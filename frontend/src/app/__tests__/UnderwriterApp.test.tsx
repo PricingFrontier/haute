@@ -10,9 +10,12 @@ vi.mock("../../api/app", () => ({
   fetchAppRelease: vi.fn(),
   fetchAppForm: vi.fn(),
   priceAppQuote: vi.fn(),
+  fetchAppQuotes: vi.fn(),
+  fetchAppPeople: vi.fn(),
+  openAppQuote: vi.fn(),
 }))
 
-import { fetchAppForm, fetchAppRelease, priceAppQuote } from "../../api/app"
+import { fetchAppForm, fetchAppPeople, fetchAppQuotes, fetchAppRelease, openAppQuote, priceAppQuote } from "../../api/app"
 import { ApiError } from "../../api/client"
 import type { WorkbenchAppReleaseResponse } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
@@ -20,7 +23,9 @@ import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { sheetForm, stubLayout } from "../../workbench/__tests__/fixtures"
+import { navigate } from "../route"
 import UnderwriterApp from "../UnderwriterApp"
+import { answer } from "./fixtures"
 
 const release: WorkbenchAppReleaseResponse = {
   id: "0a1b2c3d4e5f",
@@ -108,6 +113,32 @@ describe("UnderwriterApp", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent(`Could not open the sheets: ${refusal}`)
     expect(useWorkbenchPricingStore.getState().quotePricer).toBeNull()
+  })
+
+  it("says it keeps no quotes when it has no quote store", async () => {
+    await opened()
+
+    expect(screen.getByTestId("notice-no-store")).toHaveTextContent("This app keeps no quotes")
+  })
+
+  it("opens on the Quotes page when it keeps quotes, and a quote at its own address", async () => {
+    vi.mocked(fetchAppRelease).mockResolvedValue({ ...release, quotes: true })
+    vi.mocked(fetchAppQuotes).mockResolvedValue({ quotes: [], next_cursor: null, counts: {} })
+    vi.mocked(fetchAppPeople).mockResolvedValue({ people: [] })
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    await navigate("/", { force: true })
+    await opened()
+
+    expect(await screen.findByTestId("quotes-page")).toBeInTheDocument()
+    await act(async () => {
+      await navigate("/quotes/q1")
+    })
+    expect(await screen.findByTestId("quote-line")).toHaveTextContent("Revision 1")
+    await act(async () => {
+      await navigate("/somewhere", { force: true })
+    })
+    expect(screen.getByRole("alert")).toHaveTextContent("There is no page at this address.")
+    await navigate("/", { force: true })
   })
 
   it("leaves no quote pricer behind once it is gone", async () => {

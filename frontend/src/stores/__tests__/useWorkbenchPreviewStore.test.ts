@@ -80,7 +80,7 @@ describe("useWorkbenchPreviewStore", () => {
     vi.mocked(fetchWorkbenchFormTables).mockImplementation((spec) => Promise.resolve(workbenchOf(spec)))
     useWorkbenchFormStore.setState({ form, status: "ready" })
     useWorkbenchPricingStore.setState({ pricer: null, quotePricer: null })
-    useWorkbenchPreviewStore.setState({ quote: {}, checked: false, price: null, error: null, pricing: false })
+    useWorkbenchPreviewStore.setState({ quote: {}, checked: false, price: null, error: null, pricing: false, readOnly: false })
   })
 
   afterEach(() => {
@@ -124,6 +124,26 @@ describe("useWorkbenchPreviewStore", () => {
     // The basis moves on with the quote, so the price reads as out of date until Price again.
     store().setCell("t1", 0, "c1", "1")
     expect(store().price?.basis).not.toBe(valuesBasis(form.schema, new Set(), store().quote))
+  })
+
+  it("opens a saved quote with its price, read only or not, and holds a read-only quote as it is", async () => {
+    const quotePricer = vi.fn()
+    useWorkbenchPricingStore.setState({ quotePricer })
+    const store = useWorkbenchPreviewStore.getState
+    const price = { basis: "b", tables: { pricing_output: [{ model_premium: 7 }] }, sample: {} }
+    useWorkbenchPreviewStore.setState({ checked: true, error: "x" })
+
+    store().open({ t1: [{ c1: "5" }] }, price, true)
+    expect(store()).toMatchObject({ quote: { t1: [{ c1: "5" }] }, price, checked: false, error: null, readOnly: true })
+    store().setCell("t1", 0, "c1", "6")
+    store().setRows({ t1: [] })
+    await store().priceQuote()
+    expect(store().quote).toEqual({ t1: [{ c1: "5" }] })
+    expect(quotePricer).not.toHaveBeenCalled()
+
+    store().setReadOnly(false)
+    store().setCell("t1", 0, "c1", "6")
+    expect(store().quote).toEqual({ t1: [{ c1: "6" }] })
   })
 
   it("prices through the host's quote pricer when one is set, the underwriter app's, without the pipeline's", async () => {

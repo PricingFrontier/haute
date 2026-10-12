@@ -82,6 +82,7 @@ function Cell({
   label,
   height,
   problem,
+  disabled,
 }: {
   found: Fillable
   value: SampleValue | undefined
@@ -91,6 +92,8 @@ function Cell({
   height: string | null
   /** What breaks the column's rules in the value, or null. */
   problem: string | null
+  /** The value shows but takes no typing: the quote is read only. */
+  disabled: boolean
 }) {
   const [typing, setTyping] = useState(false)
   const { column } = found
@@ -105,6 +108,7 @@ function Cell({
         aria-label={label}
         checked={value === true}
         onChange={(event) => onChange(event.target.checked)}
+        disabled={disabled}
         className="size-4"
         style={{ accentColor: "var(--accent)" }}
       />
@@ -112,7 +116,7 @@ function Cell({
   }
   if (column.options.length > 0) {
     return (
-      <select {...marked} aria-label={label} value={text} onChange={(event) => onChange(event.target.value)} className={className} style={style}>
+      <select {...marked} aria-label={label} value={text} onChange={(event) => onChange(event.target.value)} disabled={disabled} className={className} style={style}>
         <option value="">{column.placeholder}</option>
         {column.options.map((option) => (
           <option key={option} value={option}>
@@ -123,7 +127,7 @@ function Cell({
     )
   }
   if (column.type === "date") {
-    return <input {...marked} type="date" aria-label={label} value={text} onChange={(event) => onChange(event.target.value)} className={className} style={style} />
+    return <input {...marked} type="date" aria-label={label} value={text} onChange={(event) => onChange(event.target.value)} disabled={disabled} className={className} style={style} />
   }
   return (
     <CommittedTextField
@@ -135,6 +139,7 @@ function Cell({
       onBlur={() => setTyping(false)}
       placeholder={column.placeholder || undefined}
       inputMode={isNumeric(column.type) ? "decimal" : undefined}
+      disabled={disabled}
       className={`${className} ${isNumeric(column.type) ? "text-right tabular-nums" : ""}`}
       style={style}
     />
@@ -233,7 +238,7 @@ export default function WidgetBody({ widget, fields }: { widget: Widget; fields:
  * is for other values, and a dash before the first answer or after pricing fails.
  */
 function FieldBoxes({ widgetId, fields, columns }: { widgetId: string; fields: ShownField[]; columns: number }) {
-  const { rows, setCell, price, basis, problems } = useSheetValues()
+  const { rows, setCell, price, basis, problems, readOnly } = useSheetValues()
   const typeHere = useTypeHere(widgetId)
   const stale = price !== null && price.basis !== basis
   return (
@@ -257,6 +262,7 @@ function FieldBoxes({ widgetId, fields, columns }: { widgetId: string; fields: S
                   label={fieldLabel(found)}
                   height={null}
                   problem={problems[cellKey(found.table.id, 0, found.column.id)] ?? null}
+                  disabled={readOnly}
                 />
               </div>
             ) : (
@@ -299,7 +305,7 @@ const padRows = (rows: readonly SampleRow[], length: number): SampleRow[] => [
  * the values hold.
  */
 function FieldGrid({ widgetId, fields, rows, options }: { widgetId: string; fields: ShownField[]; rows: number; options: TableOptions }) {
-  const { rows: held, setCell, setRows, price, basis, problems, quoted } = useSheetValues()
+  const { rows: held, setCell, setRows, price, basis, problems, quoted, readOnly } = useSheetValues()
   const typeHere = useTypeHere(widgetId)
   const oneRow = (found: Fillable) => found.table.rows === "one"
   const inputs = [...new Map(fields.flatMap(({ found }) => (fillable(found) && !oneRow(found) ? [[found.table.id, found.table] as const] : []))).values()]
@@ -314,7 +320,9 @@ function FieldGrid({ widgetId, fields, rows, options }: { widgetId: string; fiel
   const pricedAt = (found: NonNullable<Found>, row: number): unknown =>
     found.table.rows === "one" ? price?.tables[found.table.name]?.[0]?.[found.column.name] : matched.get(found.table.id)?.[row]?.[found.column.name]
 
-  const { row_numbers: numbered, gridlines, striped, fixed_rows: fixed } = options
+  const { row_numbers: numbered, gridlines, striped } = options
+  // Rows are not added or deleted in a grid of fixed rows, or while the values are read only.
+  const fixed = options.fixed_rows || readOnly
   const height = ROW_HEIGHT[options.density]
   // The line before a field's column: an output's, and every column's in a full grid; none
   // without gridlines, or at the grid's left edge.
@@ -378,6 +386,7 @@ function FieldGrid({ widgetId, fields, rows, options }: { widgetId: string; fiel
                           label={`${fieldLabel(found)} row ${row + 1}`}
                           height={height}
                           problem={problems[cellKey(found.table.id, at, found.column.id)] ?? null}
+                          disabled={readOnly}
                         />
                       </td>
                     )

@@ -14665,7 +14665,25 @@
           "type": "string"
         },
         "fields": {
-          "items": {},
+          "items": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "title": "Fields",
           "type": "array"
         },
@@ -14710,6 +14728,23 @@
           "type": "string"
         },
         "headline": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null,
           "title": "Headline"
         },
@@ -16277,7 +16312,9 @@
       "WorkbenchTestQuotesBranchResponse",
       "WorkbenchTestQuoteWriteResponse",
       "WorkbenchTestQuoteOpenResponse",
-      "WorkbenchTestQuoteCompareResponse",
+      "WorkbenchTestQuoteCompareResponse"
+    ],
+    "workbench-app": [
       "WorkbenchAppReleaseResponse",
       "WorkbenchAppFormResponse",
       "WorkbenchAppPriceResponse",

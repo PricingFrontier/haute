@@ -68,6 +68,15 @@
         }
       },
       {
+        "pattern": "src/app/use*Store.ts",
+        "thresholds": {
+          "statements": 94,
+          "branches": 87,
+          "functions": 91,
+          "lines": 95
+        }
+      },
+      {
         "pattern": "src/panels/explore/{ExplorePivotsPane.tsx,useExplorePivotActions.ts}",
         "thresholds": {
           "statements": 100,

@@ -400,8 +400,8 @@ class WorkbenchAppQuote(BaseModel):
     title: str
     #: The quote list's title field's value, summary fields' values in order, and headline.
     title_value: str | None = None
-    fields: list[Any] = Field(default_factory=list)
-    headline: Any = None
+    fields: list[str | int | float | bool | None] = Field(default_factory=list)
+    headline: str | int | float | bool | None = None
     stage: WorkbenchAppQuoteStage
     assignee: str
     owner: str

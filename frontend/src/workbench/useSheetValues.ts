@@ -31,6 +31,8 @@ export interface SheetValues {
   visibility: SheetVisibility
   /** The schema as these values' quote reads it: without the columns the sheets hide. */
   quoted: FormSchema
+  /** The values may not change: the cells take no typing and rows are not added or deleted. */
+  readOnly: boolean
 }
 
 export const SheetValuesContext = createContext<SheetValues | null>(null)
@@ -64,6 +66,7 @@ export function useSampleValues(): SheetValues {
       problems: NO_PROBLEMS,
       visibility,
       quoted: form === null ? NO_SCHEMA : quotedSchema(form.schema, visibility.hidden),
+      readOnly: false,
     }
   }, [form, change, price])
 }
@@ -80,6 +83,7 @@ export function usePreviewValues(): SheetValues {
   const price = useWorkbenchPreviewStore((s) => s.price)
   const setCell = useWorkbenchPreviewStore((s) => s.setCell)
   const setRows = useWorkbenchPreviewStore((s) => s.setRows)
+  const readOnly = useWorkbenchPreviewStore((s) => s.readOnly)
   return useMemo<SheetValues>(() => {
     const visibility = form === null ? NO_VISIBILITY : sheetVisibility(form, quote)
     const quoted = form === null ? NO_SCHEMA : quotedSchema(form.schema, visibility.hidden)
@@ -92,8 +96,9 @@ export function usePreviewValues(): SheetValues {
       problems: checked && form !== null ? quoteProblems(quoted, quote) : NO_PROBLEMS,
       visibility,
       quoted,
+      readOnly,
     }
-  }, [form, quote, checked, price, setCell, setRows])
+  }, [form, quote, checked, price, setCell, setRows, readOnly])
 }
 
 /**

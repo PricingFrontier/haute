@@ -661,6 +661,51 @@ Out of scope:
   came from another site, or whose origin is not the app's host, is refused (403). The
   app's pages, `/`, `/quotes/new`, `/quotes/{id}` and `/quotes/{id}/revisions/{n}`, are
   its one page, which reads its route in the browser.
+- **The Quotes page.** With a quote store, the app opens on the Quotes page, at `/`. On
+  the left are the lists, My work (the quotes assigned to the signed-in underwriter), Team
+  (everyone's) and Archived, and the stages of the list showing, Draft, Priced and Final,
+  each with its count; a stage picked narrows the list and picked again widens it. Above
+  the list are its name, a search box (`/` focuses it) matching every word typed in the
+  reference, name, title or summary fields, in Team an assignee to narrow it to, the
+  order (newest saved, newest reference, or title) and New quote (`N`). The list is a
+  table at Haute's density, 50 quotes at a time with Load more: each quote's reference,
+  its title, the quote list's summary fields and headline under their columns' labels,
+  formatted as the sheets format them, its stage, who it is with and when it was saved,
+  relative, with the time on hover. A row opens its quote, its reference a link of its
+  own; on hover or focus it offers Open, Duplicate, and Archive or Restore. The list,
+  stage, search, assignee and order are in the page's address, so Back returns to the
+  list as it was. Loading shows placeholder rows, a failure says why with Retry, and an
+  empty list says why: no quotes yet, with New quote; none matching, with Clear search;
+  none archived.
+- **A quote in the app.** A quote opens at `/quotes/{id}` on the sheets, under its bar:
+  back to Quotes, its reference, its name edited in place, its stage and, when archived,
+  Archived, who it is with (reassigned from the people quotes are with, or a name typed),
+  Price, Save, Mark final or, for a final quote, Reopen, which asks why, a menu of
+  Duplicate, Renew, Create alternative, Archive or Restore and Copy link, and History.
+  Beneath are its revision, who saved it and when, the release that priced it and the
+  quote it came from. Save keeps the quote priced when the sheets show a price for the
+  values as they are, and unpriced otherwise, which its title says; with nothing typed
+  there is nothing to save. A new quote, at `/quotes/new`, is saved by its first Save,
+  which gives it its reference and its own address; one made from another quote's
+  revision (Duplicate, Renew, Create alternative) opens with that revision's values
+  carried onto the current sheets, unpriced, naming what it was made from and any value
+  that no longer fits. The sheets take no typing, and Price, Save and Clear are off, while
+  the quote is final, archived, shown at an earlier revision (at
+  `/quotes/{id}/revisions/{n}`, with Open the newest) or saved on earlier sheets (opened
+  on those sheets, with Move to current sheets, which carries its values onto the
+  current ones as unsaved values naming any that no longer fits). A save the server
+  priced differently from the sheets says so and shows the server's price. A save or
+  change over a quote moved on since it was opened names who moved it, keeps the
+  underwriter's values, and offers to open the newest or to save the values as a new
+  quote; a page drawn for an earlier release says so and offers to reload. Values not
+  yet saved are kept in the browser as they are typed and offered back when the quote is
+  opened again, as not saved to the server, until they are saved or discarded; leaving a
+  quote with unsaved values asks first, and closing the tab warns. Archiving says so
+  with Undo. History, on the right, holds the handover note, edited there, the
+  revisions, each opened as it was, what was done to the quote, by whom and when, and
+  the quotes it came from or that were made from it. Ctrl+S saves and Ctrl+Enter prices.
+  Without a quote store the app opens on a blank quote with Price and Clear, and says it
+  keeps no quotes.
 - **Shown when.** A sheet, a section or a component with conditions shows only while they
   hold on the values typed into the sheets, the sample while building and the quote in
   Preview; a section on a sheet that does not show does not show either, nor does a
@@ -1268,7 +1313,7 @@ Out of scope:
   checkbox and the icon select); and the fields' order and the sheets' tabs use the
   list-reorder hook the step editor's cards use.
 - [engineering-quality](../engineering-quality/high-level.md): the generated contract bundle
-  carries the `workbench` response group.
+  carries the `workbench` response group and the underwriter app's `workbench-app`.
 - [json-shredding](../json-shredding/high-level.md): the Quote Input's reader, which the
   Workbench Input leaves alone; its columns' types are the Quote Input's, held equal by a test,
   and a table's name follows the one rule a Quote Input's labels follow.

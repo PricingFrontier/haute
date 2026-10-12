@@ -2762,14 +2762,12 @@ export interface WorkbenchAppQuote {
   archived_by: string | null;
   assignee: string;
   created_at: string;
-  fields: unknown[];
+  fields: (string | number | boolean | null)[];
   final_at: string | null;
   final_by: string | null;
   final_revision: number | null;
   form_revision: string;
-  headline: {
-    [k: string]: unknown;
-  };
+  headline: string | number | boolean | null;
   id: string;
   last_saved_at: string;
   last_saved_by: string;

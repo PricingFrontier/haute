@@ -3,7 +3,8 @@
  * sheets, kept apart from the sample, never saved and never undone, lasting while the
  * editor is open, through Build and back; whether Price has checked it against the
  * columns' rules; and what pricing it on the pipeline gave, with the basis it was priced
- * for, or why there is no price.
+ * for, or why there is no price. The underwriter app opens a saved quote into it, with its
+ * price, and holds it read only while the quote may not change.
  */
 import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
@@ -26,12 +27,21 @@ interface WorkbenchPreviewState {
   /** Why the quote was not priced, as the toolbar says it, until a pricing succeeds. */
   error: string | null
   pricing: boolean
+  /** The quote may not change: its cells take no typing and it is not priced. */
+  readOnly: boolean
   /** Set one cell, adding empty rows up to it. */
   setCell: (tableId: string, row: number, columnId: string, value: SampleValue) => void
   /** Replace tables' rows, as a grid adds and deletes a row in every table it shows. */
   setRows: (rowsByTable: Record<string, SampleRow[]>) => void
   /** Start over: no quote, nothing marked, no price. */
   clear: () => void
+  /**
+   * Put a quote in place of the one there, with the price it was saved with (null when
+   * unpriced), nothing marked, read only or not; a pricing under way is nobody's.
+   */
+  open: (quote: Record<string, SampleRow[]>, price: SamplePrice | null, readOnly: boolean) => void
+  /** Hold the quote read only, or let it change. */
+  setReadOnly: (readOnly: boolean) => void
   /**
    * Check the quote against the columns' rules and, when every cell passes, price it on
    * the pipeline through the pricer the view gave the pricing store, or through the quote
@@ -54,20 +64,26 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => (
   price: null,
   error: null,
   pricing: false,
+  readOnly: false,
   setCell: (tableId, row, columnId, value) =>
-    set((s) => ({ quote: { ...s.quote, [tableId]: withCell(s.quote[tableId] ?? [], row, columnId, value) } })),
-  setRows: (rowsByTable) => set((s) => ({ quote: { ...s.quote, ...rowsByTable } })),
+    set((s) => (s.readOnly ? s : { quote: { ...s.quote, [tableId]: withCell(s.quote[tableId] ?? [], row, columnId, value) } })),
+  setRows: (rowsByTable) => set((s) => (s.readOnly ? s : { quote: { ...s.quote, ...rowsByTable } })),
   clear: () => {
     asked += 1
     set({ quote: {}, checked: false, price: null, error: null, pricing: false })
   },
+  open: (quote, price, readOnly) => {
+    asked += 1
+    set({ quote, checked: false, price, error: null, pricing: false, readOnly })
+  },
+  setReadOnly: (readOnly) => set({ readOnly }),
   priceQuote: async () => {
     const { form, status } = useWorkbenchFormStore.getState()
     const { pricer, quotePricer } = useWorkbenchPricingStore.getState()
     // The host's quote pricer, the underwriter app's, else the pipeline open in the editor.
     const priceWith: QuotePricer | null =
       quotePricer ?? (pricer === null ? null : (sheets, typed) => priceForm({ ...sheets, sample: typed }, pricer))
-    if (get().pricing || form === null || status !== "ready" || priceWith === null) return
+    if (get().pricing || get().readOnly || form === null || status !== "ready" || priceWith === null) return
     const { quote } = get()
     const { hidden } = sheetVisibility(form, quote)
     const quoted = quotedSchema(form.schema, hidden)

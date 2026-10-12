@@ -216,6 +216,10 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         WorkbenchTestQuoteWriteResponse,
         WorkbenchTestQuoteOpenResponse,
         WorkbenchTestQuoteCompareResponse,
+    ),
+    # The underwriter app's own page reads these; the builder never does, so its chunks
+    # carry none of them.
+    "workbench-app": (
         WorkbenchAppReleaseResponse,
         WorkbenchAppFormResponse,
         WorkbenchAppPriceResponse,

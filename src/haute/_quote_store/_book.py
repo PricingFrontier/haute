@@ -914,7 +914,7 @@ class QuoteBook:
             ).one()
             raise StaleQuoteError(
                 f"{quote.reference} has changed since you opened it: {last.actor} "
-                f"{_DONE[last.kind]} it at {last.at.isoformat(timespec='minutes')}."
+                f"{_DONE[last.kind]} it at {last.at:%H:%M} UTC on {last.at:%d %b %Y}."
             )
         return quote
 
