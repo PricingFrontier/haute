@@ -113,9 +113,11 @@ pruned graph reads has a `live` value, since deployed scoring runs under `live`.
 `test_quotes.dir` is configured,
 the path must exist, be a directory, and contain at least one `*.json` quote; otherwise
 validation fails rather than silently disabling the gate. Every quote is scored through the
-resolved graph. Test-quote files may be plain input rows or "golden" rows with an
-`expected` output and a `tolerance_pct`; any row whose actual output falls outside
-tolerance fails the deploy. All failures — structural and test-quote — are collected and
+resolved graph. Every test-quote row wraps its request as `input`, with an optional
+`expected` output and `tolerance_pct` and any `_`-prefixed notes; a row without `input`, or
+with any other top-level key, is refused naming the row, and any row whose actual output
+falls outside tolerance fails the deploy. The starter quote `haute init` writes takes that
+shape, so a new project's test quotes parse before the analyst replaces them. All failures — structural and test-quote — are collected and
 raised together as one `DeployError` so an operator sees the whole picture in one pass,
 not a fix-rerun-fix cycle.
 

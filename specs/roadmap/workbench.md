@@ -177,8 +177,7 @@ leaves the previous release running on the migrated schema and the run failed.
 **Dependencies:** WB-07 (the app), WB-10 (the store and its migrations), WB-11 (the export
 the app's tests make, once its formats are decided) and WB-12 (the test quotes), none needed
 by the first slices. The Azure resources and identities, provided by the project's IT team.
-Shared ground with [BUG-20](bugs.md#bug-20--the-starter-test-quote-passes-the-deploy-check)
-(which test-quote rows are accepted),
+Shared ground with
 [BUG-23](bugs.md#bug-23--the-impact-steps-portfolio-sample-is-in-the-repository) (impact's
 input) and [BUG-24](bugs.md#bug-24--container-deploys-log-in-to-their-registry) (the
 registry login before a push).
@@ -388,8 +387,8 @@ merge button cannot merge a binary file, so a pull request in conflict over it i
 to date locally, where that merge runs. In CI, Validate re-prices every test quote against
 its accepted outputs and posts on the pull request a summary of the quotes added, changed
 and removed and of the outputs that moved, since the provider shows the file as binary. For
-a workbench project the file stands where the hand-written test-quote files stand now,
-holding the rows BUG-20 settles.
+a workbench project the file stands where the hand-written test-quote files stand now, each
+quote an `input` with the outputs `expected` of it, as those files hold them.
 
 **Acceptance:** An analyst saves the quote on the sheets as a test quote, reopens it after
 restarting `haute serve`, changes a rate, runs all the test quotes and sees which outputs
@@ -405,9 +404,8 @@ commit fails naming the file, and no torn file and no journal or write-ahead fil
 committed; a checkout or a merge with `haute serve` open leaves the server reading the new
 file.
 
-**Dependencies:** WB-10 (the store and its SQLite backend), WB-08 for the half that runs in
-CI, and [BUG-20](bugs.md#bug-20--the-starter-test-quote-passes-the-deploy-check) (which
-test-quote rows are accepted).
+**Dependencies:** WB-10 (the store and its SQLite backend) and WB-08 for the half that runs
+in CI.
 
 **Evidence:** `frontend/src/stores/useWorkbenchPreviewStore.ts::priceQuote` (Preview prices
 one quote and keeps nothing); `frontend/src/workbench/WorkbenchView.tsx` (the pricer reads

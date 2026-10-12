@@ -1145,14 +1145,16 @@ def test_pipeline_parses() -> None:
 
 
 def starter_test_quote() -> str:
-    """Generate the starter ``tests/quotes/example.json``."""
+    """Generate the starter ``tests/quotes/example.json``, a row in the test-quote shape."""
     return """\
 [
   {
-    "_description": "Example quote - replace with your own fields",
-    "id": 1,
-    "field_a": "value",
-    "field_b": 42
+    "_description": "Example quote - replace the input and add the outputs you expect",
+    "input": {
+      "id": 1,
+      "field_a": "value",
+      "field_b": 42
+    }
   }
 ]
 """

@@ -151,10 +151,11 @@ class TestInitCreatesProjectStructure:
         runner.invoke(cli, ["init"], catch_exceptions=False)
         quote_file = tmp_path / "tests" / "quotes" / "example.json"
         assert quote_file.exists()
-        import json
+        from haute.deploy._validators import load_test_quote_file
 
-        data = json.loads(quote_file.read_text())
-        assert isinstance(data, (dict, list))
+        # The deploy check's own loader reads the starter, so a new project's test
+        # quotes parse before the analyst replaces them.
+        assert load_test_quote_file(quote_file) == [{"id": 1, "field_a": "value", "field_b": 42}]
 
     def test_creates_env_example(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
