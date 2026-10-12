@@ -20,6 +20,7 @@ A file behind the store's schema is brought up to date by a write and refused by
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
@@ -215,7 +216,9 @@ def _read_test_quotes(config: WorkbenchConfig, read: Callable[[QuoteStore], _T])
         if not path.is_file():
             return None
         # The clone's drivers; .gitattributes, if it changes, rides the next write's capture.
-        ensure_test_quote_git(config.project_root, relative)
+        # A file that cannot be written leaves the read as it is: the next write says so.
+        with suppress(OSError):
+            ensure_test_quote_git(config.project_root, relative)
         try:
             store = open_store(store_url(path))
         except QuoteStoreNotMigratedError as exc:
@@ -227,22 +230,48 @@ def _read_test_quotes(config: WorkbenchConfig, read: Callable[[QuoteStore], _T])
             return read(store)
 
 
+#: A write that names no branch: an accept names its revision by digest instead.
+_ANY_BRANCH = object()
+
+
 def _write_test_quotes(
-    config: WorkbenchConfig, write: Callable[[QuoteStore, str], _T], *, create: bool = False
+    config: WorkbenchConfig,
+    write: Callable[[QuoteStore, str], _T],
+    *,
+    create: bool = False,
+    branch: object = _ANY_BRANCH,
 ) -> tuple[_T, WorkbenchTestQuoteWriteResponse]:
     """*write* on the test-quote file, brought to the newest schema if it must be (and made,
-    when *create*), under the repository's lock, then the write captured on the ledger."""
+    when *create*), under the repository's lock, then the write captured on the ledger.
+
+    Everything that can refuse it does so before anything is written, so a refusal never
+    reports as unsaved a write that landed: *branch*, when given, must be the branch checked
+    out now, and the file's git drivers are registered in ``.gitattributes`` first.
+    """
     from haute._git_setup import get_identity
     from haute._quote_store import QuoteNotFoundError, migrate_store, open_store, store_url
-    from haute._test_quotes import project_gitattributes_path
+    from haute._test_quotes import (
+        WorkbenchTestQuoteError,
+        ensure_test_quote_git,
+        project_gitattributes_path,
+        test_quotes_branch,
+    )
 
     with repository_mutation(config.project_root):
         path, relative = _test_quotes_file(config)
-        # Refused before anything is written: a write the capture then refuses would be
-        # reported as not saved though it was.
         project_gitattributes_path(config.project_root)
+        if branch is not _ANY_BRANCH and test_quotes_branch(config.project_root) != branch:
+            raise WorkbenchTestQuoteError(
+                "The branch changed while the quote was priced: save it again on this one."
+            )
         if not create and not path.is_file():
             raise QuoteNotFoundError(f"{relative} holds no test quotes yet.")
+        try:
+            ensure_test_quote_git(config.project_root, relative)
+        except OSError as exc:
+            raise WorkbenchTestQuoteError(
+                f".gitattributes could not be written, so nothing was saved: {exc}"
+            ) from exc
         path.parent.mkdir(parents=True, exist_ok=True)
         migrate_store(store_url(path))
         name, email = get_identity(config.project_root)
@@ -254,14 +283,22 @@ def _write_test_quotes(
 
 def _capture_test_quotes(config: WorkbenchConfig, relative: str) -> WorkbenchTestQuoteWriteResponse:
     """The test-quote file at *relative* captured on the save ledger as it is, with the
-    drivers in ``.gitattributes``, under the repository's lock the caller holds."""
-    from haute._test_quotes import ensure_test_quote_git, project_gitattributes_path
+    drivers in ``.gitattributes``, under the repository's lock the caller holds. Whatever
+    cannot be done is a warning: the write, if any, has landed."""
+    from haute._test_quotes import (
+        WorkbenchTestQuoteError,
+        ensure_test_quote_git,
+        project_gitattributes_path,
+    )
 
-    ensure_test_quote_git(config.project_root, relative)
-    captured = [relative]
-    if project_gitattributes_path(config.project_root).is_file():
-        captured.append(".gitattributes")
     warnings: list[str] = []
+    captured = [relative]
+    try:
+        ensure_test_quote_git(config.project_root, relative)
+        if project_gitattributes_path(config.project_root).is_file():
+            captured.append(".gitattributes")
+    except (OSError, WorkbenchTestQuoteError) as exc:
+        warnings.append(f"The test quotes' git drivers could not be registered: {exc}")
     git_sha, identity_required = capture_save_in_ledger(config.project_root, captured, warnings)
     return WorkbenchTestQuoteWriteResponse(
         warnings=warnings, git_sha=git_sha, identity_required=identity_required
@@ -284,11 +321,14 @@ def _written(store: QuoteStore, revision: QuoteRevision) -> WorkbenchTestQuoteSu
 @router.get("/test-quotes", response_model=WorkbenchTestQuotesResponse)
 async def list_test_quotes() -> WorkbenchTestQuotesResponse:
     """The project's test quotes, the most recently saved first."""
+    from haute._test_quotes import test_quotes_branch
+
     config = await _enabled_config()
     quotes = await run_in_threadpool(
         _read_test_quotes, config, lambda store: [_summary(q) for q in store.quotes()]
     )
-    return WorkbenchTestQuotesResponse(quotes=quotes or [])
+    branch = await run_in_threadpool(test_quotes_branch, config.project_root)
+    return WorkbenchTestQuotesResponse(quotes=quotes or [], branch=branch)
 
 
 @router.post("/test-quotes", response_model=WorkbenchTestQuoteWriteResponse)
@@ -317,7 +357,7 @@ async def save_test_quote(body: WorkbenchTestQuoteSaveRequest) -> WorkbenchTestQ
     try:
         async with save_lock:
             quote, written = await run_in_threadpool(
-                lambda: _write_test_quotes(config, write, create=True)
+                lambda: _write_test_quotes(config, write, create=True, branch=body.branch)
             )
     except QuoteStoreError as exc:
         raise _store_error(exc) from None

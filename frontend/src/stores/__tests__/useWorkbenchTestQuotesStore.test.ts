@@ -86,7 +86,10 @@ describe("useWorkbenchTestQuotesStore", () => {
     snapshots = 0
     pricer = vi.fn<Pricer>((_workbench: WorkbenchTablesResponse) => Promise.resolve(priced(500)))
     vi.mocked(fetchWorkbenchFormTables).mockResolvedValue(workbench)
-    vi.mocked(fetchTestQuotes).mockResolvedValue({ quotes: [summary("a", "Northern"), summary("b", "Southern")] })
+    vi.mocked(fetchTestQuotes).mockResolvedValue({
+      quotes: [summary("a", "Northern"), summary("b", "Southern")],
+      branch: "work",
+    })
     vi.mocked(saveTestQuote).mockResolvedValue(written)
     vi.mocked(acceptTestQuote).mockResolvedValue(written)
     vi.mocked(deleteTestQuote).mockResolvedValue(written)
@@ -117,7 +120,8 @@ describe("useWorkbenchTestQuotesStore", () => {
 
     expect(snapshots).toBe(1)
     expect(fetchWorkbenchFormTables).toHaveBeenCalledWith({ ...form, sample: { t1: [{ c1: "250000" }] } })
-    expect(saveTestQuote).toHaveBeenCalledWith("Northern", form, { t1: [{ c1: "250000" }] }, priced(500).tables)
+    // On the branch the list named as the save started.
+    expect(saveTestQuote).toHaveBeenCalledWith("Northern", form, { t1: [{ c1: "250000" }] }, priced(500).tables, "work")
     expect(store().quotes.map((quote) => quote.name)).toEqual(["Northern", "Southern"])
   })
 
@@ -313,7 +317,7 @@ describe("useWorkbenchTestQuotesStore", () => {
     const saving = store().save("Northern")
     let flushed = false
     const flushing = store().flush().then(() => { flushed = true })
-    await Promise.resolve()
+    await vi.waitFor(() => expect(pricer).toHaveBeenCalled())
     expect(flushed).toBe(false)
 
     useDocumentStatusStore.setState({ executionGeneration: useDocumentStatusStore.getState().executionGeneration + 1 })

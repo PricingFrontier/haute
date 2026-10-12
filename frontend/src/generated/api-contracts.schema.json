@@ -14996,8 +14996,20 @@
       "type": "object"
     },
     "WorkbenchTestQuotesResponse": {
-      "description": "The project's test quotes, the most recently saved first.",
+      "description": "The project's test quotes, the most recently saved first, and the branch they were\nread from (null outside a repository), which a save names.",
       "properties": {
+        "branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Branch"
+        },
         "quotes": {
           "items": {
             "$ref": "#/$defs/WorkbenchTestQuoteSummary"
@@ -15007,7 +15019,8 @@
         }
       },
       "required": [
-        "quotes"
+        "quotes",
+        "branch"
       ],
       "title": "WorkbenchTestQuotesResponse",
       "type": "object"

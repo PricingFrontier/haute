@@ -81,6 +81,20 @@ def _attributes_pattern(relative: str) -> str:
     return f'"{escaped}"'
 
 
+def test_quotes_branch(project_root: Path) -> str | None:
+    """The branch the project's test quotes are read from and written to now: the branch
+    checked out, the commit when none is, None outside a repository."""
+    from haute._git_core import _get_current_branch, _run_git_ok
+
+    if not (project_root / ".git").exists():
+        return None
+    branch = _get_current_branch(project_root)
+    if branch != "HEAD":
+        return branch
+    ok, commit = _run_git_ok("rev-parse", "HEAD", cwd=project_root)
+    return commit.strip() if ok else None
+
+
 #: The git drivers' name for the test-quote file, in ``.gitattributes`` and the clone's config.
 GIT_DRIVER = "haute-test-quotes"
 

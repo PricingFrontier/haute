@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -62,9 +63,12 @@ def spec(document: dict[str, Any] = FORM) -> FormSpec:
 
 
 def save(name: str = "Northern fleet", tables: dict[str, Any] = TABLES) -> Any:
+    """A save on the branch the list names, as the panel makes one."""
+    listed = client().get("/api/workbench/test-quotes")
+    branch = listed.json()["branch"] if listed.status_code == 200 else None
     return client().post(
         "/api/workbench/test-quotes",
-        json={"name": name, "form": FORM, "values": VALUES, "tables": tables},
+        json={"name": name, "form": FORM, "values": VALUES, "tables": tables, "branch": branch},
     )
 
 
@@ -127,6 +131,48 @@ def test_a_gitattributes_leading_outside_the_project_refuses_the_write_before_it
     assert ".gitattributes leads outside" in refused.json()["detail"]
     assert not (project / PATH).exists()
     assert [entry.name for entry in outside.rglob("*")] == [".gitattributes-target"]
+
+
+def test_a_save_started_on_another_branch_is_refused_and_nothing_written(
+    project: Path,
+) -> None:
+    enable(project)
+    init_repo(project)
+    listed = client().get("/api/workbench/test-quotes").json()
+    assert listed["branch"] == git(project, "symbolic-ref", "--short", "HEAD")
+
+    # Checked out elsewhere while the quote was priced: the save names the branch it began on.
+    refused = client().post(
+        "/api/workbench/test-quotes",
+        json={"name": "n", "form": FORM, "values": VALUES, "tables": TABLES, "branch": "other"},
+    )
+
+    assert refused.status_code == 409
+    assert "branch changed while the quote was priced" in refused.json()["detail"]
+    assert not (project / PATH).exists()
+    assert save().status_code == 200
+
+
+def test_a_gitattributes_that_cannot_be_written_refuses_the_save_before_it_is_made(
+    project: Path,
+) -> None:
+    enable(project)
+    init_repo(project)
+    attributes = project / ".gitattributes"
+    attributes.write_text("* text=auto\n", encoding="utf-8")
+    attributes.chmod(stat.S_IREAD)
+    try:
+        refused = save()
+    finally:
+        attributes.chmod(stat.S_IREAD | stat.S_IWRITE)
+
+    # Refused before the quote was written: a retry saves it once.
+    assert refused.status_code == 409, refused.text
+    assert ".gitattributes could not be written, so nothing was saved" in refused.text
+    assert not (project / PATH).exists()
+    assert save().status_code == 200
+    [listed] = client().get("/api/workbench/test-quotes").json()["quotes"]
+    assert listed["number"] == 1
 
 
 def test_a_test_quote_folder_with_a_space_keeps_its_drivers(project: Path) -> None:
@@ -391,7 +437,7 @@ def test_a_delete_removes_the_quote(project: Path) -> None:
     deleted = client().delete(f"/api/workbench/test-quotes/{quote_id}")
 
     assert deleted.status_code == 200, deleted.text
-    assert client().get("/api/workbench/test-quotes").json() == {"quotes": []}
+    assert client().get("/api/workbench/test-quotes").json()["quotes"] == []
     missing = client().delete(f"/api/workbench/test-quotes/{quote_id}")
     assert missing.status_code == 409
     assert "quote_not_found" in missing.text
@@ -410,7 +456,7 @@ def test_a_save_of_a_response_preview_cut_short_names_the_table(project: Path) -
 def test_a_read_of_a_project_with_no_file_lists_nothing_and_creates_none(project: Path) -> None:
     enable(project)
 
-    assert client().get("/api/workbench/test-quotes").json() == {"quotes": []}
+    assert client().get("/api/workbench/test-quotes").json()["quotes"] == []
     assert not (project / "tests").exists()
 
 
@@ -443,7 +489,7 @@ def test_every_test_quote_route_is_404_while_the_workbench_is_off(project: Path)
     write = {"form": FORM, "values": VALUES, "tables": TABLES}
     for method, url, body in (
         ("GET", "/api/workbench/test-quotes", None),
-        ("POST", "/api/workbench/test-quotes", {"name": "n", **write}),
+        ("POST", "/api/workbench/test-quotes", {"name": "n", "branch": None, **write}),
         ("POST", "/api/workbench/test-quotes/q/open", {"form": FORM}),
         (
             "POST",

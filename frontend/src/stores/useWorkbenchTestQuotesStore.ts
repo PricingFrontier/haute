@@ -218,12 +218,15 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
     const document = useDocumentStatusStore.getState().executionGeneration
     set({ saving: true, error: null, notice: null })
     try {
+      // The branch the save starts on, which the server holds it to: a checkout outside the
+      // editor that changes nothing but the test-quote file adopts no document.
+      const { branch = null } = await fetchTestQuotes()
       const { tables } = await priceForm({ ...form, sample: quote }, fixedPricer())
       if (useDocumentStatusStore.getState().executionGeneration !== document) {
         set({ error: "Not saved: the branch changed while the quote was priced. Save it again on this one." })
         return false
       }
-      const written = await saveTestQuote(name, form, quote, tables as PricedTables)
+      const written = await saveTestQuote(name, form, quote, tables as PricedTables, branch)
       set({ uncaptured: uncapturedAfter(written) })
       await get().load()
       return true

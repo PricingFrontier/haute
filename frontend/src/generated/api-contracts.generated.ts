@@ -2615,9 +2615,11 @@ export interface WorkbenchFormSaveResponse {
   warnings: string[];
 }
 /**
- * The project's test quotes, the most recently saved first.
+ * The project's test quotes, the most recently saved first, and the branch they were
+ * read from (null outside a repository), which a save names.
  */
 export interface WorkbenchTestQuotesResponse {
+  branch: string | null;
   quotes: WorkbenchTestQuoteSummary[];
 }
 /**
