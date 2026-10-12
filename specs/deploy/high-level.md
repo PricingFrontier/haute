@@ -233,8 +233,9 @@ approving it.
   artefact-path remapping (`NodeBuildHooks(before_build=_intercept)`). This keeps
   dev/deploy behavioural drift structurally impossible for every other node type.
 - **The pruned graph JSON, not the `.py` file, is the deployment unit.** This was a
-  deliberate design decision: `_utils.py::build_manifest` embeds `resolved.pruned_graph.model_dump()` verbatim into
-  `deploy_manifest.json`, and at runtime `HauteModel.load_context`
+  deliberate design decision: `_utils.py::build_manifest` embeds `resolved.pruned_graph.model_dump()` into
+  `deploy_manifest.json`, every Workbench Input's `sample` left out (`shipped_graph`; the
+  quote typed while building, which nothing deployed reads), and at runtime `HauteModel.load_context`
   (`_model_code.py`) reconstructs the graph via `PipelineGraph.model_validate(manifest["pruned_graph"])`
   rather than re-parsing any source file. The graph JSON is inspectable without the
   original source and cannot drift from what was validated. Its embedded preamble still

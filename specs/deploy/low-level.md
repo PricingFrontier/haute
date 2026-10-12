@@ -13,7 +13,7 @@
 | `src/haute/deploy/_scorer.py` | Runtime scoring engine (`score_graph`, `score_graph_lazy`, taking a frame or a Workbench Input's `QuoteRequest`, the quotes as their records; `reads_one_quote_per_request`) shared by every deploy target; `NodeBuildHooks` interception for live-input injection and artefact-path remapping; stat-gated model/contract caches; execution admission. |
 | `src/haute/deploy/_project_modules.py` | Project-module resolution for the bundle (`resolve_project_modules`): the project-local `utility` package the preamble resolves, which deploy ships, and every other project-local static import, which validation refuses. |
 | `src/haute/deploy/_validators.py` | Pre-deploy validation (`validate_deploy`): structural checks + exactly one test-quote scoring pass, returning successful per-file results to its caller; golden test-quote parsing and expected-output tolerance comparison, walked into a Workbench Output's tables (`_first_mismatch`); `score_test_quotes`; `_workbench_form_errors`, each Workbench node's copy of its tables against the form in a project whose workbench is enabled. |
-| `src/haute/deploy/_utils.py` | Shared helpers: `get_user`, `get_haute_version`, `build_manifest` (the canonical deploy-manifest schema). |
+| `src/haute/deploy/_utils.py` | Shared helpers: `get_user`, `get_haute_version`, `build_manifest` (the canonical deploy-manifest schema), `shipped_graph` (the pruned graph as the bundle carries it, every Workbench Input's `sample` left out, submodels' graphs included). |
 | `src/haute/deploy/_mlflow.py` | Databricks target: `deploy_to_mlflow`, `get_deploy_status`, MLflow signature building (each rendered dtype parsed by `_polars_dtypes.parse_rendered_dtype` and mapped by `rendered_dtype_mlflow_type_name`; a struct a `Map` of `AnyType` and a list an `Array` of its inner type, a table's column not required, since the Workbench Input's reader holds the request to the table's columns and leaves others unread where MLflow's typed object would refuse them), conda-env building, Databricks Model Serving endpoint create/update, connectivity pre-check, and the MLflow destination check (`_resolve_mlflow_databricks`) that binds its logging and registry calls. |
 | `src/haute/deploy/_model_code.py` | MLflow models-from-code entry point: `HauteModel` (`mlflow.pyfunc.PythonModel` subclass) wrapping `score_graph`; `_request` hands a Workbench Input its quotes as the records MLflow passed (`QuoteRequest`, numpy's values made plain by `_plain`), never a frame inferred from them, and any other request input the frame. |
 | `src/haute/deploy/_container.py` | Container build/push orchestration, build-directory preparation (`prepare_build_directory`), generated FastAPI `/health` and `/quote` runtime, stable JSON/NDJSON response handling, pinned Dockerfile generation, Docker subprocess calls, and the platform service-update stub. |
@@ -104,8 +104,8 @@
   version, generation id, source signature, data checksum, size, row and column
   counts, columns, creation time, profile, build class), `model_sources` (node id →
   the registered model, alias, concrete version and run ID the bundle packaged),
-  `pruned_graph` (full
-  `model_dump()`), `nodes_deployed`,
+  `pruned_graph` (`shipped_graph`: the full `model_dump()` with every Workbench Input's
+  `sample` left out, inside submodels too), `nodes_deployed`,
   `nodes_skipped`, `nodes_skipped_names`.
 
 ## Control flow
@@ -802,7 +802,8 @@ what they cover:
   contract matching (`_assert_runtime_contract_matches`), contract-only (no model
   artefact) scoring rejection, static-data-source remap edge cases.
 - **`test_deploy_utils.py`** — `get_user`/`get_haute_version` fallback behaviour,
-  `build_manifest` field population.
+  `build_manifest` field population, and a Workbench Input's sample left out of the
+  shipped graph, a submodel's too, while the validated graph keeps it.
 - **`test_cli_deploy.py`** — thin CLI-boundary tests (`TestDeploy`) — the deploy command
   wiring itself is specced in [cli](../cli/high-level.md), but this file exercises the
   handoff into `haute.deploy`'s public functions.

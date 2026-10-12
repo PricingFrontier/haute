@@ -648,7 +648,9 @@ Out of scope:
     its columns for a one-row table and a list of them for a many-row one, with their declared
     types, and the dry run reads one quote with nothing filled in, one row of nulls per table,
     the rows a preview runs on before the workbench supplies values. A node that cannot take a
-    null fails that dry run with its own error. Deploy's test quotes are not held to the
+    null fails that dry run with its own error. Nothing deployed reads the sample, so the
+    bundle leaves it out and carries the tables alone: the quote an analyst typed while
+    building stays in the project. Deploy's test quotes are not held to the
     tables as a Quote Input's are to its columns: a quote may leave a table out, and the
     reader says what does not fit when it is scored; their expected outputs are compared
     into the response's tables, a number inside one held to the tolerance and a boolean to a
