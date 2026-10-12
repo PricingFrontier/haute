@@ -3,7 +3,8 @@
  * Output's tables as its preview shows them. The document's top-level workbench nodes run
  * with the tables and sample the form gives, in this request alone, as a fetch gives them
  * copies; a Workbench Input inside a submodel keeps its copy, and the document itself is
- * left alone.
+ * left alone. Asked for the complete response, as a test quote keeps it, a table Preview
+ * cut short at its row or cell limit is refused, naming the table and its rows.
  */
 import { previewNode } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
@@ -14,7 +15,12 @@ import { WORKBENCH_COPY_PATCHES, workbenchTablePorts, type PricedSample } from "
 /** The preview route's most rows: a quote's many-row tables fit. */
 const ROW_LIMIT = 10_000
 
-export async function priceSample(graph: GraphPayload, workbench: WorkbenchTablesResponse, source: string): Promise<PricedSample> {
+export async function priceSample(
+  graph: GraphPayload,
+  workbench: WorkbenchTablesResponse,
+  source: string,
+  { complete = false }: { complete?: boolean } = {},
+): Promise<PricedSample> {
   const copies = { tables: workbench.tables, sample: workbench.sample, responseTables: workbench.response_tables }
   const nodes = graph.nodes.map((node) => {
     const config = (node.data.config ?? {}) as Record<string, unknown>
@@ -38,6 +44,11 @@ export async function priceSample(graph: GraphPayload, workbench: WorkbenchTable
         })
       if (result.status !== "ok") {
         throw new Error(result.error || `The Workbench Output's '${label}' table could not be previewed.`)
+      }
+      if (complete && result.preview_truncated) {
+        throw new Error(
+          `The '${label}' table has ${result.row_count ?? "more"} rows, more than Preview returns: a test quote keeps the whole response.`,
+        )
       }
       return [label, result.preview ?? []] as const
     }),

@@ -10,6 +10,7 @@ import type { FormSpec } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore from "../../stores/useWorkbenchPricingStore"
+import useWorkbenchTestQuotesStore from "../../stores/useWorkbenchTestQuotesStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import WorkbenchToolbar from "../WorkbenchToolbar"
 
@@ -142,6 +143,19 @@ describe("WorkbenchToolbar", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Build" }))
     expect(useWorkbenchViewStore.getState().section).toBe("sheets")
+  })
+
+  it("opens and closes the test quotes from Preview alone", () => {
+    useWorkbenchTestQuotesStore.setState({ open: false })
+    renderToolbar()
+    expect(screen.queryByRole("button", { name: "Test quotes" })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }))
+    fireEvent.click(screen.getByRole("button", { name: "Test quotes" }))
+    expect(useWorkbenchTestQuotesStore.getState().open).toBe(true)
+    expect(screen.getByRole("button", { name: "Test quotes" })).toHaveAttribute("aria-pressed", "true")
+    fireEvent.click(screen.getByRole("button", { name: "Test quotes" }))
+    expect(useWorkbenchTestQuotesStore.getState().open).toBe(false)
   })
 
   it("prices nothing while the only values typed are in cells the sheets hide, though Clear clears them", () => {
