@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,15 +65,12 @@ def _read_quotes(path: Path, scratch: Path) -> dict[str, _Saved]:
 def _base_file(project: Path, base: str, relative: str, scratch: Path) -> Path | str | None:
     """The test-quote file at *base* as a file in *scratch*; None when *base* has none; the
     reason, as text, when *base* cannot be read."""
-    resolved = subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"],
-        cwd=project,
-        capture_output=True,
-        text=True,
-    )
-    if resolved.returncode != 0:
+    from haute._git_core import _run_git_ok, _run_git_process
+
+    resolved, _ = _run_git_ok("rev-parse", "--verify", "--quiet", f"{base}^{{commit}}", cwd=project)
+    if not resolved:
         return f"{base} could not be read as a commit"
-    shown = subprocess.run(["git", "show", f"{base}:{relative}"], cwd=project, capture_output=True)
+    shown = _run_git_process("show", f"{base}:{relative}", binary=True, cwd=project)
     if shown.returncode != 0:
         return None
     path = scratch / "base-file.sqlite"

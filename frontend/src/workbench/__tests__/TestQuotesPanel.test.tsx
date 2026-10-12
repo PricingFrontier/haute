@@ -71,7 +71,7 @@ describe("TestQuotesPanel", () => {
 
   it("saves the quote on the sheets under the name typed, and empties the name once saved", async () => {
     render(<TestQuotesPanel />)
-    const save = screen.getByRole("button", { name: "Save" })
+    const save = screen.getByRole("button", { name: "Save quote" })
     expect(save).toBeDisabled()
 
     fireEvent.change(screen.getByRole("textbox", { name: "Test quote name" }), { target: { value: "  Coastal  " } })

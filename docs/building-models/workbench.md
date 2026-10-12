@@ -237,7 +237,7 @@ it. **Clear** empties the quote, after asking. Ctrl+S still saves the project in
 
 Keep the quotes you check rates with as **test quotes**. In Preview, **Test quotes** opens
 a panel beside the sheets. Type a quote into the sheets, name it in the panel and press
-**Save**: Haute checks it as Price does, prices it in full on the pipeline as it is now and
+**Save quote**: Haute checks it as Price does, prices it in full on the pipeline as it is now and
 keeps it with its prices, in `tests/quotes/test_quotes.sqlite` (in the folder
 `[test_quotes] dir` in `haute.toml` names). Save and Commit carry the file with the rest of
 the project.

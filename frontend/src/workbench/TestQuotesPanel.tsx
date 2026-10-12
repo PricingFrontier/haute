@@ -126,7 +126,7 @@ export default function TestQuotesPanel() {
             style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
           />
           <button type="submit" className={BUTTON} disabled={saving || name.trim() === ""} title="Price the quote on the sheets in full and save it as a test quote">
-            <Save size={12} /> {saving ? "Saving…" : "Save"}
+            <Save size={12} /> {saving ? "Saving…" : "Save quote"}
           </button>
         </form>
 

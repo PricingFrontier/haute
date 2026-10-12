@@ -22,7 +22,7 @@ Preview; and the actions that fill the sheets from databases and APIs.
 | WB-09 | Decision | P2 | A Button on a sheet, or a lookup beside a key cell, runs an action the project declares against a database or an API and fills input cells with what comes back, through the server with no credential in the browser, while pricing stays as pure as it is. |
 | WB-10 | Planned | P2 | An underwriter's quotes are saved to and reopened from the SQL instance the project's IT team provides, with the form and the release that priced each one, through the same store an analyst's machine runs on SQLite. |
 | WB-11 | Decision | P2 | An underwriter exports a saved quote from the app in the formats the project needs, naming the release that priced it. |
-| WB-12 | Planned | P2 | An analyst keys test quotes in on the sheets in Preview, saves and reloads them and re-prices them all at once against the pipeline in the editor, and CI re-prices the same quotes from the file committed with the change. |
+| WB-12 | Planned | P3 | A test quote whose response runs past what Preview shows is saved, run and compared in full, as every other test quote is. |
 
 ## Planned improvements
 
@@ -338,71 +338,32 @@ show); `frontend/src/workbench/useSheetValues.ts` (the one path for a sheet's va
 `src/haute/_workbench_tables.py::quote_schema` (a quote's columns as typed).
 
 ### WB-12 — Test quotes in Preview
-**Why:** Pricing analysts check a rate change by pricing quotes they know and comparing what
-comes out. Preview prices the one quote typed on the sheets and keeps nothing, so it is gone
-when the next is typed. Deploy's test quotes are files of hand-written JSON rows, each an
-input with an optional expected output, which deploy and the smoke score; nothing in the
-workbench writes them, and none is keyed in on the sheets. The ruling: analysts key test
-quotes in on the sheets in Preview, save, load and re-price them in bulk, and they are kept
-in a SQLite file committed with the project, so analysts share them and CI re-prices them.
+**Why:** Analysts keep test quotes in Preview ([workbench](../workbench/high-level.md)):
+saved from the sheets, opened back onto them, run in bulk on a pipeline fixed when the run
+starts, accepted and deleted from a panel, kept in a SQLite file committed with the project
+that git diffs as text and merges quote by quote, and priced again by deploy's check and the
+smoke, with a report of each pull request's changes to them. A test quote keeps its response
+whole only while Preview shows it whole: its pricing goes through the preview route, which
+answers at most 10,000 rows of a table, fewer for a wide one, and a response cut short is
+refused rather than kept cut. A quote whose many-row table runs past that cannot be a test
+quote.
 
-**Plan:** Test quotes live in a SQLite file in the project, through the store of WB-10, each
-with a stable id, a name, its inputs and the outputs an analyst accepted. In Preview: save
-the quote on the sheets as a test quote, with its complete response accepted, priced in full
-for the save rather than taken from Preview's display, which stops at a row and a cell
-limit; open one back onto the sheets; and run them all, or a selection, against the pipeline
-open in the editor, each a request of its own answered in full, with each quote's new tables
-beside its accepted ones, the changed values marked, and a change accepted where it was
-meant; and delete one that is no longer wanted. A run prices on one basis taken when it
-starts, the editor's graph, the data source and the form, and the selected quotes'
-revisions; its results keep that basis and are marked stale once the editor changes, and
-accepting a result never overwrites a quote or an accepted output changed since the run. A
-response too large to keep is refused, naming its size, rather than kept cut. The comparison
-is deploy's, the same tolerance and the same walk into the response's tables, so a change
-Preview shows is a change CI fails on. The file in git: a commit takes a consistent snapshot
-of it, with the store's writes held while the snapshot is taken, so a Save or an Accept
-waits, and the commit fails naming the file if it cannot get one; its journal and
-write-ahead files are ignored; the server closes the file before a checkout or a merge
-replaces it and opens it again after, so a running `haute serve` never writes into a file
-git has swapped; the specification settles the lock; tracks it from
-`haute init --workbench`, because a milestone Commit sweeps tracked files only; registers a
-text diff of its quotes for local diffs; and merges it quote by quote when an analyst's
-branch takes `main`, flagging a quote changed on both sides. The provider's merge button
-cannot merge a binary file, so a pull request in conflict over it is brought up to date
-locally, where that merge runs. In CI, Validate re-prices every test quote against its
-accepted outputs and posts on the pull request a summary of the quotes added, changed and
-removed and of the outputs that moved, since the provider shows the file as binary. For a
-workbench project the file stands where the hand-written test-quote files stand now, each
-quote an `input` with the outputs `expected` of it, as those files hold them.
+**Plan:** A pricing for test quotes that answers the Workbench Output's response whole for
+the editor's graph, apart from the preview route's limits: the patched graph run as the dry
+run runs a deployed pipeline, on the worker pool with its admission limits, answering the
+response document a deployed pipeline gives. The panel's saves and runs use it; Preview
+keeps the preview route for what it shows.
 
-**Acceptance:** An analyst saves the quote on the sheets as a test quote, reopens it after
-restarting `haute serve`, changes a rate, runs all the test quotes and sees which outputs
-moved and by how much, accepts one change, deletes another quote and commits; the file goes
-to the pull request with the rate change, and the summary on the pull request names the
-quotes whose outputs moved; CI fails on an output that moved beyond tolerance and was not
-accepted; two analysts who added different quotes on separate branches merge both without a
-conflict, and two who changed the same quote are told so; a rate edit while a run is under
-way leaves every result priced on the rates the run started with and marks them stale, and
-accepting a result for a quote edited since the run is refused; a test quote whose response
-passes Preview's display limits is saved and compared in full; a Save or an Accept during a
-commit waits, or the commit fails naming the file, and no torn file and no journal or
-write-ahead file is ever committed; a checkout or a merge with `haute serve` open leaves the
-server reading the new file.
+**Acceptance:** A test quote whose many-row table holds more rows than Preview shows is
+saved, run and compared in full, a change in a row past Preview's limit listed as any other
+is; a response too large for the worker's limits is refused naming its size; Preview itself
+prices as it does now.
 
-**Dependencies:** WB-10 (the store and its SQLite backend) and WB-08 for the half that runs
-in CI.
+**Dependencies:** None.
 
-**Evidence:** `frontend/src/stores/useWorkbenchPreviewStore.ts::priceQuote` (Preview prices
-one quote and keeps nothing); `frontend/src/workbench/WorkbenchView.tsx` (the pricer reads
-the editor's graph and data source afresh on each call);
-`frontend/src/workbench/priceSample.ts::priceSample` (the preview route's row limit);
-`src/haute/executor.py::_preview_row_limit_for_width` (Preview's cell limit);
-`src/haute/_workbench_output.py::workbench_response` (the response in full);
-`src/haute/deploy/_validators.py::_load_test_quote_cases`, `::score_test_quotes`,
-`::_expected_value_matches` and `::_first_mismatch` (the test quotes, each a request of its
-own, and the comparison, which needs tables of equal length);
-`src/haute/_git_transactions.py::commit_save` and `::_residual_tracked_changes` (the add and
-the commit run apart, and a milestone sweeps tracked files only);
-`src/haute/_git_core.py::_serialized_mutation` (git's operations serialised, not the
-database's writes); `src/haute/_gitignore_guard.py::ensure_gitignore_guards` (the project's
-ignore rules).
+**Evidence:** `frontend/src/workbench/priceSample.ts::priceSample` (the preview route's row
+limit, and a table cut short refused); `src/haute/executor.py::_preview_row_limit_for_width`
+(Preview's cell limit); `src/haute/_workbench_output.py::workbench_response` (the response
+whole, as a deployed pipeline gives it);
+`src/haute/deploy/_validators.py::score_test_quotes` (the dry run's pricing of each quote
+alone).
