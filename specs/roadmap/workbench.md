@@ -24,7 +24,7 @@ that fill the sheets from databases and APIs.
 | WB-10 | Planned | P2 | The quote store runs on the SQL instance the project's IT team provides, migrated by the deploy under an identity of its own, with the release before a candidate proved to work on the schema the candidate leaves. |
 | WB-11 | Decision | P2 | An underwriter exports a saved quote from the app in the formats the project needs, naming the release that priced it. |
 | WB-12 | Planned | P3 | A test quote whose response runs past what Preview shows is saved, run and compared in full, as every other test quote is. |
-| WB-13 | Planned | P1 | The underwriter app opens on its quotes: an underwriter finds, opens, saves, hands over, marks final, archives, renews and offers alternatives to quotes, each with a reference, a history and the release that priced it. |
+| WB-13 | Planned | P3 | An underwriter compares a quote's revisions, sees which quotes are about to lapse, records how a final quote ended, and archives or reassigns many quotes at once. |
 
 ## Planned improvements
 
@@ -289,7 +289,7 @@ holds the quote's values and prices and names the release that priced them; an u
 is not exported as priced; each export is recorded against its quote; a change to a template
 starts the workflow, and the template's output for the test quotes is checked in CI.
 
-**Dependencies:** The decision above. WB-13 (the saved revision an export reads).
+**Dependencies:** The decision above.
 
 **Evidence:** `frontend/src/utils/sheetValues.ts::pricedRows` (the priced rows the sheets
 show); `frontend/src/workbench/useSheetValues.ts` (the one path for a sheet's values);
@@ -327,69 +327,38 @@ whole, as a deployed pipeline gives it);
 alone).
 
 ### WB-13 — Managing quotes in the underwriter app
-**Why:** The underwriter app opens on a blank quote: an underwriter keys it into the sheets,
-prices it and loses it on a reload, with nothing saved, nothing listed and nothing to come
-back to. The store keeps quotes and their revisions, but the app has no place for it: no
-list of quotes, no save, no reference an underwriter can quote back, no way to hand a quote
-to a colleague, to mark the revision that was offered as final, to archive what is done
-with, or to start a renewal or an alternative from a quote. The store's schema holds a
-quote's name and owner alone, with no stage, no reference, no record of who did what and no
-list a page can search and page through; `open_store` refuses any database not at the exact
-newest schema it knows, so a release rolled back after a migration could not open its
-quotes; the app's pricing checks the sheets' revision but not the release, so a release that
-changes the model alone prices on the old one unnoticed; and the sheets have no read-only
-mode, so a quote that must not change can still be typed into.
+**Why:** The underwriter app opens on its quotes ([workbench](../workbench/high-level.md)):
+the Quotes page lists them by who they are with, by stage and by archive, searched and
+ordered, under the quote list's columns; a quote has a reference, numbered revisions each
+saved priced or unpriced and priced again on the server, a handover note, an assignee, a
+final revision reopened with a reason, an archive, and the duplicates, renewals and
+alternatives made from it, with a history of who did what; a reader sees every quote and
+changes none. What underwriters still keep elsewhere is the rest of a quote's commercial
+life: two revisions cannot be compared side by side; a quote has no validity date, so
+nothing says which offers are about to lapse; nothing records whether a final quote was
+bound, declined or not taken up, so the lists cannot tell open work from closed; and
+archiving or reassigning many quotes is done one at a time.
 
-**Plan:** Decided with the project owner: every underwriter the deployment signs in sees and
-edits every quote, the assignee saying whose it is; Final pins one priced revision for good,
-and any underwriter may reopen it, giving a reason, as an amendment under the same reference
-with the final kept in its history; Price stays free for trying terms, and Save prices the
-quote again on the server and keeps that price, saying so when it moved; renewals and
-alternatives are in the first release; referrals are not. In slices, each usable on
-`haute app serve`. First, the store's second migration: a record for each of the app's
-quotes, apart from the test quotes of WB-12, holding a reference taken from a counter in the
-transaction that creates the quote, the title and summary the list shows, the assignee,
-whether its newest revision is priced, the final revision, the archive, a version every
-change moves and the quote it came from; an events table of who did what; an operation key
-per save so a retried save writes once; and the oldest Haute that can use the database,
-which `open_store` accepts in place of the exact newest. Second, the app's routes to list,
-create, open and save quotes and change them, every change naming the version it was made on
-and refused when the quote has moved on; the pages at `/quotes/...`; the release named on
-pricing; `haute app serve` keeping its quotes beside the release, not in it; and the
-deployed app reading its store's URL from `HAUTE_QUOTE_STORE_URL`, refusing to start on a
-database not migrated, which `haute app migrate` migrates. Third, the Quotes page the app
-opens on and the quote's bar above the sheets. Fourth, the quote list setting in the form,
-chosen in the Schema section: a title, up to three summary fields and a headline output from
-one-row tables, projected onto each quote as it is saved and again when a release changes
-the setting. Fifth, assigning, the handover note, archiving and restoring, duplicating,
-renewing and alternatives, marking final and reopening, and the history, with
-`[workbench.app] edit_role` making readers of those the host signs in without that role.
-Sixth, surviving releases: a quote saved on earlier sheets opens on them read only and moves
-onto the current sheets with what no longer fits named, and unsaved work is kept in the
-browser across a reload.
+**Plan:** Decisions first, recorded here before each slice: which outcomes a quote can close
+with, and whether a project names its own; and the date a quote's validity is read from, a
+column of the sheets the quote list names, with how near its end the Quotes page warns.
+Then, each usable on `haute app serve`: a comparison of two revisions, values and prices
+side by side, the rows of a many-row table matched by their keys rather than their places; a
+quote's validity, read from the column the setting names, with an Expiring soon list;
+outcomes, recorded on a final quote with who and when and listed apart from the open quotes;
+and archiving and reassigning a selection of quotes at once, each checked against its
+version, a quote moved on since named without undoing the rest. Exports stay WB-11's.
 
-**Acceptance:** The app opens on the Quotes page; an underwriter creates a quote, saves it
-unpriced and priced, finds it again by its reference, its name or a summary field, reopens
-it from a link after a reload and sees its revisions; a save made over a quote a colleague
-saved since is refused, with the underwriter's work kept and an offer to open the newest or
-save theirs as a new quote; a retried save writes one revision; marking final needs the
-newest revision priced on the running release, and a final quote cannot be saved until it is
-reopened with a reason, its final kept in its history; an archived quote leaves the default
-views and opens read only until restored; a duplicate, a renewal or an alternative is a new
-quote with its own reference, unpriced, naming the quote and revision it came from; two
-quotes created at once take different references; a reader with no edit role is refused
-every change; a release that changes the model alone refuses a page priced on the one
-before; a quote saved on earlier sheets opens on them read only and moves onto the current
-ones naming each value that no longer fits; a previous Haute that the database names as able
-to use it opens it.
+**Acceptance:** Two revisions of a quote are compared with each changed value and price
+named, the rows of a many-row table matched by their keys; a quote whose validity ends
+within the warning is listed under Expiring soon, and one past it says so; an outcome
+recorded on a final quote is listed with who recorded it and when, and the quote leaves the
+open lists; a selection of quotes is archived or reassigned at once, a quote moved on since
+refused by name and the rest changed.
 
-**Dependencies:** None on an analyst's machine. For the deployed app, the SQL instance of
-WB-10.
+**Dependencies:** The decisions above.
 
-**Evidence:** `frontend/src/app/UnderwriterApp.tsx::UnderwriterApp` (one page, no save, no
-list); `src/haute/_quote_store/_tables.py::QUOTES` (a quote's name and owner alone);
-`src/haute/_quote_store/_store.py::open_store` (the exact newest schema) and `::QuoteStore`
-(no stage, archive or list a page can page through);
-`src/haute/_workbench_app.py::create_app` (pricing checks the sheets' revision alone; no
-store); `frontend/src/workbench/useSheetValues.ts::usePreviewValues` (the sheets always
-editable).
+**Evidence:** `src/haute/_quote_store/_book.py::QuoteBook` (the quotes, their changes and
+lists, without outcomes or validity); `src/haute/deploy/_validators.py::response_changes` (a
+comparison by place, not by key); `frontend/src/app/QuotesPage.tsx::QuotesPage` (one quote
+changed at a time).
