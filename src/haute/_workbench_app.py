@@ -130,9 +130,15 @@ def write_release(release_dir: Path, form: FormSpec, host: str | None) -> Releas
     return release
 
 
-def build_release(project_dir: Path, release_dir: Path) -> Release:
+def build_release(
+    project_dir: Path, release_dir: Path, *, haute_requirement: str | None = None
+) -> Release:
     """Build the project's release into *release_dir*: its pipeline resolved, validated and
     bundled as ``haute deploy`` does it, test quotes included, then the release beside it.
+    With ``[deploy.container] base_image`` set, pinned as a container deploy pins it, the
+    directory is the image's build context: the container's Dockerfile, copying the release
+    too, with the release's entry point in the scoring app's place; *haute_requirement* is the
+    ``haute`` the image installs, as the container target takes it.
 
     *release_dir* is replaced when it holds an earlier release and refused when it holds
     anything else. Raises :class:`WorkbenchAppError` for a project without a workbench, sheets
@@ -143,8 +149,12 @@ def build_release(project_dir: Path, release_dir: Path) -> Release:
     from haute._project import resolve_pipeline_file
     from haute._workbench_config import read_workbench_config
     from haute._workbench_form import read_form_document
-    from haute.deploy._config import DeployConfig, resolve_config
-    from haute.deploy._container import write_bundle
+    from haute.deploy._config import (
+        DeployConfig,
+        _validate_base_image_pinning,
+        resolve_config,
+    )
+    from haute.deploy._container import prepare_build_directory, write_bundle
     from haute.deploy._validators import validate_deploy
     from haute.errors import DeployError
 
@@ -167,6 +177,12 @@ def build_release(project_dir: Path, release_dir: Path) -> Release:
 
     deploy_config = DeployConfig.from_toml(project_dir / "haute.toml")
     deploy_config.pipeline_file = resolve_pipeline_file(project_dir)
+    base_image = deploy_config.container.base_image
+    if base_image:
+        try:
+            _validate_base_image_pinning(base_image)
+        except DeployError as exc:
+            raise WorkbenchAppError(f"[deploy.container] base_image: {exc.message}") from exc
     resolved = resolve_config(deploy_config)
     try:
         try:
@@ -186,10 +202,41 @@ def build_release(project_dir: Path, release_dir: Path) -> Release:
                 "Test quotes failed:\n"
                 + "\n".join(f"  - {result['file']}: {result['error']}" for result in failed)
             )
-        write_bundle(resolved, release_dir)
+        if base_image:
+            prepare_build_directory(
+                resolved,
+                release_dir,
+                haute_requirement=haute_requirement,
+                extra_files=(FORM_FILE, RELEASE_FILE),
+            )
+        else:
+            write_bundle(resolved, release_dir)
     finally:
         resolved.close()
     return write_release(release_dir, document.spec, config.app_host)
+
+
+def build_image(release_dir: Path, tag: str) -> None:
+    """Build the image of the release in *release_dir*, tagged *tag*, with Docker."""
+    from haute.deploy._container import _check_docker_available, _docker_build
+    from haute.errors import DeployError
+
+    if not (release_dir / "Dockerfile").is_file():
+        raise WorkbenchAppError(
+            "The release has no Dockerfile: set [deploy.container] base_image in haute.toml, "
+            "pinned to a patch release or a digest, and build it again."
+        )
+    try:
+        _check_docker_available()
+    except DeployError as exc:
+        raise WorkbenchAppError(
+            f"Docker is not available here: build the image from {release_dir} where it is, "
+            "such as in CI."
+        ) from exc
+    try:
+        _docker_build(release_dir, tag)
+    except DeployError as exc:
+        raise WorkbenchAppError(str(exc)) from exc
 
 
 def _read_json(path: Path) -> Any:

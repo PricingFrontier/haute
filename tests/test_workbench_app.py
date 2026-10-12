@@ -467,3 +467,137 @@ def test_haute_app_serve_serves_the_release_on_loopback_as_the_analyst(
     unnamed = CliRunner().invoke(cli, ["app", "serve"])
     assert unnamed.exit_code != 0
     assert "Set your git identity first" in unnamed.output
+
+
+# ── The release's image ───────────────────────────────────────────────────
+
+PINNED = '\n[deploy.container]\nbase_image = "python:3.11.9-slim"\n'
+
+_SLIM_RELEASE_CHILD = """
+import importlib.abc, json, sys
+
+blocked = set(json.loads(sys.argv[1]))
+
+
+class _NotInTheImage(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path=None, target=None):
+        if name.split(".")[0] in blocked:
+            raise ModuleNotFoundError(f"{name} is not installed in the image", name=name)
+        return None
+
+
+sys.meta_path.insert(0, _NotInTheImage())
+sys.path.insert(0, ".")
+from fastapi.testclient import TestClient
+
+import app
+
+client = TestClient(app.app)
+signed_in = {"x-ms-client-principal-name": "uw@example.com"}
+revision = client.get("/api/app/form", headers=signed_in).json()["revision"]
+values = json.loads(sys.argv[2])
+response = client.post(
+    "/api/app/price", json={"form_revision": revision, "values": values}, headers=signed_in
+)
+print(json.dumps({"status": response.status_code, "body": response.json()}))
+"""
+
+
+def _pin_base_image(project: Path) -> None:
+    toml = project / "haute.toml"
+    toml.write_text(toml.read_text(encoding="utf-8") + PINNED, encoding="utf-8")
+
+
+def test_a_pinned_base_image_makes_the_release_the_images_build_context(project: Path) -> None:
+    plain = build_release(project, project / "plain")
+    assert not (project / "plain" / "Dockerfile").exists()
+    _pin_base_image(project)
+
+    built = build_release(project, project / "image")
+
+    dockerfile = (project / "image" / "Dockerfile").read_text(encoding="utf-8")
+    assert dockerfile.startswith("FROM python:3.11.9-slim")
+    assert "COPY app.py .\nCOPY form.json .\nCOPY release.json .\n" in dockerfile
+    # The release's entry point, not the scoring API's.
+    assert (project / "image" / "app.py").read_text(encoding="utf-8") == APP_ENTRY
+    # The image is how the release ships, not what it is.
+    assert built.id == plain.id
+
+
+def test_a_base_image_not_pinned_is_refused(project: Path) -> None:
+    toml = project / "haute.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8") + '\n[deploy.container]\nbase_image = "python:3.11"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(WorkbenchAppError, match=r"\[deploy.container\] base_image: .*not pinned"):
+        build_release(project, project / "build" / "app")
+
+
+def test_haute_app_build_builds_the_image_with_docker(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from click.testing import CliRunner
+
+    import haute.deploy._container as container
+    from haute.cli import cli
+    from haute.errors import DeployError
+
+    built: list[tuple[Path, str]] = []
+    monkeypatch.setattr(container, "_check_docker_available", lambda: None)
+    monkeypatch.setattr(container, "_docker_build", lambda where, tag: built.append((where, tag)))
+
+    unpinned = CliRunner().invoke(cli, ["app", "build", "out", "--image", "motor-app:1"])
+    assert unpinned.exit_code != 0
+    assert "has no Dockerfile: set [deploy.container] base_image" in unpinned.output
+    assert built == []
+
+    _pin_base_image(project)
+    result = CliRunner().invoke(cli, ["app", "build", "out", "--image", "motor-app:1"])
+    assert result.exit_code == 0, result.output
+    assert "Image built: motor-app:1" in result.output
+    assert built == [((project / "out").resolve(), "motor-app:1")]
+
+    def no_docker() -> None:
+        raise DeployError("Docker is not available.")
+
+    monkeypatch.setattr(container, "_check_docker_available", no_docker)
+    refused = CliRunner().invoke(cli, ["app", "build", "out", "--image", "motor-app:1"])
+    assert refused.exit_code != 0
+    assert "Docker is not available here" in refused.output
+
+
+def test_the_release_prices_with_only_the_images_runtime_installed(project: Path) -> None:
+    """The image installs haute --no-deps and the pinned scoring runtime: the release's app is
+    imported and prices a quote in a fresh interpreter that cannot import anything else haute
+    depends on, as the container's scoring app is checked."""
+    import subprocess
+    import sys
+
+    from tests.test_container_smoke_script import _modules_outside_the_image
+
+    _pin_base_image(project)
+    release_dir = project / "image"
+    build_release(project, release_dir)
+    manifest = json.loads((release_dir / "deploy_manifest.json").read_text(encoding="utf-8"))
+    blocked = _modules_outside_the_image(manifest["container_dependencies"][1:])
+    assert {"sqlalchemy", "alembic", "mlflow"} <= set(blocked)
+    child = project / "price_one_quote.py"
+    child.write_text(_SLIM_RELEASE_CHILD, encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, str(child), json.dumps(blocked), json.dumps(PROJECT_VALUES)],
+        cwd=release_dir,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr[-4000:]
+    result = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert result["status"] == 200, result
+    assert result["body"]["tables"]["pricing"] == [
+        {"premium": 100.0, "limit": 1000.0, "referral": "none"}
+    ]

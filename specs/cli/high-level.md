@@ -90,10 +90,12 @@ Out of scope, owned elsewhere:
 - `haute test-quotes merge BASE OURS THEIRS` merges the test-quote files of a three-way
   merge quote by quote into `OURS`, git's merge driver contract: it exits 0 when every quote
   merges and 1 naming the quotes in conflict, `OURS` then left as it was.
-- `haute app build [OUTPUT]` builds the workbench project's release for the underwriter
-  app into `OUTPUT` (`build/app` by default): the pipeline resolved, validated and
-  bundled as `haute deploy` does it, test quotes included, with the sheets, what the
-  release is and its entry point. A directory holding anything but an earlier release
+- `haute app build [OUTPUT] [--image TAG]` builds the workbench project's release for
+  the underwriter app into `OUTPUT` (`build/app` by default): the pipeline resolved,
+  validated and bundled as `haute deploy` does it, test quotes included, with the
+  sheets, what the release is and its entry point, and, with `[deploy.container]
+  base_image` set, the Dockerfile that makes it the image's build context; `--image`
+  builds that image with Docker. A directory holding anything but an earlier release
   is refused, as are a project without a workbench and sheets never saved.
 - `haute app serve [--port PORT] [--static-dir DIR]` builds the release under
   `.haute/app/release` and serves the underwriter app on `127.0.0.1` alone (port 8001

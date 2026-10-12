@@ -599,7 +599,11 @@ Out of scope:
   bundle as a deploy builds it (the sample left out), the form without its sample
   (`form.json`), what the release is (`release.json`: an id taken from the form and the
   bundle, the form's revision, the pipeline's name, the Haute version that built it and
-  when) and an entry point, `app.py`, serving it through the app Haute maintains. The app
+  when) and an entry point, `app.py`, serving it through the app Haute maintains.
+  With `[deploy.container] base_image` set, pinned as a container deploy pins it, the
+  release is also the image's build context, the container's Dockerfile copying it,
+  and `haute app build --image TAG` builds the image with Docker; the image installs
+  what a scoring container installs, nothing more. The app
   serves the sheets on a page of their own, drawn as Preview draws them, with the same
   components filled from the app's routes rather than the builder's and nothing of the
   builder mounted: the sheets' tabs, the sheet showing, Price and Clear, the release and

@@ -6,7 +6,7 @@ import json
 import re
 import shutil
 import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as metadata_version
@@ -135,6 +135,7 @@ def prepare_build_directory(
     build_dir: Path,
     *,
     haute_requirement: str | None = None,
+    extra_files: Sequence[str] = (),
 ) -> Path:
     """Prepare the container build directory with manifest, artifacts, app.py, and Dockerfile.
 
@@ -151,6 +152,8 @@ def prepare_build_directory(
         haute_requirement: Optional override for the ``haute`` dependency in the Dockerfile.
             When it names a local wheel file (*.whl), the wheel is copied into ``build_dir``
             and the Dockerfile gains ``COPY <wheel name> .`` before ``pip install ./<wheel name>``.
+        extra_files: Files the caller writes beside ``app.py``, which the image copies too: a
+            workbench release's form and description.
 
     Returns:
         Path to the written ``deploy_manifest.json``.
@@ -198,6 +201,7 @@ def prepare_build_directory(
         resolved,
         haute_pip_dep=haute_pip_dep,
         wheel_name=wheel_name,
+        extra_files=extra_files,
     )
     (build_dir / "Dockerfile").write_text(dockerfile, encoding="utf-8")
 
@@ -907,8 +911,9 @@ def _generate_dockerfile(
     *,
     haute_pip_dep: str | None = None,
     wheel_name: str | None = None,
+    extra_files: Sequence[str] = (),
 ) -> str:
-    """Generate a Dockerfile for the scoring container."""
+    """Generate a Dockerfile for the scoring container, copying *extra_files* beside app.py."""
     haute_dep, *runtime_deps = _pinned_dockerfile_deps(resolved, haute_requirement=haute_pip_dep)
     runtime_line = " ".join(runtime_deps)
     copy_wheel = f"COPY {wheel_name} .\n" if wheel_name else ""
@@ -919,6 +924,7 @@ def _generate_dockerfile(
         copy_utility = f"COPY {UTILITY_PACKAGE}/ {UTILITY_PACKAGE}/\n"
     else:
         copy_utility = f"COPY {UTILITY_PACKAGE}.py .\n"
+    copy_extra = "".join(f"COPY {name} .\n" for name in extra_files)
 
     return f"""\
 FROM {base_image}
@@ -938,7 +944,7 @@ RUN pip install --no-cache-dir {runtime_line}
 # Copy application code and artifacts
 COPY deploy_manifest.json .
 COPY app.py .
-COPY artifacts/ artifacts/
+{copy_extra}COPY artifacts/ artifacts/
 {copy_utility}
 EXPOSE {port}
 

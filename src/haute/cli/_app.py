@@ -31,6 +31,8 @@ class AppBuildConfig:
     """Parsed inputs for the ``haute app build`` command."""
 
     output: Path
+    #: The tag to build the release's image as, with Docker; None builds no image.
+    image: str | None = None
 
 
 @dataclass
@@ -57,8 +59,19 @@ def _built(project_dir: Path, release_dir: Path) -> None:
 
 
 def handle_app_build(config: AppBuildConfig) -> None:
-    """Build the project in the working directory into ``config.output``."""
-    _built(Path.cwd(), config.output.resolve())
+    """Build the project in the working directory into ``config.output``, and its image when
+    ``config.image`` names a tag."""
+    from haute._workbench_app import WorkbenchAppError, build_image
+
+    release_dir = config.output.resolve()
+    _built(Path.cwd(), release_dir)
+    if config.image is None:
+        return
+    try:
+        build_image(release_dir, config.image)
+    except WorkbenchAppError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"  ✓ Image built: {config.image}")
 
 
 def handle_app_serve(config: AppServeConfig) -> None:
@@ -95,9 +108,13 @@ def app() -> None:
     type=click.Path(file_okay=False, path_type=Path),
     default=Path("build") / "app",
 )
-def build(output: Path) -> None:
-    """Build the release the underwriter app serves into OUTPUT (default build/app)."""
-    handle_app_build(AppBuildConfig(output=output))
+@click.option(
+    "--image", default=None, help="Also build the release's image with Docker, tagged so."
+)
+def build(output: Path, image: str | None) -> None:
+    """Build the release the underwriter app serves into OUTPUT (default build/app): the
+    image's build context, Dockerfile included."""
+    handle_app_build(AppBuildConfig(output=output, image=image))
 
 
 @app.command()
