@@ -3,7 +3,7 @@
  * columns, which are the pipeline's tables. Every text field commits on blur or Enter, so
  * an edit is one undo step; Enter in a column's name adds the next column, and Alt+Up and
  * Alt+Down move a column, as the step editor's cards move. Removing what a sheet shows
- * asks first.
+ * asks first. Under the tables, the quote list setting (`QuoteListSettings`).
  */
 import { ChevronDown, ChevronRight, KeyRound, Plus, SlidersHorizontal, Trash2, X, type LucideIcon } from "lucide-react"
 import { useMemo, useState, type ButtonHTMLAttributes, type FocusEvent, type KeyboardEvent, type ReactNode } from "react"
@@ -33,6 +33,7 @@ import {
 import { PIVOT_DECIMAL_PLACES_MAX, PIVOT_NUMBER_FORMATS } from "../panels/explore/pivotConfig"
 import { NUMBER_FORMAT_LABELS } from "../panels/explore/pivotNumberFormat"
 import { COLUMN_TYPES, COLUMN_TYPE_OPTIONS, isNumeric } from "./columnTypes"
+import QuoteListSettings from "./QuoteListSettings"
 
 const ROLES: ReadonlyArray<{ value: SchemaTable["role"]; label: string; title: string }> = [
   { value: "input", label: "Input", title: "Sent to the pricing engine" },
@@ -137,6 +138,7 @@ export default function SchemaEditor() {
           />
         ))}
         <AddButton onClick={addTable}>Add table</AddButton>
+        <QuoteListSettings form={form} />
       </div>
     </div>
   )

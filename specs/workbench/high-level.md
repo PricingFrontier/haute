@@ -271,7 +271,12 @@ Out of scope:
   unique whatever its case), a column's name is an identifier that is not a Python keyword,
   as the server holds it, unique in its table, a many-row table needs a key, an input
   column's range must not be inverted and its allowed values must be of its type, and
-  True/false and Date columns can have none.
+  True/false and Date columns can have none. Under the tables, the quote list: what the
+  underwriter app's Quotes page shows of each quote, a title and up to three summary
+  fields picked from the columns of the one-row input tables and a headline from the
+  number columns of the one-row output tables, each or none, every pick one undo step;
+  removing a column or a table it names, or switching that table to many rows, takes it
+  out of the quote list, and what a deploy would refuse of it is said under it.
 - **The sheets.** A sheet is a canvas on an 8px snap grid that fills its viewport across
   at the zoom and, like a spreadsheet, has no right or bottom edge: it widens and
   lengthens to hold what is on it. Its tabs run along the top: the sheet showing is
