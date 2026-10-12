@@ -64,7 +64,7 @@ export interface QuotesQuery {
   stage: "draft" | "priced" | "final" | null
   search: string
   assignee: string | null
-  sort: "saved" | "reference" | "title"
+  sort: "saved" | "reference" | "insured"
 }
 
 /** How a quote is made from another's revision. */
@@ -80,7 +80,7 @@ export interface QuoteSave {
 }
 
 /** A change a quote takes besides a save, by its route's name. */
-export type QuoteChange = "name" | "assignee" | "note" | "archive" | "restore" | "final" | "reopen"
+export type QuoteChange = "assignee" | "note" | "archive" | "restore" | "final" | "reopen"
 
 /** A page of `query`'s list, after `cursor` when given. */
 export async function fetchAppQuotes(query: QuotesQuery, cursor: string | null = null): Promise<WorkbenchAppQuotesResponse> {
@@ -97,13 +97,12 @@ async function quoteResponse(data: unknown): Promise<WorkbenchAppQuoteResponse> 
   return expectGeneratedContract("WorkbenchAppQuoteResponse", (await workbenchValidators()).validateWorkbenchAppQuoteResponse, data)
 }
 
-/** A new quote, named `name`, made from `source` when given. */
+/** A new quote, made from `source` when given. */
 export async function createAppQuote(
   save: QuoteSave,
-  name: string,
   source: { quote_id: string; revision: number; relation: QuoteRelation } | null,
 ): Promise<WorkbenchAppQuoteResponse> {
-  return quoteResponse(await post<unknown>("/api/app/quotes", { ...save, name, source }, { timeout: PRICE_TIMEOUT_MS }))
+  return quoteResponse(await post<unknown>("/api/app/quotes", { ...save, source }, { timeout: PRICE_TIMEOUT_MS }))
 }
 
 /** A quote with its newest revision, or revision `revision`. */
@@ -117,14 +116,18 @@ export async function saveAppQuote(id: string, save: QuoteSave, version: number)
   return quoteResponse(await post<unknown>(`/api/app/quotes/${encodeURIComponent(id)}/revisions`, { ...save, version }, { timeout: PRICE_TIMEOUT_MS }))
 }
 
-/** A change to the quote at `version`, with what it changes. */
+/**
+ * A change to the quote at `version`, with what it changes, answered with the revision it
+ * wrote. A note is no revision: it is written over whichever the quote is at.
+ */
 export async function changeAppQuote(
   id: string,
   change: QuoteChange,
   version: number,
   fields: Record<string, string | number> = {},
 ): Promise<WorkbenchAppQuoteChangeResponse> {
-  const data = await post<unknown>(`/api/app/quotes/${encodeURIComponent(id)}/${change}`, { version, ...fields })
+  const body = change === "note" ? fields : { version, ...fields }
+  const data = await post<unknown>(`/api/app/quotes/${encodeURIComponent(id)}/${change}`, body)
   return expectGeneratedContract("WorkbenchAppQuoteChangeResponse", (await workbenchValidators()).validateWorkbenchAppQuoteChangeResponse, data)
 }
 

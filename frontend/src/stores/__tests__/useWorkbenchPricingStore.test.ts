@@ -37,7 +37,7 @@ const column = (id: string, name: string, type: SchemaColumn["type"]): SchemaCol
 const policy: SchemaTable = { id: "t1", name: "policy_details", role: "input", rows: "one", columns: [column("c1", "exposure", "float")] }
 const pricing: SchemaTable = { id: "t2", name: "pricing_output", role: "output", rows: "one", columns: [column("c2", "model_premium", "float")] }
 const form: FormSpec = {
-  version: 1, quote_list: { title: null, fields: [], headline: null },
+  version: 1,
   name: "t",
   schema: { tables: [policy, pricing] },
   pages: [

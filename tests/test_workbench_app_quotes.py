@@ -15,7 +15,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from haute._quote_store import (
-    QuoteBook,
     QuoteStoreNotMigratedError,
     migrate_store,
     open_store,
@@ -26,26 +25,27 @@ from haute._workbench_app import (
     EASY_AUTH_NAME,
     EASY_AUTH_PRINCIPAL,
     STORE_URL_ENV,
-    WorkbenchAppError,
     create_app,
     easy_auth_roles,
     write_release,
 )
-from haute._workbench_form import FormSpec
+from haute._workbench_form import FormSpec, with_quote_details
 from haute.deploy._utils import shipped_graph
 from tests.test_workbench_app import _graph
 from tests.test_workbench_routes import POLICY, PRICING, form
 
 ANA = {EASY_AUTH_NAME: "ana@example.com"}
 JO = {EASY_AUTH_NAME: "jo@example.com"}
-VALUES = {"t1": [{"c_state": "NY", "c_exposure": "1000"}]}
+DETAILS = {"qd_quote_name": "Fleet", "qd_insured": "Acme", "qd_inception_date": "2026-11-01"}
+#: The details the app sets on a first save by Ana, priced.
+SET = {"qd_reference": "Q-000001", "qd_stage": "priced", "qd_assignee": "ana@example.com"}
+VALUES = {"t1": [{"c_state": "NY", "c_exposure": "1000"}], "quote_details": [DETAILS]}
+#: VALUES as a priced quote of Ana's keeps them: the details with the app's set over them.
+KEPT = {**VALUES, "quote_details": [{**DETAILS, **SET, "qd_archived": False}]}
 PRICED = {"pricing_output": [{"premium": 500.0}]}
-LISTED = {
-    "title": {"table": "t1", "column": "c_state"},
-    "fields": [{"table": "t1", "column": "c_exposure"}],
-    "headline": {"table": "t2", "column": "c_premium"},
-}
-FORM = {**form(POLICY, PRICING), "quote_list": LISTED}
+FORM = with_quote_details(FormSpec.model_validate(form(POLICY, PRICING))).model_dump(
+    mode="json", by_alias=True
+)
 
 
 def _write_release(
@@ -143,7 +143,8 @@ def test_the_release_says_the_app_keeps_quotes(client: TestClient, release_dir: 
 
 
 def test_a_priced_save_is_priced_again_on_the_server_and_kept(page: Page) -> None:
-    created = page.create()
+    sent = {**VALUES, "quote_details": [{**DETAILS, "qd_assignee": "jo", "qd_stage": "final"}]}
+    created = page.create(values=sent)
 
     assert created.status_code == 200, created.text
     answered = created.json()
@@ -153,7 +154,18 @@ def test_a_priced_save_is_priced_again_on_the_server_and_kept(page: Page) -> Non
         "priced",
         "ana@example.com",
     )
-    assert (quote["title"], quote["fields"], quote["headline"]) == ("NY", ["1000"], 500.0)
+    assert quote["title"] == "Fleet"
+    assert quote["details"] == {
+        "reference": "Q-000001",
+        "quote_name": "Fleet",
+        "insured": "Acme",
+        "inception_date": "2026-11-01",
+        "stage": "priced",
+        "assignee": "ana@example.com",
+        "archived": False,
+    }
+    # The values read back hold the details, the app's set over what the page sent.
+    assert answered["revision"]["values"]["quote_details"][0]["qd_stage"] == "priced"
     assert answered["revision"]["tables"] == PRICED
     assert answered["revision"]["release"] == page.release
     assert answered["moved"] is False
@@ -173,10 +185,11 @@ def test_a_quote_saved_unpriced_is_a_draft_and_an_empty_one_is_refused(page: Pag
     draft = page.create(shown=None).json()
 
     assert (draft["quote"]["stage"], draft["revision"]["tables"]) == ("draft", None)
-    assert draft["quote"]["headline"] is None
-    refused = page.create(shown=None, values={})
-    assert refused.status_code == 422
-    assert refused.json()["detail"] == "Type the quote first"
+    # The details the app sets are not typing, whatever the page sends of them.
+    for values in ({}, {"quote_details": [{"qd_reference": "Q-9", "qd_stage": "final"}]}):
+        refused = page.create(shown=None, values=values)
+        assert refused.status_code == 422
+        assert refused.json()["detail"] == "Type the quote first"
 
 
 def test_a_save_from_a_page_of_another_release_is_refused(page: Page) -> None:
@@ -195,7 +208,7 @@ def test_a_quote_opens_with_its_newest_revision_and_each_revision_by_number(page
     first = page.client.get(f"/api/app/quotes/{quote['id']}/revisions/1", headers=ANA).json()
 
     assert (opened["revision"]["number"], opened["revision"]["saved_by"]) == (2, "jo@example.com")
-    assert opened["revision"]["values"] == VALUES
+    assert opened["revision"]["values"] == KEPT
     assert (first["revision"]["number"], first["revision"]["tables"]) == (1, None)
     missing = page.client.get("/api/app/quotes/nope", headers=ANA)
     assert missing.status_code == 404
@@ -230,11 +243,18 @@ def test_a_save_repeated_with_its_operation_key_writes_one_revision(page: Page) 
 
 def test_the_lists_page_search_and_count_through_the_route(page: Page) -> None:
     mine = page.create().json()["quote"]
-    page.create(headers=JO, values={"t1": [{"c_state": "CA", "c_exposure": "5"}]}, shown=None)
+    page.create(
+        headers=JO,
+        values={
+            "t1": [{"c_state": "CA", "c_exposure": "5"}],
+            "quote_details": [{"qd_insured": "Cal"}],
+        },
+        shown=None,
+    )
 
     listed = page.client.get("/api/app/quotes", headers=ANA).json()
     team = page.client.get("/api/app/quotes?view=team&limit=1", headers=ANA).json()
-    found = page.client.get("/api/app/quotes?view=team&search=ca&stage=draft", headers=ANA)
+    found = page.client.get("/api/app/quotes?view=team&search=cal&stage=draft", headers=ANA)
 
     assert [q["id"] for q in listed["quotes"]] == [mine["id"]]
     assert listed["counts"]["team"] == 2
@@ -243,7 +263,7 @@ def test_the_lists_page_search_and_count_through_the_route(page: Page) -> None:
         "/api/app/quotes", params={"view": "team", "cursor": team["next_cursor"]}, headers=ANA
     ).json()
     assert following["quotes"][0]["reference"] == "Q-000001"
-    assert [q["title"] for q in found.json()["quotes"]] == ["CA"]
+    assert [q["title"] for q in found.json()["quotes"]] == ["Cal"]
     bad = page.client.get("/api/app/quotes?cursor=x", headers=ANA)
     assert bad.status_code == 422
     assert bad.json()["detail"]["error_code"] == "quote_store_invalid"
@@ -276,27 +296,39 @@ def test_a_revision_is_carried_onto_the_releases_sheets(page: Page) -> None:
         f"/api/app/quotes/{quote['id']}/revisions/1/carry", headers=ANA
     ).json()
 
-    assert carried == {"values": VALUES, "dropped": []}
+    assert carried == {"values": KEPT, "dropped": []}
 
 
 # ── Changes ───────────────────────────────────────────────────────────────
 
 
-def test_changes_through_the_routes_name_the_version_they_were_made_on(page: Page) -> None:
+def test_changes_through_the_routes_name_the_revision_they_were_made_on(page: Page) -> None:
     quote = page.create().json()["quote"]
 
-    renamed = page.change(quote, "name", name="Fleet").json()["quote"]
-    assigned = page.change(renamed, "assignee", assignee="jo@example.com").json()["quote"]
-    noted = page.change(assigned, "note", note="Waiting on the broker").json()["quote"]
-    stale = page.change(quote, "name", name="Again")
+    made = page.change(quote, "assignee", assignee="jo@example.com").json()
+    assigned = made["quote"]
+    written = page.client.post(
+        f"/api/app/quotes/{quote['id']}/note", json={"note": "Waiting on the broker"}, headers=ANA
+    ).json()
+    noted = written["quote"]
+    stale = page.change(quote, "assignee", assignee="sam@example.com")
 
-    assert (noted["name"], noted["assignee"], noted["note"]) == (
-        "Fleet",
+    # The change answers with the revision it wrote: the values kept, the details changed.
+    assert made["revision"]["number"] == 2
+    assert made["revision"]["values"]["quote_details"][0]["qd_assignee"] == "jo@example.com"
+    assert made["revision"]["values"]["t1"] == VALUES["t1"]
+    assert written["revision"] is None
+
+    assert (assigned["assignee"], assigned["latest"], assigned["version"]) == (
         "jo@example.com",
-        "Waiting on the broker",
+        2,
+        2,
     )
+    assert (noted["note"], noted["latest"]) == ("Waiting on the broker", 2)
     assert stale.status_code == 409
-    assert stale.json()["detail"]["quote"]["version"] == noted["version"]
+    assert stale.json()["detail"]["quote"]["version"] == 2
+    history = page.client.get(f"/api/app/quotes/{quote['id']}/history", headers=ANA).json()
+    assert [r["number"] for r in history["revisions"]] == [1, 2]
 
 
 def test_final_archive_restore_and_reopen_through_the_routes(page: Page) -> None:
@@ -309,10 +341,11 @@ def test_final_archive_restore_and_reopen_through_the_routes(page: Page) -> None
     unreasoned = page.change(restored, "reopen", reason="")
     reopened = page.change(restored, "reopen", reason="Broker asked").json()["quote"]
 
-    assert final["stage"] == "final"
+    assert (final["stage"], final["final_revision"]) == ("final", 2)
     assert locked.status_code == 409
     assert locked.json()["detail"]["error_code"] == "quote_locked"
-    assert archived["archived_at"] is not None and restored["stage"] == "final"
+    assert archived["archived"] and archived["archived_at"] is not None
+    assert (restored["archived"], restored["stage"]) == (False, "final")
     assert unreasoned.status_code == 422
     assert reopened["stage"] == "priced"
     assert page.save(reopened).status_code == 200
@@ -360,36 +393,6 @@ def test_the_apps_pages_are_its_one_page(release_dir: Path, url: str, tmp_path: 
 def test_the_app_does_not_start_on_a_store_not_migrated(release_dir: Path, tmp_path: Path) -> None:
     with pytest.raises(QuoteStoreNotMigratedError, match="migrate_store"):
         create_app(release_dir, store_url=store_url(tmp_path / "fresh.sqlite"))
-
-
-def test_a_release_whose_quote_list_names_a_missing_column_does_not_start(
-    tmp_path: Path, url: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    broken = {**FORM, "quote_list": {"title": {"table": "t1", "column": "gone"}}}
-    directory = _write_release(tmp_path / "broken", broken)
-    original = _get_project_root()
-    try:
-        with pytest.raises(WorkbenchAppError, match="does not have"):
-            create_app(directory, store_url=url)
-    finally:
-        set_project_root(original)
-
-
-def test_the_app_projects_quotes_again_when_a_release_changes_the_quote_list(
-    release_dir: Path, url: str, tmp_path: Path
-) -> None:
-    with TestClient(create_app(release_dir, store_url=url)) as client:
-        Page(client).create()
-
-    plain = _write_release(tmp_path / "plain", {**FORM, "quote_list": {}})
-    with TestClient(create_app(plain, store_url=url)) as client:
-        quote = client.get("/api/app/quotes", headers=ANA).json()["quotes"][0]
-
-    assert (quote["title"], quote["fields"], quote["headline"]) == ("Q-000001", [], None)
-    assert quote["version"] == 1
-    with QuoteBook(open_store(url)) as book:
-        assert [e.kind for e in book.timeline(quote["id"]).events] == ["created"]
 
 
 # ── Who may change quotes ─────────────────────────────────────────────────

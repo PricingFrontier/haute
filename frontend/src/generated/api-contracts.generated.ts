@@ -2424,7 +2424,6 @@ export interface FormSpec {
    * @minItems 1
    */
   pages: Page[];
-  quote_list: QuoteList;
   sample: {
     [k: string]: {
       [k: string]: string | boolean;
@@ -2569,20 +2568,6 @@ export interface HeadingWidget {
   w: number;
   x: number;
   y: number;
-}
-/**
- * What the underwriter app's Quotes page shows of each quote: a title, up to three
- * summary fields and a headline output, each a column of a one-row table, the title and
- * summary fields of input tables, the headline a number of an output table. Each is
- * optional; ``haute._workbench_quote_list`` checks they name such columns.
- */
-export interface QuoteList {
-  /**
-   * @maxItems 3
-   */
-  fields: FieldRef[];
-  headline: FieldRef | null;
-  title: FieldRef | null;
 }
 /**
  * The data the sheets work with: tables of named, typed columns.
@@ -2756,29 +2741,31 @@ export interface WorkbenchAppQuotesResponse {
   quotes: WorkbenchAppQuote[];
 }
 /**
- * An app quote as the Quotes page and the quote's bar show it. Times are ISO 8601, in
- * UTC.
+ * An app quote as the Quotes page and the quote's bar show it: its ``quote_details`` row
+ * and what its newest revision and its events say of it. Times are ISO 8601, in UTC.
  */
 export interface WorkbenchAppQuote {
+  archived: boolean;
   archived_at: string | null;
   archived_by: string | null;
   assignee: string;
   created_at: string;
-  fields: (string | number | boolean | null)[];
+  details: {
+    [k: string]: string | number | boolean | null;
+  };
   final_at: string | null;
   final_by: string | null;
   final_revision: number | null;
   form_revision: string;
-  headline: string | number | boolean | null;
   id: string;
   last_saved_at: string;
   last_saved_by: string;
   latest: number;
-  name: string;
   note: string;
   note_at: string | null;
   note_by: string | null;
   owner: string;
+  priced: boolean;
   reference: string;
   relation: 'duplicate' | 'renewal' | 'alternative' | null;
   release: string | null;
@@ -2787,7 +2774,6 @@ export interface WorkbenchAppQuote {
   source_revision: number | null;
   stage: 'draft' | 'priced' | 'final';
   title: string;
-  title_value: string | null;
   version: number;
 }
 /**
@@ -2826,10 +2812,11 @@ export interface WorkbenchAppQuoteRevision {
   };
 }
 /**
- * The quote as the change left it.
+ * The quote as the change left it, and the revision it wrote; a note writes none.
  */
 export interface WorkbenchAppQuoteChangeResponse {
   quote: WorkbenchAppQuote;
+  revision: WorkbenchAppQuoteRevision | null;
 }
 /**
  * A quote's revisions, events, the quote it was made from and those made from it.
@@ -2848,7 +2835,6 @@ export interface WorkbenchAppRelatedQuote {
   reference: string;
   relation: 'duplicate' | 'renewal' | 'alternative';
   revision: number;
-  title: string;
 }
 /**
  * Who did what to a quote, and when.
@@ -2860,21 +2846,11 @@ export interface WorkbenchAppQuoteEvent {
     [k: string]: unknown;
   };
   id: number;
-  kind:
-    | 'created'
-    | 'saved'
-    | 'renamed'
-    | 'assigned'
-    | 'noted'
-    | 'archived'
-    | 'restored'
-    | 'finalised'
-    | 'reopened'
-    | 'derived';
+  kind: 'created' | 'saved' | 'assigned' | 'noted' | 'archived' | 'restored' | 'finalised' | 'reopened' | 'derived';
   revision: number | null;
 }
 /**
- * A revision as a quote's history lists it.
+ * A revision as a quote's history lists it, with the stage it was saved at.
  */
 export interface WorkbenchAppQuoteRevisionSummary {
   form_revision: string;
@@ -2883,6 +2859,7 @@ export interface WorkbenchAppQuoteRevisionSummary {
   release: string | null;
   saved_at: string;
   saved_by: string;
+  stage: 'draft' | 'priced' | 'final';
 }
 /**
  * A revision's values carried onto the release's sheets, and each filled value with no

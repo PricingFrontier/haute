@@ -49,7 +49,7 @@ const policy: SchemaTable = {
 }
 const pricing: SchemaTable = { id: "t2", name: "pricing_output", role: "output", rows: "one", columns: [column("c2", "model_premium", { type: "float" })] }
 const form: FormSpec = {
-  version: 1, quote_list: { title: null, fields: [], headline: null },
+  version: 1,
   name: "t",
   schema: { tables: [policy, pricing] },
   pages: [sheet("p", "Sheet 1")],
@@ -80,7 +80,7 @@ describe("useWorkbenchPreviewStore", () => {
     vi.mocked(fetchWorkbenchFormTables).mockImplementation((spec) => Promise.resolve(workbenchOf(spec)))
     useWorkbenchFormStore.setState({ form, status: "ready" })
     useWorkbenchPricingStore.setState({ pricer: null, quotePricer: null })
-    useWorkbenchPreviewStore.setState({ quote: {}, checked: false, price: null, error: null, pricing: false, readOnly: false })
+    useWorkbenchPreviewStore.setState({ quote: {}, checked: false, price: null, error: null, pricing: false, readOnly: false, locked: new Set() })
   })
 
   afterEach(() => {
@@ -103,6 +103,25 @@ describe("useWorkbenchPreviewStore", () => {
     useWorkbenchPreviewStore.setState({ checked: true, error: "x", price: { basis: "b", tables: {}, sample: {} } })
     store().clear()
     expect(store()).toMatchObject({ quote: {}, checked: false, error: null, price: null })
+  })
+
+  it("keeps a locked column as the app set it: no typing, not cleared, and not what makes a quote typed", async () => {
+    const quotePricer = vi.fn()
+    useWorkbenchPricingStore.setState({ quotePricer })
+    const store = useWorkbenchPreviewStore.getState
+    store().open({ t1: [{ c4: "Q-000001" }] }, null, false)
+    store().setLocked(new Set(["t1:c4"]))
+    useWorkbenchFormStore.setState({ form: { ...form, schema: covered } })
+
+    store().setCell("t1", 0, "c4", "Q-9")
+    expect(store().quote).toEqual({ t1: [{ c4: "Q-000001" }] })
+    await store().priceQuote()
+    expect(store().error).toBe("Type the quote first")
+    expect(quotePricer).not.toHaveBeenCalled()
+
+    store().setCell("t1", 0, "c1", "5")
+    store().clear()
+    expect(store().quote).toEqual({ t1: [{ c4: "Q-000001" }] })
   })
 
   it("prices the quote on the pipeline as the sample is priced, keeping what the server typed", async () => {

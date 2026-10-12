@@ -113,7 +113,6 @@ export default function HistoryPanel() {
                         {made.reference}
                       </a>{" "}
                       <span style={{ color: "var(--text-secondary)" }}>
-                        {made.title !== made.reference && `${made.title} · `}
                         {RELATION[made.relation]} from revision {made.revision}
                       </span>
                     </li>

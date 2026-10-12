@@ -459,12 +459,7 @@
           ]
         }
       ],
-      "sample": {},
-      "quote_list": {
-        "title": null,
-        "fields": [],
-        "headline": null
-      }
+      "sample": {}
     },
     "tests": {
       "version": 1,
@@ -767,12 +762,7 @@
           ]
         }
       ],
-      "sample": {},
-      "quote_list": {
-        "title": null,
-        "fields": [],
-        "headline": null
-      }
+      "sample": {}
     },
     "sections": {
       "version": 1,
@@ -1169,12 +1159,7 @@
           ]
         }
       ],
-      "sample": {},
-      "quote_list": {
-        "title": null,
-        "fields": [],
-        "headline": null
-      }
+      "sample": {}
     }
   },
   "cases": [

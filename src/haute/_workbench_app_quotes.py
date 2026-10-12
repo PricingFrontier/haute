@@ -2,12 +2,14 @@
 the quotes it keeps in its quote store, mounted by ``haute._workbench_app.create_app`` when
 the app has a store.
 
-A save names the sheets' revision and the release the page was drawn from, and either
-saves the quote unpriced or prices it again here, keeping this pricing and saying whether it
-moved from what the page showed. Every change names the version of the quote it was made on.
-The store's refusals answer as the app's: a quote it does not keep 404, a quote moved on 409
-with the quote as it is now, a quote that does not take the change 409, anything else it
-refuses 422.
+A quote's details are the row of the sheets' ``quote_details`` table, which the app keeps in
+the store's typed table: the app sets the reference, the stage, who the quote is with and
+whether it is archived, over whatever a page sends, before the quote is priced. A save names
+the sheets' revision and the release the page was drawn for, and either saves the quote
+unpriced or prices it again here, keeping this pricing and saying whether it moved from what
+the page showed. Every change names the revision of the quote it was made on. The store's
+refusals answer as the app's: a quote it does not keep 404, a quote moved on 409 with the
+quote as it is now, a quote that does not take the change 409, anything else it refuses 422.
 """
 
 from __future__ import annotations
@@ -31,12 +33,13 @@ from haute._quote_store import (
     Source,
     StaleQuoteError,
     carry_values,
+    details_of,
     open_store,
+    with_details,
 )
 from haute._quote_store._book import MAX_PAGE_SIZE, PAGE_SIZE
 from haute._test_quotes import ACCEPTED_TOLERANCE, quote_request
 from haute._workbench_form import FormSpec
-from haute._workbench_quote_list import project, projection_key
 from haute.deploy._request_limits import (
     RequestBodyHeaderError,
     RequestBodyLimitError,
@@ -57,7 +60,6 @@ from haute.schemas import (
     WorkbenchAppQuoteFinal,
     WorkbenchAppQuoteHistoryResponse,
     WorkbenchAppQuoteNote,
-    WorkbenchAppQuoteRename,
     WorkbenchAppQuoteReopen,
     WorkbenchAppQuoteResponse,
     WorkbenchAppQuoteReviseRequest,
@@ -90,25 +92,9 @@ class QuoteApp:
     price: Pricer
 
 
-def open_book(url: str, form: FormSpec) -> QuoteBook:
-    """The book of the store at *url*, which must be migrated, with every quote projected by
-    *form*'s quote list setting: those projected by another are projected again."""
-    store = open_store(url)
-    book = QuoteBook(store)
-    forms: dict[str, FormSpec] = {}
-
-    def again(revision: QuoteRevision) -> Any:
-        if revision.form_revision not in forms:
-            forms[revision.form_revision] = store.form(revision.form_revision)
-        saved = forms[revision.form_revision]
-        return project(form.quote_list, saved, revision.inputs, revision.response)
-
-    try:
-        book.reproject(projection_key(form.quote_list), again)
-    except Exception:
-        book.close()
-        raise
-    return book
+def open_book(url: str) -> QuoteBook:
+    """The book of the store at *url*, which must be migrated."""
+    return QuoteBook(open_store(url))
 
 
 def _iso(moment: Any) -> str | None:
@@ -120,18 +106,17 @@ def quote_model(quote: AppQuote) -> WorkbenchAppQuote:
     return WorkbenchAppQuote(
         id=quote.id,
         reference=quote.reference,
-        name=quote.name,
         title=quote.title,
-        title_value=quote.summary.get("title"),
-        fields=list(quote.summary.get("fields", [])),
-        headline=quote.summary.get("headline"),
+        details=quote.details,
         stage=quote.stage,
         assignee=quote.assignee,
+        archived=quote.archived,
         owner=quote.owner,
         created_at=quote.created_at.isoformat(),
         latest=quote.latest,
         release=quote.release,
         form_revision=quote.form_revision,
+        priced=quote.priced,
         last_saved_by=quote.last_saved_by,
         last_saved_at=quote.last_saved_at.isoformat(),
         final_revision=quote.final_revision,
@@ -146,7 +131,7 @@ def quote_model(quote: AppQuote) -> WorkbenchAppQuote:
         source_reference=quote.source_reference,
         source_revision=quote.source_revision,
         relation=quote.relation,
-        version=quote.version,
+        version=quote.latest,
     )
 
 
@@ -220,24 +205,42 @@ async def _body(http: Request, model: type[M]) -> M:
         raise RequestValidationError(exc.errors()) from None
 
 
-async def _priced_save(
-    app: QuoteApp, body: WorkbenchAppQuoteSaveRequest
-) -> tuple[dict[str, Any], WorkbenchPricedTables | None, bool]:
-    """The request a save keeps, its prices (made again here when the page showed some;
-    none for an unpriced save) and whether they moved from what the page showed."""
+@dataclass(frozen=True)
+class _Prepared:
+    """A save as it is kept: the values with the app's details over them, the request priced,
+    its prices (none unpriced) and whether they moved from what the page showed."""
+
+    values: WorkbenchValues
+    request: dict[str, Any]
+    tables: WorkbenchPricedTables | None
+    moved: bool
+
+
+async def _prepared(
+    app: QuoteApp, body: WorkbenchAppQuoteSaveRequest, managed: dict[str, Any]
+) -> _Prepared:
+    """*body*'s save made ready: refused (409) for another sheets' revision or release; its
+    details' app columns set to *managed*; unpriced, refused (422) with nothing typed, or
+    priced again here and compared with what the page showed."""
     if body.form_revision != app.form_revision or body.release != app.release_id:
         raise HTTPException(
             409,
             "This page was drawn for another release of the app: reload it to save on this one.",
         )
+    # The details the app sets are its own, whatever the page sent; and nothing the
+    # underwriter typed is nothing to save.
+    details = {
+        name: value for name, value in details_of(body.values).items() if name not in managed
+    }
+    typed = with_details(body.values, details)
+    if not quote_request(app.form, typed):
+        raise HTTPException(422, "Type the quote first")
+    values = with_details(typed, {**details, **managed})
     if body.shown is None:
-        request = quote_request(app.form, body.values)
-        if not request:
-            raise HTTPException(422, "Type the quote first")
-        return request, None, False
-    tables, request = await app.price(body.values)
+        return _Prepared(values, quote_request(app.form, values), None, False)
+    tables, request = await app.price(values)
     moved = bool(response_changes(tables, body.shown, ACCEPTED_TOLERANCE))
-    return request, tables, moved
+    return _Prepared(values, request, tables, moved)
 
 
 def quote_router(app: QuoteApp) -> APIRouter:
@@ -262,7 +265,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
         stage: Literal["draft", "priced", "final"] | None = None,
         search: str = Query(default="", max_length=200),
         assignee: str | None = Query(default=None, max_length=320),
-        sort: Literal["saved", "reference", "title"] = "saved",
+        sort: Literal["saved", "reference", "insured"] = "saved",
         cursor: str | None = Query(default=None, max_length=2000),
         limit: int = Query(default=PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     ) -> WorkbenchAppQuotesResponse:
@@ -290,7 +293,8 @@ def quote_router(app: QuoteApp) -> APIRouter:
     async def create_quote(http: Request) -> WorkbenchAppQuoteResponse:
         actor = _editor(http)
         body = await _body(http, WorkbenchAppQuoteCreateRequest)
-        request, tables, moved = await _priced_save(app, body)
+        managed = {**QuoteBook.managed(None, priced=body.shown is not None), "assignee": actor}
+        ready = await _prepared(app, body, managed)
         source = (
             None
             if body.source is None
@@ -301,16 +305,14 @@ def quote_router(app: QuoteApp) -> APIRouter:
             quote = book.create(
                 operation=body.operation,
                 actor=actor,
-                name=body.name,
                 form=app.form,
-                inputs=body.values,
-                request=request,
-                response=tables,
-                release=None if tables is None else app.release_id,
-                projection=project(app.form.quote_list, app.form, body.values, tables),
+                inputs=ready.values,
+                request=ready.request,
+                response=ready.tables,
+                release=None if ready.tables is None else app.release_id,
                 source=source,
             )
-            return answer(quote, book.store.revision(quote.id, quote.latest), moved=moved)
+            return answer(quote, book.revision(quote.id, quote.latest), moved=ready.moved)
 
         return await _call(app, create)
 
@@ -318,14 +320,14 @@ def quote_router(app: QuoteApp) -> APIRouter:
     async def open_quote(quote_id: str) -> WorkbenchAppQuoteResponse:
         def read() -> WorkbenchAppQuoteResponse:
             quote = book.get(quote_id)
-            return answer(quote, book.store.revision(quote_id, quote.latest))
+            return answer(quote, book.revision(quote_id, quote.latest))
 
         return await _call(app, read)
 
     @router.get("/quotes/{quote_id}/revisions/{number}", response_model=WorkbenchAppQuoteResponse)
     async def open_revision(quote_id: str, number: int) -> WorkbenchAppQuoteResponse:
         def read() -> WorkbenchAppQuoteResponse:
-            return answer(book.get(quote_id), book.store.revision(quote_id, number))
+            return answer(book.get(quote_id), book.revision(quote_id, number))
 
         return await _call(app, read)
 
@@ -334,11 +336,9 @@ def quote_router(app: QuoteApp) -> APIRouter:
     )
     async def carry(quote_id: str, number: int) -> WorkbenchAppCarryResponse:
         def read() -> WorkbenchAppCarryResponse:
-            book.get(quote_id)
-            revision = book.store.revision(quote_id, number)
-            carried = carry_values(
-                revision.inputs, book.store.form(revision.form_revision), app.form
-            )
+            revision = book.revision(quote_id, number)
+            saved = book.store.form(revision.form_revision)
+            carried = carry_values(revision.inputs, saved, app.form)
             return WorkbenchAppCarryResponse(values=carried.values, dropped=carried.dropped)
 
         return await _call(app, read)
@@ -347,7 +347,10 @@ def quote_router(app: QuoteApp) -> APIRouter:
     async def save_quote(quote_id: str, http: Request) -> WorkbenchAppQuoteResponse:
         actor = _editor(http)
         body = await _body(http, WorkbenchAppQuoteReviseRequest)
-        request, tables, moved = await _priced_save(app, body)
+        current = await _call(app, lambda: book.get(quote_id))
+        ready = await _prepared(
+            app, body, QuoteBook.managed(current, priced=body.shown is not None)
+        )
 
         def save() -> WorkbenchAppQuoteResponse:
             quote = book.save(
@@ -356,13 +359,12 @@ def quote_router(app: QuoteApp) -> APIRouter:
                 version=body.version,
                 actor=actor,
                 form=app.form,
-                inputs=body.values,
-                request=request,
-                response=tables,
-                release=None if tables is None else app.release_id,
-                projection=project(app.form.quote_list, app.form, body.values, tables),
+                inputs=ready.values,
+                request=ready.request,
+                response=ready.tables,
+                release=None if ready.tables is None else app.release_id,
             )
-            return answer(quote, book.store.revision(quote_id, quote.latest), moved=moved)
+            return answer(quote, book.revision(quote_id, quote.latest), moved=ready.moved)
 
         return await _call(app, save, quote_id)
 
@@ -374,8 +376,15 @@ def quote_router(app: QuoteApp) -> APIRouter:
         async def route(quote_id: str, http: Request) -> WorkbenchAppQuoteChangeResponse:
             actor = _editor(http)
             body = await _body(http, model)
-            quote = await _call(app, lambda: apply(quote_id, body, actor), quote_id)
-            return WorkbenchAppQuoteChangeResponse(quote=quote_model(quote))
+
+            def made() -> WorkbenchAppQuoteChangeResponse:
+                quote = apply(quote_id, body, actor)
+                revision = book.revision(quote_id, quote.latest)
+                return WorkbenchAppQuoteChangeResponse(
+                    quote=quote_model(quote), revision=_revision_model(revision)
+                )
+
+            return await _call(app, made, quote_id)
 
         router.add_api_route(
             f"/quotes/{{quote_id}}/{path}",
@@ -386,19 +395,9 @@ def quote_router(app: QuoteApp) -> APIRouter:
         )
 
     change(
-        "name",
-        WorkbenchAppQuoteRename,
-        lambda q, b, a: book.rename(q, version=b.version, actor=a, name=b.name),
-    )
-    change(
         "assignee",
         WorkbenchAppQuoteAssign,
         lambda q, b, a: book.assign(q, version=b.version, actor=a, assignee=b.assignee),
-    )
-    change(
-        "note",
-        WorkbenchAppQuoteNote,
-        lambda q, b, a: book.set_note(q, version=b.version, actor=a, note=b.note),
     )
     change(
         "archive",
@@ -423,12 +422,22 @@ def quote_router(app: QuoteApp) -> APIRouter:
         lambda q, b, a: book.reopen(q, version=b.version, actor=a, reason=b.reason),
     )
 
+    @router.post("/quotes/{quote_id}/note", response_model=WorkbenchAppQuoteChangeResponse)
+    async def note(quote_id: str, http: Request) -> WorkbenchAppQuoteChangeResponse:
+        actor = _editor(http)
+        body = await _body(http, WorkbenchAppQuoteNote)
+        quote = await _call(app, lambda: book.set_note(quote_id, actor=actor, note=body.note))
+        return WorkbenchAppQuoteChangeResponse(quote=quote_model(quote))
+
     @router.get("/quotes/{quote_id}/history", response_model=WorkbenchAppQuoteHistoryResponse)
     async def history(quote_id: str) -> WorkbenchAppQuoteHistoryResponse:
         timeline = await _call(app, lambda: book.timeline(quote_id))
-        related = lambda r: WorkbenchAppRelatedQuote(  # noqa: E731 - a one-line mapping
-            id=r.id, reference=r.reference, title=r.title, relation=r.relation, revision=r.revision
-        )
+
+        def related(each: Any) -> WorkbenchAppRelatedQuote:
+            return WorkbenchAppRelatedQuote(
+                id=each.id, reference=each.reference, relation=each.relation, revision=each.revision
+            )
+
         return WorkbenchAppQuoteHistoryResponse(
             revisions=[
                 WorkbenchAppQuoteRevisionSummary(
@@ -438,6 +447,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
                     priced=r.priced,
                     release=r.release,
                     form_revision=r.form_revision,
+                    stage=r.stage,
                 )
                 for r in timeline.revisions
             ],

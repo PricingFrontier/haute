@@ -24,7 +24,7 @@ from haute._workbench_app import (
     read_release,
     write_release,
 )
-from haute._workbench_form import FormSpec, form_revision, render_form
+from haute._workbench_form import QUOTE_DETAILS_COLUMNS, FormSpec, form_revision, render_form
 from haute.deploy._utils import shipped_graph
 from haute.execution import ExecutionProfile
 from tests.test_workbench_routes import POLICY, PRICING, form
@@ -422,11 +422,25 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         '[workbench.app]\nhost = "azure-container-apps"\n',
         encoding="utf-8",
     )
-    _write(_priced(), tmp_path, "main")
+    _write(with_details_copy(_priced()), tmp_path, "main")
     (tmp_path / "forms").mkdir()
     write_sheets(tmp_path, PROJECT_TABLES)
     yield tmp_path
     set_project_root(original)
+
+
+def with_details_copy(graph: PipelineGraph) -> PipelineGraph:
+    """*graph* with Haute's ``quote_details`` table first in its Workbench Input's copy of the
+    tables, as the editor copies it from a form, which always holds it."""
+    from tests.test_workbench_output import _table
+
+    for node in graph.nodes:
+        if node.data.nodeType == NodeType.WORKBENCH_INPUT:
+            details = _table(
+                "quote_details", *((name, type_) for _, name, type_ in QUOTE_DETAILS_COLUMNS)
+            )
+            node.data.config["tables"] = [details, *node.data.config["tables"]]
+    return graph
 
 
 def write_sheets(project: Path, tables: list[dict[str, Any]]) -> None:
@@ -517,7 +531,7 @@ def test_the_app_prices_on_the_utility_code_the_release_carries(project: Path) -
 
     from tests.test_workbench_output import _priced, _write
 
-    graph = _priced()
+    graph = with_details_copy(_priced())
     graph.preamble = "from utility import RATE\n"
     graph.node_map["priced"].data.config["code"] = (
         "df = policy.with_columns(premium=pl.col('limit') / 10 * RATE, referral=pl.lit('none'))"

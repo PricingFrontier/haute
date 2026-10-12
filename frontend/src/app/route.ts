@@ -17,7 +17,7 @@ export type AppRoute =
 
 const VIEWS = ["mine", "team", "archived"] as const
 const STAGES = ["draft", "priced", "final"] as const
-const SORTS = ["saved", "reference", "title"] as const
+const SORTS = ["saved", "reference", "insured"] as const
 const RELATIONS = ["duplicate", "renewal", "alternative"] as const
 
 const oneOf = <T extends string>(values: readonly T[], value: string | null): T | null =>

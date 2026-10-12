@@ -135,11 +135,9 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // The test quotes kept in Preview (their panel and store, the API calls and their
 // generated validators, all in the lazy workbench chunks) bring it to 1,661.1 KiB;
 // 1,663 KiB restores about 1.9 KiB.
-// The quote list setting (its block under the schema editor's tables and its form
-// operations, in the lazy workbench chunks) brings it to 1,664.2 KiB; the underwriter
-// app's own response validators are a contract group of their own, which the builder
-// never loads. 1,666 KiB restores about 1.8 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1666
+// Haute's quote_details table (its columns, the schema editor's lock on it and the cells
+// the underwriter app sets) brings it to 1,663.1 KiB; 1,664 KiB restores about 0.9 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1664
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

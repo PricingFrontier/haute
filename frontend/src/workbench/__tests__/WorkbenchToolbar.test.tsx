@@ -19,7 +19,7 @@ vi.mock("../../components/BranchIndicator", () => ({
 }))
 
 const blank: FormSpec = {
-  version: 1, quote_list: { title: null, fields: [], headline: null },
+  version: 1,
   name: "motor",
   schema: { tables: [] },
   pages: [

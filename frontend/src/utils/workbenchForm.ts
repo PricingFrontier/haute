@@ -5,7 +5,7 @@
  * pipeline's tables or a sheet, a section or a component showing what it should. Each
  * operation returns a new form and leaves its input untouched.
  */
-import type { ChartWidget, Condition, FieldRef, FormSchema, FormSpec, HeadingWidget, Page, QuoteList, SchemaColumn, SchemaTable, Section, ShowWhen } from "../api/types"
+import type { ChartWidget, Condition, FieldRef, FormSchema, FormSpec, HeadingWidget, Page, SchemaColumn, SchemaTable, Section, ShowWhen } from "../api/types"
 import { ASCII_IDENTIFIER_RE, apiInputLabelIssue, apiInputLabelIssueMessage } from "./apiInputPorts"
 import { PYTHON_KEYWORDS } from "./globalConstants"
 import { BLANK_SECTION_HEIGHT, NEW_SECTION_HEIGHT, fittedSectionHeight, leastSectionHeight, type Rect } from "./sheetGeometry"
@@ -124,15 +124,6 @@ const dropFields = (draft: FormSpec, drop: (field: FieldRef) => boolean): void =
     widget.fields = widget.fields.filter((field) => !drop(field))
     if (widget.type === "chart" && widget.category !== null && drop(widget.category)) widget.category = null
   }
-  dropQuoteListFields(draft, drop)
-}
-
-/** Take the columns `drop` matches out of the quote list. */
-const dropQuoteListFields = (draft: FormSpec, drop: (field: FieldRef) => boolean): void => {
-  const list = draft.quote_list
-  if (list.title !== null && drop(list.title)) list.title = null
-  list.fields = list.fields.filter((field) => !drop(field))
-  if (list.headline !== null && drop(list.headline)) list.headline = null
 }
 
 /** Take the conditions `drop` matches out of every sheet, section and widget that tests them. */
@@ -166,8 +157,6 @@ export const setSchemaTableRows = (spec: FormSpec, id: string, rows: SchemaTable
     const table = schemaTableOf(draft, id)
     table.rows = rows
     if (rows === "one") for (const column of table.columns) column.key = false
-    // The quote list shows one value of each column it names: a table of many rows has none to show.
-    else dropQuoteListFields(draft, (field) => field.table === id)
   })
 }
 
@@ -991,65 +980,32 @@ export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<strin
   return problems
 }
 
-// ── The quote list ───────────────────────────────────────────────────────
-
-/** What the underwriter app's Quotes page shows of each quote, changed by `patch`. */
-export const setQuoteList = (spec: FormSpec, patch: Partial<QuoteList>): FormSpec =>
-  edit(spec, (draft) => {
-    Object.assign(draft.quote_list, patch)
-  })
-
-/** The most summary fields the quote list shows. */
-export const MAX_QUOTE_LIST_FIELDS = 3
-
-/** A column the quote list can name: its table, its column, and how the editor names it. */
-export interface QuoteListChoice {
-  ref: FieldRef
-  label: string
-}
+// ── Haute's quote_details table ──────────────────────────────────────────
 
 /**
- * The columns the quote list can name: for the title and summary fields, the columns of
- * the one-row input tables; for the headline, the number columns of the one-row output
- * tables. An index column numbers rows and is never one.
+ * The id and name of Haute's own input table of a quote's details, first in every form
+ * (`haute._workbench_form.QUOTE_DETAILS_ID`): the underwriter app keeps its row with each
+ * revision, and its Quotes page lists them.
  */
-export function quoteListChoices(spec: FormSpec, place: "field" | "headline"): QuoteListChoice[] {
-  const role = place === "headline" ? "output" : "input"
-  return spec.schema.tables
-    .filter((table) => table.role === role && table.rows === "one")
-    .flatMap((table) =>
-      table.columns
-        .filter((column) => !column.index && (place === "field" || column.type === "int" || column.type === "float"))
-        .map((column) => ({
-          ref: { table: table.id, column: column.id },
-          label: `${readableName(table.name)} › ${column.label || readableName(column.name)}`,
-        })),
-    )
-}
+export const QUOTE_DETAILS_ID = "quote_details"
 
-/**
- * Each way the quote list names a column the Quotes page cannot show, as a deploy refuses
- * it (`haute._workbench_quote_list.quote_list_problems`): one the schema does not have,
- * one of a many-row table or the wrong role, a headline that is not a number, or a
- * summary field named twice.
- */
-export function quoteListProblems(spec: FormSpec): string[] {
-  const list = spec.quote_list
-  const problems: string[] = []
-  const check = (ref: FieldRef, what: string, role: SchemaTable["role"]) => {
-    const found = fieldColumn(spec, ref)
-    if (found === null) {
-      problems.push(`The ${what} names a column the schema no longer has.`)
-      return
-    }
-    const where = `${found.table.name}.${found.column.name}`
-    if (found.table.rows !== "one") problems.push(`The ${what}, ${where}, is in a many-row table: a quote's list row shows one value.`)
-    if (found.table.role !== role) problems.push(`The ${what}, ${where}, is not in an ${role} table.`)
-    if (what === "headline" && found.column.type !== "int" && found.column.type !== "float") problems.push(`The headline, ${where}, is not a number column.`)
-  }
-  if (list.title !== null) check(list.title, "title", "input")
-  list.fields.forEach((ref, index) => check(ref, `summary field ${index + 1}`, "input"))
-  if (new Set(list.fields.map((ref) => `${ref.table}\u0000${ref.column}`)).size !== list.fields.length) problems.push("A summary field is named twice.")
-  if (list.headline !== null) check(list.headline, "headline", "output")
-  return problems
-}
+/** Its columns, in order, as id, name and type (`QUOTE_DETAILS_COLUMNS`); their structure is fixed. */
+export const QUOTE_DETAILS_COLUMNS: ReadonlyArray<readonly [id: string, name: string, type: SchemaColumn["type"]]> = [
+  ["qd_reference", "reference", "str"],
+  ["qd_quote_name", "quote_name", "str"],
+  ["qd_insured", "insured", "str"],
+  ["qd_broker", "broker", "str"],
+  ["qd_inception_date", "inception_date", "date"],
+  ["qd_expiry_date", "expiry_date", "date"],
+  ["qd_valid_until", "valid_until", "date"],
+  ["qd_currency", "currency", "str"],
+  ["qd_stage", "stage", "str"],
+  ["qd_assignee", "assignee", "str"],
+  ["qd_archived", "archived", "bool"],
+]
+
+/** The columns the underwriter app sets over whatever is typed, which take no rules (`QUOTE_DETAILS_MANAGED`). */
+export const QUOTE_DETAILS_MANAGED: ReadonlySet<string> = new Set(["qd_reference", "qd_stage", "qd_assignee", "qd_archived"])
+
+/** Whether `table` is Haute's quote_details table, whose structure the editor does not change. */
+export const isQuoteDetails = (table: Pick<SchemaTable, "id">): boolean => table.id === QUOTE_DETAILS_ID

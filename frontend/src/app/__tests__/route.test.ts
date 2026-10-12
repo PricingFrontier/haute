@@ -15,9 +15,9 @@ const at = (path: string) => {
 describe("routeOf", () => {
   it("reads the Quotes page with its list, a new quote with what it is made from, a quote and a revision", () => {
     expect(at("/")).toEqual({ page: "quotes", query: { view: "mine", stage: null, search: "", assignee: null, sort: "saved" } })
-    expect(at("/?view=team&stage=final&q=acme&assignee=jo%40example.com&sort=title")).toEqual({
+    expect(at("/?view=team&stage=final&q=acme&assignee=jo%40example.com&sort=insured")).toEqual({
       page: "quotes",
-      query: { view: "team", stage: "final", search: "acme", assignee: "jo@example.com", sort: "title" },
+      query: { view: "team", stage: "final", search: "acme", assignee: "jo@example.com", sort: "insured" },
     })
     expect(at("/quotes/new")).toEqual({ page: "new", from: null })
     expect(at("/quotes/new?from=abc&revision=2&as=renewal")).toEqual({ page: "new", from: { quoteId: "abc", revision: 2, relation: "renewal" } })

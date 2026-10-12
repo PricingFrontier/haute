@@ -3,9 +3,10 @@
  * columns, which are the pipeline's tables. Every text field commits on blur or Enter, so
  * an edit is one undo step; Enter in a column's name adds the next column, and Alt+Up and
  * Alt+Down move a column, as the step editor's cards move. Removing what a sheet shows
- * asks first. Under the tables, the quote list setting (`QuoteListSettings`).
+ * asks first. Haute's quote_details table, first, keeps its structure: its columns' labels
+ * and help, and the rules of those the underwriter types, are the project's.
  */
-import { ChevronDown, ChevronRight, KeyRound, Plus, SlidersHorizontal, Trash2, X, type LucideIcon } from "lucide-react"
+import { ChevronDown, ChevronRight, KeyRound, Lock, Plus, SlidersHorizontal, Trash2, X, type LucideIcon } from "lucide-react"
 import { useMemo, useState, type ButtonHTMLAttributes, type FocusEvent, type KeyboardEvent, type ReactNode } from "react"
 import type { FormSpec, SchemaColumn, SchemaTable } from "../api/types"
 import { CommittedTextField, ConfigCheckbox, IconSelect, ValidatedTextField } from "../components/form"
@@ -21,7 +22,9 @@ import {
   createSchemaTable,
   conditionUses,
   fieldUses,
+  isQuoteDetails,
   moveSchemaColumn,
+  QUOTE_DETAILS_MANAGED,
   readableName,
   removeSchemaColumn,
   removeSchemaTable,
@@ -33,7 +36,6 @@ import {
 import { PIVOT_DECIMAL_PLACES_MAX, PIVOT_NUMBER_FORMATS } from "../panels/explore/pivotConfig"
 import { NUMBER_FORMAT_LABELS } from "../panels/explore/pivotNumberFormat"
 import { COLUMN_TYPES, COLUMN_TYPE_OPTIONS, isNumeric } from "./columnTypes"
-import QuoteListSettings from "./QuoteListSettings"
 
 const ROLES: ReadonlyArray<{ value: SchemaTable["role"]; label: string; title: string }> = [
   { value: "input", label: "Input", title: "Sent to the pricing engine" },
@@ -50,6 +52,11 @@ const DECIMAL_PLACES = Array.from({ length: PIVOT_DECIMAL_PLACES_MAX + 1 }, (_, 
 const FIELD_CLASS = "focus-ring min-w-0 rounded-md px-1.5 py-0.5 text-xs"
 const CHIP_CLASS = "focus-ring shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-semibold"
 const HOVER_ONLY = "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+
+/** What Haute's quote_details table is, on its lock. */
+const DETAILS_TITLE =
+  "Haute's table of a quote's details: the underwriter app keeps it with each quote and lists it on the Quotes page. " +
+  "Its columns are fixed; place them on the sheets, and give them labels, help and rules."
 
 /** The form as the store holds it now, for an edit that builds on it. */
 function currentForm(): FormSpec {
@@ -138,7 +145,6 @@ export default function SchemaEditor() {
           />
         ))}
         <AddButton onClick={addTable}>Add table</AddButton>
-        <QuoteListSettings form={form} />
       </div>
     </div>
   )
@@ -169,6 +175,8 @@ function TableBlock({ form, table, added, setAdded, details, setDetails, collaps
     onBlur: () => setAdded(null),
   })
   const count = table.columns.length
+  // Haute's quote_details table keeps its structure.
+  const locked = isQuoteDetails(table)
 
   const insertAt = (index: number) => {
     const column = createSchemaColumn(currentForm(), table.id)
@@ -198,11 +206,15 @@ function TableBlock({ form, table, added, setAdded, details, setDetails, collaps
           value={table.name}
           onCommit={(name) => change((f) => updateSchemaTable(f, table.id, { name }))}
           {...fresh(table.id)}
+          readOnly={locked}
+          title={locked ? DETAILS_TITLE : undefined}
           className="focus-ring min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1.5 py-0.5 font-mono font-semibold"
           style={{ color: "var(--text-primary)" }}
         />
+        {locked && <Lock size={11} aria-label="Haute's table" className="shrink-0" style={{ color: "var(--text-muted)" }} />}
         <select
           aria-label={`Role of ${table.name}`}
+          disabled={locked}
           value={table.role}
           onChange={(e) => change((f) => updateSchemaTable(f, table.id, { role: e.target.value as SchemaTable["role"] }))}
           title={ROLES.find((role) => role.value === table.role)?.title}
@@ -217,6 +229,7 @@ function TableBlock({ form, table, added, setAdded, details, setDetails, collaps
         </select>
         <select
           aria-label={`Rows of ${table.name}`}
+          disabled={locked}
           value={table.rows}
           onChange={(e) => change((f) => setSchemaTableRows(f, table.id, e.target.value as SchemaTable["rows"]))}
           title={ROWS.find((rows) => rows.value === table.rows)?.title}
@@ -237,13 +250,15 @@ function TableBlock({ form, table, added, setAdded, details, setDetails, collaps
           {count} {count === 1 ? "col" : "cols"}
           {problems.length > 0 && `, ${problems.length} ${problems.length === 1 ? "problem" : "problems"}`}
         </span>
-        <IconButton
-          icon={Trash2}
-          onClick={() => (uses > 0 ? setConfirming(true) : remove())}
-          aria-label={`Delete table ${table.name}`}
-          title="Delete table"
-          className={`icon-danger-btn ${HOVER_ONLY}`}
-        />
+        {!locked && (
+          <IconButton
+            icon={Trash2}
+            onClick={() => (uses > 0 ? setConfirming(true) : remove())}
+            aria-label={`Delete table ${table.name}`}
+            title="Delete table"
+            className={`icon-danger-btn ${HOVER_ONLY}`}
+          />
+        )}
       </div>
       {confirming && (
         <ConfirmBar
@@ -270,12 +285,19 @@ function TableBlock({ form, table, added, setAdded, details, setDetails, collaps
               open={details === column.id}
               onToggleDetails={() => setDetails(details === column.id ? null : column.id)}
               onInsertAfter={() => insertAt(index + 1)}
+              locked={locked}
             />
           ))}
-          <div className="flex items-center gap-3">
-            <AddButton onClick={() => insertAt(count)}>Add column</AddButton>
-            {table.rows === "many" && <IndexControl form={form} table={table} onAdded={setAdded} />}
-          </div>
+          {locked ? (
+            <p className="px-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+              Kept with each quote and listed on the Quotes page; the app sets reference, stage, assignee and archived.
+            </p>
+          ) : (
+            <div className="flex items-center gap-3">
+              <AddButton onClick={() => insertAt(count)}>Add column</AddButton>
+              {table.rows === "many" && <IndexControl form={form} table={table} onAdded={setAdded} />}
+            </div>
+          )}
           {problems.map((message) => (
             <p key={message} className="px-1 text-[11px]" style={{ color: "var(--warning)" }}>
               {message}
@@ -296,9 +318,11 @@ interface ColumnRowProps {
   open: boolean
   onToggleDetails: () => void
   onInsertAfter: () => void
+  /** In Haute's quote_details table: the column's name and type are fixed, and it stays. */
+  locked: boolean
 }
 
-function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, onInsertAfter }: ColumnRowProps) {
+function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, onInsertAfter, locked }: ColumnRowProps) {
   const change = useWorkbenchFormStore((s) => s.change)
   const shown = fieldUses(form, table.id, column.id).length
   const tested = conditionUses(form, table.id, column.id).length
@@ -306,11 +330,14 @@ function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, o
   const [confirming, setConfirming] = useState(false)
   const remove = () => change((f) => removeSchemaColumn(f, table.id, column.id))
   const { label, icon: Icon, color } = COLUMN_TYPES[column.type]
-  const summary = column.index ? "row number" : table.role === "input" ? rulesSummary(column) : ""
+  // A column the underwriter app sets takes no rules.
+  const managed = locked && QUOTE_DETAILS_MANAGED.has(column.id)
+  const summary = column.index ? "row number" : managed ? "set by the app" : table.role === "input" ? rulesSummary(column) : ""
   const set = (patch: Partial<SchemaColumn>) => change((f) => updateSchemaColumn(f, table.id, column.id, patch))
 
   // Enter adds the next column; Alt+Up and Alt+Down move this one.
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (locked) return
     if (e.key === "Enter") {
       e.preventDefault()
       onInsertAfter()
@@ -325,12 +352,12 @@ function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, o
   return (
     <div className="flex flex-col gap-1" data-testid={`schema-column-${column.id}`}>
       <div className="group flex items-stretch gap-1 rounded">
-        {column.index ? (
-          // The index is always an Integer.
+        {column.index || locked ? (
+          // The index is always an Integer; Haute's columns keep their types.
           <span
             className={`relative flex w-6 shrink-0 items-center justify-center rounded-md ${color}`}
             style={markerStyle}
-            title="Integer: each row's number, from 1"
+            title={column.index ? "Integer: each row's number, from 1" : label}
           >
             <Icon size={12} aria-hidden="true" />
           </span>
@@ -352,6 +379,7 @@ function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, o
           value={column.name}
           onCommit={(name) => set({ name })}
           {...fresh}
+          readOnly={locked}
           onKeyDown={onKeyDown}
           className={`${FIELD_CLASS} flex-1 font-mono`}
           style={INPUT_STYLE}
@@ -381,13 +409,17 @@ function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, o
           className={`self-center ${open ? "" : HOVER_ONLY}`}
           style={{ color: open ? "var(--text-primary)" : "var(--text-muted)" }}
         />
-        <IconButton
-          icon={X}
-          onClick={() => (uses > 0 ? setConfirming(true) : remove())}
-          aria-label={`Remove column ${column.name}`}
-          title="Remove column"
-          className={`icon-danger-btn self-center ${HOVER_ONLY}`}
-        />
+        {locked ? (
+          <span className="size-5 shrink-0" aria-hidden="true" />
+        ) : (
+          <IconButton
+            icon={X}
+            onClick={() => (uses > 0 ? setConfirming(true) : remove())}
+            aria-label={`Remove column ${column.name}`}
+            title="Remove column"
+            className={`icon-danger-btn self-center ${HOVER_ONLY}`}
+          />
+        )}
       </div>
       {confirming && (
         <ConfirmBar
@@ -401,7 +433,7 @@ function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, o
           className="mr-12 ml-7"
         />
       )}
-      {open && <ColumnDetails table={table} column={column} set={set} />}
+      {open && <ColumnDetails table={table} column={column} managed={managed} set={set} />}
     </div>
   )
 }
@@ -410,9 +442,19 @@ function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, o
  * A column's label and help; in an input table, the rules its value must meet and what an
  * empty cell shows; for a number, how the sheets show it.
  */
-function ColumnDetails({ table, column, set }: { table: SchemaTable; column: SchemaColumn; set: (patch: Partial<SchemaColumn>) => void }) {
-  // The index takes no rules: nothing is typed into it.
-  const input = table.role === "input" && !column.index
+function ColumnDetails({
+  table,
+  column,
+  managed,
+  set,
+}: {
+  table: SchemaTable
+  column: SchemaColumn
+  managed: boolean
+  set: (patch: Partial<SchemaColumn>) => void
+}) {
+  // The index takes no rules, nor does a column the app sets: nothing is typed into them.
+  const input = table.role === "input" && !column.index && !managed
   // General with automatic decimal places shows a number as it is, separators and all.
   const grouped = column.number_format !== "general" || column.decimal_places !== null
   const numberOrNothing = (text: string): string | null =>

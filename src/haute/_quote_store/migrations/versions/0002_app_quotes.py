@@ -1,6 +1,6 @@
-"""The quote store's second schema: the underwriter app's record of each quote it keeps, the
-events of who did what, the reference counter, the operation keys, and the oldest schema
-whose Haute can still use the database.
+"""The quote store's second schema: the details of each revision of a quote the underwriter
+app keeps, the events of who did what, the reference counter, the operation keys, and the
+oldest schema whose Haute can still use the database.
 
 Tables are added and nothing is changed or dropped, so a Haute at the first schema could
 read and write what it wrote; it does not know to look for the oldest reader, so this
@@ -20,38 +20,28 @@ depends_on = None
 
 def upgrade() -> None:
     op.create_table(
-        "haute_app_quotes",
-        sa.Column("quote_id", sa.String(36), sa.ForeignKey("haute_quotes.id"), primary_key=True),
+        "haute_quote_details",
+        sa.Column("quote_id", sa.String(36), primary_key=True),
+        sa.Column("revision", sa.Integer, primary_key=True),
         sa.Column("reference", sa.String(40), nullable=False),
-        sa.Column("title", sa.String(200), nullable=False),
-        sa.Column("summary", sa.Text, nullable=False),
-        sa.Column("search_text", sa.Text, nullable=False),
-        sa.Column("projection", sa.String(64), nullable=False),
+        sa.Column("quote_name", sa.Text, nullable=True),
+        sa.Column("insured", sa.Text, nullable=True),
+        sa.Column("broker", sa.Text, nullable=True),
+        sa.Column("inception_date", sa.Date, nullable=True),
+        sa.Column("expiry_date", sa.Date, nullable=True),
+        sa.Column("valid_until", sa.Date, nullable=True),
+        sa.Column("currency", sa.Text, nullable=True),
+        sa.Column("stage", sa.String(20), nullable=False),
         sa.Column("assignee", sa.String(320), nullable=False),
-        sa.Column("priced", sa.Boolean, nullable=False),
-        sa.Column("final_revision", sa.Integer, nullable=True),
-        sa.Column("final_by", sa.String(320), nullable=True),
-        sa.Column("final_at", sa.DateTime, nullable=True),
-        sa.Column("archived_by", sa.String(320), nullable=True),
-        sa.Column("archived_at", sa.DateTime, nullable=True),
-        sa.Column("note", sa.Text, nullable=False),
-        sa.Column("note_by", sa.String(320), nullable=True),
-        sa.Column("note_at", sa.DateTime, nullable=True),
-        sa.Column(
-            "source_quote_id", sa.String(36), sa.ForeignKey("haute_quotes.id"), nullable=True
+        sa.Column("archived", sa.Boolean, nullable=False),
+        sa.ForeignKeyConstraint(
+            ["quote_id", "revision"],
+            ["haute_quote_revisions.quote_id", "haute_quote_revisions.number"],
+            name="fk_haute_quote_details_revision",
         ),
-        sa.Column("source_revision", sa.Integer, nullable=True),
-        sa.Column("relation", sa.String(20), nullable=True),
-        sa.Column("last_saved_by", sa.String(320), nullable=False),
-        sa.Column("last_saved_at", sa.DateTime, nullable=False),
-        sa.Column("version", sa.Integer, nullable=False),
     )
-    op.create_index("ux_haute_app_quotes_reference", "haute_app_quotes", ["reference"], unique=True)
-    op.create_index("ix_haute_app_quotes_saved", "haute_app_quotes", ["last_saved_at", "quote_id"])
-    op.create_index(
-        "ix_haute_app_quotes_assignee", "haute_app_quotes", ["assignee", "last_saved_at"]
-    )
-    op.create_index("ix_haute_app_quotes_source", "haute_app_quotes", ["source_quote_id"])
+    op.create_index("ix_haute_quote_details_reference", "haute_quote_details", ["reference"])
+    op.create_index("ix_haute_quote_details_assignee", "haute_quote_details", ["assignee"])
     op.create_table(
         "haute_quote_events",
         sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),

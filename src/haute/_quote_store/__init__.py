@@ -8,7 +8,6 @@ used, never on the scorer's import path, so a deployed pipeline loads no databas
 
 from haute._quote_store._book import (
     AppQuote,
-    Projection,
     QuoteBook,
     QuoteEvent,
     QuoteLockedError,
@@ -17,6 +16,8 @@ from haute._quote_store._book import (
     RelatedQuote,
     RevisionSummary,
     Source,
+    details_of,
+    with_details,
 )
 from haute._quote_store._store import (
     CarriedValues,
@@ -37,7 +38,6 @@ from haute._quote_store._store import (
 __all__ = [
     "AppQuote",
     "CarriedValues",
-    "Projection",
     "QuoteBook",
     "QuoteEvent",
     "QuoteLockedError",
@@ -55,7 +55,9 @@ __all__ = [
     "QuoteSummary",
     "StaleQuoteError",
     "carry_values",
+    "details_of",
     "migrate_store",
     "open_store",
     "store_url",
+    "with_details",
 ]

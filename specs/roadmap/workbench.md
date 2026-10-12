@@ -329,8 +329,9 @@ alone).
 ### WB-13 — Managing quotes in the underwriter app
 **Why:** The underwriter app opens on its quotes ([workbench](../workbench/high-level.md)):
 the Quotes page lists them by who they are with, by stage and by archive, searched and
-ordered, under the quote list's columns; a quote has a reference, numbered revisions each
-saved priced or unpriced and priced again on the server, a handover note, an assignee, a
+ordered, from their quote details, Haute's `quote_details` table, whose row each revision
+keeps; a quote has a reference, numbered revisions each saved priced or unpriced and
+priced again on the server, a handover note, an assignee, a
 final revision reopened with a reason, an archive, and the duplicates, renewals and
 alternatives made from it, with a history of who did what; a reader sees every quote and
 changes none. What underwriters still keep elsewhere is the rest of a quote's commercial
@@ -340,11 +341,11 @@ bound, declined or not taken up, so the lists cannot tell open work from closed;
 archiving or reassigning many quotes is done one at a time.
 
 **Plan:** Decisions first, recorded here before each slice: which outcomes a quote can close
-with, and whether a project names its own; and the date a quote's validity is read from, a
-column of the sheets the quote list names, with how near its end the Quotes page warns.
-Then, each usable on `haute app serve`: a comparison of two revisions, values and prices
-side by side, the rows of a many-row table matched by their keys rather than their places; a
-quote's validity, read from the column the setting names, with an Expiring soon list;
+with, and whether a project names its own; and how near the end of a quote's validity, its
+`quote_details.valid_until`, the Quotes page warns. Then, each usable on `haute app serve`:
+a comparison of two revisions, values and prices side by side, the rows of a many-row table
+matched by their keys rather than their places; a quote's validity, read from its
+`valid_until`, with an Expiring soon list;
 outcomes, recorded on a final quote with who and when and listed apart from the open quotes;
 and archiving and reassigning a selection of quotes at once, each checked against its
 version, a quote moved on since named without undoing the rest. Exports stay WB-11's.

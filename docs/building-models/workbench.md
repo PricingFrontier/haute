@@ -73,6 +73,21 @@ while you type into a cell it shows as typed, and what is typed is what is saved
   Changing a column's type drops the rules and the format the new type cannot have.
 - Removing a column or a table a sheet shows asks first, and takes it off the sheet.
 
+### Quote details
+
+Every workbench has Haute's own table, `quote_details`, first in the Schema section: one
+row of a quote's details, which the underwriter app keeps with each saved quote and lists
+on its Quotes page. Its columns are fixed: **reference**, **quote_name**, **insured**,
+**broker**, **inception_date**, **expiry_date**, **valid_until**, **currency**, **stage**,
+**assignee** and **archived**. Put them on the sheets as any other columns, and give them
+labels, help, placeholders and rules; the pipeline receives the table as it receives any
+other input, so a rule can read a quote's inception date or its stage.
+
+The app sets **reference**, **stage**, **assignee** and **archived** itself: their cells take
+no typing in the app and take no rules. Assigning, archiving, restoring, marking final and
+reopening a quote each save a new revision with those details changed, its values and price
+kept, so the history shows when a quote moved and the pipeline sees it as it was.
+
 A table or a column you add reaches the pipeline when you save: the editor fetches the
 tables again, the Workbench Input's and Workbench Output's tables follow the schema, and
 the pipeline is saved with them in the same save. Until then it is on the sheets alone.
@@ -309,25 +324,19 @@ picks up the release; its unsaved values stay in the browser.
 ### The Quotes page
 The app opens on the Quotes page. On the left are **My work** (the quotes with you),
 **Team** and **Archived**, and the stages of the list showing, **Draft** (saved without a
-price), **Priced** and **Final**, each with its count. Search matches every word you type
-against the reference, the name and the quote list's columns; in Team you can narrow the
-list to who a quote is with, and order it by when it was saved, its reference or its
-title. The list, the search and the order are in the page's address, so a link or Back
+price), **Priced** and **Final**, each with its count. Each quote shows its reference, its
+quote name (or its insured, or its reference), and its insured, broker and inception date
+under the labels the sheets give them, read from its quote details. Search matches every
+word you type against the reference, quote name, insured and broker; in Team you can
+narrow the list to who a quote is with, and order it by when it was saved, its reference
+or its insured. The list, the search and the order are in the page's address, so a link or Back
 returns to the same list. A row opens its quote; Duplicate and Archive appear as you hover
 over it, and Archive can be undone from the message it shows. **New quote** (or `N`) starts
 a blank one; `/` jumps to the search.
 
-### The quote list
-What the Quotes page shows of each quote is yours to choose, under the tables in the
-Workbench's Schema section: a **title**, up to three **summary** columns from the one-row
-input tables (an insured's name, a class of business, an inception date), and a
-**headline** number from a one-row output table (the premium charged). Each shows in its
-column's format. Without a title, a quote shows its name, or its reference. Change the
-quote list in a release and the app shows every saved quote by the new one when it starts.
-
 ### A quote
 A quote opens at its own address, under a bar holding its reference (`Q-000123`), its
-name, its stage, and:
+name (its `quote_name`, saved with the next **Save**), its stage, and:
 
 - **Price**, which checks the quote and prices it, as Preview does. **Save** keeps the
   quote with its price when the sheets show one for the values as they are, and unpriced

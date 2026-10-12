@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from haute import _git
 from haute._git_state import write_working_branch
 from haute._git_transactions import commit_milestone
-from haute._workbench_form import FormSpec, blank_form, render_form
+from haute._workbench_form import QUOTE_DETAILS_COLUMNS, FormSpec, blank_form, render_form
 from haute.routes._error_handlers import install_exception_handlers
 from haute.routes.workbench import router
 
@@ -54,6 +54,14 @@ PRICING = {
     "role": "output",
     "rows": "one",
     "columns": [column("premium", "float")],
+}
+
+
+#: Haute's quote_details table as the tables route serves it, first in every form.
+DETAILS = {
+    "name": "quote_details",
+    "rows": "one",
+    "columns": [{"name": name, "type": type_} for _, name, type_ in QUOTE_DETAILS_COLUMNS],
 }
 
 
@@ -132,18 +140,20 @@ def test_the_tables_are_served_from_the_form_as_it_is_now(project: Path) -> None
     assert served.status_code == 200, served.text
     body = served.json()
     assert body["tables"] == [
+        DETAILS,
         {
             "name": "policy_details",
             "rows": "one",
             "columns": [{"name": "state", "type": "str"}, {"name": "exposure", "type": "float"}],
-        }
+        },
     ]
     assert body["sample"] == {"policy_details": {"state": "NY", "exposure": 1000.0}}
     assert [t["name"] for t in body["response_tables"]] == ["pricing_output"]
 
     # Nothing is cached: a form changed on disk is served on the next request.
     write_form(project, form({**POLICY, "name": "policy"}, PRICING))
-    assert [t["name"] for t in client().get("/api/workbench/tables").json()["tables"]] == ["policy"]
+    tables = client().get("/api/workbench/tables").json()["tables"]
+    assert [t["name"] for t in tables] == ["quote_details", "policy"]
 
 
 def test_the_form_is_read_from_where_the_table_says(project: Path) -> None:
@@ -151,7 +161,7 @@ def test_the_form_is_read_from_where_the_table_says(project: Path) -> None:
     write_form(project, form(POLICY), at="workbench/quote.json")
 
     assert client().get("/api/workbench").json()["form"] == "workbench/quote.json"
-    assert client().get("/api/workbench/tables").json()["tables"][0]["name"] == "policy_details"
+    assert client().get("/api/workbench/tables").json()["tables"][1]["name"] == "policy_details"
 
 
 def test_a_missing_form_is_the_blank_form_with_no_tables(project: Path) -> None:
@@ -160,7 +170,8 @@ def test_a_missing_form_is_the_blank_form_with_no_tables(project: Path) -> None:
     tables = client().get("/api/workbench/tables")
     served = client().get("/api/workbench/form")
 
-    assert tables.json() == {"tables": [], "sample": {}, "response_tables": []}
+    # The blank form holds Haute's quote_details table alone.
+    assert tables.json() == {"tables": [DETAILS], "sample": {}, "response_tables": []}
     assert served.status_code == 200, served.text
     # Never saved, so there is no revision to quote: the first save creates the file.
     assert served.json() == {
@@ -176,8 +187,10 @@ def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path
     served = client().get("/api/workbench/form")
     assert served.status_code == 200, served.text
     body = served.json()
-    # Every field is served, defaults included, as the file is written.
-    assert body["form"]["schema"]["tables"][0]["columns"][1] == {
+    # Every field is served, defaults included, as the file is written; Haute's quote_details
+    # table first, which the file written before it takes on at its save.
+    assert body["form"]["schema"]["tables"][0]["name"] == "quote_details"
+    assert body["form"]["schema"]["tables"][1]["columns"][1] == {
         "id": "c_exposure",
         "name": "exposure",
         "type": "float",
@@ -197,8 +210,11 @@ def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path
     revision = body["revision"]
     assert isinstance(revision, str) and len(revision) == 16
 
-    policy, pricing = body["form"]["schema"]["tables"]
-    renamed = {**body["form"], "schema": {"tables": [{**policy, "name": "policy"}, pricing]}}
+    details, policy, pricing = body["form"]["schema"]["tables"]
+    renamed = {
+        **body["form"],
+        "schema": {"tables": [details, {**policy, "name": "policy"}, pricing]},
+    }
     saved = client().put("/api/workbench/form", json={"form": renamed, "base_revision": revision})
 
     assert saved.status_code == 200, saved.text
@@ -211,7 +227,18 @@ def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path
         "form": renamed,
         "revision": saved.json()["revision"],
     }
-    assert [t["name"] for t in client().get("/api/workbench/tables").json()["tables"]] == ["policy"]
+    assert [t["name"] for t in client().get("/api/workbench/tables").json()["tables"]] == [
+        "quote_details",
+        "policy",
+    ]
+
+    # A form saved without the table, as no view of Haute's sends one, is written with it.
+    without = {**renamed, "schema": {"tables": [{**policy, "name": "policy"}, pricing]}}
+    again = client().put(
+        "/api/workbench/form", json={"form": without, "base_revision": saved.json()["revision"]}
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["form"]["schema"]["tables"][0]["name"] == "quote_details"
 
 
 def test_a_save_against_a_form_that_changed_on_disk_is_refused_writing_nothing(
@@ -438,13 +465,14 @@ def test_the_tables_of_an_unsaved_form_are_served_without_writing_it(project: Pa
 
     assert posted.status_code == 200, posted.text
     body = posted.json()
-    assert [t["name"] for t in body["tables"]] == ["policy"]
+    assert [t["name"] for t in body["tables"]] == ["quote_details", "policy"]
     assert body["sample"] == {"policy": {"state": "CA"}}
     assert [t["name"] for t in body["response_tables"]] == ["pricing_output"]
     # The file is as it was, and the saved form is what the GET still serves.
     assert (project / "forms" / "form.json").read_bytes() == before
     assert [t["name"] for t in client().get("/api/workbench/tables").json()["tables"]] == [
-        "policy_details"
+        "quote_details",
+        "policy_details",
     ]
 
 

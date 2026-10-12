@@ -454,6 +454,68 @@ class QuoteStore:
         release: str | None,
     ) -> QuoteRevision:
         """:meth:`save_revision` on *connection*, in its transaction."""
+        self._advance(connection, quote_id, after, after_digest)
+        return self._write_revision(
+            connection,
+            quote_id,
+            after + 1,
+            saved_by=saved_by,
+            saved_at=saved_at,
+            form=form,
+            inputs=inputs,
+            request=request,
+            response=response,
+            release=release,
+        )
+
+    def _copy_in(
+        self,
+        connection: Connection,
+        quote_id: str,
+        *,
+        after: int,
+        saved_by: str,
+        saved_at: datetime,
+        inputs: Values,
+    ) -> QuoteRevision:
+        """The revision after *after* on *connection*: *after*'s form, request, response and
+        release kept as they were, its values *inputs*. Refused as :meth:`save_revision` is
+        when the quote has moved past *after*."""
+        kept = _read_revision(connection, quote_id, after)
+        self._advance(connection, quote_id, after, None)
+        values = _checked_values(inputs)
+        connection.execute(
+            insert(QUOTE_REVISIONS).values(
+                quote_id=quote_id,
+                number=after + 1,
+                form_revision=kept.form_revision,
+                inputs=json.dumps(values, ensure_ascii=False),
+                request=json.dumps(kept.request, ensure_ascii=False),
+                response=None
+                if kept.response is None
+                else json.dumps(kept.response, ensure_ascii=False),
+                release=kept.release,
+                saved_by=saved_by,
+                saved_at=saved_at,
+            )
+        )
+        return QuoteRevision(
+            quote_id=quote_id,
+            number=after + 1,
+            form_revision=kept.form_revision,
+            inputs=values,
+            request=kept.request,
+            response=kept.response,
+            release=kept.release,
+            saved_by=saved_by,
+            saved_at=saved_at,
+        )
+
+    def _advance(
+        self, connection: Connection, quote_id: str, after: int, after_digest: str | None
+    ) -> None:
+        """Move quote *quote_id*'s newest revision on from *after*, refusing a quote that has
+        moved past it or, given *after_digest*, whose revision *after* is not that one."""
         moved = connection.execute(
             update(QUOTES)
             .where(QUOTES.c.id == quote_id, QUOTES.c.latest == after)
@@ -477,18 +539,6 @@ class QuoteStore:
                 f"Quote {quote_id!r} revision {after} is not the one that was read: it was "
                 "saved apart, on another branch. Open it again to save over it."
             )
-        return self._write_revision(
-            connection,
-            quote_id,
-            after + 1,
-            saved_by=saved_by,
-            saved_at=saved_at,
-            form=form,
-            inputs=inputs,
-            request=request,
-            response=response,
-            release=release,
-        )
 
     def revision(self, quote_id: str, number: int | None = None) -> QuoteRevision:
         """Revision *number* of quote *quote_id*, its newest when *number* is None."""
@@ -614,14 +664,7 @@ class QuoteStore:
         response: dict[str, Any] | None,
         release: str | None,
     ) -> QuoteRevision:
-        try:
-            values = _VALUES.validate_python(inputs, strict=True)
-        except ValidationError as exc:
-            first = exc.errors()[0]
-            where = ".".join(str(part) for part in first["loc"])
-            raise QuoteStoreError(
-                f"The quote's values are not as the sheets keep them ({where}: {first['msg']})."
-            ) from exc
+        values = _checked_values(inputs)
         document = render_form(form)
         revision = form_revision(document.encode("utf-8"))
         _keep_form(connection, revision, document)
@@ -649,6 +692,18 @@ class QuoteStore:
             saved_by=saved_by,
             saved_at=saved_at,
         )
+
+
+def _checked_values(inputs: Values) -> Values:
+    """*inputs*, refused unless they are as the sheets keep values."""
+    try:
+        return _VALUES.validate_python(inputs, strict=True)
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        where = ".".join(str(part) for part in first["loc"])
+        raise QuoteStoreError(
+            f"The quote's values are not as the sheets keep them ({where}: {first['msg']})."
+        ) from exc
 
 
 def _keep_form(connection: Connection, revision: str, document: str) -> None:

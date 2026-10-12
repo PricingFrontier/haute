@@ -17,7 +17,7 @@ import { ApiError } from "../../api/client"
 import type { WorkbenchAppQuote, WorkbenchAppQuotesResponse } from "../../api/types"
 import ToastContainer from "../../components/Toast"
 import useToastStore from "../../stores/useToastStore"
-import { sheetForm } from "../../workbench/__tests__/fixtures"
+import { detailsTable, sheetForm } from "../../workbench/__tests__/fixtures"
 import QuotesPage from "../QuotesPage"
 import { navigate, quotesQueryOf, setLeaveGuard } from "../route"
 import useAppStore from "../useAppStore"
@@ -42,14 +42,8 @@ function show(query: QuotesQuery = MINE) {
 
 describe("QuotesPage", () => {
   beforeEach(async () => {
-    const form = {
-      ...sheetForm(),
-      quote_list: {
-        title: { table: "policy", column: "policy.state" },
-        fields: [{ table: "policy", column: "policy.year" }],
-        headline: { table: "premiums", column: "premiums.premium" },
-      },
-    }
+    const sheets = sheetForm()
+    const form = { ...sheets, schema: { tables: [detailsTable({ broker: "Placing broker" }), ...sheets.schema.tables] } }
     useAppStore.setState({ release, form, revision: "rev-9", people: [] })
     useQuoteListStore.setState({ query: null, quotes: [], counts: {}, next: null, status: "idle", error: null, loadingMore: false })
     useToastStore.setState({ toasts: [] })
@@ -63,18 +57,20 @@ describe("QuotesPage", () => {
     setLeaveGuard(null)
   })
 
-  it("lists the quotes under the quote list's columns, with the lists' and stages' counts", async () => {
-    vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote({ fields: ["2026"], headline: 1234.5, stage: "priced" }), appQuote({ id: "q2", reference: "Q-000002", title: "CA", assignee: "jo@example.com", stage: "draft" })]))
+  it("lists the quotes under their details' columns, with the lists' and stages' counts", async () => {
+    const details = { reference: "Q-000001", quote_name: "Fleet", insured: "Acme", broker: "Marsh", inception_date: "2026-11-01" }
+    vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote({ details, stage: "priced" }), appQuote({ id: "q2", reference: "Q-000002", title: "CA", assignee: "jo@example.com", stage: "draft" })]))
     show()
 
     const row = await screen.findByTestId("quote-row-Q-000001")
-    expect(within(row).getByText("NY")).toBeInTheDocument()
-    expect(within(row).getByText("2026")).toBeInTheDocument()
-    expect(within(row).getByText(/^1,?234.5$/)).toBeInTheDocument()
+    expect(within(row).getByText("Fleet")).toBeInTheDocument()
+    expect(within(row).getByText("Acme")).toBeInTheDocument()
+    expect(within(row).getByText("Marsh")).toBeInTheDocument()
+    expect(within(row).getByText(/2026/)).not.toHaveTextContent("2026-11-01")
     expect(within(row).getByText("You")).toBeInTheDocument()
     expect(within(row).getByTestId("stage-priced")).toBeInTheDocument()
     expect(within(screen.getByTestId("quote-row-Q-000002")).getByText("jo@example.com")).toBeInTheDocument()
-    for (const header of ["Ref", "State", "Year", "Premium", "Stage", "With", "Saved"]) {
+    for (const header of ["Ref", "Quote", "Insured", "Placing broker", "Inception date", "Stage", "With", "Saved"]) {
       expect(screen.getByRole("columnheader", { name: header })).toBeInTheDocument()
     }
     expect(screen.getByTestId("list-team")).toHaveTextContent("5")
@@ -89,8 +85,8 @@ describe("QuotesPage", () => {
 
     fireEvent.click(screen.getByTestId("stage-filter-final"))
     expect(window.location.search).toBe("?view=team&stage=final")
-    fireEvent.change(screen.getByLabelText("Order"), { target: { value: "title" } })
-    expect(window.location.search).toContain("sort=title")
+    fireEvent.change(screen.getByLabelText("Order"), { target: { value: "insured" } })
+    expect(window.location.search).toContain("sort=insured")
     await screen.findByRole("option", { name: "jo@example.com" })
     fireEvent.change(screen.getByLabelText("Assigned to"), { target: { value: "jo@example.com" } })
     expect(window.location.search).toContain("assignee=jo%40example.com")
@@ -164,7 +160,7 @@ describe("QuotesPage", () => {
 
   it("archives a quote with Undo, which restores it", async () => {
     vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote()]))
-    vi.mocked(changeAppQuote).mockResolvedValueOnce({ quote: appQuote({ version: 2, archived_at: "2026-10-12T10:00:00+00:00" }) }).mockResolvedValueOnce({ quote: appQuote({ version: 3 }) })
+    vi.mocked(changeAppQuote).mockResolvedValueOnce({ quote: appQuote({ version: 2, archived_at: "2026-10-12T10:00:00+00:00" }), revision: null }).mockResolvedValueOnce({ quote: appQuote({ version: 3 }), revision: null })
     show()
 
     fireEvent.click(await screen.findByRole("button", { name: "Archive Q-000001" }))
@@ -189,7 +185,7 @@ describe("QuotesPage", () => {
 
   it("restores an archived quote from the archive", async () => {
     vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote({ archived_at: "2026-10-12T10:00:00+00:00" })]))
-    vi.mocked(changeAppQuote).mockResolvedValue({ quote: appQuote({ version: 2 }) })
+    vi.mocked(changeAppQuote).mockResolvedValue({ quote: appQuote({ version: 2 }), revision: null })
     show(quotesQueryOf("?view=archived"))
 
     fireEvent.click(await screen.findByRole("button", { name: "Restore Q-000001" }))

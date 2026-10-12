@@ -4,12 +4,13 @@
  * editor is open, through Build and back; whether Price has checked it against the
  * columns' rules; and what pricing it on the pipeline gave, with the basis it was priced
  * for, or why there is no price. The underwriter app opens a saved quote into it, with its
- * price, and holds it read only while the quote may not change.
+ * price, holds it read only while the quote may not change, and locks the columns it sets
+ * itself.
  */
 import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
 import { quoteFilled, quoteProblems, valuesBasis } from "../utils/sheetValues"
-import { quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
+import { columnKey, quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
 import { withCell, type SampleRow, type SampleValue } from "../utils/workbenchForm"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
 import useWorkbenchPricingStore, { priceForm, type QuotePricer, type SamplePrice } from "./useWorkbenchPricingStore"
@@ -29,11 +30,16 @@ interface WorkbenchPreviewState {
   pricing: boolean
   /** The quote may not change: its cells take no typing and it is not priced. */
   readOnly: boolean
-  /** Set one cell, adding empty rows up to it. */
+  /**
+   * The columns, by `columnKey`, whose cells take no typing: the underwriter app sets them
+   * itself. They are not what makes a quote typed, and Clear leaves them as they are.
+   */
+  locked: ReadonlySet<string>
+  /** Set one cell, adding empty rows up to it; a locked column's is not set. */
   setCell: (tableId: string, row: number, columnId: string, value: SampleValue) => void
   /** Replace tables' rows, as a grid adds and deletes a row in every table it shows. */
   setRows: (rowsByTable: Record<string, SampleRow[]>) => void
-  /** Start over: no quote, nothing marked, no price. */
+  /** Start over: no quote but the locked columns' values, nothing marked, no price. */
   clear: () => void
   /**
    * Put a quote in place of the one there, with the price it was saved with (null when
@@ -42,6 +48,7 @@ interface WorkbenchPreviewState {
   open: (quote: Record<string, SampleRow[]>, price: SamplePrice | null, readOnly: boolean) => void
   /** Hold the quote read only, or let it change. */
   setReadOnly: (readOnly: boolean) => void
+  setLocked: (locked: ReadonlySet<string>) => void
   /**
    * Check the quote against the columns' rules and, when every cell passes, price it on
    * the pipeline through the pricer the view gave the pricing store, or through the quote
@@ -58,6 +65,18 @@ interface WorkbenchPreviewState {
 /** The pricing asked for last; an answer to an earlier one is dropped. */
 let asked = 0
 
+const NOTHING_LOCKED: ReadonlySet<string> = new Set()
+
+/** The locked columns' values of `quote`, row by row: what Clear leaves. */
+function lockedValues(quote: Record<string, SampleRow[]>, locked: ReadonlySet<string>): Record<string, SampleRow[]> {
+  const kept: Record<string, SampleRow[]> = {}
+  for (const [tableId, rows] of Object.entries(quote)) {
+    const left = rows.map((row) => Object.fromEntries(Object.entries(row).filter(([columnId]) => locked.has(columnKey(tableId, columnId)))))
+    if (left.some((row) => Object.keys(row).length > 0)) kept[tableId] = left
+  }
+  return kept
+}
+
 const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => ({
   quote: {},
   checked: false,
@@ -65,18 +84,22 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => (
   error: null,
   pricing: false,
   readOnly: false,
+  locked: NOTHING_LOCKED,
   setCell: (tableId, row, columnId, value) =>
-    set((s) => (s.readOnly ? s : { quote: { ...s.quote, [tableId]: withCell(s.quote[tableId] ?? [], row, columnId, value) } })),
+    set((s) =>
+      s.readOnly || s.locked.has(columnKey(tableId, columnId)) ? s : { quote: { ...s.quote, [tableId]: withCell(s.quote[tableId] ?? [], row, columnId, value) } },
+    ),
   setRows: (rowsByTable) => set((s) => (s.readOnly ? s : { quote: { ...s.quote, ...rowsByTable } })),
   clear: () => {
     asked += 1
-    set({ quote: {}, checked: false, price: null, error: null, pricing: false })
+    set((s) => ({ quote: lockedValues(s.quote, s.locked), checked: false, price: null, error: null, pricing: false }))
   },
   open: (quote, price, readOnly) => {
     asked += 1
     set({ quote, checked: false, price, error: null, pricing: false, readOnly })
   },
   setReadOnly: (readOnly) => set({ readOnly }),
+  setLocked: (locked) => set({ locked }),
   priceQuote: async () => {
     const { form, status } = useWorkbenchFormStore.getState()
     const { pricer, quotePricer } = useWorkbenchPricingStore.getState()
@@ -84,10 +107,10 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => (
     const priceWith: QuotePricer | null =
       quotePricer ?? (pricer === null ? null : (sheets, typed) => priceForm({ ...sheets, sample: typed }, pricer))
     if (get().pricing || get().readOnly || form === null || status !== "ready" || priceWith === null) return
-    const { quote } = get()
+    const { quote, locked } = get()
     const { hidden } = sheetVisibility(form, quote)
     const quoted = quotedSchema(form.schema, hidden)
-    if (!quoteFilled(quoted, quote)) {
+    if (!quoteFilled(quotedSchema(quoted, locked), quote)) {
       set({ checked: true, price: null, error: "Type the quote first" })
       return
     }

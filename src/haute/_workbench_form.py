@@ -12,6 +12,12 @@ components itself, as sheets did before sections, is refused with what replaced 
 A file that does not exist is the blank form that has never been saved. A file's revision
 is its content hash, which a save quotes so a form that changed on disk since it was read
 is never overwritten.
+
+Every form holds Haute's own input table, ``quote_details``, first: the details of a quote
+(its reference, name, insured, broker, dates and currency, and its stage, who it is with and
+whether it is archived, which the underwriter app sets itself). Its structure is Haute's and
+a form that changes it is refused; a form read or saved without it has it added, the one
+exception to nothing migrating, so a project written before it existed takes it on.
 """
 
 from __future__ import annotations
@@ -273,17 +279,6 @@ class FormSchema(_Strict):
     tables: list[SchemaTable] = Field(default_factory=list)
 
 
-class QuoteList(_Strict):
-    """What the underwriter app's Quotes page shows of each quote: a title, up to three
-    summary fields and a headline output, each a column of a one-row table, the title and
-    summary fields of input tables, the headline a number of an output table. Each is
-    optional; ``haute._workbench_quote_list`` checks they name such columns."""
-
-    title: FieldRef | None = None
-    fields: list[FieldRef] = Field(default_factory=list, max_length=3)
-    headline: FieldRef | None = None
-
-
 class FormSpec(_Strict):
     """The form: what the workbench edits and ``forms/form.json`` stores."""
 
@@ -298,8 +293,89 @@ class FormSpec(_Strict):
     #: id, each value as typed (text, or a tick). The Workbench Input's previews run on it.
     #: Held as typed, strictly: a number or a null for a cell is not a form the view writes.
     sample: dict[str, list[dict[str, Cell]]] = Field(default_factory=dict)
-    #: What the underwriter app's Quotes page shows of each quote.
-    quote_list: QuoteList = Field(default_factory=QuoteList)
+
+    @model_validator(mode="after")
+    def _keeps_quote_details_as_hautes(self) -> FormSpec:
+        for table in self.data_schema.tables:
+            if table.id == QUOTE_DETAILS_ID or table.name == QUOTE_DETAILS_ID:
+                _check_quote_details(table)
+        return self
+
+
+#: Haute's table of a quote's details: its id, also its name.
+QUOTE_DETAILS_ID = "quote_details"
+#: Its columns, in order: each one's id, name and type.
+QUOTE_DETAILS_COLUMNS: tuple[tuple[str, str, ColumnType], ...] = (
+    ("qd_reference", "reference", "str"),
+    ("qd_quote_name", "quote_name", "str"),
+    ("qd_insured", "insured", "str"),
+    ("qd_broker", "broker", "str"),
+    ("qd_inception_date", "inception_date", "date"),
+    ("qd_expiry_date", "expiry_date", "date"),
+    ("qd_valid_until", "valid_until", "date"),
+    ("qd_currency", "currency", "str"),
+    ("qd_stage", "stage", "str"),
+    ("qd_assignee", "assignee", "str"),
+    ("qd_archived", "archived", "bool"),
+)
+#: The columns the underwriter app sets itself, whatever a page sends: read only on its
+#: sheets, and taking no rules.
+QUOTE_DETAILS_MANAGED: frozenset[str] = frozenset(
+    {"qd_reference", "qd_stage", "qd_assignee", "qd_archived"}
+)
+
+
+def quote_details_table() -> SchemaTable:
+    """Haute's table of a quote's details, as a form holds it when nothing of it is set."""
+    return SchemaTable(
+        id=QUOTE_DETAILS_ID,
+        name=QUOTE_DETAILS_ID,
+        role="input",
+        rows="one",
+        columns=[
+            SchemaColumn(id=column_id, name=name, type=column_type)
+            for column_id, name, column_type in QUOTE_DETAILS_COLUMNS
+        ],
+    )
+
+
+def _check_quote_details(table: SchemaTable) -> None:
+    """Refuse a ``quote_details`` table that is not Haute's: another id under its name, or its
+    structure changed. Its columns' labels, help and placeholders are the project's, as are
+    the rules of the columns the app does not set."""
+    if table.id != QUOTE_DETAILS_ID or table.name != QUOTE_DETAILS_ID:
+        raise ValueError(
+            f"{QUOTE_DETAILS_ID} is Haute's own table of a quote's details: name yours otherwise"
+        )
+    shape = [(column.id, column.name, column.type) for column in table.columns]
+    if (
+        table.role != "input"
+        or table.rows != "one"
+        or shape != list(QUOTE_DETAILS_COLUMNS)
+        or any(column.key or column.index for column in table.columns)
+    ):
+        raise ValueError(
+            f"{QUOTE_DETAILS_ID} is Haute's: a one-row input table of the columns "
+            f"{', '.join(name for _, name, _ in QUOTE_DETAILS_COLUMNS)}, in that order, whose "
+            "structure is not changed"
+        )
+    for column in table.columns:
+        if column.id in QUOTE_DETAILS_MANAGED and (
+            column.required or column.options or column.min is not None or column.max is not None
+        ):
+            raise ValueError(
+                f"{QUOTE_DETAILS_ID}.{column.name} is set by the underwriter app and takes no rules"
+            )
+
+
+def with_quote_details(spec: FormSpec) -> FormSpec:
+    """*spec* holding Haute's ``quote_details`` table, first, added when it has none."""
+    if any(table.id == QUOTE_DETAILS_ID for table in spec.data_schema.tables):
+        return spec
+    tables = [quote_details_table(), *spec.data_schema.tables]
+    return spec.model_copy(
+        update={"data_schema": spec.data_schema.model_copy(update={"tables": tables})}
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,10 +389,12 @@ class FormDocument:
 
 
 def blank_form(name: str) -> FormSpec:
-    """The form a project starts with: one blank sheet holding one section, no tables, no
-    sample."""
+    """The form a project starts with: one blank sheet holding one section, Haute's
+    ``quote_details`` table alone, no sample."""
     section = Section(id="section_1", title="Section 1", height=BLANK_SECTION_HEIGHT)
-    return FormSpec(name=name, pages=[Page(id="page_1", title="Sheet 1", sections=[section])])
+    return with_quote_details(
+        FormSpec(name=name, pages=[Page(id="page_1", title="Sheet 1", sections=[section])])
+    )
 
 
 def render_form(spec: FormSpec) -> str:
@@ -402,4 +480,4 @@ def read_form_document(config: WorkbenchConfig) -> FormDocument:
         raise WorkbenchFormError(
             f"{config.form} is not a workbench form: {where}: {first['msg']}", path=str(path)
         ) from exc
-    return FormDocument(spec, form_revision(data))
+    return FormDocument(with_quote_details(spec), form_revision(data))

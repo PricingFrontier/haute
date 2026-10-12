@@ -393,27 +393,26 @@ WorkbenchAppQuoteRelation = Literal["duplicate", "renewal", "alternative"]
 
 
 class WorkbenchAppQuote(BaseModel):
-    """An app quote as the Quotes page and the quote's bar show it. Times are ISO 8601, in
-    UTC."""
+    """An app quote as the Quotes page and the quote's bar show it: its ``quote_details`` row
+    and what its newest revision and its events say of it. Times are ISO 8601, in UTC."""
 
     id: str
     reference: str
-    name: str
-    #: What the list shows as the quote: the title field's value, else the name, else the
-    #: reference.
+    #: What the list shows as the quote: its name, else its insured, else its reference.
     title: str
-    #: The quote list's title field's value, summary fields' values in order, and headline.
-    title_value: str | None = None
-    fields: list[str | int | float | bool | None] = Field(default_factory=list)
-    headline: str | int | float | bool | None = None
+    #: The ``quote_details`` row, by column name: dates as ISO text, blanks left out.
+    details: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
     stage: WorkbenchAppQuoteStage
     assignee: str
+    archived: bool = False
     owner: str
     created_at: str
-    #: The newest revision's number, the release that priced it and its sheets' revision.
+    #: The newest revision's number, the release that priced it, its sheets' revision and
+    #: whether it is priced.
     latest: int
     release: str | None = None
     form_revision: str
+    priced: bool = False
     last_saved_by: str
     last_saved_at: str
     final_revision: int | None = None
@@ -428,7 +427,8 @@ class WorkbenchAppQuote(BaseModel):
     source_reference: str | None = None
     source_revision: int | None = None
     relation: WorkbenchAppQuoteRelation | None = None
-    #: What a change to the quote names: one made on another is refused (409).
+    #: What a change to the quote names, its newest revision: one made on another is
+    #: refused (409).
     version: int
 
 
@@ -487,9 +487,8 @@ class WorkbenchAppQuoteSaveRequest(BaseModel):
 
 
 class WorkbenchAppQuoteCreateRequest(WorkbenchAppQuoteSaveRequest):
-    """A new quote: its name, and the quote it is made from when it is."""
+    """A new quote, and the quote it is made from when it is."""
 
-    name: str = Field(default="", max_length=200)
     source: WorkbenchAppQuoteSource | None = None
 
 
@@ -505,20 +504,14 @@ class WorkbenchAppQuoteChange(BaseModel):
     version: int = Field(ge=1)
 
 
-class WorkbenchAppQuoteRename(WorkbenchAppQuoteChange):
-    """A quote's new name; blank leaves it to its title field or reference."""
-
-    name: str = Field(max_length=200)
-
-
 class WorkbenchAppQuoteAssign(WorkbenchAppQuoteChange):
     """Who the quote is with now."""
 
     assignee: str = Field(min_length=1, max_length=320)
 
 
-class WorkbenchAppQuoteNote(WorkbenchAppQuoteChange):
-    """The quote's handover note; blank clears it."""
+class WorkbenchAppQuoteNote(BaseModel):
+    """The quote's handover note; blank clears it. A note is no revision, so it names none."""
 
     note: str = Field(max_length=4000)
 
@@ -536,9 +529,10 @@ class WorkbenchAppQuoteReopen(WorkbenchAppQuoteChange):
 
 
 class WorkbenchAppQuoteChangeResponse(BaseModel):
-    """The quote as the change left it."""
+    """The quote as the change left it, and the revision it wrote; a note writes none."""
 
     quote: WorkbenchAppQuote
+    revision: WorkbenchAppQuoteRevision | None = None
 
 
 class WorkbenchAppQuoteEvent(BaseModel):
@@ -550,7 +544,6 @@ class WorkbenchAppQuoteEvent(BaseModel):
     kind: Literal[
         "created",
         "saved",
-        "renamed",
         "assigned",
         "noted",
         "archived",
@@ -564,7 +557,7 @@ class WorkbenchAppQuoteEvent(BaseModel):
 
 
 class WorkbenchAppQuoteRevisionSummary(BaseModel):
-    """A revision as a quote's history lists it."""
+    """A revision as a quote's history lists it, with the stage it was saved at."""
 
     number: int
     saved_by: str
@@ -572,6 +565,7 @@ class WorkbenchAppQuoteRevisionSummary(BaseModel):
     priced: bool
     release: str | None = None
     form_revision: str
+    stage: WorkbenchAppQuoteStage
 
 
 class WorkbenchAppRelatedQuote(BaseModel):
@@ -579,7 +573,6 @@ class WorkbenchAppRelatedQuote(BaseModel):
 
     id: str
     reference: str
-    title: str
     relation: WorkbenchAppQuoteRelation
     revision: int
 

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from haute._workbench_form import quote_details_table
 from haute.cli import cli
 from haute.cli._init_cmd import _ensure_haute_dependency, _toml_basic_string
 
@@ -777,7 +778,7 @@ class TestInitWorkbench:
         assert form == {
             "version": 1,
             "name": "motor",
-            "schema": {"tables": []},
+            "schema": {"tables": [quote_details_table().model_dump(mode="json")]},
             "pages": [
                 {
                     "id": "page_1",
@@ -795,7 +796,6 @@ class TestInitWorkbench:
                 }
             ],
             "sample": {},
-            "quote_list": {"title": None, "fields": [], "headline": None},
         }
         assert "forms/form.json" in result.output
         assert "workbench config" in result.output

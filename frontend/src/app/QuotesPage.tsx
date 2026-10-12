@@ -49,7 +49,7 @@ const STAGES: ReadonlyArray<{ stage: NonNullable<QuotesQuery["stage"]>; label: s
 const SORTS: ReadonlyArray<{ sort: QuotesQuery["sort"]; label: string }> = [
   { sort: "saved", label: "Newest saved" },
   { sort: "reference", label: "Newest reference" },
-  { sort: "title", label: "Title" },
+  { sort: "insured", label: "Insured" },
 ]
 const SELECT = "focus-ring rounded-md px-1.5 py-1 text-xs"
 const SELECT_STYLE = { border: "1px solid var(--border)", color: "var(--text-primary)" }
@@ -188,7 +188,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
   const view = VIEWS.find((each) => each.view === query.view) ?? VIEWS[0]
   const stage = STAGES.find((each) => each.stage === query.stage)
   const filtered = query.search !== "" || query.stage !== null || query.assignee !== null
-  const span = 6 + columns.fields.length + (columns.headline === null ? 0 : 1)
+  const span = 6 + columns.length
 
   const onRowKey = (event: ReactKeyboardEvent, quote: WorkbenchAppQuote) => {
     if (event.key === "Enter" && event.target === event.currentTarget) void navigate(quotePath(quote.id))
@@ -281,13 +281,12 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
             <thead className="sticky top-0 z-10" style={{ background: "var(--bg-elevated)" }}>
               <tr className="text-left text-[11px] font-semibold tracking-wider uppercase" style={{ color: "var(--text-secondary)" }}>
                 <th className="h-7 w-28 px-3 font-semibold">Ref</th>
-                <th className="h-7 px-2 font-semibold">{columns.title}</th>
-                {columns.fields.map((column) => (
-                  <th key={column.key} className={`h-7 px-2 font-semibold ${column.numeric ? "text-right" : ""}`}>
+                <th className="h-7 px-2 font-semibold">Quote</th>
+                {columns.map((column) => (
+                  <th key={column.key} className="h-7 px-2 font-semibold">
                     {column.label}
                   </th>
                 ))}
-                {columns.headline !== null && <th className="h-7 px-2 text-right font-semibold">{columns.headline.label}</th>}
                 <th className="h-7 w-20 px-2 font-semibold">Stage</th>
                 <th className="h-7 px-2 font-semibold">With</th>
                 <th className="h-7 w-24 px-2 font-semibold">Saved</th>
@@ -357,16 +356,11 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                     <td className="max-w-[280px] truncate px-2 font-medium" style={{ color: "var(--text-primary)" }} title={quote.title}>
                       {quote.title}
                     </td>
-                    {columns.fields.map((column, index) => (
-                      <td key={column.key} className={`max-w-[200px] truncate px-2 ${column.numeric ? "text-right tabular-nums" : ""}`} style={{ color: "var(--text-secondary)" }}>
-                        {listValue(column, quote.fields[index])}
+                    {columns.map((column) => (
+                      <td key={column.key} className="max-w-[200px] truncate px-2 whitespace-nowrap" style={{ color: "var(--text-secondary)" }}>
+                        {listValue(column, quote.details[column.key])}
                       </td>
                     ))}
-                    {columns.headline !== null && (
-                      <td className="px-2 text-right tabular-nums" style={{ color: "var(--text-primary)" }}>
-                        {listValue(columns.headline, quote.headline)}
-                      </td>
-                    )}
                     <td className="px-2">
                       <span className="inline-flex gap-1">
                         <StageChip stage={quote.stage} />

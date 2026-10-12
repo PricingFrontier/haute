@@ -14,9 +14,11 @@ from typing import Any
 from sqlalchemy import (
     Boolean,
     Column,
+    Date,
     DateTime,
     Dialect,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     MetaData,
@@ -36,9 +38,9 @@ PRINCIPAL_LENGTH = 320
 RELEASE_LENGTH = 200
 #: A form's revision: the content hash ``haute._workbench_form.form_revision`` gives.
 FORM_REVISION_LENGTH = 64
-#: Longest reference, relation, event kind, operation key and migration revision.
+#: Longest reference, stage, event kind, operation key and migration revision.
 REFERENCE_LENGTH = 40
-RELATION_LENGTH = 20
+STAGE_LENGTH = 20
 EVENT_KIND_LENGTH = 40
 OPERATION_LENGTH = 64
 SCHEMA_REVISION_LENGTH = 32
@@ -105,38 +107,32 @@ QUOTE_REVISIONS = Table(
 )
 
 
-#: The underwriter app's record of each quote it keeps, beside the quote: the test quotes
-#: never have one. The reference is taken from ``QUOTE_COUNTER``; the title, summary and
-#: search text are projected from the newest revision; ``version`` moves on every change.
-APP_QUOTES = Table(
-    "haute_app_quotes",
+#: The details of each revision of a quote the underwriter app keeps: the row of the form's
+#: ``quote_details`` table in typed columns, the one place they are held (the revision's
+#: values leave the table out). A test quote has none.
+QUOTE_DETAILS = Table(
+    "haute_quote_details",
     METADATA,
-    Column("quote_id", String(ID_LENGTH), ForeignKey("haute_quotes.id"), primary_key=True),
+    Column("quote_id", String(ID_LENGTH), primary_key=True),
+    Column("revision", Integer, primary_key=True),
     Column("reference", String(REFERENCE_LENGTH), nullable=False),
-    Column("title", String(NAME_LENGTH), nullable=False),
-    Column("summary", Text, nullable=False),
-    Column("search_text", Text, nullable=False),
-    Column("projection", String(FORM_REVISION_LENGTH), nullable=False),
+    Column("quote_name", Text, nullable=True),
+    Column("insured", Text, nullable=True),
+    Column("broker", Text, nullable=True),
+    Column("inception_date", Date, nullable=True),
+    Column("expiry_date", Date, nullable=True),
+    Column("valid_until", Date, nullable=True),
+    Column("currency", Text, nullable=True),
+    Column("stage", String(STAGE_LENGTH), nullable=False),
     Column("assignee", String(PRINCIPAL_LENGTH), nullable=False),
-    Column("priced", Boolean, nullable=False),
-    Column("final_revision", Integer, nullable=True),
-    Column("final_by", String(PRINCIPAL_LENGTH), nullable=True),
-    Column("final_at", UtcDateTime, nullable=True),
-    Column("archived_by", String(PRINCIPAL_LENGTH), nullable=True),
-    Column("archived_at", UtcDateTime, nullable=True),
-    Column("note", Text, nullable=False),
-    Column("note_by", String(PRINCIPAL_LENGTH), nullable=True),
-    Column("note_at", UtcDateTime, nullable=True),
-    Column("source_quote_id", String(ID_LENGTH), ForeignKey("haute_quotes.id"), nullable=True),
-    Column("source_revision", Integer, nullable=True),
-    Column("relation", String(RELATION_LENGTH), nullable=True),
-    Column("last_saved_by", String(PRINCIPAL_LENGTH), nullable=False),
-    Column("last_saved_at", UtcDateTime, nullable=False),
-    Column("version", Integer, nullable=False),
-    Index("ux_haute_app_quotes_reference", "reference", unique=True),
-    Index("ix_haute_app_quotes_saved", "last_saved_at", "quote_id"),
-    Index("ix_haute_app_quotes_assignee", "assignee", "last_saved_at"),
-    Index("ix_haute_app_quotes_source", "source_quote_id"),
+    Column("archived", Boolean, nullable=False),
+    ForeignKeyConstraint(
+        ["quote_id", "revision"],
+        ["haute_quote_revisions.quote_id", "haute_quote_revisions.number"],
+        name="fk_haute_quote_details_revision",
+    ),
+    Index("ix_haute_quote_details_reference", "reference"),
+    Index("ix_haute_quote_details_assignee", "assignee"),
 )
 
 #: Who did what to an app quote, and when, in the order it was done.

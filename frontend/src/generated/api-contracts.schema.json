@@ -5559,9 +5559,6 @@
           "title": "Pages",
           "type": "array"
         },
-        "quote_list": {
-          "$ref": "#/$defs/QuoteList"
-        },
         "sample": {
           "additionalProperties": {
             "items": {
@@ -5597,8 +5594,7 @@
         "name",
         "schema",
         "pages",
-        "sample",
-        "quote_list"
+        "sample"
       ],
       "title": "FormSpec",
       "type": "object"
@@ -11948,49 +11944,6 @@
       "title": "PolarsStepsRenderResponse",
       "type": "object"
     },
-    "QuoteList": {
-      "additionalProperties": false,
-      "description": "What the underwriter app's Quotes page shows of each quote: a title, up to three\nsummary fields and a headline output, each a column of a one-row table, the title and\nsummary fields of input tables, the headline a number of an output table. Each is\noptional; ``haute._workbench_quote_list`` checks they name such columns.",
-      "properties": {
-        "fields": {
-          "items": {
-            "$ref": "#/$defs/FieldRef"
-          },
-          "maxItems": 3,
-          "title": "Fields",
-          "type": "array"
-        },
-        "headline": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/FieldRef"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "title": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/FieldRef"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        }
-      },
-      "required": [
-        "title",
-        "fields",
-        "headline"
-      ],
-      "title": "QuoteList",
-      "type": "object"
-    },
     "RatingLevelColumn": {
       "description": "What one column offers as rating levels.\n\n`distinct_count` counts the levels that could be chosen — neither missing\nnor blank — so it is the number `values` would hold without the cap.",
       "properties": {
@@ -14630,8 +14583,13 @@
       "type": "object"
     },
     "WorkbenchAppQuote": {
-      "description": "An app quote as the Quotes page and the quote's bar show it. Times are ISO 8601, in\nUTC.",
+      "description": "An app quote as the Quotes page and the quote's bar show it: its ``quote_details`` row\nand what its newest revision and its events say of it. Times are ISO 8601, in UTC.",
       "properties": {
+        "archived": {
+          "default": false,
+          "title": "Archived",
+          "type": "boolean"
+        },
         "archived_at": {
           "anyOf": [
             {
@@ -14664,8 +14622,8 @@
           "title": "Created At",
           "type": "string"
         },
-        "fields": {
-          "items": {
+        "details": {
+          "additionalProperties": {
             "anyOf": [
               {
                 "type": "string"
@@ -14684,8 +14642,8 @@
               }
             ]
           },
-          "title": "Fields",
-          "type": "array"
+          "title": "Details",
+          "type": "object"
         },
         "final_at": {
           "anyOf": [
@@ -14727,27 +14685,6 @@
           "title": "Form Revision",
           "type": "string"
         },
-        "headline": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "integer"
-            },
-            {
-              "type": "number"
-            },
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Headline"
-        },
         "id": {
           "title": "Id",
           "type": "string"
@@ -14763,10 +14700,6 @@
         "latest": {
           "title": "Latest",
           "type": "integer"
-        },
-        "name": {
-          "title": "Name",
-          "type": "string"
         },
         "note": {
           "default": "",
@@ -14800,6 +14733,11 @@
         "owner": {
           "title": "Owner",
           "type": "string"
+        },
+        "priced": {
+          "default": false,
+          "title": "Priced",
+          "type": "boolean"
         },
         "reference": {
           "title": "Reference",
@@ -14883,18 +14821,6 @@
           "title": "Title",
           "type": "string"
         },
-        "title_value": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Title Value"
-        },
         "version": {
           "title": "Version",
           "type": "integer"
@@ -14903,18 +14829,17 @@
       "required": [
         "id",
         "reference",
-        "name",
         "title",
-        "title_value",
-        "fields",
-        "headline",
+        "details",
         "stage",
         "assignee",
+        "archived",
         "owner",
         "created_at",
         "latest",
         "release",
         "form_revision",
+        "priced",
         "last_saved_by",
         "last_saved_at",
         "final_revision",
@@ -14935,14 +14860,26 @@
       "type": "object"
     },
     "WorkbenchAppQuoteChangeResponse": {
-      "description": "The quote as the change left it.",
+      "description": "The quote as the change left it, and the revision it wrote; a note writes none.",
       "properties": {
         "quote": {
           "$ref": "#/$defs/WorkbenchAppQuote"
+        },
+        "revision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchAppQuoteRevision"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
-        "quote"
+        "quote",
+        "revision"
       ],
       "title": "WorkbenchAppQuoteChangeResponse",
       "type": "object"
@@ -14971,7 +14908,6 @@
           "enum": [
             "created",
             "saved",
-            "renamed",
             "assigned",
             "noted",
             "archived",
@@ -15177,7 +15113,7 @@
       "type": "object"
     },
     "WorkbenchAppQuoteRevisionSummary": {
-      "description": "A revision as a quote's history lists it.",
+      "description": "A revision as a quote's history lists it, with the stage it was saved at.",
       "properties": {
         "form_revision": {
           "title": "Form Revision",
@@ -15210,6 +15146,15 @@
         "saved_by": {
           "title": "Saved By",
           "type": "string"
+        },
+        "stage": {
+          "enum": [
+            "draft",
+            "priced",
+            "final"
+          ],
+          "title": "Stage",
+          "type": "string"
         }
       },
       "required": [
@@ -15218,7 +15163,8 @@
         "saved_at",
         "priced",
         "release",
-        "form_revision"
+        "form_revision",
+        "stage"
       ],
       "title": "WorkbenchAppQuoteRevisionSummary",
       "type": "object"
@@ -15284,16 +15230,11 @@
         "revision": {
           "title": "Revision",
           "type": "integer"
-        },
-        "title": {
-          "title": "Title",
-          "type": "string"
         }
       },
       "required": [
         "id",
         "reference",
-        "title",
         "relation",
         "revision"
       ],

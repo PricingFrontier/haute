@@ -1,11 +1,11 @@
 /**
  * What the underwriter app works out of a quote's values (specs/workbench): one quote however
- * its blanks were left, a saved revision's price, the quote list's columns and values, how
+ * its blanks were left, a saved revision's price, the Quotes page's columns and values, how
  * long ago, what an event says, and the values kept in the browser.
  */
 import { afterEach, describe, expect, it, vi } from "vitest"
-import type { FormSpec, WorkbenchAppQuoteEvent } from "../../api/types"
-import { sheetForm } from "../../workbench/__tests__/fixtures"
+import type { WorkbenchAppQuoteEvent } from "../../api/types"
+import { detailsTable, sheetForm } from "../../workbench/__tests__/fixtures"
 import {
   clearDraft,
   draftKey,
@@ -20,8 +20,6 @@ import {
   valuesKey,
   writeDraft,
 } from "../quoteValues"
-
-const withList = (quoteList: FormSpec["quote_list"]): FormSpec => ({ ...sheetForm(), quote_list: quoteList })
 
 describe("values", () => {
   it("are the same quote however blank cells and trailing empty rows were left", () => {
@@ -40,23 +38,32 @@ describe("values", () => {
   })
 })
 
-describe("the quote list", () => {
-  it("names its columns as the sheets label them, a missing one a dash", () => {
-    const form = withList({
-      title: { table: "policy", column: "policy.state" },
-      fields: [{ table: "policy", column: "policy.year" }, { table: "policy", column: "gone" }],
-      headline: null,
-    })
+describe("the Quotes page's columns", () => {
+  it("are insured, broker and inception, as the sheets label them, else by their names", () => {
+    const sheets = sheetForm()
+    const form = { ...sheets, schema: { tables: [detailsTable({ insured: "Client" }), ...sheets.schema.tables] } }
     const columns = listColumns(form)
-    expect(columns.title).toBe("State")
-    expect(columns.fields.map((column) => column.label)).toEqual(["Year", "—"])
-    expect(columns.fields.map((column) => column.numeric)).toEqual([true, false])
-    expect(columns.headline).toBeNull()
-    expect(listColumns(null)).toEqual({ fields: [], headline: null, title: "Title" })
+    expect(columns.map((column) => [column.key, column.label])).toEqual([
+      ["insured", "Client"],
+      ["broker", "Broker"],
+      ["inception_date", "Inception date"],
+    ])
+    expect(columns[2].column?.type).toBe("date")
+    expect(listColumns(null).map((column) => [column.label, column.column])).toEqual([
+      ["Insured", null],
+      ["Broker", null],
+      ["Inception date", null],
+    ])
+  })
+
+  it("shows a date as a day, not as it is kept", () => {
+    const [, , inception] = listColumns({ ...sheetForm(), schema: { tables: [detailsTable()] } })
+    expect(listValue(inception, "2026-11-01")).toBe(new Date(2026, 10, 1).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }))
+    expect(listValue(inception, "soon")).toBe("soon")
   })
 
   it("shows a value as its column formats it, a dash when blank and Yes or No for a tick", () => {
-    const column = { key: "k", label: "Premium", numeric: true, column: { ...sheetForm().schema.tables[0].columns[0], type: "float" as const, number_format: "currency_gbp" as const, decimal_places: 0 } }
+    const column = { key: "k", label: "Premium", column: { ...sheetForm().schema.tables[0].columns[0], type: "float" as const, number_format: "currency_gbp" as const, decimal_places: 0 } }
     expect(listValue(column, 1234.4)).toBe("£1,234")
     expect(listValue(column, null)).toBe("—")
     expect(listValue({ ...column, column: null }, true)).toBe("Yes")
@@ -96,15 +103,13 @@ describe("eventText", () => {
     [event("created", { source: { reference: "Q-000001", revision: 2, relation: "renewal" } }), "made it as a renewal of Q-000001 revision 2"],
     [event("saved", { priced: true }), "saved revision 2, priced"],
     [event("saved", { priced: false }), "saved revision 2, unpriced"],
-    [event("renamed", { to: "Fleet" }), "named it “Fleet”"],
-    [event("renamed", { to: "" }), "cleared its name"],
     [event("assigned", { to: "jo" }), "assigned it to jo"],
     [event("noted", { note: "x" }), "wrote the note"],
     [event("noted", { note: "" }), "cleared the note"],
     [event("archived"), "archived it"],
     [event("restored"), "restored it"],
     [event("finalised"), "marked revision 2 final"],
-    [event("reopened", { reason: "Broker asked" }), "reopened revision 2: Broker asked"],
+    [event("reopened", { reason: "Broker asked", final_revision: 2 }), "reopened final revision 2: Broker asked"],
     [event("derived", { reference: "Q-000003", relation: "alternative" }), "made Q-000003 from revision 2, as an alternative"],
   ])("says what was done", (happened, said) => {
     expect(eventText(happened)).toBe(said)

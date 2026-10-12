@@ -16,6 +16,7 @@ import { INPUT_STYLE } from "../panels/editors/_shared"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { formatValue } from "../utils/formatValue"
 import { cellKey, formattedNumber } from "../utils/sheetValues"
+import { columnKey } from "../utils/sheetVisibility"
 import { linedUpOutputs, readableName, type SampleRow, type SampleValue, type ShownField, type TableOptions, type Widget } from "../utils/workbenchForm"
 import ChartBody from "./ChartBody"
 import { isNumeric } from "./columnTypes"
@@ -238,7 +239,7 @@ export default function WidgetBody({ widget, fields }: { widget: Widget; fields:
  * is for other values, and a dash before the first answer or after pricing fails.
  */
 function FieldBoxes({ widgetId, fields, columns }: { widgetId: string; fields: ShownField[]; columns: number }) {
-  const { rows, setCell, price, basis, problems, readOnly } = useSheetValues()
+  const { rows, setCell, price, basis, problems, readOnly, locked } = useSheetValues()
   const typeHere = useTypeHere(widgetId)
   const stale = price !== null && price.basis !== basis
   return (
@@ -262,7 +263,7 @@ function FieldBoxes({ widgetId, fields, columns }: { widgetId: string; fields: S
                   label={fieldLabel(found)}
                   height={null}
                   problem={problems[cellKey(found.table.id, 0, found.column.id)] ?? null}
-                  disabled={readOnly}
+                  disabled={readOnly || locked.has(columnKey(found.table.id, found.column.id))}
                 />
               </div>
             ) : (
@@ -305,7 +306,7 @@ const padRows = (rows: readonly SampleRow[], length: number): SampleRow[] => [
  * the values hold.
  */
 function FieldGrid({ widgetId, fields, rows, options }: { widgetId: string; fields: ShownField[]; rows: number; options: TableOptions }) {
-  const { rows: held, setCell, setRows, price, basis, problems, quoted, readOnly } = useSheetValues()
+  const { rows: held, setCell, setRows, price, basis, problems, quoted, readOnly, locked } = useSheetValues()
   const typeHere = useTypeHere(widgetId)
   const oneRow = (found: Fillable) => found.table.rows === "one"
   const inputs = [...new Map(fields.flatMap(({ found }) => (fillable(found) && !oneRow(found) ? [[found.table.id, found.table] as const] : []))).values()]
@@ -386,7 +387,7 @@ function FieldGrid({ widgetId, fields, rows, options }: { widgetId: string; fiel
                           label={`${fieldLabel(found)} row ${row + 1}`}
                           height={height}
                           problem={problems[cellKey(found.table.id, at, found.column.id)] ?? null}
-                          disabled={readOnly}
+                          disabled={readOnly || locked.has(columnKey(found.table.id, found.column.id))}
                         />
                       </td>
                     )

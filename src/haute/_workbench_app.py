@@ -42,7 +42,6 @@ from haute._sandbox import set_project_root
 from haute._test_quotes import quote_request
 from haute._types import PipelineGraph
 from haute._workbench_form import FormSpec, form_revision, render_form
-from haute._workbench_quote_list import quote_list_problems
 from haute.deploy._request_limits import (
     RequestBodyHeaderError,
     RequestBodyLimitError,
@@ -395,9 +394,6 @@ def create_app(
     one that is not, and keeps no quotes without one.
     """
     release, form, manifest = read_release(release_dir)
-    problems = quote_list_problems(form)
-    if problems:
-        raise WorkbenchAppError(f"The release's quote list cannot be shown: {'; '.join(problems)}")
     # The pipeline reads what it ships from the release, wherever the host starts the app.
     set_project_root(release_dir)
     static = _STATIC if static_dir is None else static_dir
@@ -452,7 +448,7 @@ def create_app(
     if store_url is not None:
         from haute._workbench_app_quotes import open_book
 
-        book = open_book(store_url, form)
+        book = open_book(store_url)
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:

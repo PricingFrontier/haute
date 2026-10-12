@@ -1,16 +1,16 @@
 /**
  * What the underwriter app works out of a quote's values (specs/workbench): whether two sets
  * of values are the same quote, the price a saved revision shows on the sheets, the
- * quote list's columns and how each value shows in them, how long ago a moment was, and the
- * values kept in the browser until they are saved or discarded.
+ * quote_details columns the Quotes page lists and how each value shows in them, how long
+ * ago a moment was, and the values kept in the browser until they are saved or discarded.
  */
-import type { FieldRef, FormSpec, SchemaColumn, SchemaTable, WorkbenchAppQuote, WorkbenchAppQuoteEvent } from "../api/types"
+import type { FormSpec, SchemaColumn, WorkbenchAppQuote, WorkbenchAppQuoteEvent } from "../api/types"
 import type { SamplePrice } from "../stores/useWorkbenchPricingStore"
 import { canonicalJson } from "../utils/canonicalJson"
 import { formatValue } from "../utils/formatValue"
 import { formattedNumber, valuesBasis } from "../utils/sheetValues"
 import { sheetVisibility } from "../utils/sheetVisibility"
-import { readableName, type SampleRow } from "../utils/workbenchForm"
+import { QUOTE_DETAILS_ID, readableName, type SampleRow } from "../utils/workbenchForm"
 
 export type Values = Record<string, SampleRow[]>
 
@@ -43,48 +43,35 @@ export function savedPrice(
   return { basis: basisOf(form, values), tables, sample: request }
 }
 
-// ── The quote list's columns ─────────────────────────────────────────────
+// ── The Quotes page's columns ────────────────────────────────────────────
 
 export interface ListColumn {
+  /** The quote_details column's name, which the quote's details are keyed by. */
   key: string
   label: string
-  /** The schema column, which says how a value shows; null when the sheets no longer have it. */
+  /** The schema column, which says how a value shows; null when the sheets have none. */
   column: SchemaColumn | null
-  numeric: boolean
 }
 
-function found(form: FormSpec, ref: FieldRef): { table: SchemaTable; column: SchemaColumn } | null {
-  const table = form.schema.tables.find((candidate) => candidate.id === ref.table)
-  const column = table?.columns.find((candidate) => candidate.id === ref.column)
-  return table !== undefined && column !== undefined ? { table, column } : null
+/** The quote_details columns the Quotes page lists after the quote's reference and title. */
+const LISTED = ["insured", "broker", "inception_date"] as const
+
+/** The listed columns, as the release's sheets label and format them. */
+export function listColumns(form: FormSpec | null): ListColumn[] {
+  const table = form?.schema.tables.find((candidate) => candidate.id === QUOTE_DETAILS_ID)
+  return LISTED.map((key) => {
+    const column = table?.columns.find((candidate) => candidate.name === key) ?? null
+    return { key, label: column?.label || readableName(key), column }
+  })
 }
 
-const columnOf = (form: FormSpec, ref: FieldRef, key: string): ListColumn => {
-  const at = found(form, ref)
-  return {
-    key,
-    label: at === null ? "—" : at.column.label || readableName(at.column.name),
-    column: at?.column ?? null,
-    numeric: at !== null && (at.column.type === "int" || at.column.type === "float"),
-  }
-}
-
-/** The summary fields' and headline's columns, as the release's sheets name and format them. */
-export function listColumns(form: FormSpec | null): { fields: ListColumn[]; headline: ListColumn | null; title: string } {
-  if (form === null) return { fields: [], headline: null, title: "Title" }
-  const setting = form.quote_list
-  const title = setting.title === null ? null : found(form, setting.title)
-  return {
-    fields: setting.fields.map((ref, index) => columnOf(form, ref, `field-${index}`)),
-    headline: setting.headline === null ? null : columnOf(form, setting.headline, "headline"),
-    title: title === null ? "Title" : title.column.label || readableName(title.column.name),
-  }
-}
-
-/** A value as the list shows it: formatted as its column formats it, a dash when blank. */
+/** A value as the list shows it: a date as a day, a number as its column formats it, a dash when blank. */
 export function listValue(column: ListColumn, value: unknown): string {
   if (value === null || value === undefined || value === "") return "—"
   if (typeof value === "boolean") return value ? "Yes" : "No"
+  if (column.column?.type === "date" && typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return new Date(`${value}T00:00:00`).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })
+  }
   if (column.column !== null) {
     const formatted = formattedNumber(column.column, value)
     if (formatted !== null) return formatted
@@ -187,8 +174,6 @@ export function eventText(event: WorkbenchAppQuoteEvent): string {
     }
     case "saved":
       return `saved revision ${event.revision ?? "?"}${detail.priced ? ", priced" : ", unpriced"}`
-    case "renamed":
-      return text("to") ? `named it “${text("to")}”` : "cleared its name"
     case "assigned":
       return `assigned it to ${text("to")}`
     case "noted":
@@ -200,7 +185,7 @@ export function eventText(event: WorkbenchAppQuoteEvent): string {
     case "finalised":
       return `marked revision ${event.revision ?? "?"} final`
     case "reopened":
-      return `reopened revision ${event.revision ?? "?"}: ${text("reason")}`
+      return `reopened final revision ${typeof detail.final_revision === "number" ? detail.final_revision : "?"}: ${text("reason")}`
     case "derived":
       return `made ${text("reference")} from revision ${event.revision ?? "?"}, as ${RELATION_TEXT[(detail.relation as keyof typeof RELATION_TEXT) ?? "duplicate"]}`
   }

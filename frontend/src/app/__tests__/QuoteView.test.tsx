@@ -24,13 +24,14 @@ import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { sheetForm, stubLayout } from "../../workbench/__tests__/fixtures"
+import { APP_SET_COLUMNS } from "../openRelease"
 import { draftKey, writeDraft } from "../quoteValues"
 import QuoteView from "../QuoteView"
 import { navigate, setLeaveGuard, type AppRoute } from "../route"
 import { QuestionDialog } from "../ui"
 import useAppStore from "../useAppStore"
 import useOpenQuoteStore from "../useOpenQuoteStore"
-import { answer, appQuote, release } from "./fixtures"
+import { answer, appQuote, release, VALUES } from "./fixtures"
 
 type QuoteRoute = Extract<AppRoute, { page: "new" } | { page: "quote" }>
 
@@ -60,7 +61,7 @@ describe("QuoteView", () => {
     useAppStore.setState({ release, form, revision: "rev-9", people: [], question: null })
     useWorkbenchFormStore.setState({ form, status: "ready" })
     useWorkbenchViewStore.setState({ section: "preview", pageId: null, zoom: 1, fitted: false, viewport: null, sheet: null })
-    useWorkbenchPreviewStore.setState({ quote: {}, checked: false, price: null, error: null, pricing: false, readOnly: false })
+    useWorkbenchPreviewStore.setState({ quote: {}, checked: false, price: null, error: null, pricing: false, readOnly: false, locked: APP_SET_COLUMNS })
     useOpenQuoteStore.setState({ status: "idle", quote: null, revision: null, past: false, olderSheets: null, source: null, pending: null, conflict: null, error: null, historyOpen: false, history: null })
     useToastStore.setState({ toasts: [] })
     vi.mocked(fetchAppPeople).mockResolvedValue({ people: ["jo@example.com"] })
@@ -138,8 +139,8 @@ describe("QuoteView", () => {
   it("marks a priced quote final once asked, and reopens it giving a reason", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     vi.mocked(changeAppQuote)
-      .mockResolvedValueOnce({ quote: appQuote({ stage: "final", final_revision: 1, final_by: "ana@example.com", final_at: "2026-10-12T10:00:00+00:00", version: 2 }) })
-      .mockResolvedValueOnce({ quote: appQuote({ version: 3 }) })
+      .mockResolvedValueOnce({ quote: appQuote({ stage: "final", final_revision: 1, final_by: "ana@example.com", final_at: "2026-10-12T10:00:00+00:00", version: 2 }), revision: null })
+      .mockResolvedValueOnce({ quote: appQuote({ version: 3 }), revision: null })
     await opened()
 
     fireEvent.click(screen.getByRole("button", { name: "Mark final" }))
@@ -179,7 +180,7 @@ describe("QuoteView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save mine as a new quote" }))
 
     await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/q2"))
-    expect(vi.mocked(createAppQuote).mock.calls[0][2]).toEqual({ quote_id: "q1", revision: 2, relation: "duplicate" })
+    expect(vi.mocked(createAppQuote).mock.calls[0][1]).toEqual({ quote_id: "q1", revision: 2, relation: "duplicate" })
   })
 
   it("offers a reload when the page was drawn for an earlier release", async () => {
@@ -219,9 +220,9 @@ describe("QuoteView", () => {
   it("restores an archived quote from its notice, and archives one with Undo", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer({ archived_at: "2026-10-12T10:00:00+00:00", archived_by: "jo@example.com" }))
     vi.mocked(changeAppQuote)
-      .mockResolvedValueOnce({ quote: appQuote({ version: 2 }) })
-      .mockResolvedValueOnce({ quote: appQuote({ version: 3, archived_at: "2026-10-12T11:00:00+00:00" }) })
-      .mockResolvedValueOnce({ quote: appQuote({ version: 4 }) })
+      .mockResolvedValueOnce({ quote: appQuote({ version: 2 }), revision: null })
+      .mockResolvedValueOnce({ quote: appQuote({ version: 3, archived_at: "2026-10-12T11:00:00+00:00" }), revision: null })
+      .mockResolvedValueOnce({ quote: appQuote({ version: 4 }), revision: null })
     await opened()
     expect(screen.getByTestId("notice-archived")).toHaveTextContent("Archived by jo@example.com")
 
@@ -269,7 +270,7 @@ describe("QuoteView", () => {
 
   it("assigns the quote to someone from the people, or to a name typed", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(changeAppQuote).mockResolvedValueOnce({ quote: appQuote({ assignee: "jo@example.com", version: 2 }) }).mockResolvedValueOnce({ quote: appQuote({ assignee: "sam@example.com", version: 3 }) })
+    vi.mocked(changeAppQuote).mockResolvedValueOnce({ quote: appQuote({ assignee: "jo@example.com", version: 2 }), revision: null }).mockResolvedValueOnce({ quote: appQuote({ assignee: "sam@example.com", version: 3 }), revision: null })
     await opened()
     await screen.findByRole("option", { name: "jo@example.com" })
 
@@ -281,33 +282,60 @@ describe("QuoteView", () => {
     await vi.waitFor(() => expect(changeAppQuote).toHaveBeenLastCalledWith("q1", "assignee", 2, { assignee: "sam@example.com" }))
   })
 
-  it("renames the quote in place", async () => {
+  it("takes the details an assignment set onto the sheets, what was typed kept", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(changeAppQuote).mockResolvedValue({ quote: appQuote({ name: "Fleet", version: 2 }) })
+    const details = { qd_reference: "Q-000001", qd_stage: "priced", qd_assignee: "jo@example.com", qd_archived: false }
+    vi.mocked(changeAppQuote).mockResolvedValue({
+      quote: appQuote({ assignee: "jo@example.com", latest: 2, version: 2 }),
+      revision: answer({}, { number: 2, values: { ...VALUES, quote_details: [details] } }).revision,
+    })
+    await opened()
+    await screen.findByRole("option", { name: "jo@example.com" })
+    type("CA")
+    // A cell the app sets takes no typing.
+    act(() => useWorkbenchPreviewStore.getState().setCell("quote_details", 0, "qd_stage", "final"))
+
+    fireEvent.change(screen.getByLabelText("Assigned to"), { target: { value: "jo@example.com" } })
+
+    await vi.waitFor(() => expect(useOpenQuoteStore.getState().revision?.number).toBe(2))
+    expect(useWorkbenchPreviewStore.getState().quote).toEqual({ policy: [{ "policy.state": "CA" }], quote_details: [details] })
+    expect(screen.getByTestId("quote-unsaved")).toBeInTheDocument()
+    expect(screen.getByTestId("quote-line")).toHaveTextContent("Revision 2")
+  })
+
+  it("names the quote in its quote_details.quote_name cell, saved with the quote", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    vi.mocked(saveAppQuote).mockResolvedValue(answer({ latest: 2, version: 2 }, { number: 2 }))
     await opened()
 
     const name = screen.getByLabelText("Quote name")
-    fireEvent.change(name, { target: { value: "Fleet" } })
+    expect(name).toHaveAttribute("placeholder", "Fleet")
+    fireEvent.change(name, { target: { value: " Fleet renewal " } })
     fireEvent.blur(name)
 
-    await vi.waitFor(() => expect(changeAppQuote).toHaveBeenCalledWith("q1", "name", 1, { name: "Fleet" }))
+    expect(useWorkbenchPreviewStore.getState().quote.quote_details).toEqual([{ qd_quote_name: "Fleet renewal" }])
+    expect(screen.getByTestId("quote-unsaved")).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId("save-quote"))
+    await vi.waitFor(() => expect(saveAppQuote).toHaveBeenCalled())
+    expect(vi.mocked(saveAppQuote).mock.calls[0][1].values.quote_details).toEqual([{ qd_quote_name: "Fleet renewal" }])
+    expect(changeAppQuote).not.toHaveBeenCalled()
   })
 
   it("shows the history: the note, the revisions and what was done", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer({ latest: 2, final_revision: null }, { number: 2 }))
     vi.mocked(fetchAppQuoteHistory).mockResolvedValue({
       revisions: [
-        { number: 1, saved_by: "ana@example.com", saved_at: "2026-10-12T09:00:00+00:00", priced: false, release: null, form_revision: "rev-9" },
-        { number: 2, saved_by: "jo@example.com", saved_at: "2026-10-12T10:00:00+00:00", priced: true, release: "rel-1", form_revision: "rev-9" },
+        { number: 1, saved_by: "ana@example.com", saved_at: "2026-10-12T09:00:00+00:00", priced: false, release: null, form_revision: "rev-9", stage: "draft" },
+        { number: 2, saved_by: "jo@example.com", saved_at: "2026-10-12T10:00:00+00:00", priced: true, release: "rel-1", form_revision: "rev-9", stage: "priced" },
       ],
       events: [
         { id: 1, at: "2026-10-12T09:00:00+00:00", actor: "ana@example.com", kind: "created", revision: 1, detail: { reference: "Q-000001" } },
         { id: 2, at: "2026-10-12T10:00:00+00:00", actor: "jo@example.com", kind: "saved", revision: 2, detail: { priced: true } },
       ],
-      source: { id: "q0", reference: "Q-000000", title: "Old", relation: "renewal", revision: 3 },
-      derived: [{ id: "q3", reference: "Q-000003", title: "Alt", relation: "alternative", revision: 2 }],
+      source: { id: "q0", reference: "Q-000000", relation: "renewal", revision: 3 },
+      derived: [{ id: "q3", reference: "Q-000003", relation: "alternative", revision: 2 }],
     })
-    vi.mocked(changeAppQuote).mockResolvedValue({ quote: appQuote({ latest: 2, note: "Call the broker", note_by: "ana@example.com", note_at: "2026-10-12T11:00:00+00:00", version: 2 }) })
+    vi.mocked(changeAppQuote).mockResolvedValue({ quote: appQuote({ latest: 2, note: "Call the broker", note_by: "ana@example.com", note_at: "2026-10-12T11:00:00+00:00", version: 2 }), revision: null })
     await opened()
 
     fireEvent.click(screen.getByRole("button", { name: "History" }))

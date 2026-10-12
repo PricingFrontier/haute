@@ -355,13 +355,7 @@ def _output_copy() -> list[dict[str, Any]]:
     return [{"name": "pricing", "rows": "one", "columns": [_column("premium", "float")]}]
 
 
-def _workbench_project(
-    root: Path,
-    *,
-    enabled: bool = True,
-    form: bool = True,
-    quote_list: dict[str, Any] | None = None,
-) -> None:
+def _workbench_project(root: Path, *, enabled: bool = True, form: bool = True) -> None:
     from haute._workbench_form import FormSpec, render_form
 
     (root / "haute.toml").write_text(
@@ -379,21 +373,35 @@ def _workbench_project(
                         "sections": [{"id": "s", "title": "s", "height": 120, "widgets": []}],
                     }
                 ],
-                "quote_list": quote_list or {},
             }
         )
         (root / "forms").mkdir()
         (root / "forms" / "form.json").write_text(render_form(spec), encoding="utf-8")
 
 
+def _details_copy() -> dict[str, Any]:
+    """Haute's ``quote_details`` table as the editor copies it into the Workbench Input."""
+    from haute._workbench_form import QUOTE_DETAILS_COLUMNS
+
+    columns = [_column(name, type_) for _, name, type_ in QUOTE_DETAILS_COLUMNS]
+    return {"name": "quote_details", "rows": "one", "columns": columns}
+
+
 def _form_check_errors(
     root: Path,
     input_copy: list[dict[str, Any]],
     output_copy: list[dict[str, Any]],
+    *,
+    details: bool = True,
 ) -> list[str]:
     """The structural errors ``validate_deploy`` reports for a workbench pipeline in *root*;
-    the pipeline is otherwise sound, so they are the form check's alone."""
+    the pipeline is otherwise sound, so they are the form check's alone. The Workbench
+    Input's copy holds Haute's ``quote_details`` table first, as the form read does, unless
+    *details* is false, as a copy saved before the table existed does not."""
     from haute.deploy._validators import validate_deploy
+
+    if details:
+        input_copy = [_details_copy(), *input_copy]
 
     resolved = _make_resolved(
         nodes=[
@@ -498,12 +506,15 @@ class TestValidateDeployWorkbenchForm:
         assert named in error
         assert "Save the project in Haute's editor" in error
 
-    def test_a_quote_list_naming_a_column_the_schema_lacks_is_refused(self, tmp_path: Path) -> None:
-        _workbench_project(tmp_path, quote_list={"title": {"table": "nope", "column": "x"}})
+    def test_a_copy_saved_before_quote_details_existed_asks_for_a_save(
+        self, tmp_path: Path
+    ) -> None:
+        _workbench_project(tmp_path)
 
-        [error] = _form_check_errors(tmp_path, _input_copy(), _output_copy())
+        [error] = _form_check_errors(tmp_path, _input_copy(), _output_copy(), details=False)
 
-        assert error.startswith("forms/form.json: The quote list's title names column 'x'")
+        assert "table 'quote_details' is in the form but not in the copy" in error
+        assert "Save the project in Haute's editor" in error
 
     def test_a_form_file_that_does_not_exist_is_refused(self, tmp_path: Path) -> None:
         _workbench_project(tmp_path, form=False)

@@ -149,7 +149,7 @@ describe("useOpenQuoteStore", () => {
     const made = await store().saveAsNew()
 
     expect(made?.reference).toBe("Q-000002")
-    expect(vi.mocked(createAppQuote).mock.calls[0][2]).toEqual({ quote_id: "q1", revision: 2, relation: "duplicate" })
+    expect(vi.mocked(createAppQuote).mock.calls[0][1]).toEqual({ quote_id: "q1", revision: 2, relation: "duplicate" })
     expect(store().conflict).toBeNull()
   })
 
@@ -187,7 +187,7 @@ describe("useOpenQuoteStore", () => {
     expect(createAppQuote).not.toHaveBeenCalled()
   })
 
-  it("creates a new quote with its name, and a quote made from another's revision with its source", async () => {
+  it("creates a quote made from another's revision with its source", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     vi.mocked(carryAppQuote).mockResolvedValue({ values: VALUES, dropped: ["policy.gone"] })
     vi.mocked(createAppQuote).mockResolvedValue(answer({ id: "q2", reference: "Q-000002" }))
@@ -197,9 +197,8 @@ describe("useOpenQuoteStore", () => {
     expect(store().source).toEqual({ quoteId: "q1", revision: 1, relation: "renewal", reference: "Q-000001" })
     expect(store().dropped).toEqual(["policy.gone"])
     expect(preview().quote).toEqual(VALUES)
-    store().setNewName("Renewal 2027")
     await store().save()
-    expect(vi.mocked(createAppQuote).mock.calls[0].slice(1)).toEqual(["Renewal 2027", { quote_id: "q1", revision: 1, relation: "renewal" }])
+    expect(vi.mocked(createAppQuote).mock.calls[0][1]).toEqual({ quote_id: "q1", revision: 1, relation: "renewal" })
     expect(store().source).toBeNull()
   })
 
@@ -253,7 +252,7 @@ describe("useOpenQuoteStore", () => {
 
   it("changes the quote and holds it read only as the change leaves it", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(changeAppQuote).mockResolvedValueOnce({ quote: appQuote({ stage: "final", final_revision: 1, version: 2 }) }).mockResolvedValueOnce({ quote: appQuote({ version: 3 }) })
+    vi.mocked(changeAppQuote).mockResolvedValueOnce({ quote: appQuote({ stage: "final", final_revision: 1, version: 2 }), revision: null }).mockResolvedValueOnce({ quote: appQuote({ version: 3 }), revision: null })
     await store().openQuote("q1", null)
 
     await store().change("final", { revision: 1 })
@@ -331,7 +330,7 @@ describe("useOpenQuoteStore", () => {
   it("reads the history again as an open quote is opened, saved and changed", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     vi.mocked(saveAppQuote).mockResolvedValue(answer({ latest: 2, version: 2 }, { number: 2 }))
-    vi.mocked(changeAppQuote).mockResolvedValue({ quote: appQuote({ version: 3 }) })
+    vi.mocked(changeAppQuote).mockResolvedValue({ quote: appQuote({ version: 3 }), revision: null })
     vi.mocked(fetchAppQuoteHistory).mockResolvedValue({ revisions: [], events: [], source: null, derived: [] })
     useOpenQuoteStore.setState({ historyOpen: true })
 

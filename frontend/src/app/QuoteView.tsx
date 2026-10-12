@@ -30,6 +30,7 @@ import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
 import { quoteFilled } from "../utils/sheetValues"
 import { quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
+import { QUOTE_DETAILS_ID } from "../utils/workbenchForm"
 import PageTabs from "../workbench/PageTabs"
 import SheetCanvas from "../workbench/SheetCanvas"
 import AppHeader from "./AppHeader"
@@ -43,6 +44,9 @@ import useOpenQuoteStore, { canEdit, openDraftKey, readOnlyReason } from "./useO
 type QuoteRoute = Extract<AppRoute, { page: "new" } | { page: "quote" }>
 
 const RELATION_LABEL = { duplicate: "Duplicate", renewal: "Renewal", alternative: "Alternative" } as const
+
+/** The quote_details column that names a quote, typed in the bar. */
+const NAME_COLUMN = "qd_quote_name"
 
 /** A quote just saved as new, on the sheets already: its address is moved to without opening it again. */
 let adopted: string | null = null
@@ -192,14 +196,14 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   const past = useOpenQuoteStore((s) => s.past)
   const olderSheets = useOpenQuoteStore((s) => s.olderSheets)
   const source = useOpenQuoteStore((s) => s.source)
-  const newName = useOpenQuoteStore((s) => s.newName)
   const saving = useOpenQuoteStore((s) => s.saving)
   const changing = useOpenQuoteStore((s) => s.changing)
   const historyOpen = useOpenQuoteStore((s) => s.historyOpen)
   const change = useOpenQuoteStore((s) => s.change)
-  const setNewName = useOpenQuoteStore((s) => s.setNewName)
   const setHistoryOpen = useOpenQuoteStore((s) => s.setHistoryOpen)
   const values = useWorkbenchPreviewStore((s) => s.quote)
+  const appSet = useWorkbenchPreviewStore((s) => s.locked)
+  const setCell = useWorkbenchPreviewStore((s) => s.setCell)
   const price = useWorkbenchPreviewStore((s) => s.price)
   const pricing = useWorkbenchPreviewStore((s) => s.pricing)
   const error = useWorkbenchPreviewStore((s) => s.error)
@@ -210,14 +214,17 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   const reason = readOnlyReason({ quote, past, olderSheets })
   const editor = release?.can_edit ?? true
   const ready = status === "ready" && form !== null
-  const typed = form !== null && quoteFilled(form.schema, values)
-  const shownTyped = form !== null && quoteFilled(quotedSchema(form.schema, sheetVisibility(form, values).hidden), values)
+  // The details the app sets are not typing.
+  const typed = form !== null && quoteFilled(quotedSchema(form.schema, appSet), values)
+  const shownTyped = form !== null && quoteFilled(quotedSchema(quotedSchema(form.schema, sheetVisibility(form, values).hidden), appSet), values)
   const priced = form !== null && price !== null && price.basis === basisOf(form, values)
-  const locked = reason !== null
+  const closed = reason !== null
+  // The quote's name is its quote_details.quote_name cell, on the sheets or not.
+  const name = values[QUOTE_DETAILS_ID]?.[0]?.[NAME_COLUMN]
   // A saved quote whose values are as saved, priced as saved, has nothing new to save.
   const nothingNew = quote !== null && !dirty && priced === (quote.stage !== "draft")
 
-  const saveTitle = locked
+  const saveTitle = closed
     ? "This quote does not take changes as it is"
     : !typed
       ? "Type the quote first"
@@ -235,7 +242,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
           ? "Price and save the quote first"
           : quote.release !== release?.id
             ? "Priced on an earlier release: price it again and save it first"
-            : locked
+            : closed
               ? "This quote does not take changes as it is"
               : null
 
@@ -319,20 +326,18 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
         </div>
         <CommittedTextField
           aria-label="Quote name"
-          value={quote === null ? newName : quote.name}
+          value={typeof name === "string" ? name : ""}
           placeholder={quote === null ? (source === null ? "Name this quote" : `${RELATION_LABEL[source.relation]} of ${source.reference}`) : quote.title}
-          disabled={!ready || !editor || (quote !== null && (quote.archived_at !== null || changing))}
-          onCommit={(name) => {
-            if (quote === null) setNewName(name)
-            else if (name.trim() !== quote.name) void change("name", { name: name.trim() })
-          }}
+          disabled={!ready || closed}
+          title="The quote's name, saved with it"
+          onCommit={(text) => setCell(QUOTE_DETAILS_ID, 0, NAME_COLUMN, text.trim())}
           maxLength={200}
           className="focus-ring w-full rounded px-1 py-0.5 text-[12px]"
           style={{ background: "transparent", border: "1px solid var(--border-subtle)", color: "var(--text-primary)" }}
         />
       </div>
       <ToolbarColumn role="group" aria-label="Quote">
-        <ToolbarButton icon={Calculator} onClick={() => void priceQuote()} disabled={!ready || pricing || locked || !shownTyped} title={locked ? "This quote does not take changes as it is" : shownTyped ? "Check the quote and price it (Ctrl+Enter)" : "Type the quote first"}>
+        <ToolbarButton icon={Calculator} onClick={() => void priceQuote()} disabled={!ready || pricing || closed || !shownTyped} title={closed ? "This quote does not take changes as it is" : shownTyped ? "Check the quote and price it (Ctrl+Enter)" : "Type the quote first"}>
           {pricing ? "Pricing…" : "Price"}
         </ToolbarButton>
         <ToolbarButton
@@ -342,15 +347,15 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
               if (yes) clear()
             })
           }}
-          disabled={!ready || locked || !typed}
+          disabled={!ready || closed || !typed}
           title="Empty the sheets"
         >
           Clear
         </ToolbarButton>
       </ToolbarColumn>
       <ToolbarColumn role="group" aria-label="Save">
-        <button type="button" className="toolbar-fill toolbar-fill-save" onClick={() => void saveOpen()} disabled={!ready || saving || locked || !typed || nothingNew} title={nothingNew ? "Nothing has changed since the quote was saved" : saveTitle} data-testid="save-quote">
-          {saving ? "Saving…" : priced || locked ? "Save" : "Save unpriced"}
+        <button type="button" className="toolbar-fill toolbar-fill-save" onClick={() => void saveOpen()} disabled={!ready || saving || closed || !typed || nothingNew} title={nothingNew ? "Nothing has changed since the quote was saved" : saveTitle} data-testid="save-quote">
+          {saving ? "Saving…" : priced || closed ? "Save" : "Save unpriced"}
         </button>
         {quote?.stage === "final" ? (
           <ToolbarButton icon={LockOpen} onClick={() => void reopen()} disabled={changing || !editor || past || olderSheets !== null || quote.archived_at !== null} title="Reopen the quote for an amendment, giving a reason">
