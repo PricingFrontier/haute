@@ -672,10 +672,12 @@ def carry_values(values: Values, saved: FormSpec, current: FormSpec) -> CarriedV
 
     Values follow the stable ids, so a renamed table or column keeps them. A filled value
     whose input table or column the current form no longer has is named as ``table.column``
-    by the names it was saved under; a blank one is no loss.
+    by the names it was saved under; a blank one is no loss. A table that now holds one row
+    keeps its first, and each filled value of the rows after it is named as
+    ``table.column row N``.
     """
     places = {
-        table.id: {column.id for column in table.columns}
+        table.id: ({column.id for column in table.columns}, table.rows)
         for table in current.data_schema.tables
         if table.role == "input"
     }
@@ -685,12 +687,21 @@ def carry_values(values: Values, saved: FormSpec, current: FormSpec) -> CarriedV
         rows = values.get(table.id)
         if not rows:
             continue
-        columns = places.get(table.id, set())
+        columns, now = places.get(table.id, (set(), "many"))
         for column in table.columns:
             if column.id not in columns and any(_filled(row.get(column.id)) for row in rows):
                 dropped.append(f"{table.name}.{column.name}")
-        if table.id in places:
-            kept = [{key: value for key, value in row.items() if key in columns} for row in rows]
-            if any(kept):
-                carried[table.id] = kept
+        if table.id not in places:
+            continue
+        if now == "one":
+            for number, row in enumerate(rows[1:], start=2):
+                dropped.extend(
+                    f"{table.name}.{column.name} row {number}"
+                    for column in table.columns
+                    if column.id in columns and _filled(row.get(column.id))
+                )
+            rows = rows[:1]
+        kept = [{key: value for key, value in row.items() if key in columns} for row in rows]
+        if any(kept):
+            carried[table.id] = kept
     return CarriedValues(carried, dropped)

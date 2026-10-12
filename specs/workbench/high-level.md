@@ -1025,9 +1025,10 @@ Out of scope:
   list is projected by changes, each quote is projected again from its newest revision
   without moving its version, its time saved or its events. A
   saved quote opens on its own form, and its values are carried onto the current form
-  through the stable ids: a renamed table or column keeps its values, and each filled
+  through the stable ids: a renamed table or column keeps its values, each filled
   value whose table or column the current form no longer has is named as
-  `table.column`, by the names it was saved under. A database is brought to the schema by
+  `table.column`, by the names it was saved under, and a table that now holds one row
+  keeps its first, each filled value of the rows after it named as `table.column row N`. A database is brought to the schema by
   the store's migrations, numbered and shipped with Haute, so a Haute upgrade carries
   them; the store refuses to open a database behind the newest, naming what to run, and
   nothing migrates as it opens. A migration keeps the previous release's reads and

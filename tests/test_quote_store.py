@@ -389,3 +389,22 @@ def test_values_are_carried_onto_the_current_form_through_the_stable_ids() -> No
     assert carried.values == {"t_policy": [{"c_region": "north"}]}
     # By the saved form's names, in its order; the blank note is no loss.
     assert carried.dropped == ["policy.cover", "driver.age"]
+
+
+def test_a_table_now_of_one_row_keeps_the_first_and_names_the_values_of_the_rest() -> None:
+    saved = _form(
+        {**_table("t_layer", "layers", ("c_limit", "limit"), ("c_note", "note")), "rows": "many"}
+    )
+    current = _form(_table("t_layer", "layer", ("c_limit", "limit")))
+    values = {
+        "t_layer": [
+            {"c_limit": "500", "c_note": "first"},
+            {"c_limit": "1000", "c_note": ""},
+            {"c_limit": "", "c_note": "third"},
+        ]
+    }
+
+    carried = carry_values(values, saved, current)
+
+    assert carried.values == {"t_layer": [{"c_limit": "500"}]}
+    assert carried.dropped == ["layers.note", "layers.limit row 2"]

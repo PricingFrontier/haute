@@ -1284,7 +1284,8 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   a file left in write-ahead logging put back to a rollback journal and one held that
   way by another connection refused with nothing written, a revision saved apart under
   the same number refused by its digest, and,
-  a removed table and a table that is no longer an input, blank cells not counted.
+  a removed table and a table that is no longer an input, blank cells not counted, and a
+  table now of one row keeping its first and naming the values of the rows after it.
 - `tests/test_workbench_config.py` covers the table absent (and `haute.toml` absent), enabled
   and disabled, the default and a configured form path, and each refusal (not a table, an
   unknown key, `enabled` missing or not a boolean, `form` empty, not a string, absolute or
