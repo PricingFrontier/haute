@@ -91,7 +91,8 @@ Out of scope, owned elsewhere:
   merge quote by quote into `OURS`, git's merge driver contract: it exits 0 when every quote
   merges and 1 naming the quotes in conflict, `OURS` then left as it was.
 - `haute app build [OUTPUT] [--image TAG]` builds the workbench project's release for
-  the underwriter app into `OUTPUT` (`build/app` by default): the pipeline resolved,
+  the underwriter app into `OUTPUT` (`.haute/app/release` by default, which git
+  ignores): the pipeline resolved,
   validated and bundled as `haute deploy` does it, test quotes included, with the
   sheets, what the release is and its entry point, and, with `[deploy.container]
   base_image` set, the Dockerfile that makes it the image's build context; `--image`

@@ -438,6 +438,11 @@ def test_haute_app_build_writes_the_release(project: Path) -> None:
     assert f"Release {read_release(project / 'out')[0].id} of main" in result.output
     assert (project / "out" / "app.py").is_file()
 
+    # Unless told otherwise, the release goes in the clone's state directory, which git
+    # ignores, model files and all.
+    assert CliRunner().invoke(cli, ["app", "build"]).exit_code == 0
+    assert (project / ".haute" / "app" / "release" / "release.json").is_file()
+
 
 def test_haute_app_serve_serves_the_release_on_loopback_as_the_analyst(
     project: Path, monkeypatch: pytest.MonkeyPatch

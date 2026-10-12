@@ -6,9 +6,10 @@ Split into:
 * :func:`handle_app_build` and :func:`handle_app_serve` — the functions that do the work.
 * :func:`app` and its ``build`` and ``serve`` — the thin ``@click`` entry points.
 
-``build`` writes the project's release into a directory: the pipeline bundled as ``haute
+``build`` writes the project's release into a directory, ``.haute/app/release`` unless
+another is named: the pipeline bundled as ``haute
 deploy`` bundles it, after the same validation and test quotes, with the sheets, what the
-release is and its entry point. ``serve`` builds the release under ``.haute/`` and serves it on
+release is and its entry point. ``serve`` builds the release there and serves it on
 the analyst's machine, on loopback alone, signed in as the analyst's git identity, so the sheets
 underwriters will see are checked before a merge.
 """
@@ -20,8 +21,9 @@ from pathlib import Path
 
 import click
 
-#: Where ``serve`` builds its release, in the clone's own state directory.
-SERVE_RELEASE_DIR = Path(".haute") / "app" / "release"
+#: Where ``build`` writes a release unless told otherwise, and ``serve`` always: the
+#: clone's own state directory, which git ignores, model files and all.
+RELEASE_DIR = Path(".haute") / "app" / "release"
 #: ``serve`` binds this address alone: everyone reaching it is signed in as the analyst.
 SERVE_HOST = "127.0.0.1"
 
@@ -89,7 +91,7 @@ def handle_app_serve(config: AppServeConfig) -> None:
         raise click.ClickException(
             "Set your git identity first (git config user.email): the app signs you in as it."
         )
-    release_dir = (project_dir / SERVE_RELEASE_DIR).resolve()
+    release_dir = (project_dir / RELEASE_DIR).resolve()
     _built(project_dir, release_dir)
     application = create_app(release_dir, local_principal=principal, static_dir=config.static_dir)
     click.echo(f"  ✓ Signed in as {principal} (your git identity)")
@@ -106,13 +108,13 @@ def app() -> None:
 @click.argument(
     "output",
     type=click.Path(file_okay=False, path_type=Path),
-    default=Path("build") / "app",
+    default=RELEASE_DIR,
 )
 @click.option(
     "--image", default=None, help="Also build the release's image with Docker, tagged so."
 )
 def build(output: Path, image: str | None) -> None:
-    """Build the release the underwriter app serves into OUTPUT (default build/app): the
+    """Build the release the underwriter app serves into OUTPUT (default .haute/app/release): the
     image's build context, Dockerfile included."""
     handle_app_build(AppBuildConfig(output=output, image=image))
 

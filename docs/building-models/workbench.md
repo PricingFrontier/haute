@@ -269,7 +269,8 @@ builder on screen.
 - `haute app serve` builds the app from the project as it is saved and serves it at
   `http://127.0.0.1:8001/`, signed in as your git identity, so you can see the sheets as
   underwriters will before you merge. Only your machine can reach it.
-- `haute app build` writes a **release** to `build/app`: the pipeline, checked and bundled
+- `haute app build` writes a **release** to `.haute/app/release` (or the folder you name):
+  the pipeline, checked and bundled
   as `haute deploy` does it (the test quotes included), with the sheets and an `app.py` that
   serves them. The release's id changes when anything that prices a quote changes, and the
   app names it in its bar.
