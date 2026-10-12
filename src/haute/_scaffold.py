@@ -194,6 +194,80 @@ def _release_input_dirs(workbench: bool) -> tuple[str, ...]:
     return (*_RELEASE_INPUT_DIRS, PurePosixPath(DEFAULT_FORM_PATH).parent.as_posix())
 
 
+#: A workbench project's report of what a pull request does to its test quotes: posted on
+#: the pull request (editing the last one posted) and added to the run's summary.
+_GITHUB_TEST_QUOTES_JOB = """
+  test-quotes:
+    name: Test Quotes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - run: uv sync --frozen
+      - name: Report what the change does to the test quotes
+        run: >-
+          uv run haute test-quotes report --base "origin/${{ github.base_ref }}"
+          --output test-quotes-report.md
+      - name: Post the report on the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          cat test-quotes-report.md >> "$GITHUB_STEP_SUMMARY"
+          gh pr comment "$PR" --body-file test-quotes-report.md --edit-last --create-if-none
+"""
+
+#: The same on a GitLab merge request, kept with the job as an artifact.
+_GITLAB_TEST_QUOTES_JOB = """
+# ── Test quotes (a merge request's report) ────────────────────
+test-quotes-report:
+  stage: validate
+  timeout: 10 minutes
+  script:
+    - git fetch origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+    - >-
+      uv run haute test-quotes report --base "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+      --output test-quotes-report.md
+    - cat test-quotes-report.md
+  artifacts:
+    paths:
+      - test-quotes-report.md
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+"""
+
+#: The same on an Azure DevOps pull request, published as an artifact.
+_AZURE_TEST_QUOTES_JOB = """
+      - job: test_quotes
+        displayName: Test Quotes Report
+        timeoutInMinutes: 10
+        condition: eq(variables['Build.Reason'], 'PullRequest')
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+            fetchDepth: 0
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.11"
+          - script: pip install "uv>=0.5,<1" && uv sync --frozen
+            displayName: Install dependencies
+          - script: |
+              base="origin/${SYSTEM_PULLREQUEST_TARGETBRANCH#refs/heads/}"
+              uv run haute test-quotes report --base "$base" --output test-quotes-report.md
+              cat test-quotes-report.md
+            displayName: Report what the change does to the test quotes
+          - publish: test-quotes-report.md
+            artifact: test-quotes-report
+"""
+
+
 def _github_trigger_paths(workbench: bool) -> str:
     """The deploy workflow's ``on.push.paths`` entries, one per release input."""
     dirs = [f'      - "{name}/**"' for name in _release_input_dirs(workbench)]
@@ -395,9 +469,10 @@ def _azure_devops_secrets_env(target: str, indent: str = "              ") -> st
 # ── GitHub Actions: ci.yml ────────────────────────────────────────────
 
 
-def github_ci_yml() -> str:
-    """PR checks workflow for GitHub Actions."""
-    return """\
+def github_ci_yml(*, workbench: bool = False) -> str:
+    """PR checks workflow for GitHub Actions; a workbench project's also reports what the
+    change does to its test quotes, on the pull request."""
+    jobs = """\
 name: CI
 
 on:
@@ -465,6 +540,7 @@ jobs:
       - name: Dry-run deploy (score test quotes)
         run: uv run haute deploy --dry-run
 """
+    return jobs + (_GITHUB_TEST_QUOTES_JOB if workbench else "")
 
 
 def github_deploy_yml(target: str, *, workbench: bool = False) -> str:
@@ -661,7 +737,7 @@ jobs:
 # ── GitLab CI ────────────────────────────────────────────────────────
 
 
-def gitlab_ci_yml(target: str) -> str:
+def gitlab_ci_yml(target: str, *, workbench: bool = False) -> str:
     """Combined CI + deploy pipeline for GitLab CI/CD.
 
     Uses GitLab stages to enforce ordering.  The ``deploy-production``
@@ -738,7 +814,7 @@ lint:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-
+{_GITLAB_TEST_QUOTES_JOB if workbench else ""}
 # ── Staging ───────────────────────────────────────────────────
 deploy-staging:
   stage: deploy-staging
@@ -933,7 +1009,7 @@ stages:
             displayName: Lint pipeline
           - script: uv run haute deploy --dry-run
             displayName: Dry-run deploy
-
+{_AZURE_TEST_QUOTES_JOB if workbench else ""}
   # ── Deploy to staging (only on push to main) ─────────────────
   - stage: DeployStaging
     displayName: Deploy → Staging

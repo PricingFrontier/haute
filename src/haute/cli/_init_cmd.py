@@ -592,7 +592,9 @@ def handle_init(config: InitConfig) -> None:
     if ci == "github":
         workflows_dir = project_dir / ".github" / "workflows"
         workflows_dir.mkdir(parents=True, exist_ok=True)
-        (workflows_dir / "ci.yml").write_text(github_ci_yml(), encoding="utf-8")
+        (workflows_dir / "ci.yml").write_text(
+            github_ci_yml(workbench=config.workbench), encoding="utf-8"
+        )
         (workflows_dir / "deploy-staging.yml").write_text(
             github_deploy_yml(target, workbench=config.workbench),
             encoding="utf-8",
@@ -608,7 +610,7 @@ def handle_init(config: InitConfig) -> None:
         ]
     elif ci == "gitlab":
         (project_dir / ".gitlab-ci.yml").write_text(
-            gitlab_ci_yml(target),
+            gitlab_ci_yml(target, workbench=config.workbench),
             encoding="utf-8",
         )
         ci_files = [".gitlab-ci.yml"]

@@ -70,7 +70,8 @@ Out of scope, owned elsewhere:
 - `haute deploy [pipeline_file] [--model-name] [--dry-run] [--endpoint-suffix]` validates a pipeline,
   scores its test quotes, and deploys it to the configured target. Non-dry-run deploys are blocked
   outside a recognised CI environment.
-- `haute smoke [--endpoint-suffix]` sends each test quote in `tests/quotes/` to a live serving
+- `haute smoke [--endpoint-suffix]` sends each test quote in `tests/quotes/`, the workbench's
+  test-quote file among them, to a live serving
   endpoint as a request of its own, as a pipeline reading one quote per request takes it, and
   holds each quote with an `expected` output to it as the deploy check does, walked into a
   Workbench Output's tables: one answer row, an object of output columns, each expected
@@ -78,6 +79,11 @@ Out of scope, owned elsewhere:
   and the other quotes are still priced. HTTP health accepts any decodable 2xx JSON.
   An endpoint suffix is a Databricks naming override; HTTP targets reject it and direct operators
   to configure the complete staging endpoint URL instead.
+- `haute test-quotes report [--base REF] [--output FILE]` compares the workbench's test-quote
+  file with the one at `REF` (`origin/main` by default) and writes, as Markdown, the test
+  quotes added, removed and accepted anew, each with the outputs that moved; a file absent
+  on either side reads as no test quotes, one an older Haute wrote is read through a
+  migrated copy, and the report never fails the run.
 - `haute status [model_name] [--version-only]` looks up a model's latest version/stage in the MLflow
   Model Registry.
 - `haute impact [--sample] [--batch-size] [--endpoint-suffix]` scores a configured safety dataset

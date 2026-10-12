@@ -15,7 +15,9 @@ from typing import Any, NamedTuple
 import polars as pl
 
 from haute._io import read_user_text
+from haute._json_safe import to_json_safe
 from haute._logging import get_logger
+from haute._test_quotes import TEST_QUOTES_FILE
 from haute._types import GLOBAL_CONSTANTS_FILE, NodeType, PipelineGraph
 from haute._workbench_config import WorkbenchConfigError, read_workbench_config
 from haute._workbench_form import WorkbenchFormError, read_form_document
@@ -39,6 +41,11 @@ class _TestQuoteCase:
     input: dict[str, Any]
     expected: dict[str, Any] | None
     tolerance_pct: float
+    #: The expected output is a whole accepted response, a workbench test quote's, so the
+    #: answer is compared whole rather than at the expected columns alone.
+    whole: bool = False
+    #: How a failure names the case; ``row <n>`` of its file when None.
+    label: str | None = None
 
 
 _GOLDEN_QUOTE_KEYS = frozenset({"input", "expected", "tolerance_pct"})
@@ -109,7 +116,46 @@ def _parse_test_quote_case(row: Any, *, row_index: int) -> _TestQuoteCase:
     )
 
 
+def test_quote_files(directory: Path) -> list[Path]:
+    """The test-quote files in *directory*: its JSON files, then the workbench's test-quote
+    file when there is one."""
+    files = sorted(directory.glob("*.json"))
+    saved = directory / TEST_QUOTES_FILE
+    return [*files, saved] if saved.is_file() else files
+
+
+def _saved_test_quote_cases(path: Path) -> list[_TestQuoteCase]:
+    """The workbench's test quotes as cases, by name: each newest revision's request, and
+    the response it was accepted with to compare the answer with whole."""
+    from haute._quote_store import QuoteStoreNotMigratedError, open_store, store_url
+    from haute._test_quotes import ACCEPTED_TOLERANCE
+
+    try:
+        store = open_store(store_url(path))
+    except QuoteStoreNotMigratedError as exc:
+        raise ValueError(
+            f"{path.name} was written by another version of Haute: open the project in Haute "
+            "and save a test quote to bring it up to date."
+        ) from exc
+    with store:
+        cases: list[_TestQuoteCase] = []
+        for summary in sorted(store.quotes(), key=lambda quote: (quote.name, quote.id)):
+            revision = store.revision(summary.id)
+            cases.append(
+                _TestQuoteCase(
+                    input=revision.request,
+                    expected=revision.response,
+                    tolerance_pct=ACCEPTED_TOLERANCE,
+                    whole=True,
+                    label=f"quote {summary.name!r}",
+                )
+            )
+    return cases
+
+
 def _load_test_quote_cases(path: Path) -> list[_TestQuoteCase]:
+    if path.name == TEST_QUOTES_FILE:
+        return _saved_test_quote_cases(path)
     raw = json.loads(read_user_text(path))
     if not isinstance(raw, list):
         raise ValueError("Expected a JSON array of quote objects")
@@ -370,15 +416,7 @@ def _validate_expected_outputs(
     errors: list[str] = []
     missing_columns: set[str] = set()
     for row_index, case in expected_cases:
-        errors.extend(
-            _case_errors(
-                row_index=row_index,
-                case=case,
-                row=output_rows[row_index],
-                columns=output.columns,
-                missing_columns=missing_columns,
-            )
-        )
+        errors.extend(_response_errors(row_index, case, [output_rows[row_index]], missing_columns))
 
     if errors:
         raise ValueError("expected-output validation failed: " + "; ".join(errors))
@@ -412,11 +450,20 @@ def _response_errors(
     wrong against its expected output; nothing when the case expects none."""
     if case.expected is None:
         return []
+    where = case.label or f"row {row_index}"
     if len(rows) != 1:
-        return [f"row {row_index}: expected one output row, {len(rows)} output row(s)."]
+        return [f"{where}: expected one output row, {len(rows)} output row(s)."]
     [row] = rows
     if not isinstance(row, dict):
-        return [f"row {row_index}: the response is {row!r}, not an object of output columns."]
+        return [f"{where}: the response is {row!r}, not an object of output columns."]
+    if case.whole:
+        # Encoded as a preview encodes it, as the accepted response was: a date as its text.
+        changes = response_changes(to_json_safe(row), case.expected, case.tolerance_pct)
+        return [
+            f"{where}: {change.path} {change.kind}, accepted {change.accepted!r}, "
+            f"answered {change.priced!r}"
+            for change in changes
+        ]
     return _case_errors(
         row_index=row_index,
         case=case,
@@ -663,8 +710,11 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
         errors.append(f"Configured test_quotes.dir does not exist: {tq_dir}")
     elif tq_dir is not None and not tq_dir.is_dir():
         errors.append(f"Configured test_quotes.dir is not a directory: {tq_dir}")
-    elif tq_dir is not None and not list(tq_dir.glob("*.json")):
-        errors.append(f"Configured test_quotes.dir contains no *.json files: {tq_dir}")
+    elif tq_dir is not None and not test_quote_files(tq_dir):
+        errors.append(
+            f"Configured test_quotes.dir holds no test quotes, neither a *.json file nor "
+            f"{TEST_QUOTES_FILE}: {tq_dir}"
+        )
     elif tq_dir is not None:
         # Pre-check each quote against the declared input schema; a
         # silently missing column won't be caught by a passthrough graph
@@ -675,7 +725,7 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
         # scored below, so its cases are not held to the columns here.
         required_cols = set(resolved.input_schema or {})
         reads_quotes = _reads_one_quote_per_request(resolved)
-        for jf in sorted(tq_dir.glob("*.json")):
+        for jf in test_quote_files(tq_dir):
             try:
                 cleaned = load_test_quote_file(jf)
             except Exception as exc:
@@ -750,7 +800,7 @@ def score_test_quotes(
     if tq_dir is None or not tq_dir.is_dir():
         return []
 
-    json_files = sorted(tq_dir.glob("*.json"))
+    json_files = test_quote_files(tq_dir)
     if not json_files:
         return []
 
@@ -771,7 +821,9 @@ def score_test_quotes(
         t0 = time.perf_counter()
         try:
             cases = _load_test_quote_cases(jf)
-            if one_quote_per_request:
+            if not cases:
+                rows = 0
+            elif one_quote_per_request:
                 # Each case as its request was sent: the Workbench Input types it.
                 outputs = [score(QuoteRequest((case.input,))) for case in cases]
                 _validate_expected_outputs_per_case(cases=cases, outputs=outputs)

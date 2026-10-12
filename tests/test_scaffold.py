@@ -645,6 +645,39 @@ class TestDeployTriggers:
         ]
 
 
+class TestTestQuotesReport:
+    """A workbench project's pull-request checks report what a change does to its test quotes."""
+
+    def test_github_posts_the_report_on_the_pull_request(self) -> None:
+        jobs = yaml.safe_load(github_ci_yml(workbench=True))["jobs"]
+        steps = jobs["test-quotes"]["steps"]
+        assert steps[0]["with"] == {"fetch-depth": 0}
+        run = " ".join(step.get("run", "") for step in steps)
+        assert 'haute test-quotes report --base "origin/${{ github.base_ref }}"' in run
+        assert "gh pr comment" in run and "--edit-last --create-if-none" in run
+        assert "GITHUB_STEP_SUMMARY" in run
+        assert "test-quotes" not in yaml.safe_load(github_ci_yml())["jobs"]
+
+    def test_gitlab_keeps_the_report_with_a_merge_requests_run(self) -> None:
+        job = yaml.safe_load(gitlab_ci_yml("databricks", workbench=True))["test-quotes-report"]
+        assert job["stage"] == "validate"
+        assert job["artifacts"] == {"paths": ["test-quotes-report.md"]}
+        assert job["rules"] == [{"if": '$CI_PIPELINE_SOURCE == "merge_request_event"'}]
+        assert "test-quotes-report" not in yaml.safe_load(gitlab_ci_yml("databricks"))
+
+    def test_azure_devops_publishes_the_report_for_a_pull_request(self) -> None:
+        def validate_jobs(workbench: bool) -> dict[str, dict[str, object]]:
+            document = yaml.safe_load(azure_devops_yml("databricks", workbench=workbench))
+            return {job["job"]: job for job in document["stages"][0]["jobs"]}
+
+        job = validate_jobs(True)["test_quotes"]
+        assert job["condition"] == "eq(variables['Build.Reason'], 'PullRequest')"
+        assert {"publish": "test-quotes-report.md", "artifact": "test-quotes-report"} in job[
+            "steps"
+        ]
+        assert "test_quotes" not in validate_jobs(False)
+
+
 class TestCompleteYamlParity:
     """Complete CI documents preserve their release flow and secret consumers."""
 

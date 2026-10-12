@@ -345,7 +345,10 @@ once and rendered three ways. The release inputs that start a deploy are listed 
 too (`_RELEASE_INPUT_DIRS`, `_RELEASE_INPUT_FILES`, and `DEFAULT_FORM_PATH`'s directory
 through `_release_input_dirs` when `workbench` is set) and rendered by
 `_github_trigger_paths` and `_azure_devops_trigger_paths`; `github_deploy_yml` and
-`azure_devops_yml` take `workbench`, which `handle_init` passes from `--workbench`.
+`azure_devops_yml` take `workbench`, which `handle_init` passes from `--workbench`, as do
+`github_ci_yml` and `gitlab_ci_yml`, which then add the test-quote report job
+(`_GITHUB_TEST_QUOTES_JOB`, `_GITLAB_TEST_QUOTES_JOB`, `_AZURE_TEST_QUOTES_JOB`, the last
+added to Azure DevOps' Validate stage).
 `handle_init` calls exactly the generator(s) for the chosen
 `ci` value (`"none"` calls none of them); on `--force` it first calls
 `_prune_stale_ci_files(project_dir, keep=ci)` (defined in `src/haute/cli/_init_cmd.py`),

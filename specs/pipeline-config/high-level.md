@@ -214,7 +214,11 @@ deploy starts on a push to the default branch that changes a release input: the
 pipeline (`rating/`), `data/`, `models/`, the test quotes, `haute.toml`, the dependency
 files `pyproject.toml` and `uv.lock`, and in a project initialised with `--workbench` the
 form's directory, `forms/`. GitHub and Azure DevOps filter the push on those paths;
-GitLab's pipeline runs on every default-branch commit and filters none. A
+GitLab's pipeline runs on every default-branch commit and filters none. A project
+initialised with `--workbench` also reports on each pull request what it does to the
+test quotes (`haute test-quotes report` against the target branch): GitHub posts it on
+the pull request, editing the report it posted before, and adds it to the run's
+summary; GitLab and Azure DevOps keep it with the run as an artifact. A
 build-and-push-only target's workflow has no smoke-test or impact-analysis job (its production
 job follows staging directly): nothing runs the pushed image until someone updates the service
 by hand, so those checks would test the old service. The production job tags the release in git:

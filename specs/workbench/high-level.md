@@ -72,7 +72,7 @@ Out of scope:
 - Where a deployment's quote store is configured and migrated, the server databases it
   will run on, and the app's Save, Open and list of quotes
   ([WB-10](../roadmap/workbench.md#wb-10--the-quote-store)); the test-quote file's
-  history in git and its check in CI
+  history in git, its diff and its merge
   ([WB-12](../roadmap/workbench.md#wb-12--test-quotes-in-preview)).
 - `haute init`'s other scaffolding ([cli](../cli/high-level.md),
   [pipeline-config](../pipeline-config/high-level.md)).
@@ -565,6 +565,17 @@ Out of scope:
   `haute init --workbench` writes the file empty, at the newest schema, so a milestone's
   sweep tracks it from the start, and the `.gitignore` guards keep SQLite's journal files
   out of the repository.
+
+  In CI, deploy's check prices every test quote in the file, one request each, and
+  compares its answer with the response it was accepted with as a run compares it, so a
+  change the panel shows is a change the check fails on; a test quote saved unpriced is
+  priced with nothing to compare, and the smoke test does the same against the deployed
+  endpoint ([deploy](../deploy/high-level.md)). `haute test-quotes report` says what a
+  branch does to the test quotes against its base: those added, removed and accepted
+  anew, each with the outputs that moved; a workbench project's generated pull-request
+  checks post it on the pull request on GitHub and keep it with the run on GitLab and
+  Azure DevOps ([cli](../cli/high-level.md),
+  [pipeline-config](../pipeline-config/high-level.md)).
 - **Shown when.** A sheet, a section or a component with conditions shows only while they
   hold on the values typed into the sheets, the sample while building and the quote in
   Preview; a section on a sheet that does not show does not show either, nor does a

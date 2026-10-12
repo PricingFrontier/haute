@@ -822,6 +822,14 @@ class TestInitWorkbench:
         runner.invoke(cli, ["init", "--force", "--ci", ci], catch_exceptions=False)
         assert entry not in (tmp_path / workflow).read_text(encoding="utf-8")
 
+    def test_the_pull_request_checks_report_the_test_quotes(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(cli, ["init", "--workbench"], catch_exceptions=False)
+        checks = (tmp_path / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        assert "haute test-quotes report" in checks
+
     def test_writes_the_test_quote_file_empty_at_the_newest_schema(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):

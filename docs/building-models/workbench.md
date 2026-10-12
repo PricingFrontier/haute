@@ -232,3 +232,30 @@ Table's the row keyed like each grid row, and every Chart plots the quote. The v
 the Charts dim when you change the quote, until
 you press **Price** again, and the quote is priced exactly as a deployed pipeline would price
 it. **Clear** empties the quote, after asking. Ctrl+S still saves the project in Preview.
+
+## Test quotes
+
+Keep the quotes you check rates with as **test quotes**. In Preview, **Test quotes** opens
+a panel beside the sheets. Type a quote into the sheets, name it in the panel and press
+**Save**: Haute checks it as Price does, prices it in full on the pipeline as it is now and
+keeps it with its prices, in `tests/quotes/test_quotes.sqlite` (in the folder
+`[test_quotes] dir` in `haute.toml` names). Save and Commit carry the file with the rest of
+the project.
+
+- **Open** puts a test quote back on the sheets. Its values follow the tables and columns
+  they were typed into, renamed or not; the panel names any value that has no place on
+  the sheets now.
+- **Run all** (or **Run ticked**) prices each test quote on the pipeline as it is when you
+  press it, and compares what comes out with the prices you accepted for it: each shows
+  **Unchanged**, **Changed** or **Failed**. Click a changed quote to see every output that
+  moved, the accepted value beside the new. Change the pipeline or the sheets while a
+  run's results are showing and the panel says to run again.
+- **Accept** (the tick) keeps a changed quote's new prices as the ones to expect, when the
+  change was meant. **Delete** (the bin) removes a test quote, after asking.
+
+When the project deploys, the dry run prices every test quote again and fails on any
+output that moved and was not accepted, so a rate change arrives with its test quotes
+accepted. On a pull request, a project set up with `haute init --workbench` reports what
+the change does to the test quotes: GitHub posts the report on the pull request, and
+GitLab and Azure DevOps keep it with the run. `haute test-quotes report` writes the same
+report on your machine.

@@ -60,9 +60,11 @@ def handle_smoke(config: SmokeConfig) -> None:
         click.echo(f"Error: No test quotes directory found (resolved: {tq_dir}).", err=True)
         raise SystemExit(1)
 
-    json_files = sorted(tq_dir.glob("*.json"))
+    from haute.deploy._validators import test_quote_files
+
+    json_files = test_quote_files(tq_dir)
     if not json_files:
-        click.echo("Error: No .json files in tests/quotes/.", err=True)
+        click.echo(f"Error: No test quotes in {tq_dir}.", err=True)
         raise SystemExit(1)
 
     click.echo(f"Smoke testing endpoint: {endpoint_name}")

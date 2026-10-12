@@ -570,3 +570,59 @@ class TestSmokeUnsupportedTarget:
         assert "smoke" in result.output.lower()
         assert "sagemaker" in result.output.lower()
         assert "not supported" in result.output.lower()
+
+
+class TestSmokeTestQuoteFile:
+    """The workbench's test-quote file is smoked as the JSON files are, each quote compared
+    whole with the response it was accepted with."""
+
+    def test_each_saved_quote_is_sent_alone_and_held_to_its_accepted_response(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute._quote_store import migrate_store, open_store, store_url
+        from haute._workbench_form import FormSpec
+
+        quotes_dir = _setup_smoke_project(tmp_path, monkeypatch)
+        for stale in quotes_dir.glob("*.json"):
+            stale.unlink()
+        url = store_url(quotes_dir / "test_quotes.sqlite")
+        migrate_store(url)
+        blank = {"id": "s", "title": "s", "height": 120, "widgets": []}
+        form = FormSpec.model_validate(
+            {
+                "name": "m",
+                "schema": {"tables": []},
+                "pages": [{"id": "p", "title": "S", "sections": [blank]}],
+            }
+        )
+        with open_store(url) as store:
+            store.create(
+                name="Northern fleet",
+                owner="ana",
+                saved_by="ana",
+                form=form,
+                inputs={},
+                request={"policy": {"limit": 5}},
+                response={"pricing": {"premium": 50.0}},
+                release=None,
+            )
+
+        mock_ws = MagicMock()
+        mock_ws.serving_endpoints.get.return_value = _ready_endpoint_mock()
+        mock_response = MagicMock()
+        mock_response.predictions = [{"pricing": {"premium": 61.0}}]
+        mock_ws.serving_endpoints.query.return_value = mock_response
+
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), patch("time.sleep"):
+            result = runner.invoke(cli, ["smoke"])
+
+        assert result.exit_code == 1
+        sent = mock_ws.serving_endpoints.query.call_args.kwargs["dataframe_records"]
+        assert sent == [{"policy": {"limit": 5}}]
+        assert (
+            "test_quotes.sqlite: quote 'Northern fleet': pricing.premium changed, accepted 50.0, "
+            "answered 61.0"
+        ) in result.output
