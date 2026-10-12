@@ -143,6 +143,48 @@ def test_a_sqlite_store_keeps_foreign_keys_on_and_no_write_ahead_log(
         assert raw.execute("PRAGMA journal_mode").fetchone() == ("delete",)
 
 
+def _write_ahead(path: Path) -> None:
+    """A store's file put in write-ahead logging, as another tool might leave it."""
+    raw = sqlite3.connect(path)
+    try:
+        assert raw.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+    finally:
+        raw.close()
+
+
+def test_a_file_left_in_write_ahead_logging_is_put_back_to_a_rollback_journal(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "quotes.sqlite"
+    migrate_store(store_url(path))
+    _write_ahead(path)
+
+    with open_store(store_url(path), clock=Clock()) as store:
+        _create(store)
+
+    with sqlite3.connect(path) as raw:
+        assert raw.execute("PRAGMA journal_mode").fetchone() == ("delete",)
+    assert sorted(entry.name for entry in tmp_path.iterdir()) == ["quotes.sqlite"]
+
+
+def test_a_file_held_in_write_ahead_logging_is_refused_and_nothing_is_written(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "quotes.sqlite"
+    migrate_store(store_url(path))
+    _write_ahead(path)
+    # Another connection holds the file in write-ahead logging, so it cannot be switched.
+    holder = sqlite3.connect(path)
+    try:
+        holder.execute("SELECT COUNT(*) FROM haute_quotes").fetchone()
+        with pytest.raises(QuoteStoreError, match="could not be put back to a rollback journal"):
+            with open_store(store_url(path), clock=Clock()) as store:
+                _create(store)
+        assert holder.execute("SELECT COUNT(*) FROM haute_quotes").fetchone() == (0,)
+    finally:
+        holder.close()
+
+
 # ── Quotes and revisions ──────────────────────────────────────────────────
 
 
@@ -207,6 +249,32 @@ def test_a_revision_after_one_the_quote_has_moved_past_is_refused_with_nothing_w
     # The refused save's form was not kept either: the one transaction wrote nothing.
     with sqlite3.connect(url.removeprefix("sqlite:///")) as raw:
         assert raw.execute("SELECT COUNT(*) FROM haute_quote_forms").fetchone() == (1,)
+
+
+def test_a_revision_saved_apart_under_the_same_number_is_refused_by_its_token(
+    store: QuoteStore,
+) -> None:
+    first = _create(store)
+    fields = {
+        "saved_by": "ben@example.com",
+        "form": FORM,
+        "inputs": VALUES,
+        "request": REQUEST,
+        "response": RESPONSE,
+        "release": None,
+    }
+    second = store.save_revision(first.quote_id, after=1, **fields)
+    # The token names the revision by what was saved, beyond its number.
+    assert second.token == store.revision(first.quote_id, 2).token
+    assert second.token != first.token
+
+    # A run read revision 2 as another branch saved it.
+    with pytest.raises(StaleQuoteError, match="saved apart, on another branch"):
+        store.save_revision(first.quote_id, after=2, after_token=first.token, **fields)
+    assert store.revision(first.quote_id).number == 2
+
+    third = store.save_revision(first.quote_id, after=2, after_token=second.token, **fields)
+    assert third.number == 3
 
 
 def test_an_unknown_quote_or_revision_is_refused_naming_it(store: QuoteStore) -> None:

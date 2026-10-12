@@ -37,7 +37,11 @@ class WorkbenchTestQuoteError(WorkbenchError):
 
 
 def project_test_quotes_path(project_root: Path) -> Path:
-    """The project's test-quote file: ``test_quotes.sqlite`` in its test-quote directory."""
+    """The project's test-quote file: ``test_quotes.sqlite`` in its test-quote directory.
+
+    The whole path is held inside the project, the file included, so a link at the file's
+    name that leads outside is refused as a directory that does is.
+    """
     directory = DEFAULT_TEST_QUOTES_DIR
     toml_path = project_root / "haute.toml"
     if toml_path.is_file():
@@ -50,11 +54,31 @@ def project_test_quotes_path(project_root: Path) -> Path:
         if isinstance(configured, str) and configured:
             directory = configured
     try:
-        return contained_path(project_root.resolve(), directory) / TEST_QUOTES_FILE
+        return contained_path(project_root.resolve(), Path(directory) / TEST_QUOTES_FILE)
     except PathOutsideProjectError as exc:
         raise WorkbenchTestQuoteError(
-            f"[test_quotes] dir {directory!r} must be a folder inside the project."
+            f"[test_quotes] dir {directory!r} must be a folder inside the project, and "
+            f"{TEST_QUOTES_FILE} a file inside it."
         ) from exc
+
+
+def project_gitattributes_path(project_root: Path) -> Path:
+    """The project's ``.gitattributes``, refused when a link at its name leads outside."""
+    try:
+        return contained_path(project_root.resolve(), ".gitattributes")
+    except PathOutsideProjectError as exc:
+        raise WorkbenchTestQuoteError(
+            ".gitattributes leads outside the project: make it a file of the project's own."
+        ) from exc
+
+
+def _attributes_pattern(relative: str) -> str:
+    """*relative* as a ``.gitattributes`` pattern: quoted as git reads a quoted pattern when
+    it holds a space, a quote or a backslash, which would otherwise end it or escape."""
+    if not any(character in relative for character in ' \t"\\'):
+        return relative
+    escaped = relative.replace("\\", "\\\\").replace('"', '\\"').replace("\t", "\\t")
+    return f'"{escaped}"'
 
 
 #: The git drivers' name for the test-quote file, in ``.gitattributes`` and the clone's config.
@@ -82,8 +106,8 @@ def ensure_test_quote_git(project_root: Path, relative: str) -> bool:
         ok, current = _run_git_ok("config", "--local", "--get", key, cwd=project_root)
         if not ok or current.strip() != value:
             _run_git_ok("config", "--local", key, value, cwd=project_root)
-    attributes = project_root / ".gitattributes"
-    line = f"{relative} diff={GIT_DRIVER} merge={GIT_DRIVER}"
+    attributes = project_gitattributes_path(project_root)
+    line = f"{_attributes_pattern(relative)} diff={GIT_DRIVER} merge={GIT_DRIVER}"
     text = attributes.read_text(encoding="utf-8") if attributes.is_file() else ""
     if line in text.splitlines():
         return False

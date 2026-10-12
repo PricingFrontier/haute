@@ -10,9 +10,11 @@ from typing import Any
 
 import pytest
 
-from haute._quote_store import migrate_store, store_url
+from haute import _git
+from haute._quote_store import migrate_store, open_store, store_url
 from haute._test_quotes import (
     WorkbenchTestQuoteError,
+    project_gitattributes_path,
     project_test_quotes_path,
     quote_request,
     response_document,
@@ -77,6 +79,56 @@ def test_the_file_is_in_the_test_quote_directory(project: Path) -> None:
     (project / "haute.toml").write_text('[test_quotes]\ndir = "../elsewhere"\n', encoding="utf-8")
     with pytest.raises(WorkbenchTestQuoteError, match="inside the project"):
         project_test_quotes_path(project)
+
+
+def _link_file(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("this account cannot make a file symlink here")
+
+
+def test_a_test_quote_file_or_gitattributes_leading_outside_the_project_is_refused(
+    project: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    enable(project)
+    outside = tmp_path_factory.mktemp("outside")
+    target = outside / "elsewhere.sqlite"
+    migrate_store(store_url(target))
+    before = target.read_bytes()
+    (project / "tests" / "quotes").mkdir(parents=True)
+    _link_file(project / PATH, target)
+
+    with pytest.raises(WorkbenchTestQuoteError, match="a file inside it"):
+        project_test_quotes_path(project)
+    refused = save()
+    assert refused.status_code == 409, refused.text
+    assert target.read_bytes() == before
+
+    (project / PATH).unlink()
+    _link_file(project / ".gitattributes", outside / "attributes")
+    with pytest.raises(WorkbenchTestQuoteError, match=".gitattributes leads outside"):
+        project_gitattributes_path(project)
+    assert not (outside / "attributes").exists()
+
+
+def test_a_test_quote_folder_with_a_space_keeps_its_drivers(project: Path) -> None:
+    enable(project, '[workbench]\nenabled = true\n\n[test_quotes]\ndir = "test quotes"\n')
+    init_repo(project)
+
+    assert save().status_code == 200
+    saved = "test quotes/test_quotes.sqlite"
+
+    assert (project / ".gitattributes").read_text(encoding="utf-8") == (
+        f'"{saved}" diff=haute-test-quotes merge=haute-test-quotes\n'
+    )
+    assert git(project, "check-attr", "diff", "merge", "--", saved).splitlines() == [
+        f"{saved}: diff: haute-test-quotes",
+        f"{saved}: merge: haute-test-quotes",
+    ]
+    # A second save finds the line it wrote, quoted, and adds no other.
+    assert save("Southern fleet").status_code == 200
+    assert (project / ".gitattributes").read_text(encoding="utf-8").count("diff=") == 1
 
 
 def test_the_request_is_built_as_price_builds_it() -> None:
@@ -183,10 +235,11 @@ def test_a_compare_lists_what_changed_since_the_revision_the_run_read(project: P
 
     compared = client().post(
         f"/api/workbench/test-quotes/{quote_id}/compare",
-        json={"form": FORM, "tables": repriced, "number": 1},
+        json={"form": FORM, "values": VALUES, "tables": repriced, "number": 1},
     )
 
     assert compared.status_code == 200, compared.text
+    assert compared.json()["token"] == opened(quote_id)["token"]
     assert compared.json()["changes"] == [
         {
             "path": "pricing_output.premium",
@@ -197,11 +250,71 @@ def test_a_compare_lists_what_changed_since_the_revision_the_run_read(project: P
     ]
 
 
+def opened(quote_id: str) -> dict[str, Any]:
+    answered = client().post(f"/api/workbench/test-quotes/{quote_id}/open", json={"form": FORM})
+    assert answered.status_code == 200, answered.text
+    return dict(answered.json())
+
+
+def test_a_compare_asks_for_an_accept_when_the_request_a_deploy_prices_has_moved(
+    project: Path,
+) -> None:
+    """A column renamed since the save: Preview's request uses the new name, and the one the
+    revision keeps, which a deploy prices, the old; the compare names both places, and the
+    accept keeps the request the run priced."""
+    enable(project)
+    quote_id = save().json()["quote"]["id"]
+    renamed = form(
+        {**POLICY, "columns": [POLICY["columns"][0], column("sum_insured", "float")]},
+        PRICING,
+        ITEMS,
+    )
+    # The column kept its id, so the value typed under its old name is carried onto it.
+    renamed["schema"]["tables"][0]["columns"][1]["id"] = "c_exposure"
+    carried = (
+        client().post(f"/api/workbench/test-quotes/{quote_id}/open", json={"form": renamed}).json()
+    )
+
+    compared = client().post(
+        f"/api/workbench/test-quotes/{quote_id}/compare",
+        json={"form": renamed, "values": carried["values"], "tables": TABLES, "number": 1},
+    )
+
+    assert compared.status_code == 200, compared.text
+    assert {(change["path"], change["kind"]) for change in compared.json()["changes"]} == {
+        ("request.policy_details.sum_insured", "added"),
+        ("request.policy_details.exposure", "removed"),
+    }
+    accepted = client().post(
+        f"/api/workbench/test-quotes/{quote_id}/accept",
+        json={
+            "after": 1,
+            "token": compared.json()["token"],
+            "form": renamed,
+            "values": carried["values"],
+            "tables": TABLES,
+        },
+    )
+    assert accepted.status_code == 200, accepted.text
+    with open_store(store_url(project / PATH)) as store:
+        assert store.revision(quote_id).request == {
+            "policy_details": {"state": "NY", "sum_insured": 1000.0}
+        }
+
+
 def test_an_accept_follows_the_newest_and_a_stale_one_writes_nothing(project: Path) -> None:
     enable(project)
     quote_id = save().json()["quote"]["id"]
     repriced = {**TABLES, "pricing_output": [{"premium": 530.0}]}
-    body = {"after": 1, "form": FORM, "values": VALUES, "tables": repriced}
+    token = opened(quote_id)["token"]
+    body = {"after": 1, "token": token, "form": FORM, "values": VALUES, "tables": repriced}
+
+    # A revision 1 read as another branch saved it is not the one here.
+    other = client().post(
+        f"/api/workbench/test-quotes/{quote_id}/accept", json={**body, "token": "elsewhere"}
+    )
+    assert other.status_code == 409
+    assert "saved apart, on another branch" in other.text
 
     accepted = client().post(f"/api/workbench/test-quotes/{quote_id}/accept", json=body)
     stale = client().post(f"/api/workbench/test-quotes/{quote_id}/accept", json=body)
@@ -278,10 +391,41 @@ def test_every_test_quote_route_is_404_while_the_workbench_is_off(project: Path)
         (
             "POST",
             "/api/workbench/test-quotes/q/compare",
-            {"form": FORM, "tables": TABLES, "number": 1},
+            {"form": FORM, "values": VALUES, "tables": TABLES, "number": 1},
         ),
-        ("POST", "/api/workbench/test-quotes/q/accept", {"after": 1, **write}),
+        ("POST", "/api/workbench/test-quotes/q/accept", {"after": 1, "token": "t", **write}),
         ("DELETE", "/api/workbench/test-quotes/q", None),
+        ("POST", "/api/workbench/test-quotes/capture", None),
     ):
         answered = client().request(method, url, json=body)
         assert answered.status_code == 404, (url, answered.text)
+
+
+def test_a_write_the_ledger_did_not_capture_is_captured_again_without_writing(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    enable(project)
+    init_repo(project)
+    # Nothing to capture before there is a file, and capturing makes none.
+    nothing = client().post("/api/workbench/test-quotes/capture")
+    assert nothing.status_code == 200, nothing.text
+    assert not (project / PATH).exists()
+
+    # No commit identity: the save lands, and the response says the capture waits on one.
+    identity = _git.get_identity
+    monkeypatch.setattr(_git, "get_identity", lambda cwd=None: (None, None))
+    saved = save()
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["identity_required"] is True
+    assert PATH not in git(project, "ls-tree", "-r", "--name-only", LEDGER).splitlines()
+    monkeypatch.setattr(_git, "get_identity", identity)
+
+    captured = client().post("/api/workbench/test-quotes/capture")
+
+    assert captured.status_code == 200, captured.text
+    assert captured.json()["git_sha"] is not None
+    assert captured.json()["quote"] is None
+    assert PATH in git(project, "ls-tree", "-r", "--name-only", LEDGER).splitlines()
+    # The retry wrote nothing: still the one test quote, at its first revision.
+    [listed] = client().get("/api/workbench/test-quotes").json()["quotes"]
+    assert listed["number"] == 1

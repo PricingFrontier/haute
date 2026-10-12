@@ -430,7 +430,8 @@ class TestSmokeDatabricksEdgeCases:
         outcome: str | None,
     ) -> None:
         """The same comparison as deploy's, walked into a Workbench Output's tables."""
-        quotes_dir = _setup_smoke_project(tmp_path, monkeypatch)
+        _setup_smoke_project(tmp_path, monkeypatch)
+        quotes_dir = tmp_path / "tests" / "quotes"
         for stale in quotes_dir.glob("*.json"):
             stale.unlink()
         (quotes_dir / "golden.json").write_text(
@@ -490,7 +491,8 @@ class TestSmokeDatabricksEdgeCases:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        quotes_dir = _setup_smoke_project(tmp_path, monkeypatch)
+        _setup_smoke_project(tmp_path, monkeypatch)
+        quotes_dir = tmp_path / "tests" / "quotes"
         (quotes_dir / "broken.json").write_text("[{}]")
 
         mock_ws = MagicMock()
@@ -515,9 +517,10 @@ class TestSmokeHttpRequests:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        quotes_dir = _setup_smoke_project(
+        _setup_smoke_project(
             tmp_path, monkeypatch, target="container", staging_url="http://localhost:8080"
         )
+        quotes_dir = tmp_path / "tests" / "quotes"
         (quotes_dir / "golden.json").write_text(
             json.dumps([{"input": {"VehPower": 7, "Area": "C"}, "expected": {"premium": 9.0}}])
         )
@@ -585,7 +588,8 @@ class TestSmokeTestQuoteFile:
         from haute._quote_store import migrate_store, open_store, store_url
         from haute._workbench_form import FormSpec
 
-        quotes_dir = _setup_smoke_project(tmp_path, monkeypatch)
+        _setup_smoke_project(tmp_path, monkeypatch)
+        quotes_dir = tmp_path / "tests" / "quotes"
         for stale in quotes_dir.glob("*.json"):
             stale.unlink()
         url = store_url(quotes_dir / "test_quotes.sqlite")

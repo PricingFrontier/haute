@@ -7,11 +7,17 @@
  * pipeline, the data source and the form when it starts and prices each test quote on them,
  * one request each, its values carried onto that form, then asks the server what changed
  * since the revision it read; a change to any of the three afterwards makes the run stale.
- * Accepting a change saves the run's response after that revision.
+ * Accepting a change saves the run's response after that revision, the one the run read
+ * (its token), never while a run is under way or once the run is stale, and never over a
+ * run started since. A run is forgotten when the pipeline's document is adopted anew (a
+ * branch switched): its results were read on another branch's test quotes. Each write's
+ * capture on the save ledger is reported as a save's is, and one the ledger did not take
+ * is taken again, nothing written, when the project is next saved.
  */
 import { create } from "zustand"
 import {
   acceptTestQuote,
+  captureTestQuotes,
   compareTestQuote,
   deleteTestQuote,
   fetchTestQuotes,
@@ -22,9 +28,11 @@ import {
   type TestQuoteChange,
 } from "../api/workbench"
 import { apiErrorMessage } from "../api/errors"
-import type { FormSpec, WorkbenchTestQuoteSummary } from "../api/types"
+import type { FormSpec, WorkbenchTestQuoteSummary, WorkbenchTestQuoteWriteResponse } from "../api/types"
 import { quoteFilled, quoteProblems } from "../utils/sheetValues"
 import { quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
+import { reportSaveCapture } from "./saveCapture"
+import useDocumentStatusStore from "./useDocumentStatusStore"
 import useGraphStore from "./useGraphStore"
 import useSettingsStore from "./useSettingsStore"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
@@ -36,8 +44,9 @@ export type RunStatus = "running" | "unchanged" | "changed" | "failed"
 /** A test quote as the last run left it. */
 export interface QuoteRun {
   status: RunStatus
-  /** The revision the run read, which an accept follows. */
+  /** The revision the run read, which an accept follows, and what it is beyond its number. */
   number: number | null
+  token: string | null
   /** The quote's values carried onto the run's form, and what had no place on it. */
   values: SheetQuote | null
   dropped: string[]
@@ -70,6 +79,10 @@ interface WorkbenchTestQuotesState {
   runForm: FormSpec | null
   runBasis: RunBasis | null
   running: boolean
+  /** An accept is under way: neither a run nor another accept starts meanwhile. */
+  accepting: boolean
+  /** A write landed but the ledger did not capture it: the next project save captures it. */
+  uncaptured: boolean
   setOpen: (open: boolean) => void
   load: () => Promise<void>
   /** Save the quote on the sheets as a new test quote; whether it was saved. */
@@ -80,6 +93,10 @@ interface WorkbenchTestQuotesState {
   run: () => Promise<void>
   accept: (id: string) => Promise<void>
   remove: (id: string) => Promise<void>
+  /** Forget the last run, as when the pipeline's document is adopted anew. */
+  forget: () => void
+  /** Capture the test-quote file on the ledger again when a write's capture was not taken. */
+  flush: () => Promise<void>
 }
 
 /** What a run of the form as it is now would price on. */
@@ -114,9 +131,19 @@ function quoteRefusal(form: FormSpec, quote: SheetQuote): string | null {
   return problems === 0 ? null : `${problems} ${problems === 1 ? "cell needs" : "cells need"} attention`
 }
 
+/** The run asked for last: an answer for an earlier one is nobody's. */
+let generation = 0
+
+/** Report a write's capture as a save's is; whether the ledger has yet to take it. */
+function uncapturedAfter(written: WorkbenchTestQuoteWriteResponse): boolean {
+  reportSaveCapture(written)
+  return written.identity_required || (written.git_sha === null && written.warnings.length > 0)
+}
+
 const runOf = (patch: Partial<QuoteRun>): QuoteRun => ({
   status: "running",
   number: null,
+  token: null,
   values: null,
   dropped: [],
   tables: null,
@@ -137,6 +164,8 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
   runForm: null,
   runBasis: null,
   running: false,
+  accepting: false,
+  uncaptured: false,
   // The panel lists the quotes when it opens.
   setOpen: (open) => set({ open }),
   load: async () => {
@@ -163,7 +192,8 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
     set({ saving: true, error: null, notice: null })
     try {
       const { tables } = await priceForm({ ...form, sample: quote }, fixedPricer())
-      await saveTestQuote(name, form, quote, tables as PricedTables)
+      const written = await saveTestQuote(name, form, quote, tables as PricedTables)
+      set({ uncaptured: uncapturedAfter(written) })
       await get().load()
       return true
     } catch (error: unknown) {
@@ -195,7 +225,7 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
     set((s) => ({ selected: s.selected.includes(id) ? s.selected.filter((x) => x !== id) : [...s.selected, id] })),
   run: async () => {
     const { form } = useWorkbenchFormStore.getState()
-    if (form === null || get().running) return
+    if (form === null || get().running || get().accepting) return
     let pricer: Pricer
     try {
       pricer = fixedPricer()
@@ -205,6 +235,7 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
     }
     const { quotes, selected } = get()
     const ids = selected.length > 0 ? selected : quotes.map((quote) => quote.id)
+    const mine = ++generation
     set({
       running: true,
       error: null,
@@ -215,15 +246,18 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
     })
     // One quote at a time: each is its own request, as deploy scores them.
     for (const id of ids) {
-      const done = (patch: Partial<QuoteRun>) =>
-        set((s) => ({ runs: { ...s.runs, [id]: { ...s.runs[id], ...patch } } }))
+      if (generation !== mine) return
+      const done = (patch: Partial<QuoteRun>) => {
+        if (generation === mine) set((s) => ({ runs: { ...s.runs, [id]: { ...s.runs[id], ...patch } } }))
+      }
       try {
         const opened = await openTestQuote(id, form)
-        done({ number: opened.number, values: opened.values, dropped: opened.dropped })
+        done({ number: opened.number, token: opened.token, values: opened.values, dropped: opened.dropped })
         const { tables } = await priceForm({ ...form, sample: opened.values }, pricer)
-        const compared = await compareTestQuote(id, form, tables as PricedTables, opened.number)
+        const compared = await compareTestQuote(id, form, opened.values, tables as PricedTables, opened.number)
         done({
           status: compared.changes.length === 0 ? "unchanged" : "changed",
+          token: compared.token,
           tables: tables as PricedTables,
           changes: compared.changes,
         })
@@ -231,31 +265,46 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
         done({ status: "failed", error: apiErrorMessage(error) })
       }
     }
-    set({ running: false })
+    if (generation === mine) set({ running: false })
   },
   accept: async (id) => {
-    const { runs, runForm } = get()
+    const { runs, runForm, runBasis, running, accepting } = get()
     const run = runs[id]
-    if (run === undefined || runForm === null || run.number === null || run.values === null || run.tables === null) return
+    if (run === undefined || runForm === null || run.number === null || run.token === null || run.values === null || run.tables === null) return
+    if (running || accepting) return
+    if (runIsStale(runBasis, useWorkbenchFormStore.getState().form)) {
+      set({ error: "The pipeline, the data source or the form has changed since this run: run again before accepting." })
+      return
+    }
+    const mine = generation
+    set({ accepting: true })
     try {
-      await acceptTestQuote(id, run.number, runForm, run.values, run.tables)
-      set((s) => ({
-        error: null,
-        runs: { ...s.runs, [id]: { ...run, status: "unchanged", changes: [], number: run.number === null ? null : run.number + 1 } },
-      }))
+      const written = await acceptTestQuote(id, run.number, run.token, runForm, run.values, run.tables)
+      set({ uncaptured: uncapturedAfter(written) })
+      // A run started since, or forgotten since, holds its own result for the quote.
+      if (generation === mine) {
+        set((s) => ({
+          error: null,
+          // The accepted revision's token is the server's to give: the next run reads it.
+          runs: { ...s.runs, [id]: { ...run, status: "unchanged", changes: [], number: run.number === null ? null : run.number + 1, token: null } },
+        }))
+      }
       await get().load()
     } catch (error: unknown) {
       const message = apiErrorMessage(error)
       set({
         error: message.includes("stale_quote_revision")
-          ? "The quote was saved since the run: run it again before accepting."
+          ? "The quote was saved since the run, or differently on this branch: run it again before accepting."
           : `Not accepted: ${message}`,
       })
+    } finally {
+      set({ accepting: false })
     }
   },
   remove: async (id) => {
     try {
-      await deleteTestQuote(id)
+      const written = await deleteTestQuote(id)
+      set({ uncaptured: uncapturedAfter(written) })
       set((s) => {
         const runs = { ...s.runs }
         delete runs[id]
@@ -266,6 +315,25 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
       set({ error: `Not deleted: ${apiErrorMessage(error)}` })
     }
   },
+  forget: () => {
+    generation += 1
+    set({ runs: {}, runForm: null, runBasis: null, running: false })
+    if (get().open) void get().load()
+  },
+  flush: async () => {
+    if (!get().uncaptured) return
+    try {
+      set({ uncaptured: uncapturedAfter(await captureTestQuotes()) })
+    } catch (error: unknown) {
+      set({ error: `The test quotes were not captured: ${apiErrorMessage(error)}` })
+    }
+  },
 }))
+
+// The test quotes follow the pipeline's document: a run read on the branch before an
+// adoption (a branch switched by hand, a change on disk) is nobody's now.
+useDocumentStatusStore.subscribe((state, previous) => {
+  if (state.executionGeneration !== previous.executionGeneration) useWorkbenchTestQuotesStore.getState().forget()
+})
 
 export default useWorkbenchTestQuotesStore

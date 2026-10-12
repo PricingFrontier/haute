@@ -1293,6 +1293,10 @@ function FlowEditor() {
       // A form save refused (stale, or failed) saves no pipeline: what is saved runs on
       // the form that was saved, never on copies of a form the view does not show.
       if (!(await formStore.getState().flush())) return false
+      // A test-quote write the ledger did not capture is captured now; a capture that
+      // fails says so and saves the pipeline all the same.
+      const { default: testQuotesStore } = await import("./stores/useWorkbenchTestQuotesStore")
+      await testQuotesStore.getState().flush()
       if (refused()) return false
       const brought = await bringUpToDate()
       if (refused()) return false

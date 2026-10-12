@@ -254,9 +254,14 @@ class WorkbenchTestQuoteSaveRequest(BaseModel):
 
 
 class WorkbenchTestQuoteAcceptRequest(BaseModel):
-    """A test quote's new response, accepted as the revision after ``after``."""
+    """A test quote's new response, accepted as the revision after ``after``.
+
+    ``token`` is the token of revision ``after`` as the run read it: a revision ``after``
+    saved apart, on another branch, is refused.
+    """
 
     after: int = Field(ge=1)
+    token: str = Field(min_length=1)
     form: FormSpec
     values: WorkbenchValues
     tables: WorkbenchPricedTables
@@ -291,15 +296,19 @@ class WorkbenchTestQuoteOpenResponse(BaseModel):
     id: str
     name: str
     number: int
+    #: What the revision is, beyond its number, for an accept to name.
+    token: str
     values: WorkbenchValues
     dropped: list[str]
     response: dict[str, Any] | None = None
 
 
 class WorkbenchTestQuoteCompareRequest(BaseModel):
-    """A run's priced tables for a test quote, compared with revision ``number``'s response."""
+    """A run's priced tables for a test quote, compared with revision ``number``'s response,
+    and the request its ``values`` make on ``form`` with the request that revision keeps."""
 
     form: FormSpec
+    values: WorkbenchValues
     tables: WorkbenchPricedTables
     number: int = Field(ge=1)
 
@@ -314,9 +323,11 @@ class WorkbenchTestQuoteChange(BaseModel):
 
 
 class WorkbenchTestQuoteCompareResponse(BaseModel):
-    """Every place a run's response differs from the revision it read; none: unchanged."""
+    """Every place a run's response, or the request it priced, differs from the revision it
+    read, a request's places under ``request.``; none: unchanged."""
 
     number: int
+    token: str
     changes: list[WorkbenchTestQuoteChange]
 
 

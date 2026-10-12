@@ -2657,6 +2657,7 @@ export interface WorkbenchTestQuoteOpenResponse {
   response: {
     [k: string]: unknown;
   } | null;
+  token: string;
   values: {
     [k: string]: {
       [k: string]: string | boolean;
@@ -2664,11 +2665,13 @@ export interface WorkbenchTestQuoteOpenResponse {
   };
 }
 /**
- * Every place a run's response differs from the revision it read; none: unchanged.
+ * Every place a run's response, or the request it priced, differs from the revision it
+ * read, a request's places under ``request.``; none: unchanged.
  */
 export interface WorkbenchTestQuoteCompareResponse {
   changes: WorkbenchTestQuoteChange[];
   number: number;
+  token: string;
 }
 /**
  * One place the priced response differs from the accepted one.

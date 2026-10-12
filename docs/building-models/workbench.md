@@ -290,5 +290,6 @@ builder on screen.
   base_image = "python:3.11.9-slim"
   ```
 
-A page opened before a new release is refused when it prices, and reloading it picks up the
-new sheets.
+A page opened before a release that changed the sheets is refused when it prices, and
+reloading it picks up the new sheets. A release that changes only the pipeline prices the
+open page on the new pipeline.

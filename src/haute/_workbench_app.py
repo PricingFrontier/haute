@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import copy
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -98,15 +99,52 @@ _PRICING_KEYS = (
 )
 
 
+def _graphs(graph: dict[str, Any]) -> list[dict[str, Any]]:
+    """A manifest's pipeline graph and each submodel's, as dicts."""
+    found = [graph]
+    for submodel in (graph.get("submodels") or {}).values():
+        found.extend(_graphs(submodel["graph"]))
+    return found
+
+
+def _without_sources(graph: dict[str, Any]) -> dict[str, Any]:
+    """*graph* without the files its pipelines were read from: where a checkout sits on
+    disk prices nothing."""
+    copied: dict[str, Any] = copy.deepcopy(graph)
+    for each in _graphs(copied):
+        each.pop("source_file", None)
+    return copied
+
+
+def _utility_hashes(release_dir: Path) -> dict[str, str]:
+    """Each file of the project's utility code the bundle carries, by its path in it."""
+    from haute.deploy._project_modules import UTILITY_PACKAGE
+
+    package = release_dir / UTILITY_PACKAGE
+    files = [release_dir / f"{UTILITY_PACKAGE}.py"]
+    if package.is_dir():
+        files += [file for file in package.rglob("*") if "__pycache__" not in file.parts]
+    return {
+        file.relative_to(release_dir).as_posix(): content_hash(file)
+        for file in sorted(files)
+        if file.is_file()
+    }
+
+
 def _release_id(release_dir: Path, shipped: bytes, manifest: dict[str, Any]) -> str:
-    """The form as shipped, what of the manifest prices a quote and each artifact's bytes, so
-    the same project builds the same id and a retrained model under the same name another."""
+    """The form as shipped, what of the manifest prices a quote, each artifact's bytes and
+    the utility code's, so the same project builds the same id wherever it is checked out,
+    and a retrained model or an edited helper under the same name another."""
+    from haute._cache import canonical_json
+
     pricing = {key: manifest.get(key) for key in _PRICING_KEYS}
+    pricing["pruned_graph"] = _without_sources(manifest["pruned_graph"])
     pricing["artifacts"] = {
         name: content_hash(release_dir / path)
         for name, path in sorted(manifest["artifacts"].items())
     }
-    return content_hash_bytes(shipped + json.dumps(pricing, sort_keys=True).encode("utf-8"))[:12]
+    pricing["utility"] = _utility_hashes(release_dir)
+    return content_hash_bytes(shipped + canonical_json(pricing).encode("utf-8"))[:12]
 
 
 def write_release(release_dir: Path, form: FormSpec, host: str | None) -> Release:
@@ -267,7 +305,13 @@ def create_app(
     # The pipeline reads what it ships from the release, wherever the host starts the app.
     set_project_root(release_dir)
     static = _STATIC if static_dir is None else static_dir
-    graph = PipelineGraph.model_validate(manifest["pruned_graph"])
+    # The pipeline imports its utility code from beside its file: placed in the release, it
+    # imports the bundle's copy, never the project's as it is edited afterwards.
+    shipped_graph = copy.deepcopy(manifest["pruned_graph"])
+    for each in _graphs(shipped_graph):
+        if each.get("source_file"):
+            each["source_file"] = str(release_dir.resolve() / Path(each["source_file"]).name)
+    graph = PipelineGraph.model_validate(shipped_graph)
     input_node_ids: list[str] = manifest["input_node_ids"]
     output_node_id: str = manifest["output_node_id"]
     output_fields: list[str] | None = manifest.get("output_fields")

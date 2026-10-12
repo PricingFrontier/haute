@@ -16,7 +16,14 @@ from haute._quote_store import QuoteStore, migrate_store, open_store, store_url
 from haute._test_quotes import ensure_test_quote_git
 from haute._workbench_form import FormSpec
 from haute.cli import cli
-from haute.cli._test_quotes import ReportConfig, dump_text, handle_report, merge_files
+from haute.cli._test_quotes import (
+    ReportConfig,
+    _Saved,
+    dump_text,
+    handle_report,
+    merge_files,
+    report_markdown,
+)
 
 FILE = "tests/quotes/test_quotes.sqlite"
 FORM = FormSpec.model_validate(
@@ -118,6 +125,18 @@ def test_a_branch_that_changed_nothing_says_so(project: Path) -> None:
     assert handle_report(ReportConfig(base="main", output=None)).endswith(
         "**0 accepted anew, 0 added, 0 removed, 2 unchanged.**\n"
     )
+
+
+def test_a_revision_under_the_same_number_with_another_response_is_accepted_anew() -> None:
+    # Two branches each saved revision 2, and the merge kept the head's.
+    base = {"q": _Saved("Northern fleet", 2, {"pricing": {"premium": 100.0}})}
+    head = {"q": _Saved("Northern fleet", 2, {"pricing": {"premium": 900.0}})}
+
+    report = report_markdown(base, head)
+
+    assert "**1 accepted anew, 0 added, 0 removed, 0 unchanged.**" in report
+    assert "`pricing.premium`: 100.0 -> 900.0" in report
+    assert report_markdown(base, base).count("1 unchanged") == 1
 
 
 def test_a_base_without_the_file_reads_as_no_test_quotes(project: Path) -> None:

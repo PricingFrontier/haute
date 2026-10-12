@@ -14,12 +14,14 @@ vi.mock("../../api/workbench", async (importOriginal) => ({
   compareTestQuote: vi.fn(),
   acceptTestQuote: vi.fn(),
   deleteTestQuote: vi.fn(),
+  captureTestQuotes: vi.fn(),
 }))
 
 import { ApiError } from "../../api/client"
 import type { FormSpec, SchemaColumn, SchemaTable, WorkbenchTablesResponse, WorkbenchTestQuoteSummary } from "../../api/types"
 import {
   acceptTestQuote,
+  captureTestQuotes,
   compareTestQuote,
   deleteTestQuote,
   fetchTestQuotes,
@@ -29,6 +31,7 @@ import {
 } from "../../api/workbench"
 import type { PricedSample } from "../../utils/workbenchTables"
 import { sheet } from "../../workbench/__tests__/fixtures"
+import useDocumentStatusStore from "../useDocumentStatusStore"
 import useGraphStore from "../useGraphStore"
 import useSettingsStore from "../useSettingsStore"
 import useWorkbenchFormStore from "../useWorkbenchFormStore"
@@ -70,7 +73,7 @@ const summary = (id: string, name: string): WorkbenchTestQuoteSummary => ({
 })
 const written = { git_sha: null, warnings: [], identity_required: false, quote: null }
 const opened = (id: string, exposure: string, dropped: string[] = []) => ({
-  id, name: id, number: 3, values: { t1: [{ c1: exposure }] }, dropped, response: { pricing_output: { premium: 1 } },
+  id, name: id, number: 3, token: "read-3", values: { t1: [{ c1: exposure }] }, dropped, response: { pricing_output: { premium: 1 } },
 })
 
 const store = useWorkbenchTestQuotesStore.getState
@@ -97,7 +100,7 @@ describe("useWorkbenchTestQuotesStore", () => {
     useWorkbenchPreviewStore.setState({ quote: {}, checked: false, price: null, error: null, pricing: false })
     useWorkbenchTestQuotesStore.setState({
       open: false, quotes: [], loading: false, error: null, notice: null, saving: false,
-      selected: [], runs: {}, runForm: null, runBasis: null, running: false,
+      selected: [], runs: {}, runForm: null, runBasis: null, running: false, accepting: false, uncaptured: false,
     })
   })
 
@@ -144,6 +147,7 @@ describe("useWorkbenchTestQuotesStore", () => {
     vi.mocked(openTestQuote).mockImplementation(async (id) => opened(id, id === "a" ? "1" : "2"))
     vi.mocked(compareTestQuote).mockImplementation(async (id) => ({
       number: 3,
+      token: "compared-3",
       changes: id === "a" ? [] : [{ path: "pricing_output.premium", kind: "changed", accepted: 1, priced: 500 }],
     }))
 
@@ -152,7 +156,7 @@ describe("useWorkbenchTestQuotesStore", () => {
     // One pricer, fixed when the run started, for every quote.
     expect(snapshots).toBe(1)
     expect(pricer).toHaveBeenCalledTimes(2)
-    expect(compareTestQuote).toHaveBeenCalledWith("b", form, priced(500).tables, 3)
+    expect(compareTestQuote).toHaveBeenCalledWith("b", form, { t1: [{ c1: "2" }] }, priced(500).tables, 3)
     expect(store().runs.a).toMatchObject({ status: "unchanged", number: 3 })
     expect(store().runs.b).toMatchObject({ status: "changed", changes: [{ path: "pricing_output.premium" }] })
     expect(store().running).toBe(false)
@@ -172,7 +176,7 @@ describe("useWorkbenchTestQuotesStore", () => {
   it("is stale once the pipeline, the source or the form changes after the run started", async () => {
     await store().load()
     vi.mocked(openTestQuote).mockImplementation(async (id) => opened(id, "1"))
-    vi.mocked(compareTestQuote).mockResolvedValue({ number: 3, changes: [] })
+    vi.mocked(compareTestQuote).mockResolvedValue({ number: 3, token: "compared-3", changes: [] })
     await store().run()
     const { runBasis } = store()
     expect(runIsStale(runBasis, form)).toBe(false)
@@ -190,23 +194,113 @@ describe("useWorkbenchTestQuotesStore", () => {
     await store().load()
     vi.mocked(openTestQuote).mockImplementation(async (id) => opened(id, "1"))
     vi.mocked(compareTestQuote).mockResolvedValue({
-      number: 3, changes: [{ path: "pricing_output.premium", kind: "changed", accepted: 1, priced: 500 }],
+      number: 3, token: "compared-3", changes: [{ path: "pricing_output.premium", kind: "changed", accepted: 1, priced: 500 }],
     })
     await store().run()
 
     await store().accept("a")
-    expect(acceptTestQuote).toHaveBeenCalledWith("a", 3, form, { t1: [{ c1: "1" }] }, priced(500).tables)
+    expect(acceptTestQuote).toHaveBeenCalledWith("a", 3, "compared-3", form, { t1: [{ c1: "1" }] }, priced(500).tables)
     expect(store().runs.a).toMatchObject({ status: "unchanged", changes: [], number: 4 })
 
     vi.mocked(acceptTestQuote).mockRejectedValueOnce(new ApiError("HTTP 409", 409, "stale_quote_revision: moved", null, null))
     await store().accept("b")
-    expect(store().error).toBe("The quote was saved since the run: run it again before accepting.")
+    expect(store().error).toBe("The quote was saved since the run, or differently on this branch: run it again before accepting.")
+  })
+
+  it("accepts nothing while a run is under way, nor once the run is stale", async () => {
+    await store().load()
+    vi.mocked(openTestQuote).mockImplementation(async (id) => opened(id, "1"))
+    vi.mocked(compareTestQuote).mockResolvedValue({
+      number: 3, token: "compared-3", changes: [{ path: "pricing_output.premium", kind: "changed", accepted: 1, priced: 500 }],
+    })
+    // The second quote's pricing waits, so the run is under way once the first has changed.
+    let finish: () => void = () => {}
+    pricer
+      .mockImplementationOnce(() => Promise.resolve(priced(500)))
+      .mockImplementationOnce(() => new Promise((resolve) => { finish = () => resolve(priced(500)) }))
+    const running = store().run()
+    await vi.waitFor(() => expect(store().runs.a?.status).toBe("changed"))
+
+    await store().accept("a")
+    expect(acceptTestQuote).not.toHaveBeenCalled()
+
+    finish()
+    await running
+    const pipeline = useGraphStore.getState().structuralFingerprint
+    useGraphStore.setState({ structuralFingerprint: "edited" })
+    await store().accept("a")
+    expect(acceptTestQuote).not.toHaveBeenCalled()
+    expect(store().error).toMatch(/run again before accepting/)
+    useGraphStore.setState({ structuralFingerprint: pipeline })
+  })
+
+  it("starts no run while an accept is under way", async () => {
+    await store().load()
+    vi.mocked(openTestQuote).mockImplementation(async (id) => opened(id, "1"))
+    vi.mocked(compareTestQuote).mockResolvedValue({
+      number: 3, token: "compared-3", changes: [{ path: "pricing_output.premium", kind: "changed", accepted: 1, priced: 500 }],
+    })
+    await store().run()
+    let finish: () => void = () => {}
+    vi.mocked(acceptTestQuote).mockImplementationOnce(() => new Promise((resolve) => { finish = () => resolve(written) }))
+
+    const accepting = store().accept("a")
+    await store().run()
+    expect(openTestQuote).toHaveBeenCalledTimes(2)
+
+    finish()
+    await accepting
+    expect(store().runs.a).toMatchObject({ status: "unchanged", number: 4 })
+    expect(store().accepting).toBe(false)
+  })
+
+  it("forgets a run once the pipeline's document is adopted anew, and an accept answering after is nobody's", async () => {
+    await store().load()
+    vi.mocked(openTestQuote).mockImplementation(async (id) => opened(id, "1"))
+    vi.mocked(compareTestQuote).mockResolvedValue({
+      number: 3, token: "compared-3", changes: [{ path: "pricing_output.premium", kind: "changed", accepted: 1, priced: 500 }],
+    })
+    await store().run()
+    let finish: () => void = () => {}
+    vi.mocked(acceptTestQuote).mockImplementationOnce(() => new Promise((resolve) => { finish = () => resolve(written) }))
+    const accepting = store().accept("a")
+
+    // A branch switched by hand: the run was read on the other branch's test quotes.
+    useDocumentStatusStore.setState({ executionGeneration: useDocumentStatusStore.getState().executionGeneration + 1 })
+    expect(store().runs).toEqual({})
+    expect(store().runBasis).toBeNull()
+
+    finish()
+    await accepting
+    expect(store().runs).toEqual({})
+  })
+
+  it("reports each write's capture, and captures again on the next project save what the ledger did not take", async () => {
+    useWorkbenchPreviewStore.setState({ quote: { t1: [{ c1: "250000" }] } })
+    vi.mocked(saveTestQuote).mockResolvedValueOnce({
+      ...written,
+      identity_required: true,
+      warnings: ["Changes saved, but version capture needs a git identity."],
+    })
+    vi.mocked(captureTestQuotes).mockResolvedValue({ ...written, git_sha: "abc123" })
+
+    expect(await store().save("Northern")).toBe(true)
+    expect(store().uncaptured).toBe(true)
+
+    await store().flush()
+    expect(captureTestQuotes).toHaveBeenCalledTimes(1)
+    expect(saveTestQuote).toHaveBeenCalledTimes(1)
+    expect(store().uncaptured).toBe(false)
+
+    // Nothing waits on the ledger now: a save captures nothing again.
+    await store().flush()
+    expect(captureTestQuotes).toHaveBeenCalledTimes(1)
   })
 
   it("deletes a test quote and forgets its run", async () => {
     await store().load()
     store().toggle("a")
-    useWorkbenchTestQuotesStore.setState({ runs: { a: { status: "changed", number: 1, values: null, dropped: [], tables: null, changes: [], error: null } } })
+    useWorkbenchTestQuotesStore.setState({ runs: { a: { status: "changed", number: 1, token: null, values: null, dropped: [], tables: null, changes: [], error: null } } })
 
     await store().remove("a")
 

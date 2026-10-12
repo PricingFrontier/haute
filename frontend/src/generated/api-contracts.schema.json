@@ -14810,7 +14810,7 @@
       "type": "object"
     },
     "WorkbenchTestQuoteCompareResponse": {
-      "description": "Every place a run's response differs from the revision it read; none: unchanged.",
+      "description": "Every place a run's response, or the request it priced, differs from the revision it\nread, a request's places under ``request.``; none: unchanged.",
       "properties": {
         "changes": {
           "items": {
@@ -14822,10 +14822,15 @@
         "number": {
           "title": "Number",
           "type": "integer"
+        },
+        "token": {
+          "title": "Token",
+          "type": "string"
         }
       },
       "required": [
         "number",
+        "token",
         "changes"
       ],
       "title": "WorkbenchTestQuoteCompareResponse",
@@ -14866,6 +14871,10 @@
           "default": null,
           "title": "Response"
         },
+        "token": {
+          "title": "Token",
+          "type": "string"
+        },
         "values": {
           "additionalProperties": {
             "items": {
@@ -14891,6 +14900,7 @@
         "id",
         "name",
         "number",
+        "token",
         "values",
         "dropped",
         "response"

@@ -176,11 +176,19 @@ def report_markdown(
     removed = sorted(
         (quote for key, quote in base.items() if key not in head), key=lambda q: q.name
     )
+    # Accepted anew: a newer revision, or one under the same number holding another
+    # response, as two branches each saving revision 2 leave after a merge keeps one.
     anew = sorted(
         (
             (base[key], quote)
             for key, quote in head.items()
-            if key in base and base[key].number != quote.number
+            if key in base
+            and (
+                base[key].number != quote.number
+                or response_changes(
+                    quote.response or {}, base[key].response or {}, ACCEPTED_TOLERANCE
+                )
+            )
         ),
         key=lambda pair: pair[1].name,
     )

@@ -67,6 +67,7 @@ export default function TestQuotesPanel() {
   const selected = useWorkbenchTestQuotesStore((s) => s.selected)
   const runs = useWorkbenchTestQuotesStore((s) => s.runs)
   const running = useWorkbenchTestQuotesStore((s) => s.running)
+  const accepting = useWorkbenchTestQuotesStore((s) => s.accepting)
   const runBasis = useWorkbenchTestQuotesStore((s) => s.runBasis)
   const setOpen = useWorkbenchTestQuotesStore((s) => s.setOpen)
   const load = useWorkbenchTestQuotesStore((s) => s.load)
@@ -89,7 +90,9 @@ export default function TestQuotesPanel() {
     void load()
   }, [load])
 
-  const stale = !running && runIsStale(runBasis, form)
+  const outdated = runIsStale(runBasis, form)
+  // Said once the run is over; an accept waits for both.
+  const stale = !running && outdated
   const ran = Object.values(runs)
   const counts = {
     changed: ran.filter((r) => r.status === "changed").length,
@@ -134,7 +137,7 @@ export default function TestQuotesPanel() {
           <button
             type="button"
             className={BUTTON}
-            disabled={running || quotes.length === 0}
+            disabled={running || accepting || quotes.length === 0}
             onClick={() => { void run() }}
             title="Price the test quotes on the pipeline as it is now, one request each, and compare each with its accepted response"
           >
@@ -204,7 +207,7 @@ export default function TestQuotesPanel() {
                       <button
                         type="button"
                         className={ICON_BUTTON}
-                        disabled={stale}
+                        disabled={running || accepting || outdated}
                         onClick={() => { void accept(quote.id) }}
                         title={`Accept the new response as ${quote.name}'s`}
                         aria-label={`Accept ${quote.name}`}

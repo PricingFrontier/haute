@@ -150,12 +150,12 @@ export async function openTestQuote(id: string, form: FormSpec): Promise<Workben
 
 /** Every place a run's priced tables differ from what revision `number` accepted. */
 export async function compareTestQuote(
-  id: string, form: FormSpec, tables: PricedTables, number: number,
-): Promise<{ number: number; changes: TestQuoteChange[] }> {
+  id: string, form: FormSpec, values: SheetQuote, tables: PricedTables, number: number,
+): Promise<{ number: number; token: string; changes: TestQuoteChange[] }> {
   const data = await request<unknown>(`/api/workbench/test-quotes/${encodeURIComponent(id)}/compare`, {
     method: "POST",
     headers: JSON_HEADERS,
-    body: JSON.stringify({ form, tables, number }),
+    body: JSON.stringify({ form, values, tables, number }),
   })
   const compared: WorkbenchTestQuoteCompareResponse = expectGeneratedContract(
     "WorkbenchTestQuoteCompareResponse",
@@ -163,20 +163,34 @@ export async function compareTestQuote(
     data,
   )
   // The generated type reads an any-valued field as an object; a value may be any JSON.
-  return { number: compared.number, changes: compared.changes as unknown as TestQuoteChange[] }
+  return {
+    number: compared.number,
+    token: compared.token,
+    changes: compared.changes as unknown as TestQuoteChange[],
+  }
 }
 
 /**
- * Accept a run's response as the test quote's revision after `after`. A quote saved since
- * answers 409 with a `stale_quote_revision` detail and nothing is written.
+ * Accept a run's response as the test quote's revision after `after`, the one `token` names.
+ * A quote saved since, or a revision `after` saved apart on another branch, answers 409 with
+ * a `stale_quote_revision` detail and nothing is written.
  */
 export async function acceptTestQuote(
-  id: string, after: number, form: FormSpec, values: SheetQuote, tables: PricedTables,
+  id: string, after: number, token: string, form: FormSpec, values: SheetQuote, tables: PricedTables,
 ): Promise<WorkbenchTestQuoteWriteResponse> {
   const data = await request<unknown>(`/api/workbench/test-quotes/${encodeURIComponent(id)}/accept`, {
     method: "POST",
     headers: JSON_HEADERS,
-    body: JSON.stringify({ after, form, values, tables }),
+    body: JSON.stringify({ after, token, form, values, tables }),
+    retry: { maxRetries: 0 },
+  })
+  return writeResponse(data)
+}
+
+/** The test-quote file captured on the save ledger as it is: a skipped capture's retry. */
+export async function captureTestQuotes(): Promise<WorkbenchTestQuoteWriteResponse> {
+  const data = await request<unknown>("/api/workbench/test-quotes/capture", {
+    method: "POST",
     retry: { maxRetries: 0 },
   })
   return writeResponse(data)

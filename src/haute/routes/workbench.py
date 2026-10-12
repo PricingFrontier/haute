@@ -234,7 +234,6 @@ def _write_test_quotes(
     when *create*), under the repository's lock, then the write captured on the ledger."""
     from haute._git_setup import get_identity
     from haute._quote_store import QuoteNotFoundError, migrate_store, open_store, store_url
-    from haute._test_quotes import ensure_test_quote_git
 
     with repository_mutation(config.project_root):
         path, relative = _test_quotes_file(config)
@@ -245,14 +244,22 @@ def _write_test_quotes(
         name, email = get_identity(config.project_root)
         with open_store(store_url(path)) as store:
             result = write(store, email or name or "")
-        # The file's drivers in .gitattributes ride the same capture.
-        ensure_test_quote_git(config.project_root, relative)
-        captured = [relative]
-        if (config.project_root / ".gitattributes").is_file():
-            captured.append(".gitattributes")
-        warnings: list[str] = []
-        git_sha, identity_required = capture_save_in_ledger(config.project_root, captured, warnings)
-    return result, WorkbenchTestQuoteWriteResponse(
+        captured = _capture_test_quotes(config, relative)
+    return result, captured
+
+
+def _capture_test_quotes(config: WorkbenchConfig, relative: str) -> WorkbenchTestQuoteWriteResponse:
+    """The test-quote file at *relative* captured on the save ledger as it is, with the
+    drivers in ``.gitattributes``, under the repository's lock the caller holds."""
+    from haute._test_quotes import ensure_test_quote_git, project_gitattributes_path
+
+    ensure_test_quote_git(config.project_root, relative)
+    captured = [relative]
+    if project_gitattributes_path(config.project_root).is_file():
+        captured.append(".gitattributes")
+    warnings: list[str] = []
+    git_sha, identity_required = capture_save_in_ledger(config.project_root, captured, warnings)
+    return WorkbenchTestQuoteWriteResponse(
         warnings=warnings, git_sha=git_sha, identity_required=identity_required
     )
 
@@ -313,6 +320,23 @@ async def save_test_quote(body: WorkbenchTestQuoteSaveRequest) -> WorkbenchTestQ
     return written.model_copy(update={"quote": quote})
 
 
+@router.post("/test-quotes/capture", response_model=WorkbenchTestQuoteWriteResponse)
+async def capture_test_quotes() -> WorkbenchTestQuoteWriteResponse:
+    """The test-quote file captured on the save ledger as it is, nothing written to it: the
+    retry of a write whose capture was skipped or failed. Nothing to capture without a file."""
+    config = await _enabled_config()
+
+    def capture() -> WorkbenchTestQuoteWriteResponse:
+        with repository_mutation(config.project_root):
+            path, relative = _test_quotes_file(config)
+            if not path.is_file():
+                return WorkbenchTestQuoteWriteResponse()
+            return _capture_test_quotes(config, relative)
+
+    async with save_lock:
+        return await run_in_threadpool(capture)
+
+
 @router.post("/test-quotes/{quote_id}/open", response_model=WorkbenchTestQuoteOpenResponse)
 async def open_test_quote(
     quote_id: str, body: WorkbenchTestQuoteOpenRequest
@@ -330,6 +354,7 @@ async def open_test_quote(
             id=quote_id,
             name=summary.name,
             number=revision.number,
+            token=revision.token,
             values=carried.values,
             dropped=carried.dropped,
             response=revision.response,
@@ -348,13 +373,16 @@ async def open_test_quote(
 async def compare_test_quote(
     quote_id: str, body: WorkbenchTestQuoteCompareRequest
 ) -> WorkbenchTestQuoteCompareResponse:
-    """Every place a run's response differs from the one revision ``number`` accepted."""
+    """Every place a run's response differs from the one revision ``number`` accepted, and
+    every place the request the run priced differs from the one that revision keeps, which a
+    deploy prices: a column renamed since asks for an accept, so the two price alike."""
     from haute._quote_store import QuoteNotFoundError, QuoteStoreError
-    from haute._test_quotes import ACCEPTED_TOLERANCE, response_document
+    from haute._test_quotes import ACCEPTED_TOLERANCE, quote_request, response_document
     from haute.deploy._validators import response_changes
 
     config = await _enabled_config()
     priced = response_document(body.form, body.tables)
+    request = quote_request(body.form, body.values)
     try:
         revision = await run_in_threadpool(
             _read_test_quotes, config, lambda store: store.revision(quote_id, body.number)
@@ -363,9 +391,16 @@ async def compare_test_quote(
         raise _store_error(exc) from None
     if revision is None:
         raise _store_error(QuoteNotFoundError(f"The quote store holds no quote {quote_id!r}."))
-    changes = response_changes(priced, revision.response or {}, ACCEPTED_TOLERANCE)
+    changes = [
+        *response_changes(priced, revision.response or {}, ACCEPTED_TOLERANCE),
+        *(
+            change._replace(path=f"request.{change.path}")
+            for change in response_changes(request, revision.request, ACCEPTED_TOLERANCE)
+        ),
+    ]
     return WorkbenchTestQuoteCompareResponse(
         number=revision.number,
+        token=revision.token,
         changes=[WorkbenchTestQuoteChange(**change._asdict()) for change in changes],
     )
 
@@ -386,6 +421,7 @@ async def accept_test_quote(
         revision = store.save_revision(
             quote_id,
             after=body.after,
+            after_token=body.token,
             saved_by=saved_by,
             form=body.form,
             inputs=body.values,

@@ -127,15 +127,16 @@ def test_a_release_holds_the_form_without_its_sample_what_it_is_and_its_entry(re
     assert (directory / "app.py").read_text(encoding="utf-8") == APP_ENTRY
 
 
-def test_the_release_id_is_taken_from_the_form_and_the_bundle(release: Any) -> None:
+def test_the_release_id_is_taken_from_the_form_and_the_bundle(release: Any, tmp_path: Path) -> None:
     first = read_release(release())[0].id
+    directory = tmp_path / "release"
 
     def rebuilt(**changes: Any) -> str:
-        manifest_path = Path("release/deploy_manifest.json")
+        manifest_path = tmp_path / "release" / "deploy_manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest.update(changes)
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        return write_release(Path("release"), FormSpec.model_validate(FORM), None).id
+        return write_release(directory, FormSpec.model_validate(FORM), None).id
 
     # Built again later, by someone else, from another checkout and for another target, the
     # same project is the same release.
@@ -155,14 +156,27 @@ def test_the_release_id_is_taken_from_the_form_and_the_bundle(release: Any) -> N
     renamed = {**FORM, "name": "renamed"}
     assert read_release(release(spec=renamed))[0].id != first
 
+    # Where the pipeline's file sat on the machine that built it prices nothing.
+    graph = shipped_graph(_graph())
+    here = rebuilt(pruned_graph={**graph, "source_file": "C:/checkouts/one/main.py"})
+    assert rebuilt(pruned_graph={**graph, "source_file": "D:/two/main.py"}) == here == first
+
     # A model retrained under the same name is another release.
     release()
-    model = Path("release/artifacts/model.cbm")
+    model = tmp_path / "release" / "artifacts" / "model.cbm"
     model.parent.mkdir()
     model.write_bytes(b"trained")
     trained = rebuilt(artifacts={"model": "artifacts/model.cbm"})
     model.write_bytes(b"retrained")
-    assert rebuilt() not in (first, trained)
+    retrained = rebuilt()
+    assert retrained not in (first, trained)
+
+    # So is a helper of the utility code edited under the same name.
+    helper = tmp_path / "release" / "utility.py"
+    helper.write_text("RATE = 1\n", encoding="utf-8")
+    helped = rebuilt()
+    helper.write_text("RATE = 2\n", encoding="utf-8")
+    assert rebuilt() not in (retrained, helped)
 
 
 def test_the_app_reads_what_the_pipeline_ships_from_the_release(release: Any) -> None:
@@ -399,6 +413,78 @@ def test_a_project_builds_a_release_that_prices_as_its_pipeline(project: Path) -
     # Built again, into the same directory or another, it is the same release.
     assert build_release(project, project / "build" / "app").id == built.id
     assert build_release(project, project / "elsewhere").id == built.id
+
+
+def test_the_same_project_checked_out_twice_builds_the_same_release(
+    project: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    import shutil
+
+    other = tmp_path_factory.mktemp("checkout")
+    for name in ("haute.toml", "main.py", "forms", "config"):
+        source = project / name
+        if source.is_dir():
+            shutil.copytree(source, other / name)
+        elif source.is_file():
+            shutil.copy2(source, other / name)
+
+    here = build_release(project, project / "build" / "app")
+    there = build_release(other, other / "build" / "app")
+
+    assert there.id == here.id
+
+
+_PRICE_FROM_THE_PROJECT = """
+import json, sys
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from haute._workbench_app import create_app
+
+client = TestClient(create_app(Path(sys.argv[1]), local_principal="analyst@example.com"))
+revision = client.get("/api/app/form").json()["revision"]
+answered = client.post(
+    "/api/app/price", json={"form_revision": revision, "values": json.loads(sys.argv[2])}
+)
+print(json.dumps(answered.json()))
+"""
+
+
+def test_the_app_prices_on_the_utility_code_the_release_carries(project: Path) -> None:
+    """Served from the project, as `haute app serve` serves it, the app imports the release's
+    copy of the utility code: an edit to the project's afterwards changes no price."""
+    import subprocess
+    import sys
+
+    from tests.test_workbench_output import _priced, _write
+
+    graph = _priced()
+    graph.preamble = "from utility import RATE\n"
+    graph.node_map["priced"].data.config["code"] = (
+        "df = policy.with_columns(premium=pl.col('limit') / 10 * RATE, referral=pl.lit('none'))"
+    )
+    _write(graph, project, "main")
+    (project / "utility.py").write_text("RATE = 1\n", encoding="utf-8")
+    release_dir = project / "build" / "app"
+    build_release(project, release_dir)
+    assert (release_dir / "utility.py").read_text(encoding="utf-8") == "RATE = 1\n"
+    (project / "utility.py").write_text("RATE = 2\n", encoding="utf-8")
+    child = project / "price_from_the_project.py"
+    child.write_text(_PRICE_FROM_THE_PROJECT, encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, str(child), str(release_dir), json.dumps(PROJECT_VALUES)],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr[-4000:]
+    priced = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert priced["tables"]["pricing"] == [{"premium": 100.0, "limit": 1000.0, "referral": "none"}]
 
 
 def test_a_release_is_refused_for_what_the_project_cannot_ship(project: Path) -> None:

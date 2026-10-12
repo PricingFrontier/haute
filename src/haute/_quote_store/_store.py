@@ -10,6 +10,7 @@ was keyed into with it, and a revision that names one the quote has moved past i
 from __future__ import annotations
 
 import json
+import sqlite3
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -88,6 +89,23 @@ class QuoteRevision:
     saved_by: str
     saved_at: datetime
 
+    @property
+    def token(self) -> str:
+        """What this revision is, beyond its number: two branches can each hold a revision 2
+        of one quote, saved apart. A content hash of who saved what, when."""
+        from haute._cache import canonical_json
+        from haute._hashing import content_hash_bytes
+
+        material = {
+            "quote_id": self.quote_id,
+            "number": self.number,
+            "saved_at": self.saved_at.isoformat(),
+            "saved_by": self.saved_by,
+            "request": self.request,
+            "response": self.response,
+        }
+        return content_hash_bytes(canonical_json(material).encode("utf-8"))
+
 
 @dataclass(frozen=True, slots=True)
 class QuoteSummary:
@@ -138,13 +156,25 @@ def store_url(path: Path) -> str:
 def _engine(url: str) -> Engine:
     engine = create_engine(url)
     if engine.dialect.name == "sqlite":
-        # SQLite leaves foreign keys off unless each connection turns them on. Its rollback
-        # journal stays: write-ahead logging would leave files beside a committed store.
+        # SQLite leaves foreign keys off unless each connection turns them on. The rollback
+        # journal is required, not assumed: a file left in write-ahead logging would keep
+        # saved quotes in a -wal file beside it, which the ledger never commits.
         @event.listens_for(engine, "connect")
         def _foreign_keys(dbapi_connection: Any, _record: Any) -> None:
             cursor = dbapi_connection.cursor()
-            cursor.execute("PRAGMA foreign_keys=ON")
-            cursor.close()
+            try:
+                cursor.execute("PRAGMA foreign_keys=ON")
+                try:
+                    mode = cursor.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+                except sqlite3.OperationalError as exc:
+                    mode = str(exc)
+            finally:
+                cursor.close()
+            if str(mode).lower() != "delete":
+                raise QuoteStoreError(
+                    f"The quote store's database is in {mode!r} mode and could not be put "
+                    "back to a rollback journal: close whatever else has it open and try again."
+                )
 
     return engine
 
@@ -189,6 +219,34 @@ def open_store(url: str, *, clock: Callable[[], datetime] | None = None) -> Quot
             f"{head}: bring it there with migrate_store before opening it."
         )
     return QuoteStore(engine, clock=clock or (lambda: datetime.now(UTC)))
+
+
+def _read_revision(connection: Connection, quote_id: str, number: int | None) -> QuoteRevision:
+    """Revision *number* of quote *quote_id* on *connection*, its newest when *number* is None."""
+    query = select(QUOTE_REVISIONS).where(QUOTE_REVISIONS.c.quote_id == quote_id)
+    if number is None:
+        query = query.join(
+            QUOTES,
+            (QUOTES.c.id == QUOTE_REVISIONS.c.quote_id)
+            & (QUOTES.c.latest == QUOTE_REVISIONS.c.number),
+        )
+    else:
+        query = query.where(QUOTE_REVISIONS.c.number == number)
+    row = connection.execute(query).mappings().one_or_none()
+    if row is None:
+        what = f"quote {quote_id!r}" if number is None else f"revision {number} of {quote_id!r}"
+        raise QuoteNotFoundError(f"The quote store holds no {what}.")
+    return QuoteRevision(
+        quote_id=row["quote_id"],
+        number=row["number"],
+        form_revision=row["form_revision"],
+        inputs=json.loads(row["inputs"]),
+        request=json.loads(row["request"]),
+        response=None if row["response"] is None else json.loads(row["response"]),
+        release=row["release"],
+        saved_by=row["saved_by"],
+        saved_at=row["saved_at"],
+    )
 
 
 class QuoteStore:
@@ -249,6 +307,7 @@ class QuoteStore:
         quote_id: str,
         *,
         after: int,
+        after_token: str | None = None,
         saved_by: str,
         form: FormSpec,
         inputs: Values,
@@ -258,8 +317,10 @@ class QuoteStore:
     ) -> QuoteRevision:
         """The revision following revision *after* of quote *quote_id*.
 
-        Raises :class:`StaleQuoteError` when the quote's newest revision is not *after*, and
-        :class:`QuoteNotFoundError` when there is no such quote; nothing is written either way.
+        Raises :class:`StaleQuoteError` when the quote's newest revision is not *after*, or,
+        given *after_token*, is a revision *after* other than the one that token names (one
+        saved apart on another branch); :class:`QuoteNotFoundError` when there is no such
+        quote. Nothing is written either way.
         """
         with self._engine.begin() as connection:
             moved = connection.execute(
@@ -277,6 +338,14 @@ class QuoteStore:
                     f"Quote {quote_id!r} has moved on since revision {after}: its newest is "
                     f"{latest}. Open it again to save over the newest."
                 )
+            if after_token is not None and _read_revision(connection, quote_id, after).token != (
+                after_token
+            ):
+                # Raised inside the transaction, so the move above is rolled back.
+                raise StaleQuoteError(
+                    f"Quote {quote_id!r} revision {after} is not the one that was read: it was "
+                    "saved apart, on another branch. Open it again to save over it."
+                )
             return self._write_revision(
                 connection,
                 quote_id,
@@ -292,31 +361,8 @@ class QuoteStore:
 
     def revision(self, quote_id: str, number: int | None = None) -> QuoteRevision:
         """Revision *number* of quote *quote_id*, its newest when *number* is None."""
-        query = select(QUOTE_REVISIONS).where(QUOTE_REVISIONS.c.quote_id == quote_id)
-        if number is None:
-            query = query.join(
-                QUOTES,
-                (QUOTES.c.id == QUOTE_REVISIONS.c.quote_id)
-                & (QUOTES.c.latest == QUOTE_REVISIONS.c.number),
-            )
-        else:
-            query = query.where(QUOTE_REVISIONS.c.number == number)
         with self._engine.connect() as connection:
-            row = connection.execute(query).mappings().one_or_none()
-        if row is None:
-            what = f"quote {quote_id!r}" if number is None else f"revision {number} of {quote_id!r}"
-            raise QuoteNotFoundError(f"The quote store holds no {what}.")
-        return QuoteRevision(
-            quote_id=row["quote_id"],
-            number=row["number"],
-            form_revision=row["form_revision"],
-            inputs=json.loads(row["inputs"]),
-            request=json.loads(row["request"]),
-            response=None if row["response"] is None else json.loads(row["response"]),
-            release=row["release"],
-            saved_by=row["saved_by"],
-            saved_at=row["saved_at"],
-        )
+            return _read_revision(connection, quote_id, number)
 
     def form(self, revision: str) -> FormSpec:
         """The form a quote was keyed into, by its *revision*."""

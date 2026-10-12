@@ -866,6 +866,46 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/WorkbenchTablesResponse"},
         },
     },
+    "/api/workbench/test-quotes": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuotesResponse"},
+        },
+        "POST": {
+            "request_ref": "#/components/schemas/WorkbenchTestQuoteSaveRequest",
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuoteWriteResponse"},
+        },
+    },
+    "/api/workbench/test-quotes/capture": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuoteWriteResponse"},
+        },
+    },
+    "/api/workbench/test-quotes/{quote_id}": {
+        "DELETE": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuoteWriteResponse"},
+        },
+    },
+    "/api/workbench/test-quotes/{quote_id}/accept": {
+        "POST": {
+            "request_ref": "#/components/schemas/WorkbenchTestQuoteAcceptRequest",
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuoteWriteResponse"},
+        },
+    },
+    "/api/workbench/test-quotes/{quote_id}/compare": {
+        "POST": {
+            "request_ref": "#/components/schemas/WorkbenchTestQuoteCompareRequest",
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuoteCompareResponse"},
+        },
+    },
+    "/api/workbench/test-quotes/{quote_id}/open": {
+        "POST": {
+            "request_ref": "#/components/schemas/WorkbenchTestQuoteOpenRequest",
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuoteOpenResponse"},
+        },
+    },
 }
 
 

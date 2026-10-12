@@ -17,7 +17,7 @@ const summary = (id: string, name: string): WorkbenchTestQuoteSummary => ({
   id, name, number: 1, saved_by: "ana@example.com", saved_at: "2026-10-12T09:00:00", priced: true,
 })
 const result = (patch: Partial<QuoteRun>): QuoteRun => ({
-  status: "unchanged", number: 1, values: {}, dropped: [], tables: {}, changes: [], error: null, ...patch,
+  status: "unchanged", number: 1, token: "read-1", values: {}, dropped: [], tables: {}, changes: [], error: null, ...patch,
 })
 
 const actions = {
@@ -46,6 +46,7 @@ describe("TestQuotesPanel", () => {
       runForm: null,
       runBasis: null,
       running: false,
+      accepting: false,
     })
   })
 
@@ -133,6 +134,25 @@ describe("TestQuotesPanel", () => {
 
     expect(screen.getByRole("alert")).toHaveTextContent("has changed since this run")
     expect(screen.getByRole("button", { name: "Accept Northern fleet" })).toBeDisabled()
+  })
+
+  it("accepts nothing while a run or another accept is under way, the run current or not", () => {
+    useWorkbenchTestQuotesStore.setState({
+      runBasis: currentBasis(form),
+      running: true,
+      runs: { a: result({ status: "changed" }), b: result({ status: "running" }) },
+    })
+    render(<TestQuotesPanel />)
+    expect(screen.getByRole("button", { name: "Accept Northern fleet" })).toBeDisabled()
+
+    // Edited mid-run: nothing is said until the run is over, but nothing is accepted either.
+    act(() => useGraphStore.setState({ structuralFingerprint: `${useGraphStore.getState().structuralFingerprint}+edit` }))
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Accept Northern fleet" })).toBeDisabled()
+
+    act(() => useWorkbenchTestQuotesStore.setState({ running: false, accepting: true, runBasis: currentBasis(form) }))
+    expect(screen.getByRole("button", { name: "Accept Northern fleet" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Run all" })).toBeDisabled()
   })
 
   it("opens a test quote onto the sheets, and deletes one once confirmed", () => {
