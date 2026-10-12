@@ -52,6 +52,8 @@ In scope:
   editor keeps current and shows, and previews on.
 - The Workbench Output, the node type that holds a copy of the output tables, which the
   editor keeps current and shows, and whose ports take the frames that fill them.
+- The quote store: saved quotes and their revisions, each with the form it was keyed
+  into, on a SQLite file, its schema and the migrations that bring a database to it.
 
 Out of scope:
 
@@ -65,6 +67,10 @@ Out of scope:
 - The app that shows the sheets to an underwriter outside Haute and prices through the
   deployed pipeline ([WB-07](../roadmap/workbench.md#wb-07--the-underwriter-app)). Preview
   is those sheets inside the builder, priced on the pipeline open in the editor.
+- Where a deployment's quote store is configured and migrated, the server databases it
+  will run on, and the app's Save, Open and list of quotes
+  ([WB-10](../roadmap/workbench.md#wb-10--the-quote-store)); the test quotes kept in
+  Preview ([WB-12](../roadmap/workbench.md#wb-12--test-quotes-in-preview)).
 - `haute init`'s other scaffolding ([cli](../cli/high-level.md),
   [pipeline-config](../pipeline-config/high-level.md)).
 
@@ -786,6 +792,28 @@ Out of scope:
   - **The assistant** reads a Workbench Output and connects nodes to its tables, or removes
     such connections, but cannot add, change, rename or delete one: its node card says the
     tables are the workbench's and the analyst adds the node from the palette.
+- **The quote store.** Quotes keyed into the sheets are saved to a store of Haute's, one
+  schema for every database it runs on: a SQLite file now, for an analyst's machine and
+  CI, and a server database the project's IT team provides for the underwriter app
+  later. A quote has a stable id, a name, its owner, when it was made and numbered
+  revisions. Each revision is written whole, in one transaction: the values as typed into
+  the sheets, in the sample's shape (by table and column id, the cells the sheets hide
+  kept); the request as it was priced; the response's tables in full, or none when it was
+  saved unpriced; the release that priced it; who saved it and when; and the form it was
+  keyed into, by its revision, the form's canonical text kept once for every quote that
+  names it. A new revision names the one it follows and is refused, with nothing
+  written, when the quote has moved on since. The owner is recorded and the list of
+  quotes can be read for one owner; who may see whose quotes is decided with the app. A
+  saved quote opens on its own form, and its values are carried onto the current form
+  through the stable ids: a renamed table or column keeps its values, and each filled
+  value whose table or column the current form no longer has is named as
+  `table.column`, by the names it was saved under. A database is brought to the schema by
+  the store's migrations, numbered and shipped with Haute, so a Haute upgrade carries
+  them; the store refuses to open a database that is not at the newest, naming what to
+  run, and nothing migrates as it opens. A migration keeps the previous release's reads
+  and writes working: a column it adds is nullable or has a default, and it drops
+  nothing. A SQLite store keeps foreign keys on and its rollback journal, never
+  write-ahead logging, so the file stands alone between writes.
 
 ## Design rationale
 
@@ -1003,6 +1031,17 @@ Out of scope:
   settle out of order, so only the newest publishes and none applies to a document adopted
   after it started, including through an update still waiting on identity resolution. Graph
   edits, undo and redo never start one, so the refresh never fights the user's history.
+- **One store, two databases.** An analyst saving a test quote and an underwriter saving
+  a quote go through the same code, so what an analyst's machine and CI prove holds for
+  the underwriter app; only the connection differs. SQLAlchemy Core and Alembic, which
+  MLflow already installs with Haute, speak to SQLite and the server engines alike.
+- **A quote keeps its form.** The current form cannot show a field it no longer has, so
+  each revision names the form it was keyed into, kept under its content hash, the
+  revision the editor already gives a form, once however many quotes name it.
+- **Migrations Haute owns.** The schema is Haute's, not each project's, so its
+  migrations ship with Haute and a project takes a new one by upgrading Haute. A deploy
+  applies them before the new release starts, never the app as it opens, so replicas
+  never race to migrate.
 - **The response's tables, filled through a mapping.** The workbench defines what a priced
   quote fills in as it defines the quote, so the pipeline's part is to connect a frame to each
   table and say which of its columns fills which. Filling by name until the analyst picks

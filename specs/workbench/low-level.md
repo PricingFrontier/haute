@@ -5,6 +5,11 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/_workbench_config.py` | The `[workbench]` table of `haute.toml`: `WORKBENCH_TOML_KEYS` (`enabled`, `form`), `DEFAULT_FORM_PATH` (`forms/form.json`), `WorkbenchError` (the base of every workbench problem the analyst fixes in the project), `WorkbenchConfigError`, the frozen `WorkbenchConfig` record (`enabled`, `form` as `haute.toml` names it, `project_root`, and `form_path`) and `read_workbench_config` (the table read and checked from the project root's `haute.toml`: disabled without the file or the table). |
+| `src/haute/_quote_store/__init__.py` | The quote store's surface: `open_store`, `migrate_store`, `store_url`, `carry_values`, `QuoteStore`, `QuoteRevision`, `QuoteSummary`, `CarriedValues` and the errors `QuoteStoreError`, `QuoteStoreNotMigratedError`, `QuoteNotFoundError`, `StaleQuoteError`. Imported where a store is used, never on the scorer's import path. |
+| `src/haute/_quote_store/_tables.py` | The schema as SQLAlchemy Core tables in `METADATA`: `QUOTE_FORMS` (each form under its revision), `QUOTES` (the id, name, owner, when it was made and its newest revision's number, indexed by owner) and `QUOTE_REVISIONS` (keyed by quote and number: the form's revision, the values, the request, the response and the release, the last two nullable, and who saved it and when); `UtcDateTime`, a moment held in UTC on every engine; `VERSION_TABLE`, Alembic's version table for the store. Every table's name starts haute_. |
+| `src/haute/_quote_store/_store.py` | `store_url` (a SQLite path as a SQLAlchemy URL), `_engine` (SQLite's `PRAGMA foreign_keys=ON` on every connection), `migrate_store` (Alembic's `upgrade head` on one connection), `open_store` (refuses a database whose version is not the head), `QuoteStore` (`create`, `save_revision`, `revision`, `form`, `quotes`, `close`; a context manager) and `carry_values`. |
+| `src/haute/_quote_store/migrations/env.py` | Alembic's environment: runs the migrations on the connection handed over in the config's attributes, against `METADATA`, with `VERSION_TABLE` and batch mode for SQLite. |
+| `src/haute/_quote_store/migrations/versions/0001_quotes.py` | The first migration: the three tables. |
 | `src/haute/_workbench_form.py` | The form file's canonical shape, its reading and its revision: the pydantic models `FormSpec`, `FormSchema`, `SchemaTable`, `SchemaColumn`, `Page`, `Section` (its widgets held inside its height by an after-validator), `TableInputWidget`, `CollectionWidget`, `ChartWidget`, `HeadingWidget`, `FieldRef`, `ShowWhen` and `Condition` (every field written, unknown fields refused), `ConditionTest` (a condition's twelve tests), `ChartType` and `ChartLegend` (how a Chart draws, and where its legend sits), `HeadingSize` and `HeadingAlign` (how large a Heading's text is, and where it sits across its width), `WorkbenchFormError`, `FormDocument` (a form with its file's revision), `blank_form` (one blank sheet, page_1 "Sheet 1", holding one section, section_1 "Section 1", `BLANK_SECTION_HEIGHT` (560) tall, named after the project), `render_form` (the file's text), `form_revision` (a file's revision: the content hash of its bytes), `write_form` (an atomic write, answering the written file's revision), `form_file_revision` (the file's revision as it is now, None when the file does not exist) and `read_form_document` (the file's bytes read once, hashed and checked, the blank form with no revision when the file does not exist, naming the file and what is wrong otherwise, a sheet holding `widgets` of its own refused by name before the shape is checked, through `_refuse_page_widgets`: "pages.N.widgets was removed; a sheet's components now sit in its sections (pages.N.sections[].widgets)"). |
 | `src/haute/_workbench_tables.py` | The workbench's tables as the pipeline holds them: the models `WorkbenchTable` (`name`, `rows`, `columns`; `one_row`, `frame_schema`, `quote_dtype`) and `WorkbenchColumn` (`name`, `type`; `dtype`), `COLUMN_DTYPES`, `WorkbenchTablesError`, `parse_workbench_tables` (a node's `tables` config read strictly, naming the spot that is not as the workbench writes it), `check_tables` (every name held to `is_frame_label`, unique across tables whatever its case and within a table), `port_tables` (the tables with a column), `table_disagreements` (where a node's copy of its tables differs from the form's: a table or `table.column` on one side only, rows per quote, a column's type, then table or column order; deploy's validation reports them), `quote_schema` (the schema of one quote holding tables), `input_tables` and `output_tables` (the schema's tables of the role, in schema order, checked), `sample_quote` (the sample typed while building as one request holds it, each value as its column's type holds it, the values the sheets hide left out) and `workbench_tables`, which gathers the three as a `WorkbenchTables`. |
 | `src/haute/_workbench_visibility.py` | Which sheets, sections and components show for values typed into the sheets, and so which input columns a quote leaves out: `Visibility` (`pages`, `sections` and `widgets`, the ids of the sheets, sections and components that show, and `hidden`, the input columns left out, each a table id and a column id), `visibility(spec, rows)` (everything shown, then anything whose conditions fail hidden, a section with its sheet and a component with its section, round after round, until nothing more hides, the fields of Tables and Collections alone counting as on a component, through `_entered`, since a Chart takes nothing typed and a Heading has no fields) and `condition_fits` (whether a condition can hold as written: its column in a one-row input table, a test its type takes, the values its test takes, each one its column could hold). `frontend/src/utils/sheetVisibility.ts` applies the same rules in the view, both held to `frontend/src/utils/__tests__/fixtures/sheetVisibility.json`. |
@@ -168,6 +173,14 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
 
 ## Key types and data structures
 
+- **`QuoteRevision`** (`src/haute/_quote_store/_store.py`, frozen): `quote_id`, `number`
+  (from 1), `form_revision`, `inputs` (by table id, rows keyed by column id, as typed),
+  `request` and `response` (JSON objects; `response` is `None` when saved unpriced),
+  `release` (`None` when unpriced), `saved_by`, `saved_at`. **`QuoteSummary`**: `id`,
+  `name`, `owner`, `created_at`, `latest` (the newest revision's number), `saved_at` and
+  `priced` of the newest revision. **`CarriedValues`**: `values` (the values the
+  current form has a place for) and `dropped` (each filled value's `table.column` that it
+  has not, by the saved form's names, in that form's order).
 - **`WorkbenchConfig`** (`src/haute/_workbench_config.py`): `enabled`, `form` (the path as
   written in `haute.toml`, or `DEFAULT_FORM_PATH`), `project_root`, and `form_path`
   (`project_root / form`). `read_workbench_config(project_root)` returns a disabled config
@@ -982,6 +995,12 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
 
 ## Error handling
 
+- The quote store's errors are `WorkbenchError`s (`src/haute/_quote_store/_store.py`), so a
+  route answers them as the workbench's: `QuoteStoreNotMigratedError`
+  (`quote_store_not_migrated`) names the database's version, the head and
+  `migrate_store`; `QuoteNotFoundError` (`quote_not_found`) names the quote or revision;
+  `StaleQuoteError` (`stale_quote_revision`) names the revision the save followed and the
+  quote's newest, and nothing of the save is written.
 - `WorkbenchConfigError` and `WorkbenchFormError` are `WorkbenchError`s; `_error_handlers.py`
   answers any `WorkbenchError` as 409 with its message, logged as a warning. The message names
   the key or the file and says what to set; the path is kept in the error's context for the
@@ -1083,6 +1102,15 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
 
 ## Testing
 
+- `tests/test_quote_store.py` covers a new SQLite file migrated to a schema equal to
+  `METADATA` (Alembic's `compare_metadata` finds nothing), a second migration changing
+  nothing, a file not migrated refused at open naming `migrate_store`, foreign keys on and
+  no write-ahead log; a quote created and read back, a revision following it, a revision
+  naming one the quote has moved past refused with nothing written, an unknown quote or
+  revision refused, an unpriced save, two quotes on one form keeping it once, the list
+  for one owner and for all, newest first; and values carried onto a current form, kept
+  through a renamed table and column and dropped, by the old names, for a removed column,
+  a removed table and a table that is no longer an input, blank cells not counted.
 - `tests/test_workbench_config.py` covers the table absent (and `haute.toml` absent), enabled
   and disabled, the default and a configured form path, and each refusal (not a table, an
   unknown key, `enabled` missing or not a boolean, `form` empty, not a string, absolute or

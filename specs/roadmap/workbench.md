@@ -124,45 +124,45 @@ workflows; the behaviour lives in Haute's commands, which read the workbench set
 the YAML stays thin and alike across providers, and a refresh command regenerates a
 project's workflows without rewriting its pipeline or form, as `haute init --force` would.
 The deploy triggers gain each release input as it arrives, where its specification puts it:
-the app's entry point, the store's migrations and the export templates. The app's delivery
-builds each release once. On every pull request, Validate and the packaged app tested in the
-CI runner before any host sees it, against SQLite and once against the server engine IT's
-instance runs (a service container), since SQLite proves neither that engine's migrations
-nor its types: the test quotes of WB-12 re-priced one request each against their accepted
-outputs, a quote saved, reopened and, once WB-11's formats exist, exported through the app,
-and the sheets driven in a browser. On the merge to `main` alone, never on a push of the
-save branch: the merge commit built once, the packaged app's tests run again on that build,
-the image published to the registry and its digest recorded; the staging database migrated
-and the staging app rolled to that digest, never to a tag; a hosted check that the expected
-release runs, that a request without sign-in is refused and that the app reaches its
-database; impact re-pricing a bounded sample of saved quotes from the store, through a
-read-only identity, on the candidate and the production app, comparing within each quote's
-response tables (a premium inside a table, a schedule's rows matched by key) and naming a
-quote whose shape no longer compares; for a first release, with no production app or no
-saved quotes, impact reports that there is no baseline and the candidate answers for the
-committed test quotes alone, while a production app that fails fails the check; approval;
-then production migrated and rolled to the same digest, checked the same way, and the
-release that runs recorded. Rollouts take a maintenance window: the old revision stops, the
-migrations run, the new revision starts, and no traffic is split; a new revision that fails
-to start or fails its check after the migrations is replaced by the previous release,
-started again on the migrated schema, which the migrations of WB-10 keep it able to read and
-write, and the run fails. The host step is small, and the project's IT team provides what it
-deploys onto (the Container App, the registry, the identities and the database): it
-publishes, rolls the environment to the release, waits until the release runs and reports
-it, and creates nothing. Azure Container Apps first; other hosts follow with the same
-commands.
+the app's entry point and the export templates; the store's migrations ship with Haute, so
+the lockfile already carries them. The app's delivery builds each release once. On every
+pull request, Validate and the packaged app tested in the CI runner before any host sees it,
+against SQLite and once against the server engine IT's instance runs (a service container),
+since SQLite proves neither that engine's migrations nor its types: the test quotes of WB-12
+re-priced one request each against their accepted outputs, a quote saved, reopened and, once
+WB-11's formats exist, exported through the app, and the sheets driven in a browser. On the
+merge to `main` alone, never on a push of the save branch: the merge commit built once, the
+packaged app's tests run again on that build, the image published to the registry and its
+digest recorded; the staging database migrated and the staging app rolled to that digest,
+never to a tag; a hosted check that the expected release runs, that a request without
+sign-in is refused and that the app reaches its database; impact re-pricing a bounded sample
+of saved quotes from the store, through a read-only identity, on the candidate and the
+production app, comparing within each quote's response tables (a premium inside a table, a
+schedule's rows matched by key) and naming a quote whose shape no longer compares; for a
+first release, with no production app or no saved quotes, impact reports that there is no
+baseline and the candidate answers for the committed test quotes alone, while a production
+app that fails fails the check; approval; then production migrated and rolled to the same
+digest, checked the same way, and the release that runs recorded. Rollouts take a
+maintenance window: the old revision stops, the migrations run, the new revision starts, and
+no traffic is split; a new revision that fails to start or fails its check after the
+migrations is replaced by the previous release, started again on the migrated schema, which
+the migrations of WB-10 keep it able to read and write, and the run fails. The host step is
+small, and the project's IT team provides what it deploys onto (the Container App, the
+registry, the identities and the database): it publishes, rolls the environment to the
+release, waits until the release runs and reports it, and creates nothing. Azure Container
+Apps first; other hosts follow with the same commands.
 
 **Acceptance:** A project initialised by `haute init --workbench` for Azure Container Apps
 and merged to `main` runs its generated workflow to a staging app and, after approval, to
 production, with the digest CI tested deployed to both, a re-run of the workflow included, a
 maintenance window around each rollout and the release that runs recorded; a change confined
-to a migration or an export template starts the workflow; the packaged app passes the same
-tests against SQLite and the server engine before any host sees it; a push of the save
-branch releases nothing; a request to the hosted app without sign-in is refused; impact
-reports a change to a premium inside a response table; the first release, onto an empty
-database with no production app, reports that there is no baseline and still waits for
-approval; a candidate that fails after the migrations leaves the previous release running on
-the migrated schema and the run failed.
+to an export template starts the workflow; the packaged app passes the same tests against
+SQLite and the server engine before any host sees it; a push of the save branch releases
+nothing; a request to the hosted app without sign-in is refused; impact reports a change to
+a premium inside a response table; the first release, onto an empty database with no
+production app, reports that there is no baseline and still waits for approval; a candidate
+that fails after the migrations leaves the previous release running on the migrated schema
+and the run failed.
 
 **Dependencies:** WB-07 (the app), WB-10 (the store and its migrations), WB-11 (the export
 the app's tests make, once its formats are decided) and WB-12 (the test quotes). The Azure
@@ -260,38 +260,34 @@ and the editor's data-access pair).
 
 ### WB-10 — The quote store
 **Why:** Underwriters save the quotes they price and come back to them, and the business
-keeps what was quoted and on which rates. Haute keeps nothing of a quote: a deployed
-pipeline answers it and forgets it, Preview holds one quote in the browser for the session,
-and Haute has no store for saving a quote and reopening it as revisions; its database output
-writes a pipeline's frames to a table, nothing more. The ruling is one store with two
-databases: on the underwriter app, a SQL instance the project's IT team provides; on an
-analyst's machine and in CI, a SQLite file, which the test quotes of WB-12 use. Saving and
-reopening a quote is then the same code on a laptop and on the host, and only the connection
-differs.
+keeps what was quoted and on which rates. The ruling is one store with two databases: on the
+underwriter app, a SQL instance the project's IT team provides; on an analyst's machine and
+in CI, a SQLite file, which the test quotes of WB-12 use. The store runs on SQLite
+([workbench](../workbench/high-level.md)): quotes with numbered revisions written whole,
+each keeping the form it was keyed into, a revision that names one its quote has moved past
+refused, a saved quote's values carried onto the current form by the stable ids, and Haute's
+numbered migrations, which the store refuses to open without. What the underwriter app needs
+of it does not exist: a backend for the server engine IT's instance runs, the connection
+configured per environment, the migrations run by a deploy under an identity of their own,
+and the app's Save, Open and list of quotes.
 
-**Plan:** A store behind one interface with two backends, SQLite and the server engine IT's
-instance runs. Which engine, Azure SQL or Azure Database for PostgreSQL, is the IT team's to
-name and is recorded here before the server backend's slice; nothing before that slice waits
-on it. Who sees whose quotes, each underwriter their own or a team's, is recorded before the
-app's list of quotes. A saved quote holds a stable id, its owner, who saved it and when, and
-revisions, each with the inputs as typed, the request as priced and the response's tables in
-full, the release that priced it, and the form's schema and pages as they were, kept with
-the revision or as an unchanging copy the revision names for as long as the quote is kept,
-since the current form cannot show a field it no longer has; a price stays with the inputs
-it priced, so editing a quote while it prices never attaches the old price to the new
-values. The schema is Haute's, versioned by numbered migrations in the project and applied
-by the deploy's migrate step under an identity that owns the schema, while the app's own
-identity reads and writes data only; a release's migrations keep the previous release's
-reads and writes working (a column added as nullable or with a default, no constraint the
-previous release's writes would break, nothing dropped), proved by running the previous
-release's store tests against the schema the migrations leave, so the previous release can
-be started again after a failed rollout; removing a column is a step of its own after the
-release that stops using it. A form that changes keeps what was saved: a quote saved under
-an older form opens on that form, as it was saved, read-only, and re-pricing it on the
-current form makes a new revision through the form's stable ids, naming what no longer fits.
-The connection is configured per environment by name, its value supplied by the host at
-runtime (a managed identity or a secret) and never written to a file the ledger pushes. Then
-the app's Save and Open and the list of quotes on the sheets.
+**Plan:** Which engine, Azure SQL or Azure Database for PostgreSQL, is the IT team's to name
+and is recorded here before the server backend's slice. The backend is that engine's driver
+behind an optional extra, as the Databricks clients are, with the store's tests run against
+SQLite and that engine alike (a service container in CI), and the form copies kept once
+through that engine's own insert-if-absent. Who sees whose quotes, each underwriter their
+own or a team's, is recorded before the app's list of quotes. The connection is configured
+per environment by name, its value supplied by the host at runtime (a managed identity or a
+secret) and never written to a file the ledger pushes. The deploy's migrate step applies the
+migrations under an identity that owns the schema, while the app's own identity reads and
+writes data only. A release's migrations keep the previous release's reads and writes
+working (a column added as nullable or with a default, no constraint the previous release's
+writes would break, nothing dropped), proved by running the previous release's store tests
+against the schema the migrations leave, so the previous release can be started again after
+a failed rollout; removing a column is a step of its own after the release that stops using
+it. Then the app's Save and Open and the list of quotes on the sheets: a quote saved under
+an older form opens on that form, read-only, and re-pricing it on the current form makes a
+new revision, naming what no longer fits.
 
 **Acceptance:** An underwriter saves a priced quote in the app, closes it, finds it in their
 list and reopens it with its values, its prices and the release that priced them; a second
@@ -305,13 +301,14 @@ file, `haute.toml`, an API response or a log; the app's identity cannot change t
 **Dependencies:** WB-07 (the app that saves). The SQL instance and its identities, provided
 by the project's IT team, and the choice of engine above.
 
-**Evidence:** `src/haute/_workbench_form.py::FormSpec` and `::read_form_document` (the
-form's stable table and column ids, read as the current form only);
-`src/haute/_workbench_tables.py::workbench_tables` and `::quote_schema` (the tables and
-columns a quote is read as); `frontend/src/stores/useWorkbenchPreviewStore.ts::priceQuote`
-(a quote held in the browser alone); `src/haute/_polars_io_registry.py::write_polars_output`
-(the database output, a pipeline's frames to a table);
-`src/haute/_workbench_config.py::read_workbench_config` (the workbench's settings).
+**Evidence:** `src/haute/_quote_store/_store.py::open_store`, `::migrate_store`,
+`::QuoteStore` and `::carry_values` (the store on SQLite);
+`src/haute/_quote_store/_tables.py::METADATA` (Haute's schema);
+`src/haute/_quote_store/_store.py::_keep_form` (a form kept once, by SQLite's
+insert-if-absent and otherwise a read first);
+`frontend/src/stores/useWorkbenchPreviewStore.ts::priceQuote` (Preview's quote, held in the
+browser alone); `src/haute/_workbench_config.py::read_workbench_config` (the workbench's
+settings, with no store in them).
 
 ### WB-11 — Exports from the app
 **Why:** Underwriters take what they need out of the app themselves: a quote's tables for a

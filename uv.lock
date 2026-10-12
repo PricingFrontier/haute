@@ -1211,6 +1211,7 @@ name = "haute"
 version = "0.6.0"
 source = { editable = "." }
 dependencies = [
+    { name = "alembic" },
     { name = "anthropic" },
     { name = "catboost" },
     { name = "click" },
@@ -1236,6 +1237,7 @@ dependencies = [
     { name = "python-multipart" },
     { name = "rustystats" },
     { name = "scipy" },
+    { name = "sqlalchemy" },
     { name = "structlog" },
     { name = "t-boost" },
     { name = "tomlkit" },
@@ -1273,6 +1275,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "alembic", specifier = ">=1.18.4,<2" },
     { name = "anthropic", specifier = ">=0.40,<1" },
     { name = "catboost", specifier = ">=1.2.10,<2" },
     { name = "click", specifier = ">=8.4.2,<9" },
@@ -1300,6 +1303,7 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.31,<0.1" },
     { name = "rustystats", specifier = ">=0.9.0,<0.10" },
     { name = "scipy", specifier = ">=1.16.0,<2" },
+    { name = "sqlalchemy", specifier = ">=2.0.46,<3" },
     { name = "structlog", specifier = ">=25.5.0,<26" },
     { name = "t-boost", specifier = ">=0.8.1,<0.9" },
     { name = "tomlkit", specifier = ">=0.15.1,<0.16" },
