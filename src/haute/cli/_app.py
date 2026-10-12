@@ -7,11 +7,11 @@ Split into:
 * :func:`app` and its ``build`` and ``serve`` — the thin ``@click`` entry points.
 
 ``build`` writes the project's release into a directory, ``.haute/app/release`` unless
-another is named: the pipeline bundled as ``haute
-deploy`` bundles it, after the same validation and test quotes, with the sheets, what the
-release is and its entry point. ``serve`` builds the release there and serves it on
-the analyst's machine, on loopback alone, signed in as the analyst's git identity, so the sheets
-underwriters will see are checked before a merge.
+another is named: the pipeline bundled as ``haute deploy`` bundles it, after the same
+validation and test quotes, with the sheets, what the release is and its entry point.
+``serve`` builds the release there and serves it on the analyst's machine, on loopback
+alone, signed in as the analyst's git identity, so the sheets underwriters will see are
+checked before a merge.
 """
 
 from __future__ import annotations
