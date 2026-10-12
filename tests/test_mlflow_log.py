@@ -560,6 +560,9 @@ class TestLocalRegistrationEndToEnd:
 
         from haute._sandbox import set_project_root
 
+        # The model cache is `.cache/models` under the working directory: in the repository
+        # root it is every worker's, and a test clearing it there removes this one's model.
+        monkeypatch.chdir(tmp_path)
         set_project_root(tmp_path)
         frame = pd.DataFrame({"age": [20.0, 30.0, 40.0, 50.0]})
         artifacts = tmp_path / "artifacts"
