@@ -218,10 +218,10 @@ describe("QuoteView", () => {
   })
 
   it("restores an archived quote from its notice, and archives one with Undo", async () => {
-    vi.mocked(openAppQuote).mockResolvedValue(answer({ archived_at: "2026-10-12T10:00:00+00:00", archived_by: "jo@example.com" }))
+    vi.mocked(openAppQuote).mockResolvedValue(answer({ archived: true, archived_at: "2026-10-12T10:00:00+00:00", archived_by: "jo@example.com" }))
     vi.mocked(changeAppQuote)
       .mockResolvedValueOnce({ quote: appQuote({ version: 2 }), revision: null })
-      .mockResolvedValueOnce({ quote: appQuote({ version: 3, archived_at: "2026-10-12T11:00:00+00:00" }), revision: null })
+      .mockResolvedValueOnce({ quote: appQuote({ version: 3, archived: true, archived_at: "2026-10-12T11:00:00+00:00" }), revision: null })
       .mockResolvedValueOnce({ quote: appQuote({ version: 4 }), revision: null })
     await opened()
     expect(screen.getByTestId("notice-archived")).toHaveTextContent("Archived by jo@example.com")

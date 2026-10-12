@@ -114,7 +114,7 @@ const CLOSED: Closed = {
 export function readOnlyReason(state: Pick<OpenQuoteState, "quote" | "past" | "olderSheets">): ReadOnlyReason {
   if (state.past) return "past"
   if (state.olderSheets !== null) return "older-sheets"
-  if (state.quote?.archived_at) return "archived"
+  if (state.quote?.archived) return "archived"
   if (state.quote?.stage === "final") return "final"
   if (!canEdit()) return "reader"
   return null

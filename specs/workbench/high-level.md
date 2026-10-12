@@ -1026,8 +1026,10 @@ Out of scope:
   `final`; who it is assigned to, at first who made it; and whether it is archived. The
   newest revision's row is the quote as the app lists, searches and orders it.
   Assigning, archiving, restoring, marking final and reopening each write a revision of
-  the newest, its values, request, prices and release kept and its details changed, so
-  the pipeline sees them as it sees any other input; a handover note is an event alone.
+  the newest, its values, request, prices and release kept and its details changed: the
+  pipeline sees the new details, as any other input, the next time the quote is priced.
+  A new quote is priced before it takes its reference, so its first pricing sees none. A
+  handover note is an event alone.
   Who marked it final and when, when it was archived and by whom, the note, and the
   quote and revision it was made from and how, a duplicate, a renewal or an
   alternative, are read from its events; its version is its newest revision's number.

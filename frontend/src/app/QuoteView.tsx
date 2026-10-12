@@ -293,7 +293,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
     { label: "Duplicate", icon: Copy, run: () => derive("duplicate"), disabled: quote === null || !editor, title: "A new quote with this revision's values" },
     { label: "Renew", icon: RefreshCcw, run: () => derive("renewal"), disabled: quote === null || !editor, title: "A new quote renewing this one, from this revision's values" },
     { label: "Create alternative", icon: GitBranchPlus, run: () => derive("alternative"), disabled: quote === null || !editor, title: "A new quote offering other terms, from this revision's values" },
-    quote?.archived_at
+    quote?.archived
       ? { label: "Restore", icon: ArchiveRestore, run: () => void change("restore"), disabled: changing || !editor }
       : { label: "Archive", icon: Archive, run: () => void archive(), disabled: quote === null || changing || !editor },
     { label: "Copy link", icon: Link2, run: () => void copyLink(), disabled: quote === null },
@@ -317,7 +317,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
             {quote?.reference ?? "New quote"}
           </span>
           {quote !== null && <StageChip stage={quote.stage} />}
-          {quote?.archived_at && <StageChip stage="archived" />}
+          {quote?.archived && <StageChip stage="archived" />}
           {dirty && (
             <span className="text-[10px]" style={{ color: "var(--warning)" }} data-testid="quote-unsaved">
               Unsaved
@@ -358,7 +358,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
           {saving ? "Saving…" : priced || closed ? "Save" : "Save unpriced"}
         </button>
         {quote?.stage === "final" ? (
-          <ToolbarButton icon={LockOpen} onClick={() => void reopen()} disabled={changing || !editor || past || olderSheets !== null || quote.archived_at !== null} title="Reopen the quote for an amendment, giving a reason">
+          <ToolbarButton icon={LockOpen} onClick={() => void reopen()} disabled={changing || !editor || past || olderSheets !== null || quote.archived} title="Reopen the quote for an amendment, giving a reason">
             Reopen
           </ToolbarButton>
         ) : (
@@ -464,7 +464,7 @@ function QuoteLine() {
             <select
               aria-label="Assigned to"
               value={quote.assignee}
-              disabled={changing || quote.archived_at !== null || !canEdit()}
+              disabled={changing || quote.archived || !canEdit()}
               onChange={(event) => void assign(event.target.value)}
               className="focus-ring rounded px-1 py-0.5 text-[11px]"
               style={{ border: "1px solid var(--border)", color: "var(--text-primary)" }}
@@ -573,9 +573,9 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
           Saved on earlier sheets: it shows as it was keyed in, read only. Move it to the current sheets to change it.
         </Notice>
       )}
-      {reason === "archived" && quote?.archived_at && (
+      {reason === "archived" && quote !== null && (
         <Notice tone="info" testId="notice-archived" actions={canEdit() && <button type="button" className={BUTTON} onClick={() => void change("restore")}>Restore</button>}>
-          Archived by {quote.archived_by} {relativeTime(quote.archived_at)}, read only. Restore it to change it.
+          Archived{quote.archived_by !== null && ` by ${quote.archived_by}`}{quote.archived_at !== null && ` ${relativeTime(quote.archived_at)}`}, read only. Restore it to change it.
         </Notice>
       )}
       {!canEdit() && (

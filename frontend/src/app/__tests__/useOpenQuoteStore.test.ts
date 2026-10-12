@@ -63,7 +63,7 @@ describe("useOpenQuoteStore", () => {
 
   it.each([
     ["final", answer({ stage: "final", final_revision: 1 }), null],
-    ["archived", answer({ archived_at: "2026-10-12T10:00:00+00:00" }), null],
+    ["archived", answer({ archived: true, archived_at: "2026-10-12T10:00:00+00:00" }), null],
     ["past", answer({ latest: 2 }, { number: 1 }), 1],
     ["older-sheets", answer({}, {}, { form: { ...sheetForm(), name: "older" } }), null],
   ] as const)("holds a %s quote read only", async (reason, opened, revision) => {

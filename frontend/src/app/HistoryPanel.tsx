@@ -40,7 +40,7 @@ function NoteEditor({ quote }: { quote: WorkbenchAppQuote }) {
     setEditedFrom(quote.note)
     setNote(quote.note)
   }
-  const locked = quote.archived_at !== null || !canEdit()
+  const locked = quote.archived || !canEdit()
   return (
     <div className="flex flex-col gap-1">
       <textarea

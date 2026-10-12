@@ -85,8 +85,10 @@ other input, so a rule can read a quote's inception date or its stage.
 
 The app sets **reference**, **stage**, **assignee** and **archived** itself: their cells take
 no typing in the app and take no rules. Assigning, archiving, restoring, marking final and
-reopening a quote each save a new revision with those details changed, its values and price
-kept, so the history shows when a quote moved and the pipeline sees it as it was.
+reopening a quote each save a new revision with those details changed and its values and
+price kept, so the history shows when a quote moved; the pipeline sees the new details the
+next time the quote is priced. A new quote is priced before it takes its reference, so its
+first price is made without one.
 
 A table or a column you add reaches the pipeline when you save: the editor fetches the
 tables again, the Workbench Input's and Workbench Output's tables follow the schema, and

@@ -364,7 +364,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                     <td className="px-2">
                       <span className="inline-flex gap-1">
                         <StageChip stage={quote.stage} />
-                        {quote.archived_at !== null && query.view !== "archived" && <StageChip stage="archived" />}
+                        {quote.archived && query.view !== "archived" && <StageChip stage="archived" />}
                       </span>
                     </td>
                     <td className="max-w-[180px] truncate px-2" style={{ color: "var(--text-secondary)" }} title={quote.assignee}>
@@ -389,7 +389,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                           <Copy size={12} />
                         </button>
                         )}
-                        {!editor ? null : quote.archived_at === null ? (
+                        {!editor ? null : !quote.archived ? (
                           <button type="button" className={ICON_BUTTON} onClick={() => void archive(quote)} title={`Archive ${quote.reference}`} aria-label={`Archive ${quote.reference}`}>
                             <Archive size={12} />
                           </button>

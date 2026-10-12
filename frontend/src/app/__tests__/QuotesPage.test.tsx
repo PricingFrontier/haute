@@ -160,7 +160,7 @@ describe("QuotesPage", () => {
 
   it("archives a quote with Undo, which restores it", async () => {
     vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote()]))
-    vi.mocked(changeAppQuote).mockResolvedValueOnce({ quote: appQuote({ version: 2, archived_at: "2026-10-12T10:00:00+00:00" }), revision: null }).mockResolvedValueOnce({ quote: appQuote({ version: 3 }), revision: null })
+    vi.mocked(changeAppQuote).mockResolvedValueOnce({ quote: appQuote({ version: 2, archived: true, archived_at: "2026-10-12T10:00:00+00:00" }), revision: null }).mockResolvedValueOnce({ quote: appQuote({ version: 3 }), revision: null })
     show()
 
     fireEvent.click(await screen.findByRole("button", { name: "Archive Q-000001" }))
@@ -184,7 +184,8 @@ describe("QuotesPage", () => {
   })
 
   it("restores an archived quote from the archive", async () => {
-    vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote({ archived_at: "2026-10-12T10:00:00+00:00" })]))
+    // A list row knows it is archived, not by whom or when: those are read with the quote.
+    vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote({ archived: true })]))
     vi.mocked(changeAppQuote).mockResolvedValue({ quote: appQuote({ version: 2 }), revision: null })
     show(quotesQueryOf("?view=archived"))
 
