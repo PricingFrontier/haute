@@ -66,9 +66,8 @@ Out of scope:
   ([sandbox-security](../sandbox-security/high-level.md)), which apply to the workbench
   routes exactly as to any other `/api/` route.
 - How a deployed pipeline reads a request into its tables ([deploy](../deploy/high-level.md)).
-- The app that shows the sheets to an underwriter outside Haute and prices through the
-  deployed pipeline ([WB-07](../roadmap/workbench.md#wb-07--the-underwriter-app)). Preview
-  is those sheets inside the builder, priced on the pipeline open in the editor.
+- The underwriter app's host-side delivery: rolling a host to a release and checking it
+  there ([WB-08](../roadmap/workbench.md#wb-08--the-workbench-projects-cicd)).
 - Where a deployment's quote store is configured and migrated, the server databases it
   will run on, and the app's Save, Open and list of quotes
   ([WB-10](../roadmap/workbench.md#wb-10--the-quote-store)).
@@ -96,7 +95,9 @@ Out of scope:
   generates for GitHub or Azure DevOps also starts when a file under `forms/` changes;
   `haute init --force` rewrites `haute.toml`, so the table stays only when `--workbench`
   is given again, while `forms/` is left as `data/` is. An existing project enables its
-  workbench by adding the table by hand.
+  workbench by adding the table by hand. A nested `[workbench.app]` table says where the
+  underwriter app runs: its one key, `host`, is `azure-container-apps`, and any other key
+  or host is refused by name.
 - **The form file.** `forms/form.json` is one JSON document: `version` (1), `name`, `schema`
   (its tables), `pages` (its sheets, at least one) and `sample` (the quote typed while
   building, `{}` for none). Every field has one canonical spelling and an unknown field is
@@ -593,6 +594,31 @@ Out of scope:
   checks post it on the pull request on GitHub and keep it with the run on GitLab and
   Azure DevOps ([cli](../cli/high-level.md),
   [pipeline-config](../pipeline-config/high-level.md)).
+- **The underwriter app.** The sheets reach underwriters through an app Haute builds from
+  the project, apart from the builder. `haute app build` writes a release: the pipeline's
+  bundle as a deploy builds it (the sample left out), the form without its sample
+  (`form.json`), what the release is (`release.json`: an id taken from the form and the
+  bundle, the form's revision, the pipeline's name, the Haute version that built it and
+  when) and an entry point, `app.py`, serving it through the app Haute maintains. The app
+  serves the sheets on a page of their own, drawn as Preview draws them, with the same
+  components filled from the app's routes rather than the builder's and nothing of the
+  builder mounted: the sheets' tabs, the sheet showing, Price and Clear, the release and
+  who is signed in. A quote keyed in is checked against the columns' rules as Preview
+  checks it, then priced by the app through `POST /api/app/price`, which takes the values
+  and the form revision the page was loaded with. A revision that is not the release's is
+  refused (409), so a page loaded from an earlier release reloads rather than price on a
+  newer contract. The request is built as Price builds it and priced through the deployed
+  pipeline's engine, one quote per request, off the server's event loop, under the deploy's
+  admission limit and a timeout, and answered whole: each output table's rows, with the
+  request priced. `GET /api/app/release` and `GET /api/app/form` serve the release and the
+  form; `GET /health` answers without sign-in, for the host's probes. Every other route
+  needs the principal the host signed in. The identity follows `[workbench.app] host`:
+  `azure-container-apps` reads the principal Azure's built-in authentication sets on each
+  request, which the host strips from what a client sends, and refuses a request without
+  it (401); a release built with no host refuses every request but the health check.
+  `haute app serve` builds a release of the project as it is saved and serves it on the
+  analyst's machine, the principal the analyst's git identity, so the sheets underwriters
+  will see are checked before a merge. No credential reaches the page.
 - **Shown when.** A sheet, a section or a component with conditions shows only while they
   hold on the values typed into the sheets, the sample while building and the quote in
   Preview; a section on a sheet that does not show does not show either, nor does a
@@ -1100,6 +1126,14 @@ Out of scope:
   settle out of order, so only the newest publishes and none applies to a document adopted
   after it started, including through an update still waiting on identity resolution. Graph
   edits, undo and redo never start one, so the refresh never fights the user's history.
+- **Preview's drawing, the app's data.** Preview already shows the sheets as an
+  underwriter uses them: nothing selected or moved, the tabs read-only, no section bars.
+  The app mounts the same components over the same stores, which it fills from its own
+  routes, so what an analyst sees in Preview is what an underwriter sees, and the
+  builder's palette, toolbar, schema editor, panels and shortcuts are never mounted.
+- **One release.** The form, the sheets and the pipeline ship in one release, so form
+  v12 prices on pipeline v12 by construction, and a page that holds another release's
+  form is refused rather than priced on a contract it was not drawn for.
 - **One store, two databases.** An analyst saving a test quote and an underwriter saving
   a quote go through the same code, so what an analyst's machine and CI prove holds for
   the underwriter app; only the connection differs. SQLAlchemy Core and Alembic, which

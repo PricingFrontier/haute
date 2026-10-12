@@ -31,18 +31,17 @@ Preview; and the actions that fill the sheets from databases and APIs.
 quote by patching the pipeline open in the editor with the form's tables and the typed quote
 and previewing each Workbench Output port through the dev server's worker pool, so it needs
 `haute serve`, the pipeline's source and the editor's graph, and it sits inside the
-builder's chrome; the sheet canvas itself reads the builder's form and view stores and
-carries the builder's selection and layout editing, so hiding the chrome would not make it
-an underwriter's view. Underwriters have no Haute, and the builder (the nodes, the schema
-editor, the sample) is not theirs to see. Pricing analysts build the rates and the sheets on
-their own machines with `haute serve`; what underwriters use is an app that a merge to
-`main` puts in front of them, and where it runs varies by project: Azure, AWS, a Databricks
-App or the company's own platform. What a host has today: the container target generates a
-FastAPI scoring app and a Dockerfile and builds and pushes the image, and no target rolls a
-running service to it; the hosted Databricks factory puts the builder's server behind the
-workspace proxy, which is not an underwriter's app; and a deploy carries the Workbench
-Input's tables, not the form's pages, so the sheets an underwriter would see are not
-versioned with the pipeline they price on.
+builder's chrome; the sheet canvas itself reads the builder's form and view stores, which
+Preview fills for an underwriter's quote, with nothing selected or moved. Underwriters have
+no Haute, and the builder (the nodes, the schema editor, the sample) is not theirs to see.
+Pricing analysts build the rates and the sheets on their own machines with `haute serve`;
+what underwriters use is an app that a merge to `main` puts in front of them, and where it
+runs varies by project: Azure, AWS, a Databricks App or the company's own platform. What a
+host has today: the container target generates a FastAPI scoring app and a Dockerfile and
+builds and pushes the image, and no target rolls a running service to it; the hosted
+Databricks factory puts the builder's server behind the workspace proxy, which is not an
+underwriter's app; and a deploy carries the Workbench Input's tables, not the form's pages,
+so the sheets an underwriter would see are not versioned with the pipeline they price on.
 
 **Plan:** The hosting decisions are recorded: one app for every host, Azure Container Apps
 first; pricing inside the app; the host's infrastructure and sign-in provided by the
@@ -62,9 +61,10 @@ host's own authentication fronts the app (Azure's built-in authentication first)
 reads the principal the host asserts, verifying it where the host signs it, and is reachable
 only through that front; sign-in built into the app is not part of the first increment. The
 app's host is a setting beside the workbench's (for example `[workbench.app]`), apart from
-`[deploy] target`, which keeps meaning a separately deployed scoring API. The slices: the
-renderer drawn out of the builder's stores, with Preview kept on it; the app factory with
-pricing inside and the release it reports; `haute app serve`, which runs the same app on an
+`[deploy] target`, which keeps meaning a separately deployed scoring API. The app draws the
+sheets as Preview does, the same components over the same stores, which it fills from its
+own routes, and mounts nothing of the builder. The slices: the app factory with pricing
+inside and the release it reports; `haute app serve`, which runs the same app on an
 analyst's machine against a local SQLite store, so the sheets underwriters will see are
 checked before a merge; then the image for Azure Container Apps.
 
