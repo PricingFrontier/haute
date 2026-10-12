@@ -105,6 +105,16 @@ describe("priceSample", () => {
     await expect(priceSample(graph(), workbench([pricing]), "live")).rejects.toThrow(reason)
   })
 
+  it("refuses, when the complete response is asked for, a table Preview cut short", async () => {
+    preview.mockResolvedValue({ ...ok([{ layer: 1 }]), row_count: 12000, preview_truncated: true })
+
+    // Preview itself shows the rows it has; a test quote keeps the whole response.
+    await expect(priceSample(graph(), workbench([layers]), "live")).resolves.toEqual({ tables: { layer_premiums: [{ layer: 1 }] } })
+    await expect(priceSample(graph(), workbench([layers]), "live", { complete: true })).rejects.toThrow(
+      "The 'layer_premiums' table has 12000 rows, more than Preview returns",
+    )
+  })
+
   it("resolves to no tables for a Workbench Output without any", async () => {
     await expect(priceSample(graph(), workbench([]), "live")).resolves.toEqual({ tables: {} })
     expect(preview).not.toHaveBeenCalled()

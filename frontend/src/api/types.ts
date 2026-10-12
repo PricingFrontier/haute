@@ -531,12 +531,20 @@ export type {
   Section,
   ShowWhen,
   TableInputWidget,
+  WorkbenchAppFormResponse,
+  WorkbenchAppPriceResponse,
+  WorkbenchAppReleaseResponse,
   WorkbenchColumn,
   WorkbenchFormResponse,
   WorkbenchFormSaveResponse,
   WorkbenchStatusResponse,
   WorkbenchTable,
   WorkbenchTablesResponse,
+  WorkbenchTestQuoteCompareResponse,
+  WorkbenchTestQuoteOpenResponse,
+  WorkbenchTestQuotesResponse,
+  WorkbenchTestQuoteSummary,
+  WorkbenchTestQuoteWriteResponse,
 } from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------

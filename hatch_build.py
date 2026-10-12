@@ -28,6 +28,9 @@ _FALSE_VALUES = frozenset({"", "0", "false", "no", "off"})
 _COMMAND_TIMEOUT_SECONDS = 900
 _INPUT_MANIFEST_NAME = "haute-build-inputs.json"
 _OUTPUT_MANIFEST_NAME = "manifest.json"
+# The underwriter app's page (specs/workbench), built apart from the builder's by
+# frontend/vite.app.config.ts, with its own Vite manifest beside it.
+_APP_PAGE = Path("app") / "app.html"
 _INPUT_MANIFEST_VERSION = 1
 _SOURCE_TEST_ONLY_DIRS = frozenset({"__tests__", "test-utils", "testSupport"})
 # Vitest setup files are verification-system support, not production inputs;
@@ -96,7 +99,7 @@ class FrontendBuildHook(BuildHookInterface):
             index_html,
             manifest=inputs_before_build,
         )
-        self._require_static_readiness(index_html)
+        self._require_pages_ready(index_html)
         self._require_current_input_manifest(frontend_dir, index_html)
 
     @staticmethod
@@ -116,17 +119,23 @@ class FrontendBuildHook(BuildHookInterface):
     @classmethod
     def _validate_static_assets(cls, frontend_dir: Path, index_html: Path) -> None:
         """Fail clearly rather than packaging an incomplete or stale client."""
-        cls._require_static_readiness(index_html)
+        cls._require_pages_ready(index_html)
         cls._require_current_input_manifest(frontend_dir, index_html)
 
     @classmethod
     def _static_assets_ready(cls, index_html: Path) -> bool:
         """Return whether the generated output dependency graph is coherent."""
         try:
-            cls._require_static_readiness(index_html)
+            cls._require_pages_ready(index_html)
         except RuntimeError:
             return False
         return True
+
+    @classmethod
+    def _require_pages_ready(cls, index_html: Path) -> None:
+        """Require the builder's page and the underwriter app's, each with its manifest."""
+        cls._require_static_readiness(index_html)
+        cls._require_static_readiness(index_html.parent / _APP_PAGE)
 
     @classmethod
     def _require_static_readiness(cls, index_html: Path) -> None:
@@ -136,7 +145,7 @@ class FrontendBuildHook(BuildHookInterface):
             raise RuntimeError(
                 cls._readiness_message(
                     static_dir,
-                    "index.html is missing or is not a regular file",
+                    f"{index_html.name} is missing or is not a regular file",
                 )
             )
 
@@ -201,7 +210,7 @@ class FrontendBuildHook(BuildHookInterface):
             index_text = index_html.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
             raise RuntimeError(
-                cls._readiness_message(static_dir, f"index.html is unreadable: {exc}")
+                cls._readiness_message(static_dir, f"{index_html.name} is unreadable: {exc}")
             ) from exc
 
         parser = _LocalAssetParser()
@@ -210,7 +219,7 @@ class FrontendBuildHook(BuildHookInterface):
             parser.close()
         except Exception as exc:
             raise RuntimeError(
-                cls._readiness_message(static_dir, f"index.html is malformed: {exc}")
+                cls._readiness_message(static_dir, f"{index_html.name} is malformed: {exc}")
             ) from exc
 
         direct_assets: set[str] = set()
@@ -221,7 +230,7 @@ class FrontendBuildHook(BuildHookInterface):
             resolved = cls._require_local_asset(
                 static_dir,
                 local,
-                "index.html reference",
+                f"{index_html.name} reference",
             )
             direct_assets.add(resolved)
             if (
@@ -231,7 +240,8 @@ class FrontendBuildHook(BuildHookInterface):
                 raise RuntimeError(
                     cls._readiness_message(
                         static_dir,
-                        f"index.html reference {reference!r} is absent from the Vite manifest",
+                        f"{index_html.name} reference {reference!r} is absent from the Vite "
+                        "manifest",
                     )
                 )
 
@@ -239,7 +249,7 @@ class FrontendBuildHook(BuildHookInterface):
             raise RuntimeError(
                 cls._readiness_message(
                     static_dir,
-                    "index.html does not reference the Vite manifest entry chunk",
+                    f"{index_html.name} does not reference the Vite manifest entry chunk",
                 )
             )
 
@@ -333,9 +343,11 @@ class FrontendBuildHook(BuildHookInterface):
             root / "pyproject.toml",
             frontend / ".npmrc",
             frontend / "index.html",
+            frontend / "app.html",
             frontend / "package.json",
             frontend / "package-lock.json",
             frontend / "vite.config.ts",
+            frontend / "vite.app.config.ts",
         }
         required.update(cls._referenced_tsconfigs(frontend))
 

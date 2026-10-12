@@ -70,11 +70,38 @@ Out of scope, owned elsewhere:
 - `haute deploy [pipeline_file] [--model-name] [--dry-run] [--endpoint-suffix]` validates a pipeline,
   scores its test quotes, and deploys it to the configured target. Non-dry-run deploys are blocked
   outside a recognised CI environment.
-- `haute smoke [--endpoint-suffix]` sends every test-quote JSON file in `tests/quotes/` to a live
-  serving endpoint and checks that each request completes. The current backends do not
-  consistently require a non-empty prediction list, and HTTP health accepts any decodable 2xx JSON.
+- `haute smoke [--endpoint-suffix]` sends each test quote in `tests/quotes/`, the workbench's
+  test-quote file among them, to a live serving
+  endpoint as a request of its own, as a pipeline reading one quote per request takes it, and
+  holds each quote with an `expected` output to it as the deploy check does, walked into a
+  Workbench Output's tables: one answer row, an object of output columns, each expected
+  value within tolerance. A failed request or mismatch is reported by its row in the file
+  and the other quotes are still priced. HTTP health accepts any decodable 2xx JSON.
   An endpoint suffix is a Databricks naming override; HTTP targets reject it and direct operators
   to configure the complete staging endpoint URL instead.
+- `haute test-quotes report [--base REF] [--output FILE]` compares the workbench's test-quote
+  file with the one at `REF` (`origin/main` by default) and writes, as Markdown, the test
+  quotes added, removed and accepted anew, each with the outputs that moved; a file absent
+  on either side reads as no test quotes, one an older Haute wrote is read through a
+  migrated copy, and the report never fails the run.
+- `haute test-quotes dump FILE` writes the test-quote file at `FILE` as text, each quote by
+  name with its newest revision, who saved it and when, its request and its response, the
+  JSON with sorted keys, for git's diff driver.
+- `haute test-quotes merge BASE OURS THEIRS` merges the test-quote files of a three-way
+  merge quote by quote into `OURS`, git's merge driver contract: it exits 0 when every quote
+  merges and 1 naming the quotes in conflict, `OURS` then left as it was.
+- `haute app build [OUTPUT] [--image TAG]` builds the workbench project's release for
+  the underwriter app into `OUTPUT` (`.haute/app/release` by default, which git
+  ignores): the pipeline resolved,
+  validated and bundled as `haute deploy` does it, test quotes included, with the
+  sheets, what the release is and its entry point, and, with `[deploy.container]
+  base_image` set, the Dockerfile that makes it the image's build context; `--image`
+  builds that image with Docker. A directory holding anything but an earlier release
+  is refused, as are a project without a workbench and sheets never saved.
+- `haute app serve [--port PORT] [--static-dir DIR]` builds the release under
+  `.haute/app/release` and serves the underwriter app on `127.0.0.1` alone (port 8001
+  by default), every request signed in as the analyst's git identity; without one it
+  refuses to start.
 - `haute status [model_name] [--version-only]` looks up a model's latest version/stage in the MLflow
   Model Registry.
 - `haute impact [--sample] [--batch-size] [--endpoint-suffix]` scores a configured safety dataset

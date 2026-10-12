@@ -52,6 +52,10 @@ In scope:
   editor keeps current and shows, and previews on.
 - The Workbench Output, the node type that holds a copy of the output tables, which the
   editor keeps current and shows, and whose ports take the frames that fill them.
+- The quote store: saved quotes and their revisions, each with the form it was keyed
+  into, on a SQLite file, its schema and the migrations that bring a database to it.
+- The test quotes an analyst keeps in Preview, in the project's test-quote file, and the
+  routes that save, list, open, compare, accept and delete them.
 
 Out of scope:
 
@@ -62,9 +66,13 @@ Out of scope:
   ([sandbox-security](../sandbox-security/high-level.md)), which apply to the workbench
   routes exactly as to any other `/api/` route.
 - How a deployed pipeline reads a request into its tables ([deploy](../deploy/high-level.md)).
-- The app that shows the sheets to an underwriter outside Haute and prices through the
-  deployed pipeline ([WB-07](../roadmap/workbench.md#wb-07--the-underwriter-app)). Preview
-  is those sheets inside the builder, priced on the pipeline open in the editor.
+- The underwriter app on hosts other than Azure Container Apps
+  ([WB-07](../roadmap/workbench.md#wb-07--the-underwriter-app-on-other-hosts)).
+- The underwriter app's host-side delivery: rolling a host to a release and checking it
+  there ([WB-08](../roadmap/workbench.md#wb-08--the-workbench-projects-cicd)).
+- Where a deployment's quote store is configured and migrated, the server databases it
+  will run on, and the app's Save, Open and list of quotes
+  ([WB-10](../roadmap/workbench.md#wb-10--the-quote-store)).
 - `haute init`'s other scaffolding ([cli](../cli/high-level.md),
   [pipeline-config](../pipeline-config/high-level.md)).
 
@@ -82,10 +90,16 @@ Out of scope:
   without this component. With the table, `enabled` is required and `true` or `false`; `form`
   is optional, a path relative to the project root that stays inside it, `forms/form.json`
   when absent; any other key is refused by name. `haute deploy`'s whole-file check of
-  `haute.toml` accepts the table with those two keys. `haute init --workbench` writes the
-  table and a blank form; `haute init --force` rewrites `haute.toml`, so the table stays only
-  when `--workbench` is given again, while `forms/` is left as `data/` is. An existing project
-  enables its workbench by adding the table by hand.
+  `haute.toml` accepts the table with those two keys, and while `enabled` is true deploy
+  holds each Workbench node's copy of the tables to the form, read strictly, naming each
+  table or column that differs ([deploy](../deploy/high-level.md)).
+  `haute init --workbench` writes the table and a blank form, and the deploy workflow it
+  generates for GitHub or Azure DevOps also starts when a file under `forms/` changes;
+  `haute init --force` rewrites `haute.toml`, so the table stays only when `--workbench`
+  is given again, while `forms/` is left as `data/` is. An existing project enables its
+  workbench by adding the table by hand. A nested `[workbench.app]` table says where the
+  underwriter app runs: its one key, `host`, is `azure-container-apps`, and any other key
+  or host is refused by name.
 - **The form file.** `forms/form.json` is one JSON document: `version` (1), `name`, `schema`
   (its tables), `pages` (its sheets, at least one) and `sample` (the quote typed while
   building, `{}` for none). Every field has one canonical spelling and an unknown field is
@@ -514,6 +528,103 @@ Out of scope:
   answer to a pricing still on its way is dropped, as one is once the view has left.
   Ctrl/Cmd+S still saves the project in Preview and Ctrl/Cmd+1 fits the sheet; the sheet's
   editing keys and undo do nothing.
+- **Test quotes.** An analyst keeps test quotes in Preview, in the project's test-quote
+  file: `test_quotes.sqlite` in the test-quote directory (`[test_quotes] dir` of
+  `haute.toml`, `tests/quotes` when absent), held by the quote store. The toolbar's Test
+  quotes, in Preview, opens a panel beside the sheets that lists them, the most recently
+  saved first:
+  - **Saved.** The quote on the sheets, under a name, with its values, the request built
+    from them as Price builds it (the cells the sheets hide left out), and the response its
+    pricing gave as a deployed pipeline answers it: each output table under its name, a
+    one-row table as an object of its columns and a many-row table as a list of them. A
+    response that Preview cut short, past its row or cell limit, is refused naming the
+    table and its rows, and so is a one-row table priced with other than one row. The form
+    as the view holds it is kept with the quote.
+  - **Opened.** A test quote's values replace the quote on the sheets, carried onto the
+    form as the view holds it by the stable ids; each filled value with no place on it is
+    named, by the names it was saved under.
+  - **Run.** Run prices every test quote, or those ticked, one request each, on the
+    pipeline, the data source and the form as they were when the run started, and compares
+    each answer with the response the quote was accepted with: a number matches within one
+    part in a billion and anything else exactly, walked into the response's tables, every
+    difference listed by its place (`table.column`, `table[row].column`), the accepted
+    value beside the new, a value on one side only as added or removed. Each quote shows
+    unchanged, changed or failed with its reason, and a change to the pipeline, the source
+    or the form after the run started marks the run's results stale.
+  - **Accepted.** Accepting a changed quote saves its new response as a new revision,
+    after the revision the run read; a quote saved since is refused, with nothing written,
+    to be run again.
+  - **Deleted.** Deleting a test quote, after a confirmation, removes it and its revisions.
+
+  Every write to the file runs under the project's save lock and the repository's lock,
+  which a commit, a branch switch and a merge hold, with the file opened for that write
+  alone and closed before the lock is let go, and is captured on the save ledger as a save
+  of the file, so a commit or a switch never meets the file half-written or open. A read
+  holds the repository's lock alone. A file an older Haute wrote is brought to the newest
+  schema by the next write and refused by a read until then, naming the save that brings
+  it up to date; a project with no file lists no test quotes, and a read creates none.
+  `haute init --workbench` writes the file empty, at the newest schema, so a milestone's
+  sweep tracks it from the start, and the `.gitignore` guards keep SQLite's journal files
+  out of the repository.
+
+  In git the file is a binary, so each clone is given two drivers whenever Haute reads or
+  writes its test quotes: `.gitattributes` names the file with
+  `diff=haute-test-quotes merge=haute-test-quotes`, written and captured with the file, and
+  the clone's own git configuration runs `haute test-quotes dump` to show the file as text
+  in a diff (each quote by name: its revision, who saved it and when, its request and its
+  response) and `haute test-quotes merge` to merge it, through the Python running Haute
+  (`python -m haute.cli._test_quotes`, without the CLI's start-up, whose log line would
+  join a diff's text).
+  The merge takes the two sides quote by quote, by id, against their common base: a quote
+  one side added, changed or deleted while the other left it as the base had it takes that
+  side's; a quote changed on both sides, or changed on one and deleted on the other, is a
+  conflict, named, the file left as it was on the branch being merged into. A provider's
+  merge button runs no driver, so a pull request in conflict over the file is brought up
+  to date where git runs it, on an analyst's machine (`git merge` of the target branch).
+  Before Haute commits the file, it settles a rollback journal a write that never finished
+  left beside it, as SQLite would on its next open: a hot journal is played back and
+  removed, and one the write never synced is left, harmless, never committed. A file
+  SQLite cannot open to settle refuses the commit, naming it.
+
+  In CI, deploy's check prices every test quote in the file, one request each, and
+  compares its answer with the response it was accepted with as a run compares it, so a
+  change the panel shows is a change the check fails on; a test quote saved unpriced is
+  priced with nothing to compare, and the smoke test does the same against the deployed
+  endpoint ([deploy](../deploy/high-level.md)). `haute test-quotes report` says what a
+  branch does to the test quotes against its base: those added, removed and accepted
+  anew, each with the outputs that moved; a workbench project's generated pull-request
+  checks post it on the pull request on GitHub and keep it with the run on GitLab and
+  Azure DevOps ([cli](../cli/high-level.md),
+  [pipeline-config](../pipeline-config/high-level.md)).
+- **The underwriter app.** The sheets reach underwriters through an app Haute builds from
+  the project, apart from the builder. `haute app build` writes a release: the pipeline's
+  bundle as a deploy builds it (the sample left out), the form without its sample
+  (`form.json`), what the release is (`release.json`: an id taken from the form and the
+  bundle, the form's revision, the pipeline's name, the Haute version that built it and
+  when) and an entry point, `app.py`, serving it through the app Haute maintains.
+  With `[deploy.container] base_image` set, pinned as a container deploy pins it, the
+  release is also the image's build context, the container's Dockerfile copying it,
+  and `haute app build --image TAG` builds the image with Docker; the image installs
+  what a scoring container installs, nothing more. The app
+  serves the sheets on a page of their own, drawn as Preview draws them, with the same
+  components filled from the app's routes rather than the builder's and nothing of the
+  builder mounted: the sheets' tabs, the sheet showing, Price and Clear, the release and
+  who is signed in. A quote keyed in is checked against the columns' rules as Preview
+  checks it, then priced by the app through `POST /api/app/price`, which takes the values
+  and the form revision the page was loaded with. A revision that is not the release's is
+  refused (409), so a page loaded from an earlier release reloads rather than price on a
+  newer contract. The request is built as Price builds it and priced through the deployed
+  pipeline's engine, one quote per request, off the server's event loop, under the deploy's
+  admission limit and a timeout, and answered whole: each output table's rows, with the
+  request priced. `GET /api/app/release` and `GET /api/app/form` serve the release and the
+  form; `GET /health` answers without sign-in, for the host's probes. Every other route
+  needs the principal the host signed in. The identity follows `[workbench.app] host`:
+  `azure-container-apps` reads the principal Azure's built-in authentication sets on each
+  request, which the host strips from what a client sends, and refuses a request without
+  it (401); a release built with no host refuses every request but the health check.
+  `haute app serve` builds a release of the project as it is saved and serves it on the
+  analyst's machine, the principal the analyst's git identity, so the sheets underwriters
+  will see are checked before a merge. No credential reaches the page.
 - **Shown when.** A sheet, a section or a component with conditions shows only while they
   hold on the values typed into the sheets, the sample while building and the quote in
   Preview; a section on a sheet that does not show does not show either, nor does a
@@ -644,7 +755,9 @@ Out of scope:
     its columns for a one-row table and a list of them for a many-row one, with their declared
     types, and the dry run reads one quote with nothing filled in, one row of nulls per table,
     the rows a preview runs on before the workbench supplies values. A node that cannot take a
-    null fails that dry run with its own error. Deploy's test quotes are not held to the
+    null fails that dry run with its own error. Nothing deployed reads the sample, so the
+    bundle leaves it out and carries the tables alone: the quote an analyst typed while
+    building stays in the project. Deploy's test quotes are not held to the
     tables as a Quote Input's are to its columns: a quote may leave a table out, and the
     reader says what does not fit when it is scored; their expected outputs are compared
     into the response's tables, a number inside one held to the tolerance and a boolean to a
@@ -780,6 +893,28 @@ Out of scope:
   - **The assistant** reads a Workbench Output and connects nodes to its tables, or removes
     such connections, but cannot add, change, rename or delete one: its node card says the
     tables are the workbench's and the analyst adds the node from the palette.
+- **The quote store.** Quotes keyed into the sheets are saved to a store of Haute's, one
+  schema for every database it runs on: a SQLite file now, for an analyst's machine and
+  CI, and a server database the project's IT team provides for the underwriter app
+  later. A quote has a stable id, a name, its owner, when it was made and numbered
+  revisions. Each revision is written whole, in one transaction: the values as typed into
+  the sheets, in the sample's shape (by table and column id, the cells the sheets hide
+  kept); the request as it was priced; the response's tables in full, or none when it was
+  saved unpriced; the release that priced it; who saved it and when; and the form it was
+  keyed into, by its revision, the form's canonical text kept once for every quote that
+  names it. A new revision names the one it follows and is refused, with nothing
+  written, when the quote has moved on since. The owner is recorded and the list of
+  quotes can be read for one owner; who may see whose quotes is decided with the app. A
+  saved quote opens on its own form, and its values are carried onto the current form
+  through the stable ids: a renamed table or column keeps its values, and each filled
+  value whose table or column the current form no longer has is named as
+  `table.column`, by the names it was saved under. A database is brought to the schema by
+  the store's migrations, numbered and shipped with Haute, so a Haute upgrade carries
+  them; the store refuses to open a database that is not at the newest, naming what to
+  run, and nothing migrates as it opens. A migration keeps the previous release's reads
+  and writes working: a column it adds is nullable or has a default, and it drops
+  nothing. A SQLite store keeps foreign keys on and its rollback journal, never
+  write-ahead logging, so the file stands alone between writes.
 
 ## Design rationale
 
@@ -997,6 +1132,25 @@ Out of scope:
   settle out of order, so only the newest publishes and none applies to a document adopted
   after it started, including through an update still waiting on identity resolution. Graph
   edits, undo and redo never start one, so the refresh never fights the user's history.
+- **Preview's drawing, the app's data.** Preview already shows the sheets as an
+  underwriter uses them: nothing selected or moved, the tabs read-only, no section bars.
+  The app mounts the same components over the same stores, which it fills from its own
+  routes, so what an analyst sees in Preview is what an underwriter sees, and the
+  builder's palette, toolbar, schema editor, panels and shortcuts are never mounted.
+- **One release.** The form, the sheets and the pipeline ship in one release, so form
+  v12 prices on pipeline v12 by construction, and a page that holds another release's
+  form is refused rather than priced on a contract it was not drawn for.
+- **One store, two databases.** An analyst saving a test quote and an underwriter saving
+  a quote go through the same code, so what an analyst's machine and CI prove holds for
+  the underwriter app; only the connection differs. SQLAlchemy Core and Alembic, which
+  MLflow already installs with Haute, speak to SQLite and the server engines alike.
+- **A quote keeps its form.** The current form cannot show a field it no longer has, so
+  each revision names the form it was keyed into, kept under its content hash, the
+  revision the editor already gives a form, once however many quotes name it.
+- **Migrations Haute owns.** The schema is Haute's, not each project's, so its
+  migrations ship with Haute and a project takes a new one by upgrading Haute. A deploy
+  applies them before the new release starts, never the app as it opens, so replicas
+  never race to migrate.
 - **The response's tables, filled through a mapping.** The workbench defines what a priced
   quote fills in as it defines the quote, so the pipeline's part is to connect a frame to each
   table and say which of its columns fills which. Filling by name until the analyst picks

@@ -14482,6 +14482,103 @@
       "title": "WarehouseListResponse",
       "type": "object"
     },
+    "WorkbenchAppFormResponse": {
+      "description": "The release's form, without its sample, with the revision a price quotes.",
+      "properties": {
+        "form": {
+          "$ref": "#/$defs/FormSpec"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "form",
+        "revision"
+      ],
+      "title": "WorkbenchAppFormResponse",
+      "type": "object"
+    },
+    "WorkbenchAppPriceResponse": {
+      "description": "The quote priced: each output table's rows by name, and the request that was priced.",
+      "properties": {
+        "request": {
+          "additionalProperties": true,
+          "title": "Request",
+          "type": "object"
+        },
+        "tables": {
+          "additionalProperties": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "title": "Tables",
+          "type": "object"
+        }
+      },
+      "required": [
+        "tables",
+        "request"
+      ],
+      "title": "WorkbenchAppPriceResponse",
+      "type": "object"
+    },
+    "WorkbenchAppReleaseResponse": {
+      "description": "The underwriter app's release, and who the host signed in.",
+      "properties": {
+        "created_at": {
+          "title": "Created At",
+          "type": "string"
+        },
+        "form_revision": {
+          "title": "Form Revision",
+          "type": "string"
+        },
+        "haute_version": {
+          "title": "Haute Version",
+          "type": "string"
+        },
+        "host": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Host"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "pipeline_name": {
+          "title": "Pipeline Name",
+          "type": "string"
+        },
+        "principal": {
+          "title": "Principal",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "form_revision",
+        "pipeline_name",
+        "haute_version",
+        "created_at",
+        "host",
+        "principal"
+      ],
+      "title": "WorkbenchAppReleaseResponse",
+      "type": "object"
+    },
     "WorkbenchColumn": {
       "additionalProperties": false,
       "description": "A column of a table: its name in the frame and its type.",
@@ -14676,6 +14773,265 @@
         "response_tables"
       ],
       "title": "WorkbenchTablesResponse",
+      "type": "object"
+    },
+    "WorkbenchTestQuoteChange": {
+      "description": "One place the priced response differs from the accepted one.",
+      "properties": {
+        "accepted": {
+          "default": null,
+          "title": "Accepted"
+        },
+        "kind": {
+          "enum": [
+            "changed",
+            "added",
+            "removed"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "priced": {
+          "default": null,
+          "title": "Priced"
+        }
+      },
+      "required": [
+        "path",
+        "kind",
+        "accepted",
+        "priced"
+      ],
+      "title": "WorkbenchTestQuoteChange",
+      "type": "object"
+    },
+    "WorkbenchTestQuoteCompareResponse": {
+      "description": "Every place a run's response, or the request it priced, differs from the revision it\nread, a request's places under ``request.``; none: unchanged.",
+      "properties": {
+        "changes": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchTestQuoteChange"
+          },
+          "title": "Changes",
+          "type": "array"
+        },
+        "number": {
+          "title": "Number",
+          "type": "integer"
+        },
+        "revision_digest": {
+          "title": "Revision Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "number",
+        "revision_digest",
+        "changes"
+      ],
+      "title": "WorkbenchTestQuoteCompareResponse",
+      "type": "object"
+    },
+    "WorkbenchTestQuoteOpenResponse": {
+      "description": "A test quote's newest revision, its values carried onto the view's form.\n\n``dropped`` names each filled value with no place on that form, ``table.column`` by the\nnames it was saved under; ``response`` is the response the quote was accepted with.",
+      "properties": {
+        "dropped": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Dropped",
+          "type": "array"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "number": {
+          "title": "Number",
+          "type": "integer"
+        },
+        "response": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Response"
+        },
+        "revision_digest": {
+          "title": "Revision Digest",
+          "type": "string"
+        },
+        "values": {
+          "additionalProperties": {
+            "items": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "title": "Values",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "number",
+        "revision_digest",
+        "values",
+        "dropped",
+        "response"
+      ],
+      "title": "WorkbenchTestQuoteOpenResponse",
+      "type": "object"
+    },
+    "WorkbenchTestQuoteSummary": {
+      "description": "A test quote as the list shows it: its newest revision's number, saver and time.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "number": {
+          "title": "Number",
+          "type": "integer"
+        },
+        "priced": {
+          "title": "Priced",
+          "type": "boolean"
+        },
+        "saved_at": {
+          "title": "Saved At",
+          "type": "string"
+        },
+        "saved_by": {
+          "title": "Saved By",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "number",
+        "saved_by",
+        "saved_at",
+        "priced"
+      ],
+      "title": "WorkbenchTestQuoteSummary",
+      "type": "object"
+    },
+    "WorkbenchTestQuoteWriteResponse": {
+      "description": "A test-quote write and its capture on the save ledger.\n\n``quote`` is the test quote as written, null after a delete; the capture fields mean what\nthey mean on the form save's response.",
+      "properties": {
+        "git_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Git Sha"
+        },
+        "identity_required": {
+          "default": false,
+          "title": "Identity Required",
+          "type": "boolean"
+        },
+        "quote": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchTestQuoteSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "quote",
+        "warnings",
+        "git_sha",
+        "identity_required"
+      ],
+      "title": "WorkbenchTestQuoteWriteResponse",
+      "type": "object"
+    },
+    "WorkbenchTestQuotesBranchResponse": {
+      "description": "The branch the test quotes are on now, which a save names; null outside a\nrepository. Read without opening the test-quote file, so a file an older Haute wrote,\nwhich a save brings up to date, does not stop it.",
+      "properties": {
+        "branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Branch"
+        }
+      },
+      "required": [
+        "branch"
+      ],
+      "title": "WorkbenchTestQuotesBranchResponse",
+      "type": "object"
+    },
+    "WorkbenchTestQuotesResponse": {
+      "description": "The project's test quotes, the most recently saved first.",
+      "properties": {
+        "quotes": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchTestQuoteSummary"
+          },
+          "title": "Quotes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "quotes"
+      ],
+      "title": "WorkbenchTestQuotesResponse",
       "type": "object"
     }
   },
@@ -14908,6 +15264,15 @@
     "WarehouseListResponse": {
       "$ref": "#/$defs/WarehouseListResponse"
     },
+    "WorkbenchAppFormResponse": {
+      "$ref": "#/$defs/WorkbenchAppFormResponse"
+    },
+    "WorkbenchAppPriceResponse": {
+      "$ref": "#/$defs/WorkbenchAppPriceResponse"
+    },
+    "WorkbenchAppReleaseResponse": {
+      "$ref": "#/$defs/WorkbenchAppReleaseResponse"
+    },
     "WorkbenchFormResponse": {
       "$ref": "#/$defs/WorkbenchFormResponse"
     },
@@ -14919,6 +15284,21 @@
     },
     "WorkbenchTablesResponse": {
       "$ref": "#/$defs/WorkbenchTablesResponse"
+    },
+    "WorkbenchTestQuoteCompareResponse": {
+      "$ref": "#/$defs/WorkbenchTestQuoteCompareResponse"
+    },
+    "WorkbenchTestQuoteOpenResponse": {
+      "$ref": "#/$defs/WorkbenchTestQuoteOpenResponse"
+    },
+    "WorkbenchTestQuoteWriteResponse": {
+      "$ref": "#/$defs/WorkbenchTestQuoteWriteResponse"
+    },
+    "WorkbenchTestQuotesBranchResponse": {
+      "$ref": "#/$defs/WorkbenchTestQuotesBranchResponse"
+    },
+    "WorkbenchTestQuotesResponse": {
+      "$ref": "#/$defs/WorkbenchTestQuotesResponse"
     },
     "execution_strategy_diagnostic": {
       "$ref": "#/$defs/ExecutionStrategyDiagnosticPayload"
@@ -14990,6 +15370,14 @@
     "WorkbenchTablesResponse",
     "WorkbenchFormResponse",
     "WorkbenchFormSaveResponse",
+    "WorkbenchTestQuotesResponse",
+    "WorkbenchTestQuotesBranchResponse",
+    "WorkbenchTestQuoteWriteResponse",
+    "WorkbenchTestQuoteOpenResponse",
+    "WorkbenchTestQuoteCompareResponse",
+    "WorkbenchAppReleaseResponse",
+    "WorkbenchAppFormResponse",
+    "WorkbenchAppPriceResponse",
     "SessionStatusResponse",
     "BrowseFilesResponse",
     "ModelFileInspectionResponse",
@@ -15116,7 +15504,15 @@
       "WorkbenchStatusResponse",
       "WorkbenchTablesResponse",
       "WorkbenchFormResponse",
-      "WorkbenchFormSaveResponse"
+      "WorkbenchFormSaveResponse",
+      "WorkbenchTestQuotesResponse",
+      "WorkbenchTestQuotesBranchResponse",
+      "WorkbenchTestQuoteWriteResponse",
+      "WorkbenchTestQuoteOpenResponse",
+      "WorkbenchTestQuoteCompareResponse",
+      "WorkbenchAppReleaseResponse",
+      "WorkbenchAppFormResponse",
+      "WorkbenchAppPriceResponse"
     ]
   }
 }

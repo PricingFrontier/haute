@@ -1,9 +1,10 @@
-import { Calculator, Database, Eraser, Eye, Sheet, Wrench } from "lucide-react"
+import { Calculator, Database, Eraser, Eye, FlaskConical, Sheet, Wrench } from "lucide-react"
 import ProjectControls from "../components/ProjectControls"
 import { ToolbarBrand, ToolbarButton, ToolbarColumn, UndoRedo, ZoomInOut } from "../haute-ui"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
+import useWorkbenchTestQuotesStore from "../stores/useWorkbenchTestQuotesStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
 import { quoteFilled } from "../utils/sheetValues"
 import { quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
@@ -24,7 +25,7 @@ interface WorkbenchToolbarProps {
  * The toolbar while the workbench's view shows (specs/workbench): the brand; Build over
  * Preview; while building, Sheets over Schema, the form's Undo and Redo and, while the
  * sheets show, Zoom In over Zoom Out and why pricing the sample last failed; in Preview,
- * Price over Clear for the quote, the zoom, and why the quote has no price; and the
+ * Price over Clear for the quote, Test quotes, the zoom, and why the quote has no price; and the
  * project's controls, the host's and the same as the pipeline toolbar's: Save saves the
  * project, the form and then the pipeline, and Commit records a milestone after that save.
  */
@@ -49,6 +50,8 @@ export default function WorkbenchToolbar({ onSave, onCommit, editingDisabled = f
   const blank = form === null || !quoteFilled(quotedSchema(form.schema, sheetVisibility(form, quote).hidden), quote)
   const priceQuote = useWorkbenchPreviewStore((s) => s.priceQuote)
   const clear = useWorkbenchPreviewStore((s) => s.clear)
+  const testQuotesOpen = useWorkbenchTestQuotesStore((s) => s.open)
+  const setTestQuotesOpen = useWorkbenchTestQuotesStore((s) => s.setOpen)
   const previewing = section === "preview"
   const note = previewing
     ? previewError === null ? null : { text: previewError, title: previewError }
@@ -83,6 +86,19 @@ export default function WorkbenchToolbar({ onSave, onCommit, editingDisabled = f
               title="Start a new quote"
             >
               Clear
+            </ToolbarButton>
+          </ToolbarColumn>
+        ) : null}
+        {previewing ? (
+          <ToolbarColumn role="group" aria-label="Test quotes">
+            <ToolbarButton
+              icon={FlaskConical}
+              aria-pressed={testQuotesOpen}
+              onClick={() => setTestQuotesOpen(!testQuotesOpen)}
+              disabled={!ready}
+              title="Save the quote on the sheets as a test quote, and run the test quotes on the pipeline"
+            >
+              Test quotes
             </ToolbarButton>
           </ToolbarColumn>
         ) : (

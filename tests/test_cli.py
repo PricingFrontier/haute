@@ -680,7 +680,7 @@ class TestSmoke:
         (tmp_path / "tests" / "quotes").mkdir(parents=True)
         result = runner.invoke(cli, ["smoke"])
         assert result.exit_code == 1
-        assert "no .json" in result.output.lower()
+        assert "no test quotes in" in result.output.lower()
 
 
 class TestServe:

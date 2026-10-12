@@ -10,23 +10,25 @@
 | `.python-version` | Pins the checkout's selected Python interpreter version for version-manager tooling. |
 | `.gitattributes` | Enforces LF checkout normalisation, including byte-sensitive JSON test fixtures, so generated and golden-file inputs are stable across platforms. |
 | `uv.lock` | Locks the repository's Python dependency resolution used by the build, docs, and quality workflows. |
-| `hatch_build.py` | Defines `FrontendBuildHook`: inventories and fingerprints production inputs, validates the generated input/output manifests and every local output dependency, explicitly rebuilds embedded frontend assets, resolves npm, and turns failed prerequisites/commands into runtime errors. |
+| `hatch_build.py` | Defines `FrontendBuildHook`: inventories and fingerprints production inputs, validates the generated input/output manifests and every local output dependency of the builder's page and the underwriter app's (`_APP_PAGE`, through `_require_pages_ready`), explicitly rebuilds embedded frontend assets, resolves npm, and turns failed prerequisites/commands into runtime errors. |
 | `src/haute/__init__.py` | Defines the installed package's public import surface, which is the package root selected for wheel distribution. |
 | `src/haute/py.typed` | PEP 561 marker declaring that the installed `haute` package ships type information. |
-| `frontend/package.json` | Declares the private frontend's pinned Node/npm engines, locked-toolchain commands, production build (`tsc -b && vite build`), explicit contract generation/check commands, and build-time dependencies. Ajv, json-schema-to-typescript, and esbuild are exact-pinned development generators, not production runtime dependencies. |
+| `frontend/package.json` | Declares the private frontend's pinned Node/npm engines, locked-toolchain commands, production build (`tsc -b && vite build && vite build --config vite.app.config.ts`, the builder's page then the underwriter app's), the app's development server (`dev:app`), explicit contract generation/check commands, and build-time dependencies. Ajv, json-schema-to-typescript, and esbuild are exact-pinned development generators, not production runtime dependencies. |
 | `frontend/package-lock.json` | Pins the sole supported frontend dependency graph consumed by `npm ci` for reproducible frontend builds. Secondary package-manager lockfiles are unsupported and must not be checked in because CI cannot verify their parity. |
 | `frontend/.npmrc` | Supplies npm configuration used when installing the frontend dependency graph. |
 | `frontend/README.md` | Documents the frontend project for repository contributors. |
 | `frontend/index.html` | Vite HTML entry document for the browser bundle. |
+| `frontend/app.html` | Vite HTML entry document for the underwriter app's page ([workbench](../workbench/low-level.md)). |
 | `frontend/public/favicon.svg` | Public favicon copied through the Vite build. |
 | `frontend/public/vite.svg` | Checked-in Vite public asset copied through the Vite build. |
 | `frontend/vite.config.ts` | Reads the package version from `pyproject.toml`, defines `__APP_VERSION__`, and configures React/Tailwind plugins, a strict `127.0.0.1:5173` development listener, API/WebSocket proxies, chunking, a Rollup manifest, and output to `src/haute/static/`. |
+| `frontend/vite.app.config.ts` | The underwriter app's build: `frontend/vite.config.ts` merged with the app's entry (`app.html`), its own Rollup manifest and output to `src/haute/static/app/`, which it clears, and a development listener on 5174 proxying `/api` to `haute app serve` (`HAUTE_APP_URL`, `127.0.0.1:8001` by default). |
 | `docs/overrides/home.html` | Supplies the public documentation landing-page override and is a documentation-build input. |
 | `docs/stylesheets/extra.css` | Supplies public documentation styling and is a documentation-build input. |
 | `docs/CI_MIRROR.md`, `docs/COMMIT_STANDARDS.md`, `docs/PERFORMANCE_CHECKS.md`, `docs/ENGINEERING_QUALITY_AUDIT_2026_08.md`, `docs/ENGINEERING_QUALITY_AUDIT_2026_08_COVERAGE.toml` | Internal engineering procedures and dated audit records: retained in the repository but excluded from public-site output. |
 | `frontend/tsconfig.json` | References the application and Vite-node TypeScript projects. |
 | `frontend/tsconfig.app.json` | Sets strict browser-source TypeScript compilation and build-info placement. |
-| `frontend/tsconfig.node.json` | Sets strict TypeScript compilation for `frontend/vite.config.ts`. |
+| `frontend/tsconfig.node.json` | Sets strict TypeScript compilation for `frontend/vite.config.ts` and `frontend/vite.app.config.ts`. |
 | `mkdocs.yml` | Configures the Material/MkDocs public site, navigation, strict-build plugins, and exclusions for the internal engineering reference documents and dated audit records that remain under `docs/`. |
 | `.github/workflows/release.yml` | Manual-dispatch Release workflow (optional dry run): `check` refuses to run outside `main`, requires `main`'s push CI run for the commit to have succeeded, reads PyPI's release list and runs `scripts/check_release_version.py`, and refuses a version that is already tagged; `build` makes the frontend-inclusive wheel and sdist, checks their file names carry the version, and runs the package smoke check on clean installs of each; `publish` uploads them through PyPI trusted publishing in the `pypi` environment, skipping files PyPI already has so a re-run completes a partial upload; `verify` polls PyPI's JSON for the version until `scripts/verify_pypi_release.py` confirms exactly the built files are served; `github-release` then tags the commit and creates the GitHub release with generated notes and both files. The tag lookup accepts only `git ls-remote --exit-code` exit 2 as untagged. |
 | `scripts/verify_pypi_release.py` | Compares the SHA-256 of every built file with PyPI's JSON for the released version and reports each built file PyPI lacks, each file whose digest differs, and each file PyPI lists that the run did not build; exits non-zero on any difference or an empty build. |
@@ -50,7 +52,8 @@ package input validated by `hatch_build.py`, not hand-edited source.
   It records schema version, SHA-256 algorithm, a digest, and a sorted row for
   every input containing its project-relative path, byte size, and content
   digest. The closed inventory contains root `pyproject.toml`;
-  `frontend/.npmrc`, `index.html`, package/lock metadata and Vite config; every
+  `frontend/.npmrc`, `index.html`, `app.html`, package/lock metadata and both Vite
+  configs; every
   recursively referenced TypeScript config; all regular files below
   `frontend/public/`; and production files below `frontend/src/`. Test files,
   test-only directories, test support, and the vitest setup files
@@ -62,7 +65,9 @@ package input validated by `hatch_build.py`, not hand-edited source.
   and every local script `src` or link `href` parsed from the entry document.
   All resolved paths must remain inside the static root and exist as regular files;
   JavaScript and CSS referenced by HTML must be declared by the Vite manifest,
-  and the HTML must reference a manifest entry chunk.
+  and the HTML must reference a manifest entry chunk. The underwriter app's page,
+  `src/haute/static/app/app.html` with its own `src/haute/static/app/manifest.json`, is held to the same
+  rules within `src/haute/static/app/`, so a package without it is refused.
 - **Frontend TypeScript projects** are strict, no-emit build projects: the app
   project targets browser ES2022/React JSX and the node project targets ES2023
   for Vite configuration. The root TypeScript config references both.
@@ -190,7 +195,8 @@ package input validated by `hatch_build.py`, not hand-edited source.
   (`tests/test_hatch_build.py::test_atomic_proof_publication_failure`: a failed
   temporary-file replace raises `RuntimeError` naming the destination, leaves no
   temporary file and leaves an existing manifest unchanged), navigation-link
-  exclusion, and coherent post-build readiness.
+  exclusion, coherent post-build readiness, and a build missing the underwriter app's
+  page, manifest or entry chunk refused naming its directory.
 - `tests/test_check_release_version.py` covers the release version gate: a newer
   version passes and is written to the GitHub output file, a first release with
   no PyPI history passes, a released, older, equal, or malformed version fails

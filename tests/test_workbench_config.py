@@ -44,6 +44,16 @@ def test_the_table_enables_the_workbench_with_the_default_form(tmp_path: Path) -
     assert config.project_root == tmp_path
 
 
+def test_the_app_table_names_where_the_underwriter_app_runs(tmp_path: Path) -> None:
+    _write(tmp_path, "[workbench]\nenabled = true\n")
+    assert read_workbench_config(tmp_path).app_host is None
+
+    _write(
+        tmp_path, '[workbench]\nenabled = true\n\n[workbench.app]\nhost = "azure-container-apps"\n'
+    )
+    assert read_workbench_config(tmp_path).app_host == "azure-container-apps"
+
+
 def test_the_table_can_disable_the_workbench_and_name_its_form(tmp_path: Path) -> None:
     _write(tmp_path, '[workbench]\nenabled = false\nform = "workbench/quote.json"\n')
 
@@ -62,13 +72,31 @@ def test_the_table_can_disable_the_workbench_and_name_its_form(tmp_path: Path) -
         ("workbench = true\n", "[workbench] must be a TOML table"),
         (
             "[workbench]\nenabled = true\nenable = true\nlabel = 'x'\n",
-            "[workbench] has unknown key(s): enable, label; the keys are enabled and form",
+            "[workbench] has unknown key(s): enable, label; the keys are enabled, form and app",
         ),
         ("[workbench]\nenabled = true\nform = 3\n", "[workbench].form must be a path"),
         ("[workbench]\nenabled = true\nform = '  '\n", "[workbench].form must be a path"),
         (
             "[workbench]\nenabled = true\nform = '../elsewhere/form.json'\n",
             "[workbench].form must stay inside the project",
+        ),
+        ("[workbench]\nenabled = true\napp = 'azure'\n", "[workbench.app] must be a TOML table"),
+        (
+            "[workbench]\nenabled = true\n[workbench.app]\nhost = 'azure-container-apps'\n"
+            "port = 1\n",
+            "[workbench.app] has unknown key(s): port; the key is host",
+        ),
+        (
+            "[workbench]\nenabled = true\n[workbench.app]\nhost = 'heroku'\n",
+            "[workbench.app].host must be one of azure-container-apps; got 'heroku'",
+        ),
+        (
+            "[workbench]\nenabled = true\n[workbench.app]\nhost = []\n",
+            "[workbench.app].host must be one of azure-container-apps; got []",
+        ),
+        (
+            "[workbench]\nenabled = true\n[workbench.app]\nhost = { name = 'azure' }\n",
+            "[workbench.app].host must be one of azure-container-apps; got {'name': 'azure'}",
         ),
     ],
 )
@@ -143,6 +171,9 @@ def test_deploy_s_whole_file_check_accepts_the_table_and_refuses_an_unknown_key(
 ) -> None:
     path = tmp_path / "haute.toml"
     _validate_toml_keys({"workbench": {"enabled": True, "form": "forms/form.json"}}, path)
+    _validate_toml_keys(
+        {"workbench": {"enabled": True, "app": {"host": "azure-container-apps"}}}, path
+    )
 
     with pytest.raises(ValueError, match=r"\[workbench\] unknown key 'enable'"):
         _validate_toml_keys({"workbench": {"enable": True}}, path)

@@ -15,11 +15,12 @@ import type { CollectionWidget, FormSchema, FormSpec, SchemaColumn, SchemaTable,
 import { fetchWorkbenchFormTables } from "../../api/workbench"
 import { cellKey, quoteProblems, valuesBasis } from "../../utils/sheetValues"
 import { columnKey } from "../../utils/sheetVisibility"
+import type { SampleRow } from "../../utils/workbenchForm"
 import type { PricedSample } from "../../utils/workbenchTables"
 import { section, sheet } from "../../workbench/__tests__/fixtures"
 import useWorkbenchFormStore from "../useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../useWorkbenchPreviewStore"
-import useWorkbenchPricingStore from "../useWorkbenchPricingStore"
+import useWorkbenchPricingStore, { type PricedValues } from "../useWorkbenchPricingStore"
 
 const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
   id,
@@ -78,7 +79,7 @@ describe("useWorkbenchPreviewStore", () => {
   beforeEach(() => {
     vi.mocked(fetchWorkbenchFormTables).mockImplementation((spec) => Promise.resolve(workbenchOf(spec)))
     useWorkbenchFormStore.setState({ form, status: "ready" })
-    useWorkbenchPricingStore.setState({ pricer: null })
+    useWorkbenchPricingStore.setState({ pricer: null, quotePricer: null })
     useWorkbenchPreviewStore.setState({ quote: {}, checked: false, price: null, error: null, pricing: false })
   })
 
@@ -123,6 +124,34 @@ describe("useWorkbenchPreviewStore", () => {
     // The basis moves on with the quote, so the price reads as out of date until Price again.
     store().setCell("t1", 0, "c1", "1")
     expect(store().price?.basis).not.toBe(valuesBasis(form.schema, new Set(), store().quote))
+  })
+
+  it("prices through the host's quote pricer when one is set, the underwriter app's, without the pipeline's", async () => {
+    let answer: (value: PricedValues) => void = () => {}
+    const quotePricer = vi.fn((_form: FormSpec, _quote: Record<string, SampleRow[]>) =>
+      new Promise<PricedValues>((resolve) => { answer = resolve }))
+    useWorkbenchPricingStore.setState({ quotePricer })
+    const store = useWorkbenchPreviewStore.getState
+    store().setCell("t1", 0, "c1", "250000")
+
+    const pricing = store().priceQuote()
+    answer({ tables: { pricing_output: [{ model_premium: 7 }] }, sample: { policy_details: { exposure: 250000 } } })
+    await pricing
+
+    expect(quotePricer).toHaveBeenCalledWith(form, { t1: [{ c1: "250000" }] })
+    expect(fetchWorkbenchFormTables).not.toHaveBeenCalled()
+    expect(store().price).toMatchObject({
+      tables: { pricing_output: [{ model_premium: 7 }] },
+      sample: { policy_details: { exposure: 250000 } },
+    })
+
+    // The host dropped its quote pricer meanwhile: the answer is nobody's.
+    useWorkbenchPreviewStore.setState({ price: null })
+    const late = store().priceQuote()
+    useWorkbenchPricingStore.setState({ quotePricer: null })
+    answer({ tables: { pricing_output: [{ model_premium: 8 }] }, sample: {} })
+    await late
+    expect(store().price).toBeNull()
   })
 
   it("marks the cells that break their column's rules instead of pricing, and says how many", async () => {

@@ -10,8 +10,10 @@ Split into:
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -58,9 +60,11 @@ def handle_smoke(config: SmokeConfig) -> None:
         click.echo(f"Error: No test quotes directory found (resolved: {tq_dir}).", err=True)
         raise SystemExit(1)
 
-    json_files = sorted(tq_dir.glob("*.json"))
+    from haute.deploy._validators import test_quote_files
+
+    json_files = test_quote_files(tq_dir)
     if not json_files:
-        click.echo("Error: No .json files in tests/quotes/.", err=True)
+        click.echo(f"Error: No test quotes in {tq_dir}.", err=True)
         raise SystemExit(1)
 
     click.echo(f"Smoke testing endpoint: {endpoint_name}")
@@ -114,7 +118,6 @@ def smoke(endpoint_suffix: str | None) -> None:
 
 def _smoke_databricks(endpoint_name: str, json_files: list[Path]) -> bool:
     """Run smoke tests against a Databricks Model Serving endpoint."""
-    from haute.deploy._validators import load_test_quote_file
 
     try:
         from databricks.sdk import WorkspaceClient
@@ -191,28 +194,14 @@ def _smoke_databricks(endpoint_name: str, json_files: list[Path]) -> bool:
         )
         raise SystemExit(1)
 
-    all_ok = True
+    def price(record: dict[str, Any]) -> list[Any]:
+        response = ws.serving_endpoints.query(name=endpoint_name, dataframe_records=[record])
+        predictions = response.predictions
+        if predictions is None:
+            raise ValueError("Endpoint returned no predictions")
+        return predictions if isinstance(predictions, list) else [predictions]
 
-    for jf in json_files:
-        try:
-            cleaned = load_test_quote_file(jf)
-
-            response = ws.serving_endpoints.query(
-                name=endpoint_name,
-                dataframe_records=cleaned,
-            )
-
-            predictions = response.predictions
-            if predictions is None:
-                raise ValueError("Endpoint returned no predictions")
-
-            n_rows = len(predictions) if isinstance(predictions, list) else 1
-            click.echo(f"  \u2713 {jf.name}: {n_rows} predictions returned")
-        except Exception as exc:
-            click.echo(f"  \u2717 {jf.name}: {exc}", err=True)
-            all_ok = False
-
-    return all_ok
+    return _smoke_files(json_files, price)
 
 
 def _smoke_http(endpoint_url: str, json_files: list[Path]) -> bool:
@@ -221,7 +210,6 @@ def _smoke_http(endpoint_url: str, json_files: list[Path]) -> bool:
     import urllib.request
 
     from haute.deploy._impact import score_http_endpoint_batched
-    from haute.deploy._validators import load_test_quote_file
 
     health_url = endpoint_url.rstrip("/") + "/health"
 
@@ -236,16 +224,32 @@ def _smoke_http(endpoint_url: str, json_files: list[Path]) -> bool:
         click.echo(f"  \u2717 Health check failed: {exc}", err=True)
         return False
 
-    all_ok = True
+    def price(record: dict[str, Any]) -> list[Any]:
+        return score_http_endpoint_batched(endpoint_url, [record], batch_size=1)
 
+    return _smoke_files(json_files, price)
+
+
+def _smoke_files(json_files: list[Path], price: Callable[[dict[str, Any]], list[Any]]) -> bool:
+    """Price every file's test quotes, each a request of its own, and check their expected
+    outputs as deploy does; report each file, and whether every one passed."""
+    from haute.deploy._validators import price_test_quotes_live
+
+    all_ok = True
     for jf in json_files:
         try:
-            cleaned = load_test_quote_file(jf)
-            preds = score_http_endpoint_batched(endpoint_url, cleaned, batch_size=len(cleaned))
-            n_rows = len(preds) if isinstance(preds, list) else 1
-            click.echo(f"  \u2713 {jf.name}: {n_rows} predictions returned")
-        except Exception as exc:
+            result = price_test_quotes_live(jf, price)
+        except (OSError, ValueError) as exc:
             click.echo(f"  \u2717 {jf.name}: {exc}", err=True)
             all_ok = False
-
+            continue
+        for error in result.errors:
+            click.echo(f"  \u2717 {jf.name}: {error}", err=True)
+        if result.errors:
+            all_ok = False
+            continue
+        click.echo(
+            f"  \u2713 {jf.name}: {result.priced} quote(s) priced, {result.checked} checked "
+            "against expected outputs"
+        )
     return all_ok

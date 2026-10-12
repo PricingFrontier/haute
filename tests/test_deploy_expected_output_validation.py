@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
@@ -502,3 +503,81 @@ def test_validate_deploy_blocks_expected_output_drift(tmp_path: Path) -> None:
         and "actual=102.25" in err
         for err in exc_info.value.context["test_quote_errors"]
     )
+
+
+def _saved_test_quotes(quotes_dir: Path, *responses: dict[str, object] | None) -> None:
+    """The workbench's test-quote file holding one test quote per response, named in order."""
+    from haute._quote_store import migrate_store, open_store, store_url
+    from haute._workbench_form import FormSpec
+
+    form = FormSpec.model_validate(
+        {
+            "name": "motor",
+            "schema": {"tables": []},
+            "pages": [
+                {
+                    "id": "p",
+                    "title": "Sheet 1",
+                    "sections": [{"id": "s", "title": "s", "height": 120, "widgets": []}],
+                }
+            ],
+        }
+    )
+    url = store_url(quotes_dir / "test_quotes.sqlite")
+    migrate_store(url)
+    with open_store(url) as store:
+        for index, response in enumerate(responses):
+            store.create(
+                name=f"quote {index}",
+                owner="ana",
+                saved_by="ana",
+                form=form,
+                inputs={},
+                request={"policy": {"limit": index}},
+                response=response,
+                release=None,
+            )
+
+
+def test_the_workbench_test_quotes_are_priced_each_alone_and_compared_whole(
+    tmp_path: Path,
+) -> None:
+    quotes_dir = tmp_path / "quotes"
+    quotes_dir.mkdir()
+    accepted = {"pricing": {"premium": 50.0, "start": "2026-10-12"}}
+    _saved_test_quotes(quotes_dir, accepted, accepted, None)
+    resolved = _resolved_with_quotes(quotes_dir, request_input=NodeType.WORKBENCH_INPUT)
+
+    def answer(premium: float) -> pl.DataFrame:
+        # The answer as scored: a date as a date, which the check reads as a preview does.
+        return pl.DataFrame({"pricing": [{"premium": premium, "start": date(2026, 10, 12)}]})
+
+    with patch("haute.deploy._validators.score_graph") as score_graph:
+        score_graph.side_effect = [answer(50.0), answer(50.0), answer(1.0)]
+        [unchanged] = score_test_quotes(resolved)
+        score_graph.side_effect = [answer(50.0), answer(61.0), answer(1.0)]
+        [moved] = score_test_quotes(resolved)
+
+    assert unchanged["status"] == "ok", unchanged
+    assert unchanged["file"] == "test_quotes.sqlite"
+    sent = [call.kwargs["input_df"] for call in score_graph.call_args_list[:3]]
+    assert sent == [QuoteRequest(({"policy": {"limit": index}},)) for index in range(3)]
+    assert moved["status"] == "error"
+    assert "quote 'quote 1': pricing.premium changed, accepted 50.0, answered 61.0" in str(
+        moved["error"]
+    )
+
+
+def test_a_test_quote_directory_holding_only_the_test_quote_file_passes_the_gate(
+    tmp_path: Path,
+) -> None:
+    quotes_dir = tmp_path / "quotes"
+    quotes_dir.mkdir()
+    _saved_test_quotes(quotes_dir)
+    resolved = _resolved_with_quotes(quotes_dir, request_input=NodeType.WORKBENCH_INPUT)
+
+    with patch("haute.deploy._validators.score_graph") as score_graph:
+        [result] = validate_deploy(resolved)
+
+    assert result == {**result, "file": "test_quotes.sqlite", "rows": 0, "status": "ok"}
+    score_graph.assert_not_called()

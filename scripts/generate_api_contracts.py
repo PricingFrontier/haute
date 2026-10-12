@@ -100,10 +100,18 @@ from haute.schemas import (
     UtilityReadResponse,
     UtilityWriteResponse,
     WarehouseListResponse,
+    WorkbenchAppFormResponse,
+    WorkbenchAppPriceResponse,
+    WorkbenchAppReleaseResponse,
     WorkbenchFormResponse,
     WorkbenchFormSaveResponse,
     WorkbenchStatusResponse,
     WorkbenchTablesResponse,
+    WorkbenchTestQuoteCompareResponse,
+    WorkbenchTestQuoteOpenResponse,
+    WorkbenchTestQuotesBranchResponse,
+    WorkbenchTestQuotesResponse,
+    WorkbenchTestQuoteWriteResponse,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -197,6 +205,14 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         WorkbenchTablesResponse,
         WorkbenchFormResponse,
         WorkbenchFormSaveResponse,
+        WorkbenchTestQuotesResponse,
+        WorkbenchTestQuotesBranchResponse,
+        WorkbenchTestQuoteWriteResponse,
+        WorkbenchTestQuoteOpenResponse,
+        WorkbenchTestQuoteCompareResponse,
+        WorkbenchAppReleaseResponse,
+        WorkbenchAppFormResponse,
+        WorkbenchAppPriceResponse,
     ),
     "session": (
         SessionStatusResponse,

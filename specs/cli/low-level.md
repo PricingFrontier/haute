@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/__main__.py` | Package-module entry point; imports and invokes the canonical `haute.cli:cli` group for `python -m haute`. |
-| `src/haute/cli/__init__.py` | Builds the Click command group (`cli`), registers all ten subcommands, exposes `--version`. |
+| `src/haute/cli/__init__.py` | Builds the Click command group (`cli`), registers all twelve subcommands, exposes `--version`. |
 | `src/haute/cli/_helpers.py` | Cross-command utilities: `resolve_model_name`, `_open_browser`, `_node_env`, `_npm`, `_find_frontend_dir`, the `TransportInfo`/`resolve_transport` transport-dispatch helper, and the shared `ENDPOINT_SUFFIX_HELP` string. |
 | `src/haute/cli/_init_cmd.py` | `haute init` — project scaffolding: `InitConfig`, `handle_init`, TOML-aware `pyproject.toml` dependency injection, CI-provider file generation/pruning, and the `--workbench` table and form ([workbench](../workbench/low-level.md)). |
 | `src/haute/cli/_run.py` | `haute run` — `RunConfig`, `handle_run`, parses + executes a pipeline and prints per-node results. |
@@ -13,7 +13,9 @@
 | `src/haute/cli/_train.py` | `haute train` — `TrainConfig`, `handle_train`, loads a training script as a module, runs its `job`, prints a live progress bar. |
 | `src/haute/cli/_serve.py` | `haute serve` — `ServeConfig`, `handle_serve`, host-safety checks, working-directory/editable-checkout frontend selection, dev/prod mode dispatch, Vite and uvicorn launch/cleanup. |
 | `src/haute/cli/_deploy.py` | `haute deploy` — `DeployCliConfig`, `handle_deploy`, CI-gate check, resolve → validate-and-score-once → render quote results → deploy pipeline. |
-| `src/haute/cli/_smoke.py` | `haute smoke` — `SmokeConfig`, `handle_smoke`, sends test quotes to a live endpoint (Databricks or HTTP). |
+| `src/haute/cli/_app.py` | `haute app` — the `app` group and its `build` and `serve` commands: `AppBuildConfig` and `handle_app_build` (the working directory's release through `build_release` into the directory given, `RELEASE_DIR` by default, and with `--image` its image through `build_image`), `AppServeConfig` and `handle_app_serve` (the release built into `RELEASE_DIR`, then `create_app` with the git identity from `get_identity` as its local principal, refused without one, served by `uvicorn` on `SERVE_HOST` alone); a release refused as a Click error, and a note when `[workbench.app] host` is unset. |
+| `src/haute/cli/_test_quotes.py` | `haute test-quotes` — the `test_quotes` group and its `report` command: `ReportConfig`, `handle_report` (the file at `project_test_quotes_path`, the base's through `git show`, read through `_read_quotes` from a migrated copy), `report_markdown` (the counts, then the accepted anew, a newer revision or one under the same number with another response, with `response_changes` between the base's and the branch's accepted responses, the added and the removed, by name); `dump` (`dump_text`) and `merge` (`merge_files`: each side read through a migrated copy as `QuoteHistory` by id, a quote taken from the side that changed it against the base, a conflict where both did, the result written over a copy of OURS and moved into place only when nothing conflicts). |
+| `src/haute/cli/_smoke.py` | `haute smoke` — `SmokeConfig`, `handle_smoke`, sends each test quote to a live endpoint (Databricks or HTTP) as a request of its own through `_smoke_files`, which reports each file from `price_test_quotes_live`. |
 | `src/haute/cli/_status.py` | `haute status` — `StatusConfig`, `handle_status`, MLflow Model Registry lookup. |
 | `src/haute/cli/_impact.py` | `haute impact` — `ImpactConfig`, `handle_impact`, staging-vs-production comparison report; `_impact_databricks`/`_impact_http` transport backends. |
 | `src/haute/cli/_gpu_setup.py` | `haute gpu-setup` — `GpuSetupConfig`, `handle_gpu_setup`, swaps `xgboost-cpu` for XGBoost's CUDA build (or back) in the running interpreter and verifies it in a fresh process. |
@@ -68,7 +70,10 @@ without validating required positional arguments.
 | `haute train TRAINING_SCRIPT` | Required positional path. | Omission is a Click exit-2 usage error. Missing/unsafe/unloadable script, missing `job`, script exception, or `job.run` failure exits 1; successful training exits 0. |
 | `haute serve` | `--host TEXT` (CLI → `[server].host` → `localhost`); `--port INTEGER` (effective default `8000`, not shown by current help); `--no-browser`. Port range is not Click-validated: negative/out-of-range integers reach socket setup and may raise rawly. | Port conflict or missing production static build exits 1; malformed `haute.toml` propagates `ConfigError`. A browser-launch failure prints the manual URL but leaves the running server path intact. |
 | `haute deploy [PIPELINE_FILE]` | Optional path; `--model-name TEXT`; `--dry-run`; `--endpoint-suffix TEXT`. | Non-dry-run outside recognised CI exits 1. Resolution, validation, either validation's quote pass or the separately printed quote pass, missing backend dependency, unimplemented target, and backend failure all exit 1. Dry-run success exits 0 before backend dispatch. |
-| `haute smoke` | `--endpoint-suffix TEXT`. | Missing config/quotes/endpoint, missing Databricks SDK, an installed SDK too old to expose the required `NotFound` error type, unsupported target, readiness timeout, health-request failure, or any scoring request failure exits 1. Missing and outdated SDKs produce distinct install/upgrade guidance. A successful request can currently pass with an empty prediction payload. |
+| `haute test-quotes dump` | `FILE`. | A file that cannot be read exits 1. |
+| `haute test-quotes merge` | `BASE OURS THEIRS` (git's `%O %A %B`). | Exits 1 naming each quote in conflict, `OURS` untouched; 0 once merged. |
+| `haute test-quotes report` | `--base TEXT` (default `origin/main`); `--output PATH` (default: stdout). | Never exits non-zero for what changed; a project outside git or a base without the file reports every test quote as added. |
+| `haute smoke` | `--endpoint-suffix TEXT`. | Missing config/quotes/endpoint, missing Databricks SDK, an installed SDK too old to expose the required `NotFound` error type, unsupported target, readiness timeout, health-request failure, any scoring request failure, an unreadable test-quote file, or an expected output the answer does not match exits 1. Missing and outdated SDKs produce distinct install/upgrade guidance. A quote without an `expected` output passes on any answer. |
 | `haute status [MODEL_NAME]` | Optional model name; `--version-only`. | Missing resolvable name or MLflow dependency exits 1. Normal mode prints “not found” and exits 0; `--version-only` prints only a version on success and raises `ClickException` (exit 1, stderr only) when no version exists. |
 | `haute impact` | `--sample INTEGER` (default `10000`; every value `<=0` currently means all, although help documents `0`); `--batch-size INTEGER` (default `500`, minimum `1`); `--endpoint-suffix TEXT`. | Invalid batch size exits 2. Missing config/suffix/dataset or missing Databricks SDK exits 1. Endpoint/scoring/arithmetic/write failures propagate. Unsupported transport returns successfully without a report only after TOML, suffix, and dataset/parquet loading have succeeded; otherwise success writes `impact_report.md` and exits 0. |
 | `haute gpu-setup` | `--check` (report only); `--cpu` (switch back to `xgboost-cpu`); `--yes`/`-y` (skip confirmation). | `--check` exits 0. Exactly one of `xgboost-cpu`/`xgboost` must be installed, else exit 1. The target build already installed exits 0 without changes. Any switch on macOS (which installs the standard `xgboost` package and has no CUDA build), or a CUDA request without an `nvidia-smi` GPU, exits 1 before installing. A declined confirmation, a failed uninstall/install step (the message names the command that restores the previous build), an XGBoost that no longer imports, or a fresh-process CUDA check that disagrees with the request exits 1. |
@@ -162,12 +167,17 @@ override, requires a non-empty `tests/quotes/*.json` set, then dispatches on
 `resolve_transport(deploy_config).kind`:
   - `"databricks"` (`_smoke_databricks`): polls `ws.serving_endpoints.get(name)` every 30s up to 30
     minutes waiting for `state.ready == "READY"` and `config_update in ("", "NOT_UPDATING")`, then
-    queries the endpoint once per test-quote file. Only the SDK's explicit not-found exception is
-    retryable; every other endpoint lookup failure stops immediately with its cause.
-  - `"http"` (`_smoke_http`): hits `<url>/health` once, then POSTs each test-quote file via
-    `score_http_endpoint_batched`. An explicit suffix is rejected because an HTTP deployment must
-    supply its complete `[ci.staging].endpoint_url`.
-  Both backends run every file even after an individual failure and report a combined pass/fail at
+    queries the endpoint once per test quote (`dataframe_records=[input]`; `None` predictions are a
+    failure). Only the SDK's explicit not-found exception is retryable; every other endpoint
+    lookup failure stops immediately with its cause.
+  - `"http"` (`_smoke_http`): hits `<url>/health` once, then POSTs each test quote alone via
+    `score_http_endpoint_batched(url, [input], batch_size=1)`. An explicit suffix is rejected
+    because an HTTP deployment must supply its complete `[ci.staging].endpoint_url`.
+  Both hand `_smoke_files` a `price` callable for one quote. `price_test_quotes_live`
+  (`deploy/_validators.py`) reads the file's cases, prices each, and checks a case's
+  `expected` output against its own answer with `_response_errors`, the per-case check
+  `score_test_quotes` uses, so a mismatch reads the same as the deploy check's. Every file
+  and every quote runs even after a failure, and the run reports a combined pass/fail at
   the end.
 
 **`status`**: resolves the model name with CLI > `HAUTE_MODEL_NAME` > TOML precedence
@@ -289,8 +299,17 @@ Key files and what they cover:
   threaded through to `get_deploy_status`.
 - `test_cli_deploy.py` — deploy CI gating, dry-run, resolution/validation/quote failures,
   exact resolved-object dispatch, dependency/unsupported-target errors, and suffix overrides.
+- `test_cli_test_quotes.py` — the report of a branch against its base: added, removed and
+  accepted-anew quotes with the outputs that moved (a revision under the same number with
+  another response among them), nothing changed, no file on the base,
+  and the report written to a file; the dump's text; the merge of quotes added on both
+  sides, changed on one, deleted on one, and a conflict named with OURS left alone; and a
+  real `git merge` of two branches running the registered driver.
 - `test_cli_smoke.py` — Databricks polling loop (including the "not ready" retry path), HTTP smoke
-  path, and the unsupported-target error.
+  path, the unsupported-target error, each test quote sent as a request of its own on both
+  transports, an expected output checked within tolerance into a Workbench Output's tables
+  (and refused for two rows or a non-object answer), a failed request reported by its row
+  while the rest are priced, and an unreadable file.
 - `test_cli_ux.py` — cross-cutting UX contracts: shared `ENDPOINT_SUFFIX_HELP` string reused across
   commands, `init --force`, `train` progress-bar flushing, `status --version-only` exit codes,
   Windows pre-commit chmod skip.

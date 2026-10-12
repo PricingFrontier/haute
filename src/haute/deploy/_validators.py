@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from numbers import Real
@@ -14,8 +15,19 @@ from typing import Any, NamedTuple
 import polars as pl
 
 from haute._io import read_user_text
+from haute._json_safe import to_json_safe
 from haute._logging import get_logger
+from haute._test_quotes import TEST_QUOTES_FILE
 from haute._types import GLOBAL_CONSTANTS_FILE, NodeType, PipelineGraph
+from haute._workbench_config import WorkbenchConfigError, read_workbench_config
+from haute._workbench_form import WorkbenchFormError, read_form_document
+from haute._workbench_tables import (
+    WorkbenchTablesError,
+    input_tables,
+    output_tables,
+    parse_workbench_tables,
+    table_disagreements,
+)
 from haute.deploy._config import ResolvedDeploy
 from haute.deploy._scorer import QuoteRequest, reads_one_quote_per_request, score_graph
 
@@ -29,6 +41,11 @@ class _TestQuoteCase:
     input: dict[str, Any]
     expected: dict[str, Any] | None
     tolerance_pct: float
+    #: The expected output is a whole accepted response, a workbench test quote's, so the
+    #: answer is compared whole rather than at the expected columns alone.
+    whole: bool = False
+    #: How a failure names the case; ``row <n>`` of its file when None.
+    label: str | None = None
 
 
 _GOLDEN_QUOTE_KEYS = frozenset({"input", "expected", "tolerance_pct"})
@@ -99,7 +116,46 @@ def _parse_test_quote_case(row: Any, *, row_index: int) -> _TestQuoteCase:
     )
 
 
+def test_quote_files(directory: Path) -> list[Path]:
+    """The test-quote files in *directory*: its JSON files, then the workbench's test-quote
+    file when there is one."""
+    files = sorted(directory.glob("*.json"))
+    saved = directory / TEST_QUOTES_FILE
+    return [*files, saved] if saved.is_file() else files
+
+
+def _saved_test_quote_cases(path: Path) -> list[_TestQuoteCase]:
+    """The workbench's test quotes as cases, by name: each newest revision's request, and
+    the response it was accepted with to compare the answer with whole."""
+    from haute._quote_store import QuoteStoreNotMigratedError, open_store, store_url
+    from haute._test_quotes import ACCEPTED_TOLERANCE
+
+    try:
+        store = open_store(store_url(path))
+    except QuoteStoreNotMigratedError as exc:
+        raise ValueError(
+            f"{path.name} was written by another version of Haute: open the project in Haute "
+            "and save a test quote to bring it up to date."
+        ) from exc
+    with store:
+        cases: list[_TestQuoteCase] = []
+        for summary in sorted(store.quotes(), key=lambda quote: (quote.name, quote.id)):
+            revision = store.revision(summary.id)
+            cases.append(
+                _TestQuoteCase(
+                    input=revision.request,
+                    expected=revision.response,
+                    tolerance_pct=ACCEPTED_TOLERANCE,
+                    whole=True,
+                    label=f"quote {summary.name!r}",
+                )
+            )
+    return cases
+
+
 def _load_test_quote_cases(path: Path) -> list[_TestQuoteCase]:
+    if path.name == TEST_QUOTES_FILE:
+        return _saved_test_quote_cases(path)
     raw = json.loads(read_user_text(path))
     if not isinstance(raw, list):
         raise ValueError("Expected a JSON array of quote objects")
@@ -226,6 +282,62 @@ def _first_mismatch(actual: Any, expected: Any, tolerance_pct: float) -> _Mismat
     return _Mismatch("", actual, expected)
 
 
+class ResponseChange(NamedTuple):
+    """One place a priced response differs from the response it was accepted with."""
+
+    #: Into the response: ``pricing.premium``, ``items[1].value``, ``items[3]``.
+    path: str
+    #: ``changed`` where both hold a value, ``added`` where the priced response alone does,
+    #: ``removed`` where the accepted one alone does.
+    kind: str
+    accepted: Any
+    priced: Any
+
+
+def response_changes(priced: Any, accepted: Any, tolerance_pct: float) -> list[ResponseChange]:
+    """Every place *priced* differs from *accepted*, in the accepted response's order.
+
+    The walk is :func:`_first_mismatch`'s, into objects and lists, a leaf compared by
+    :func:`_expected_value_matches` within *tolerance_pct*; but both sides are whole
+    responses, so a key or a list item on one side only is a difference too.
+    """
+    changes: list[ResponseChange] = []
+    _walk_changes(priced, accepted, tolerance_pct, "", changes)
+    return changes
+
+
+def _walk_changes(
+    priced: Any, accepted: Any, tolerance_pct: float, path: str, changes: list[ResponseChange]
+) -> None:
+    if isinstance(accepted, dict) and isinstance(priced, dict):
+        for key, value in accepted.items():
+            place = f"{path}.{key}" if path else str(key)
+            if key in priced:
+                _walk_changes(priced[key], value, tolerance_pct, place, changes)
+            else:
+                changes.append(ResponseChange(place, "removed", value, None))
+        changes.extend(
+            ResponseChange(f"{path}.{key}" if path else str(key), "added", None, value)
+            for key, value in priced.items()
+            if key not in accepted
+        )
+        return
+    if isinstance(accepted, list) and isinstance(priced, list):
+        for index, (item, wanted) in enumerate(zip(priced, accepted, strict=False)):
+            _walk_changes(item, wanted, tolerance_pct, f"{path}[{index}]", changes)
+        changes.extend(
+            ResponseChange(f"{path}[{index}]", "removed", wanted, None)
+            for index, wanted in enumerate(accepted[len(priced) :], start=len(priced))
+        )
+        changes.extend(
+            ResponseChange(f"{path}[{index}]", "added", None, item)
+            for index, item in enumerate(priced[len(accepted) :], start=len(accepted))
+        )
+        return
+    if not _expected_value_matches(priced, accepted, tolerance_pct):
+        changes.append(ResponseChange(path, "changed", accepted, priced))
+
+
 def _format_expected_mismatch(
     *,
     row_index: int,
@@ -304,15 +416,7 @@ def _validate_expected_outputs(
     errors: list[str] = []
     missing_columns: set[str] = set()
     for row_index, case in expected_cases:
-        errors.extend(
-            _case_errors(
-                row_index=row_index,
-                case=case,
-                row=output_rows[row_index],
-                columns=output.columns,
-                missing_columns=missing_columns,
-            )
-        )
+        errors.extend(_response_errors(row_index, case, [output_rows[row_index]], missing_columns))
 
     if errors:
         raise ValueError("expected-output validation failed: " + "; ".join(errors))
@@ -331,24 +435,125 @@ def _validate_expected_outputs_per_case(
     errors: list[str] = []
     missing_columns: set[str] = set()
     for row_index, (case, output) in enumerate(zip(cases, outputs, strict=True)):
-        if case.expected is None:
-            continue
-        if output.height != 1:
-            errors.append(
-                f"row {row_index}: expected one output row, {output.height} output row(s)."
-            )
-            continue
-        errors.extend(
-            _case_errors(
-                row_index=row_index,
-                case=case,
-                row=output.to_dicts()[0],
-                columns=output.columns,
-                missing_columns=missing_columns,
-            )
-        )
+        errors.extend(_response_errors(row_index, case, output.to_dicts(), missing_columns))
     if errors:
         raise ValueError("expected-output validation failed: " + "; ".join(errors))
+
+
+def _response_errors(
+    row_index: int,
+    case: _TestQuoteCase,
+    rows: list[Any],
+    missing_columns: set[str],
+) -> list[str]:
+    """What *rows*, the answer to *case*'s own request (row *row_index* of its file), gets
+    wrong against its expected output; nothing when the case expects none."""
+    if case.expected is None:
+        return []
+    where = case.label or f"row {row_index}"
+    if len(rows) != 1:
+        return [f"{where}: expected one output row, {len(rows)} output row(s)."]
+    [row] = rows
+    if not isinstance(row, dict):
+        return [f"{where}: the response is {row!r}, not an object of output columns."]
+    if case.whole:
+        # Encoded as a preview encodes it, as the accepted response was: a date as its text.
+        changes = response_changes(to_json_safe(row), case.expected, case.tolerance_pct)
+        return [
+            f"{where}: {change.path} {change.kind}, accepted {change.accepted!r}, "
+            f"answered {change.priced!r}"
+            for change in changes
+        ]
+    return _case_errors(
+        row_index=row_index,
+        case=case,
+        row=row,
+        columns=list(row),
+        missing_columns=missing_columns,
+    )
+
+
+class LiveTestQuotes(NamedTuple):
+    """One test-quote file priced against a live endpoint."""
+
+    priced: int
+    checked: int
+    errors: list[str]
+
+
+def price_test_quotes_live(
+    path: Path, price: Callable[[dict[str, Any]], list[Any]]
+) -> LiveTestQuotes:
+    """Price each case of the test-quote file at *path* as a request of its own.
+
+    *price* sends one quote to the endpoint and returns the rows it answers. Each case's
+    expected output is compared with its own answer as deploy compares it, walked into a
+    Workbench Output's tables. A request that fails is reported by its row and the rest are
+    still priced. Raises ``ValueError`` when the file cannot be read as test quotes.
+    """
+    cases = _load_test_quote_cases(path)
+    priced = checked = 0
+    errors: list[str] = []
+    missing_columns: set[str] = set()
+    for row_index, case in enumerate(cases):
+        try:
+            rows = price(case.input)
+        except Exception as exc:  # reported by its row; the other cases still run
+            errors.append(f"row {row_index}: {exc}")
+            continue
+        priced += 1
+        if case.expected is not None:
+            checked += 1
+        errors.extend(_response_errors(row_index, case, rows, missing_columns))
+    return LiveTestQuotes(priced, checked, errors)
+
+
+def _workbench_form_errors(resolved: ResolvedDeploy) -> list[str]:
+    """Each Workbench node's copy of its tables against the form, when the workbench is on.
+
+    The editor copies the form's input tables into the Workbench Input and its output tables
+    into the Workbench Output, so the pipeline runs without the form; a copy that no longer
+    matches the form would deploy tables the sheets do not ask for. The form is read
+    strictly: one that does not exist is refused, not read as the blank form.
+    """
+    nodes = [
+        node
+        for node in resolved.pruned_graph.nodes
+        if node.data.nodeType in (NodeType.WORKBENCH_INPUT, NodeType.WORKBENCH_OUTPUT)
+    ]
+    if not nodes:
+        return []
+    project_root = (resolved.config.project_dir or resolved.config.pipeline_file.parent).resolve()
+    try:
+        config = read_workbench_config(project_root)
+        if not config.enabled:
+            return []
+        document = read_form_document(config)
+    except (WorkbenchConfigError, WorkbenchFormError) as exc:
+        return [str(exc)]
+    if document.revision is None:
+        return [
+            f"The workbench is enabled but {config.form} does not exist, so the pipeline's "
+            "Workbench nodes cannot be checked against the form. Save the project in Haute's "
+            "editor to write it, or turn the workbench off in haute.toml."
+        ]
+    errors: list[str] = []
+    for node in nodes:
+        reads_quotes = node.data.nodeType == NodeType.WORKBENCH_INPUT
+        owner = "Workbench Input" if reads_quotes else "Workbench Output"
+        try:
+            defined = input_tables(document.spec) if reads_quotes else output_tables(document.spec)
+            copied = parse_workbench_tables(node.data.config.get("tables"), owner=owner)
+        except WorkbenchTablesError as exc:
+            errors.append(str(exc))
+            continue
+        found = table_disagreements(defined, copied)
+        if found:
+            errors.append(
+                f"{owner} {node.id!r} does not match {config.form}: {'; '.join(found)}. Save "
+                "the project in Haute's editor to bring its copy of the tables up to date."
+            )
+    return errors
 
 
 def _global_constant_errors(graph: PipelineGraph) -> list[str]:
@@ -470,6 +675,9 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
     # 8. Every global constant the deployed graph reads has a live value.
     errors.extend(_global_constant_errors(resolved.pruned_graph))
 
+    # 9. A workbench project's Workbench nodes hold the tables its form defines.
+    errors.extend(_workbench_form_errors(resolved))
+
     # Project-local imports the bundle does not carry would fail on import in
     # the served bundle, although they resolve from the project here.
     errors.extend(resolved.project_modules.unbundled_imports)
@@ -502,8 +710,11 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
         errors.append(f"Configured test_quotes.dir does not exist: {tq_dir}")
     elif tq_dir is not None and not tq_dir.is_dir():
         errors.append(f"Configured test_quotes.dir is not a directory: {tq_dir}")
-    elif tq_dir is not None and not list(tq_dir.glob("*.json")):
-        errors.append(f"Configured test_quotes.dir contains no *.json files: {tq_dir}")
+    elif tq_dir is not None and not test_quote_files(tq_dir):
+        errors.append(
+            f"Configured test_quotes.dir holds no test quotes, neither a *.json file nor "
+            f"{TEST_QUOTES_FILE}: {tq_dir}"
+        )
     elif tq_dir is not None:
         # Pre-check each quote against the declared input schema; a
         # silently missing column won't be caught by a passthrough graph
@@ -514,7 +725,7 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
         # scored below, so its cases are not held to the columns here.
         required_cols = set(resolved.input_schema or {})
         reads_quotes = _reads_one_quote_per_request(resolved)
-        for jf in sorted(tq_dir.glob("*.json")):
+        for jf in test_quote_files(tq_dir):
             try:
                 cleaned = load_test_quote_file(jf)
             except Exception as exc:
@@ -589,7 +800,7 @@ def score_test_quotes(
     if tq_dir is None or not tq_dir.is_dir():
         return []
 
-    json_files = sorted(tq_dir.glob("*.json"))
+    json_files = test_quote_files(tq_dir)
     if not json_files:
         return []
 
@@ -610,7 +821,9 @@ def score_test_quotes(
         t0 = time.perf_counter()
         try:
             cases = _load_test_quote_cases(jf)
-            if one_quote_per_request:
+            if not cases:
+                rows = 0
+            elif one_quote_per_request:
                 # Each case as its request was sent: the Workbench Input types it.
                 outputs = [score(QuoteRequest((case.input,))) for case in cases]
                 _validate_expected_outputs_per_case(cases=cases, outputs=outputs)

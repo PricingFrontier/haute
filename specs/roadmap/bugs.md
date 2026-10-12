@@ -7,7 +7,7 @@ are fixed. `BUG-18` was found on 4 October 2026 while making standalone runs
 execute submodels: `haute run` then ran a pipeline without its submodels, and
 deploy still parses the same way. `BUG-19` extends the
 check for statements a save would drop from the pipeline file to submodel files.
-`BUG-20` to `BUG-26` were found on 5 October 2026 while checking the deployment
+`BUG-21` to `BUG-26` were found on 5 October 2026 while checking the deployment
 guides against the CI/CD files `haute init` generates: as generated, several of
 those files fail before a first release succeeds. The guides now give the manual
 step that works today for each, and drop it when the package lands. `BUG-27` to
@@ -23,7 +23,6 @@ multi-table Quote Input the whole request.
 |---|---|---:|---|
 | BUG-18 | Decision | P1 | A deployed pipeline runs each submodel, and an unflattened submodel placeholder never reaches an executor silently. |
 | BUG-19 | Planned | P2 | A save never drops a statement written after a submodel file's constructor. |
-| BUG-20 | Decision | P1 | The starter test quote passes the deploy check, and the deploy specification and code agree on which test-quote rows are accepted. |
 | BUG-21 | Planned | P2 | The generated smoke and impact steps work for the generic container target once its endpoint addresses are set. |
 | BUG-22 | Planned | P1 | Databricks smoke and impact authenticate with the credentials the guides and generated workflows provide. |
 | BUG-23 | Decision | P2 | A new project's impact step reads a portfolio sample that CI can see. |
@@ -92,30 +91,6 @@ line, and a save is refused with that location.
 **Evidence:** `src/haute/_pipeline_recovery.py::_unkept_statement_diagnostics`;
 `src/haute/_ast_helpers.py::unkept_module_statements`; `src/haute/codegen.py::_render_module`.
 
-
-### BUG-20 — The starter test quote passes the deploy check
-**Why:** Since the golden test-quote format (`bc527d74`), every row in
-`tests/quotes/*.json` must be `{"input": {...}, "expected": {...}?, "tolerance_pct": ...?}`
-plus `_`-prefixed notes, and any other top-level key fails with "unknown golden test
-quote key(s)". `haute init` still writes `tests/quotes/example.json` as a flat input row
-(`id`, `field_a`, `field_b`), so the generated CI's dry-run deploy and every deploy fail
-until the analyst rewrites it. The deploy specification says the opposite: test-quote
-files "may be plain input rows or golden rows".
-
-**Plan:** Decide whether plain input rows are accepted (the code changes to treat a row
-without `input` as the input, as the specification says) or refused (the specification
-changes). Either way, write the starter quote in the golden shape, and keep
-`docs/deployment/index.md#test-quotes` in step.
-
-**Acceptance:** A freshly initialised project's `haute deploy --dry-run` gets past the
-test-quote parse with the starter file in place; a test pins the starter quote to the
-loader; the specification and `_parse_test_quote_case` agree on plain rows.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/deploy/_validators.py::_parse_test_quote_case`
-(`_GOLDEN_QUOTE_KEYS`); `src/haute/_scaffold.py::starter_test_quote`;
-`specs/deploy/high-level.md` (Behaviour: test quotes).
 
 ### BUG-21 — Container smoke and impact steps reach their endpoints
 **Why:** The generated smoke and impact steps run `haute smoke --endpoint-suffix

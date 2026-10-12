@@ -6,11 +6,13 @@ import useUIStore from "../stores/useUIStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
+import useWorkbenchTestQuotesStore from "../stores/useWorkbenchTestQuotesStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { pricingBasis } from "../utils/workbenchForm"
 import PageTabs from "./PageTabs"
 import { priceSample } from "./priceSample"
 import PropertiesPanel from "./PropertiesPanel"
+import TestQuotesPanel from "./TestQuotesPanel"
 import SchemaEditor from "./SchemaEditor"
 import SheetCanvas from "./SheetCanvas"
 import { dropAt, sectionDropAt } from "./sheetInteractions"
@@ -60,11 +62,13 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
   const basis = useWorkbenchFormStore((s) => (s.form === null ? null : pricingBasis(s.form)))
   const section = useWorkbenchViewStore((s) => s.section)
   const setPricer = useWorkbenchPricingStore((s) => s.setPricer)
+  const setSnapshot = useWorkbenchPricingStore((s) => s.setSnapshot)
   const schedule = useWorkbenchPricingStore((s) => s.schedule)
   const formPath = useWorkbenchStore((s) => s.formPath) ?? "forms/form.json"
   const gitOpen = useUIStore((s) => s.gitOpen)
   const setGitOpen = useUIStore((s) => s.setGitOpen)
   const assistantOpen = useUIStore((s) => s.assistantOpen)
+  const testQuotesOpen = useWorkbenchTestQuotesStore((s) => s.open)
 
   useEffect(() => {
     void useWorkbenchFormStore.getState().load()
@@ -73,8 +77,18 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
   // The pricer prices on the document and the source as they are when it is called.
   useEffect(() => {
     setPricer((workbench) => priceSample(resolveGraph(), workbench, useSettingsStore.getState().activeSource))
-    return () => setPricer(null)
-  }, [resolveGraph, setPricer])
+    // A test quote's pricer is fixed on the document and the source as they are when it is
+    // asked for, and answers in full.
+    setSnapshot(() => {
+      const graph = resolveGraph()
+      const source = useSettingsStore.getState().activeSource
+      return (workbench) => priceSample(graph, workbench, source, { complete: true })
+    })
+    return () => {
+      setPricer(null)
+      setSnapshot(null)
+    }
+  }, [resolveGraph, setPricer, setSnapshot])
   useEffect(() => {
     if (section === "sheets" && basis !== null) schedule()
   }, [basis, section, schedule])
@@ -142,6 +156,10 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
               <AssistantPanel isInsideSubmodel={isInsideSubmodel} readOnly={readOnly} />
             </Suspense>
           </ErrorBoundary>
+        </aside>
+      ) : status === "ready" && section === "preview" && testQuotesOpen ? (
+        <aside aria-label="Test quotes">
+          <TestQuotesPanel />
         </aside>
       ) : status === "ready" && section === "sheets" ? (
         <PropertiesPanel />

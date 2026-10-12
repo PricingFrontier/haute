@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -299,3 +300,224 @@ class TestValidateDeployGlobalConstants:
 
         with pytest.raises(DeployError, match="'rate' has no live value"):
             validate_deploy(resolved)
+
+
+# ===========================================================================
+# validate_deploy — the form against each Workbench node's copy of its tables
+# ===========================================================================
+
+
+def _column(name: str, type_: str) -> dict[str, str]:
+    return {"name": name, "type": type_}
+
+
+_FORM_TABLES: list[dict[str, Any]] = [
+    {
+        "id": "t_policy",
+        "name": "policy",
+        "role": "input",
+        "rows": "one",
+        "columns": [
+            {"id": "c_limit", "name": "limit", "type": "float"},
+            {"id": "c_region", "name": "region", "type": "str"},
+        ],
+    },
+    {
+        "id": "t_items",
+        "name": "items",
+        "role": "input",
+        "rows": "many",
+        "columns": [{"id": "c_value", "name": "value", "type": "float"}],
+    },
+    {
+        "id": "t_pricing",
+        "name": "pricing",
+        "role": "output",
+        "rows": "one",
+        "columns": [{"id": "c_premium", "name": "premium", "type": "float"}],
+    },
+]
+
+
+def _input_copy() -> list[dict[str, Any]]:
+    """The Workbench Input's tables as the editor copies them from ``_FORM_TABLES``."""
+    return [
+        {
+            "name": "policy",
+            "rows": "one",
+            "columns": [_column("limit", "float"), _column("region", "str")],
+        },
+        {"name": "items", "rows": "many", "columns": [_column("value", "float")]},
+    ]
+
+
+def _output_copy() -> list[dict[str, Any]]:
+    return [{"name": "pricing", "rows": "one", "columns": [_column("premium", "float")]}]
+
+
+def _workbench_project(root: Path, *, enabled: bool = True, form: bool = True) -> None:
+    from haute._workbench_form import FormSpec, render_form
+
+    (root / "haute.toml").write_text(
+        f"[workbench]\nenabled = {str(enabled).lower()}\n", encoding="utf-8"
+    )
+    if form:
+        spec = FormSpec.model_validate(
+            {
+                "name": "motor",
+                "schema": {"tables": _FORM_TABLES},
+                "pages": [
+                    {
+                        "id": "p",
+                        "title": "Sheet 1",
+                        "sections": [{"id": "s", "title": "s", "height": 120, "widgets": []}],
+                    }
+                ],
+            }
+        )
+        (root / "forms").mkdir()
+        (root / "forms" / "form.json").write_text(render_form(spec), encoding="utf-8")
+
+
+def _form_check_errors(
+    root: Path,
+    input_copy: list[dict[str, Any]],
+    output_copy: list[dict[str, Any]],
+) -> list[str]:
+    """The structural errors ``validate_deploy`` reports for a workbench pipeline in *root*;
+    the pipeline is otherwise sound, so they are the form check's alone."""
+    from haute.deploy._validators import validate_deploy
+
+    resolved = _make_resolved(
+        nodes=[
+            _make_node("quote", NodeType.WORKBENCH_INPUT, {"tables": input_copy}),
+            _make_node("priced", NodeType.WORKBENCH_OUTPUT, {"tables": output_copy}),
+        ],
+        edges=[GraphEdge(id="e1", source="quote", target="priced")],
+        input_node_ids=["quote"],
+        output_node_id="priced",
+        config=DeployConfig(pipeline_file=root / "main.py", model_name="m", project_dir=root),
+    )
+    try:
+        validate_deploy(resolved)
+    except DeployError as exc:
+        return list(exc.context["structural_errors"])
+    return []
+
+
+class TestValidateDeployWorkbenchForm:
+    """Each Workbench node must hold the tables the form defines for it (deploy spec)."""
+
+    def test_copies_that_match_the_form_pass(self, tmp_path: Path) -> None:
+        _workbench_project(tmp_path)
+        assert _form_check_errors(tmp_path, _input_copy(), _output_copy()) == []
+
+    @pytest.mark.parametrize(
+        ("node", "change", "named"),
+        [
+            (
+                "input",
+                lambda tables: tables[0]["columns"].pop(),
+                "column 'policy.region' is in the form but not in the copy",
+            ),
+            (
+                "input",
+                lambda tables: tables[0]["columns"].append(_column("extra", "int")),
+                "column 'policy.extra' is in the copy but not in the form",
+            ),
+            (
+                "input",
+                lambda tables: tables[0]["columns"][0].update(type="int"),
+                "column 'policy.limit' is float in the form and int in the copy",
+            ),
+            (
+                "input",
+                lambda tables: tables[1].update(rows="one"),
+                "table 'items' is many rows per quote in the form and one in the copy",
+            ),
+            (
+                "input",
+                lambda tables: tables.pop(),
+                "table 'items' is in the form but not in the copy",
+            ),
+            (
+                "input",
+                lambda tables: tables.append({"name": "old", "rows": "one", "columns": []}),
+                "table 'old' is in the copy but not in the form",
+            ),
+            (
+                "input",
+                lambda tables: tables.reverse(),
+                "the tables are in a different order in the copy",
+            ),
+            (
+                "input",
+                lambda tables: tables[0]["columns"].reverse(),
+                "the columns of table 'policy' are in a different order in the copy",
+            ),
+            (
+                "output",
+                lambda tables: tables[0]["columns"][0].update(type="int"),
+                "column 'pricing.premium' is float in the form and int in the copy",
+            ),
+        ],
+        ids=[
+            "column-missing",
+            "column-extra",
+            "column-type",
+            "rows",
+            "table-missing",
+            "table-extra",
+            "table-order",
+            "column-order",
+            "output-column-type",
+        ],
+    )
+    def test_each_disagreement_is_named_with_the_way_to_fix_it(
+        self,
+        tmp_path: Path,
+        node: str,
+        change: Any,
+        named: str,
+    ) -> None:
+        _workbench_project(tmp_path)
+        input_copy, output_copy = _input_copy(), _output_copy()
+        change(input_copy if node == "input" else output_copy)
+
+        [error] = _form_check_errors(tmp_path, input_copy, output_copy)
+
+        owner = "Workbench Input 'quote'" if node == "input" else "Workbench Output 'priced'"
+        assert error.startswith(f"{owner} does not match forms/form.json: ")
+        assert named in error
+        assert "Save the project in Haute's editor" in error
+
+    def test_a_form_file_that_does_not_exist_is_refused(self, tmp_path: Path) -> None:
+        _workbench_project(tmp_path, form=False)
+
+        [error] = _form_check_errors(tmp_path, _input_copy(), _output_copy())
+
+        assert "forms/form.json does not exist" in error
+
+    def test_a_project_whose_workbench_is_off_is_not_checked_against_a_form(
+        self, tmp_path: Path
+    ) -> None:
+        _workbench_project(tmp_path, enabled=False)
+        input_copy = _input_copy()
+        input_copy.pop()
+
+        assert _form_check_errors(tmp_path, input_copy, _output_copy()) == []
+
+    def test_a_form_that_cannot_be_read_is_reported(self, tmp_path: Path) -> None:
+        _workbench_project(tmp_path)
+        (tmp_path / "forms" / "form.json").write_text("not json", encoding="utf-8")
+
+        [error] = _form_check_errors(tmp_path, _input_copy(), _output_copy())
+
+        assert "forms/form.json is not JSON" in error
+
+    def test_a_copy_not_as_the_workbench_writes_it_is_reported(self, tmp_path: Path) -> None:
+        _workbench_project(tmp_path)
+
+        [error] = _form_check_errors(tmp_path, [{"name": "policy"}], _output_copy())
+
+        assert "The Workbench Input's tables are not as the workbench writes them" in error

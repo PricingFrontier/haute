@@ -208,6 +208,62 @@ class TestCommitSave:
         # both staged and unstaged (MM) in the branch manager.
         assert _git(repo, "status", "--porcelain", "--", "rating.py") == ""
 
+    def test_a_sqlite_file_a_write_left_half_done_is_settled_before_the_commit(
+        self, repo: Path
+    ) -> None:
+        import shutil
+        import sqlite3
+        from contextlib import closing
+
+        source = repo / "source.sqlite"
+        with closing(sqlite3.connect(source)) as connection:
+            connection.execute("CREATE TABLE quotes (premium REAL, note BLOB)")
+            connection.executemany("INSERT INTO quotes VALUES (?, ?)", [(512.4, b"x" * 2000)] * 400)
+            connection.commit()
+        # A write caught part-way: a cache too small to hold it spills changed pages into the
+        # file, which needs the journal synced first. The file and its hot journal are copied
+        # as a crash leaves them.
+        writer = sqlite3.connect(source, isolation_level=None)
+        try:
+            writer.execute("PRAGMA journal_mode=DELETE")
+            writer.execute("PRAGMA cache_size=2")
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute("UPDATE quotes SET premium = 0, note = zeroblob(2000)")
+            shutil.copyfile(source, repo / "quotes.sqlite")
+            shutil.copyfile(f"{source}-journal", repo / "quotes.sqlite-journal")
+        finally:
+            writer.execute("ROLLBACK")
+            writer.close()
+
+        sha = commit_save(["quotes.sqlite"], WORKING, cwd=repo)
+
+        assert sha is not None
+        assert not (repo / "quotes.sqlite-journal").exists()
+        with closing(sqlite3.connect(repo / "quotes.sqlite")) as connection:
+            assert connection.execute("SELECT DISTINCT premium FROM quotes").fetchall() == [
+                (512.4,)
+            ]
+
+    def test_a_sqlite_journal_sqlite_cannot_settle_refuses_the_commit(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sqlite3
+        from contextlib import closing
+
+        with closing(sqlite3.connect(repo / "quotes.sqlite")) as connection:
+            connection.execute("CREATE TABLE quotes (premium REAL)")
+        (repo / "quotes.sqlite-journal").write_bytes(b"left by a write that never finished")
+
+        def locked(_path: object) -> sqlite3.Connection:
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(git_transactions.sqlite3, "connect", locked)
+
+        with pytest.raises(GitDomainError, match="quotes.sqlite has a rollback journal"):
+            commit_save(["quotes.sqlite"], WORKING, cwd=repo)
+        # Nothing was committed: the ledger is where the working branch is.
+        assert _git(repo, "rev-parse", LEDGER) == _git(repo, "rev-parse", WORKING)
+
     def test_noop_save_produces_no_commit(self, repo: Path) -> None:
         first = _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
         again = commit_save(["rating.py"], WORKING, cwd=repo)

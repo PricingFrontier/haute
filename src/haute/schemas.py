@@ -61,7 +61,7 @@ from haute._types import GraphEdge as GraphEdge  # noqa: F401
 from haute._types import GraphNode as GraphNode  # noqa: F401
 from haute._types import NodeData as GraphNodeData  # noqa: F401
 from haute._types import PipelineGraph as Graph  # noqa: F401
-from haute._workbench_form import FormSpec
+from haute._workbench_form import Cell, FormSpec
 from haute._workbench_tables import WorkbenchTable
 
 
@@ -214,6 +214,170 @@ class WorkbenchFormTablesRequest(BaseModel):
     """A form as the view holds it, saved or not, whose tables and sample are asked for."""
 
     form: FormSpec
+
+
+#: Values typed into the sheets: by table id, rows keyed by column id, as typed.
+WorkbenchValues = dict[str, list[dict[str, Cell]]]
+#: Priced output tables: each table's rows by its name, as Preview's pricing gives them.
+WorkbenchPricedTables = dict[str, list[dict[str, Any]]]
+
+
+class WorkbenchTestQuoteSummary(BaseModel):
+    """A test quote as the list shows it: its newest revision's number, saver and time."""
+
+    id: str
+    name: str
+    number: int
+    saved_by: str
+    #: When the newest revision was saved: ISO 8601, in UTC.
+    saved_at: str
+    priced: bool
+
+
+class WorkbenchTestQuotesResponse(BaseModel):
+    """The project's test quotes, the most recently saved first."""
+
+    quotes: list[WorkbenchTestQuoteSummary]
+
+
+class WorkbenchTestQuotesBranchResponse(BaseModel):
+    """The branch the test quotes are on now, which a save names; null outside a
+    repository. Read without opening the test-quote file, so a file an older Haute wrote,
+    which a save brings up to date, does not stop it."""
+
+    branch: str | None = None
+
+
+class WorkbenchTestQuoteSaveRequest(BaseModel):
+    """The quote on the sheets, saved as a new test quote under *name*.
+
+    ``form`` is the form as the view holds it, saved or not; ``values`` the quote as typed;
+    ``tables`` its pricing's output tables, each in full.
+    """
+
+    name: str = Field(min_length=1, max_length=200)
+    form: FormSpec
+    values: WorkbenchValues
+    tables: WorkbenchPricedTables
+    #: The branch the save started on, as the branch route named it: a branch checked out
+    #: since is refused, so a quote priced on one branch is never saved into another.
+    branch: str | None
+
+
+class WorkbenchTestQuoteAcceptRequest(BaseModel):
+    """A test quote's new response, accepted as the revision after ``after``.
+
+    ``revision_digest`` is the digest of revision ``after`` as the run read it: a
+    revision ``after`` saved apart, on another branch, is refused.
+    """
+
+    after: int = Field(ge=1)
+    revision_digest: str = Field(min_length=1)
+    form: FormSpec
+    values: WorkbenchValues
+    tables: WorkbenchPricedTables
+
+
+class WorkbenchTestQuoteWriteResponse(BaseModel):
+    """A test-quote write and its capture on the save ledger.
+
+    ``quote`` is the test quote as written, null after a delete; the capture fields mean what
+    they mean on the form save's response.
+    """
+
+    quote: WorkbenchTestQuoteSummary | None = None
+    warnings: list[str] = Field(default_factory=list)
+    git_sha: str | None = None
+    identity_required: bool = False
+
+
+class WorkbenchTestQuoteOpenRequest(BaseModel):
+    """The form as the view holds it, onto which a test quote's values are carried."""
+
+    form: FormSpec
+
+
+class WorkbenchTestQuoteOpenResponse(BaseModel):
+    """A test quote's newest revision, its values carried onto the view's form.
+
+    ``dropped`` names each filled value with no place on that form, ``table.column`` by the
+    names it was saved under; ``response`` is the response the quote was accepted with.
+    """
+
+    id: str
+    name: str
+    number: int
+    #: What the revision is, beyond its number, for an accept to name.
+    revision_digest: str
+    values: WorkbenchValues
+    dropped: list[str]
+    response: dict[str, Any] | None = None
+
+
+class WorkbenchTestQuoteCompareRequest(BaseModel):
+    """A run's priced tables for a test quote, compared with revision ``number``'s response,
+    and the request its ``values`` make on ``form`` with the request that revision keeps.
+
+    ``revision_digest`` is the digest of revision ``number`` as the run opened it: a
+    revision ``number`` saved apart since (another branch's) is refused rather than compared.
+    """
+
+    form: FormSpec
+    values: WorkbenchValues
+    tables: WorkbenchPricedTables
+    number: int = Field(ge=1)
+    revision_digest: str = Field(min_length=1)
+
+
+class WorkbenchTestQuoteChange(BaseModel):
+    """One place the priced response differs from the accepted one."""
+
+    path: str
+    kind: Literal["changed", "added", "removed"]
+    accepted: Any = None
+    priced: Any = None
+
+
+class WorkbenchTestQuoteCompareResponse(BaseModel):
+    """Every place a run's response, or the request it priced, differs from the revision it
+    read, a request's places under ``request.``; none: unchanged."""
+
+    number: int
+    revision_digest: str
+    changes: list[WorkbenchTestQuoteChange]
+
+
+class WorkbenchAppReleaseResponse(BaseModel):
+    """The underwriter app's release, and who the host signed in."""
+
+    id: str
+    form_revision: str
+    pipeline_name: str
+    haute_version: str
+    created_at: str
+    host: str | None = None
+    principal: str
+
+
+class WorkbenchAppFormResponse(BaseModel):
+    """The release's form, without its sample, with the revision a price quotes."""
+
+    form: FormSpec
+    revision: str
+
+
+class WorkbenchAppPriceRequest(BaseModel):
+    """A quote typed into the app's sheets, with the form revision the page was drawn from."""
+
+    form_revision: str
+    values: WorkbenchValues
+
+
+class WorkbenchAppPriceResponse(BaseModel):
+    """The quote priced: each output table's rows by name, and the request that was priced."""
+
+    tables: WorkbenchPricedTables
+    request: dict[str, Any]
 
 
 # ---------------------------------------------------------------------------

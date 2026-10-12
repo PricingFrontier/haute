@@ -67,6 +67,7 @@ from haute.deploy._container import _generate_app_source
 from haute.deploy._pruner import find_deploy_input_nodes
 from haute.deploy._schema import _read_sample_row, infer_input_schema
 from haute.deploy._scorer import DeployInput, QuoteRequest, score_graph
+from haute.deploy._utils import shipped_graph
 from haute.deploy._validators import score_test_quotes
 from haute.execution import ExecutionProfile, execute_lazy_graph
 from haute.parser import parse_pipeline_file
@@ -1225,14 +1226,19 @@ def test_a_deployed_request_is_sized_per_table_for_the_memory_estimate(project: 
 
 
 def test_the_containers_quote_route_reads_the_request_as_sent(project: Path) -> None:
-    """A served quote answers 200 priced, and a misfit the structured 422, not Polars' 500."""
+    """A served quote answers 200 priced, and a misfit the structured 422, not Polars' 500.
+
+    The graph is shipped as a deploy ships it, the sample typed while building left behind,
+    and the request alone is priced."""
     from fastapi.testclient import TestClient
 
     graph = _pricing(project, NodeType.WORKBENCH_INPUT)
+    [request] = [node for node in graph.nodes if node.id == "request"]
+    request.data.config["sample"] = {"policy": {"state": "CA", "limit": 1}}
     container = project / "container"
     container.mkdir()
     manifest = {
-        "pruned_graph": graph.model_dump(mode="json"),
+        "pruned_graph": shipped_graph(graph),
         "input_node_ids": ["request"],
         "output_node_id": "listed",
         "artifacts": {},

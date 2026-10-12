@@ -7,6 +7,7 @@ project name, deploy target, and CI provider.
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import PurePosixPath
 
 from haute._workbench_config import DEFAULT_FORM_PATH
 from haute._workbench_form import blank_form, render_form
@@ -178,6 +179,107 @@ BUILD_AND_PUSH_ONLY_TARGETS = ("azure-container-apps", "aws-ecs", "gcp-run")
 # Targets whose deploy builds a container image. ``haute status`` reads the
 # MLflow registry, so these have no registered version to tag a release with.
 _CONTAINER_BASED_TARGETS = ("container", *BUILD_AND_PUSH_ONLY_TARGETS)
+
+
+# What a release is built from: a push to main that changes none of these deploys
+# nothing. The dependency files change what the deployed image or model installs.
+_RELEASE_INPUT_DIRS = ("rating", "data", "models", "tests/quotes")
+_RELEASE_INPUT_FILES = ("haute.toml", "pyproject.toml", "uv.lock")
+
+
+def _release_input_dirs(workbench: bool) -> tuple[str, ...]:
+    """The release's input directories; a workbench project's form directory with them."""
+    if not workbench:
+        return _RELEASE_INPUT_DIRS
+    return (*_RELEASE_INPUT_DIRS, PurePosixPath(DEFAULT_FORM_PATH).parent.as_posix())
+
+
+#: A workbench project's report of what a pull request does to its test quotes: posted on
+#: the pull request (editing the last one posted) and added to the run's summary.
+_GITHUB_TEST_QUOTES_JOB = """
+  test-quotes:
+    name: Test Quotes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - run: uv sync --frozen
+      - name: Report what the change does to the test quotes
+        run: >-
+          uv run haute test-quotes report --base "origin/${{ github.base_ref }}"
+          --output test-quotes-report.md
+      - name: Post the report on the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          cat test-quotes-report.md >> "$GITHUB_STEP_SUMMARY"
+          gh pr comment "$PR" --body-file test-quotes-report.md --edit-last --create-if-none
+"""
+
+#: The same on a GitLab merge request, kept with the job as an artifact.
+_GITLAB_TEST_QUOTES_JOB = """
+# ── Test quotes (a merge request's report) ────────────────────
+test-quotes-report:
+  stage: validate
+  timeout: 10 minutes
+  script:
+    - git fetch origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+    - >-
+      uv run haute test-quotes report --base "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+      --output test-quotes-report.md
+    - cat test-quotes-report.md
+  artifacts:
+    paths:
+      - test-quotes-report.md
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+"""
+
+#: The same on an Azure DevOps pull request, published as an artifact.
+_AZURE_TEST_QUOTES_JOB = """
+      - job: test_quotes
+        displayName: Test Quotes Report
+        timeoutInMinutes: 10
+        condition: eq(variables['Build.Reason'], 'PullRequest')
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+            fetchDepth: 0
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.11"
+          - script: pip install "uv>=0.5,<1" && uv sync --frozen
+            displayName: Install dependencies
+          - script: |
+              base="origin/${SYSTEM_PULLREQUEST_TARGETBRANCH#refs/heads/}"
+              uv run haute test-quotes report --base "$base" --output test-quotes-report.md
+              cat test-quotes-report.md
+            displayName: Report what the change does to the test quotes
+          - publish: test-quotes-report.md
+            artifact: test-quotes-report
+"""
+
+
+def _github_trigger_paths(workbench: bool) -> str:
+    """The deploy workflow's ``on.push.paths`` entries, one per release input."""
+    dirs = [f'      - "{name}/**"' for name in _release_input_dirs(workbench)]
+    files = [f'      - "{name}"' for name in _RELEASE_INPUT_FILES]
+    return "\n".join([*dirs, *files])
+
+
+def _azure_devops_trigger_paths(workbench: bool) -> str:
+    """The pipeline's ``trigger.paths.include`` entries, one per release input."""
+    dirs = [f"      - {name}/" for name in _release_input_dirs(workbench)]
+    files = [f"      - {name}" for name in _RELEASE_INPUT_FILES]
+    return "\n".join([*dirs, *files])
 
 
 def _release_tag_script(target: str, indent: str) -> str:
@@ -367,9 +469,10 @@ def _azure_devops_secrets_env(target: str, indent: str = "              ") -> st
 # ── GitHub Actions: ci.yml ────────────────────────────────────────────
 
 
-def github_ci_yml() -> str:
-    """PR checks workflow for GitHub Actions."""
-    return """\
+def github_ci_yml(*, workbench: bool = False) -> str:
+    """PR checks workflow for GitHub Actions; a workbench project's also reports what the
+    change does to its test quotes, on the pull request."""
+    jobs = """\
 name: CI
 
 on:
@@ -437,9 +540,10 @@ jobs:
       - name: Dry-run deploy (score test quotes)
         run: uv run haute deploy --dry-run
 """
+    return jobs + (_GITHUB_TEST_QUOTES_JOB if workbench else "")
 
 
-def github_deploy_yml(target: str) -> str:
+def github_deploy_yml(target: str, *, workbench: bool = False) -> str:
     """Merge-to-main deploy workflow for GitHub Actions.
 
     Runs automatically: validate → staging → smoke test → impact analysis.
@@ -510,11 +614,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "rating/**"
-      - "haute.toml"
-      - "data/**"
-      - "models/**"
-      - "tests/quotes/**"
+{_github_trigger_paths(workbench)}
   workflow_dispatch:
 
 concurrency:
@@ -637,7 +737,7 @@ jobs:
 # ── GitLab CI ────────────────────────────────────────────────────────
 
 
-def gitlab_ci_yml(target: str) -> str:
+def gitlab_ci_yml(target: str, *, workbench: bool = False) -> str:
     """Combined CI + deploy pipeline for GitLab CI/CD.
 
     Uses GitLab stages to enforce ordering.  The ``deploy-production``
@@ -714,7 +814,7 @@ lint:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-
+{_GITLAB_TEST_QUOTES_JOB if workbench else ""}
 # ── Staging ───────────────────────────────────────────────────
 deploy-staging:
   stage: deploy-staging
@@ -749,7 +849,7 @@ deploy-production:
 # ── Azure DevOps ─────────────────────────────────────────────────────
 
 
-def azure_devops_yml(target: str) -> str:
+def azure_devops_yml(target: str, *, workbench: bool = False) -> str:
     """Combined CI + deploy pipeline for Azure DevOps.
 
     Uses stages to enforce ordering.  The ``DeployProduction`` stage
@@ -833,11 +933,7 @@ trigger:
     include: [main]
   paths:
     include:
-      - rating/
-      - haute.toml
-      - data/
-      - models/
-      - tests/quotes/
+{_azure_devops_trigger_paths(workbench)}
 
 pr:
   branches:
@@ -913,7 +1009,7 @@ stages:
             displayName: Lint pipeline
           - script: uv run haute deploy --dry-run
             displayName: Dry-run deploy
-
+{_AZURE_TEST_QUOTES_JOB if workbench else ""}
   # ── Deploy to staging (only on push to main) ─────────────────
   - stage: DeployStaging
     displayName: Deploy → Staging
@@ -1145,14 +1241,16 @@ def test_pipeline_parses() -> None:
 
 
 def starter_test_quote() -> str:
-    """Generate the starter ``tests/quotes/example.json``."""
+    """Generate the starter ``tests/quotes/example.json``, a row in the test-quote shape."""
     return """\
 [
   {
-    "_description": "Example quote - replace with your own fields",
-    "id": 1,
-    "field_a": "value",
-    "field_b": 42
+    "_description": "Example quote - replace the input and add the outputs you expect",
+    "input": {
+      "id": 1,
+      "field_a": "value",
+      "field_b": 42
+    }
   }
 ]
 """

@@ -97,7 +97,9 @@ In steady state a clone-state read performs one marker `stat` plus cache lookup,
 repository with no callers leaves no permanent registry entry.
 
 **Gitignore guards** (`_gitignore_guard.py`): `GITIGNORE_GUARD_ENTRIES` is exactly
-`.env`, `.haute/`, `impact_report.md`, `.haute_cache/`, `mlruns/`, `data/`, and `.venv/`.
+`.env`, `.haute/`, `impact_report.md`, `.haute_cache/`, `mlruns/`, `data/`, `.venv/`, and
+SQLite's side files `*.sqlite-journal`, `*.sqlite-wal` and `*.sqlite-shm`, which never sit
+beside a committed test-quote file ([workbench](../workbench/high-level.md)).
 `ensure_gitignore_guards(project_dir)` creates `.gitignore` with those lines when absent or
 appends only missing exact lines under a `# Haute` block. Existing non-UTF-8 bytes are decoded
 with replacement for membership testing. It deliberately does not ignore `*.haute.json`,
@@ -149,7 +151,7 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 **Save.** `commit_save(paths, working, cwd, message)` → `resolve_ledger(working)` (find-or-
 lazily-spawn the ledger at the working branch's current tip, checkout if not already
 current) → `git status --porcelain -- <paths>` to check anything in *paths* actually
-changed (idempotent no-op returns `None`) → `git add -- <paths>` → `git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `git commit -m <msg> --
+changed (idempotent no-op returns `None`) → `_settle_sqlite_journals` (a `*.sqlite` path with a non-empty `-journal` beside it is opened and read, which plays a hot journal back as SQLite's next open would; an open that fails raises `GitDomainError` naming the path, nothing committed) → `git add -- <paths>` → `git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `git commit -m <msg> --
 <paths>` (pathspec-scoped, so it commits only those paths' working-tree state regardless of
 what else the user may have pre-staged) → returns the new SHA. A canvas save passes no
 message, so the default names the changed files; an assistant apply passes its change
@@ -540,7 +542,9 @@ process failures, and precise ref-movement races deterministic.
 - **`tests/test_git_engine.py`** — the primary unit suite for the Git facade and domain
   modules, organized into
   focused test classes covering: slugification, branch-category naming, ledger
-  resolve/spawn, `commit_save` (including idempotent-no-op saves), milestone merge and its
+  resolve/spawn, `commit_save` (including idempotent-no-op saves, a SQLite file's hot
+  journal played back before the commit and one SQLite cannot settle refusing it),
+  milestone merge and its
   invariant checks, git identity get/set, working-branch status across all seven readiness states,
   `set_working_branch` including the unborn-repo seed path and its gitignore-guard
   interaction (`TestSeedGitignoreGuards`, `TestSetWorkingBranchUnbornNonDefault`), move-to-

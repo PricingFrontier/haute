@@ -305,3 +305,44 @@ class TestBuildManifest:
         assert graph_dict["pipeline_name"] == "test_pipe"
         assert len(graph_dict["nodes"]) == 2
         assert graph_dict["edges"] == []
+
+    def test_a_workbench_inputs_sample_stays_out_of_the_bundle(self) -> None:
+        """The sample is the quote an analyst typed while building; a deployed pipeline reads
+        each request instead, so the manifest carries the tables and not the sample, inside a
+        submodel too, and the graph deploy validated keeps it."""
+        tables = [{"name": "policy", "rows": "one", "columns": [{"name": "limit", "type": "int"}]}]
+
+        def workbench_input(node_id: str) -> GraphNode:
+            config = {"tables": tables, "sample": {"policy": {"limit": 5}}}
+            return GraphNode(
+                id=node_id,
+                data=NodeData(label=node_id, nodeType="workbenchInput", config=config),
+            )
+
+        inner = PipelineGraph(nodes=[workbench_input("inner_quote")], edges=[])
+        graph = PipelineGraph.model_validate(
+            {
+                "nodes": [workbench_input("quote").model_dump()],
+                "edges": [],
+                "submodels": {
+                    "sub": {
+                        "definitionId": "sub",
+                        "file": "modules/sub.py",
+                        "graph": inner.model_dump(),
+                        "inputPorts": [],
+                        "outputPorts": [],
+                    }
+                },
+            }
+        )
+        resolved = _make_resolved()
+        resolved.pruned_graph = graph
+
+        shipped = build_manifest(resolved)["pruned_graph"]
+
+        [node] = shipped["nodes"]
+        assert node["data"]["config"] == {"tables": tables}
+        [inner_node] = shipped["submodels"]["sub"]["graph"]["nodes"]
+        assert inner_node["data"]["config"] == {"tables": tables}
+        assert PipelineGraph.model_validate(shipped).nodes[0].data.config == {"tables": tables}
+        assert graph.nodes[0].data.config["sample"] == {"policy": {"limit": 5}}

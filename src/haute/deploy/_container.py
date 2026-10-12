@@ -6,11 +6,12 @@ import json
 import re
 import shutil
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as metadata_version
 from pathlib import Path
+from typing import Any
 
 from haute._git_core import _run_git_ok, git_binary_available
 from haute._logging import get_logger
@@ -83,68 +84,28 @@ class ContainerBuildResult:
     model_version: int
 
 
-def prepare_build_directory(
+def write_bundle(
     resolved: ResolvedDeploy,
     build_dir: Path,
-    *,
-    haute_requirement: str | None = None,
+    manifest_extras: Mapping[str, Any] | None = None,
 ) -> Path:
-    """Prepare the container build directory with manifest, artifacts, app.py, and Dockerfile.
+    """Write the pipeline's bundle into *build_dir*, as a deploy and a workbench release hold it.
 
-    Steps:
-        1. Create build directory and artifacts subdirectory
-        2. Build deployment manifest JSON
-        3. Copy artifacts into build directory
-        4. Copy the bundled utility package, if any, beside app.py
-        5. Generate FastAPI app source
-        6. Generate Dockerfile (and copy wheel if haute_requirement is a wheel path)
-
-    Args:
-        resolved: Fully resolved deployment config (from ``resolve_config()``).
-        build_dir: Destination directory for the build artefacts.
-        haute_requirement: Optional override for the ``haute`` dependency in the Dockerfile.
-            When it names a local wheel file (*.whl), the wheel is copied into ``build_dir``
-            and the Dockerfile gains ``COPY <wheel name> .`` before ``pip install ./<wheel name>``.
+    The manifest (``build_manifest`` with its artifacts at ``artifacts/<name>`` and
+    *manifest_extras* added), the artifacts copied under ``artifacts/``, and the project's
+    utility package beside them, any earlier build's removed first.
 
     Returns:
         Path to the written ``deploy_manifest.json``.
     """
-    config = resolved.config
-    model_name = config.model_name
-    ct = config.container
-
-    _validate_base_image(ct.base_image)
-    _validate_model_name(model_name)
-
     build_dir = Path(build_dir)
     build_dir.mkdir(parents=True, exist_ok=True)
     artifacts_dir = build_dir / "artifacts"
     artifacts_dir.mkdir(exist_ok=True)
 
     manifest = build_manifest(resolved)
-    container_artifacts: dict[str, str] = {}
-    for artifact_name in resolved.artifacts:
-        container_artifacts[artifact_name] = f"artifacts/{artifact_name}"
-
-    wheel_name: str | None = None
-    haute_pip_dep: str | None = None
-    if haute_requirement is not None:
-        if haute_requirement.lower().endswith(".whl"):
-            wheel_path = Path(haute_requirement)
-            wheel_name = wheel_path.name
-            dest_wheel = build_dir / wheel_name
-            if wheel_path.resolve() != dest_wheel.resolve():
-                shutil.copy2(wheel_path, dest_wheel)
-            haute_pip_dep = f"./{wheel_name}"
-        else:
-            haute_pip_dep = haute_requirement
-
-    manifest["artifacts"] = container_artifacts
-    manifest["container_dependencies"] = _pinned_dockerfile_deps(
-        resolved,
-        haute_requirement=haute_pip_dep,
-    )
-
+    manifest["artifacts"] = {name: f"artifacts/{name}" for name in resolved.artifacts}
+    manifest.update(manifest_extras or {})
     manifest_path = build_dir / "deploy_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
@@ -166,6 +127,70 @@ def prepare_build_directory(
         )
     elif utility is not None:
         shutil.copy2(utility, build_dir / f"{UTILITY_PACKAGE}.py")
+    return manifest_path
+
+
+def prepare_build_directory(
+    resolved: ResolvedDeploy,
+    build_dir: Path,
+    *,
+    haute_requirement: str | None = None,
+    extra_files: Sequence[str] = (),
+) -> Path:
+    """Prepare the container build directory with manifest, artifacts, app.py, and Dockerfile.
+
+    Steps:
+        1. Create build directory
+        2. Write the bundle (``write_bundle``): the manifest, with the container's pinned
+           dependencies, the artifacts and the utility package
+        3. Generate FastAPI app source
+        4. Generate Dockerfile (and copy wheel if haute_requirement is a wheel path)
+
+    Args:
+        resolved: Fully resolved deployment config (from ``resolve_config()``).
+        build_dir: Destination directory for the build artefacts.
+        haute_requirement: Optional override for the ``haute`` dependency in the Dockerfile.
+            When it names a local wheel file (*.whl), the wheel is copied into ``build_dir``
+            and the Dockerfile gains ``COPY <wheel name> .`` before ``pip install ./<wheel name>``.
+        extra_files: Files the caller writes beside ``app.py``, which the image copies too: a
+            workbench release's form and description.
+
+    Returns:
+        Path to the written ``deploy_manifest.json``.
+    """
+    config = resolved.config
+    model_name = config.model_name
+    ct = config.container
+
+    _validate_base_image(ct.base_image)
+    _validate_model_name(model_name)
+
+    build_dir = Path(build_dir)
+    build_dir.mkdir(parents=True, exist_ok=True)
+
+    wheel_name: str | None = None
+    haute_pip_dep: str | None = None
+    if haute_requirement is not None:
+        if haute_requirement.lower().endswith(".whl"):
+            wheel_path = Path(haute_requirement)
+            wheel_name = wheel_path.name
+            dest_wheel = build_dir / wheel_name
+            if wheel_path.resolve() != dest_wheel.resolve():
+                shutil.copy2(wheel_path, dest_wheel)
+            haute_pip_dep = f"./{wheel_name}"
+        else:
+            haute_pip_dep = haute_requirement
+
+    manifest_path = write_bundle(
+        resolved,
+        build_dir,
+        {
+            "container_dependencies": _pinned_dockerfile_deps(
+                resolved,
+                haute_requirement=haute_pip_dep,
+            )
+        },
+    )
 
     app_source = _generate_app_source(config.model_name, ct.port)
     (build_dir / "app.py").write_text(app_source, encoding="utf-8")
@@ -176,6 +201,7 @@ def prepare_build_directory(
         resolved,
         haute_pip_dep=haute_pip_dep,
         wheel_name=wheel_name,
+        extra_files=extra_files,
     )
     (build_dir / "Dockerfile").write_text(dockerfile, encoding="utf-8")
 
@@ -885,8 +911,9 @@ def _generate_dockerfile(
     *,
     haute_pip_dep: str | None = None,
     wheel_name: str | None = None,
+    extra_files: Sequence[str] = (),
 ) -> str:
-    """Generate a Dockerfile for the scoring container."""
+    """Generate a Dockerfile for the scoring container, copying *extra_files* beside app.py."""
     haute_dep, *runtime_deps = _pinned_dockerfile_deps(resolved, haute_requirement=haute_pip_dep)
     runtime_line = " ".join(runtime_deps)
     copy_wheel = f"COPY {wheel_name} .\n" if wheel_name else ""
@@ -897,6 +924,7 @@ def _generate_dockerfile(
         copy_utility = f"COPY {UTILITY_PACKAGE}/ {UTILITY_PACKAGE}/\n"
     else:
         copy_utility = f"COPY {UTILITY_PACKAGE}.py .\n"
+    copy_extra = "".join(f"COPY {name} .\n" for name in extra_files)
 
     return f"""\
 FROM {base_image}
@@ -916,7 +944,7 @@ RUN pip install --no-cache-dir {runtime_line}
 # Copy application code and artifacts
 COPY deploy_manifest.json .
 COPY app.py .
-COPY artifacts/ artifacts/
+{copy_extra}COPY artifacts/ artifacts/
 {copy_utility}
 EXPOSE {port}
 

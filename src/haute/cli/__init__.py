@@ -3,6 +3,7 @@
 import click
 
 from haute._cpu_performance import configure_process_high_qos
+from haute.cli._app import app
 from haute.cli._deploy import deploy
 from haute.cli._gpu_setup import gpu_setup
 from haute.cli._impact import impact
@@ -12,6 +13,7 @@ from haute.cli._run import run
 from haute.cli._serve import serve
 from haute.cli._smoke import smoke
 from haute.cli._status import status
+from haute.cli._test_quotes import test_quotes
 from haute.cli._train import train
 
 
@@ -22,6 +24,7 @@ def cli() -> None:
     configure_process_high_qos()
 
 
+cli.add_command(app)
 cli.add_command(deploy)
 cli.add_command(gpu_setup)
 cli.add_command(impact)
@@ -31,4 +34,5 @@ cli.add_command(run)
 cli.add_command(serve)
 cli.add_command(smoke)
 cli.add_command(status)
+cli.add_command(test_quotes)
 cli.add_command(train)
