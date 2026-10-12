@@ -49,6 +49,7 @@ from haute.schemas import (
     WorkbenchTestQuoteOpenRequest,
     WorkbenchTestQuoteOpenResponse,
     WorkbenchTestQuoteSaveRequest,
+    WorkbenchTestQuotesBranchResponse,
     WorkbenchTestQuotesResponse,
     WorkbenchTestQuoteSummary,
     WorkbenchTestQuoteWriteResponse,
@@ -321,14 +322,21 @@ def _written(store: QuoteStore, revision: QuoteRevision) -> WorkbenchTestQuoteSu
 @router.get("/test-quotes", response_model=WorkbenchTestQuotesResponse)
 async def list_test_quotes() -> WorkbenchTestQuotesResponse:
     """The project's test quotes, the most recently saved first."""
-    from haute._test_quotes import test_quotes_branch
-
     config = await _enabled_config()
     quotes = await run_in_threadpool(
         _read_test_quotes, config, lambda store: [_summary(q) for q in store.quotes()]
     )
+    return WorkbenchTestQuotesResponse(quotes=quotes or [])
+
+
+@router.get("/test-quotes/branch", response_model=WorkbenchTestQuotesBranchResponse)
+async def test_quotes_branch_now() -> WorkbenchTestQuotesBranchResponse:
+    """The branch the test quotes are on now, which a save names; the file is not opened."""
+    from haute._test_quotes import test_quotes_branch
+
+    config = await _enabled_config()
     branch = await run_in_threadpool(test_quotes_branch, config.project_root)
-    return WorkbenchTestQuotesResponse(quotes=quotes or [], branch=branch)
+    return WorkbenchTestQuotesBranchResponse(branch=branch)
 
 
 @router.post("/test-quotes", response_model=WorkbenchTestQuoteWriteResponse)

@@ -109,6 +109,7 @@ from haute.schemas import (
     WorkbenchTablesResponse,
     WorkbenchTestQuoteCompareResponse,
     WorkbenchTestQuoteOpenResponse,
+    WorkbenchTestQuotesBranchResponse,
     WorkbenchTestQuotesResponse,
     WorkbenchTestQuoteWriteResponse,
 )
@@ -205,6 +206,7 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         WorkbenchFormResponse,
         WorkbenchFormSaveResponse,
         WorkbenchTestQuotesResponse,
+        WorkbenchTestQuotesBranchResponse,
         WorkbenchTestQuoteWriteResponse,
         WorkbenchTestQuoteOpenResponse,
         WorkbenchTestQuoteCompareResponse,

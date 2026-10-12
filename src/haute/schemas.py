@@ -235,10 +235,16 @@ class WorkbenchTestQuoteSummary(BaseModel):
 
 
 class WorkbenchTestQuotesResponse(BaseModel):
-    """The project's test quotes, the most recently saved first, and the branch they were
-    read from (null outside a repository), which a save names."""
+    """The project's test quotes, the most recently saved first."""
 
     quotes: list[WorkbenchTestQuoteSummary]
+
+
+class WorkbenchTestQuotesBranchResponse(BaseModel):
+    """The branch the test quotes are on now, which a save names; null outside a
+    repository. Read without opening the test-quote file, so a file an older Haute wrote,
+    which a save brings up to date, does not stop it."""
+
     branch: str | None = None
 
 
@@ -253,8 +259,8 @@ class WorkbenchTestQuoteSaveRequest(BaseModel):
     form: FormSpec
     values: WorkbenchValues
     tables: WorkbenchPricedTables
-    #: The branch the save started on, as the list named it: a branch checked out since is
-    #: refused, so a quote priced on one branch is never saved into another.
+    #: The branch the save started on, as the branch route named it: a branch checked out
+    #: since is refused, so a quote priced on one branch is never saved into another.
     branch: str | None
 
 

@@ -2615,11 +2615,9 @@ export interface WorkbenchFormSaveResponse {
   warnings: string[];
 }
 /**
- * The project's test quotes, the most recently saved first, and the branch they were
- * read from (null outside a repository), which a save names.
+ * The project's test quotes, the most recently saved first.
  */
 export interface WorkbenchTestQuotesResponse {
-  branch: string | null;
   quotes: WorkbenchTestQuoteSummary[];
 }
 /**
@@ -2632,6 +2630,14 @@ export interface WorkbenchTestQuoteSummary {
   priced: boolean;
   saved_at: string;
   saved_by: string;
+}
+/**
+ * The branch the test quotes are on now, which a save names; null outside a
+ * repository. Read without opening the test-quote file, so a file an older Haute wrote,
+ * which a save brings up to date, does not stop it.
+ */
+export interface WorkbenchTestQuotesBranchResponse {
+  branch: string | null;
 }
 /**
  * A test-quote write and its capture on the save ledger.

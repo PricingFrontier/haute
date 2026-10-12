@@ -63,9 +63,8 @@ def spec(document: dict[str, Any] = FORM) -> FormSpec:
 
 
 def save(name: str = "Northern fleet", tables: dict[str, Any] = TABLES) -> Any:
-    """A save on the branch the list names, as the panel makes one."""
-    listed = client().get("/api/workbench/test-quotes")
-    branch = listed.json()["branch"] if listed.status_code == 200 else None
+    """A save on the branch the branch route names, as the panel makes one."""
+    branch = client().get("/api/workbench/test-quotes/branch").json()["branch"]
     return client().post(
         "/api/workbench/test-quotes",
         json={"name": name, "form": FORM, "values": VALUES, "tables": tables, "branch": branch},
@@ -138,8 +137,8 @@ def test_a_save_started_on_another_branch_is_refused_and_nothing_written(
 ) -> None:
     enable(project)
     init_repo(project)
-    listed = client().get("/api/workbench/test-quotes").json()
-    assert listed["branch"] == git(project, "symbolic-ref", "--short", "HEAD")
+    named = client().get("/api/workbench/test-quotes/branch").json()
+    assert named["branch"] == git(project, "symbolic-ref", "--short", "HEAD")
 
     # Checked out elsewhere while the quote was priced: the save names the branch it began on.
     refused = client().post(
@@ -503,6 +502,7 @@ def test_every_test_quote_route_is_404_while_the_workbench_is_off(project: Path)
         ),
         ("DELETE", "/api/workbench/test-quotes/q", None),
         ("POST", "/api/workbench/test-quotes/capture", None),
+        ("GET", "/api/workbench/test-quotes/branch", None),
     ):
         answered = client().request(method, url, json=body)
         assert answered.status_code == 404, (url, answered.text)

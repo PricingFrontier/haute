@@ -21,6 +21,7 @@ import {
   compareTestQuote,
   deleteTestQuote,
   fetchTestQuotes,
+  fetchTestQuotesBranch,
   openTestQuote,
   saveTestQuote,
   type PricedTables,
@@ -220,7 +221,7 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
     try {
       // The branch the save starts on, which the server holds it to: a checkout outside the
       // editor that changes nothing but the test-quote file adopts no document.
-      const { branch = null } = await fetchTestQuotes()
+      const branch = await fetchTestQuotesBranch()
       const { tables } = await priceForm({ ...form, sample: quote }, fixedPricer())
       if (useDocumentStatusStore.getState().executionGeneration !== document) {
         set({ error: "Not saved: the branch changed while the quote was priced. Save it again on this one." })

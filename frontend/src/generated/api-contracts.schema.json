@@ -14995,8 +14995,8 @@
       "title": "WorkbenchTestQuoteWriteResponse",
       "type": "object"
     },
-    "WorkbenchTestQuotesResponse": {
-      "description": "The project's test quotes, the most recently saved first, and the branch they were\nread from (null outside a repository), which a save names.",
+    "WorkbenchTestQuotesBranchResponse": {
+      "description": "The branch the test quotes are on now, which a save names; null outside a\nrepository. Read without opening the test-quote file, so a file an older Haute wrote,\nwhich a save brings up to date, does not stop it.",
       "properties": {
         "branch": {
           "anyOf": [
@@ -15009,7 +15009,17 @@
           ],
           "default": null,
           "title": "Branch"
-        },
+        }
+      },
+      "required": [
+        "branch"
+      ],
+      "title": "WorkbenchTestQuotesBranchResponse",
+      "type": "object"
+    },
+    "WorkbenchTestQuotesResponse": {
+      "description": "The project's test quotes, the most recently saved first.",
+      "properties": {
         "quotes": {
           "items": {
             "$ref": "#/$defs/WorkbenchTestQuoteSummary"
@@ -15019,8 +15029,7 @@
         }
       },
       "required": [
-        "quotes",
-        "branch"
+        "quotes"
       ],
       "title": "WorkbenchTestQuotesResponse",
       "type": "object"
@@ -15285,6 +15294,9 @@
     "WorkbenchTestQuoteWriteResponse": {
       "$ref": "#/$defs/WorkbenchTestQuoteWriteResponse"
     },
+    "WorkbenchTestQuotesBranchResponse": {
+      "$ref": "#/$defs/WorkbenchTestQuotesBranchResponse"
+    },
     "WorkbenchTestQuotesResponse": {
       "$ref": "#/$defs/WorkbenchTestQuotesResponse"
     },
@@ -15359,6 +15371,7 @@
     "WorkbenchFormResponse",
     "WorkbenchFormSaveResponse",
     "WorkbenchTestQuotesResponse",
+    "WorkbenchTestQuotesBranchResponse",
     "WorkbenchTestQuoteWriteResponse",
     "WorkbenchTestQuoteOpenResponse",
     "WorkbenchTestQuoteCompareResponse",
@@ -15493,6 +15506,7 @@
       "WorkbenchFormResponse",
       "WorkbenchFormSaveResponse",
       "WorkbenchTestQuotesResponse",
+      "WorkbenchTestQuotesBranchResponse",
       "WorkbenchTestQuoteWriteResponse",
       "WorkbenchTestQuoteOpenResponse",
       "WorkbenchTestQuoteCompareResponse",

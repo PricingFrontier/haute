@@ -9,6 +9,7 @@ vi.mock("../../api/workbench", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../api/workbench")>()),
   fetchWorkbenchFormTables: vi.fn(),
   fetchTestQuotes: vi.fn(),
+  fetchTestQuotesBranch: vi.fn(),
   saveTestQuote: vi.fn(),
   openTestQuote: vi.fn(),
   compareTestQuote: vi.fn(),
@@ -25,6 +26,7 @@ import {
   compareTestQuote,
   deleteTestQuote,
   fetchTestQuotes,
+  fetchTestQuotesBranch,
   fetchWorkbenchFormTables,
   openTestQuote,
   saveTestQuote,
@@ -86,10 +88,8 @@ describe("useWorkbenchTestQuotesStore", () => {
     snapshots = 0
     pricer = vi.fn<Pricer>((_workbench: WorkbenchTablesResponse) => Promise.resolve(priced(500)))
     vi.mocked(fetchWorkbenchFormTables).mockResolvedValue(workbench)
-    vi.mocked(fetchTestQuotes).mockResolvedValue({
-      quotes: [summary("a", "Northern"), summary("b", "Southern")],
-      branch: "work",
-    })
+    vi.mocked(fetchTestQuotes).mockResolvedValue({ quotes: [summary("a", "Northern"), summary("b", "Southern")] })
+    vi.mocked(fetchTestQuotesBranch).mockResolvedValue("work")
     vi.mocked(saveTestQuote).mockResolvedValue(written)
     vi.mocked(acceptTestQuote).mockResolvedValue(written)
     vi.mocked(deleteTestQuote).mockResolvedValue(written)
@@ -120,7 +120,7 @@ describe("useWorkbenchTestQuotesStore", () => {
 
     expect(snapshots).toBe(1)
     expect(fetchWorkbenchFormTables).toHaveBeenCalledWith({ ...form, sample: { t1: [{ c1: "250000" }] } })
-    // On the branch the list named as the save started.
+    // On the branch named as the save started.
     expect(saveTestQuote).toHaveBeenCalledWith("Northern", form, { t1: [{ c1: "250000" }] }, priced(500).tables, "work")
     expect(store().quotes.map((quote) => quote.name)).toEqual(["Northern", "Southern"])
   })
@@ -327,6 +327,99 @@ describe("useWorkbenchTestQuotesStore", () => {
     expect(flushed).toBe(true)
     expect(saveTestQuote).not.toHaveBeenCalled()
     expect(store().error).toMatch(/branch changed while the quote was priced/)
+  })
+
+  it("saves past a list that refuses a file an older Haute wrote: the save brings it up to date", async () => {
+    vi.mocked(fetchTestQuotes).mockRejectedValueOnce(
+      new ApiError("HTTP 409", 409, "test_quote_invalid: tests/quotes/test_quotes.sqlite was written by another version of Haute.", null, null),
+    )
+    await store().load()
+    expect(store().error).toMatch(/another version of Haute/)
+    useWorkbenchPreviewStore.setState({ quote: { t1: [{ c1: "250000" }] } })
+
+    expect(await store().save("Northern")).toBe(true)
+    expect(saveTestQuote).toHaveBeenCalledWith("Northern", form, { t1: [{ c1: "250000" }] }, priced(500).tables, "work")
+  })
+
+  it("says why a save, an open, a run, an accept, a delete or a capture did not happen", async () => {
+    useWorkbenchPreviewStore.setState({ quote: { t1: [{ c1: "250000" }] } })
+    vi.mocked(saveTestQuote).mockRejectedValueOnce(new ApiError("HTTP 409", 409, "quote_store_invalid: locked", null, null))
+    expect(await store().save("Northern")).toBe(false)
+    expect(store().error).toBe("Not saved: quote_store_invalid: locked")
+
+    vi.mocked(openTestQuote).mockRejectedValueOnce(new ApiError("HTTP 409", 409, "quote_not_found: gone", null, null))
+    await store().openQuote("a")
+    expect(store().error).toBe("quote_not_found: gone")
+
+    useWorkbenchPricingStore.setState({ snapshot: null })
+    await store().run()
+    expect(store().error).toBe("Open the workbench's sheets to price test quotes.")
+    expect(store().running).toBe(false)
+
+    vi.mocked(deleteTestQuote).mockRejectedValueOnce(new ApiError("HTTP 409", 409, "quote_not_found: gone", null, null))
+    await store().remove("a")
+    expect(store().error).toBe("Not deleted: quote_not_found: gone")
+
+    vi.mocked(saveTestQuote).mockResolvedValueOnce({ ...written, identity_required: true })
+    useWorkbenchPricingStore.setState({ snapshot: () => pricer })
+    expect(await store().save("Southern")).toBe(true)
+    vi.mocked(captureTestQuotes).mockRejectedValueOnce(new ApiError("HTTP 500", 500, "disk full", null, null))
+    await store().flush()
+    expect(store().error).toBe("The test quotes were not captured: disk full")
+    expect(store().uncaptured).toBe(true)
+  })
+
+  it("accepts nothing for a quote the run has no result for, and words a failure that is not a stale one", async () => {
+    await store().accept("nowhere")
+    useWorkbenchTestQuotesStore.setState({
+      runForm: form,
+      runs: { a: { status: "failed", number: 3, digest: "read-3", values: null, dropped: [], tables: null, changes: [], error: "x" } },
+    })
+    await store().accept("a")
+    expect(acceptTestQuote).not.toHaveBeenCalled()
+
+    await store().load()
+    vi.mocked(openTestQuote).mockImplementation(async (id) => opened(id, "1"))
+    vi.mocked(compareTestQuote).mockResolvedValue({
+      number: 3, digest: "compared-3", changes: [{ path: "pricing_output.premium", kind: "changed", accepted: 1, priced: 500 }],
+    })
+    await store().run()
+    vi.mocked(acceptTestQuote).mockRejectedValueOnce(new ApiError("HTTP 500", 500, "disk full", null, null))
+    await store().accept("a")
+    expect(store().error).toBe("Not accepted: disk full")
+  })
+
+  it("leaves a run forgotten part-way unfinished, its later quotes unpriced, and lists the quotes again when the panel is open", async () => {
+    await store().load()
+    useWorkbenchTestQuotesStore.setState({ open: true })
+    vi.mocked(openTestQuote).mockImplementation(async (id) => opened(id, "1"))
+    vi.mocked(compareTestQuote).mockResolvedValue({ number: 3, digest: "compared-3", changes: [] })
+    let finish: () => void = () => {}
+    pricer.mockImplementationOnce(() => new Promise((resolve) => { finish = () => resolve(priced(500)) }))
+    const running = store().run()
+    await vi.waitFor(() => expect(pricer).toHaveBeenCalledTimes(1))
+    vi.mocked(fetchTestQuotes).mockClear()
+
+    useDocumentStatusStore.setState({ executionGeneration: useDocumentStatusStore.getState().executionGeneration + 1 })
+    finish()
+    await running
+
+    expect(fetchTestQuotes).toHaveBeenCalledTimes(1)
+    expect(store().runs).toEqual({})
+    expect(store().running).toBe(false)
+    // The second quote was never opened: the run stopped where it was forgotten.
+    expect(openTestQuote).toHaveBeenCalledTimes(1)
+  })
+
+  it("ticks and unticks a quote, and opens and closes the panel", () => {
+    store().toggle("a")
+    store().toggle("b")
+    store().toggle("a")
+    expect(store().selected).toEqual(["b"])
+    store().setOpen(true)
+    expect(store().open).toBe(true)
+    store().setOpen(false)
+    expect(store().open).toBe(false)
   })
 
   it("deletes a test quote and forgets its run", async () => {

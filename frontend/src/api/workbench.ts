@@ -112,6 +112,17 @@ export async function fetchTestQuotes(): Promise<WorkbenchTestQuotesResponse> {
   )
 }
 
+/** The branch the test quotes are on now, which a save names: the file is not opened. */
+export async function fetchTestQuotesBranch(): Promise<string | null> {
+  const data = await request<unknown>("/api/workbench/test-quotes/branch")
+  const named = expectGeneratedContract(
+    "WorkbenchTestQuotesBranchResponse",
+    (await workbenchValidators()).validateWorkbenchTestQuotesBranchResponse,
+    data,
+  )
+  return named.branch ?? null
+}
+
 async function writeResponse(data: unknown): Promise<WorkbenchTestQuoteWriteResponse> {
   return expectGeneratedContract(
     "WorkbenchTestQuoteWriteResponse",
@@ -122,8 +133,9 @@ async function writeResponse(data: unknown): Promise<WorkbenchTestQuoteWriteResp
 
 /** Save the quote on the sheets as a new test quote, with its pricing's tables in full. */
 /**
- * Save the quote as a new test quote on `branch`, the branch the save started on as the list
- * named it: a branch checked out since answers 409 and nothing is written.
+ * Save the quote as a new test quote on `branch`, the branch the save started on as
+ * `fetchTestQuotesBranch` named it: a branch checked out since answers 409 and nothing is
+ * written.
  */
 export async function saveTestQuote(
   name: string, form: FormSpec, values: SheetQuote, tables: PricedTables, branch: string | null,

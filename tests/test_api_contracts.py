@@ -876,6 +876,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuoteWriteResponse"},
         },
     },
+    "/api/workbench/test-quotes/branch": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuotesBranchResponse"},
+        },
+    },
     "/api/workbench/test-quotes/capture": {
         "POST": {
             "request_ref": None,
