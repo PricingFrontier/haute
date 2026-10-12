@@ -13,7 +13,7 @@
 | `src/haute/cli/_train.py` | `haute train` — `TrainConfig`, `handle_train`, loads a training script as a module, runs its `job`, prints a live progress bar. |
 | `src/haute/cli/_serve.py` | `haute serve` — `ServeConfig`, `handle_serve`, host-safety checks, working-directory/editable-checkout frontend selection, dev/prod mode dispatch, Vite and uvicorn launch/cleanup. |
 | `src/haute/cli/_deploy.py` | `haute deploy` — `DeployCliConfig`, `handle_deploy`, CI-gate check, resolve → validate-and-score-once → render quote results → deploy pipeline. |
-| `src/haute/cli/_smoke.py` | `haute smoke` — `SmokeConfig`, `handle_smoke`, sends test quotes to a live endpoint (Databricks or HTTP). |
+| `src/haute/cli/_smoke.py` | `haute smoke` — `SmokeConfig`, `handle_smoke`, sends each test quote to a live endpoint (Databricks or HTTP) as a request of its own through `_smoke_files`, which reports each file from `price_test_quotes_live`. |
 | `src/haute/cli/_status.py` | `haute status` — `StatusConfig`, `handle_status`, MLflow Model Registry lookup. |
 | `src/haute/cli/_impact.py` | `haute impact` — `ImpactConfig`, `handle_impact`, staging-vs-production comparison report; `_impact_databricks`/`_impact_http` transport backends. |
 | `src/haute/cli/_gpu_setup.py` | `haute gpu-setup` — `GpuSetupConfig`, `handle_gpu_setup`, swaps `xgboost-cpu` for XGBoost's CUDA build (or back) in the running interpreter and verifies it in a fresh process. |
@@ -68,7 +68,7 @@ without validating required positional arguments.
 | `haute train TRAINING_SCRIPT` | Required positional path. | Omission is a Click exit-2 usage error. Missing/unsafe/unloadable script, missing `job`, script exception, or `job.run` failure exits 1; successful training exits 0. |
 | `haute serve` | `--host TEXT` (CLI → `[server].host` → `localhost`); `--port INTEGER` (effective default `8000`, not shown by current help); `--no-browser`. Port range is not Click-validated: negative/out-of-range integers reach socket setup and may raise rawly. | Port conflict or missing production static build exits 1; malformed `haute.toml` propagates `ConfigError`. A browser-launch failure prints the manual URL but leaves the running server path intact. |
 | `haute deploy [PIPELINE_FILE]` | Optional path; `--model-name TEXT`; `--dry-run`; `--endpoint-suffix TEXT`. | Non-dry-run outside recognised CI exits 1. Resolution, validation, either validation's quote pass or the separately printed quote pass, missing backend dependency, unimplemented target, and backend failure all exit 1. Dry-run success exits 0 before backend dispatch. |
-| `haute smoke` | `--endpoint-suffix TEXT`. | Missing config/quotes/endpoint, missing Databricks SDK, an installed SDK too old to expose the required `NotFound` error type, unsupported target, readiness timeout, health-request failure, or any scoring request failure exits 1. Missing and outdated SDKs produce distinct install/upgrade guidance. A successful request can currently pass with an empty prediction payload. |
+| `haute smoke` | `--endpoint-suffix TEXT`. | Missing config/quotes/endpoint, missing Databricks SDK, an installed SDK too old to expose the required `NotFound` error type, unsupported target, readiness timeout, health-request failure, any scoring request failure, an unreadable test-quote file, or an expected output the answer does not match exits 1. Missing and outdated SDKs produce distinct install/upgrade guidance. A quote without an `expected` output passes on any answer. |
 | `haute status [MODEL_NAME]` | Optional model name; `--version-only`. | Missing resolvable name or MLflow dependency exits 1. Normal mode prints “not found” and exits 0; `--version-only` prints only a version on success and raises `ClickException` (exit 1, stderr only) when no version exists. |
 | `haute impact` | `--sample INTEGER` (default `10000`; every value `<=0` currently means all, although help documents `0`); `--batch-size INTEGER` (default `500`, minimum `1`); `--endpoint-suffix TEXT`. | Invalid batch size exits 2. Missing config/suffix/dataset or missing Databricks SDK exits 1. Endpoint/scoring/arithmetic/write failures propagate. Unsupported transport returns successfully without a report only after TOML, suffix, and dataset/parquet loading have succeeded; otherwise success writes `impact_report.md` and exits 0. |
 | `haute gpu-setup` | `--check` (report only); `--cpu` (switch back to `xgboost-cpu`); `--yes`/`-y` (skip confirmation). | `--check` exits 0. Exactly one of `xgboost-cpu`/`xgboost` must be installed, else exit 1. The target build already installed exits 0 without changes. Any switch on macOS (which installs the standard `xgboost` package and has no CUDA build), or a CUDA request without an `nvidia-smi` GPU, exits 1 before installing. A declined confirmation, a failed uninstall/install step (the message names the command that restores the previous build), an XGBoost that no longer imports, or a fresh-process CUDA check that disagrees with the request exits 1. |
@@ -162,12 +162,17 @@ override, requires a non-empty `tests/quotes/*.json` set, then dispatches on
 `resolve_transport(deploy_config).kind`:
   - `"databricks"` (`_smoke_databricks`): polls `ws.serving_endpoints.get(name)` every 30s up to 30
     minutes waiting for `state.ready == "READY"` and `config_update in ("", "NOT_UPDATING")`, then
-    queries the endpoint once per test-quote file. Only the SDK's explicit not-found exception is
-    retryable; every other endpoint lookup failure stops immediately with its cause.
-  - `"http"` (`_smoke_http`): hits `<url>/health` once, then POSTs each test-quote file via
-    `score_http_endpoint_batched`. An explicit suffix is rejected because an HTTP deployment must
-    supply its complete `[ci.staging].endpoint_url`.
-  Both backends run every file even after an individual failure and report a combined pass/fail at
+    queries the endpoint once per test quote (`dataframe_records=[input]`; `None` predictions are a
+    failure). Only the SDK's explicit not-found exception is retryable; every other endpoint
+    lookup failure stops immediately with its cause.
+  - `"http"` (`_smoke_http`): hits `<url>/health` once, then POSTs each test quote alone via
+    `score_http_endpoint_batched(url, [input], batch_size=1)`. An explicit suffix is rejected
+    because an HTTP deployment must supply its complete `[ci.staging].endpoint_url`.
+  Both hand `_smoke_files` a `price` callable for one quote. `price_test_quotes_live`
+  (`deploy/_validators.py`) reads the file's cases, prices each, and checks a case's
+  `expected` output against its own answer with `_response_errors`, the per-case check
+  `score_test_quotes` uses, so a mismatch reads the same as the deploy check's. Every file
+  and every quote runs even after a failure, and the run reports a combined pass/fail at
   the end.
 
 **`status`**: resolves the model name with CLI > `HAUTE_MODEL_NAME` > TOML precedence
@@ -290,7 +295,10 @@ Key files and what they cover:
 - `test_cli_deploy.py` — deploy CI gating, dry-run, resolution/validation/quote failures,
   exact resolved-object dispatch, dependency/unsupported-target errors, and suffix overrides.
 - `test_cli_smoke.py` — Databricks polling loop (including the "not ready" retry path), HTTP smoke
-  path, and the unsupported-target error.
+  path, the unsupported-target error, each test quote sent as a request of its own on both
+  transports, an expected output checked within tolerance into a Workbench Output's tables
+  (and refused for two rows or a non-object answer), a failed request reported by its row
+  while the rest are priced, and an unreadable file.
 - `test_cli_ux.py` — cross-cutting UX contracts: shared `ENDPOINT_SUFFIX_HELP` string reused across
   commands, `init --force`, `train` progress-bar flushing, `status --version-only` exit codes,
   Windows pre-commit chmod skip.

@@ -375,27 +375,176 @@ class TestSmokeDatabricksEdgeCases:
         assert mock_ws.serving_endpoints.get.call_count == 1
         assert "could not check databricks endpoint" in result.output.lower()
 
-    def test_databricks_multiple_predictions(
+    def test_databricks_prices_each_test_quote_as_a_request_of_its_own(
         self,
         runner: CliRunner,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Multiple predictions should report count correctly."""
+        """A pipeline reading one quote per request takes each case alone, as deploy does."""
         _setup_smoke_project(tmp_path, monkeypatch)
 
         mock_ws = MagicMock()
         mock_ws.serving_endpoints.get.return_value = _ready_endpoint_mock()
-
         mock_response = MagicMock()
-        mock_response.predictions = [{"premium": 100.0}, {"premium": 200.0}]
+        mock_response.predictions = [{"premium": 100.0}]
         mock_ws.serving_endpoints.query.return_value = mock_response
 
         with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), patch("time.sleep"):
             result = runner.invoke(cli, ["smoke"])
 
         assert result.exit_code == 0, result.output
-        assert "2 predictions" in result.output
+        sent = [
+            call.kwargs["dataframe_records"]
+            for call in mock_ws.serving_endpoints.query.call_args_list
+        ]
+        assert sent == [
+            [{"VehPower": 5, "Area": "A"}],
+            [{"VehPower": 5, "Area": "A"}],
+            [{"VehPower": 10, "Area": "B"}],
+        ]
+        assert "multi.json: 2 quote(s) priced, 0 checked against expected outputs" in result.output
+
+    @pytest.mark.parametrize(
+        ("predictions", "outcome"),
+        [
+            ([{"pricing": {"premium": 50.4}, "ok": True}], None),
+            (
+                [{"pricing": {"premium": 70.0}, "ok": True}],
+                "row 0 column 'pricing.premium' outside tolerance: expected=50.0 actual=70.0",
+            ),
+            (
+                [{"pricing": {"premium": 50.0}}, {"pricing": {"premium": 50.0}}],
+                "row 0: expected one output row, 2 output row(s).",
+            ),
+            ([7.5], "row 0: the response is 7.5, not an object of output columns."),
+        ],
+        ids=["within-tolerance", "outside-tolerance", "two-rows", "not-an-object"],
+    )
+    def test_databricks_checks_each_quotes_expected_output(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        predictions: list[object],
+        outcome: str | None,
+    ) -> None:
+        """The same comparison as deploy's, walked into a Workbench Output's tables."""
+        quotes_dir = _setup_smoke_project(tmp_path, monkeypatch)
+        for stale in quotes_dir.glob("*.json"):
+            stale.unlink()
+        (quotes_dir / "golden.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "input": {"policy": {"limit": 5}},
+                        "expected": {"pricing": {"premium": 50.0}},
+                        "tolerance_pct": 0.01,
+                    }
+                ]
+            )
+        )
+
+        mock_ws = MagicMock()
+        mock_ws.serving_endpoints.get.return_value = _ready_endpoint_mock()
+        mock_response = MagicMock()
+        mock_response.predictions = predictions
+        mock_ws.serving_endpoints.query.return_value = mock_response
+
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), patch("time.sleep"):
+            result = runner.invoke(cli, ["smoke"])
+
+        if outcome is None:
+            assert result.exit_code == 0, result.output
+            assert "golden.json: 1 quote(s) priced, 1 checked against expected outputs" in (
+                result.output
+            )
+        else:
+            assert result.exit_code == 1
+            assert outcome in result.output
+
+    def test_databricks_reports_each_failed_request_and_prices_the_rest(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _setup_smoke_project(tmp_path, monkeypatch)
+
+        mock_ws = MagicMock()
+        mock_ws.serving_endpoints.get.return_value = _ready_endpoint_mock()
+        priced = MagicMock()
+        priced.predictions = [{"premium": 100.0}]
+        mock_ws.serving_endpoints.query.side_effect = [priced, RuntimeError("503"), priced]
+
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), patch("time.sleep"):
+            result = runner.invoke(cli, ["smoke"])
+
+        assert result.exit_code == 1
+        assert "multi.json: row 0: 503" in result.output
+        assert mock_ws.serving_endpoints.query.call_count == 3
+
+    def test_a_file_that_cannot_be_read_fails_the_smoke(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        quotes_dir = _setup_smoke_project(tmp_path, monkeypatch)
+        (quotes_dir / "broken.json").write_text("[{}]")
+
+        mock_ws = MagicMock()
+        mock_ws.serving_endpoints.get.return_value = _ready_endpoint_mock()
+        mock_response = MagicMock()
+        mock_response.predictions = [{"premium": 100.0}]
+        mock_ws.serving_endpoints.query.return_value = mock_response
+
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), patch("time.sleep"):
+            result = runner.invoke(cli, ["smoke"])
+
+        assert result.exit_code == 1
+        assert "broken.json: test quote row 0: input must be a JSON object" in result.output
+
+
+class TestSmokeHttpRequests:
+    """The HTTP transport sends each case to ``/quote`` as a request of its own."""
+
+    def test_each_quote_is_its_own_request_and_its_expected_output_is_checked(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        quotes_dir = _setup_smoke_project(
+            tmp_path, monkeypatch, target="container", staging_url="http://localhost:8080"
+        )
+        (quotes_dir / "golden.json").write_text(
+            json.dumps([{"input": {"VehPower": 7, "Area": "C"}, "expected": {"premium": 9.0}}])
+        )
+        health = MagicMock()
+        health.__enter__.return_value.read.return_value = b'{"status": "ok"}'
+        sent: list[list[dict[str, object]]] = []
+
+        def score(url: str, records: list[dict[str, object]], batch_size: int) -> list[object]:
+            sent.append(records)
+            return [{"premium": 9.0}]
+
+        with (
+            patch("urllib.request.urlopen", return_value=health),
+            patch("haute.deploy._impact.score_http_endpoint_batched", side_effect=score),
+        ):
+            result = runner.invoke(cli, ["smoke"])
+
+        assert result.exit_code == 0, result.output
+        assert sent == [
+            [{"VehPower": 5, "Area": "A"}],
+            [{"VehPower": 7, "Area": "C"}],
+            [{"VehPower": 5, "Area": "A"}],
+            [{"VehPower": 10, "Area": "B"}],
+        ]
+        assert "golden.json: 1 quote(s) priced, 1 checked against expected outputs" in (
+            result.output
+        )
 
 
 class TestSmokeUnsupportedTarget:

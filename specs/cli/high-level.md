@@ -70,9 +70,12 @@ Out of scope, owned elsewhere:
 - `haute deploy [pipeline_file] [--model-name] [--dry-run] [--endpoint-suffix]` validates a pipeline,
   scores its test quotes, and deploys it to the configured target. Non-dry-run deploys are blocked
   outside a recognised CI environment.
-- `haute smoke [--endpoint-suffix]` sends every test-quote JSON file in `tests/quotes/` to a live
-  serving endpoint and checks that each request completes. The current backends do not
-  consistently require a non-empty prediction list, and HTTP health accepts any decodable 2xx JSON.
+- `haute smoke [--endpoint-suffix]` sends each test quote in `tests/quotes/` to a live serving
+  endpoint as a request of its own, as a pipeline reading one quote per request takes it, and
+  holds each quote with an `expected` output to it as the deploy check does, walked into a
+  Workbench Output's tables: one answer row, an object of output columns, each expected
+  value within tolerance. A failed request or mismatch is reported by its row in the file
+  and the other quotes are still priced. HTTP health accepts any decodable 2xx JSON.
   An endpoint suffix is a Databricks naming override; HTTP targets reject it and direct operators
   to configure the complete staging endpoint URL instead.
 - `haute status [model_name] [--version-only]` looks up a model's latest version/stage in the MLflow

@@ -194,7 +194,7 @@ Test quotes live in `tests/quotes/` as JSON files, each holding a list of cases:
 - `expected` (optional) lists outputs the response must match. A number matches within `tolerance_pct`, a fraction (`0.01` is 1%, at most `1`; the default, `0`, means exactly); any other value must be equal.
 - Keys starting with `_` are notes and are ignored.
 
-The smoke test sends the same `input` requests to the deployed staging endpoint.
+The smoke test sends each `input` to the deployed staging endpoint as a request of its own and checks its `expected` outputs the same way.
 
 !!! warning "Replace the starter example"
     The `tests/quotes/example.json` that `haute init` writes is a placeholder in the shape above, with made-up fields and no `expected` output. Replace it with your own quotes, and the prices you expect for them, before your first deploy.

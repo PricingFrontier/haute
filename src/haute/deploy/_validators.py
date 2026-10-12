@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from numbers import Real
@@ -340,24 +341,68 @@ def _validate_expected_outputs_per_case(
     errors: list[str] = []
     missing_columns: set[str] = set()
     for row_index, (case, output) in enumerate(zip(cases, outputs, strict=True)):
-        if case.expected is None:
-            continue
-        if output.height != 1:
-            errors.append(
-                f"row {row_index}: expected one output row, {output.height} output row(s)."
-            )
-            continue
-        errors.extend(
-            _case_errors(
-                row_index=row_index,
-                case=case,
-                row=output.to_dicts()[0],
-                columns=output.columns,
-                missing_columns=missing_columns,
-            )
-        )
+        errors.extend(_response_errors(row_index, case, output.to_dicts(), missing_columns))
     if errors:
         raise ValueError("expected-output validation failed: " + "; ".join(errors))
+
+
+def _response_errors(
+    row_index: int,
+    case: _TestQuoteCase,
+    rows: list[Any],
+    missing_columns: set[str],
+) -> list[str]:
+    """What *rows*, the answer to *case*'s own request (row *row_index* of its file), gets
+    wrong against its expected output; nothing when the case expects none."""
+    if case.expected is None:
+        return []
+    if len(rows) != 1:
+        return [f"row {row_index}: expected one output row, {len(rows)} output row(s)."]
+    [row] = rows
+    if not isinstance(row, dict):
+        return [f"row {row_index}: the response is {row!r}, not an object of output columns."]
+    return _case_errors(
+        row_index=row_index,
+        case=case,
+        row=row,
+        columns=list(row),
+        missing_columns=missing_columns,
+    )
+
+
+class LiveTestQuotes(NamedTuple):
+    """One test-quote file priced against a live endpoint."""
+
+    priced: int
+    checked: int
+    errors: list[str]
+
+
+def price_test_quotes_live(
+    path: Path, price: Callable[[dict[str, Any]], list[Any]]
+) -> LiveTestQuotes:
+    """Price each case of the test-quote file at *path* as a request of its own.
+
+    *price* sends one quote to the endpoint and returns the rows it answers. Each case's
+    expected output is compared with its own answer as deploy compares it, walked into a
+    Workbench Output's tables. A request that fails is reported by its row and the rest are
+    still priced. Raises ``ValueError`` when the file cannot be read as test quotes.
+    """
+    cases = _load_test_quote_cases(path)
+    priced = checked = 0
+    errors: list[str] = []
+    missing_columns: set[str] = set()
+    for row_index, case in enumerate(cases):
+        try:
+            rows = price(case.input)
+        except Exception as exc:  # reported by its row; the other cases still run
+            errors.append(f"row {row_index}: {exc}")
+            continue
+        priced += 1
+        if case.expected is not None:
+            checked += 1
+        errors.extend(_response_errors(row_index, case, rows, missing_columns))
+    return LiveTestQuotes(priced, checked, errors)
 
 
 def _workbench_form_errors(resolved: ResolvedDeploy) -> list[str]:
