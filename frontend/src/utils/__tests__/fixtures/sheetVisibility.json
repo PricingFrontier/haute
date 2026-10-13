@@ -18,6 +18,7 @@
                 "name": "bi_cover",
                 "type": "bool",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -26,6 +27,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -35,6 +37,7 @@
                 "name": "class_of_business",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -43,6 +46,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -52,6 +56,7 @@
                 "name": "assured_name",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -60,6 +65,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -69,6 +75,7 @@
                 "name": "sum_insured",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -77,6 +84,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -86,6 +94,7 @@
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -94,6 +103,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -103,6 +113,7 @@
                 "name": "rate",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -111,6 +122,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -128,6 +140,7 @@
                 "name": "bi_sum_insured",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -136,6 +149,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -145,6 +159,7 @@
                 "name": "bi_extensions",
                 "type": "bool",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -153,6 +168,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -170,6 +186,7 @@
                 "name": "extension_days",
                 "type": "int",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -178,6 +195,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -195,6 +213,7 @@
                 "name": "row_number",
                 "type": "int",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -203,6 +222,7 @@
                 "index": true,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -212,6 +232,7 @@
                 "name": "item",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": true,
                 "required": false,
                 "min": null,
@@ -220,6 +241,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -229,6 +251,7 @@
                 "name": "value",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -237,6 +260,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -254,6 +278,7 @@
                 "name": "premium",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -262,6 +287,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -274,6 +300,7 @@
         {
           "id": "p_main",
           "title": "Main",
+          "width": 1280,
           "show_when": {"match": "all", "conditions": []},
           "sections": [
             {
@@ -354,6 +381,7 @@
         {
           "id": "p_bi",
           "title": "Business interruption",
+          "width": 1280,
           "show_when": {
             "match": "all",
             "conditions": [{"table": "t_policy", "column": "c_bi", "op": "ticked", "values": []}]
@@ -387,6 +415,7 @@
         {
           "id": "p_ext",
           "title": "Extensions",
+          "width": 1280,
           "show_when": {
             "match": "all",
             "conditions": [{"table": "t_bi", "column": "c_bi_more", "op": "ticked", "values": []}]
@@ -420,6 +449,7 @@
         {
           "id": "p_items",
           "title": "Items",
+          "width": 1280,
           "show_when": {"match": "all", "conditions": []},
           "sections": [
             {
@@ -496,6 +526,7 @@
                 "name": "tick",
                 "type": "bool",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -504,6 +535,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -513,6 +545,7 @@
                 "name": "text",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -521,6 +554,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -530,6 +564,7 @@
                 "name": "choice",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -538,6 +573,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -547,6 +583,7 @@
                 "name": "count",
                 "type": "int",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -555,6 +592,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -564,6 +602,7 @@
                 "name": "amount",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -572,6 +611,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -581,6 +621,7 @@
                 "name": "day",
                 "type": "date",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -589,6 +630,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -606,6 +648,7 @@
                 "name": "key",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": true,
                 "required": false,
                 "min": null,
@@ -614,6 +657,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -623,6 +667,7 @@
                 "name": "v",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -631,6 +676,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -648,6 +694,7 @@
                 "name": "o",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -656,6 +703,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -673,6 +721,7 @@
                 "name": "x",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -681,6 +730,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -693,6 +743,7 @@
         {
           "id": "p_main",
           "title": "Main",
+          "width": 1280,
           "show_when": {"match": "all", "conditions": []},
           "sections": [
             {
@@ -764,6 +815,7 @@
         {
           "id": "p_target",
           "title": "Target",
+          "width": 1280,
           "show_when": {"match": "all", "conditions": []},
           "sections": [
             {
@@ -811,6 +863,7 @@
                 "name": "cover",
                 "type": "bool",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -819,6 +872,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -828,6 +882,7 @@
                 "name": "flood",
                 "type": "bool",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -836,6 +891,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -845,6 +901,7 @@
                 "name": "class",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -853,6 +910,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -862,6 +920,7 @@
                 "name": "name",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -870,6 +929,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -879,6 +939,7 @@
                 "name": "area",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -887,6 +948,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -896,6 +958,7 @@
                 "name": "note",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -904,6 +967,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -913,6 +977,7 @@
                 "name": "rate",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -921,6 +986,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -938,6 +1004,7 @@
                 "name": "depth",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -946,6 +1013,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -955,6 +1023,7 @@
                 "name": "barrier",
                 "type": "bool",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -963,6 +1032,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -980,6 +1050,7 @@
                 "name": "premium",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -988,6 +1059,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -1000,6 +1072,7 @@
         {
           "id": "p_quote",
           "title": "Quote",
+          "width": 1280,
           "show_when": {"match": "all", "conditions": []},
           "sections": [
             {
@@ -1178,6 +1251,7 @@
         {
           "id": "p_other",
           "title": "Other",
+          "width": 1280,
           "show_when": {
             "match": "all",
             "conditions": [

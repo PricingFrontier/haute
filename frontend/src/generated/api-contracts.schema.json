@@ -11591,7 +11591,7 @@
     },
     "Page": {
       "additionalProperties": false,
-      "description": "A sheet: when it shows, and its sections, stacked one under the next.",
+      "description": "A sheet: ``width`` pixels wide, when it shows, and its sections, stacked one under\nthe next.",
       "properties": {
         "id": {
           "title": "Id",
@@ -11611,11 +11611,17 @@
         "title": {
           "title": "Title",
           "type": "string"
+        },
+        "width": {
+          "exclusiveMinimum": 0,
+          "title": "Width",
+          "type": "integer"
         }
       },
       "required": [
         "id",
         "title",
+        "width",
         "show_when",
         "sections"
       ],
@@ -12118,6 +12124,23 @@
           "default": null,
           "title": "Decimal Places"
         },
+        "default_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean"
+            }
+          ],
+          "default": "",
+          "title": "Default Value"
+        },
+        "group": {
+          "default": "",
+          "title": "Group",
+          "type": "string"
+        },
         "help": {
           "default": "",
           "title": "Help",
@@ -12223,6 +12246,7 @@
         "name",
         "type",
         "label",
+        "group",
         "key",
         "required",
         "min",
@@ -12231,6 +12255,7 @@
         "index",
         "help",
         "placeholder",
+        "default_value",
         "number_format",
         "decimal_places",
         "use_grouping"

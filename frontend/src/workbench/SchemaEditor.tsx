@@ -3,11 +3,12 @@
  * columns, which are the pipeline's tables. Every text field commits on blur or Enter, so
  * an edit is one undo step; Enter in a column's name adds the next column, and Alt+Up and
  * Alt+Down move a column, as the step editor's cards move. Removing what a sheet shows
- * asks first. Haute's quote_details table, first, keeps its structure: its columns' labels
- * and help, and the rules of those the underwriter types, are the project's.
+ * asks first. Haute's quote_details table, first, keeps its structure: its columns' labels,
+ * groups and help, and the rules and defaults of those the underwriter types, are the
+ * project's.
  */
 import { ChevronDown, ChevronRight, KeyRound, Lock, Plus, SlidersHorizontal, Trash2, X, type LucideIcon } from "lucide-react"
-import { useMemo, useState, type ButtonHTMLAttributes, type FocusEvent, type KeyboardEvent, type ReactNode } from "react"
+import { useId, useMemo, useState, type ButtonHTMLAttributes, type FocusEvent, type KeyboardEvent, type ReactNode } from "react"
 import type { FormSpec, SchemaColumn, SchemaTable } from "../api/types"
 import { CommittedTextField, ConfigCheckbox, IconSelect, ValidatedTextField } from "../components/form"
 import { INPUT_STYLE } from "../panels/editors/_shared"
@@ -25,7 +26,6 @@ import {
   isQuoteDetails,
   moveSchemaColumn,
   QUOTE_DETAILS_MANAGED,
-  readableName,
   removeSchemaColumn,
   removeSchemaTable,
   schemaProblems,
@@ -332,7 +332,7 @@ function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, o
   const { label, icon: Icon, color } = COLUMN_TYPES[column.type]
   // A column the underwriter app sets takes no rules.
   const managed = locked && QUOTE_DETAILS_MANAGED.has(column.id)
-  const summary = column.index ? "row number" : managed ? "set by the app" : table.role === "input" ? rulesSummary(column) : ""
+  const summary = table.role === "input" ? rulesSummary(column) : ""
   const set = (patch: Partial<SchemaColumn>) => change((f) => updateSchemaColumn(f, table.id, column.id, patch))
 
   // Enter adds the next column; Alt+Up and Alt+Down move this one.
@@ -439,8 +439,9 @@ function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, o
 }
 
 /**
- * A column's label and help; in an input table, the rules its value must meet and what an
- * empty cell shows; for a number, how the sheets show it.
+ * A column's label, group and help; in an input table, what a new quote starts with in it
+ * (in a one-row table), what an empty cell shows and the rules its value must meet; for a
+ * number, how the sheets show it. The boxes hold no hint text: the docs say what each is.
  */
 function ColumnDetails({
   table,
@@ -455,6 +456,9 @@ function ColumnDetails({
 }) {
   // The index takes no rules, nor does a column the app sets: nothing is typed into them.
   const input = table.role === "input" && !column.index && !managed
+  // The groups the table's columns are in, offered as one is typed.
+  const groupsId = useId()
+  const groups = [...new Set(table.columns.map((other) => other.group).filter((group) => group !== ""))]
   // General with automatic decimal places shows a number as it is, separators and all.
   const grouped = column.number_format !== "general" || column.decimal_places !== null
   const numberOrNothing = (text: string): string | null =>
@@ -469,16 +473,28 @@ function ColumnDetails({
       <CommittedTextField
         aria-label={`Label of ${column.name}`}
         value={column.label}
-        placeholder={readableName(column.name)}
         onCommit={(label) => set({ label })}
         className={`${FIELD_CLASS} w-full`}
         style={INPUT_STYLE}
       />
+      <span style={{ color: "var(--text-muted)" }}>Group</span>
+      <CommittedTextField
+        aria-label={`Group of ${column.name}`}
+        value={column.group}
+        list={groupsId}
+        onCommit={(group) => set({ group: group.trim() })}
+        className={`${FIELD_CLASS} w-full`}
+        style={INPUT_STYLE}
+      />
+      <datalist id={groupsId}>
+        {groups.map((group) => (
+          <option key={group} value={group} />
+        ))}
+      </datalist>
       <span style={{ color: "var(--text-muted)" }}>Help</span>
       <CommittedTextField
         aria-label={`Help of ${column.name}`}
         value={column.help}
-        placeholder="Shown beside the label on the sheets"
         onCommit={(help) => set({ help })}
         className={`${FIELD_CLASS} w-full`}
         style={INPUT_STYLE}
@@ -524,13 +540,18 @@ function ColumnDetails({
           </div>
         </>
       )}
+      {input && table.rows === "one" && (
+        <>
+          <span style={{ color: "var(--text-muted)" }}>Default</span>
+          <DefaultField column={column} set={set} />
+        </>
+      )}
       {input && column.type !== "bool" && column.type !== "date" && (
         <>
           <span style={{ color: "var(--text-muted)" }}>Placeholder</span>
           <CommittedTextField
             aria-label={`Placeholder of ${column.name}`}
             value={column.placeholder}
-            placeholder="What an empty cell shows"
             onCommit={(placeholder) => set({ placeholder })}
             className={`${FIELD_CLASS} w-full`}
             style={INPUT_STYLE}
@@ -550,7 +571,6 @@ function ColumnDetails({
                   value={column.min === null ? "" : String(column.min)}
                   onCommit={(text) => set({ min: bound(text) })}
                   validate={numberOrNothing}
-                  placeholder="Min"
                   containerClassName="w-24"
                   className={`${FIELD_CLASS} w-full`}
                   style={INPUT_STYLE}
@@ -561,7 +581,6 @@ function ColumnDetails({
                   value={column.max === null ? "" : String(column.max)}
                   onCommit={(text) => set({ max: bound(text) })}
                   validate={numberOrNothing}
-                  placeholder="Max"
                   containerClassName="w-24"
                   className={`${FIELD_CLASS} w-full`}
                   style={INPUT_STYLE}
@@ -575,7 +594,6 @@ function ColumnDetails({
               <CommittedTextField
                 aria-label={`Allowed values of ${column.name}`}
                 value={column.options.join(", ")}
-                placeholder="Any value, or a list such as ACV, RC"
                 onCommit={(text) => set({ options: text.split(",").map((value) => value.trim()).filter(Boolean) })}
                 className={`${FIELD_CLASS} w-full`}
                 style={INPUT_STYLE}
@@ -585,6 +603,53 @@ function ColumnDetails({
         </>
       )}
     </div>
+  )
+}
+
+/**
+ * What a new quote starts a one-row input column with, as its cells take a value: ticked
+ * or not, one of the allowed values while it has some (one no longer allowed kept in view,
+ * for its problem to name), a date, or typed. Blank or unticked, it has none.
+ */
+function DefaultField({ column, set }: { column: SchemaColumn; set: (patch: Partial<SchemaColumn>) => void }) {
+  if (column.type === "bool") {
+    return (
+      <ConfigCheckbox
+        label={`${column.name} starts ticked`}
+        checked={column.default_value === true}
+        onChange={(ticked) => set({ default_value: ticked ? true : "" })}
+      />
+    )
+  }
+  const text = typeof column.default_value === "string" ? column.default_value : ""
+  const label = `Default of ${column.name}`
+  if (column.options.length > 0) {
+    return (
+      <select
+        aria-label={label}
+        value={text}
+        onChange={(e) => set({ default_value: e.target.value })}
+        className={`${FIELD_CLASS} w-full`}
+        style={INPUT_STYLE}
+      >
+        <option value="" />
+        {[...column.options, ...(text === "" || column.options.includes(text) ? [] : [text])].map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+    )
+  }
+  return (
+    <CommittedTextField
+      aria-label={label}
+      type={column.type === "date" ? "date" : "text"}
+      value={text}
+      onCommit={(value) => set({ default_value: value.trim() })}
+      className={`${FIELD_CLASS} w-full`}
+      style={INPUT_STYLE}
+    />
   )
 }
 

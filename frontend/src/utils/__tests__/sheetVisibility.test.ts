@@ -82,6 +82,8 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   index: false,
   help: "",
   placeholder: "",
+  group: "",
+  default_value: "",
   number_format: "general",
   decimal_places: null,
   use_grouping: true,
@@ -130,7 +132,7 @@ const section = (id: string, widgets: Widget[], showWhen: ShowWhen = ALWAYS): Se
   widgets,
 })
 /** A sheet of `sections`. */
-const sectioned = (id: string, sections: Section[], showWhen: ShowWhen = ALWAYS): Page => ({ id, title: id, show_when: showWhen, sections })
+const sectioned = (id: string, sections: Section[], showWhen: ShowWhen = ALWAYS): Page => ({ id, title: id, width: 1280, show_when: showWhen, sections })
 /** A sheet of one section, `s_` and its id, holding `widgets`. */
 const page = (id: string, widgets: Widget[], showWhen: ShowWhen = ALWAYS): Page => sectioned(id, [section(`s_${id}`, widgets)], showWhen)
 const formOf = (pages: Page[], tables: SchemaTable[] = [policy, items, premium]): FormSpec => ({

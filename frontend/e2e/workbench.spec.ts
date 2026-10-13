@@ -1,10 +1,11 @@
 /**
  * The workbench end to end (specs/workbench): switched on for the project, its schema read
- * into the Schema section, a Collection dragged onto a sheet and given its fields, the
- * sample typed and priced live on the pipeline open in the editor, an underwriter's quote
- * priced in Preview apart from the sample, a column added to the schema, and the project
- * saved in one Save: the sheets to forms/form.json and the pipeline after them, its
- * Workbench Input's copy carrying the column, both on the project's ledger.
+ * into the Schema section, a Collection dragged onto a sheet and given its fields, drawn
+ * while building as a new quote, the sample typed in Preview and priced live on the
+ * pipeline open in the editor, with no Price or Clear, a column added to the schema, and
+ * the project saved in one Save: the sheets and the sample to forms/form.json and the
+ * pipeline after them, its Workbench Input's copy carrying the column, both on the
+ * project's ledger.
  */
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
@@ -51,7 +52,7 @@ const FORM = {
       },
     ],
   },
-  pages: [{ id: "page_1", title: "Sheet 1", sections: [{ id: "section_1", title: "Section 1", height: 560, widgets: [] }] }],
+  pages: [{ id: "page_1", title: "Sheet 1", width: 1280, sections: [{ id: "section_1", title: "Section 1", height: 560, widgets: [] }] }],
   sample: {},
 }
 
@@ -182,7 +183,7 @@ test.describe("workbench", () => {
     enableWorkbench()
   })
 
-  test("lays out a sheet from the schema, prices the sample live and a quote in Preview, and saves the sheets", async ({ page }) => {
+  test("lays out a sheet from the schema, drawn as a new quote, prices the sample live in Preview, and saves the sheets", async ({ page }) => {
     await page.goto("/")
     await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
     await buildWorkbenchPipeline(page)
@@ -214,24 +215,24 @@ test.describe("workbench", () => {
     await page.getByRole("checkbox", { name: "Show policy region" }).check()
     await page.getByRole("checkbox", { name: "Show pricing premium" }).check()
 
-    // The sample, priced live on the pipeline as it is typed.
+    // Building, the sheet is a new quote's: nothing typed, nothing priced, its cells inert.
     const premium = page.getByTestId("priced-t_pricing:c_premium")
+    const builtLimit = collection.getByRole("textbox", { name: "Limit", includeHidden: true })
     await expect(premium).toHaveText("—")
+    await expect(builtLimit).toHaveValue("")
+
+    // Preview: the sample typed and priced live on the pipeline, with nothing to press.
+    await page.getByRole("button", { name: "Preview" }).click()
+    await expect(page.getByRole("button", { name: "Price" })).toHaveCount(0)
+    await expect(page.getByRole("button", { name: "Clear" })).toHaveCount(0)
     await page.getByRole("textbox", { name: "Limit" }).fill("1000")
     await page.getByRole("textbox", { name: "Limit" }).press("Enter")
     await page.getByRole("combobox", { name: "Region" }).selectOption("north")
     await expect(premium).toHaveText(/^100(\.0+)?$/, { timeout: 60_000 })
-
-    // Preview: an underwriter's quote, apart from the sample, priced on Price.
-    await page.getByRole("button", { name: "Preview" }).click()
-    await expect(page.getByRole("button", { name: "Price" })).toBeDisabled()
-    await expect(page.getByRole("textbox", { name: "Limit" })).toHaveValue("")
-    await page.getByRole("textbox", { name: "Limit" }).fill("2000")
-    await page.getByRole("textbox", { name: "Limit" }).press("Enter")
-    await page.getByRole("button", { name: "Price" }).click()
-    await expect(premium).toHaveText(/^200(\.0+)?$/, { timeout: 60_000 })
+    // Back to building: a new quote's sheet again, the sample kept for Preview.
     await page.getByRole("button", { name: "Build" }).click()
-    await expect(page.getByRole("textbox", { name: "Limit" })).toHaveValue("1000")
+    await expect(builtLimit).toHaveValue("")
+    await expect(premium).toHaveText("—")
 
     // A column added to the schema, unsaved: on the sheets alone until the save.
     await page.getByRole("button", { name: "Schema" }).click()

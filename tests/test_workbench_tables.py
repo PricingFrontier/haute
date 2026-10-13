@@ -33,7 +33,8 @@ def form(*tables: dict[str, Any], pages: list[dict[str, Any]] | None = None) -> 
         {
             "name": "x",
             "schema": {"tables": list(tables)},
-            "pages": pages or [{"id": "p", "title": "Sheet 1", "sections": [section("s")]}],
+            "pages": pages
+            or [{"id": "p", "title": "Sheet 1", "width": 1280, "sections": [section("s")]}],
         }
     )
 
@@ -405,6 +406,7 @@ def test_a_value_in_a_column_the_sheets_hide_is_left_out_of_the_sample() -> None
             {
                 "id": "p_main",
                 "title": "Main",
+                "width": 1280,
                 "sections": [
                     section(
                         "s_main",
@@ -419,6 +421,7 @@ def test_a_value_in_a_column_the_sheets_hide_is_left_out_of_the_sample() -> None
                 "show_when": {
                     "conditions": [{"table": "t1", "column": "c_bi_cover", "op": "ticked"}]
                 },
+                "width": 1280,
                 "sections": [
                     section(
                         "s_bi",
@@ -471,6 +474,7 @@ def test_a_value_a_chart_that_shows_plots_is_left_out_while_the_collection_takin
             {
                 "id": "p_main",
                 "title": "Main",
+                "width": 1280,
                 "sections": [
                     section(
                         "s_main",
@@ -485,6 +489,7 @@ def test_a_value_a_chart_that_shows_plots_is_left_out_while_the_collection_takin
                 "show_when": {
                     "conditions": [{"table": "t1", "column": "c_bi_cover", "op": "ticked"}]
                 },
+                "width": 1280,
                 "sections": [section("s_bi", widget("w_bi", "collection", "t1.c_bi_limit"))],
             },
         ],
@@ -515,6 +520,7 @@ def test_a_value_in_a_hidden_section_is_left_out_and_back_once_the_section_shows
             {
                 "id": "p_main",
                 "title": "Main",
+                "width": 1280,
                 "sections": [
                     section(
                         "s_main", widget("w_policy", "collection", "t1.c_flood", "t1.c_assured")

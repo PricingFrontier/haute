@@ -26,9 +26,9 @@ function moveSheet(from: number, to: number): void {
  * there, or press Alt+Left or Alt+Right on it; a plus adds a sheet; the showing sheet's
  * settings mark opens its own panel and its cross deletes it, asking first when
  * components are on it, while another sheet remains. A sheet with conditions carries an
- * eye, struck through and its tab faded while the sample hides it, and a sheet whose
+ * eye, struck through and its tab faded while a new quote hides it, and a sheet whose
  * conditions have a problem a warning mark naming it. Read only, in Preview, the tabs only
- * switch sheets, and only between the sheets the quote shows.
+ * switch sheets, and only between the sheets the values show.
  */
 export default function PageTabs({ readOnly = false }: { readOnly?: boolean }) {
   const form = useWorkbenchFormStore((s) => s.form)
@@ -168,7 +168,7 @@ export default function PageTabs({ readOnly = false }: { readOnly?: boolean }) {
                 type="button"
                 onClick={selectSheet}
                 aria-label={`Settings of sheet ${sheet.title}`}
-                title="Sheet settings: its title and when it shows"
+                title="Sheet settings: its title, when it shows and its width"
                 className="focus-ring hover-bg -ml-1 rounded p-0.5"
                 style={{ color: "var(--text-muted)" }}
               >

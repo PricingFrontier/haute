@@ -38,6 +38,7 @@ def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
         "name": name,
         "type": type_,
         "label": "",
+        "group": "",
         "key": False,
         "required": False,
         "min": None,
@@ -46,6 +47,7 @@ def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
         "index": False,
         "help": "",
         "placeholder": "",
+        "default_value": "",
         "number_format": "general",
         "decimal_places": None,
         "use_grouping": True,
@@ -79,12 +81,19 @@ FORM: dict[str, Any] = {
                 "role": "input",
                 "rows": "one",
                 "columns": [
-                    column("state", options=["CA", "NY"], required=True, label="State"),
+                    column(
+                        "state",
+                        options=["CA", "NY"],
+                        required=True,
+                        label="State",
+                        default_value="CA",
+                    ),
                     column(
                         "exposure",
                         "float",
                         min=0.0,
                         help="Sum insured",
+                        group="Cover",
                         placeholder="e.g. 250,000",
                         number_format="currency_gbp",
                         decimal_places=0,
@@ -115,6 +124,7 @@ FORM: dict[str, Any] = {
         {
             "id": "page_1",
             "title": "Sheet 1",
+            "width": 1280,
             "show_when": ALWAYS,
             "sections": [
                 {
@@ -261,7 +271,7 @@ def test_the_blank_form_is_one_empty_sheet_named_after_the_project() -> None:
     text = render_form(blank_form("motor"))
 
     # The whole sheet is one section until another is added, as tall as the view's least
-    # sheet height less the room it leaves below the sections.
+    # sheet height less the room it leaves below the sections, on a sheet 1280 wide.
     section = {"id": "section_1", "title": "Section 1", "height": 560}
     assert json.loads(text) == {
         "version": 1,
@@ -280,6 +290,7 @@ def test_the_blank_form_is_one_empty_sheet_named_after_the_project() -> None:
             {
                 "id": "page_1",
                 "title": "Sheet 1",
+                "width": 1280,
                 "show_when": ALWAYS,
                 "sections": [{**section, "show_when": ALWAYS, "widgets": []}],
             }
@@ -351,7 +362,15 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
     # Chart's options, the Heading's text, description, size and alignment, the sheet's, the
     # Collection's and the Heading's show_when and the sample, as a builder that leaves
     # defaults out would write it.
-    display = ("help", "placeholder", "number_format", "decimal_places", "use_grouping")
+    display = (
+        "group",
+        "help",
+        "placeholder",
+        "default_value",
+        "number_format",
+        "decimal_places",
+        "use_grouping",
+    )
     options = ("row_numbers", "density", "gridlines", "striped", "fixed_rows", "header", "frame")
     collection_options = ("labels", "density", "frame")
     chart_options = ("category", "chart_type", "orientation", "stacked", "legend", "data_labels")
@@ -386,6 +405,7 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
     assert written["sample"] == {}
     assert all("index" in c for t in written["schema"]["tables"] for c in t["columns"])
     assert written["schema"]["tables"][1]["columns"][1] == column("exposure", "float", min=0.0)
+    assert written["schema"]["tables"][1]["columns"][0]["default_value"] == ""
     grid = widgets(written)[1]
     assert {field: grid[field] for field in options} == {
         "row_numbers": True,
@@ -486,6 +506,14 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         (lambda f: widgets(f)[2].update(align="center"), "align"),
         (lambda f: f["schema"]["tables"][0]["columns"][0].update(type="money"), "type"),
         (
+            lambda f: f["schema"]["tables"][0]["columns"][1].update(default_value=250000),
+            "default_value",
+        ),
+        (
+            lambda f: f["schema"]["tables"][0]["columns"][1].update(default_value=None),
+            "default_value",
+        ),
+        (
             lambda f: f["schema"]["tables"][0]["columns"][1].update(number_format="yen"),
             "number_format",
         ),
@@ -508,6 +536,11 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         ),
         (lambda f: f["pages"][0]["sections"][1].update(height=47), "pages.0.sections.1"),
         (lambda f: f["pages"][0]["sections"][1].update(height=47), "widget w_title reaches"),
+        # A sheet has a width, at least a pixel, holding its components inside it: the Chart,
+        # 760 across and 480 wide, needs 1240.
+        (lambda f: f["pages"][0].pop("width"), "pages.0.width"),
+        (lambda f: f["pages"][0].update(width=0), "pages.0.width"),
+        (lambda f: f["pages"][0].update(width=1239), "widget w_limits reaches 1240px across"),
         (lambda f: f["pages"][0]["sections"][0].update(colour="red"), "colour"),
         (lambda f: f["pages"][0]["sections"][1]["show_when"].update(match="most"), "match"),
         (lambda f: widgets(f)[0].update(type="slider"), "type"),
@@ -548,6 +581,15 @@ def test_a_section_as_tall_as_its_components_reach_holds_them(tmp_path: Path) ->
     (tmp_path / "forms" / "form.json").write_text(json.dumps(exact), encoding="utf-8")
 
     assert read_form_document(config(tmp_path)).spec.pages[0].sections[1].height == 48
+
+
+def test_a_sheet_as_wide_as_its_components_reach_holds_them(tmp_path: Path) -> None:
+    exact = json.loads(json.dumps(FORM))
+    exact["pages"][0]["width"] = 1240
+    (tmp_path / "forms").mkdir()
+    (tmp_path / "forms" / "form.json").write_text(json.dumps(exact), encoding="utf-8")
+
+    assert read_form_document(config(tmp_path)).spec.pages[0].width == 1240
 
 
 def test_a_sheet_holding_its_own_components_is_refused_with_what_replaced_them(
@@ -619,7 +661,9 @@ def test_a_form_holding_hautes_quote_details_reads_and_writes_as_it_is(tmp_path:
     held = _with_details_table(
         lambda table: table["columns"][1].update(label="Quote", help="As the broker calls it")
     )
-    held["schema"]["tables"][0]["columns"][7]["options"] = ["GBP", "USD"]
+    held["schema"]["tables"][0]["columns"][7].update(options=["GBP", "USD"], default_value="GBP")
+    held["schema"]["tables"][0]["columns"][0]["group"] = "Quote"
+    held["schema"]["tables"][0]["columns"][10]["default_value"] = False
     (tmp_path / "forms").mkdir()
     (tmp_path / "forms" / "form.json").write_text(json.dumps(held), encoding="utf-8")
 
@@ -648,9 +692,28 @@ def test_a_form_holding_hautes_quote_details_reads_and_writes_as_it_is(tmp_path:
             lambda t: t["columns"][8].update(options=["draft"]),
             "stage is set by the underwriter app",
         ),
+        (
+            lambda t: t["columns"][9].update(default_value="Underwriting"),
+            "assignee is set by the underwriter app and takes no rules or default",
+        ),
+        (
+            lambda t: t["columns"][10].update(default_value=True),
+            "archived is set by the underwriter app and takes no rules or default",
+        ),
         (lambda t: t.update(id="t_details"), "is Haute's own table of a quote's details"),
     ],
-    ids=["many-rows", "output", "column-gone", "renamed", "retyped", "rule", "options", "own-id"],
+    ids=[
+        "many-rows",
+        "output",
+        "column-gone",
+        "renamed",
+        "retyped",
+        "rule",
+        "options",
+        "default",
+        "ticked-default",
+        "own-id",
+    ],
 )
 def test_a_quote_details_table_that_is_not_hautes_is_refused(change: Any, message: str) -> None:
     with pytest.raises(ValidationError, match=message):

@@ -25,6 +25,8 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   index: false,
   help: "",
   placeholder: "",
+  group: "",
+  default_value: "",
   number_format: "general",
   decimal_places: null,
   use_grouping: true,
@@ -96,6 +98,7 @@ const motorForm = (): FormSpec => ({
     {
       id: "p1",
       title: "Sheet 1",
+      width: 1280,
       show_when: always,
       sections: [
         {

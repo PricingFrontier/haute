@@ -2434,7 +2434,8 @@ export interface FormSpec {
   version: 1;
 }
 /**
- * A sheet: when it shows, and its sections, stacked one under the next.
+ * A sheet: ``width`` pixels wide, when it shows, and its sections, stacked one under
+ * the next.
  */
 export interface Page {
   id: string;
@@ -2444,6 +2445,7 @@ export interface Page {
   sections: Section[];
   show_when: ShowWhen;
   title: string;
+  width: number;
 }
 /**
  * A section of a sheet: a strip across the sheet's whole width, ``height`` pixels tall,
@@ -2590,6 +2592,8 @@ export interface SchemaTable {
 }
 export interface SchemaColumn {
   decimal_places: number | null;
+  default_value: string | boolean;
+  group: string;
   help: string;
   id: string;
   index: boolean;

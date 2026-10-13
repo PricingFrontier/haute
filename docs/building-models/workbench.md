@@ -29,8 +29,8 @@ editor; **Pricing** brings the pipeline back. The pipeline editor keeps everythi
 shortcuts are off meanwhile, so nothing you press in the workbench edits the pipeline. The
 toolbar keeps Haute's project controls (Assistant, Help, the branch, **Save** and
 **Commit**) and shows the workbench's own: **Build** over **Preview**, then, while building,
-**Sheets** over **Schema**, **Undo** over **Redo**, and **Zoom In** over **Zoom Out** on
-the sheets.
+**Sheets** over **Schema** and **Display**, in Preview **Test quotes**, then **Undo** over
+**Redo**, and **Zoom In** over **Zoom Out** on the sheets.
 
 **Save** and Ctrl+S save the project, the same from either view: `forms/form.json` first
 when the workbench has unsaved edits, then the pipeline, with the Workbench Input's and
@@ -53,14 +53,25 @@ row** per quote, such as policy details, or **Many rows**, such as an equipment 
 Each column has a type (Text, Integer, Decimal, True/false or Date, drawn as the step editor
 draws a value of that kind and changed from its marker), a name and, in a many-row table,
 whether it is a **key**, part of what says which row is which. **Label, help, rules and
-format** beside a column opens its details: its label; its **help**, shown as a small mark
-beside the label on the sheets; for an Integer or a Decimal, its **format** (General,
-Number, Percentage or a currency), decimal places and thousands separators, as the Explore
-pivot offers them; and, in an input table, its **placeholder**, what an empty cell shows
-(any type but True/false and Date), and the rules an underwriter's value must meet:
-required, a range for a number, the allowed values. A number shows in its format wherever
-the sheets show it, a percentage as the value times 100, so you type 0.125 for 12.5%;
-while you type into a cell it shows as typed, and what is typed is what is saved and priced.
+format** beside a column opens its details: its label; its **group**, a name you give the
+columns that belong together (type the same group on each; the table's groups are offered
+as you type), which the sheets do not show yet; its **help**, shown as a
+small mark beside the label on the sheets; for an Integer or a Decimal, its **format**
+(General, Number, Percentage or a currency), decimal places and thousands separators, as
+the Explore pivot offers them; and, in an input table, its **default**, its
+**placeholder**, what an empty cell shows (any type but True/false and Date), and the
+rules an underwriter's value must meet: required, a range for a number, the allowed
+values. A number shows in its format wherever the sheets show it, a percentage as the
+value times 100, so you type 0.125 for 12.5%; while you type into a cell it shows as
+typed, and what is typed is what is saved and priced.
+
+A column's **default** is the value a new quote starts with in it, as if the underwriter
+had typed it: ticked or not for a True/false, one of its allowed values when it has some,
+a date for a Date, or typed. Only a one-row input table's columns take one. Build shows a
+new quote with its defaults, and the underwriter app's **New quote** opens with them; the
+sample you type in Preview, and a quote made from another quote, keep their own values. A
+quote holding nothing but its defaults is not priced, marked or saved until something is
+typed, and a value typed equal to its default counts as the default.
 
 - Enter in a column's name adds the next column; Alt+Up and Alt+Down move one.
 - **Add index** on a many-row table adds a column first in the table, `row_number` until
@@ -69,8 +80,11 @@ while you type into a cell it shows as typed, and what is typed is what is saved
   held to the rules a Quote Input's labels follow (an identifier, no reserved name, unique
   whatever its case), a column's name is an identifier that is not a Python keyword, unique
   in its table, a many-row table needs a key, an input column's range must not be inverted
-  and its allowed values must be of its type, and a True/false or Date column can have none.
-  Changing a column's type drops the rules and the format the new type cannot have.
+  and its allowed values must be of its type, a True/false or Date column can have none,
+  and a default must be a value the column takes (of its type, in its range, one of its
+  allowed values). Changing a column's type drops the rules and the format the new type
+  cannot have, and the default when it becomes or stops being True/false; switching a
+  table to many rows clears its defaults.
 - Removing a column or a table a sheet shows asks first, and takes it off the sheet.
 
 ### Quote details
@@ -80,11 +94,11 @@ row of a quote's details, which the underwriter app keeps with each saved quote 
 on its Quotes page. Its columns are fixed: **reference**, **quote_name**, **insured**,
 **broker**, **inception_date**, **expiry_date**, **valid_until**, **currency**, **stage**,
 **assignee** and **archived**. Put them on the sheets as any other columns, and give them
-labels, help, placeholders and rules; the pipeline receives the table as it receives any
-other input, so a rule can read a quote's inception date or its stage.
+labels, groups, help, placeholders, defaults and rules; the pipeline receives the table as
+it receives any other input, so a rule can read a quote's inception date or its stage.
 
 The app sets **reference**, **stage**, **assignee** and **archived** itself: their cells take
-no typing in the app and take no rules. Assigning, archiving, restoring, marking final and
+no typing in the app and take no rules and no default. Assigning, archiving, restoring, marking final and
 reopening a quote each save a new revision with those details changed and its values and
 price kept, so the history shows when a quote moved; the pipeline sees the new details the
 next time the quote is priced. A new quote is priced before it takes its reference, so its
@@ -96,7 +110,10 @@ the pipeline is saved with them in the same save. Until then it is on the sheets
 
 ## Sheets
 
-A sheet is a canvas on a snap grid that fills its width and grows to hold what is on it.
+A sheet is a canvas on a snap grid with a set **width** (1280 pixels to start, and a
+sheet you add as wide as the last), set in the sheet's own panel, and as long as its
+sections. It stays beside the palette and under the sheet tabs: zoom out and it is drawn
+smaller from that corner; wider than the window, it scrolls across.
 It is a stack of **sections**: strips across its whole width, one under the next, each
 holding the components placed in it. A new sheet is one section; hide a section and, in
 Preview, the sections under it move up to close the gap (see
@@ -148,7 +165,8 @@ shows, its layout and its look. A Heading's properties are its **Text** and
 Drag a component to move it and any of its eight handles to resize it; everything snaps
 to the grid. A component stays inside its section: it stops at the section's edges, and
 moves into another section only once its top is over it. Resizing a component past its
-section's bottom pushes the section's border down. With a component selected (click it, or Tab to it), the
+section's bottom pushes the section's border down. It stays inside the sheet's width
+too, stopping at its edges; resizing it past the right edge widens the sheet. With a component selected (click it, or Tab to it), the
 arrow keys nudge it (Shift for a pixel), Ctrl+D duplicates it, Delete or Backspace removes
 it and Escape deselects it; Ctrl+Z and Ctrl+Y undo and redo. Ctrl+1 fits the sheet to the
 window, and the zoom runs from 25% to 200%. A component with a problem — no fields, a
@@ -177,7 +195,8 @@ double-click it to fit the section to what it holds. A section never shrinks by 
 
 Sheets have tabs along the top: **+** adds one, double-click (or F2) renames one, dragging
 a tab onto another moves its sheet there (or press Alt+Left and Alt+Right on a tab), the
-settings mark on the showing tab opens the sheet's own panel (its title and when it shows),
+settings mark on the showing tab opens the sheet's own panel (its title, when it shows
+and its width),
 and the cross beside it deletes it (asking first when components are on it; the schema and
 the sample stay).
 
@@ -203,10 +222,11 @@ section on a hidden sheet is hidden too, as is a component in a hidden section, 
 or a section waiting on a box that sits somewhere hidden is hidden with it, so a cover and
 its extensions hide and show in a chain.
 
-While building, the sample decides: a hidden sheet's tab, a hidden section and a hidden
-component are faded, their eye struck through (hover it to read the conditions), and you
-can still select and edit them; every section keeps its place. In Preview the quote
-decides as it is typed: a hidden sheet has no tab; a hidden section is not drawn and the
+While building, a new quote decides, holding its defaults alone: a hidden sheet's tab, a hidden
+section and a hidden component are faded, their eye struck through (hover it to read the
+conditions), and you can still select and edit them; every section keeps its place. In
+Preview the sample decides as you type it, and in the underwriter app the quote: a hidden
+sheet has no tab; a hidden section is not drawn and the
 sections under it move up to close the gap; and a hidden component is not drawn, its space
 in its section left empty, since components are placed freely. So give what should close
 up a section of its own, with its Heading in it, and put the tick box that controls it
@@ -215,9 +235,9 @@ button down on the sheet nothing moves, so a click is never pulled from under th
 when a section above them opens or closes the sheet scrolls to keep their place.
 
 A quote is what the sheets show. Values typed into hidden cells are left out of what is
-priced, as if they had never been typed, for the sample priced live (and the Workbench
-Input's copy of it) and for the quote in Preview, and a hidden required cell never stops
-**Price**. The values are kept, so ticking the cover again brings them back. A Chart takes
+priced, as if they had never been typed, for the sample priced in Preview (and the
+Workbench Input's copy of it) and for a quote in the underwriter app, and a hidden required
+cell is never marked. The values are kept, so ticking the cover again brings them back. A Chart takes
 nothing typed, so a column only a Chart plots never hides and a condition on it never
 holds, and a value only a hidden component takes is left out even when a Chart that shows
 plots it. A Heading takes nothing either; it just hides and shows. A condition
@@ -225,57 +245,61 @@ that cannot work (its column gone or retyped, a missing value) and a sheet or a 
 nothing could show again once hidden (its tick box only inside it) are named on the
 sheet's tab, the section's header or the component's dashed frame.
 
-## The sample
+## Building: a new quote
 
-Type a sample quote straight into the components while building: a Collection's boxes
-hold its tables' one row, and a Table's grid holds its tables' rows, with **Add row** and a
-delete on each row unless its rows are fixed (they add and delete the row in every input
-table the grid shows, so the cells stay side by side). A Table starts with its rows, empty;
-the first value you type keeps them, and from then on the rows are yours to add and
-delete, fewer than it started with too, though a Table of fixed rows never shows fewer.
-Change a Table's rows while building and the grid shows it at once: empty rows after the
-last one you typed into go, or more are added. Each cell is the control its column
-calls for: a tick box, a dropdown of the allowed values, a date picker, or a text field. An
-empty cell is blank, or shows its column's placeholder. The sample is part of what
-**Save** writes, undone like any other edit, and it is what the
-[Workbench Input](nodes/workbench-input.md)'s previews run on once saved.
-
-The sample is also **priced live**: whenever the schema or the sample changes and typing
-pauses, Haute prices it on the pipeline open in the editor, as it stands, saved or not, and
-a Collection's output columns show what the pipeline gave them, dimmed while a newer
-answer is on its way. When pricing fails — no Workbench Output on the pipeline, a table
-with nothing connected, a value that does not fit its column — the toolbar says why. A
-Table's output columns show the row in the answer keyed like each grid row. A Chart plots
-the sample, with what pricing it gave.
+While building, the sheets look as they will when an underwriter starts a new quote: every
+input empty but those a column's default fills, every output a dash, each Table with the
+rows it starts with, each Chart with nothing but defaults to chart, and only what a new
+quote shows unfaded. The cells take no
+typing while building: clicking one selects its component, as clicking anywhere on it does.
+Nothing is priced while building.
 
 ## Preview
 
-**Preview** shows the sheets as an underwriter uses them: the sections that show stacked
-one under the next and each component where it sits in its section, with no section bars
-and nothing to move or lay out. Type a quote into the cells, kept apart from
-the sample (it is never saved, and stays while you switch to Build and back), and press
-**Price**, enabled once something is typed into the tables the schema has, in cells the
-sheets show. Haute first checks every cell the sheets show against its column's rules: a required cell left
-empty, a number that is not one, a whole number that is not whole, a number outside its
-range, a value that is not one of the allowed ones. A cell that breaks a rule is outlined,
-naming the problem when you hover, and the toolbar says how many need attention; the marks
-follow the cells as you fix them. A quote that passes is priced on the pipeline open in the
-editor, and every output column shows its value: a Collection's its table's one row, and a
-Table's the row keyed like each grid row, and every Chart plots the quote. The values and
-the Charts dim when you change the quote, until
-you press **Price** again, and the quote is priced exactly as a deployed pipeline would price
-it. **Clear** empties the quote, after asking. Ctrl+S still saves the project in Preview.
+**Preview** shows the sheets as an underwriter uses them, drawn as the underwriter app
+draws them: the sections that show stacked one under the next and each component where it
+sits in its section, with no section bars and nothing to move or lay out. It is where you
+type the **sample**, a quote you key in as an underwriter would: it is saved with the
+sheets, and it is what the [Workbench Input](nodes/workbench-input.md)'s previews run on
+once saved.
+
+A Collection's boxes hold its tables' one row, and a Table's grid holds its tables' rows,
+with **Add row** and a delete on each row unless its rows are fixed (they add and delete
+the row in every input table the grid shows, so the cells stay side by side). A Table
+starts with its rows, empty; the first value you type keeps them, and from then on the
+rows are yours to add and delete, fewer than it started with too, though a Table of fixed
+rows never shows fewer. Change a Table's rows while building and Preview shows it: empty
+rows after the last one you typed into go, or more are added. Each cell is the control its
+column calls for: a tick box, a dropdown of the allowed values, a date picker, or a text
+field. An empty cell is blank, or shows its column's placeholder. The sample is part of
+what **Save** writes, and **Undo** and **Redo** take back what you type, in Preview as
+while building.
+
+The sample is **priced live**: whenever the schema or the sample changes and typing
+pauses, and each time you open Preview, Haute prices it on the pipeline open in the
+editor, as it stands, saved or not, exactly as a deployed pipeline would price it. Every
+output column shows its value, a Collection's its table's one row and a Table's the row in
+the answer keyed like each grid row, dimmed while a newer answer is on its way, and every
+Chart plots the sample with what pricing it gave. There is no **Price** to press and no
+**Clear**: a sample with nothing typed is not priced, and its outputs show dashes. The
+sample is priced whatever its cells hold. Once anything is typed, a cell that breaks its
+column's rules (a required cell left empty, a number that is not one, a whole number that
+is not whole, a number outside its range, a value that is not one of the allowed ones) is
+outlined, naming the problem when you hover, and priced all the same. When pricing fails —
+no Workbench Output on the pipeline, a table with nothing connected, a value that does not
+fit its column — the toolbar says why. Ctrl+S still saves the project in Preview.
 
 ## Test quotes
 
 Keep the quotes you check rates with as **test quotes**. In Preview, **Test quotes** opens
-a panel beside the sheets. Type a quote into the sheets, name it in the panel and press
-**Save quote**: Haute checks it as Price does, prices it in full on the pipeline as it is now and
-keeps it with its prices, in `tests/quotes/test_quotes.sqlite` (in the folder
+a panel beside the sheets. Type a quote into the sheets, the sample, name it in the panel
+and press **Save quote**: Haute prices it in full on the pipeline as it is now, whatever its
+cells hold, and keeps it with its prices, in `tests/quotes/test_quotes.sqlite` (in the folder
 `[test_quotes] dir` in `haute.toml` names). Save and Commit carry the file with the rest of
 the project.
 
-- **Open** puts a test quote back on the sheets. Its values follow the tables and columns
+- **Open** puts a test quote on the sheets in place of the sample (**Undo** brings the
+  sample back). Its values follow the tables and columns
   they were typed into, renamed or not; the panel names any value that has no place on
   the sheets now.
 - **Run all** (or **Run ticked**) prices each test quote on the pipeline as it is when you
@@ -350,17 +374,19 @@ narrow the list to who a quote is with, and order it by when it was saved, its r
 or its insured. The list, the search and the order are in the page's address, so a link or Back
 returns to the same list. A row opens its quote; Duplicate and Archive appear as you hover
 over it, and Archive can be undone from the message it shows. **New quote** (or `N`) starts
-a blank one; `/` jumps to the search.
+a new one, holding the columns' defaults; `/` jumps to the search.
 
 ### A quote
 A quote opens at its own address, under a bar holding its reference (`Q-000123`), its
 name (its `quote_name`, saved with the next **Save**), its stage, and:
 
-- **Price**, which checks the quote and prices it, as Preview does. **Save** keeps the
-  quote with its price when the sheets show one for the values as they are, and unpriced
-  otherwise (the button says **Save unpriced** then); the app prices it again as it saves,
-  and says so if the price it keeps moved. Each save is a new revision, and the quote's
-  first save gives it its reference.
+- **Save**. The quote is priced as you type it, as Preview prices the sample, with no
+  **Price** to press and no **Clear**, and a quote opened that can change is priced again
+  when it was saved unpriced or priced on an earlier release. **Save** waits for that
+  pricing and keeps the quote with its price, or unpriced when it could not be priced (the
+  button says **Save unpriced** then, and the bar says why); the app prices it again as it
+  saves, and says so if the price it keeps moved. Each save is a new revision, and the
+  quote's first save gives it its reference.
 - **Mark final** pins the newest revision as the final quotation, once it is priced on the
   running release; a final quote cannot be saved over until someone **reopens** it, giving a
   reason. The final stays in its history.
@@ -377,4 +403,4 @@ sheets** brings its values onto today's, naming any that no longer fit. If a col
 a quote while you have it open, your save is refused naming who did it, with your values
 kept: open the newest, or save yours as a new quote. Values you have not saved are kept in
 the browser and offered back when you open the quote again, and leaving with them asks
-first. `Ctrl+S` saves and `Ctrl+Enter` prices.
+first. `Ctrl+S` saves.

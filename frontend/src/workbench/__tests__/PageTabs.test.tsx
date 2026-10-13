@@ -1,15 +1,16 @@
 /**
  * The sheets' tabs (specs/workbench): one per sheet, the showing one marked; a sheet
  * added, renamed by double-click, and deleted with a confirmation when components are in
- * any of its sections; a sheet's eye, its settings and its problems; and, read only in
- * Preview, only switching between the sheets that show.
+ * any of its sections; a sheet's eye, a new quote's while building, its settings and its
+ * problems; and, read only in Preview, only switching between the sheets the sample shows,
+ * or the underwriter app's quote.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { withSampleCell } from "../../utils/workbenchForm"
+import { updateSchemaColumn, withSampleCell } from "../../utils/workbenchForm"
 import PageTabs from "../PageTabs"
 import { coverForm, currentForm, loadForm, sectionedForm } from "./fixtures"
 
@@ -18,7 +19,7 @@ const tabs = () => screen.getAllByRole("tab").map((tab) => [tab.textContent, tab
 describe("PageTabs", () => {
   beforeEach(() => {
     loadForm()
-    useWorkbenchPreviewStore.getState().clear()
+    useWorkbenchPreviewStore.setState({ quote: {}, price: null, error: null, pricing: false, readOnly: false })
   })
 
   afterEach(() => {
@@ -145,18 +146,22 @@ describe("PageTabs", () => {
     expect(document.activeElement).toBe(first())
   })
 
-  it("marks a sheet with conditions with an eye, struck through and its tab faded while the sample hides it", () => {
+  it("marks a sheet with conditions with an eye, struck through and its tab faded while a new quote hides it, whatever the sample holds", () => {
     loadForm(coverForm())
     render(<PageTabs />)
 
     const cover = () => screen.getByRole("tab", { name: /Cover$/ })
     expect(cover()).toHaveAttribute("data-hidden", "true")
-    expect(within(cover()).getByRole("img")).toHaveAccessibleName("Hidden for the sample. Shows when Cover is ticked")
+    expect(within(cover()).getByRole("img")).toHaveAccessibleName("Hidden for a new quote. Shows when Cover is ticked")
     expect(within(screen.getByRole("tab", { name: "Sheet 1" })).queryByRole("img")).not.toBeInTheDocument()
 
+    // The sample is Preview's: while building the sheets are a new quote's.
     act(() => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy", 0, "policy.cover", true)))
+    expect(cover()).toHaveAttribute("data-hidden", "true")
+
+    // A new quote holds its defaults: cover starting ticked shows the sheet.
+    act(() => useWorkbenchFormStore.getState().change((spec) => updateSchemaColumn(spec, "policy", "policy.cover", { default_value: true })))
     expect(cover()).not.toHaveAttribute("data-hidden")
-    expect(within(cover()).getByRole("img")).toHaveAccessibleName("Shows when Cover is ticked")
   })
 
   it("opens the showing sheet's own panel from its settings mark", () => {
@@ -178,14 +183,24 @@ describe("PageTabs", () => {
     expect(screen.getByRole("img", { name: /^Sheet "Cover" waits on year, which is only on components that hide with it/ })).toBeInTheDocument()
   })
 
-  it("in Preview offers only the sheets the quote shows, the first that does marked in place of a hidden one chosen", () => {
+  it("in Preview offers only the sheets the sample shows, the first that does marked in place of a hidden one chosen", () => {
     loadForm(coverForm())
     useWorkbenchViewStore.setState({ section: "preview", pageId: "p2" })
     render(<PageTabs readOnly />)
 
     expect(tabs()).toEqual([["Sheet 1", "true"]])
-    act(() => useWorkbenchPreviewStore.getState().setCell("policy", 0, "policy.cover", true))
+    act(() => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy", 0, "policy.cover", true)))
     expect(tabs()).toEqual([["Sheet 1", "false"], ["Cover", "true"]])
     expect(screen.queryByRole("img")).not.toBeInTheDocument()
+  })
+
+  it("in the underwriter app offers the sheets its quote shows, not the sample's", () => {
+    loadForm(withSampleCell(coverForm(), "policy", 0, "policy.cover", true))
+    useWorkbenchViewStore.setState({ section: "preview", underwriterApp: true, pageId: "p2" })
+    render(<PageTabs readOnly />)
+
+    expect(tabs()).toEqual([["Sheet 1", "true"]])
+    act(() => useWorkbenchPreviewStore.setState({ quote: { policy: [{ "policy.cover": true }] } }))
+    expect(tabs()).toEqual([["Sheet 1", "false"], ["Cover", "true"]])
   })
 })

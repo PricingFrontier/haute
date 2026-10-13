@@ -24,7 +24,7 @@ import type { FormSpec, WorkbenchAppQuote, WorkbenchAppQuoteHistoryResponse, Wor
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import { canonicalJson } from "../utils/canonicalJson"
-import { quoteFilled } from "../utils/sheetValues"
+import { newQuoteValues, quoteTyped } from "../utils/sheetValues"
 import { quotedSchema } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, type SampleRow } from "../utils/workbenchForm"
 import { basisOf, clearDraft, draftKey, onSheets, operationKey, readDraft, savedPrice, valuesKey, writeDraft, type Draft, type Values } from "./quoteValues"
@@ -85,6 +85,7 @@ interface OpenQuoteState {
   historyOpen: boolean
   openNew: (from: { quoteId: string; revision: number; relation: QuoteRelation } | null) => Promise<void>
   openQuote: (id: string, revision: number | null) => Promise<void>
+  /** Save the values on the sheets, once their pricing settles, as the quote's next revision or a new quote. */
   save: () => Promise<WorkbenchAppQuote | null>
   /** Save the values on the sheets as a new quote made from the quote they were opened as. */
   saveAsNew: () => Promise<WorkbenchAppQuote | null>
@@ -220,9 +221,13 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     const values = answer.revision.values as Values
     const olderSheets = answer.form ?? null
     const state = { quote: answer.quote, past, olderSheets }
+    const readOnly = readOnlyReason(state) !== null
+    // A quote that may change shows this release's price: one priced on another release is
+    // priced again as it opens, as an unpriced one is.
+    const ownPrice = readOnly || answer.revision.release === useAppStore.getState().release?.id
     useWorkbenchPreviewStore
       .getState()
-      .open(values, savedPrice(sheets, values, answer.revision.tables, answer.revision.request), readOnlyReason(state) !== null)
+      .open(values, ownPrice ? savedPrice(sheets, values, answer.revision.tables, answer.revision.request) : null, readOnly)
     set({ ...state, revision: answer.revision, base: past ? null : answer.revision.number, baseline: valuesKey(values) })
   }
 
@@ -264,8 +269,8 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     if (form === null || release === null) return null
     const preview = useWorkbenchPreviewStore.getState()
     const values = preview.quote
-    // The details the app sets are not typing.
-    if (!quoteFilled(quotedSchema(form.schema, preview.locked), values)) return null
+    // The details the app sets are not typing, nor are the defaults a new quote starts with.
+    if (!quoteTyped(quotedSchema(form.schema, preview.locked), values)) return null
     const price = preview.price
     const shown = price !== null && price.basis === basisOf(form, values) ? (price.tables as QuoteSave["shown"]) : null
     const basis = `${valuesKey(values)}|${to}|${shown === null ? "draft" : canonicalJson(shown)}`
@@ -334,8 +339,11 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       const { form } = useAppStore.getState()
       if (form === null) return
       installSheets(form)
-      useWorkbenchPreviewStore.getState().open({}, null, !canEdit())
-      set({ ...CLOSED, status: from === null ? "ready" : "loading", loadError: null })
+      // A new quote starts with its columns' defaults, which are not typing: left as it
+      // opened, it keeps no draft.
+      const values = from === null ? (structuredClone(newQuoteValues(form.schema)) as Values) : {}
+      useWorkbenchPreviewStore.getState().open(values, null, !canEdit())
+      set({ ...CLOSED, status: from === null ? "ready" : "loading", loadError: null, baseline: valuesKey(values) })
       if (from === null) {
         offerDraft()
         return
@@ -373,13 +381,20 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     },
 
     save: async () => {
-      const { quote, source, saving, base, status } = get()
-      if (status !== "ready" || saving || readOnlyReason(get()) !== null || (quote !== null && base === null)) return null
-      const prepared = saveBody(String(base ?? "new"))
-      if (prepared === null) return null
+      if (get().status !== "ready" || get().saving || readOnlyReason(get()) !== null) return null
       const session = opening
+      set({ saving: true, error: null, moved: false })
+      // The save keeps the price the values settle on; another quote opened meanwhile is not this save's.
+      await useWorkbenchPreviewStore.getState().settle()
+      if (session !== opening) return null
+      const { quote, source, base } = get()
+      const prepared = readOnlyReason(get()) !== null || (quote !== null && base === null) ? null : saveBody(String(base ?? "new"))
+      if (prepared === null) {
+        set({ saving: false })
+        return null
+      }
       const key = openDraftKey(get())
-      set({ saving: true, error: null, moved: false, pending: { key: prepared.body.operation, basis: prepared.basis } })
+      set({ pending: { key: prepared.body.operation, basis: prepared.basis } })
       try {
         const answer =
           quote === null || base === null
@@ -403,14 +418,21 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     },
 
     saveAsNew: async () => {
-      const { conflict, quote, status, saving } = get()
-      const origin = conflict?.latest ?? quote
-      if (origin === null || status !== "ready" || saving || !canEdit()) return null
-      const prepared = saveBody(`new-from:${origin.id}:${origin.latest}`)
-      if (prepared === null) return null
+      if (get().status !== "ready" || get().saving || !canEdit()) return null
       const session = opening
+      set({ saving: true, error: null })
+      // As a save: the price the values settle on is kept.
+      await useWorkbenchPreviewStore.getState().settle()
+      if (session !== opening) return null
+      const { conflict, quote } = get()
+      const origin = conflict?.latest ?? quote
+      const prepared = origin === null ? null : saveBody(`new-from:${origin.id}:${origin.latest}`)
+      if (origin === null || prepared === null) {
+        set({ saving: false })
+        return null
+      }
       const key = openDraftKey(get())
-      set({ saving: true, error: null, pending: { key: prepared.body.operation, basis: prepared.basis } })
+      set({ pending: { key: prepared.body.operation, basis: prepared.basis } })
       try {
         const answer = await createAppQuote(prepared.body, { quote_id: origin.id, revision: origin.latest, relation: "duplicate" })
         if (session !== opening) {

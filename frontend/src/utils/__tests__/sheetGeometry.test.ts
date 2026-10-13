@@ -13,7 +13,7 @@ import {
   NEW_SECTION_HEIGHT,
   SECTION_FIT_GAP,
   SECTION_HEADER,
-  SHEET_EDGE,
+  MIN_SHEET_WIDTH,
   clearLine,
   contentBottom,
   contentRight,
@@ -21,13 +21,13 @@ import {
   fittedSectionHeight,
   fitZoom,
   leastSectionHeight,
+  leastSheetWidth,
   moveRect,
   placeAt,
   readingOrder,
   resizeRect,
   sectionAt,
   sheetHeight,
-  sheetWidth,
   snap,
   stackBottom,
   stackSections,
@@ -204,21 +204,21 @@ describe("sheetGeometry", () => {
     expect(clearLine(touching, 100)).toBe(100)
   })
 
-  it("sizes the sheet to its viewport at the zoom, or wider to hold its components, and as long as its sections", () => {
-    expect(sheetWidth(1000, 1, [])).toBe(1000)
-    expect(sheetWidth(1000, 0.5, [])).toBe(2000)
-    expect(sheetWidth(1000, 1, [{ x: 1200, y: 0, w: 300, h: 10 }])).toBe(1500 + SHEET_EDGE)
+  it("keeps a sheet as wide as its components reach, never under the least a sheet can be, and as long as its sections", () => {
+    expect(leastSheetWidth([])).toBe(MIN_SHEET_WIDTH)
+    expect(leastSheetWidth([{ x: 0, y: 0, w: 100, h: 10 }])).toBe(MIN_SHEET_WIDTH)
+    expect(leastSheetWidth([{ x: 1200, y: 0, w: 300, h: 10 }, rect])).toBe(1500)
     // Ending where its sections end, nothing under them; a sheet showing none is the least a section can be.
     expect(sheetHeight(584)).toBe(584)
     expect(sheetHeight(1000)).toBe(1000)
     expect(sheetHeight(0)).toBe(MIN_SECTION_HEIGHT)
   })
 
-  it("fits the components to the viewport across, in steps of 5%, never past 100%", () => {
-    expect(fitZoom(1000, [])).toBe(1)
-    expect(fitZoom(1000, [{ x: 0, y: 0, w: 400, h: 10 }])).toBe(1)
-    expect(fitZoom(1000, [{ x: 0, y: 0, w: 1968, h: 10 }])).toBe(0.5)
-    expect(fitZoom(1000, [{ x: 0, y: 0, w: 3000, h: 10 }])).toBe(0.3)
+  it("fits the sheet's width to the viewport across, in steps of 5%, never past 100%", () => {
+    expect(fitZoom(1000, 400)).toBe(1)
+    expect(fitZoom(1000, 1000)).toBe(1)
+    expect(fitZoom(1000, 2000)).toBe(0.5)
+    expect(fitZoom(1000, 3000)).toBe(0.3)
   })
 
   it("reads components row by row from the top, each row left to right, a tie in the order given, leaving its input as it was", () => {

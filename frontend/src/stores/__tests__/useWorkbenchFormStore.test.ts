@@ -26,6 +26,7 @@ const blank: FormSpec = {
     {
       id: "page_1",
       title: "Sheet 1",
+      width: 1280,
       show_when: { match: "all", conditions: [] },
       sections: [{ id: "section_1", title: "Section 1", height: 560, show_when: { match: "all", conditions: [] }, widgets: [] }],
     },

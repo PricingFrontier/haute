@@ -1,7 +1,8 @@
 /**
- * Test quotes in Preview (specs/workbench): the quote on the sheets saved in full, opened
- * back onto the sheets, run one request each on a pipeline fixed when the run starts, a
- * change accepted after the revision the run read, and a quote deleted.
+ * Test quotes in Preview (specs/workbench): the quote on the sheets, the form's sample,
+ * saved in full whatever its cells hold, opened back in the sample's place as one undo
+ * step, run one request each on a pipeline fixed when the run starts, a change accepted
+ * after the revision the run read, and a quote deleted.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest"
 
@@ -37,7 +38,6 @@ import useDocumentStatusStore from "../useDocumentStatusStore"
 import useGraphStore from "../useGraphStore"
 import useSettingsStore from "../useSettingsStore"
 import useWorkbenchFormStore from "../useWorkbenchFormStore"
-import useWorkbenchPreviewStore from "../useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { type Pricer } from "../useWorkbenchPricingStore"
 import useWorkbenchTestQuotesStore, { runIsStale } from "../useWorkbenchTestQuotesStore"
 import { BLANK_THEME } from "../../utils/workbenchForm"
@@ -55,6 +55,8 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   index: false,
   help: "",
   placeholder: "",
+  group: "",
+  default_value: "",
   number_format: "general",
   decimal_places: null,
   use_grouping: true,
@@ -81,6 +83,9 @@ const opened = (id: string, exposure: string, dropped: string[] = []) => ({
 
 const store = useWorkbenchTestQuotesStore.getState
 
+/** The quote on the sheets: the form's sample, as Preview types it. */
+const typeSample = (sample: FormSpec["sample"]) => useWorkbenchFormStore.setState({ form: { ...form, sample } })
+
 describe("useWorkbenchTestQuotesStore", () => {
   let pricer: Mock<Pricer>
   let snapshots: number
@@ -94,14 +99,13 @@ describe("useWorkbenchTestQuotesStore", () => {
     vi.mocked(saveTestQuote).mockResolvedValue(written)
     vi.mocked(acceptTestQuote).mockResolvedValue(written)
     vi.mocked(deleteTestQuote).mockResolvedValue(written)
-    useWorkbenchFormStore.setState({ form, status: "ready" })
+    useWorkbenchFormStore.setState({ form, status: "ready", undoStack: [], redoStack: [] })
     useWorkbenchPricingStore.setState({
       snapshot: () => {
         snapshots += 1
         return pricer
       },
     })
-    useWorkbenchPreviewStore.setState({ quote: {}, checked: false, price: null, error: null, pricing: false })
     useWorkbenchTestQuotesStore.setState({
       open: false, quotes: [], loading: false, error: null, notice: null, saving: false,
       selected: [], runs: {}, runForm: null, runBasis: null, running: false, accepting: false, uncaptured: false,
@@ -115,36 +119,41 @@ describe("useWorkbenchTestQuotesStore", () => {
   })
 
   it("saves the quote on the sheets, priced in full on a pipeline fixed for the save", async () => {
-    useWorkbenchPreviewStore.setState({ quote: { t1: [{ c1: "250000" }] } })
+    typeSample({ t1: [{ c1: "250000" }] })
 
     expect(await store().save("Northern")).toBe(true)
 
     expect(snapshots).toBe(1)
-    expect(fetchWorkbenchFormTables).toHaveBeenCalledWith({ ...form, sample: { t1: [{ c1: "250000" }] } })
+    const sampled = { ...form, sample: { t1: [{ c1: "250000" }] } }
+    expect(fetchWorkbenchFormTables).toHaveBeenCalledWith(sampled)
     // On the branch named as the save started.
-    expect(saveTestQuote).toHaveBeenCalledWith("Northern", form, { t1: [{ c1: "250000" }] }, priced(500).tables, "work")
+    expect(saveTestQuote).toHaveBeenCalledWith("Northern", sampled, { t1: [{ c1: "250000" }] }, priced(500).tables, "work")
     expect(store().quotes.map((quote) => quote.name)).toEqual(["Northern", "Southern"])
   })
 
-  it("refuses to save a quote Price would refuse, saying why", async () => {
+  it("refuses to save a blank quote, saying why, and saves one whose cells break their column's rules, as Preview prices it", async () => {
     expect(await store().save("Blank")).toBe(false)
     expect(store().error).toBe("Type the quote first")
-
-    useWorkbenchPreviewStore.setState({ quote: { t1: [{ c1: "-5" }] } })
-    expect(await store().save("Negative")).toBe(false)
-    expect(store().error).toBe("1 cell needs attention")
     expect(saveTestQuote).not.toHaveBeenCalled()
+
+    typeSample({ t1: [{ c1: "-5" }] })
+    expect(await store().save("Negative")).toBe(true)
+    expect(saveTestQuote).toHaveBeenCalledWith("Negative", { ...form, sample: { t1: [{ c1: "-5" }] } }, { t1: [{ c1: "-5" }] }, priced(500).tables, "work")
   })
 
-  it("opens a test quote onto the sheets, naming what has no place there", async () => {
+  it("opens a test quote in the sample's place, one undo step, naming what has no place on the sheets", async () => {
     vi.mocked(openTestQuote).mockResolvedValue(opened("a", "125000", ["policy_details.cover"]))
-    useWorkbenchPreviewStore.setState({ quote: { t9: [{ x: "old" }] }, checked: true })
+    typeSample({ t9: [{ x: "old" }] })
 
     await store().openQuote("a")
 
-    expect(openTestQuote).toHaveBeenCalledWith("a", form)
-    expect(useWorkbenchPreviewStore.getState()).toMatchObject({ quote: { t1: [{ c1: "125000" }] }, checked: false })
+    expect(openTestQuote).toHaveBeenCalledWith("a", { ...form, sample: { t9: [{ x: "old" }] } })
+    expect(useWorkbenchFormStore.getState().form?.sample).toEqual({ t1: [{ c1: "125000" }] })
     expect(store().notice).toBe("Opened 'a'. No place on the sheets for: policy_details.cover.")
+    // Undone, the sample is back as it was.
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
+    useWorkbenchFormStore.getState().undo()
+    expect(useWorkbenchFormStore.getState().form?.sample).toEqual({ t9: [{ x: "old" }] })
   })
 
   it("runs every test quote one at a time on one fixed pipeline and says what changed", async () => {
@@ -289,7 +298,7 @@ describe("useWorkbenchTestQuotesStore", () => {
   })
 
   it("reports each write's capture, and captures again on the next project save what the ledger did not take", async () => {
-    useWorkbenchPreviewStore.setState({ quote: { t1: [{ c1: "250000" }] } })
+    typeSample({ t1: [{ c1: "250000" }] })
     vi.mocked(saveTestQuote).mockResolvedValueOnce({
       ...written,
       identity_required: true,
@@ -311,7 +320,7 @@ describe("useWorkbenchTestQuotesStore", () => {
   })
 
   it("saves nothing into a branch adopted while the quote was priced, and a project save waits for a save under way", async () => {
-    useWorkbenchPreviewStore.setState({ quote: { t1: [{ c1: "250000" }] } })
+    typeSample({ t1: [{ c1: "250000" }] })
     let finish: () => void = () => {}
     pricer.mockImplementationOnce(() => new Promise((resolve) => { finish = () => resolve(priced(500)) }))
 
@@ -336,14 +345,14 @@ describe("useWorkbenchTestQuotesStore", () => {
     )
     await store().load()
     expect(store().error).toMatch(/another version of Haute/)
-    useWorkbenchPreviewStore.setState({ quote: { t1: [{ c1: "250000" }] } })
+    typeSample({ t1: [{ c1: "250000" }] })
 
     expect(await store().save("Northern")).toBe(true)
-    expect(saveTestQuote).toHaveBeenCalledWith("Northern", form, { t1: [{ c1: "250000" }] }, priced(500).tables, "work")
+    expect(saveTestQuote).toHaveBeenCalledWith("Northern", { ...form, sample: { t1: [{ c1: "250000" }] } }, { t1: [{ c1: "250000" }] }, priced(500).tables, "work")
   })
 
   it("says why a save, an open, a run, an accept, a delete or a capture did not happen", async () => {
-    useWorkbenchPreviewStore.setState({ quote: { t1: [{ c1: "250000" }] } })
+    typeSample({ t1: [{ c1: "250000" }] })
     vi.mocked(saveTestQuote).mockRejectedValueOnce(new ApiError("HTTP 409", 409, "quote_store_invalid: locked", null, null))
     expect(await store().save("Northern")).toBe(false)
     expect(store().error).toBe("Not saved: quote_store_invalid: locked")

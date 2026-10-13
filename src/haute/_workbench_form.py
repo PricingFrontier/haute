@@ -97,6 +97,9 @@ Cell = Annotated[str, Strict()] | Annotated[bool, Strict()]
 #: view starts a new sheet (``frontend/src/utils/sheetGeometry.ts``).
 BLANK_SECTION_HEIGHT = 560
 
+#: How wide a new form's sheet is, as the view starts one (``frontend/src/utils/sheetGeometry.ts``).
+BLANK_SHEET_WIDTH = 1280
+
 
 class WorkbenchFormError(WorkbenchError):
     """The form file cannot be read as a form: unreadable, not JSON or misshapen."""
@@ -242,12 +245,25 @@ class Section(_Strict):
 
 
 class Page(_Strict):
-    """A sheet: when it shows, and its sections, stacked one under the next."""
+    """A sheet: ``width`` pixels wide, when it shows, and its sections, stacked one under
+    the next."""
 
     id: str
     title: str
+    width: int = Field(gt=0)
     show_when: ShowWhen = Field(default_factory=ShowWhen)
     sections: list[Section] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _holds_its_widgets(self) -> Page:
+        for section in self.sections:
+            for widget in section.widgets:
+                if widget.x + widget.w > self.width:
+                    raise ValueError(
+                        f"widget {widget.id} reaches {widget.x + widget.w}px across, past the "
+                        f"sheet's width of {self.width}px"
+                    )
+        return self
 
 
 class SchemaColumn(_Strict):
@@ -256,6 +272,8 @@ class SchemaColumn(_Strict):
     type: ColumnType = "str"
     #: What widgets call it; empty means the name, made readable.
     label: str = ""
+    #: The group it is in, a name it shares with the columns grouped with it; empty for none.
+    group: str = ""
     #: In a many-row table, part of what says which row is which.
     key: bool = False
     # The rules an input column's value must meet. Output tables ignore them.
@@ -270,6 +288,9 @@ class SchemaColumn(_Strict):
     help: str = ""
     #: What an empty input cell shows, in place of the blank.
     placeholder: str = ""
+    #: What a new quote starts with in it, as if typed: text, or a tick; empty, or an
+    #: unticked box, for none. Only a one-row input table's columns start a quote with one.
+    default_value: Cell = ""
     # How a number shows wherever the sheets show it, as an Explore pivot's values show:
     # a percent is the value times 100, a currency's sign before it. ``general`` with no
     # decimal places leaves an input as typed and an output as the data preview shows a
@@ -373,8 +394,8 @@ def quote_details_table() -> SchemaTable:
 
 def _check_quote_details(table: SchemaTable) -> None:
     """Refuse a ``quote_details`` table that is not Haute's: another id under its name, or its
-    structure changed. Its columns' labels, help and placeholders are the project's, as are
-    the rules of the columns the app does not set."""
+    structure changed. Its columns' labels, groups, help and placeholders are the project's,
+    as are the rules and defaults of the columns the app does not set."""
     if table.id != QUOTE_DETAILS_ID or table.name != QUOTE_DETAILS_ID:
         raise ValueError(
             f"{QUOTE_DETAILS_ID} is Haute's own table of a quote's details: name yours otherwise"
@@ -393,10 +414,15 @@ def _check_quote_details(table: SchemaTable) -> None:
         )
     for column in table.columns:
         if column.id in QUOTE_DETAILS_MANAGED and (
-            column.required or column.options or column.min is not None or column.max is not None
+            column.required
+            or column.options
+            or column.min is not None
+            or column.max is not None
+            or column.default_value not in ("", False)
         ):
             raise ValueError(
-                f"{QUOTE_DETAILS_ID}.{column.name} is set by the underwriter app and takes no rules"
+                f"{QUOTE_DETAILS_ID}.{column.name} is set by the underwriter app and takes no "
+                "rules or default"
             )
 
 
@@ -424,9 +450,8 @@ def blank_form(name: str) -> FormSpec:
     """The form a project starts with: one blank sheet holding one section, Haute's
     ``quote_details`` table alone, no sample."""
     section = Section(id="section_1", title="Section 1", height=BLANK_SECTION_HEIGHT)
-    return with_quote_details(
-        FormSpec(name=name, pages=[Page(id="page_1", title="Sheet 1", sections=[section])])
-    )
+    page = Page(id="page_1", title="Sheet 1", width=BLANK_SHEET_WIDTH, sections=[section])
+    return with_quote_details(FormSpec(name=name, pages=[page]))
 
 
 def render_form(spec: FormSpec) -> str:

@@ -4,8 +4,8 @@
  * fields ticked from the schema tables of its kind (a Chart's from every table, the columns
  * it cannot plot disabled), with tables whose rows do not line up greyed out; a Heading's
  * text, description, size, alignment and Show when; the showing sheet's own panel, its
- * title and its Show when; and a section's panel, its title, its Show when, its height and
- * Fit, a section added below it, and its deletion.
+ * title, its Show when and its width; and a section's panel, its title, its Show when, its
+ * height and Fit, a section added below it, and its deletion.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
@@ -424,6 +424,28 @@ describe("PropertiesPanel", () => {
     showPane("Display")
     expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Year")
     expect(useWorkbenchViewStore.getState().sheetSelected).toBe(false)
+  })
+
+  it("sets the showing sheet's width in its panel, in whole pixels, never under what its components reach, as one undo step", () => {
+    loadForm(sheetForm())
+    useWorkbenchViewStore.setState({ pageId: "p1", sheetSelected: true })
+    render(<PropertiesPanel />)
+    const width = within(screen.getByRole("region", { name: "Layout" })).getByTestId("sheet-width")
+    expect(width).toHaveValue("936")
+
+    // Its Table, 16 across and 720 wide, reaches 736; 400 nines are Infinity as a number.
+    for (const typed of ["700", "800.5", "wide", "9".repeat(400)]) {
+      fireEvent.change(width, { target: { value: typed } })
+      fireEvent.blur(width)
+      expect(screen.getByTestId("sheet-width-error")).toHaveTextContent("Enter a whole number of pixels, 736 or more.")
+      expect(currentForm().pages[0].width).toBe(936)
+    }
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(0)
+    fireEvent.change(width, { target: { value: "1600" } })
+    fireEvent.blur(width)
+    expect(currentForm().pages[0].width).toBe(1600)
+    expect(screen.queryByTestId("sheet-width-error")).not.toBeInTheDocument()
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
   })
 
   it("is a section's own panel while the section is selected: its title, a blank one kept out, and when it shows, each one undo step", () => {

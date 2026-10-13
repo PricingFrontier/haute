@@ -17,15 +17,15 @@ const HANDLE_CLASS: Record<Handle, string> = {
 }
 
 /**
- * A component on the sheet (specs/workbench): its picture, inert but for its cells while
- * building, in a frame that selects it, by the pointer or by the keyboard's focus, and
- * drags it and, once selected, grows eight handles that resize it. In Preview the frame
- * does nothing: the sheet is an underwriter's, the picture scrolls and only the cells
- * respond. A problem with what it shows draws the frame dashed in the warning colour,
- * naming the problem on hover and to a screen reader. While building, a component with
- * conditions carries an eye naming them, top right, or top left on a right-aligned Heading
- * so it never covers the end of the text, and one the sample hides is drawn faded and its
- * eye struck through.
+ * A component on the sheet (specs/workbench): its picture, inert while building, cells
+ * and all, so a press anywhere on it lands on its frame, which selects it, by the pointer
+ * or by the keyboard's focus, and drags it and, once selected, grows eight handles that
+ * resize it. In Preview the frame does nothing: the sheet is an underwriter's, the picture
+ * scrolls and only the cells respond. A problem with what it shows draws the frame dashed
+ * in the warning colour, naming the problem on hover and to a screen reader. While
+ * building, a component with conditions carries an eye naming them, top right, or top left
+ * on a right-aligned Heading so it never covers the end of the text, and one a new quote
+ * hides is drawn faded and its eye struck through.
  */
 export default function SheetWidget({
   widget,
@@ -79,6 +79,7 @@ export default function SheetWidget({
     >
       <div
         className={`h-full ${editable ? "pointer-events-none" : ""}`}
+        inert={editable}
         data-hidden={hidden ? "true" : undefined}
         style={hidden ? { opacity: 0.45 } : undefined}
       >

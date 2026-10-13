@@ -15,7 +15,7 @@ A table with one row per quote takes exactly one row from its frame; a table wit
 
 Click the node to preview its tables, filled for the workbench's sample quote: each table is a dataframe, with the table picker at the top of the preview choosing which one shows when there are several. Click a value to trace it back through the pipeline: it is traced from the node connected to its table, through the column that fills it.
 
-While you build, the workbench prices the sample live and shows the answer in its output columns (see [The sample](../workbench.md#the-sample)); the node's own preview runs on the sample as last saved.
+In Preview, the workbench prices the sample live and shows the answer in its output columns (see [Preview](../workbench.md#preview)); the node's own preview runs on the sample as last saved.
 
 ## The response
 

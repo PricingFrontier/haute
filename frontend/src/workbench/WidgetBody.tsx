@@ -2,11 +2,10 @@
  * How a component looks on a sheet (specs/workbench): a Collection's fields as labelled
  * boxes and a Table's as the columns of a grid, drawn as its options say, a Chart's
  * plotted (`ChartBody`), and a Heading as its text. An input column takes the values the
- * sheet holds, the sample while building or an underwriter's quote in Preview, through
- * the control its type calls for, marked when the value breaks the column's rules; an
- * output column is shaded and shows what pricing those values gave its row, dimmed until
- * the next answer. Pressing a cell types there and selects the component rather than
- * moving it.
+ * sheet holds, none while building, as a new quote holds none, and the sample or the
+ * underwriter app's quote in Preview, through the control its type calls for, marked when
+ * the value breaks the column's rules; an output column is shaded and shows what pricing
+ * those values gave its row, dimmed until the next answer. Pressing a cell types there.
  */
 import { Info, Plus, Trash2 } from "lucide-react"
 import { useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react"
@@ -214,15 +213,8 @@ function Cell({
   )
 }
 
-/** Pressing in a cell types there: while building, it selects the component instead of moving it. */
-function useTypeHere(widgetId: string) {
-  const select = useWorkbenchViewStore((s) => s.select)
-  const editable = useWorkbenchViewStore((s) => s.section !== "preview")
-  return (event: ReactPointerEvent) => {
-    event.stopPropagation()
-    if (editable) select(widgetId)
-  }
-}
+/** Pressing in a cell types there, and goes no further: the sheet behind it neither deselects nor commits. */
+const typeHere = (event: ReactPointerEvent) => event.stopPropagation()
 
 /** What each size of Heading is: its element, a heading's level to a screen reader, its type and its colour. */
 const HEADING_STYLES: Record<HeadingWidget["size"], { as: "h2" | "h3" | "h4"; className: string; color: string }> = {
@@ -298,9 +290,9 @@ export default function WidgetBody({ widget, fields }: { widget: Widget; fields:
       ) : widget.type === "chart" ? (
         <ChartBody widget={widget} />
       ) : widget.type === "collection" ? (
-        <FieldBoxes widgetId={widget.id} fields={fields} columns={widget.columns} options={widget} colours={colours} />
+        <FieldBoxes fields={fields} columns={widget.columns} options={widget} colours={colours} />
       ) : (
-        <FieldGrid widgetId={widget.id} fields={fields} rows={widget.rows} options={widget} colours={colours} />
+        <FieldGrid fields={fields} rows={widget.rows} options={widget} colours={colours} />
       )}
     </div>
   )
@@ -313,20 +305,17 @@ export default function WidgetBody({ widget, fields }: { widget: Widget; fields:
  * other values, and a dash before the first answer or after pricing fails.
  */
 function FieldBoxes({
-  widgetId,
   fields,
   columns,
   options,
   colours,
 }: {
-  widgetId: string
   fields: ShownField[]
   columns: number
   options: CollectionOptions
   colours: SheetColours
 }) {
   const { rows, setCell, price, basis, problems, readOnly, locked } = useSheetValues()
-  const typeHere = useTypeHere(widgetId)
   const stale = price !== null && price.basis !== basis
   const height = ROW_HEIGHT[options.density]
   const beside = options.labels === "beside"
@@ -396,20 +385,17 @@ function FieldBoxes({
  * `rows`, and fixed or not, it shows every row the values hold.
  */
 function FieldGrid({
-  widgetId,
   fields,
   rows,
   options,
   colours,
 }: {
-  widgetId: string
   fields: ShownField[]
   rows: number
   options: TableOptions
   colours: SheetColours
 }) {
   const { rows: held, setCell, setRows, price, basis, problems, quoted, readOnly, locked } = useSheetValues()
-  const typeHere = useTypeHere(widgetId)
   const oneRow = (found: Fillable) => found.table.rows === "one"
   const inputs = gridInputTables(fields)
   const inputTables = inputs.map((table) => table.id)

@@ -8,18 +8,29 @@
  * dragged out of it splitting one, its line clear of every component, or put in before one
  * or below them all, the sheet fitted to its
  * viewport, the components read as laid out
- * and stacked as added, and in Preview only the sections and components the quote shows,
- * the sections under a hidden one closing up its space and a hidden component's place in
- * its section left empty, with their cells taking the quote, what shows held while a
- * pointer is pressed on the sheet and the section holding the focus kept in place on the
- * screen.
+ * and stacked as added, while building what a new quote shows, and in Preview only the
+ * sections and components the sample shows, the sections under a hidden one closing up its
+ * space and a hidden component's place in its section left empty, with their cells taking
+ * the sample, what shows held while a pointer is pressed on the sheet and the section
+ * holding the focus kept in place on the screen.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { CHART_OPTIONS, COLLECTION_OPTIONS, findSection, findWidget, HEADING_OPTIONS, TABLE_OPTIONS, updateWidget } from "../../utils/workbenchForm"
+import {
+  CHART_OPTIONS,
+  COLLECTION_OPTIONS,
+  findSection,
+  findWidget,
+  HEADING_OPTIONS,
+  setPageWidth,
+  setSectionShowWhen,
+  TABLE_OPTIONS,
+  updateWidget,
+  withSampleCell,
+} from "../../utils/workbenchForm"
 import PropertiesPanel from "../PropertiesPanel"
 import SheetCanvas from "../SheetCanvas"
 import WorkbenchPalette from "../WorkbenchPalette"
@@ -47,14 +58,15 @@ const turn = () =>
   act(() => {
     vi.advanceTimersByTime(0)
   })
-/** The quote's cover ticked or not, as a value a press commits, or one typed elsewhere, sets it. */
-const quoteCover = (ticked: boolean) => act(() => useWorkbenchPreviewStore.getState().setCell("policy", 0, "policy.cover", ticked))
+/** The sample's cover ticked or not, as a value a press commits, or one typed elsewhere, sets it. */
+const sampleCover = (ticked: boolean) =>
+  act(() => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy", 0, "policy.cover", ticked)))
 
 describe("SheetCanvas", () => {
   beforeEach(() => {
     stubLayout()
     loadForm()
-    useWorkbenchPreviewStore.setState({ quote: {}, checked: false, price: null })
+    useWorkbenchPreviewStore.setState({ quote: {}, price: null })
   })
 
   afterEach(() => {
@@ -102,9 +114,8 @@ describe("SheetCanvas", () => {
   })
 
   it("while building draws a bar naming each section just above it, the selected one's handle under its bottom, and in Preview no bars, the sections stacked tight", () => {
-    loadForm(sectionedForm())
-    // Cover ticked in the quote, so Preview shows Flood too.
-    useWorkbenchPreviewStore.setState({ quote: { policy: [{ "policy.cover": true }] } })
+    // Cover ticked in the sample, so Preview shows Flood too.
+    loadForm(withSampleCell(sectionedForm(), "policy", 0, "policy.cover", true))
     render(<SheetCanvas />)
     const bar = (id: string) => screen.getByTestId(`section-header-${id}`)
 
@@ -283,6 +294,23 @@ describe("SheetCanvas", () => {
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
   })
 
+  it("stops a component dragged right at the sheet's right edge, and widens the sheet for one resized past it, each one undo step", () => {
+    render(<SheetCanvas />)
+
+    // The Table, 720 wide from 16 across the sheet's 936, dragged 400 right: stopped with its
+    // right edge at the sheet's, at 216.
+    act(() => drag(frame("w_grid"), [100, 300], [500, 300]))
+    expect(widget("w_grid")).toMatchObject({ x: 216, w: 720 })
+    expect(currentForm().pages[0].width).toBe(936)
+
+    // Its right handle dragged 200 past that edge: the sheet widens to hold it, drawn as wide.
+    act(() => drag(frame("w_grid").querySelector('[data-handle="e"]')!, [936, 300], [1136, 300]))
+    expect(widget("w_grid")).toMatchObject({ x: 216, w: 920 })
+    expect(currentForm().pages[0].width).toBe(1136)
+    expect(screen.getByTestId("sheet")).toHaveStyle({ width: "1136px" })
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
+  })
+
   it("grows a section to hold a component resized past its bottom, the sections under it moving down and the sheet lengthening", () => {
     loadForm(sectionedForm())
     render(<SheetCanvas />)
@@ -316,39 +344,6 @@ describe("SheetCanvas", () => {
     expect(band("s_flood")).toHaveStyle({ top: "240px" })
     expect(band("s_notes")).toHaveStyle({ top: "496px" })
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
-  })
-
-  it("keeps a value typed in a cell, not yet committed, as another component is dragged or its own resized, an undo taking back the drag alone", () => {
-    render(<SheetCanvas />)
-    const cell = (row: number) => within(frame("w_grid")).getByRole("textbox", { name: `Item row ${row}` })
-    /** Press a cell, as the builder does to type there, and type `text` into it, leaving it focused and uncommitted. */
-    const typeInto = (row: number, text: string) => {
-      fireEvent.pointerDown(cell(row), { button: 0 })
-      act(() => cell(row).focus())
-      fireEvent.change(cell(row), { target: { value: text } })
-    }
-
-    typeInto(1, "Pump")
-    expect(currentForm().sample).toEqual({})
-    // Pressing another component leaves the cell, which commits it, and the drag keeps it.
-    pointer("pointerdown", 100, 100, frame("w_boxes"))
-    pointer("pointermove", 153, 121)
-    pointer("pointerup", 153, 121)
-    expect(widget("w_boxes")).toMatchObject({ x: 72, y: 40 })
-    expect(currentForm().sample).toEqual({ equipment: [{ "equipment.item": "Pump" }, {}, {}] })
-    // The commit and the drag are a step each: one undo takes back the drag, the value staying.
-    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
-    act(() => useWorkbenchFormStore.getState().undo())
-    expect(widget("w_boxes")).toMatchObject({ x: 16, y: 16 })
-    expect(currentForm().sample).toEqual({ equipment: [{ "equipment.item": "Pump" }, {}, {}] })
-
-    // So with a handle of the Table the cell is in, selected by the press in the cell.
-    typeInto(2, "Hose")
-    pointer("pointerdown", 736, 360, frame("w_grid").querySelector('[data-handle="se"]')!)
-    pointer("pointermove", 776, 394)
-    pointer("pointerup", 776, 394)
-    expect(widget("w_grid")).toMatchObject({ x: 16, y: 160, w: 760, h: 232 })
-    expect(currentForm().sample).toEqual({ equipment: [{ "equipment.item": "Pump" }, { "equipment.item": "Hose" }, {}] })
   })
 
   it("keeps a title typed in the panel, not yet committed, as another component is dragged or the one it names resized", () => {
@@ -506,18 +501,18 @@ describe("SheetCanvas", () => {
     })
     expect(screen.queryByTestId("drop-ghost")).not.toBeInTheDocument()
     act(() => {
-      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 300, clientY: 412 }))
+      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 200, clientY: 412 }))
     })
     expect(screen.getByTestId("drop-ghost")).toHaveTextContent("Collection")
     // Over every component on the sheet, the selected one's place included.
     expect(screen.getByTestId("drop-ghost")).toHaveStyle({ zIndex: "4" })
     act(() => {
-      window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 300, clientY: 412 }))
+      window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 200, clientY: 412 }))
     })
 
     // 400 down the sheet is 376 down the section, under its bar.
     const added = widgetsOf(currentForm())[2]
-    expect(added).toMatchObject({ type: "collection", x: 288, y: 376, w: 720, h: 120, fields: [], columns: 3, ...COLLECTION_OPTIONS })
+    expect(added).toMatchObject({ type: "collection", x: 184, y: 376, w: 720, h: 120, fields: [], columns: 3, ...COLLECTION_OPTIONS })
     // Inside the section, which keeps its height.
     expect(heights()).toEqual([560])
     expect(useWorkbenchViewStore.getState().selectedId).toBe(added.id)
@@ -535,18 +530,18 @@ describe("SheetCanvas", () => {
 
     act(() => {
       screen.getByTestId("palette-item-collection").dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 10, clientY: 10 }))
-      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 300, clientY: 180 }))
+      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 200, clientY: 180 }))
     })
     // The pointer is on Flood's bar, but the ghost's top edge, a little above it and snapped,
     // 168 down the sheet, is over the policy's section: kept inside it, its bottom at the
     // section's, 152 less its 120 down it, and drawn there.
-    expect(screen.getByTestId("drop-ghost")).toHaveStyle({ left: "288px", top: "56px", width: "720px", height: "120px" })
+    expect(screen.getByTestId("drop-ghost")).toHaveStyle({ left: "184px", top: "56px", width: "720px", height: "120px" })
     act(() => {
-      window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 300, clientY: 180 }))
+      window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 200, clientY: 180 }))
     })
 
     const added = widgetsOf(currentForm())[1]
-    expect(added).toMatchObject({ type: "collection", x: 288, y: 32, w: 720, h: 120 })
+    expect(added).toMatchObject({ type: "collection", x: 184, y: 32, w: 720, h: 120 })
     expect(heights()).toEqual([152, 232, 72])
     expect(within(band("s_policy")).getByTestId(`sheet-widget-${added.id}`)).toHaveStyle({ top: "32px" })
     expect(band("s_flood")).toHaveStyle({ top: "200px" })
@@ -565,16 +560,16 @@ describe("SheetCanvas", () => {
 
     act(() => {
       screen.getByTestId("palette-item-collection").dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 10, clientY: 10 }))
-      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 300, clientY: 300 }))
+      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 200, clientY: 300 }))
     })
     // Its top edge, snapped, 288 down the sheet: over Flood, whose top is 200, 88 down it.
-    expect(screen.getByTestId("drop-ghost")).toHaveStyle({ left: "288px", top: "288px" })
+    expect(screen.getByTestId("drop-ghost")).toHaveStyle({ left: "184px", top: "288px" })
     act(() => {
-      window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 300, clientY: 300 }))
+      window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 200, clientY: 300 }))
     })
 
     const added = widgetsOf(currentForm(), 0, 1)[1]
-    expect(added).toMatchObject({ type: "collection", x: 288, y: 88 })
+    expect(added).toMatchObject({ type: "collection", x: 184, y: 88 })
     expect(heights()).toEqual([152, 232, 72])
     expect(within(band("s_flood")).getByTestId(`sheet-widget-${added.id}`)).toHaveStyle({ top: "88px" })
   })
@@ -656,16 +651,53 @@ describe("SheetCanvas", () => {
     // Collection's 120 would reach past its bottom. Kept inside it, at 232 less 120, and
     // drawn there.
     pointer("pointerdown", 10, 10, screen.getByTestId("palette-item-collection"))
-    pointer("pointermove", 300, 420)
-    expect(ghost()).toHaveStyle({ left: "288px", top: "312px", width: "720px", height: "120px" })
-    pointer("pointerup", 300, 420)
+    pointer("pointermove", 200, 420)
+    expect(ghost()).toHaveStyle({ left: "184px", top: "312px", width: "720px", height: "120px" })
+    pointer("pointerup", 200, 420)
 
     const added = widgetsOf(currentForm(), 0, 1)[1]
-    expect(added).toMatchObject({ type: "collection", x: 288, y: 112 })
+    expect(added).toMatchObject({ type: "collection", x: 184, y: 112 })
     expect(heights()).toEqual([152, 232, 72])
     expect(within(band("s_flood")).getByTestId(`sheet-widget-${added.id}`)).toHaveStyle({ top: "112px" })
     expect(band("s_notes")).toHaveStyle({ top: "456px" })
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
+  })
+
+  it("keeps a component dropped out of the palette past the sheet's right edge, or beside it on its left, inside its width, the ghost drawn there, and widens a sheet narrower than it", () => {
+    withPalette()
+
+    // Its left edge, snapped, 888 across: a Collection's 720 would reach past the sheet's
+    // 936, so it is kept inside it, at 216, and drawn there.
+    pointer("pointerdown", 10, 10, screen.getByTestId("palette-item-collection"))
+    pointer("pointermove", 904, 412)
+    expect(ghost()).toHaveStyle({ left: "216px", width: "720px" })
+    pointer("pointerup", 904, 412)
+    expect(widgetsOf(currentForm())[2]).toMatchObject({ type: "collection", x: 216, w: 720 })
+    expect(currentForm().pages[0].width).toBe(936)
+
+    // Beside the sheet on its left, in the padding between it and the palette: at its left edge.
+    const box = (left: number, width: number) => ({ left, top: 0, right: left + width, bottom: 800, width, height: 800, x: left, y: 0, toJSON: () => ({}) }) as DOMRect
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return this.dataset.testid === "sheet" ? box(32, 936) : box(0, 1000)
+    })
+    pointer("pointerdown", 10, 10, screen.getByTestId("palette-item-collection"))
+    pointer("pointermove", 16, 412)
+    expect(ghost()).toHaveStyle({ left: "0px", width: "720px" })
+    pointer("pointerup", 16, 412)
+    expect(widgetsOf(currentForm())[3]).toMatchObject({ type: "collection", x: 0, w: 720 })
+    stubLayout()
+
+    // On an empty sheet 600 across, at its left edge, the sheet widening to hold it.
+    act(() => {
+      useWorkbenchFormStore.getState().change((spec) => setPageWidth(spec, "p2", 600))
+      useWorkbenchViewStore.getState().showPage("p2")
+    })
+    pointer("pointerdown", 10, 10, screen.getByTestId("palette-item-collection"))
+    pointer("pointermove", 300, 100)
+    expect(ghost()).toHaveStyle({ left: "0px", width: "720px" })
+    pointer("pointerup", 300, 100)
+    expect(widgetsOf(currentForm(), 1)[0]).toMatchObject({ type: "collection", x: 0, w: 720 })
+    expect(currentForm().pages[1].width).toBe(720)
   })
 
   it("grows a section for a component dropped out of the palette taller than it, at its top, pushing the sections under it down", () => {
@@ -988,13 +1020,24 @@ describe("SheetCanvas", () => {
     expect(eye("w_right")).not.toHaveClass("right-1")
   })
 
-  it("fits what is on the sheet to the viewport when it first shows, and sizes the sheet to hold its components", () => {
+  it("fits the sheet's width to the viewport when it first shows, and draws the sheet at its width whatever the zoom from the viewport's top-left corner, the viewport scrolling across one wider than it", () => {
     loadForm({ ...sheetForm(), pages: [sheet("p1", "Sheet 1", [{ id: "w", type: "tableInput", x: 0, y: 0, w: 1968, h: 100, title: "", rows: 3, ...TABLE_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }])] })
     render(<SheetCanvas />)
+    const sheetElement = screen.getByTestId("sheet")
 
-    // 1000 wide less the padding, over the component's reach plus the edge, in steps of 5%.
+    // 1000 wide less the padding, over the sheet's 1968, in steps of 5%.
     expect(useWorkbenchViewStore.getState().zoom).toBe(0.45)
-    expect(screen.getByTestId("sheet")).toHaveStyle({ width: "2080px", transform: "scale(0.45)" })
+    expect(sheetElement).toHaveStyle({ width: "1968px", transform: "scale(0.45)" })
+    // Zoomed out, the sheet keeps its width, drawn smaller from its top-left corner, which
+    // stays the padding in from the viewport's; zoomed in, it is drawn wider than the
+    // viewport, which scrolls across it.
+    act(() => useWorkbenchViewStore.getState().setZoom(0.25))
+    expect(sheetElement).toHaveStyle({ width: "1968px", transform: "scale(0.25)", transformOrigin: "0 0", left: "32px", top: "32px" })
+    expect(sheetElement.parentElement).toHaveStyle({ width: `${1968 * 0.25 + 64}px` })
+    act(() => useWorkbenchViewStore.getState().setZoom(2))
+    expect(sheetElement).toHaveStyle({ width: "1968px", left: "32px", top: "32px" })
+    expect(sheetElement.parentElement).toHaveStyle({ width: `${1968 * 2 + 64}px` })
+    expect(screen.getByTestId("sheet-viewport")).toHaveClass("overflow-auto")
   })
 
   it("fits a very wide sheet at the zoom's minimum, never at nothing", () => {
@@ -1025,7 +1068,7 @@ describe("SheetCanvas", () => {
     expect(useWorkbenchViewStore.getState().zoom).toBe(0.45)
   })
 
-  it("in Preview, neither selects nor moves a component, offers no drop, draws no section bars, and types into the quote", () => {
+  it("in Preview, neither selects nor moves a component, offers no drop, draws no section bars, and types into the sample", () => {
     useWorkbenchViewStore.setState({ section: "preview" })
     render(
       <>
@@ -1059,36 +1102,41 @@ describe("SheetCanvas", () => {
     expect(band("s_p1")).toHaveStyle({ top: "0px" })
 
     fireEvent.change(within(frame("w_boxes")).getByRole("combobox", { name: "State" }), { target: { value: "NY" } })
-    expect(useWorkbenchPreviewStore.getState().quote).toEqual({ policy: [{ "policy.state": "NY" }] })
-    expect(currentForm().sample).toEqual({})
+    expect(currentForm().sample).toEqual({ policy: [{ "policy.state": "NY" }] })
+    expect(useWorkbenchPreviewStore.getState().quote).toEqual({})
   })
 
-  it("while building draws a component the sample hides faded with its eye struck through, and one that shows with its eye", () => {
+  it("while building draws a component a new quote hides faded with its eye struck through, whatever the sample holds, and one that shows with its eye", () => {
     const form = coverForm()
     widgetsOf(form)[1].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"] }] }
-    loadForm(form)
+    loadForm(withSampleCell(form, "policy", 0, "policy.state", "NY"))
     render(<SheetCanvas />)
 
     const body = (id: string) => frame(id).querySelector("[data-hidden]")
     expect(body("w_grid")).not.toBeNull()
-    expect(within(frame("w_grid")).getByRole("img", { name: "Hidden for the sample. Shows when State equals NY" })).toBeInTheDocument()
+    expect(within(frame("w_grid")).getByRole("img", { name: "Hidden for a new quote. Shows when State equals NY" })).toBeInTheDocument()
     expect(within(frame("w_boxes")).queryByRole("img")).not.toBeInTheDocument()
 
-    fireEvent.change(within(frame("w_boxes")).getByRole("combobox", { name: "State" }), { target: { value: "NY" } })
+    // Shown while Cover is not ticked, as on a new quote.
+    act(() =>
+      useWorkbenchFormStore.getState().change((spec) =>
+        updateWidget(spec, "w_grid", { show_when: { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "not_ticked", values: [] }] } }),
+      ),
+    )
     expect(body("w_grid")).toBeNull()
-    expect(within(frame("w_grid")).getByRole("img", { name: "Shows when State equals NY" })).toBeInTheDocument()
+    expect(within(frame("w_grid")).getByRole("img", { name: "Shows when Cover is not ticked" })).toBeInTheDocument()
 
-    // A component on a sheet the sample hides is hidden with it, and still drawn to edit.
+    // A component on a sheet a new quote hides is hidden with it, and still drawn to edit.
     act(() => useWorkbenchViewStore.getState().showPage("p2"))
     expect(body("w_year")).not.toBeNull()
   })
 
-  it("while building draws a section the sample hides in its place, its components faded and still selected", () => {
+  it("while building draws a section a new quote hides in its place, its components faded and still selected", () => {
     loadForm(sectionedForm())
     render(<SheetCanvas />)
     const body = (id: string) => frame(id).querySelector("[data-hidden]")
 
-    // Cover is not ticked in the sample: Flood hides, and is drawn where it sits, its Table faded.
+    // Cover is not ticked on a new quote: Flood hides, and is drawn where it sits, its Table faded.
     expect(band("s_flood")).toHaveStyle({ top: "200px", height: "232px" })
     expect(body("w_grid")).not.toBeNull()
     expect(body("w_boxes")).toBeNull()
@@ -1098,21 +1146,25 @@ describe("SheetCanvas", () => {
     releasePointer()
     expect(useWorkbenchViewStore.getState().selectedId).toBe("w_grid")
 
-    // Ticked, it shows, and nothing moves.
-    fireEvent.click(within(frame("w_boxes")).getByRole("checkbox", { name: "Cover" }))
+    // Shown while Cover is not ticked, as on a new quote, and nothing moves.
+    act(() =>
+      useWorkbenchFormStore.getState().change((spec) =>
+        setSectionShowWhen(spec, "s_flood", { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "not_ticked", values: [] }] }),
+      ),
+    )
     expect(body("w_grid")).toBeNull()
     expect(band("s_flood")).toHaveStyle({ top: "200px" })
     expect(band("s_notes")).toHaveStyle({ top: "456px" })
   })
 
-  it("in Preview draws only what the quote shows, on the first sheet that shows in place of a hidden one chosen", () => {
+  it("in Preview draws only what the sample shows, on the first sheet that shows in place of a hidden one chosen", () => {
     const form = coverForm()
     widgetsOf(form)[1].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"] }] }
     loadForm(form)
     useWorkbenchViewStore.setState({ section: "preview", pageId: "p2" })
     render(<SheetCanvas />)
 
-    // The quote leaves Cover unticked: Sheet 1 shows in its place, without the hidden Table.
+    // The sample leaves Cover unticked: Sheet 1 shows in its place, without the hidden Table.
     expect(frame("w_boxes")).toBeInTheDocument()
     expect(screen.queryByTestId("sheet-widget-w_grid")).not.toBeInTheDocument()
     expect(within(frame("w_boxes")).queryByRole("img")).not.toBeInTheDocument()
@@ -1124,7 +1176,7 @@ describe("SheetCanvas", () => {
     expect(screen.queryByTestId("sheet-widget-w_boxes")).not.toBeInTheDocument()
   })
 
-  it("in Preview draws no section the quote hides, the sections under it moved up into its place, and down again once it shows", () => {
+  it("in Preview draws no section the sample hides, the sections under it moved up into its place, and down again once it shows", () => {
     loadForm(sectionedForm())
     useWorkbenchViewStore.setState({ section: "preview" })
     render(<SheetCanvas />)
@@ -1154,7 +1206,7 @@ describe("SheetCanvas", () => {
 
     // Pressed, a value the press commits opens Flood: nothing moves under the pointer.
     fireEvent.pointerDown(cover(), { button: 0 })
-    quoteCover(true)
+    sampleCover(true)
     expect(screen.queryByTestId("sheet-section-s_flood")).not.toBeInTheDocument()
     expect(band("s_notes")).toHaveStyle({ top: "152px" })
     // Released, still held for the release's click; a turn later Flood opens.
@@ -1166,7 +1218,7 @@ describe("SheetCanvas", () => {
 
     // Pressed again, a value closing Flood leaves its Table drawn as it was, not faded.
     fireEvent.pointerDown(cover(), { button: 0 })
-    quoteCover(false)
+    sampleCover(false)
     expect(frame("w_grid").querySelector("[data-hidden]")).toBeNull()
     expect(band("s_notes")).toHaveStyle({ top: "384px" })
     fireEvent.pointerUp(cover())
@@ -1192,7 +1244,7 @@ describe("SheetCanvas", () => {
     // The year focused, with the policy's section first in view: Flood opens above Notes,
     // moving it 232 down, and the view scrolls as far, so the year stays where it was.
     act(() => within(frame("w_year")).getByRole("textbox", { name: "Year" }).focus())
-    quoteCover(true)
+    sampleCover(true)
     expect(band("s_notes")).toHaveStyle({ top: "384px" })
     expect(scrollTo.mock.calls.map(([options]) => options.top)).toEqual([232])
   })
@@ -1230,15 +1282,14 @@ describe("SheetCanvas", () => {
     const form = coverForm()
     // Each sheet shows only while cover is ticked, its tick box on the first.
     form.pages[0].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [] }] }
-    loadForm(form)
-    useWorkbenchPreviewStore.setState({ quote: { policy: [{ "policy.cover": true }] } })
+    loadForm(withSampleCell(form, "policy", 0, "policy.cover", true))
     useWorkbenchViewStore.setState({ section: "preview" })
     render(<SheetCanvas />)
     const cover = () => within(frame("w_boxes")).getByRole("checkbox", { name: "Cover" })
 
     // Pressed, the press's commit unticks it: the sheet and the tick box stay, the value live.
     fireEvent.pointerDown(cover(), { button: 0 })
-    quoteCover(false)
+    sampleCover(false)
     expect(cover()).not.toBeChecked()
     expect(screen.queryByText("No sheet shows for this quote.")).not.toBeInTheDocument()
     fireEvent.pointerUp(cover())

@@ -7,7 +7,7 @@
  * first while components are in it and never a sheet's last, each of a bar's own keys kept
  * from the sheet's shortcuts; the selected section's handle alone, dragged to set its height
  * and double-clicked to fit it, at the zoom and wherever the sheet sits on the screen; and a
- * section's eye, struck through and its bar faded while the sample hides it, its problem
+ * section's eye, struck through and its bar faded while a new quote hides it, its problem
  * marked, its conditions and its problem told to a screen reader.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -435,27 +435,35 @@ describe("SectionHeaders", () => {
     expect(boxes()).toBeUndefined()
   })
 
-  it("marks a section with conditions with an eye, struck through and its bar faded while the sample hides it, its conditions told as the bar's description", () => {
+  it("marks a section with conditions with an eye, struck through and its bar faded while a new quote hides it, its conditions told as the bar's description", () => {
     render(<SheetCanvas />)
 
-    // Cover is not ticked in the sample: Flood hides.
+    // Cover is not ticked on a new quote: Flood hides, whatever the sample holds.
+    act(() => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy", 0, "policy.cover", true)))
     expect(bar("s_flood")).toHaveAttribute("data-hidden", "true")
     expect(bar("s_flood")).toHaveStyle({ opacity: "0.5" })
-    const hiddenEye = within(bar("s_flood")).getByRole("img", { name: "Hidden for the sample. Shows when Cover is ticked" })
+    const hiddenEye = within(bar("s_flood")).getByRole("img", { name: "Hidden for a new quote. Shows when Cover is ticked" })
     expect(hiddenEye.querySelector(".lucide-eye-off")).not.toBeNull()
     expect(bar("s_flood")).toHaveAttribute("aria-describedby", "s_flood-conditions")
-    expect(bar("s_flood")).toHaveAccessibleDescription("Hidden for the sample. Shows when Cover is ticked")
+    expect(bar("s_flood")).toHaveAccessibleDescription("Hidden for a new quote. Shows when Cover is ticked")
     // A section always shown has no eye and nothing to tell.
     expect(bar("s_policy")).not.toHaveAttribute("data-hidden")
     expect(within(bar("s_policy")).queryByRole("img")).not.toBeInTheDocument()
     expect(bar("s_policy")).not.toHaveAttribute("aria-describedby")
 
-    act(() => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy", 0, "policy.cover", true)))
+    // Shown while Cover is not ticked, as on a new quote.
+    act(() =>
+      useWorkbenchFormStore.getState().change((spec) => {
+        const next = structuredClone(spec)
+        next.pages[0].sections[1].show_when.conditions = [{ table: "policy", column: "policy.cover", op: "not_ticked", values: [] }]
+        return next
+      }),
+    )
     expect(bar("s_flood")).not.toHaveAttribute("data-hidden")
     expect(bar("s_flood").style.opacity).toBe("")
-    const eye = within(bar("s_flood")).getByRole("img", { name: "Shows when Cover is ticked" })
+    const eye = within(bar("s_flood")).getByRole("img", { name: "Shows when Cover is not ticked" })
     expect(eye.querySelector(".lucide-eye")).not.toBeNull()
-    expect(bar("s_flood")).toHaveAccessibleDescription("Shows when Cover is ticked")
+    expect(bar("s_flood")).toHaveAccessibleDescription("Shows when Cover is not ticked")
   })
 
   it("marks a section whose conditions have a problem, naming it, its conditions and its problem told as the bar's description", () => {
@@ -467,7 +475,7 @@ describe("SectionHeaders", () => {
     const problem = `Section "Notes" tests state against "TX", which isn't one of its allowed values`
     expect(within(bar("s_notes")).getByRole("img", { name: problem })).toHaveAttribute("title", problem)
     expect(bar("s_notes")).toHaveAttribute("aria-describedby", "s_notes-conditions s_notes-problem")
-    expect(bar("s_notes")).toHaveAccessibleDescription(`Hidden for the sample. Shows when State equals TX ${problem}`)
+    expect(bar("s_notes")).toHaveAccessibleDescription(`Hidden for a new quote. Shows when State equals TX ${problem}`)
     // Flood's conditions have no problem.
     expect(within(bar("s_flood")).getAllByRole("img")).toHaveLength(1)
     expect(bar("s_flood")).toHaveAttribute("aria-describedby", "s_flood-conditions")

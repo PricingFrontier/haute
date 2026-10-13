@@ -270,8 +270,8 @@ function ConditionValue({
 
 /**
  * The eye a sheet's tab, a section's header and a component carry while building: open
- * while the sample shows them, struck through while it hides them, naming their conditions
- * on hover.
+ * while a new quote shows them, struck through while it hides them, naming their
+ * conditions on hover.
  */
 export function ShowWhenMark({
   hidden,
@@ -285,7 +285,7 @@ export function ShowWhenMark({
   style?: CSSProperties
 }) {
   const Icon = hidden ? EyeOff : Eye
-  const text = hidden ? `Hidden for the sample. ${title}` : title
+  const text = hidden ? `Hidden for a new quote. ${title}` : title
   return (
     <span
       role="img"

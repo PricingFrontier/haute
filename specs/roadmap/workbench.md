@@ -165,9 +165,9 @@ reference table. Today every cell on a sheet is typed. The ruling is that button
 the workbench: nothing calls a database or an API at scoring time, so the test quotes, the
 impact analysis and the dry-run deploy keep assuming pure scoring, a deployed pipeline
 needs no warehouse, and a filled cell is a typed cell as far as pricing can tell. What
-exists: one path for a sheet's values, the sample while building and the quote in Preview,
-through which a result can land exactly as typing does, so the rule marks follow it and
-the price dims until Price is pressed again; a Databricks SQL reach on the server, which
+exists: one path for a sheet's values, the sample in Preview and the quote in the
+underwriter app, through which a result can land exactly as typing does, so the rule marks
+follow it and it is priced as typing is; a Databricks SQL reach on the server, which
 validates a statement as a single SELECT, builds connection settings from the workspace
 credentials and takes a service principal's, used today to snapshot tables; and a
 credential policy for the editor's data access, environment variables named in the docs
@@ -204,8 +204,8 @@ column property; and the underwriter app running the same actions on its server.
 
 **Acceptance:** With a source declared in `haute.toml` and an action in the form, pressing
 its Button in Preview fills the bound input cells with the query's values, typed by their
-columns and marked where a value breaks a rule, the price dims until Price is pressed,
-and the pipeline is not called; the same action runs against a database that is not
+columns and marked where a value breaks a rule, and priced as typed values are, the
+action itself never calling the pipeline; the same action runs against a database that is not
 Databricks, and an HTTP action fills cells from a response; no credential value appears
 in the form file, in `haute.toml`, in an API response or in a log; a statement that is
 not a single SELECT, a host not allowed, a result over the cap and a bound column no
@@ -220,8 +220,8 @@ the sources follow. The Host, Origin and session checks of
 other.
 
 **Evidence:** `frontend/src/workbench/useSheetValues.ts::useSampleValues` and
-`::usePreviewValues` (the one path for a sheet's values);
-`frontend/src/stores/useWorkbenchPreviewStore.ts::priceQuote` (price on request);
+`::useQuoteValues` (the one path for a sheet's values);
+`frontend/src/stores/useWorkbenchPricingStore.ts::priceForm` (the sample priced as it is typed);
 `frontend/src/workbench/widgetKinds.ts` and
 `frontend/src/utils/workbenchForm.ts::createWidget` and `::widgetProblems` (the two kinds
 of component); `src/haute/_workbench_form.py::FormSpec` (the strict reader);

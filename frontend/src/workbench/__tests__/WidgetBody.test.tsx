@@ -1,11 +1,11 @@
 /**
  * A component's cells (specs/workbench): the sample typed into a Collection's boxes and a
- * Table's grid while building, rows added and deleted across the tables a grid shows, a
- * grid drawn as its Table's options say,
- * an output box showing what pricing the sample gave, dimmed once the sample has moved
- * on, a Table's output columns matched to its rows by key, in Preview the quote
- * typed apart from the sample with the cells that break their column's rules marked, and
- * a Heading drawn as its text.
+ * Table's grid, rows added and deleted across the tables a grid shows, a grid drawn as its
+ * Table's options say, an output box showing what pricing the sample gave, dimmed once the
+ * sample has moved on, a Table's output columns matched to its rows by key, the cells that
+ * break their column's rules marked once anything is typed, while building a new quote's
+ * cells, empty and inert, the underwriter app's quote typed apart from the sample, and a
+ * Heading drawn as its text.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
@@ -17,7 +17,7 @@ import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { valuesBasis } from "../../utils/sheetValues"
 import { BLANK_THEME, pricingBasis, shownFields, toggleField, updateSchemaColumn, updateWidget, type WidgetPatch } from "../../utils/workbenchForm"
 import SheetCanvas from "../SheetCanvas"
-import { SheetValuesContext, usePreviewValues, useSampleValues } from "../useSheetValues"
+import { SheetValuesContext, useNewQuoteValues, useQuoteValues, useSampleValues } from "../useSheetValues"
 import WidgetBody from "../WidgetBody"
 import { addTo, column, coverForm, currentForm, headingWidget, loadForm, releasePointer, sheetForm, stubLayout, widgetsOf } from "./fixtures"
 
@@ -27,21 +27,25 @@ const widget = (id: string) => {
   return found
 }
 
-/** The sheet's values around a component: the sample, or the quote in Preview. */
-function OnSheet({ preview = false, children }: { preview?: boolean; children: ReactNode }) {
+/** Whose values the sheet holds: a new quote's while building, the sample in Preview, or the underwriter app's quote. */
+type Values = "new" | "sample" | "quote"
+
+/** The sheet's values around a component. */
+function OnSheet({ values, children }: { values: Values; children: ReactNode }) {
+  const newQuote = useNewQuoteValues()
   const sample = useSampleValues()
-  const quote = usePreviewValues()
-  return <SheetValuesContext value={preview ? quote : sample}>{children}</SheetValuesContext>
+  const quote = useQuoteValues()
+  return <SheetValuesContext value={values === "new" ? newQuote : values === "quote" ? quote : sample}>{children}</SheetValuesContext>
 }
 
-const body = (id: string, preview = false) => (
-  <OnSheet preview={preview}>
+const body = (id: string, values: Values = "sample") => (
+  <OnSheet values={values}>
     <WidgetBody widget={widget(id)} fields={shownFields(currentForm(), widget(id))} />
   </OnSheet>
 )
 
-function renderBody(id: string, preview = false) {
-  return render(body(id, preview))
+function renderBody(id: string, values: Values = "sample") {
+  return render(body(id, values))
 }
 
 describe("WidgetBody", () => {
@@ -49,7 +53,7 @@ describe("WidgetBody", () => {
     stubLayout()
     loadForm()
     useWorkbenchPricingStore.setState({ price: null, error: null })
-    useWorkbenchPreviewStore.setState({ quote: {}, checked: false, price: null, error: null, pricing: false, readOnly: false })
+    useWorkbenchPreviewStore.setState({ quote: {}, price: null, error: null, pricing: false, readOnly: false })
   })
 
   afterEach(() => {
@@ -448,25 +452,39 @@ describe("WidgetBody", () => {
     expect(cell(3)).toHaveTextContent("—")
   })
 
-  it("in Preview, types the quote apart from the sample, and marks the cells that break their column's rules once checked", () => {
+  it("marks the cells that break their column's rules once anything is typed, as the sample is typed in Preview", () => {
+    loadForm(toggleField(sheetForm(), "w_boxes", { table: "policy", column: "policy.year" }))
     useWorkbenchViewStore.setState({ section: "preview" })
-    const { rerender } = renderBody("w_boxes", true)
+    const { rerender } = renderBody("w_boxes")
 
-    fireEvent.change(screen.getByRole("combobox", { name: "State" }), { target: { value: "NY" } })
-    expect(useWorkbenchPreviewStore.getState().quote).toEqual({ policy: [{ "policy.state": "NY" }] })
-    expect(currentForm().sample).toEqual({})
-    expect(useWorkbenchFormStore.getState().undoStack).toEqual([])
+    // Nothing typed: nothing is marked, though the state is required.
     expect(screen.getByRole("combobox", { name: "State" })).not.toHaveAttribute("aria-invalid")
 
-    // Price pressed with the state blank: the required cell is marked, and cleared as soon as it is filled.
-    useWorkbenchPreviewStore.setState({ quote: {}, checked: true })
-    rerender(body("w_boxes", true))
+    // A year typed with the state blank: the required cell is marked, and cleared as soon as it is filled.
+    const year = screen.getByRole("textbox", { name: "Year" })
+    fireEvent.change(year, { target: { value: "2021" } })
+    fireEvent.blur(year)
+    rerender(body("w_boxes"))
     const state = screen.getByRole("combobox", { name: "State" })
     expect(state).toHaveAttribute("aria-invalid", "true")
     expect(state).toHaveAttribute("title", "Required")
     fireEvent.change(state, { target: { value: "CA" } })
-    rerender(body("w_boxes", true))
+    rerender(body("w_boxes"))
     expect(screen.getByRole("combobox", { name: "State" })).not.toHaveAttribute("aria-invalid")
+  })
+
+  it("types the underwriter app's quote apart from the sample, without history, its cells marked once anything is typed, and shows its price", () => {
+    loadForm(toggleField(sheetForm(), "w_boxes", { table: "policy", column: "policy.year" }))
+    const { rerender } = renderBody("w_boxes", "quote")
+
+    const year = screen.getByRole("textbox", { name: "Year" })
+    fireEvent.change(year, { target: { value: "2021" } })
+    fireEvent.blur(year)
+    expect(useWorkbenchPreviewStore.getState().quote).toEqual({ policy: [{ "policy.year": "2021" }] })
+    expect(currentForm().sample).toEqual({})
+    expect(useWorkbenchFormStore.getState().undoStack).toEqual([])
+    rerender(body("w_boxes", "quote"))
+    expect(screen.getByRole("combobox", { name: "State" })).toHaveAttribute("title", "Required")
 
     // An output box shows the quote's price, not the sample's.
     loadForm(toggleField(sheetForm(), "w_boxes", { table: "premiums", column: "premiums.premium" }))
@@ -476,13 +494,13 @@ describe("WidgetBody", () => {
       price: { basis: valuesBasis(currentForm().schema, new Set(), { policy: [{ "policy.state": "CA" }] }), sample: {}, tables: { premiums: [{ premium: 777 }] } },
     })
     cleanup()
-    renderBody("w_boxes", true)
+    renderBody("w_boxes", "quote")
     expect(screen.getByTestId("priced-premiums:premiums.premium")).toHaveTextContent("777")
   })
 
-  it("in Preview, keeps the rows a quote's grid starts with as the first value is typed into it", () => {
+  it("keeps the rows the underwriter app's quote's grid starts with as the first value is typed into it", () => {
     useWorkbenchViewStore.setState({ section: "preview" })
-    renderBody("w_grid", true)
+    renderBody("w_grid", "quote")
 
     const item = screen.getByRole("textbox", { name: "Item row 1" })
     fireEvent.change(item, { target: { value: "Crane" } })
@@ -492,18 +510,36 @@ describe("WidgetBody", () => {
     expect(currentForm().sample).toEqual({})
   })
 
-  it("selects the component when a cell is pressed, without moving it", () => {
+  it("while building draws a component's cells as a new quote's, empty and inert, so a press on one is its frame's", () => {
+    loadForm({ ...sheetForm(), sample: { policy: [{ "policy.state": "NY" }] } })
     render(<SheetCanvas />)
     const frame = screen.getByTestId("sheet-widget-w_boxes")
     const cell = within(frame).getByRole("combobox", { name: "State" })
 
-    cell.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 100, clientY: 100 }))
-    window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 160, clientY: 140 }))
-    window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 160, clientY: 140 }))
-
+    // The sample is Preview's: the cell is empty, as a new quote's is, and not disabled.
+    expect(cell).toHaveValue("")
+    expect(cell).toBeEnabled()
+    expect(cell.closest("[inert]")).not.toBeNull()
+    frame.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 100, clientY: 100 }))
+    window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 100, clientY: 100 }))
     expect(useWorkbenchViewStore.getState().selectedId).toBe("w_boxes")
-    expect(widget("w_boxes")).toMatchObject({ x: 16, y: 16 })
     expect(useWorkbenchFormStore.getState().undoStack).toEqual([])
+
+    // In Preview the cells take typing: the sample's.
+    act(() => useWorkbenchViewStore.setState({ section: "preview" }))
+    expect(within(screen.getByTestId("sheet-widget-w_boxes")).getByRole("combobox", { name: "State" })).toHaveValue("NY")
+    expect(screen.getByTestId("sheet-widget-w_boxes").querySelector("[inert]")).toBeNull()
+  })
+
+  it("while building draws a new quote holding its columns' defaults, Preview the sample as typed", () => {
+    const form = sheetForm()
+    form.schema.tables[0].columns[0].default_value = "CA"
+    loadForm({ ...form, sample: { policy: [{ "policy.state": "NY" }] } })
+    render(<SheetCanvas />)
+
+    expect(within(screen.getByTestId("sheet-widget-w_boxes")).getByRole("combobox", { name: "State" })).toHaveValue("CA")
+    act(() => useWorkbenchViewStore.setState({ section: "preview" }))
+    expect(within(screen.getByTestId("sheet-widget-w_boxes")).getByRole("combobox", { name: "State" })).toHaveValue("NY")
   })
 
   it("draws a Heading as its text alone, a heading of its size's level, and without text asks for some while building and shows nothing in Preview", () => {
@@ -530,7 +566,7 @@ describe("WidgetBody", () => {
     expect(heading(4)).toHaveStyle({ color: "var(--text-secondary)" })
     // The same in Preview, where an underwriter reads it.
     preview(true)
-    rerender(body("w_head", true))
+    rerender(body("w_head"))
     expect(heading(4)).toBeInTheDocument()
     preview(false)
 
@@ -540,7 +576,7 @@ describe("WidgetBody", () => {
     expect(screen.queryByRole("heading")).not.toBeInTheDocument()
     expect(screen.getByText("Type its text in the panel on the right")).toHaveClass("truncate")
     preview(true)
-    rerender(body("w_head", true))
+    rerender(body("w_head"))
     expect(container).toBeEmptyDOMElement()
   })
 
@@ -569,7 +605,7 @@ describe("WidgetBody", () => {
     }
     // The same for the underwriter in Preview.
     act(() => useWorkbenchViewStore.setState({ section: "preview" }))
-    rerender(body("w_head", true))
+    rerender(body("w_head"))
     expect(screen.getByText("Each item insured, with its value").parentElement).toHaveClass("text-right")
     act(() => useWorkbenchViewStore.setState({ section: "sheets" }))
     rerender(body("w_head"))
@@ -584,13 +620,13 @@ describe("WidgetBody", () => {
     expect(screen.getByText("Type its text in the panel on the right")).toBeInTheDocument()
   })
 
-  it("shows a quote held read only in Preview with its cells taking no typing and no rows added or deleted", () => {
+  it("shows the underwriter app's quote held read only with its cells taking no typing and no rows added or deleted", () => {
     act(() => useWorkbenchPreviewStore.getState().open({ policy: [{ "policy.state": "NY" }], equipment: [{ "equipment.item": "Crane" }] }, null, true))
-    const { unmount } = renderBody("w_boxes", true)
+    const { unmount } = renderBody("w_boxes", "quote")
     expect(screen.getByRole("combobox", { name: "State" })).toBeDisabled()
     unmount()
 
-    renderBody("w_grid", true)
+    renderBody("w_grid", "quote")
     expect(screen.getByRole("textbox", { name: "Item row 1" })).toBeDisabled()
     expect(screen.queryByRole("button", { name: "Add row" })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Delete row 1" })).not.toBeInTheDocument()

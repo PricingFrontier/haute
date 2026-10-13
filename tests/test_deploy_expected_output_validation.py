@@ -518,6 +518,7 @@ def _saved_test_quotes(quotes_dir: Path, *responses: dict[str, object] | None) -
                 {
                     "id": "p",
                     "title": "Sheet 1",
+                    "width": 1280,
                     "sections": [{"id": "s", "title": "s", "height": 120, "widgets": []}],
                 }
             ],

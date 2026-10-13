@@ -34,6 +34,7 @@ FORM = FormSpec.model_validate(
             {
                 "id": "p",
                 "title": "Sheet 1",
+                "width": 1280,
                 "sections": [{"id": "s", "title": "s", "height": 120, "widgets": []}],
             }
         ],

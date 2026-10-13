@@ -1,7 +1,6 @@
 /**
- * Placing sections and components on a sheet (specs/workbench): a snap grid on a sheet
- * that fills the width it is shown in and, like a spreadsheet, has no right edge: it widens
- * to hold what is on it. Its sections are strips across it stacked one under the next, the
+ * Placing sections and components on a sheet (specs/workbench): a snap grid on a sheet as
+ * wide as its width. Its sections are strips across it stacked one under the next, the
  * sheet ending with the last, and a component sits in one, placed from its top-left corner.
  * Positions and sizes are in unzoomed pixels.
  */
@@ -21,8 +20,10 @@ export interface Size {
 export const GRID = 8
 /** Around the sheet, inside its viewport. */
 export const SHEET_PADDING = 32
-/** The sheet reaches at least this far past its rightmost component. */
-export const SHEET_EDGE = GRID * 4
+/** The least a sheet can be across, holding components or none: the widest of the kinds' least widths. */
+export const MIN_SHEET_WIDTH = 240
+/** A new form's sheet, as the server's blank form has it (`BLANK_SHEET_WIDTH` in `src/haute/_workbench_form.py`). */
+export const BLANK_SHEET_WIDTH = 1280
 /** The least a section can be, holding components or none. */
 export const MIN_SECTION_HEIGHT = 48
 /** What Fit leaves under a section's lowest component. */
@@ -68,6 +69,9 @@ export function placeAt(px: number, py: number, size: Size): Rect {
 
 /** How far right the sheet's components reach. */
 export const contentRight = (rects: readonly Rect[]): number => rects.reduce((max, rect) => Math.max(max, rect.x + rect.w), 0)
+
+/** The least a sheet holding `rects` can be across: as far right as they reach, and never under `MIN_SHEET_WIDTH`. */
+export const leastSheetWidth = (rects: readonly Rect[]): number => Math.max(MIN_SHEET_WIDTH, contentRight(rects))
 
 /** How far down components reach: the lowest one's bottom, 0 for none. */
 export const contentBottom = (rects: readonly Rect[]): number => rects.reduce((max, rect) => Math.max(max, rect.y + rect.h), 0)
@@ -151,16 +155,8 @@ export function sectionAt<T extends { height: number }>(stack: readonly Stacked<
  */
 export const sheetHeight = (bottom: number): number => Math.max(MIN_SECTION_HEIGHT, bottom)
 
-/** The sheet's width: the viewport's at this zoom, or wider to hold its components. */
-export const sheetWidth = (viewportWidth: number, zoom: number, rects: readonly Rect[]): number =>
-  Math.max(Math.floor(viewportWidth / zoom), contentRight(rects) + SHEET_EDGE)
-
-/** The zoom at which everything on the sheet fits the viewport across, never past 100%. */
-export function fitZoom(viewportWidth: number, rects: readonly Rect[]): number {
-  const right = contentRight(rects)
-  if (right === 0) return 1
-  return Math.min(1, Math.floor((viewportWidth / (right + SHEET_EDGE)) * 20) / 20)
-}
+/** The zoom, in steps of 5%, at which a sheet `width` across fits the viewport across, never past 100%. */
+export const fitZoom = (viewportWidth: number, width: number): number => Math.min(1, Math.floor((viewportWidth / width) * 20) / 20)
 
 /**
  * Components in the order they are read: row by row from the top, each row left to right,

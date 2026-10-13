@@ -1,7 +1,7 @@
 /**
  * What a Chart plots and how it draws (specs/workbench): its fields' values as the sheet
- * holds them, the sample while building or the quote in Preview, with what pricing them
- * gave, and the ECharts option that draws them. A Chart of one-row tables plots a point
+ * holds them, none while building, the sample or the underwriter app's quote in Preview,
+ * with what pricing them gave, and the ECharts option that draws them. A Chart of one-row tables plots a point
  * per field; a Chart of many-row tables a series per field over the rows, lined up as a
  * Table lines its rows up. Every value is shown in its column's format. Pure: the view
  * draws the option through Explore's chart runtime.

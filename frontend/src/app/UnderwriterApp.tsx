@@ -1,15 +1,11 @@
-import { Calculator, Eraser } from "lucide-react"
 import { useEffect, useState } from "react"
 import { fetchAppForm, fetchAppRelease } from "../api/app"
 import { apiErrorMessage } from "../api/errors"
 import ToastContainer from "../components/Toast"
-import { ToolbarButton, ToolbarColumn, ZoomInOut } from "../haute-ui"
-import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
+import { ZoomInOut } from "../haute-ui"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
-import { quoteFilled } from "../utils/sheetValues"
-import { quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
 import PageTabs from "../workbench/PageTabs"
 import SheetCanvas from "../workbench/SheetCanvas"
 import AppHeader from "./AppHeader"
@@ -25,7 +21,7 @@ type Loaded = { quotes: boolean } | { error: string }
 /**
  * The underwriter app (specs/workbench): the release's sheets drawn as Preview draws them,
  * with nothing of the builder. With a quote store it opens on the Quotes page and opens each
- * quote at its own address; without one it is a blank quote with Price and Clear, keeping
+ * quote at its own address; without one it is one quote, priced as it is typed, keeping
  * nothing.
  */
 export default function UnderwriterApp() {
@@ -96,37 +92,14 @@ function Routed() {
   return <QuoteView route={route} />
 }
 
-/** An app with no quote store: one blank quote, priced and cleared, kept nowhere. */
+/** An app with no quote store: one quote, priced as it is typed, kept nowhere. */
 function OneQuote() {
-  const form = useWorkbenchFormStore((s) => s.form)
-  const quote = useWorkbenchPreviewStore((s) => s.quote)
-  const pricing = useWorkbenchPreviewStore((s) => s.pricing)
   const error = useWorkbenchPreviewStore((s) => s.error)
-  const priceQuote = useWorkbenchPreviewStore((s) => s.priceQuote)
-  const clear = useWorkbenchPreviewStore((s) => s.clear)
   const zoomBy = useWorkbenchViewStore((s) => s.zoomBy)
-  // Judged as Preview's toolbar judges them: nothing the sheets show typed is nothing to price.
-  const empty = form === null || !quoteFilled(form.schema, quote)
-  const blank = form === null || !quoteFilled(quotedSchema(form.schema, sheetVisibility(form, quote).hidden), quote)
 
   return (
     <>
       <AppHeader label="Quote toolbar">
-        <ToolbarColumn role="group" aria-label="Quote">
-          <ToolbarButton icon={Calculator} onClick={() => void priceQuote()} disabled={pricing || blank} title={blank ? "Type the quote first" : "Check the quote and price it"}>
-            Price
-          </ToolbarButton>
-          <ToolbarButton
-            icon={Eraser}
-            onClick={() => {
-              if (window.confirm("Clear the quote? Every cell will be emptied.")) clear()
-            }}
-            disabled={empty}
-            title="Start a new quote"
-          >
-            Clear
-          </ToolbarButton>
-        </ToolbarColumn>
         <ZoomInOut onZoomIn={() => zoomBy(ZOOM_STEP)} onZoomOut={() => zoomBy(-ZOOM_STEP)} />
         {error !== null && (
           <span data-testid="app-pricing-error" className="max-w-96 truncate text-xs" style={{ color: "var(--warning)" }} title={error}>

@@ -5,7 +5,20 @@
  */
 import { describe, expect, it } from "vitest"
 import type { SchemaColumn, SchemaTable } from "../../api/types"
-import { cellKey, cellProblem, filled, formattedNumber, parseTypedNumber, pricedRows, quoteFilled, quoteProblems, rowFilled, valuesBasis } from "../sheetValues"
+import {
+  cellKey,
+  cellProblem,
+  filled,
+  formattedNumber,
+  newQuoteValues,
+  parseTypedNumber,
+  pricedRows,
+  quoteFilled,
+  quoteProblems,
+  quoteTyped,
+  rowFilled,
+  valuesBasis,
+} from "../sheetValues"
 import { columnKey, quotedSchema } from "../sheetVisibility"
 import { BLANK_THEME, pricingBasis, type SampleRow } from "../workbenchForm"
 
@@ -22,6 +35,8 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   index: false,
   help: "",
   placeholder: "",
+  group: "",
+  default_value: "",
   number_format: "general",
   decimal_places: null,
   use_grouping: true,
@@ -61,6 +76,38 @@ describe("filled rows", () => {
     expect(rowFilled(equipment, { row: "7" })).toBe(false)
     expect(rowFilled(equipment, {})).toBe(false)
     expect(rowFilled(equipment, undefined)).toBe(false)
+  })
+})
+
+describe("a new quote", () => {
+  // Policy details with a default state and a tick; equipment, an output and the index too,
+  // whose defaults a new quote never takes.
+  const detailed: SchemaTable = {
+    ...policy,
+    columns: [column("state", "state", { options: ["CA", "NY"], default_value: "NY" }), column("years", "years", { type: "int" }), column("vat", "vat", { type: "bool", default_value: true })],
+  }
+  const listed: SchemaTable = { ...equipment, columns: equipment.columns.map((c) => (c.id === "item" ? { ...c, default_value: "Crane" } : c)) }
+  const priced: SchemaTable = { ...premiums, rows: "one", columns: [column("premium", "premium", { type: "float", default_value: "100" })] }
+  const schema = { tables: [detailed, listed, priced] }
+
+  it("starts with each one-row input table's row holding its columns' defaults, and nothing else", () => {
+    expect(newQuoteValues(schema)).toEqual({ policy: [{ state: "NY", vat: true }] })
+    // The same for the same schema, so a sheet reads its visibility once.
+    expect(newQuoteValues(schema)).toBe(newQuoteValues(schema))
+    expect(newQuoteValues({ tables: [policy, equipment] })).toEqual({})
+  })
+
+  it("counts nothing typed while the quote holds its defaults alone, and anything typed over them", () => {
+    const start = newQuoteValues(schema)
+    expect(quoteFilled(schema, start)).toBe(true)
+    expect(quoteTyped(schema, start)).toBe(false)
+    // A default cleared or unticked is not typing either; a value typed over one, or
+    // anywhere else, is.
+    expect(quoteTyped(schema, { policy: [{ state: "", vat: false }] })).toBe(false)
+    expect(quoteTyped(schema, { policy: [{ state: "CA", vat: true }] })).toBe(true)
+    expect(quoteTyped(schema, { policy: [{ ...start.policy[0], years: "3" }] })).toBe(true)
+    // A many-row table's column takes no default, so its value is typing.
+    expect(quoteTyped(schema, { ...start, equipment: [{ item: "Crane" }] })).toBe(true)
   })
 })
 

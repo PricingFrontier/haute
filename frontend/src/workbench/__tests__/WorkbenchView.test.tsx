@@ -167,7 +167,7 @@ describe("WorkbenchView", () => {
     expect(onSaveShortcut).not.toHaveBeenCalled()
   })
 
-  it("gives the pricing store a pricer while it shows, and prices the sample when its basis changes on the sheets", () => {
+  it("gives the pricing store a pricer while it shows, and prices the sample in Preview as it shows and when its basis changes, never while building", () => {
     const form = {
       version: 1 as const,
       name: "motor",
@@ -177,6 +177,7 @@ describe("WorkbenchView", () => {
         {
           id: "p",
           title: "Sheet 1",
+          width: 1280,
           show_when: { match: "all" as const, conditions: [] },
           sections: [{ id: "section_1", title: "Section 1", height: 560, show_when: { match: "all" as const, conditions: [] }, widgets: [] }],
         },
@@ -188,25 +189,24 @@ describe("WorkbenchView", () => {
 
     expect(pricing.setPricer).toHaveBeenCalledTimes(1)
     expect(pricing.setPricer.mock.calls[0][0]).toEqual(expect.any(Function))
-    expect(pricing.schedule).toHaveBeenCalledTimes(1)
-
-    // The same basis prices nothing again; a typed sample does; the schema section does not.
-    act(() => {
-      useWorkbenchFormStore.setState({ form: { ...form, pages: [{ ...form.pages[0], title: "Renamed" }] } })
-    })
-    expect(pricing.schedule).toHaveBeenCalledTimes(1)
+    // Building, the sheets are a new quote's: nothing is priced, the schema section neither.
+    expect(pricing.schedule).not.toHaveBeenCalled()
     act(() => {
       useWorkbenchFormStore.setState({ form: { ...form, sample: { t: [{ c: "1" }] } } })
-    })
-    expect(pricing.schedule).toHaveBeenCalledTimes(2)
-    act(() => {
       useWorkbenchViewStore.getState().showSection("schema")
       useWorkbenchFormStore.setState({ form: { ...form, sample: { t: [{ c: "2" }] } } })
     })
-    expect(pricing.schedule).toHaveBeenCalledTimes(2)
-    // Nor Preview, where the quote is priced when Price is pressed.
+    expect(pricing.schedule).not.toHaveBeenCalled()
+
+    // Preview prices the sample as it shows, as the pipeline may have changed meanwhile.
+    act(() => useWorkbenchViewStore.getState().showSection("preview"))
+    expect(pricing.schedule).toHaveBeenCalledTimes(1)
+    // The same basis prices nothing again; a typed sample does.
     act(() => {
-      useWorkbenchViewStore.getState().showSection("preview")
+      useWorkbenchFormStore.setState({ form: { ...form, sample: { t: [{ c: "2" }] }, pages: [{ ...form.pages[0], title: "Renamed" }] } })
+    })
+    expect(pricing.schedule).toHaveBeenCalledTimes(1)
+    act(() => {
       useWorkbenchFormStore.setState({ form: { ...form, sample: { t: [{ c: "3" }] } } })
     })
     expect(pricing.schedule).toHaveBeenCalledTimes(2)

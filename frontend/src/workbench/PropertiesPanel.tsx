@@ -12,7 +12,7 @@
  * panel puts an Explore node's in panes: Config, the fields and their order, and Display,
  * the rest; a Chart's are one list. A Heading's panel is its text and description, when it
  * shows, and its size and alignment. Opened from the showing sheet's tab instead, it is the
- * sheet's panel: its title and when it shows; opened from a section's header, the
+ * sheet's panel: its title, when it shows and its width; opened from a section's header, the
  * section's: its title, when it shows, its height, and adding a section under it or
  * deleting it.
  */
@@ -27,7 +27,7 @@ import { INPUT_STYLE } from "../panels/editors/_shared"
 import PreviewPanelTabs, { type PreviewPanelTab } from "../panels/PreviewPanelTabs"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { activePage, type WidgetPane } from "../stores/useWorkbenchViewStore"
-import { leastSectionHeight } from "../utils/sheetGeometry"
+import { leastSectionHeight, leastSheetWidth } from "../utils/sheetGeometry"
 import {
   addSection,
   chartGrain,
@@ -37,12 +37,14 @@ import {
   findWidget,
   fitSection,
   moveField,
+  pageWidgets,
   plottable,
   readableName,
   renamePage,
   renameSection,
   rowsShown,
   setPageShowWhen,
+  setPageWidth,
   setSectionHeight,
   setSectionShowWhen,
   setTableRows,
@@ -113,7 +115,8 @@ export default function PropertiesPanel() {
   if (sheetSelected) {
     return (
       <SidePanel {...panel} title="Sheet" icon={<Sheet size={14} style={{ color: COMPONENT_COLOR }} />}>
-        <SheetSettings form={form} page={activePage(form, pageId)} />
+        {/* Keyed by the sheet, so a width refused for one is never shown, or saved, for the next. */}
+        <SheetSettings key={activePage(form, pageId).id} form={form} page={activePage(form, pageId)} />
       </SidePanel>
     )
   }
@@ -136,9 +139,15 @@ export default function PropertiesPanel() {
   )
 }
 
-/** The showing sheet's panel: its title (a blank one kept out) and when it shows. */
+/**
+ * The showing sheet's panel: its title (a blank one kept out), when it shows, and its width
+ * in whole pixels, never under what its components reach.
+ */
 function SheetSettings({ form, page }: { form: FormSpec; page: Page }) {
   const change = useWorkbenchFormStore((s) => s.change)
+  const least = leastSheetWidth(pageWidgets(page))
+  const width = (text: string) =>
+    /^\d+$/.test(text.trim()) && Number.isSafeInteger(Number(text)) && Number(text) >= least ? null : `Enter a whole number of pixels, ${least} or more.`
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-3 py-3 text-xs">
       <Section title="Title">
@@ -159,6 +168,22 @@ function SheetSettings({ form, page }: { form: FormSpec; page: Page }) {
           showWhen={page.show_when}
           onChange={(next) => change((spec) => setPageShowWhen(spec, page.id, next))}
         />
+      </Section>
+      <Section title="Layout">
+        <label className="flex items-center gap-2">
+          <span className="w-14" style={{ color: "var(--text-muted)" }}>
+            Width
+          </span>
+          <ValidatedTextField
+            dataTestId="sheet-width"
+            value={String(page.width)}
+            onCommit={(text) => change((spec) => setPageWidth(spec, page.id, Number(text)))}
+            validate={width}
+            containerClassName="w-20"
+            className={`${FIELD_CLASS} w-full tabular-nums`}
+            style={INPUT_STYLE}
+          />
+        </label>
       </Section>
     </div>
   )

@@ -8,7 +8,7 @@ import { vi } from "vitest"
 import type { ChartWidget, FieldRef, FormSpec, HeadingWidget, Page, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { BLANK_SECTION_HEIGHT } from "../../utils/sheetGeometry"
+import { BLANK_SECTION_HEIGHT, SHEET_PADDING } from "../../utils/sheetGeometry"
 import {
   BLANK_THEME,
   CHART_OPTIONS,
@@ -35,19 +35,27 @@ export const section = (id: string, widgets: Widget[] = [], overrides: Partial<S
   ...overrides,
 })
 
-/** A sheet of one section, `s_` and its id, holding `widgets`, always shown unless `showWhen` says otherwise. */
+/** The sheets' width: what `stubLayout`'s viewport holds inside its padding, so they fit it at 100%. */
+export const SHEET_WIDTH = 1000 - SHEET_PADDING * 2
+
+/**
+ * A sheet of one section, `s_` and its id, holding `widgets`, `SHEET_WIDTH` wide or as far
+ * as they reach, always shown unless `showWhen` says otherwise.
+ */
 export const sheet = (id: string, title: string, widgets: Widget[] = [], showWhen: ShowWhen = ALWAYS): Page => ({
   id,
   title,
+  width: Math.max(SHEET_WIDTH, ...widgets.map((widget) => widget.x + widget.w)),
   show_when: showWhen,
   sections: [section(`s_${id}`, widgets)],
 })
 
-/** Put `widget` in a sheet's section, the first of the first sheet unless said otherwise, which grows to hold it. */
+/** Put `widget` in a sheet's section, the first of the first sheet unless said otherwise, which grows, as the sheet widens, to hold it. */
 export function addTo(form: FormSpec, widget: Widget, page = 0, at = 0): void {
   const target = form.pages[page].sections[at]
   target.widgets.push(widget)
   target.height = Math.max(target.height, widget.y + widget.h)
+  form.pages[page].width = Math.max(form.pages[page].width, widget.x + widget.w)
 }
 
 /** The components of a sheet's section, the first of the first sheet unless said otherwise. */
@@ -66,6 +74,8 @@ export const column = (id: string, name: string, overrides: Partial<SchemaColumn
   index: false,
   help: "",
   placeholder: "",
+  group: "",
+  default_value: "",
   number_format: "general",
   decimal_places: null,
   use_grouping: true,
@@ -224,6 +234,7 @@ export function loadForm(form: FormSpec = sheetForm()): void {
   })
   useWorkbenchViewStore.setState({
     section: "sheets",
+    underwriterApp: false,
     pageId: null,
     selectedId: null,
     sheetSelected: false,

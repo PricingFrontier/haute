@@ -1,7 +1,7 @@
 /**
  * A Chart on a sheet (specs/workbench, Charts): its fields' values as the sheet holds them,
- * the sample while building or the quote in Preview, plotted through Explore's lazy chart
- * runtime, imported once, in the page's chart theme. One chart is drawn per mount and per
+ * none while building, the sample or the underwriter app's quote in Preview, plotted
+ * through Explore's lazy chart runtime, imported once, in the page's chart theme. One chart is drawn per mount and per
  * change of theme or reduced motion, and each new option is merged into it, so a series
  * moves to its new values rather than being drawn again. It is dimmed while it plots a price for other
  * values, says "Nothing to chart yet" with nothing to plot, or why a pie cannot be drawn
