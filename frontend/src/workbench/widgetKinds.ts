@@ -68,8 +68,8 @@ export const WIDGET_KINDS: Record<WidgetType, WidgetKind> = {
   },
 }
 
-/** What the palette offers, in order: the components, then a section. */
-export const PALETTE_KINDS: readonly PaletteType[] = ["tableInput", "collection", "chart", "heading", "section"]
+/** What the palette offers, in order: a section, then the components. */
+export const PALETTE_KINDS: readonly PaletteType[] = ["section", "heading", "collection", "tableInput", "chart"]
 
 /** A palette entry by what it adds. */
 export const paletteKind = (type: PaletteType): PaletteKind => (type === "section" ? SECTION_KIND : WIDGET_KINDS[type])

@@ -356,9 +356,9 @@ Out of scope:
   200% in steps of 10%; what is on the sheet is fitted to the viewport, never past 100%,
   when the sheets first show for a form read (a zoom chosen since is kept across a trip to
   the schema or the pipeline editor) and on Ctrl/Cmd+1.
-- **The palette.** The view's left column is Haute's palette shell with a Table and a
-  Collection, in the entry colour, a Chart, in Explore's colour, a Heading and a Section,
-  in the structure colour, and the switcher under them. A Section dragged onto the sheet
+- **The palette.** The view's left column is Haute's palette shell with a Section and a
+  Heading, in the structure colour, a Collection and a Table, in the entry colour, a Chart,
+  in Explore's colour, and the switcher under them. A Section dragged onto the sheet
   shows a line across it where the new section would start, and released there starts it:
   inside a section, at the grid line nearest the pointer, moved to the nearer edge of any
   component the line would cut through, so it never runs through one, and never less than
