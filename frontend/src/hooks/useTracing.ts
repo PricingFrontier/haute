@@ -52,6 +52,8 @@ interface TracingParams {
   refreshPreview?: (node: Node) => void
   /** The `seed_plan` of the preview shown for the selected node. */
   previewSeedPlan?: PreviewSeedPlanEntry[]
+  /** The table of the preview shown for the selected node, when it has several frames. */
+  previewFrame?: string
 }
 
 export type TraceRequestState =
@@ -239,6 +241,7 @@ export default function useTracing({
   changeFocusNodeIds = null,
   refreshPreview,
   previewSeedPlan,
+  previewFrame,
 }: TracingParams): TracingReturn {
   const rowLimit = useSettingsStore((s) => s.rowLimit)
   const activeSource = useSettingsStore((s) => s.activeSource)
@@ -300,6 +303,8 @@ export default function useTracing({
   )
   const semanticContext = stableValue({
     recoveryContext,
+    // The table the explained preview shows; a refresh replaces it, as it does the seed plan.
+    frame: previewFrame ?? null,
     // The generations the explained preview read, and the node-data epoch:
     // a snapshot published, refreshed, or cleared invalidates the evidence.
     seedPlan: (previewSeedPlan ?? []).map(
@@ -404,6 +409,7 @@ export default function useTracing({
       row_limit: rowLimit,
       source: activeSource,
       row_values: rowValues,
+      port_label: previewFrame,
       seed_plan: (previewSeedPlan ?? []).map((entry) => ({
         node_id: entry.node_id,
         port_label: null,
@@ -472,7 +478,7 @@ export default function useTracing({
           traceAbort.current = null
         }
       })
-  }, [selectedNode, nodes, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, rowLimit, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan])
+  }, [selectedNode, nodes, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, rowLimit, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan, previewFrame])
 
   const handleCellClick = startTrace
   const cancelTrace = clearTrace

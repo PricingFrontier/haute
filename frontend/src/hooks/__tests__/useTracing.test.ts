@@ -306,6 +306,21 @@ describe("useTracing", () => {
     expect(mockTraceCell.mock.calls[1][0].seed_plan).toEqual([])
   })
 
+  it("sends the displayed preview's table, and hides the trace when another table shows", async () => {
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: makeTrace(["n1", "n2"]) })
+    const { result, rerender } = renderHook(
+      ({ frame }) => useTracing(makeParams({ previewFrame: frame })),
+      { initialProps: { frame: "pricing" } },
+    )
+    await act(async () => { result.current.handleCellClick(0, "price") })
+    await waitFor(() => expect(result.current.traceState.status).toBe("ready"))
+    expect(mockTraceCell.mock.calls[0][0].port_label).toBe("pricing")
+
+    rerender({ frame: "layers" })
+    expect(result.current.traceState.status).toBe("idle")
+    expect(result.current.traceResult).toBeNull()
+  })
+
   it("ignores stale trace responses when a newer click resolves first", async () => {
     type TraceCellValue = Awaited<ReturnType<typeof traceCell>>
     let resolveFirst!: (value: TraceCellValue) => void
@@ -1274,11 +1289,14 @@ describe("useTracing validity across shared snapshots", () => {
     mockTraceCell.mockRejectedValue(err)
     const refreshPreview = vi.fn()
     const { result, rerender } = renderHook(
-      ({ plan, selectedNode }) => useTracing(makeParams({ refreshPreview, previewSeedPlan: plan, selectedNode })),
+      ({ plan, selectedNode, frame }) => useTracing(makeParams({
+        refreshPreview, previewSeedPlan: plan, selectedNode, previewFrame: frame,
+      })),
       {
         initialProps: {
           plan: [seedPlanEntry("g1")] as ReturnType<typeof seedPlanEntry>[] | undefined,
           selectedNode: makeNode("n2"),
+          frame: "pricing" as string | undefined,
         },
       },
     )
@@ -1289,18 +1307,18 @@ describe("useTracing validity across shared snapshots", () => {
     expect(result.current.tracedCell).toBeNull()
 
     // The refresh replaces the preview — first with a loading one that lists
-    // no generations — and its own captures raise the epoch.
+    // no generations and no table — and its own captures raise the epoch.
     const selectedNode = makeNode("n2")
-    rerender({ plan: undefined, selectedNode })
+    rerender({ plan: undefined, selectedNode, frame: undefined })
     act(() => useNodeDataStore.getState().bumpEpoch())
-    rerender({ plan: [seedPlanEntry("g2")], selectedNode })
+    rerender({ plan: [seedPlanEntry("g2")], selectedNode, frame: "pricing" })
 
     expect(result.current.traceState).toMatchObject({
       status: "error",
       message: expect.stringContaining("The cached data this preview read has changed"),
     })
 
-    rerender({ plan: [seedPlanEntry("g2")], selectedNode: makeNode("n1") })
+    rerender({ plan: [seedPlanEntry("g2")], selectedNode: makeNode("n1"), frame: "pricing" })
     expect(result.current.traceState.status).toBe("idle")
   })
 })

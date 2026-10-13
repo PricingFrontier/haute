@@ -1035,6 +1035,10 @@ function FlowEditor() {
       previewData !== null && previewData.nodeId === selectedNode?.id
         ? previewData.seed_plan
         : undefined,
+    previewFrame:
+      previewData !== null && previewData.nodeId === selectedNode?.id
+        ? previewData.selected_frame
+        : undefined,
   })
   // Fetch the lazy trace panel while the trace request runs.
   useEffect(() => {

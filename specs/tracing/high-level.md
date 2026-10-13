@@ -432,12 +432,15 @@ Out of scope (owned elsewhere, linked where relevant):
   `target_node_id` that does not exist in the graph, a `row_index` beyond the
   target node's row count, a `row_values` mismatch that cannot be resolved by
   relocating the row (including a relocation that matches more than one row —
-  ambiguous, not just missing), and a `target_node_id` that resolves to a
+  ambiguous, not just missing), a `target_node_id` that resolves to a
   multi-frame source's `dict` output (tracing must target a node downstream of a
-  specific frame) all raise `ValueError` with a message the HTTP layer pattern
-  -matches to choose a specific status code (404 for missing target node, 400 for
-  out-of-range row or a multi-frame target, 409 for a genuine or ambiguous row
-  mismatch).
+  specific frame), and a Workbench Output target whose cell cannot be traced from
+  the node connected to its table (no table named among several, a table it lacks
+  or that nothing is connected to, a column filled with nothing) all
+  raise `ValueError` with a message the HTTP layer pattern-matches to choose a
+  specific status code (404 for missing target node, 400 for out-of-range row, a
+  multi-frame target or a Workbench Output's refusal, 409 for a genuine or
+  ambiguous row mismatch).
 - **Underlying execution errors propagate unchanged.** If a cold execution (no
   usable trace cache entry) fails — a bad node config, a contract mismatch — the
   original exception (including `ContractMismatchError`) propagates out of

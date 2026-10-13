@@ -37,18 +37,20 @@
 ## Control flow
 
 1. `frontend/src/hooks/useTracing.ts` captures graph `structuralVersion`, active
-   source, row limit, target, the explained preview's
+   source, row limit, target, the explained preview's table (`selected_frame`,
+   sent as `port_label`, so a Workbench Output's cell is traced from the node
+   connected to that table), the explained preview's
    `seed_plan` (node, identity digest, and generation of each entry), the
    node-data epoch, row, column, and clicked values with each request, and
    sends that `seed_plan` so the trace reads the generations the preview did.
-   A snapshot published, refreshed, or cleared therefore hides a displayed
-   trace and aborts an in-flight one like any other semantic change. A 409
-   refreshes the preview and asks for the row again. For
+   A snapshot published, refreshed, or cleared, or another table shown,
+   therefore hides a displayed trace and aborts an in-flight one like any other
+   semantic change. A 409 refreshes the preview and asks for the row again. For
    `preview_seed_plan_expired` it says the cached data the preview read has
-   changed. That notice belongs to the context without the seed plan and the
-   epoch, so it outlives the refresh it started — which replaces the seed plan
-   and may raise the epoch — and is hidden only by a change of node, graph,
-   source, or row limit. `useTracing` also takes `traceFocusNodeId` from `useUIStore`:
+   changed. That notice belongs to the context without the table, the seed plan
+   and the epoch, so it outlives the refresh it started — which replaces the
+   table and the seed plan and may raise the epoch — and is hidden only by a
+   change of node, graph, source, or row limit. `useTracing` also takes `traceFocusNodeId` from `useUIStore`:
    while a trace shows, the canvas node showing that step (resolved from the runtime id
    through the hook's `resolveTraceNodeId`, as for trace activity: a submodel's card or a
    boundary) is projected with `_traceFocused` and drawn with an accent ring. `TracePanel` sets it while a card or derivation row is pointed at (and

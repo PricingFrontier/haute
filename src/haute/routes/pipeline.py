@@ -684,6 +684,7 @@ def _trace_supersession_key(
     row_values: dict[str, Any] | None,
     seed_plan: list[TraceSeedPlanEntry] | None = None,
     *,
+    port_label: str | None = None,
     memo: GraphFingerprintMemo | None = None,
 ) -> tuple[str, ...]:
     return (
@@ -692,6 +693,8 @@ def _trace_supersession_key(
         *(f"{entry.node_id}={entry.generation_id}" for entry in seed_plan or ()),
         "target",
         target_node_id or "",
+        "port_label",
+        port_label or "",
         "row_index",
         str(row_index),
         "column",
@@ -805,6 +808,8 @@ def _raise_interactive_remote_http_error(
             if detail.startswith("row_index ") and "out of range" in detail:
                 raise HTTPException(status_code=400, detail=detail) from None
             if detail.startswith("Target node") and "multiple frames" in detail:
+                raise HTTPException(status_code=400, detail=detail) from None
+            if detail.startswith("Target node ") and "is a Workbench Output" in detail:
                 raise HTTPException(status_code=400, detail=detail) from None
             if detail.startswith("Target node ") and "not found in graph" in detail:
                 raise HTTPException(status_code=404, detail=detail) from None
@@ -1396,6 +1401,7 @@ def _execute_trace_worker(
             fingerprint_memo=GraphFingerprintMemo(),
             execution_context=context,
             seed_plan=_listed_seeds(body),
+            port_label=body.port_label,
         )
         trace_payload = trace_result_to_dict(result)
         TraceResponse.model_validate({"status": "ok", "trace": trace_payload})
@@ -1435,6 +1441,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
                 body.row_limit,
                 body.row_values,
                 body.seed_plan,
+                port_label=body.port_label,
                 memo=fingerprint_memo,
             )
         )
@@ -1477,6 +1484,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
                     fingerprint_memo=fingerprint_memo,
                     execution_context=trace_context,
                     seed_plan=_listed_seeds(body),
+                    port_label=body.port_label,
                 )
                 # Serialise to a JSON-safe dict here, still in the
                 # worker thread, so the event loop never walks the
@@ -1564,6 +1572,9 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
             raise HTTPException(status_code=400, detail=detail)
         if detail.startswith("Target node") and "multiple frames" in detail:
             logger.warning("trace_target_multi_frame", error=detail)
+            raise HTTPException(status_code=400, detail=detail)
+        if detail.startswith("Target node ") and "is a Workbench Output" in detail:
+            logger.warning("trace_target_workbench_output", error=detail)
             raise HTTPException(status_code=400, detail=detail)
         if detail.startswith("Target node ") and "not found in graph" in detail:
             logger.warning("trace_target_not_found", error=detail)

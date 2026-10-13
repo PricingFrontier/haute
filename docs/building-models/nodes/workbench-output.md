@@ -13,7 +13,7 @@ Each table is filled from the frame connected to it. Each of the table's columns
 
 A table with one row per quote takes exactly one row from its frame; a table with many rows per quote takes all of its frame's rows.
 
-Click the node to preview its tables, filled for the workbench's sample quote: each table is a dataframe, with the table picker at the top of the preview choosing which one shows when there are several. To trace a value back through the pipeline, click it in the preview of the node connected to its table.
+Click the node to preview its tables, filled for the workbench's sample quote: each table is a dataframe, with the table picker at the top of the preview choosing which one shows when there are several. Click a value to trace it back through the pipeline: it is traced from the node connected to its table, through the column that fills it.
 
 While you build, the workbench prices the sample live and shows the answer in its output columns (see [The sample](../workbench.md#the-sample)); the node's own preview runs on the sample as last saved.
 

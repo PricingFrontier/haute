@@ -557,9 +557,18 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
     Workbench Output a node-output snapshot point, as it never makes a request input one: a
     bundle is not one frame, so a preview with shared snapshots never captures it, though two
     inputs make it a join point. The executor renders only a Quote Response's preview with
-    `render_output_document`. `execute_trace` in `src/haute/trace.py` refuses a Workbench
-    Output's bundle as it refuses any multi-frame target, saying to trace the node connected to
-    the table instead.
+    `render_output_document`. `execute_trace` in `src/haute/trace.py` traces a cell of a
+    Workbench Output's table from the node connected to that table
+    (`_workbench_output_trace_target`): the trace request's `port_label` names the table (a
+    Workbench Output with one table needs none), and the target becomes the source of the edge
+    whose `targetHandle` is that table, at the same row. The column and the clicked row's
+    values are renamed to the frame columns that fill them, the mapping's pick or else the
+    column's own name. A column filled with nothing has no value to trace and fails: at once
+    when the mapping picks none, and once the traced frame is built when it lacks the
+    column of that name (`_execute_trace_core`'s `missing_column_error`). The listed seeds
+    are cut to that node's lineage, since the preview listed every table's. Without a table
+    to name, it refuses the bundle as it refuses any multi-frame target. Each refusal starts
+    "Target node" and names the Workbench Output, and the trace route answers it with 400.
 13. **The response node.** `Pipeline._resolve_output_node` returns the one node whose
     `_node_type` is in `RESPONSE_NODE_TYPES`, raising `ExecutionError` naming them when there
     are several; `find_output_node` picks the response node the same way; trace correlation

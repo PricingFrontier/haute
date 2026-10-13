@@ -392,6 +392,14 @@ def test_remote_error_translation_covers_each_closed_public_identity() -> None:
         (
             "pipeline_trace",
             pipeline_mod._VALUE_ERROR_REMOTE_IDENTITY,
+            "Target node 'response' is a Workbench Output whose 'pricing' table fills "
+            "'referral' with nothing, so it has no value to trace.",
+            None,
+            400,
+        ),
+        (
+            "pipeline_trace",
+            pipeline_mod._VALUE_ERROR_REMOTE_IDENTITY,
             "Target node 'missing' not found in graph",
             None,
             404,

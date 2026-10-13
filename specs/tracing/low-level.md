@@ -138,6 +138,14 @@
 
 ### `execute_trace()` (`trace.py`)
 
+**A Workbench Output's table.** A target that is a Workbench Output is first replaced by
+`_workbench_output_trace_target` with the node connected to the table `port_label` names
+(the only table when it names none), as [workbench](../workbench/low-level.md) describes:
+the column and `row_values` are renamed to the frame columns that fill them, and the listed
+seeds are cut to the new target's lineage. Everything below runs on that node; step 4 also
+raises the Workbench Output's refusal when that node's frame lacks the column, which then
+fills the table's column with nothing.
+
 **The preview's seed plan.** `execute_trace(..., seed_plan)` takes the `ListedSeed`
 entries of the preview it explains. Empty or `None`, the trace runs exactly as below with
 no plan. Otherwise `_open_trace_seed_plan` opens `open_listed_seed_plan` for the target —

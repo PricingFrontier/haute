@@ -965,8 +965,10 @@ Out of scope:
     Integer column or any number for a Decimal one, and when it is categorical for a Text one.
     A one-row table holds exactly one row; a many-row table holds any number. Clicking the node
     previews its tables as dataframes, one at a time, chosen from the preview's table picker
-    when there are several, the first table first. A value in them is traced from the node
-    connected to its table: tracing one of the tables' own cells says so.
+    when there are several, the first table first. Clicking a value in them traces it from
+    the node connected to its table: the same row of that node's frame, and the column that
+    fills the value's column. A column nothing fills has no value to trace, and tracing it
+    says so.
   - **The response.** The tables are what a priced quote's output tables are filled with. Where
     the pipeline answers a request, its tables become the response for one quote: a list of one
     object holding each one-row table as an object under its name and each many-row table as a
