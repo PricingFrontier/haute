@@ -136,6 +136,7 @@ def prepare_build_directory(
     *,
     haute_requirement: str | None = None,
     extra_files: Sequence[str] = (),
+    extra_dependencies: Sequence[str] = (),
 ) -> Path:
     """Prepare the container build directory with manifest, artifacts, app.py, and Dockerfile.
 
@@ -154,6 +155,9 @@ def prepare_build_directory(
             and the Dockerfile gains ``COPY <wheel name> .`` before ``pip install ./<wheel name>``.
         extra_files: Files the caller writes beside ``app.py``, which the image copies too: a
             workbench release's form and description.
+        extra_dependencies: Distributions the caller's app needs past the scoring runtime,
+            installed in the image pinned to the versions installed here: the underwriter
+            app's quote store.
 
     Returns:
         Path to the written ``deploy_manifest.json``.
@@ -181,14 +185,18 @@ def prepare_build_directory(
         else:
             haute_pip_dep = haute_requirement
 
+    extra_pins = [
+        _pinned_dockerfile_dependency(name, name, required_by=["the app"])
+        for name in extra_dependencies
+    ]
     manifest_path = write_bundle(
         resolved,
         build_dir,
         {
-            "container_dependencies": _pinned_dockerfile_deps(
-                resolved,
-                haute_requirement=haute_pip_dep,
-            )
+            "container_dependencies": [
+                *_pinned_dockerfile_deps(resolved, haute_requirement=haute_pip_dep),
+                *extra_pins,
+            ]
         },
     )
 
@@ -202,6 +210,7 @@ def prepare_build_directory(
         haute_pip_dep=haute_pip_dep,
         wheel_name=wheel_name,
         extra_files=extra_files,
+        extra_pins=extra_pins,
     )
     (build_dir / "Dockerfile").write_text(dockerfile, encoding="utf-8")
 
@@ -912,10 +921,12 @@ def _generate_dockerfile(
     haute_pip_dep: str | None = None,
     wheel_name: str | None = None,
     extra_files: Sequence[str] = (),
+    extra_pins: Sequence[str] = (),
 ) -> str:
-    """Generate a Dockerfile for the scoring container, copying *extra_files* beside app.py."""
+    """Generate a Dockerfile for the scoring container, copying *extra_files* beside app.py and
+    installing *extra_pins*, pinned requirements, with the runtime."""
     haute_dep, *runtime_deps = _pinned_dockerfile_deps(resolved, haute_requirement=haute_pip_dep)
-    runtime_line = " ".join(runtime_deps)
+    runtime_line = " ".join([*runtime_deps, *extra_pins])
     copy_wheel = f"COPY {wheel_name} .\n" if wheel_name else ""
     utility = resolved.project_modules.utility
     if utility is None:

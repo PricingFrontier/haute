@@ -33,6 +33,15 @@ describe("ToastContainer", () => {
     expect(alerts).toHaveLength(4)
   })
 
+  it("runs a toast's action, such as Undo, and dismisses the toast", () => {
+    const run = vi.fn()
+    useToastStore.getState().addToast("success", "Archived Q-000001", { label: "Undo", run })
+    render(<ToastContainer />)
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }))
+    expect(run).toHaveBeenCalledTimes(1)
+    expect(screen.queryByText("Archived Q-000001")).not.toBeInTheDocument()
+  })
+
   it("dismiss button removes toast", () => {
     useToastStore.getState().addToast("info", "Dismissable")
     render(<ToastContainer />)

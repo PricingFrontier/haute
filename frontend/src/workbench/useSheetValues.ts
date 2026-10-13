@@ -31,6 +31,10 @@ export interface SheetValues {
   visibility: SheetVisibility
   /** The schema as these values' quote reads it: without the columns the sheets hide. */
   quoted: FormSchema
+  /** The values may not change: the cells take no typing and rows are not added or deleted. */
+  readOnly: boolean
+  /** The columns, by `columnKey`, whose cells take no typing: the underwriter app sets them. */
+  locked: ReadonlySet<string>
 }
 
 export const SheetValuesContext = createContext<SheetValues | null>(null)
@@ -47,6 +51,7 @@ const NO_ROWS: RowsByTable = {}
 // Before the form is read nothing draws a sheet; these only fill the shape.
 const NO_VISIBILITY: SheetVisibility = { pages: new Set(), sections: new Set(), widgets: new Set(), hidden: new Set() }
 const NO_SCHEMA: FormSchema = { tables: [] }
+const NOTHING_LOCKED: ReadonlySet<string> = new Set()
 
 /** The sample while building: the form's, each edit undone like any other, priced live. */
 export function useSampleValues(): SheetValues {
@@ -64,6 +69,8 @@ export function useSampleValues(): SheetValues {
       problems: NO_PROBLEMS,
       visibility,
       quoted: form === null ? NO_SCHEMA : quotedSchema(form.schema, visibility.hidden),
+      readOnly: false,
+      locked: NOTHING_LOCKED,
     }
   }, [form, change, price])
 }
@@ -80,6 +87,8 @@ export function usePreviewValues(): SheetValues {
   const price = useWorkbenchPreviewStore((s) => s.price)
   const setCell = useWorkbenchPreviewStore((s) => s.setCell)
   const setRows = useWorkbenchPreviewStore((s) => s.setRows)
+  const readOnly = useWorkbenchPreviewStore((s) => s.readOnly)
+  const locked = useWorkbenchPreviewStore((s) => s.locked)
   return useMemo<SheetValues>(() => {
     const visibility = form === null ? NO_VISIBILITY : sheetVisibility(form, quote)
     const quoted = form === null ? NO_SCHEMA : quotedSchema(form.schema, visibility.hidden)
@@ -92,8 +101,10 @@ export function usePreviewValues(): SheetValues {
       problems: checked && form !== null ? quoteProblems(quoted, quote) : NO_PROBLEMS,
       visibility,
       quoted,
+      readOnly,
+      locked,
     }
-  }, [form, quote, checked, price, setCell, setRows])
+  }, [form, quote, checked, price, setCell, setRows, readOnly, locked])
 }
 
 /**

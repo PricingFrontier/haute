@@ -19,14 +19,14 @@ import type { ToastMessage } from "../components/Toast"
 interface ToastState {
   toasts: ToastMessage[]
   _toastCounter: number
-  addToast: (type: ToastMessage["type"], text: string) => void
+  addToast: (type: ToastMessage["type"], text: string, action?: ToastMessage["action"]) => void
   dismissToast: (id: string) => void
 }
 
 const useToastStore = create<ToastState>()((set, get) => ({
   toasts: [],
   _toastCounter: 0,
-  addToast: (type, text) => {
+  addToast: (type, text, action) => {
     // Dedup: if an identical (type, text) toast is already on screen,
     // don't stack another copy — and don't advance the counter either,
     // so the absence of a new toast is fully observable.
@@ -37,7 +37,7 @@ const useToastStore = create<ToastState>()((set, get) => ({
     const id = String(get()._toastCounter + 1)
     set((s) => ({
       _toastCounter: s._toastCounter + 1,
-      toasts: [...s.toasts.slice(-9), { id, type, text }],
+      toasts: [...s.toasts.slice(-9), action === undefined ? { id, type, text } : { id, type, text, action }],
     }))
   },
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),

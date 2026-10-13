@@ -73,6 +73,23 @@ while you type into a cell it shows as typed, and what is typed is what is saved
   Changing a column's type drops the rules and the format the new type cannot have.
 - Removing a column or a table a sheet shows asks first, and takes it off the sheet.
 
+### Quote details
+
+Every workbench has Haute's own table, `quote_details`, first in the Schema section: one
+row of a quote's details, which the underwriter app keeps with each saved quote and lists
+on its Quotes page. Its columns are fixed: **reference**, **quote_name**, **insured**,
+**broker**, **inception_date**, **expiry_date**, **valid_until**, **currency**, **stage**,
+**assignee** and **archived**. Put them on the sheets as any other columns, and give them
+labels, help, placeholders and rules; the pipeline receives the table as it receives any
+other input, so a rule can read a quote's inception date or its stage.
+
+The app sets **reference**, **stage**, **assignee** and **archived** itself: their cells take
+no typing in the app and take no rules. Assigning, archiving, restoring, marking final and
+reopening a quote each save a new revision with those details changed and its values and
+price kept, so the history shows when a quote moved; the pipeline sees the new details the
+next time the quote is priced. A new quote is priced before it takes its reference, so its
+first price is made without one.
+
 A table or a column you add reaches the pipeline when you save: the editor fetches the
 tables again, the Workbench Input's and Workbench Output's tables follow the schema, and
 the pipeline is saved with them in the same save. Until then it is on the sheets alone.
@@ -261,35 +278,87 @@ GitLab and Azure DevOps keep it with the run. `haute test-quotes report` writes 
 report on your machine.
 
 ## The underwriter app
-
 Underwriters use the sheets in an app of their own, apart from Haute: the sheets drawn as
 Preview draws them, priced by the pipeline packed into the same app, with nothing of the
-builder on screen.
+builder on screen. With a quote store it is where they manage their quotes too.
 
 - `haute app serve` builds the app from the project as it is saved and serves it at
-  `http://127.0.0.1:8001/`, signed in as your git identity, so you can see the sheets as
-  underwriters will before you merge. Only your machine can reach it.
+  `http://127.0.0.1:8001/`, signed in as your git identity, so you can see the sheets and
+  the Quotes page as underwriters will before you merge. Only your machine can reach it. The
+  quotes you save there are kept in `.haute/app/quotes.sqlite`, which a rebuild leaves as it
+  is; `haute app serve --reader` signs you in as an underwriter who may only read them.
 - `haute app build` writes a **release** to `.haute/app/release` (or the folder you name):
   the pipeline, checked and bundled
   as `haute deploy` does it (the test quotes included), with the sheets and an `app.py` that
   serves them. The release's id changes when anything that prices a quote changes, and the
   app names it in its bar.
 - Say where the app runs in `haute.toml`. Azure Container Apps is the host so far; its
-  built-in authentication signs underwriters in, and the app refuses anyone it has not:
+  built-in authentication signs underwriters in, and the app refuses anyone it has not.
+  `edit_role`, if you set it, is the app role that may change quotes: everyone else the
+  host signs in reads them. Ask your IT team to give the app role to the underwriters who
+  quote, and to pass roles to the app; the app refuses a request whose roles it cannot
+  read rather than guess:
 
   ```toml
   [workbench.app]
   host = "azure-container-apps"
+  edit_role = "Quotes.Edit"
   ```
 
 - To build the app's image, pin its base image as the container target does. The release is
-  then the image's build context, and `haute app build --image <tag>` builds it with Docker:
+  then the image's build context, and `haute app build --image <tag>` builds it with Docker;
+  the image installs the scoring runtime and the quote store's packages:
 
   ```toml
   [deploy.container]
   base_image = "python:3.11.9-slim"
   ```
 
-A page opened before a release that changed the sheets is refused when it prices, and
-reloading it picks up the new sheets. A release that changes only the pipeline prices the
-open page on the new pipeline.
+- The hosted app keeps quotes in the SQL database your IT team provides. The host gives the
+  app its SQLAlchemy URL in `HAUTE_QUOTE_STORE_URL`; without it the app prices and keeps
+  nothing, and says so. The app does not start on a database it has not been migrated to:
+  run `haute app migrate` (with `HAUTE_QUOTE_STORE_URL` set, or `--url`) before a release
+  that needs it starts.
+
+A page opened before a new release is refused when it prices or saves, and reloading it
+picks up the release; its unsaved values stay in the browser.
+
+### The Quotes page
+The app opens on the Quotes page. On the left are **My work** (the quotes with you),
+**Team** and **Archived**, and the stages of the list showing, **Draft** (saved without a
+price), **Priced** and **Final**, each with its count. Each quote shows its reference, its
+quote name (or its insured, or its reference), and its insured, broker and inception date
+under the labels the sheets give them, read from its quote details. Search matches every
+word you type against the reference, quote name, insured and broker; in Team you can
+narrow the list to who a quote is with, and order it by when it was saved, its reference
+or its insured. The list, the search and the order are in the page's address, so a link or Back
+returns to the same list. A row opens its quote; Duplicate and Archive appear as you hover
+over it, and Archive can be undone from the message it shows. **New quote** (or `N`) starts
+a blank one; `/` jumps to the search.
+
+### A quote
+A quote opens at its own address, under a bar holding its reference (`Q-000123`), its
+name (its `quote_name`, saved with the next **Save**), its stage, and:
+
+- **Price**, which checks the quote and prices it, as Preview does. **Save** keeps the
+  quote with its price when the sheets show one for the values as they are, and unpriced
+  otherwise (the button says **Save unpriced** then); the app prices it again as it saves,
+  and says so if the price it keeps moved. Each save is a new revision, and the quote's
+  first save gives it its reference.
+- **Mark final** pins the newest revision as the final quotation, once it is priced on the
+  running release; a final quote cannot be saved over until someone **reopens** it, giving a
+  reason. The final stays in its history.
+- **More**: **Duplicate**, **Renew** and **Create alternative** each start a new quote from
+  the revision showing, linked to it; **Archive** takes it out of the lists (it opens read
+  only until restored); **Copy link**.
+- **History**: the handover note, every revision (each opens as it was saved), what was done
+  to the quote, by whom and when, and the quotes it came from or that were made from it.
+
+Beneath the bar are the revision, who saved it and when, the release that priced it, where
+the quote came from, and who it is with, which you can change. A quote saved on sheets a
+later release changed opens on the sheets it was keyed into, read only; **Move to current
+sheets** brings its values onto today's, naming any that no longer fit. If a colleague saves
+a quote while you have it open, your save is refused naming who did it, with your values
+kept: open the newest, or save yours as a new quote. Values you have not saved are kept in
+the browser and offered back when you open the quote again, and leaving with them asks
+first. `Ctrl+S` saves and `Ctrl+Enter` prices.

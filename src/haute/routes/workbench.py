@@ -30,7 +30,13 @@ from fastapi.concurrency import run_in_threadpool
 from haute._git_lock import repository_mutation
 from haute._logging import get_logger
 from haute._workbench_config import WorkbenchConfig, read_workbench_config
-from haute._workbench_form import FormSpec, form_file_revision, read_form_document, write_form
+from haute._workbench_form import (
+    FormSpec,
+    form_file_revision,
+    read_form_document,
+    with_quote_details,
+    write_form,
+)
 from haute._workbench_tables import WorkbenchTablesError, workbench_tables
 from haute.routes._contract_errors import contract_error_http_exception
 from haute.routes._helpers import save_lock
@@ -80,7 +86,9 @@ async def _enabled_config() -> WorkbenchConfig:
 
 
 def _tables_response(spec: FormSpec) -> WorkbenchTablesResponse:
-    """The tables, sample and response tables of *spec*, the tables checked as the pipeline's."""
+    """The tables, sample and response tables of *spec*, holding Haute's ``quote_details``
+    as every form read or saved does, the tables checked as the pipeline's."""
+    spec = with_quote_details(spec)
     try:
         tables = workbench_tables(spec)
     except WorkbenchTablesError as exc:
@@ -110,7 +118,8 @@ def _save_form(
             message=f"{config.form} changed on disk after the workbench read it. "
             "Reload the workbench before saving.",
         )
-    revision = write_form(config.form_path, body.form)
+    form = with_quote_details(body.form)
+    revision = write_form(config.form_path, form)
     # The written file is one save on the ledger, as the pipeline's written files are, so a
     # milestone's sweep takes it from then on: a file this save created included. The path
     # resolves inside the project (the config checked it), which is where the ledger is.
@@ -118,7 +127,7 @@ def _save_form(
     form_path = config.form_path.resolve().relative_to(config.project_root.resolve()).as_posix()
     git_sha, identity_required = capture_save_in_ledger(config.project_root, [form_path], warnings)
     return WorkbenchFormSaveResponse(
-        form=body.form,
+        form=form,
         revision=revision,
         warnings=warnings,
         git_sha=git_sha,

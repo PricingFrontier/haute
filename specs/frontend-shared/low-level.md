@@ -45,7 +45,7 @@
 | `frontend/src/utils/portableKey.ts` | Browser-owned persistence key; intentionally not Python-compatible or reversible. Executable identity comes only from server metadata. |
 | `frontend/src/components/ErrorBoundary.tsx` | Class-component error boundary with a "Try again" fallback UI. For a chunk-load failure (`isChunkLoadError`), which no retry in the page can recover because the lazy import's rejection is cached and a rebuild has replaced the chunk it names, the fallback reads "Haute has been updated" and its Reload button reloads the page; while `useGraphStore`'s `dirty` is set it asks for a save first and the button reads "Reload without saving". |
 | `frontend/src/components/UpdatedNotice.tsx` | The chunk-load fallback's body for the error boundary: the reload explanation and a button that reloads the page, reading "Reload without saving" beside a save request while `useGraphStore`'s `dirty` is set, and the shared fallback button style. |
-| `frontend/src/components/Toast.tsx` | `ToastMessage` type + `ToastContainer`, rendering `useToastStore`'s queue with per-type icon/colour and auto-dismiss. |
+| `frontend/src/components/Toast.tsx` | `ToastMessage` type + `ToastContainer`, rendering `useToastStore`'s queue with per-type icon/colour and auto-dismiss, and a toast's action, such as Undo, as a button that runs it and dismisses the toast. |
 | `frontend/src/components/ModalShell.tsx` | Shared dialog chrome: backdrop, Escape-close, full Tab focus trap, focus restore on unmount; the panel is centred, or top-aligned with `placement="top"` (the node-search palette). |
 | `frontend/src/components/Tooltip.tsx` | Zero-delay hover and focus tooltip. The bubble renders into the document body with fixed positioning, so scrolling or overflow-clipped panels never cut it off; it is placed from the anchor's viewport rectangle, clamped inside the viewport horizontally, flipped between top and bottom when the preferred side would clip, closed on scroll or resize, wraps long unbroken text such as URLs, and describes the control that takes focus: a single element child receives the tooltip in its described-by reference (unless its accessible label already is the tooltip text), a function child receives the id to place on a nested control such as a native radio inside its label, and only text or fragment children leave the reference on the hover wrapper. |
 | `frontend/src/components/ContextMenu.tsx` | Node right-click menu: rename/duplicate/create-instance/dissolve-submodel/delete, arrow-key roving focus. |
@@ -208,7 +208,8 @@
   config, not this store, holds each node's choice (`mlflow_destination`,
   absent = the local folder); the store only says what the environment offers.
 - **`ToastMessage`** (`components/Toast.tsx`): `{id, type: "success"|
-  "error"|"info"|"warning", text}`. `id` is a monotonically increasing
+  "error"|"info"|"warning", text, action?}`, `action` a `{label, run}` button beside the
+  text, given as `addToast`'s third argument. `id` is a monotonically increasing
   string counter, not a UUID.
 - **`GraphPayload`** (`api/types.ts`): `{nodes, edges, submodels?,
   preamble?}` — the minimal canonical shape every pipeline-mutating endpoint

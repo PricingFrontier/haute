@@ -7,6 +7,8 @@ export interface ToastMessage {
   id: string
   type: "success" | "error" | "info" | "warning"
   text: string
+  /** A button beside the text, such as Undo, which also dismisses the toast. */
+  action?: { label: string; run: () => void }
 }
 
 const icons = {
@@ -46,6 +48,19 @@ function ToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss: (id: 
     >
       <Icon size={14} style={{ color: accent }} className="shrink-0" />
       <span className="flex-1" style={{ color: "var(--text-primary)" }}>{toast.text}</span>
+      {toast.action !== undefined && (
+        <button
+          type="button"
+          onClick={() => {
+            onDismiss(toast.id)
+            toast.action?.run()
+          }}
+          className="toolbar-btn shrink-0 rounded px-1.5 py-0.5 text-[12px] font-semibold"
+          style={{ color: "var(--text-accent)" }}
+        >
+          {toast.action.label}
+        </button>
+      )}
       <button
         onClick={() => onDismiss(toast.id)}
         aria-label="Dismiss notification"

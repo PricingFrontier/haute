@@ -9,10 +9,13 @@ from pathlib import Path
 from typing import Any, get_args
 
 import pytest
+from pydantic import ValidationError
 
 from haute._explore_pivots import PIVOT_NUMBER_FORMATS
 from haute._workbench_config import WorkbenchConfig
 from haute._workbench_form import (
+    QUOTE_DETAILS_COLUMNS,
+    QUOTE_DETAILS_MANAGED,
     ColumnFormat,
     FormDocument,
     FormSpec,
@@ -21,8 +24,10 @@ from haute._workbench_form import (
     blank_form,
     form_file_revision,
     form_revision,
+    quote_details_table,
     read_form_document,
     render_form,
+    with_quote_details,
     write_form,
 )
 
@@ -223,6 +228,18 @@ def config(project: Path, form: str = "forms/form.json") -> WorkbenchConfig:
     return WorkbenchConfig(enabled=True, form=form, project_root=project)
 
 
+def test_the_editor_names_the_quote_details_columns_the_server_does() -> None:
+    source = (
+        Path(__file__).resolve().parents[1] / "frontend" / "src" / "utils" / "workbenchForm.ts"
+    ).read_text(encoding="utf-8")
+    columns = re.findall(r'\["(qd_\w+)", "(\w+)", "(\w+)"\]', source)
+    managed = re.search(r"QUOTE_DETAILS_MANAGED[^=]*= new Set\(\[([^\]]*)\]\)", source)
+
+    assert tuple(columns) == QUOTE_DETAILS_COLUMNS
+    assert managed is not None
+    assert set(re.findall(r'"(\w+)"', managed.group(1))) == QUOTE_DETAILS_MANAGED
+
+
 def test_the_blank_form_is_one_empty_sheet_named_after_the_project() -> None:
     text = render_form(blank_form("motor"))
 
@@ -232,7 +249,7 @@ def test_the_blank_form_is_one_empty_sheet_named_after_the_project() -> None:
     assert json.loads(text) == {
         "version": 1,
         "name": "motor",
-        "schema": {"tables": []},
+        "schema": {"tables": [quote_details_table().model_dump(mode="json")]},
         "pages": [
             {
                 "id": "page_1",
@@ -254,7 +271,10 @@ def test_a_form_round_trips_through_write_and_read_with_the_file_s_revision(
     revision = write_form(tmp_path / "forms" / "form.json", spec)
     document = read_form_document(config(tmp_path))
 
-    assert document == FormDocument(spec, revision)
+    # Read, it holds Haute's quote_details table first, which the file written without it
+    # takes on at its next save.
+    assert document == FormDocument(with_quote_details(spec), revision)
+    assert document.spec.data_schema.tables[0].id == "quote_details"
     data = (tmp_path / "forms" / "form.json").read_bytes()
     assert json.loads(data) == FORM
     # The revision is the file's content hash, so the same bytes read as the same revision.
@@ -331,11 +351,11 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
     spec = read_form_document(config(tmp_path)).spec
 
     assert spec.sample == {}
-    assert [c.index for c in spec.data_schema.tables[1].columns] == [True, False, False]
+    assert [c.index for c in spec.data_schema.tables[2].columns] == [True, False, False]
     written = json.loads(render_form(spec))
     assert written["sample"] == {}
     assert all("index" in c for t in written["schema"]["tables"] for c in t["columns"])
-    assert written["schema"]["tables"][0]["columns"][1] == column("exposure", "float", min=0.0)
+    assert written["schema"]["tables"][1]["columns"][1] == column("exposure", "float", min=0.0)
     grid = widgets(written)[1]
     assert {field: grid[field] for field in options} == {
         "row_numbers": True,
@@ -517,3 +537,57 @@ def test_a_form_that_is_not_json_or_cannot_be_read_names_the_file(tmp_path: Path
         read_form_document(config(tmp_path, form="unreadable"))
     with pytest.raises(WorkbenchFormError, match="unreadable could not be read"):
         form_file_revision(config(tmp_path, form="unreadable"))
+
+
+# ── Haute's quote_details table ───────────────────────────────────────────
+
+
+def _with_details_table(change: Any = None) -> dict[str, Any]:
+    form = json.loads(json.dumps(FORM))
+    table = quote_details_table().model_dump(mode="json")
+    if change is not None:
+        change(table)
+    form["schema"]["tables"].insert(0, table)
+    return form
+
+
+def test_a_form_holding_hautes_quote_details_reads_and_writes_as_it_is(tmp_path: Path) -> None:
+    held = _with_details_table(
+        lambda table: table["columns"][1].update(label="Quote", help="As the broker calls it")
+    )
+    held["schema"]["tables"][0]["columns"][7]["options"] = ["GBP", "USD"]
+    (tmp_path / "forms").mkdir()
+    (tmp_path / "forms" / "form.json").write_text(json.dumps(held), encoding="utf-8")
+
+    spec = read_form_document(config(tmp_path)).spec
+
+    assert json.loads(render_form(spec)) == held
+    assert [c.name for c in spec.data_schema.tables[0].columns] == [
+        name for _, name, _ in QUOTE_DETAILS_COLUMNS
+    ]
+    assert with_quote_details(spec) is spec
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda t: t.update(rows="many"), "is Haute's: a one-row input table"),
+        (lambda t: t.update(role="output"), "is Haute's: a one-row input table"),
+        (lambda t: t["columns"].pop(), "is Haute's: a one-row input table"),
+        (lambda t: t["columns"][1].update(name="title"), "is Haute's: a one-row input table"),
+        (lambda t: t["columns"][4].update(type="str"), "is Haute's: a one-row input table"),
+        (
+            lambda t: t["columns"][0].update(required=True),
+            "reference is set by the underwriter app",
+        ),
+        (
+            lambda t: t["columns"][8].update(options=["draft"]),
+            "stage is set by the underwriter app",
+        ),
+        (lambda t: t.update(id="t_details"), "is Haute's own table of a quote's details"),
+    ],
+    ids=["many-rows", "output", "column-gone", "renamed", "retyped", "rule", "options", "own-id"],
+)
+def test_a_quote_details_table_that_is_not_hautes_is_refused(change: Any, message: str) -> None:
+    with pytest.raises(ValidationError, match=message):
+        FormSpec.model_validate(_with_details_table(change))

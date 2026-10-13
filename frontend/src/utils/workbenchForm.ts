@@ -979,3 +979,33 @@ export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<strin
   })
   return problems
 }
+
+// ── Haute's quote_details table ──────────────────────────────────────────
+
+/**
+ * The id and name of Haute's own input table of a quote's details, first in every form
+ * (`haute._workbench_form.QUOTE_DETAILS_ID`): the underwriter app keeps its row with each
+ * revision, and its Quotes page lists them.
+ */
+export const QUOTE_DETAILS_ID = "quote_details"
+
+/** Its columns, in order, as id, name and type (`QUOTE_DETAILS_COLUMNS`); their structure is fixed. */
+export const QUOTE_DETAILS_COLUMNS: ReadonlyArray<readonly [id: string, name: string, type: SchemaColumn["type"]]> = [
+  ["qd_reference", "reference", "str"],
+  ["qd_quote_name", "quote_name", "str"],
+  ["qd_insured", "insured", "str"],
+  ["qd_broker", "broker", "str"],
+  ["qd_inception_date", "inception_date", "date"],
+  ["qd_expiry_date", "expiry_date", "date"],
+  ["qd_valid_until", "valid_until", "date"],
+  ["qd_currency", "currency", "str"],
+  ["qd_stage", "stage", "str"],
+  ["qd_assignee", "assignee", "str"],
+  ["qd_archived", "archived", "bool"],
+]
+
+/** The columns the underwriter app sets over whatever is typed, which take no rules (`QUOTE_DETAILS_MANAGED`). */
+export const QUOTE_DETAILS_MANAGED: ReadonlySet<string> = new Set(["qd_reference", "qd_stage", "qd_assignee", "qd_archived"])
+
+/** Whether `table` is Haute's quote_details table, whose structure the editor does not change. */
+export const isQuoteDetails = (table: Pick<SchemaTable, "id">): boolean => table.id === QUOTE_DETAILS_ID

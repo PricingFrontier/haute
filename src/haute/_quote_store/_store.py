@@ -37,7 +37,13 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from haute._quote_store._tables import QUOTE_FORMS, QUOTE_REVISIONS, QUOTES, VERSION_TABLE
+from haute._quote_store._tables import (
+    QUOTE_FORMS,
+    QUOTE_REVISIONS,
+    QUOTES,
+    STORE_COMPAT,
+    VERSION_TABLE,
+)
 from haute._workbench_config import WorkbenchError
 from haute._workbench_form import Cell, FormSpec, form_revision, render_form
 from haute._workbench_tables import _filled
@@ -186,37 +192,103 @@ def _alembic_config(connection: Connection | None = None) -> Config:
     return config
 
 
+@dataclass(frozen=True, slots=True)
+class _Schema:
+    """Where a database's schema stands against this Haute's migrations."""
+
+    #: The database's migration revision; None before the first.
+    current: str | None
+    #: This Haute's newest.
+    head: str
+    #: The database is past this Haute's newest, at a revision it does not know.
+    ahead: bool
+    #: Past it and naming, as the oldest schema that can still use it, one this Haute's newest
+    #: is at least: the database can be read and written as it is.
+    usable_ahead: bool
+    #: The oldest reader the database names, when it is ahead.
+    oldest_reader: str | None
+
+
+def _revision_order(revision: str) -> int:
+    """A migration revision's place in the store's numbered sequence."""
+    if not revision.isdigit():
+        raise QuoteStoreError(
+            f"The quote store's database names {revision!r} as a schema, which is not one of "
+            "the store's numbered migrations."
+        )
+    return int(revision)
+
+
+def _schema(connection: Connection) -> _Schema:
+    scripts = ScriptDirectory.from_config(_alembic_config())
+    head = scripts.get_current_head()
+    if head is None:
+        raise QuoteStoreError("The quote store ships no migrations.")
+    context = MigrationContext.configure(connection, opts={"version_table": VERSION_TABLE})
+    current = context.get_current_revision()
+    known = {script.revision for script in scripts.walk_revisions()}
+    if current is None or current in known:
+        return _Schema(current, head, ahead=False, usable_ahead=False, oldest_reader=None)
+    oldest = connection.execute(
+        select(STORE_COMPAT.c.oldest_reader).where(STORE_COMPAT.c.id == 1)
+    ).scalar_one_or_none()
+    usable = oldest is not None and _revision_order(oldest) <= _revision_order(head)
+    return _Schema(current, head, ahead=True, usable_ahead=usable, oldest_reader=oldest)
+
+
+def _too_new(schema: _Schema) -> QuoteStoreNotMigratedError:
+    named = schema.oldest_reader or "no schema"
+    return QuoteStoreNotMigratedError(
+        f"The quote store's database is at version {schema.current}, newer than this Haute's "
+        f"newest, {schema.head}, and names {named} as the oldest that can still use it: "
+        "upgrade Haute to open it."
+    )
+
+
 def migrate_store(url: str) -> None:
-    """Bring the database at *url* to the store's newest schema; a no-op when it is there."""
+    """Bring the database at *url* to the store's newest schema; a no-op when it is there, or
+    past it at a schema that names this Haute's newest as able to use it.
+
+    Raises :class:`QuoteStoreNotMigratedError` for a database past this Haute's newest that
+    does not.
+    """
     engine = _engine(url)
     try:
         with engine.begin() as connection:
+            schema = _schema(connection)
+            if schema.ahead:
+                if not schema.usable_ahead:
+                    raise _too_new(schema)
+                return
             command.upgrade(_alembic_config(connection), "head")
     finally:
         engine.dispose()
 
 
 def open_store(url: str, *, clock: Callable[[], datetime] | None = None) -> QuoteStore:
-    """The store at *url*, once its database is at the newest schema.
+    """The store at *url*, once its database is at the newest schema, or past it at one that
+    names this Haute's newest as able to use it (a release rolled back after a migration).
 
     Raises :class:`QuoteStoreNotMigratedError`, naming the database's version and the newest,
-    when it is not: the store never migrates as it opens. *clock* gives the time a quote and
-    a revision are saved at; UTC now by default.
+    when it is behind: the store never migrates as it opens; or when it is past it at a
+    schema that names a newer oldest reader. *clock* gives the time a quote and a revision
+    are saved at; UTC now by default.
     """
     engine = _engine(url)
-    head = ScriptDirectory.from_config(_alembic_config()).get_current_head()
     try:
         with engine.connect() as connection:
-            context = MigrationContext.configure(connection, opts={"version_table": VERSION_TABLE})
-            current = context.get_current_revision()
+            schema = _schema(connection)
     except Exception:
         engine.dispose()
         raise
-    if current != head:
+    if schema.ahead and not schema.usable_ahead:
+        engine.dispose()
+        raise _too_new(schema)
+    if not schema.ahead and schema.current != schema.head:
         engine.dispose()
         raise QuoteStoreNotMigratedError(
-            f"The quote store's database is at version {current or 'none'}, not the newest, "
-            f"{head}: bring it there with migrate_store before opening it."
+            f"The quote store's database is at version {schema.current or 'none'}, not the "
+            f"newest, {schema.head}: bring it there with migrate_store before opening it."
         )
     return QuoteStore(engine, clock=clock or (lambda: datetime.now(UTC)))
 
@@ -283,24 +355,53 @@ class QuoteStore:
         release: str | None,
     ) -> QuoteRevision:
         """A new quote, owned by *owner*, with its first revision."""
-        quote_id = str(uuid.uuid4())
-        now = self._clock()
         with self._engine.begin() as connection:
-            connection.execute(
-                insert(QUOTES).values(id=quote_id, name=name, owner=owner, created_at=now, latest=1)
-            )
-            return self._write_revision(
+            return self._create_in(
                 connection,
-                quote_id,
-                1,
+                name=name,
+                owner=owner,
                 saved_by=saved_by,
-                saved_at=now,
+                saved_at=self._clock(),
                 form=form,
                 inputs=inputs,
                 request=request,
                 response=response,
                 release=release,
             )
+
+    def _create_in(
+        self,
+        connection: Connection,
+        *,
+        name: str,
+        owner: str,
+        saved_by: str,
+        saved_at: datetime,
+        form: FormSpec,
+        inputs: Values,
+        request: dict[str, Any],
+        response: dict[str, Any] | None,
+        release: str | None,
+    ) -> QuoteRevision:
+        """:meth:`create` on *connection*, in its transaction."""
+        quote_id = str(uuid.uuid4())
+        connection.execute(
+            insert(QUOTES).values(
+                id=quote_id, name=name, owner=owner, created_at=saved_at, latest=1
+            )
+        )
+        return self._write_revision(
+            connection,
+            quote_id,
+            1,
+            saved_by=saved_by,
+            saved_at=saved_at,
+            form=form,
+            inputs=inputs,
+            request=request,
+            response=response,
+            release=release,
+        )
 
     def save_revision(
         self,
@@ -323,33 +424,11 @@ class QuoteStore:
         quote. Nothing is written either way.
         """
         with self._engine.begin() as connection:
-            moved = connection.execute(
-                update(QUOTES)
-                .where(QUOTES.c.id == quote_id, QUOTES.c.latest == after)
-                .values(latest=after + 1)
-            )
-            if moved.rowcount != 1:
-                latest = connection.execute(
-                    select(QUOTES.c.latest).where(QUOTES.c.id == quote_id)
-                ).scalar_one_or_none()
-                if latest is None:
-                    raise QuoteNotFoundError(f"The quote store holds no quote {quote_id!r}.")
-                raise StaleQuoteError(
-                    f"Quote {quote_id!r} has moved on since revision {after}: its newest is "
-                    f"{latest}. Open it again to save over the newest."
-                )
-            if after_digest is not None and _read_revision(connection, quote_id, after).digest != (
-                after_digest
-            ):
-                # Raised inside the transaction, so the move above is rolled back.
-                raise StaleQuoteError(
-                    f"Quote {quote_id!r} revision {after} is not the one that was read: it was "
-                    "saved apart, on another branch. Open it again to save over it."
-                )
-            return self._write_revision(
+            return self._save_in(
                 connection,
                 quote_id,
-                after + 1,
+                after=after,
+                after_digest=after_digest,
                 saved_by=saved_by,
                 saved_at=self._clock(),
                 form=form,
@@ -357,6 +436,108 @@ class QuoteStore:
                 request=request,
                 response=response,
                 release=release,
+            )
+
+    def _save_in(
+        self,
+        connection: Connection,
+        quote_id: str,
+        *,
+        after: int,
+        after_digest: str | None,
+        saved_by: str,
+        saved_at: datetime,
+        form: FormSpec,
+        inputs: Values,
+        request: dict[str, Any],
+        response: dict[str, Any] | None,
+        release: str | None,
+    ) -> QuoteRevision:
+        """:meth:`save_revision` on *connection*, in its transaction."""
+        self._advance(connection, quote_id, after, after_digest)
+        return self._write_revision(
+            connection,
+            quote_id,
+            after + 1,
+            saved_by=saved_by,
+            saved_at=saved_at,
+            form=form,
+            inputs=inputs,
+            request=request,
+            response=response,
+            release=release,
+        )
+
+    def _copy_in(
+        self,
+        connection: Connection,
+        quote_id: str,
+        *,
+        after: int,
+        saved_by: str,
+        saved_at: datetime,
+        inputs: Values,
+    ) -> QuoteRevision:
+        """The revision after *after* on *connection*: *after*'s form, request, response and
+        release kept as they were, its values *inputs*. Refused as :meth:`save_revision` is
+        when the quote has moved past *after*."""
+        kept = _read_revision(connection, quote_id, after)
+        self._advance(connection, quote_id, after, None)
+        values = _checked_values(inputs)
+        connection.execute(
+            insert(QUOTE_REVISIONS).values(
+                quote_id=quote_id,
+                number=after + 1,
+                form_revision=kept.form_revision,
+                inputs=json.dumps(values, ensure_ascii=False),
+                request=json.dumps(kept.request, ensure_ascii=False),
+                response=None
+                if kept.response is None
+                else json.dumps(kept.response, ensure_ascii=False),
+                release=kept.release,
+                saved_by=saved_by,
+                saved_at=saved_at,
+            )
+        )
+        return QuoteRevision(
+            quote_id=quote_id,
+            number=after + 1,
+            form_revision=kept.form_revision,
+            inputs=values,
+            request=kept.request,
+            response=kept.response,
+            release=kept.release,
+            saved_by=saved_by,
+            saved_at=saved_at,
+        )
+
+    def _advance(
+        self, connection: Connection, quote_id: str, after: int, after_digest: str | None
+    ) -> None:
+        """Move quote *quote_id*'s newest revision on from *after*, refusing a quote that has
+        moved past it or, given *after_digest*, whose revision *after* is not that one."""
+        moved = connection.execute(
+            update(QUOTES)
+            .where(QUOTES.c.id == quote_id, QUOTES.c.latest == after)
+            .values(latest=after + 1)
+        )
+        if moved.rowcount != 1:
+            latest = connection.execute(
+                select(QUOTES.c.latest).where(QUOTES.c.id == quote_id)
+            ).scalar_one_or_none()
+            if latest is None:
+                raise QuoteNotFoundError(f"The quote store holds no quote {quote_id!r}.")
+            raise StaleQuoteError(
+                f"Quote {quote_id!r} has moved on since revision {after}: its newest is "
+                f"{latest}. Open it again to save over the newest."
+            )
+        if after_digest is not None and _read_revision(connection, quote_id, after).digest != (
+            after_digest
+        ):
+            # Raised inside the transaction, so the move above is rolled back.
+            raise StaleQuoteError(
+                f"Quote {quote_id!r} revision {after} is not the one that was read: it was "
+                "saved apart, on another branch. Open it again to save over it."
             )
 
     def revision(self, quote_id: str, number: int | None = None) -> QuoteRevision:
@@ -483,14 +664,7 @@ class QuoteStore:
         response: dict[str, Any] | None,
         release: str | None,
     ) -> QuoteRevision:
-        try:
-            values = _VALUES.validate_python(inputs, strict=True)
-        except ValidationError as exc:
-            first = exc.errors()[0]
-            where = ".".join(str(part) for part in first["loc"])
-            raise QuoteStoreError(
-                f"The quote's values are not as the sheets keep them ({where}: {first['msg']})."
-            ) from exc
+        values = _checked_values(inputs)
         document = render_form(form)
         revision = form_revision(document.encode("utf-8"))
         _keep_form(connection, revision, document)
@@ -520,6 +694,18 @@ class QuoteStore:
         )
 
 
+def _checked_values(inputs: Values) -> Values:
+    """*inputs*, refused unless they are as the sheets keep values."""
+    try:
+        return _VALUES.validate_python(inputs, strict=True)
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        where = ".".join(str(part) for part in first["loc"])
+        raise QuoteStoreError(
+            f"The quote's values are not as the sheets keep them ({where}: {first['msg']})."
+        ) from exc
+
+
 def _keep_form(connection: Connection, revision: str, document: str) -> None:
     """Keep the form under its revision, once however many quotes name it."""
     if connection.dialect.name == "sqlite":
@@ -541,10 +727,12 @@ def carry_values(values: Values, saved: FormSpec, current: FormSpec) -> CarriedV
 
     Values follow the stable ids, so a renamed table or column keeps them. A filled value
     whose input table or column the current form no longer has is named as ``table.column``
-    by the names it was saved under; a blank one is no loss.
+    by the names it was saved under; a blank one is no loss. A table that now holds one row
+    keeps its first, and each filled value of the rows after it is named as
+    ``table.column row N``.
     """
     places = {
-        table.id: {column.id for column in table.columns}
+        table.id: ({column.id for column in table.columns}, table.rows)
         for table in current.data_schema.tables
         if table.role == "input"
     }
@@ -554,12 +742,21 @@ def carry_values(values: Values, saved: FormSpec, current: FormSpec) -> CarriedV
         rows = values.get(table.id)
         if not rows:
             continue
-        columns = places.get(table.id, set())
+        columns, now = places.get(table.id, (set(), "many"))
         for column in table.columns:
             if column.id not in columns and any(_filled(row.get(column.id)) for row in rows):
                 dropped.append(f"{table.name}.{column.name}")
-        if table.id in places:
-            kept = [{key: value for key, value in row.items() if key in columns} for row in rows]
-            if any(kept):
-                carried[table.id] = kept
+        if table.id not in places:
+            continue
+        if now == "one":
+            for number, row in enumerate(rows[1:], start=2):
+                dropped.extend(
+                    f"{table.name}.{column.name} row {number}"
+                    for column in table.columns
+                    if column.id in columns and _filled(row.get(column.id))
+                )
+            rows = rows[:1]
+        kept = [{key: value for key, value in row.items() if key in columns} for row in rows]
+        if any(kept):
+            carried[table.id] = kept
     return CarriedValues(carried, dropped)

@@ -927,12 +927,13 @@ class TestStarterFiles:
     def test_starter_form_is_a_blank_workbench_form(self) -> None:
         import json
 
-        from haute._workbench_form import FormSpec
+        from haute._workbench_form import FormSpec, quote_details_table
 
         text = starter_form("motor")
         spec = FormSpec.model_validate(json.loads(text))
         assert spec.name == "motor"
-        assert spec.data_schema.tables == []
+        # Haute's quote_details table alone, which every form holds.
+        assert spec.data_schema.tables == [quote_details_table()]
         assert [page.title for page in spec.pages] == ["Sheet 1"]
         assert text.endswith("\n")
 

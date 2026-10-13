@@ -10,11 +10,13 @@ other facts, versioned and reviewed with them::
 
     [workbench.app]
     host = "azure-container-apps"   # optional; where the underwriter app runs
+    edit_role = "Quotes.Edit"        # optional; who may change quotes in it
 
 Without the table the project has no workbench. With it, ``enabled`` is required and
 ``form`` is a path relative to the project root that stays inside it; ``app``, when given,
-holds ``host`` alone, one of ``APP_HOSTS``. The table is read from disk whenever a workbench
-route needs it, so an edit reaches the next request.
+holds ``host``, one of ``APP_HOSTS``, and ``edit_role``, the role the host signs in with
+which an underwriter may change quotes, every other one reading them. The table is read from
+disk whenever a workbench route needs it, so an edit reaches the next request.
 """
 
 from __future__ import annotations
@@ -58,6 +60,9 @@ class WorkbenchConfig:
     project_root: Path
     #: Where the underwriter app runs (``[workbench.app] host``); None when unsaid.
     app_host: str | None = None
+    #: The role that may change quotes in the app (``[workbench.app] edit_role``); None lets
+    #: everyone signed in change them.
+    app_edit_role: str | None = None
 
     @property
     def form_path(self) -> Path:
@@ -106,20 +111,28 @@ def read_workbench_config(project_root: Path) -> WorkbenchConfig:
     if not isinstance(enabled, bool):
         raise WorkbenchConfigError("[workbench].enabled must be true or false", path=str(toml_path))
     form = _form(table.get("form"), project_root, toml_path)
-    app_host = _app_host(table.get("app"), toml_path)
-    return WorkbenchConfig(enabled=enabled, form=form, project_root=project_root, app_host=app_host)
+    app_host, app_edit_role = _app_settings(table.get("app"), toml_path)
+    return WorkbenchConfig(
+        enabled=enabled,
+        form=form,
+        project_root=project_root,
+        app_host=app_host,
+        app_edit_role=app_edit_role,
+    )
 
 
-def _app_host(raw: object, toml_path: Path) -> str | None:
-    """``[workbench.app] host``, one of ``APP_HOSTS``; None without the table."""
+def _app_settings(raw: object, toml_path: Path) -> tuple[str | None, str | None]:
+    """``[workbench.app]``'s ``host``, one of ``APP_HOSTS``, and ``edit_role``, a role's
+    name; each None when unsaid, both without the table."""
     if raw is None:
-        return None
+        return None, None
     if not isinstance(raw, dict):
         raise WorkbenchConfigError("[workbench.app] must be a TOML table", path=str(toml_path))
-    unknown = sorted(set(raw) - {"host"})
+    unknown = sorted(set(raw) - {"host", "edit_role"})
     if unknown:
         raise WorkbenchConfigError(
-            f"[workbench.app] has unknown key(s): {', '.join(unknown)}; the key is host",
+            f"[workbench.app] has unknown key(s): {', '.join(unknown)}; the keys are host and "
+            "edit_role",
             path=str(toml_path),
         )
     host = raw.get("host")
@@ -128,7 +141,14 @@ def _app_host(raw: object, toml_path: Path) -> str | None:
             f"[workbench.app].host must be one of {', '.join(sorted(APP_HOSTS))}; got {host!r}",
             path=str(toml_path),
         )
-    return str(host)
+    edit_role = raw.get("edit_role")
+    if edit_role is not None and (not isinstance(edit_role, str) or not edit_role.strip()):
+        raise WorkbenchConfigError(
+            "[workbench.app].edit_role must be the name of a role the host signs underwriters "
+            f"in with; got {edit_role!r}",
+            path=str(toml_path),
+        )
+    return str(host), None if edit_role is None else edit_role.strip()
 
 
 def _form(raw: object, project_root: Path, toml_path: Path) -> str:

@@ -98,8 +98,10 @@ Out of scope:
   `haute init --force` rewrites `haute.toml`, so the table stays only when `--workbench`
   is given again, while `forms/` is left as `data/` is. An existing project enables its
   workbench by adding the table by hand. A nested `[workbench.app]` table says where the
-  underwriter app runs: its one key, `host`, is `azure-container-apps`, and any other key
-  or host is refused by name.
+  underwriter app runs: `host` is `azure-container-apps`, and `edit_role`, when given, is
+  the role the host signs underwriters in with that may change quotes, every other
+  underwriter reading them; any other key, host or role that is not a name is refused by
+  name.
 - **The form file.** `forms/form.json` is one JSON document: `version` (1), `name`, `schema`
   (its tables), `pages` (its sheets, at least one) and `sample` (the quote typed while
   building, `{}` for none). Every field has one canonical spelling and an unknown field is
@@ -113,7 +115,17 @@ Out of scope:
   `placeholder`, what an empty input cell shows, and a number's format as an Explore
   pivot's values take one, `number_format` (`general`, `number`, `percent`,
   `currency_gbp`, `currency_usd`, `currency_eur`), `decimal_places` (0 to 10, or null for
-  automatic) and `use_grouping`. A sheet has an id, a title, when it shows (`show_when`) and
+  automatic) and `use_grouping`. Every schema holds Haute's own table of a quote's
+  details, `quote_details`, first: one row, an input, its columns `reference`,
+  `quote_name`, `insured`, `broker`, `inception_date`, `expiry_date`, `valid_until`,
+  `currency`, `stage`, `assignee` and `archived`, in that order, the three dates Dates,
+  `archived` a True/false and the rest Text, each with the id `qd_` and its name. A form
+  read or saved without it takes it on; one whose `quote_details` is not Haute's (the
+  name on another table, or its role, rows, columns, keys or index changed) is refused,
+  as is a rule on `reference`, `stage`, `assignee` or `archived`, which the underwriter
+  app sets. Its labels, help and placeholders are the project's, as are the rules of the
+  columns the underwriter types; the sheets show its columns, and the pipeline receives
+  it, as any other input table's. A sheet has an id, a title, when it shows (`show_when`) and
   its sections (`sections`, at least one): strips across the sheet's whole width, stacked in
   their order, each with an id, a `title`, its `height` in pixels, when it shows
   (`show_when`) and its components (`widgets` in the file): a Table (`tableInput`, a grid of at
@@ -268,7 +280,11 @@ Out of scope:
   unique whatever its case), a column's name is an identifier that is not a Python keyword,
   as the server holds it, unique in its table, a many-row table needs a key, an input
   column's range must not be inverted and its allowed values must be of its type, and
-  True/false and Date columns can have none.
+  True/false and Date columns can have none. Haute's `quote_details` table, first, keeps
+  its structure: its name, role and rows and its columns' names and types are fixed, and
+  it is neither deleted nor given a column; its columns take labels and help, and those
+  the underwriter types their placeholders and rules, while `reference`, `stage`,
+  `assignee` and `archived` say they are set by the app and take a label and help alone.
 - **The sheets.** A sheet is a canvas on an 8px snap grid that fills its viewport across
   at the zoom and, like a spreadsheet, has no right or bottom edge: it widens and
   lengthens to hold what is on it. Its tabs run along the top: the sheet showing is
@@ -605,15 +621,19 @@ Out of scope:
   With `[deploy.container] base_image` set, pinned as a container deploy pins it, the
   release is also the image's build context, the container's Dockerfile copying it,
   and `haute app build --image TAG` builds the image with Docker; the image installs
-  what a scoring container installs, nothing more. The app
+  what a scoring container installs and the quote store's packages, SQLAlchemy and
+  Alembic, pinned as the scoring runtime is, nothing more; a release whose Workbench
+  Input copied the tables before the form held `quote_details` is refused as a deploy
+  refuses it, asking for the project to be saved in the editor. The app
   serves the sheets on a page of their own, drawn as Preview draws them, with the same
   components filled from the app's routes rather than the builder's and nothing of the
   builder mounted: the sheets' tabs, the sheet showing, Price and Clear, the release and
   who is signed in. A quote keyed in is checked against the columns' rules as Preview
   checks it, then priced by the app through `POST /api/app/price`, which takes the values
-  and the form revision the page was loaded with. A revision that is not the release's is
-  refused (409), so a page loaded from an earlier release reloads rather than price on a
-  newer contract. The request is built as Price builds it and priced through the deployed
+  and the form revision and release the page was loaded with. A page drawn for another
+  revision or another release is refused (409), so a page loaded from an earlier release
+  reloads rather than price on a newer contract or model, a release that changed the
+  model alone included. The request is built as Price builds it and priced through the deployed
   pipeline's engine, one quote per request, off the server's event loop, under the deploy's
   admission limit and a timeout, and answered whole: each output table's rows, with the
   request priced. `GET /api/app/release` and `GET /api/app/form` serve the release and the
@@ -621,10 +641,112 @@ Out of scope:
   needs the principal the host signed in. The identity follows `[workbench.app] host`:
   `azure-container-apps` reads the principal Azure's built-in authentication sets on each
   request, which the host strips from what a client sends, and refuses a request without
-  it (401); a release built with no host refuses every request but the health check.
-  `haute app serve` builds a release of the project as it is saved and serves it on the
-  analyst's machine, the principal the analyst's git identity, so the sheets underwriters
-  will see are checked before a merge. No credential reaches the page.
+  it (401); a release built with no host refuses every request but the health check. A
+  release with an `edit_role` reads the roles from the principal Azure passes whole
+  (`X-MS-CLIENT-PRINCIPAL`, its claims of the type its `role_typ` names, an app role's
+  when it names none): one holding the role may change quotes and any other reads them,
+  `GET /api/app/release` saying which (`can_edit`), every change and save refused to a
+  reader (403); a request whose roles cannot be read is refused (401), naming the header,
+  since who may change quotes cannot be told. `haute app serve` builds a release of the
+  project as it is saved and serves it on the analyst's machine, the principal the
+  analyst's git identity, able to change quotes unless `--reader` signs them in as a
+  reader, so the sheets underwriters will see are checked before a merge. No credential
+  reaches the page.
+  Given a quote store, the app keeps the quotes saved in it, each revision's
+  `quote_details` row in a table of its own (the quote store, below). A hosted app reads the store's SQLAlchemy URL from
+  `HAUTE_QUOTE_STORE_URL`, which the host supplies at runtime, and does not start on a
+  store not migrated, which `haute app migrate` migrates before a release that needs it
+  starts; `haute app serve` keeps its quotes in `.haute/app/quotes.sqlite`, beside the
+  release rather than in it, migrated as it starts, so a rebuild keeps them. Without a
+  store the app keeps nothing, says so on `GET /api/app/release` (`quotes`), and answers
+  its quote routes 503. Its quote routes list a page of quotes
+  (`GET /api/app/quotes`: the list, stage, search, assignee, order, cursor and size),
+  create one (`POST /api/app/quotes`, made from another quote's revision when it names
+  one), open one's newest revision or another (`GET /api/app/quotes/{id}` and
+  `/api/app/quotes/{id}/revisions/{n}`), with the sheets that revision was keyed into when
+  they are not the release's, carry a revision's values onto the release's sheets
+  (`/api/app/quotes/{id}/revisions/{n}/carry`), save its next revision (`POST
+  /api/app/quotes/{id}/revisions`), assign, note, archive, restore, mark final and
+  reopen it (`POST /api/app/quotes/{id}/assignee`, `note`, `archive`, `restore`, `final`
+  and `reopen`, each but the note answering with the revision it wrote), and read its
+  history (`GET
+  /api/app/quotes/{id}/history`) and the people quotes are with (`GET /api/app/people`).
+  A save names the sheets' revision and the release it was drawn for, refused (409) for
+  another, and an operation key; the details the app sets, `reference`, `stage`,
+  `assignee` and `archived`, are set over whatever the page sent, and with nothing else
+  typed there is nothing to save (422). It saves the quote unpriced, or, given the prices
+  the page showed, prices it again on the server and keeps that pricing, saying whether
+  it moved from what the page showed, so a price kept is always the release's own. Each
+  change but a note names the quote's version and is refused (409) with the quote as it is now when
+  the quote has moved on, or (409) naming what would let it when the quote does not take
+  it as it stands; a quote the app does not keep is 404. A write whose browser says it
+  came from another site, or, from a browser that does not say, whose origin is not the
+  app's host, is refused (403). The
+  app's pages, `/`, `/quotes/new`, `/quotes/{id}` and `/quotes/{id}/revisions/{n}`, are
+  its one page, which reads its route in the browser.
+- **The Quotes page.** With a quote store, the app opens on the Quotes page, at `/`. On
+  the left are the lists, My work (the quotes assigned to the signed-in underwriter), Team
+  (everyone's) and Archived, and the stages of the list showing, Draft, Priced and Final,
+  each with its count; a stage picked narrows the list and picked again widens it. Above
+  the list are its name, a search box (`/` focuses it) matching every word typed in the
+  reference, quote name, insured or broker, in Team an assignee to narrow it to, the
+  order (newest saved, newest reference, or insured) and New quote (`N`). The list is a
+  table at Haute's density, 50 quotes at a time with Load more, read from the quotes'
+  `quote_details`: each quote's reference, its title (its quote name, else its insured,
+  else its reference), its insured, broker and inception date under their columns'
+  labels on the sheets, the date as a day, its stage, who it is with and when it was saved,
+  relative, with the time on hover. A row opens its quote, its reference a link of its
+  own; on hover or focus it offers Open, Duplicate, and Archive or Restore. The list,
+  stage, search, assignee and order are in the page's address, so Back returns to the
+  list as it was. Loading shows placeholder rows, a failure says why with Retry, and an
+  empty list says why: no quotes yet, with New quote; none matching, with Clear search;
+  none archived.
+- **A quote in the app.** A quote opens at `/quotes/{id}` on the sheets, under its bar:
+  back to Quotes, its reference, its name (its `quote_details.quote_name`, typed in the
+  bar as on the sheets and saved with the next Save), its stage and, when archived,
+  Archived, who it is with (reassigned from the people quotes are with, or a name typed),
+  Price, Save, Mark final or, for a final quote, Reopen, which asks why, a menu of
+  Duplicate, Renew, Create alternative, Archive or Restore and Copy link, and History.
+  Beneath are its revision, who saved it and when, the release that priced it and the
+  quote it came from. Save keeps the quote priced when the sheets show a price for the
+  values as they are, and unpriced otherwise, which its title says; with nothing typed,
+  the details the app sets aside, there is nothing to save, and nothing new to save while
+  the values are as saved and priced as saved on this release (a price made since, or
+  one of an earlier release, is new). A save and a change name the version the values
+  were opened or saved at, which a note does not move, so a save over a quote a colleague
+  moved on meanwhile is refused rather than written over theirs; an answer arriving once
+  another quote is open, or the quote was left, is that quote's no longer and is dropped,
+  and a quote being opened takes nothing typed and saves nothing until it is read. The cells of `reference`,
+  `stage`, `assignee` and `archived` take no typing and Clear leaves them; assigning,
+  archiving, restoring, marking final and reopening each write a revision of the newest
+  with those details changed, its values and prices kept, which the sheets take on, what
+  was typed kept. A new quote, at `/quotes/new`, is saved by its first Save,
+  which gives it its reference and its own address; one made from another quote's
+  revision (Duplicate, Renew, Create alternative) opens with that revision's values
+  carried onto the current sheets, unpriced, naming what it was made from and any value
+  that no longer fits. The sheets take no typing, and Price, Save and Clear are off, while
+  the quote is final, archived, shown at an earlier revision (at
+  `/quotes/{id}/revisions/{n}`, with Open the newest) or saved on earlier sheets (opened
+  on those sheets, with Move to current sheets, which carries its values onto the
+  current ones as unsaved values naming any that no longer fits). A save the server
+  priced differently from the sheets says so and shows the server's price. A save or
+  change over a quote moved on since it was opened names who moved it, keeps the
+  underwriter's values, and offers to open the newest or to save the values as a new
+  quote; a page drawn for an earlier release says so and offers to reload. Values not
+  yet saved are kept in the browser as they are typed, at once as the quote is left, and
+  again after a save for what was typed during it, and offered back when the quote is
+  opened again, or restored or reopened, as not saved to the server, until they are saved
+  or discarded; only a quote that may change as it is shown offers them, and they are put back on its sheets'
+  columns alone, the details the app sets as the quote has them. Leaving a quote with
+  unsaved values asks first, Back and Forward too, the history's entries kept as they
+  were, and closing the tab warns. Archiving says so with Undo, which restores the quote
+  archived whichever is open by then. History, on the right, holds the handover note, edited there, the
+  revisions, each opened as it was, what was done to the quote, by whom and when, and
+  the quotes it came from or that were made from it. Ctrl+S saves and Ctrl+Enter prices.
+  Without a quote store the app opens on a blank quote with Price and Clear, and says it
+  keeps no quotes. One who may only read quotes is offered nothing that changes them: no
+  New quote, Duplicate, Archive or Restore on the Quotes page, and every quote read only,
+  saying that changing it needs the app's edit role.
 - **Shown when.** A sheet, a section or a component with conditions shows only while they
   hold on the values typed into the sheets, the sample while building and the quote in
   Preview; a section on a sheet that does not show does not show either, nor does a
@@ -904,16 +1026,52 @@ Out of scope:
   keyed into, by its revision, the form's canonical text kept once for every quote that
   names it. A new revision names the one it follows and is refused, with nothing
   written, when the quote has moved on since. The owner is recorded and the list of
-  quotes can be read for one owner; who may see whose quotes is decided with the app. A
+  quotes can be read for one owner. A quote the underwriter app keeps has, for each
+  revision, that revision's `quote_details` row in a table of its own, a column each,
+  which a test quote never has; the revision's values hold every other table, so the
+  details are kept once. The row holds the details the underwriter typed and those the
+  app sets: a reference, `Q-` and six digits, taken from a counter in the transaction
+  that creates the quote, so two quotes made at once take two and one whose creation
+  fails keeps none; its stage, `draft` or `priced` as the revision was saved, or
+  `final`; who it is assigned to, at first who made it; and whether it is archived. The
+  newest revision's row is the quote as the app lists, searches and orders it.
+  Assigning, archiving, restoring, marking final and reopening each write a revision of
+  the newest, its values, request, prices and release kept and its details changed: the
+  pipeline sees the new details, as any other input, the next time the quote is priced.
+  A new quote is priced before it takes its reference, so its first pricing sees none. A
+  handover note is an event alone.
+  Who marked it final and when, when it was archived and by whom, the note, and the
+  quote and revision it was made from and how, a duplicate, a renewal or an
+  alternative, are read from its events; its version is its newest revision's number.
+  Each change but a note names the version it was made on and is refused, with nothing
+  written, when the quote has moved on, naming who moved it, and answers with the quote
+  as its own transaction left it; each writes an event of who did what and when in the
+  transaction that makes it; a save
+  carries an operation key, and one repeated with a key already written answers what
+  that key wrote, the quote as that write left it at the revision it wrote whatever was
+  saved or noted since, with nothing priced or written again; two at once with one key write once,
+  the second answered as a repeat. A final quote takes no save until it is reopened,
+  giving a reason, which names the revision pinned final; marking one final needs its
+  newest revision priced on the running release; an archived quote takes no change but
+  being restored; and a final one stays final through being assigned, archived and
+  restored, each a revision of its own that keeps the pinned final. The app's lists
+  are read a page at a time: the quotes assigned to the signed-in underwriter, the
+  team's, or the archive, of one stage when asked, matching every word searched for in
+  the reference, quote name, insured or broker, newest saved first, newest reference
+  first or by insured, with each list's count and each stage's. A
   saved quote opens on its own form, and its values are carried onto the current form
-  through the stable ids: a renamed table or column keeps its values, and each filled
+  through the stable ids: a renamed table or column keeps its values, each filled
   value whose table or column the current form no longer has is named as
-  `table.column`, by the names it was saved under. A database is brought to the schema by
+  `table.column`, by the names it was saved under, and a table that now holds one row
+  keeps its first, each filled value of the rows after it named as `table.column row N`. A database is brought to the schema by
   the store's migrations, numbered and shipped with Haute, so a Haute upgrade carries
-  them; the store refuses to open a database that is not at the newest, naming what to
-  run, and nothing migrates as it opens. A migration keeps the previous release's reads
-  and writes working: a column it adds is nullable or has a default, and it drops
-  nothing. A SQLite store keeps foreign keys on and its rollback journal, never
+  them; the store refuses to open a database behind the newest, naming what to run, and
+  nothing migrates as it opens. A migration keeps the previous release's reads and
+  writes working: a column it adds is nullable or has a default, and it drops nothing;
+  and the database records the oldest schema whose Haute can still use it, so a Haute
+  behind the database's schema opens it when its own newest is at least that, as a
+  release rolled back after a migration does, and refuses it, naming the upgrade, when
+  it is not. A SQLite store keeps foreign keys on and its rollback journal, never
   write-ahead logging, so the file stands alone between writes.
 
 ## Design rationale
@@ -1207,7 +1365,7 @@ Out of scope:
   checkbox and the icon select); and the fields' order and the sheets' tabs use the
   list-reorder hook the step editor's cards use.
 - [engineering-quality](../engineering-quality/high-level.md): the generated contract bundle
-  carries the `workbench` response group.
+  carries the `workbench` response group and the underwriter app's `workbench-app`.
 - [json-shredding](../json-shredding/high-level.md): the Quote Input's reader, which the
   Workbench Input leaves alone; its columns' types are the Quote Input's, held equal by a test,
   and a table's name follows the one rule a Quote Input's labels follow.

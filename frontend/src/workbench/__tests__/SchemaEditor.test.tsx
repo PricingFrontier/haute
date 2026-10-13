@@ -9,6 +9,7 @@ import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import SchemaEditor from "../SchemaEditor"
+import { detailsTable } from "./fixtures"
 
 const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
   id,
@@ -107,6 +108,32 @@ describe("SchemaEditor", () => {
     expect(screen.getByRole("combobox", { name: "Role of layers" })).toHaveValue("input")
     expect(screen.getByRole("combobox", { name: "Rows of layers" })).toHaveValue("many")
     expect(within(tableNamed("policy_details")).getByText("2 cols")).toBeInTheDocument()
+  })
+
+  it("keeps Haute's quote_details table as it is: labels and help, and rules only where the underwriter types", () => {
+    load(form(detailsTable(), POLICY))
+    render(<SchemaEditor />)
+    const details = tableNamed("quote_details")
+
+    expect(within(details).getByRole("textbox", { name: "Table name" })).toHaveAttribute("readonly")
+    expect(within(details).getByRole("combobox", { name: "Role of quote_details" })).toBeDisabled()
+    expect(within(details).getByRole("combobox", { name: "Rows of quote_details" })).toBeDisabled()
+    expect(within(details).queryByRole("button", { name: "Delete table quote_details" })).toBeNull()
+    expect(within(details).queryByRole("button", { name: /^Remove column/ })).toBeNull()
+    expect(within(details).queryByRole("button", { name: "Add column" })).toBeNull()
+    expect(within(details).queryByRole("combobox", { name: /^Type of/ })).toBeNull()
+    for (const name of within(details).getAllByRole("textbox", { name: "Column name" })) expect(name).toHaveAttribute("readonly")
+    expect(within(details).getAllByText("set by the app")).toHaveLength(4)
+
+    // A column the underwriter types takes a label and rules; one the app sets, a label alone.
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of insured" }))
+    commit(screen.getByRole("textbox", { name: "Label of insured" }), "Client")
+    fireEvent.click(screen.getByRole("checkbox", { name: "insured is required" }))
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of stage" }))
+    commit(screen.getByRole("textbox", { name: "Label of stage" }), "Status")
+    expect(screen.queryByRole("checkbox", { name: "stage is required" })).toBeNull()
+    expect(current().schema.tables[0].columns.find((column) => column.name === "insured")).toMatchObject({ label: "Client", required: true })
+    expect(current().schema.tables[0].columns.find((column) => column.name === "stage")).toMatchObject({ label: "Status", required: false })
   })
 
   it("adds a table, whose name takes the focus, and records it for undo", () => {

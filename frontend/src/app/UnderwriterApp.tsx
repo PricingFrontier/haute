@@ -2,7 +2,7 @@ import { Calculator, Eraser } from "lucide-react"
 import { useEffect, useState } from "react"
 import { fetchAppForm, fetchAppRelease } from "../api/app"
 import { apiErrorMessage } from "../api/errors"
-import type { WorkbenchAppReleaseResponse } from "../api/types"
+import ToastContainer from "../components/Toast"
 import { ToolbarButton, ToolbarColumn, ZoomInOut } from "../haute-ui"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
@@ -12,16 +12,21 @@ import { quoteFilled } from "../utils/sheetValues"
 import { quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
 import PageTabs from "../workbench/PageTabs"
 import SheetCanvas from "../workbench/SheetCanvas"
+import AppHeader from "./AppHeader"
 import { openRelease } from "./openRelease"
+import QuotesPage from "./QuotesPage"
+import QuoteView from "./QuoteView"
+import { followLink, useAppRoute } from "./route"
+import { BUTTON, Notice, QuestionDialog } from "./ui"
+import useAppStore from "./useAppStore"
 
-type Loaded = { release: WorkbenchAppReleaseResponse } | { error: string }
-
-const BRAND_STYLE = { width: "auto", minWidth: 165, maxWidth: 360, paddingRight: 8 } as const
+type Loaded = { quotes: boolean } | { error: string }
 
 /**
  * The underwriter app (specs/workbench): the release's sheets drawn as Preview draws them,
- * with nothing of the builder, under a bar holding the pipeline and the release, Price over
- * Clear, the zoom, why the quote has no price, and who is signed in.
+ * with nothing of the builder. With a quote store it opens on the Quotes page and opens each
+ * quote at its own address; without one it is a blank quote with Price and Clear, keeping
+ * nothing.
  */
 export default function UnderwriterApp() {
   const [loaded, setLoaded] = useState<Loaded | null>(null)
@@ -30,8 +35,9 @@ export default function UnderwriterApp() {
     Promise.all([fetchAppRelease(), fetchAppForm()])
       .then(([release, { form, revision }]) => {
         if (!live) return
-        openRelease(form, revision)
-        setLoaded({ release })
+        openRelease(form, revision, release.id)
+        useAppStore.getState().setRelease(release, form, revision)
+        setLoaded({ quotes: release.quotes })
       })
       .catch((error: unknown) => {
         if (live) setLoaded({ error: apiErrorMessage(error) })
@@ -52,22 +58,46 @@ export default function UnderwriterApp() {
         <div role="alert" className="flex flex-1 items-center justify-center p-8 text-[13px]" style={{ color: "var(--danger)" }}>
           Could not open the sheets: {loaded.error}
         </div>
+      ) : loaded.quotes ? (
+        <Routed />
       ) : (
-        <>
-          <AppBar release={loaded.release} />
-          <main className="relative flex min-h-0 min-w-0 flex-1 flex-col" aria-label="Sheets">
-            <div className="px-4 pt-2">
-              <PageTabs readOnly />
-            </div>
-            <SheetCanvas />
-          </main>
-        </>
+        <OneQuote />
       )}
+      <QuestionDialog />
+      <ToastContainer />
     </div>
   )
 }
 
-function AppBar({ release }: { release: WorkbenchAppReleaseResponse }) {
+/** The page the address names. */
+function Routed() {
+  const route = useAppRoute()
+  if (route.page === "quotes") {
+    return (
+      <>
+        <AppHeader label="Quotes toolbar" />
+        <QuotesPage query={route.query} />
+      </>
+    )
+  }
+  if (route.page === "missing") {
+    return (
+      <>
+        <AppHeader label="Quotes toolbar" />
+        <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-2 text-[13px]" style={{ color: "var(--text-secondary)" }}>
+          There is no page at this address.
+          <a href="/" onClick={(event) => followLink(event, "/")} className={BUTTON}>
+            Go to Quotes
+          </a>
+        </div>
+      </>
+    )
+  }
+  return <QuoteView route={route} />
+}
+
+/** An app with no quote store: one blank quote, priced and cleared, kept nowhere. */
+function OneQuote() {
   const form = useWorkbenchFormStore((s) => s.form)
   const quote = useWorkbenchPreviewStore((s) => s.quote)
   const pricing = useWorkbenchPreviewStore((s) => s.pricing)
@@ -80,31 +110,17 @@ function AppBar({ release }: { release: WorkbenchAppReleaseResponse }) {
   const blank = form === null || !quoteFilled(quotedSchema(form.schema, sheetVisibility(form, quote).hidden), quote)
 
   return (
-    <header role="toolbar" aria-label="Quote toolbar" className="toolbar flex-wrap gap-y-2 [&>div]:shrink-0">
-      {/* As wide as the pipeline's name, unlike Haute's own brand, within bounds. */}
-      <div className="toolbar-brand" style={BRAND_STYLE} data-testid="app-release">
-        <div className="toolbar-brand-mark min-w-0">
-          <h1 className="toolbar-brand-name max-w-full truncate" style={{ lineHeight: 1.2 }} title={release.pipeline_name}>
-            {release.pipeline_name || "Quote"}
-          </h1>
-          <span className="toolbar-brand-version" title={`Built ${release.created_at} by Haute ${release.haute_version}`}>
-            release {release.id}
-          </span>
-        </div>
-      </div>
-      <div className="ml-2.5 flex flex-wrap items-center gap-2.5">
+    <>
+      <AppHeader label="Quote toolbar">
         <ToolbarColumn role="group" aria-label="Quote">
-          <ToolbarButton
-            icon={Calculator}
-            onClick={() => { void priceQuote() }}
-            disabled={pricing || blank}
-            title={blank ? "Type the quote first" : "Check the quote and price it"}
-          >
+          <ToolbarButton icon={Calculator} onClick={() => void priceQuote()} disabled={pricing || blank} title={blank ? "Type the quote first" : "Check the quote and price it"}>
             Price
           </ToolbarButton>
           <ToolbarButton
             icon={Eraser}
-            onClick={() => { if (window.confirm("Clear the quote? Every cell will be emptied.")) clear() }}
+            onClick={() => {
+              if (window.confirm("Clear the quote? Every cell will be emptied.")) clear()
+            }}
             disabled={empty}
             title="Start a new quote"
           >
@@ -117,10 +133,16 @@ function AppBar({ release }: { release: WorkbenchAppReleaseResponse }) {
             {error}
           </span>
         )}
-      </div>
-      <span className="ml-auto pr-3 text-xs" style={{ color: "var(--text-muted)" }} data-testid="app-principal">
-        Signed in as {release.principal}
-      </span>
-    </header>
+      </AppHeader>
+      <main className="relative flex min-h-0 min-w-0 flex-1 flex-col" aria-label="Sheets">
+        <Notice tone="info" testId="notice-no-store">
+          This app keeps no quotes: it was started without a quote store. A quote priced here is not saved.
+        </Notice>
+        <div className="px-4 pt-2">
+          <PageTabs readOnly />
+        </div>
+        <SheetCanvas />
+      </main>
+    </>
   )
 }

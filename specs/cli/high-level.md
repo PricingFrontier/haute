@@ -98,10 +98,15 @@ Out of scope, owned elsewhere:
   base_image` set, the Dockerfile that makes it the image's build context; `--image`
   builds that image with Docker. A directory holding anything but an earlier release
   is refused, as are a project without a workbench and sheets never saved.
-- `haute app serve [--port PORT] [--static-dir DIR]` builds the release under
-  `.haute/app/release` and serves the underwriter app on `127.0.0.1` alone (port 8001
-  by default), every request signed in as the analyst's git identity; without one it
-  refuses to start.
+- `haute app serve [--port PORT] [--static-dir DIR] [--reader]` builds the release
+  under `.haute/app/release` and serves the underwriter app on `127.0.0.1` alone (port
+  8001 by default), every request signed in as the analyst's git identity, able to
+  change quotes unless `--reader` signs it in as one who reads them; without an identity
+  it refuses to start. It keeps the quotes saved in it in `.haute/app/quotes.sqlite`,
+  migrated as it starts, which a rebuild leaves as it is.
+- `haute app migrate [--url URL]` brings the underwriter app's quote store, at `URL` or
+  else at `HAUTE_QUOTE_STORE_URL`, to the schema this Haute writes, before a release that
+  needs it starts; without either it names both and exits non-zero.
 - `haute status [model_name] [--version-only]` looks up a model's latest version/stage in the MLflow
   Model Registry.
 - `haute impact [--sample] [--batch-size] [--endpoint-suffix]` scores a configured safety dataset

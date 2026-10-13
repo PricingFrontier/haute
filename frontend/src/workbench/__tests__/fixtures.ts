@@ -9,7 +9,17 @@ import type { ChartWidget, FieldRef, FormSpec, HeadingWidget, Page, SchemaColumn
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { BLANK_SECTION_HEIGHT } from "../../utils/sheetGeometry"
-import { CHART_OPTIONS, findWidget, HEADING_OPTIONS, showsFields, TABLE_OPTIONS, type FieldsWidget, type Widget } from "../../utils/workbenchForm"
+import {
+  CHART_OPTIONS,
+  findWidget,
+  HEADING_OPTIONS,
+  QUOTE_DETAILS_COLUMNS,
+  QUOTE_DETAILS_ID,
+  showsFields,
+  TABLE_OPTIONS,
+  type FieldsWidget,
+  type Widget,
+} from "../../utils/workbenchForm"
 
 const ALWAYS: ShowWhen = { match: "all", conditions: [] }
 
@@ -68,6 +78,12 @@ export const table = (id: string, name: string, overrides: Partial<SchemaTable> 
   columns: [],
   ...overrides,
 })
+
+/** Haute's quote_details table, as every form holds it, its columns labelled by name in `labels`. */
+export const detailsTable = (labels: Record<string, string> = {}): SchemaTable =>
+  table(QUOTE_DETAILS_ID, QUOTE_DETAILS_ID, {
+    columns: QUOTE_DETAILS_COLUMNS.map(([id, name, type]) => column(id, name, { type, label: labels[name] ?? "" })),
+  })
 
 export const sheetForm = (): FormSpec => ({
   version: 1,

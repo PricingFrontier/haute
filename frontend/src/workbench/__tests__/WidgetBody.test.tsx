@@ -49,7 +49,7 @@ describe("WidgetBody", () => {
     stubLayout()
     loadForm()
     useWorkbenchPricingStore.setState({ price: null, error: null })
-    useWorkbenchPreviewStore.setState({ quote: {}, checked: false, price: null, error: null, pricing: false })
+    useWorkbenchPreviewStore.setState({ quote: {}, checked: false, price: null, error: null, pricing: false, readOnly: false })
   })
 
   afterEach(() => {
@@ -403,5 +403,19 @@ describe("WidgetBody", () => {
     rerender(body("w_head"))
     expect(screen.queryByText("Each item insured, with its value")).not.toBeInTheDocument()
     expect(screen.getByText("Type its text in the panel on the right")).toBeInTheDocument()
+  })
+
+  it("shows a quote held read only in Preview with its cells taking no typing and no rows added or deleted", () => {
+    act(() => useWorkbenchPreviewStore.getState().open({ policy: [{ "policy.state": "NY" }], equipment: [{ "equipment.item": "Crane" }] }, null, true))
+    const { unmount } = renderBody("w_boxes", true)
+    expect(screen.getByRole("combobox", { name: "State" })).toBeDisabled()
+    unmount()
+
+    renderBody("w_grid", true)
+    expect(screen.getByRole("textbox", { name: "Item row 1" })).toBeDisabled()
+    expect(screen.queryByRole("button", { name: "Add row" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Delete row 1" })).not.toBeInTheDocument()
+    act(() => useWorkbenchPreviewStore.getState().setCell("policy", 0, "policy.state", "CA"))
+    expect(useWorkbenchPreviewStore.getState().quote.policy[0]["policy.state"]).toBe("NY")
   })
 })

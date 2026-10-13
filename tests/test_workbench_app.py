@@ -24,7 +24,7 @@ from haute._workbench_app import (
     read_release,
     write_release,
 )
-from haute._workbench_form import FormSpec, form_revision, render_form
+from haute._workbench_form import QUOTE_DETAILS_COLUMNS, FormSpec, form_revision, render_form
 from haute.deploy._utils import shipped_graph
 from haute.execution import ExecutionProfile
 from tests.test_workbench_routes import POLICY, PRICING, form
@@ -100,11 +100,14 @@ def _client(directory: Path, **options: Any) -> TestClient:
     return TestClient(create_app(directory, **options))
 
 
-def _price(client: TestClient, values: dict[str, Any] = VALUES, revision: str = "") -> Any:
+def _price(
+    client: TestClient, values: dict[str, Any] = VALUES, revision: str = "", release_id: str = ""
+) -> Any:
     revision = revision or client.get("/api/app/form", headers=SIGNED_IN).json()["revision"]
+    release_id = release_id or client.get("/api/app/release", headers=SIGNED_IN).json()["id"]
     return client.post(
         "/api/app/price",
-        json={"form_revision": revision, "values": values},
+        json={"form_revision": revision, "release": release_id, "values": values},
         headers=SIGNED_IN,
     )
 
@@ -262,10 +265,13 @@ def test_a_quote_is_priced_through_the_releases_pipeline(release: Any) -> None:
 
 
 def test_a_page_drawn_for_another_release_is_refused(release: Any) -> None:
-    refused = _price(_client(release()), revision="0" * 64)
+    client = _client(release())
+    other_sheets = _price(client, revision="0" * 64)
+    other_model = _price(client, release_id="another")
 
-    assert refused.status_code == 409
-    assert "reload it" in refused.json()["detail"]
+    for refused in (other_sheets, other_model):
+        assert refused.status_code == 409
+        assert "reload it" in refused.json()["detail"]
 
 
 def test_an_empty_quote_is_refused(release: Any) -> None:
@@ -416,11 +422,25 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         '[workbench.app]\nhost = "azure-container-apps"\n',
         encoding="utf-8",
     )
-    _write(_priced(), tmp_path, "main")
+    _write(with_details_copy(_priced()), tmp_path, "main")
     (tmp_path / "forms").mkdir()
     write_sheets(tmp_path, PROJECT_TABLES)
     yield tmp_path
     set_project_root(original)
+
+
+def with_details_copy(graph: PipelineGraph) -> PipelineGraph:
+    """*graph* with Haute's ``quote_details`` table first in its Workbench Input's copy of the
+    tables, as the editor copies it from a form, which always holds it."""
+    from tests.test_workbench_output import _table
+
+    for node in graph.nodes:
+        if node.data.nodeType == NodeType.WORKBENCH_INPUT:
+            details = _table(
+                "quote_details", *((name, type_) for _, name, type_ in QUOTE_DETAILS_COLUMNS)
+            )
+            node.data.config["tables"] = [details, *node.data.config["tables"]]
+    return graph
 
 
 def write_sheets(project: Path, tables: list[dict[str, Any]]) -> None:
@@ -444,6 +464,22 @@ def test_a_project_builds_a_release_that_prices_as_its_pipeline(project: Path) -
     # Built again, into the same directory or another, it is the same release.
     assert build_release(project, project / "build" / "app").id == built.id
     assert build_release(project, project / "elsewhere").id == built.id
+
+
+def test_a_project_naming_an_edit_role_builds_a_release_that_records_it(project: Path) -> None:
+    toml = project / "haute.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8").replace(
+            'host = "azure-container-apps"\n',
+            'host = "azure-container-apps"\nedit_role = "Quotes.Edit"\n',
+        ),
+        encoding="utf-8",
+    )
+
+    built = build_release(project, project / "build" / "app")
+
+    assert built.edit_role == "Quotes.Edit"
+    assert read_release(project / "build" / "app")[0].edit_role == "Quotes.Edit"
 
 
 def test_the_same_project_checked_out_twice_builds_the_same_release(
@@ -476,7 +512,12 @@ from haute._workbench_app import create_app
 client = TestClient(create_app(Path(sys.argv[1]), local_principal="analyst@example.com"))
 revision = client.get("/api/app/form").json()["revision"]
 answered = client.post(
-    "/api/app/price", json={"form_revision": revision, "values": json.loads(sys.argv[2])}
+    "/api/app/price",
+    json={
+        "form_revision": revision,
+        "release": client.get("/api/app/release").json()["id"],
+        "values": json.loads(sys.argv[2]),
+    },
 )
 print(json.dumps(answered.json()))
 """
@@ -490,7 +531,7 @@ def test_the_app_prices_on_the_utility_code_the_release_carries(project: Path) -
 
     from tests.test_workbench_output import _priced, _write
 
-    graph = _priced()
+    graph = with_details_copy(_priced())
     graph.preamble = "from utility import RATE\n"
     graph.node_map["priced"].data.config["code"] = (
         "df = policy.with_columns(premium=pl.col('limit') / 10 * RATE, referral=pl.lit('none'))"
@@ -582,8 +623,17 @@ def test_haute_app_serve_serves_the_release_on_loopback_as_the_analyst(
     assert "Signed in as ana@example.com" in result.output
     assert (served["host"], served["port"]) == ("127.0.0.1", 8123)
     assert (project / ".haute" / "app" / "release" / "release.json").is_file()
-    signed_in = TestClient(served["app"]).get("/api/app/release")
-    assert signed_in.json()["principal"] == "ana@example.com"
+    assert (project / ".haute" / "app" / "quotes.sqlite").is_file()
+    assert "Quotes kept in .haute/app/quotes.sqlite" in result.output
+    with TestClient(served["app"]) as client:
+        signed_in = client.get("/api/app/release").json()
+    assert (signed_in["principal"], signed_in["quotes"]) == ("ana@example.com", True)
+
+    reading = CliRunner().invoke(cli, ["app", "serve", "--reader"])
+    assert reading.exit_code == 0, reading.output
+    assert "reading quotes only" in reading.output
+    with TestClient(served["app"]) as client:
+        assert client.get("/api/app/release").json()["can_edit"] is False
 
     monkeypatch.setattr(git_setup, "get_identity", lambda cwd=None: (None, None))
     unnamed = CliRunner().invoke(cli, ["app", "serve"])
@@ -617,11 +667,34 @@ import app
 client = TestClient(app.app)
 signed_in = {"x-ms-client-principal-name": "uw@example.com"}
 revision = client.get("/api/app/form", headers=signed_in).json()["revision"]
+release_id = client.get("/api/app/release", headers=signed_in).json()["id"]
 values = json.loads(sys.argv[2])
 response = client.post(
-    "/api/app/price", json={"form_revision": revision, "values": values}, headers=signed_in
+    "/api/app/price",
+    json={"form_revision": revision, "release": release_id, "values": values},
+    headers=signed_in,
 )
-print(json.dumps({"status": response.status_code, "body": response.json()}))
+saved = client.post(
+    "/api/app/quotes",
+    json={
+        "operation": "operation-0001",
+        "form_revision": revision,
+        "release": release_id,
+        "values": values,
+        "shown": response.json()["tables"],
+    },
+    headers=signed_in,
+)
+print(
+    json.dumps(
+        {
+            "status": response.status_code,
+            "body": response.json(),
+            "saved": saved.status_code,
+            "quote": saved.json(),
+        }
+    )
+)
 """
 
 
@@ -690,21 +763,31 @@ def test_haute_app_build_builds_the_image_with_docker(
     assert "Docker is not available here" in refused.output
 
 
-def test_the_release_prices_with_only_the_images_runtime_installed(project: Path) -> None:
-    """The image installs haute --no-deps and the pinned scoring runtime: the release's app is
-    imported and prices a quote in a fresh interpreter that cannot import anything else haute
+def test_the_release_prices_and_keeps_quotes_with_only_the_images_runtime_installed(
+    project: Path,
+) -> None:
+    """The image installs haute --no-deps, the pinned scoring runtime and the quote store's
+    packages: the release's app, given its store's URL as a host gives it, is imported and
+    prices and saves a quote in a fresh interpreter that cannot import anything else haute
     depends on, as the container's scoring app is checked."""
+    import os
     import subprocess
     import sys
 
+    from haute._quote_store import migrate_store, store_url
     from tests.test_container_smoke_script import _modules_outside_the_image
 
     _pin_base_image(project)
     release_dir = project / "image"
     build_release(project, release_dir)
     manifest = json.loads((release_dir / "deploy_manifest.json").read_text(encoding="utf-8"))
-    blocked = _modules_outside_the_image(manifest["container_dependencies"][1:])
-    assert {"sqlalchemy", "alembic", "mlflow"} <= set(blocked)
+    installed = manifest["container_dependencies"][1:]
+    assert {requirement.split("==")[0] for requirement in installed} >= {"sqlalchemy", "alembic"}
+    blocked = _modules_outside_the_image(installed)
+    assert "mlflow" in blocked
+    assert not {"sqlalchemy", "alembic"} & set(blocked)
+    url = store_url(project / "quotes.sqlite")
+    migrate_store(url)
     child = project / "price_one_quote.py"
     child.write_text(_SLIM_RELEASE_CHILD, encoding="utf-8")
 
@@ -715,6 +798,7 @@ def test_the_release_prices_with_only_the_images_runtime_installed(project: Path
         text=True,
         encoding="utf-8",
         check=False,
+        env={**os.environ, workbench_app.STORE_URL_ENV: url},
     )
 
     assert completed.returncode == 0, completed.stderr[-4000:]
@@ -723,3 +807,35 @@ def test_the_release_prices_with_only_the_images_runtime_installed(project: Path
     assert result["body"]["tables"]["pricing"] == [
         {"premium": 100.0, "limit": 1000.0, "referral": "none"}
     ]
+    assert result["saved"] == 200, result
+    assert result["quote"]["quote"]["reference"] == "Q-000001"
+
+
+def test_a_release_without_a_quote_store_prices_without_its_packages(release: Any) -> None:
+    """Without a store the app imports nothing of the store's: a scoring image without its
+    packages serves the sheets and prices."""
+    import subprocess
+    import sys
+
+    script = (
+        "import importlib.abc, sys\n"
+        "class Block(importlib.abc.MetaPathFinder):\n"
+        "    def find_spec(self, name, path=None, target=None):\n"
+        "        if name.split('.')[0] in ('sqlalchemy', 'alembic'):\n"
+        "            raise ModuleNotFoundError(name)\n"
+        "sys.meta_path.insert(0, Block())\n"
+        "from pathlib import Path\n"
+        "from haute._workbench_app import create_app\n"
+        "create_app(Path(sys.argv[1]))\n"
+        "print('served')\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(release())],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr[-4000:]
+    assert completed.stdout.strip().endswith("served")

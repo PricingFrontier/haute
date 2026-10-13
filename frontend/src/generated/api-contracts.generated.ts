@@ -2698,13 +2698,16 @@ export interface WorkbenchTestQuoteChange {
  * The underwriter app's release, and who the host signed in.
  */
 export interface WorkbenchAppReleaseResponse {
+  can_edit: boolean;
   created_at: string;
+  edit_role: string | null;
   form_revision: string;
   haute_version: string;
   host: string | null;
   id: string;
   pipeline_name: string;
   principal: string;
+  quotes: boolean;
 }
 /**
  * The release's form, without its sample, with the revision a price quotes.
@@ -2725,4 +2728,155 @@ export interface WorkbenchAppPriceResponse {
       [k: string]: unknown;
     }[];
   };
+}
+/**
+ * A page of a list of quotes, the cursor of the next, and each list's and stage's
+ * count.
+ */
+export interface WorkbenchAppQuotesResponse {
+  counts: {
+    [k: string]: number;
+  };
+  next_cursor: string | null;
+  quotes: WorkbenchAppQuote[];
+}
+/**
+ * An app quote as the Quotes page and the quote's bar show it: its ``quote_details`` row
+ * and what its newest revision and its events say of it. Times are ISO 8601, in UTC.
+ */
+export interface WorkbenchAppQuote {
+  archived: boolean;
+  archived_at: string | null;
+  archived_by: string | null;
+  assignee: string;
+  created_at: string;
+  details: {
+    [k: string]: string | number | boolean | null;
+  };
+  final_at: string | null;
+  final_by: string | null;
+  final_revision: number | null;
+  form_revision: string;
+  id: string;
+  last_saved_at: string;
+  last_saved_by: string;
+  latest: number;
+  note: string;
+  note_at: string | null;
+  note_by: string | null;
+  owner: string;
+  priced: boolean;
+  reference: string;
+  relation: 'duplicate' | 'renewal' | 'alternative' | null;
+  release: string | null;
+  source_quote_id: string | null;
+  source_reference: string | null;
+  source_revision: number | null;
+  stage: 'draft' | 'priced' | 'final';
+  title: string;
+  version: number;
+}
+/**
+ * A quote with one revision. ``form`` is the sheets the revision was keyed into when
+ * they are not the release's, which it opens on, read only; ``moved`` says a save's
+ * prices, made again on the server, are not the ones the page showed.
+ */
+export interface WorkbenchAppQuoteResponse {
+  form: FormSpec | null;
+  moved: boolean;
+  quote: WorkbenchAppQuote;
+  revision: WorkbenchAppQuoteRevision;
+}
+/**
+ * One revision of a quote: its values as typed, its prices (null when saved unpriced),
+ * the request priced, the release that priced it, and who saved it when.
+ */
+export interface WorkbenchAppQuoteRevision {
+  form_revision: string;
+  number: number;
+  release: string | null;
+  request: {
+    [k: string]: unknown;
+  };
+  saved_at: string;
+  saved_by: string;
+  tables: {
+    [k: string]: {
+      [k: string]: unknown;
+    }[];
+  } | null;
+  values: {
+    [k: string]: {
+      [k: string]: string | boolean;
+    }[];
+  };
+}
+/**
+ * The quote as the change left it, and the revision it wrote; a note writes none.
+ */
+export interface WorkbenchAppQuoteChangeResponse {
+  quote: WorkbenchAppQuote;
+  revision: WorkbenchAppQuoteRevision | null;
+}
+/**
+ * A quote's revisions, events, the quote it was made from and those made from it.
+ */
+export interface WorkbenchAppQuoteHistoryResponse {
+  derived: WorkbenchAppRelatedQuote[];
+  events: WorkbenchAppQuoteEvent[];
+  revisions: WorkbenchAppQuoteRevisionSummary[];
+  source: WorkbenchAppRelatedQuote | null;
+}
+/**
+ * A quote this one was made from, or one made from it, and the revision it came from.
+ */
+export interface WorkbenchAppRelatedQuote {
+  id: string;
+  reference: string;
+  relation: 'duplicate' | 'renewal' | 'alternative';
+  revision: number;
+}
+/**
+ * Who did what to a quote, and when.
+ */
+export interface WorkbenchAppQuoteEvent {
+  actor: string;
+  at: string;
+  detail: {
+    [k: string]: unknown;
+  };
+  id: number;
+  kind: 'created' | 'saved' | 'assigned' | 'noted' | 'archived' | 'restored' | 'finalised' | 'reopened' | 'derived';
+  revision: number | null;
+}
+/**
+ * A revision as a quote's history lists it, with the stage it was saved at.
+ */
+export interface WorkbenchAppQuoteRevisionSummary {
+  form_revision: string;
+  number: number;
+  priced: boolean;
+  release: string | null;
+  saved_at: string;
+  saved_by: string;
+  stage: 'draft' | 'priced' | 'final';
+}
+/**
+ * A revision's values carried onto the release's sheets, and each filled value with no
+ * place there, ``table.column`` by the names it was saved under.
+ */
+export interface WorkbenchAppCarryResponse {
+  dropped: string[];
+  values: {
+    [k: string]: {
+      [k: string]: string | boolean;
+    }[];
+  };
+}
+/**
+ * Everyone a quote is assigned to, or was made or saved by: those a quote can be
+ * assigned to without typing a name.
+ */
+export interface WorkbenchAppPeopleResponse {
+  people: string[];
 }

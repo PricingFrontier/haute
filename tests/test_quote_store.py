@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 
 from haute._quote_store import (
@@ -114,7 +114,7 @@ def test_a_new_file_is_migrated_to_the_schema_and_a_second_migration_changes_not
         with engine.connect() as connection:
             context = MigrationContext.configure(connection, opts={"version_table": VERSION_TABLE})
             assert compare_metadata(context, METADATA) == []
-            assert context.get_current_revision() == "0001"
+            assert context.get_current_revision() == "0002"
     finally:
         engine.dispose()
 
@@ -123,6 +123,39 @@ def test_a_file_not_at_the_newest_schema_is_refused_naming_what_to_run(url: str)
     with pytest.raises(QuoteStoreNotMigratedError, match="migrate_store") as refused:
         open_store(url)
     assert refused.value.error_code == "quote_store_not_migrated"
+
+
+def _ahead(url: str, oldest_reader: str) -> None:
+    """Put the migrated database at a schema past this Haute's, naming *oldest_reader*."""
+    migrate_store(url)
+    engine = create_engine(url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(f"UPDATE {VERSION_TABLE} SET version_num = '0003'"))
+            connection.execute(
+                text("UPDATE haute_quote_store_compat SET oldest_reader = :oldest"),
+                {"oldest": oldest_reader},
+            )
+    finally:
+        engine.dispose()
+
+
+def test_a_database_past_this_hautes_schema_that_names_it_able_opens_as_it_is(url: str) -> None:
+    _ahead(url, oldest_reader="0002")
+
+    migrate_store(url)
+    with open_store(url, clock=Clock()) as store:
+        _create(store)
+        assert len(store.quotes()) == 1
+
+
+def test_a_database_past_this_hautes_schema_that_needs_a_newer_one_is_refused(url: str) -> None:
+    _ahead(url, oldest_reader="0003")
+
+    with pytest.raises(QuoteStoreNotMigratedError, match="newer than this Haute's newest, 0002"):
+        open_store(url)
+    with pytest.raises(QuoteStoreNotMigratedError, match="upgrade Haute"):
+        migrate_store(url)
 
 
 def test_a_sqlite_store_keeps_foreign_keys_on_and_no_write_ahead_log(
@@ -356,3 +389,22 @@ def test_values_are_carried_onto_the_current_form_through_the_stable_ids() -> No
     assert carried.values == {"t_policy": [{"c_region": "north"}]}
     # By the saved form's names, in its order; the blank note is no loss.
     assert carried.dropped == ["policy.cover", "driver.age"]
+
+
+def test_a_table_now_of_one_row_keeps_the_first_and_names_the_values_of_the_rest() -> None:
+    saved = _form(
+        {**_table("t_layer", "layers", ("c_limit", "limit"), ("c_note", "note")), "rows": "many"}
+    )
+    current = _form(_table("t_layer", "layer", ("c_limit", "limit")))
+    values = {
+        "t_layer": [
+            {"c_limit": "500", "c_note": "first"},
+            {"c_limit": "1000", "c_note": ""},
+            {"c_limit": "", "c_note": "third"},
+        ]
+    }
+
+    carried = carry_values(values, saved, current)
+
+    assert carried.values == {"t_layer": [{"c_limit": "500"}]}
+    assert carried.dropped == ["layers.note", "layers.limit row 2"]
