@@ -130,7 +130,7 @@ export default function HistoryPanel() {
                       <a href={path} onClick={(event) => followLink(event, path)} style={linkStyle} aria-current={showing ? "true" : undefined}>
                         Revision {each.number}
                       </a>
-                      {quote.final_revision === each.number && <span style={{ color: "var(--success-hover)" }}>final</span>}
+                      {quote.final_revision === each.number && <span style={{ color: "var(--quote-final-text)" }}>final</span>}
                       <span>{each.priced ? "priced" : "unpriced"}</span>
                       <span className="ml-auto truncate" title={fullTime(each.saved_at)}>
                         {each.saved_by}, {relativeTime(each.saved_at)}

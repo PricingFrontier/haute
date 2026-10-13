@@ -195,6 +195,12 @@
   --add-pill-border: var(--success-border);
   --add-pill-bg: var(--success-soft);
 
+  /* A final quote in the underwriter app: its stage chip and the revision pinned final
+     in its history. */
+  --quote-final-text: var(--success-hover);
+  --quote-final-bg: var(--success-soft);
+  --quote-final-border: var(--success-border-strong);
+
   /* Column-confirm affordances in ApiInputEditor: the per-column
      confirm check and the "Confirm all" pill.  Column-scoped name so a
      future unrelated confirm surface (e.g. a destructive confirm
