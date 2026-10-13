@@ -8,6 +8,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import { BLANK_THEME, COLLECTION_OPTIONS } from "../../utils/workbenchForm"
 import SchemaEditor from "../SchemaEditor"
 import { detailsTable } from "./fixtures"
 
@@ -42,6 +43,7 @@ const table = (id: string, name: string, overrides: Partial<SchemaTable> = {}): 
 const form = (...tables: SchemaTable[]): FormSpec => ({
   version: 1,
   name: "motor",
+  theme: { ...BLANK_THEME },
   schema: { tables },
   pages: [
     {
@@ -264,7 +266,7 @@ describe("SchemaEditor", () => {
   it("asks before removing a column or a table a sheet shows, and takes it off the sheet", () => {
     const shown = form(POLICY, LAYERS)
     shown.pages[0].sections[0].widgets = [
-      { id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, fields: [{ table: "t_policy", column: "c_state" }], show_when: { match: "all", conditions: [] } },
+      { id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "t_policy", column: "c_state" }], show_when: { match: "all", conditions: [] } },
     ]
     load(shown)
     render(<SchemaEditor />)
@@ -290,7 +292,7 @@ describe("SchemaEditor", () => {
     const condition = { table: "t_policy", column: "c_state", op: "filled" as const, values: [] }
     tested.pages[0].show_when = { match: "all", conditions: [condition] }
     tested.pages[0].sections[0].widgets = [
-      { id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, fields: [{ table: "t_policy", column: "c_state" }], show_when: { match: "all", conditions: [] } },
+      { id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "t_policy", column: "c_state" }], show_when: { match: "all", conditions: [] } },
     ]
     load(tested)
     render(<SchemaEditor />)

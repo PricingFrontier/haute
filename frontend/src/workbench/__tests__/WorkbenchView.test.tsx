@@ -10,6 +10,7 @@ import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import useWorkbenchPricingStore from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
+import { BLANK_THEME } from "../../utils/workbenchForm"
 import WorkbenchView from "../WorkbenchView"
 
 vi.mock("../SchemaEditor", () => ({
@@ -170,6 +171,7 @@ describe("WorkbenchView", () => {
     const form = {
       version: 1 as const,
       name: "motor",
+      theme: { ...BLANK_THEME },
       schema: { tables: [] },
       pages: [
         {

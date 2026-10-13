@@ -173,12 +173,12 @@ function track(
 
 /**
  * Commit a field being typed into before a gesture reads the form. A press whose default is
- * prevented does not move the focus, so the field would keep what was typed, lost when the
- * panel it is in goes or written over by the gesture; a field left commits what was typed
- * into it as it blurs, so the form is read after that, and the edit is an undo step apart
- * from the gesture's.
+ * prevented does not move the focus, and a press on the empty sheet closes the panel before
+ * the focus moves, so the field would keep what was typed, lost when the panel it is in goes
+ * or written over by the gesture; a field left commits what was typed into it as it blurs,
+ * so the form is read after that, and the edit is an undo step apart from the gesture's.
  */
-function leaveField(pressed: EventTarget): void {
+export function leaveField(pressed: EventTarget): void {
   if (document.activeElement instanceof HTMLElement && document.activeElement !== pressed) document.activeElement.blur()
 }
 

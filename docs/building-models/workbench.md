@@ -105,9 +105,9 @@ The palette on the left offers four components and a section; drag a component o
 sheet (a ghost shows where it lands) and it goes into the section under the top of the
 ghost:
 
-- A **Table** shows columns of many-row tables as a grid of at least its number of rows.
-- A **Collection** shows columns of one-row tables as boxes with their labels above, its
-  number of boxes across.
+- A **Table** shows columns of many-row tables as a grid that starts with its number of rows.
+- A **Collection** shows columns of one-row tables as labelled boxes, its number of boxes
+  across.
 - A **Chart** plots number columns, typed or priced. Of one-row tables it gives a point per
   field; of many-row tables, a series per field over the rows, each row labelled by a
   column you choose or numbered. A pie shows parts of a whole, so given a value below 0, or
@@ -118,11 +118,21 @@ ghost:
   right. It holds no values; give it the conditions of the section it names and it hides
   with it.
 
+While building, **Display** in the toolbar opens the sheets' colours: the **Sheet
+background**, the **Component background** of framed Tables, Collections and Charts, their
+**Borders**, the **Font** of Headings and of components' titles, labels and values, and the
+fill of **Input cells** and **Output cells**. Each is Automatic, one of the swatches (white,
+light grey, dark grey and black, then eight hues) or a colour of your own from the rainbow
+square, and the sheet shows a colour as you pick it. They apply wherever the
+sheets show, Preview and the underwriter app included.
+
 Select a component to open its properties on the right: its title, when it shows (see
-[Showing sheets, sections and components conditionally](#showing-sheets-sections-and-components-conditionally)), its layout (a Table's
-rows and whether they are **fixed**, with no Add row or delete, or a Collection's columns
+[Showing sheets, sections and components conditionally](#showing-sheets-sections-and-components-conditionally)), its layout (the rows a
+Table starts with and whether they are **fixed**, with no Add row or delete, or a Collection's columns
 across), a Table's **look** (compact or comfortable rows; gridlines between the rows, a full
-grid or none; row numbers; striped rows), the **order** of the fields it shows (drag, or
+grid or none; a header as written or in capitals; row numbers; striped rows; a frame or
+none), a Collection's **look** (labels above or beside the boxes; compact or comfortable
+boxes; a frame or none), the **order** of the fields it shows (drag, or
 Alt+Up and Alt+Down), and its **fields**, ticked from the schema tables of its kind. A
 Chart's settings are its **Type** (Column, Line, Area or Pie), **Rows** (what labels the
 rows of many-row tables, or Row number), its **Legend**, and whether it is **Stacked**,
@@ -130,7 +140,9 @@ rows of many-row tables, or Row number), its **Legend**, and whether it is **Sta
 other than an index. A grid holds one kind of row, so once a Table or a Chart shows a
 field, tables whose rows do not line up with it (keyed differently) are greyed out; an
 input table and an output table with the same key line up, so each row can show its
-premium. Output columns are shaded. A Heading's properties are its **Text** and
+premium. Output columns are shaded. A Table's and a Collection's properties are in two
+panes: **Config**, the fields it shows and their order, and **Display**, its title, when it
+shows, its layout and its look. A Heading's properties are its **Text** and
 **Description**, when it shows, its **Size** and its **Align**ment.
 
 Drag a component to move it and any of its eight handles to resize it; everything snaps
@@ -218,7 +230,11 @@ sheet's tab, the section's header or the component's dashed frame.
 Type a sample quote straight into the components while building: a Collection's boxes
 hold its tables' one row, and a Table's grid holds its tables' rows, with **Add row** and a
 delete on each row unless its rows are fixed (they add and delete the row in every input
-table the grid shows, so the cells stay side by side). Each cell is the control its column
+table the grid shows, so the cells stay side by side). A Table starts with its rows, empty;
+the first value you type keeps them, and from then on the rows are yours to add and
+delete, fewer than it started with too, though a Table of fixed rows never shows fewer.
+Change a Table's rows while building and the grid shows it at once: empty rows after the
+last one you typed into go, or more are added. Each cell is the control its column
 calls for: a tick box, a dropdown of the allowed values, a date picker, or a text field. An
 empty cell is blank, or shows its column's placeholder. The sample is part of what
 **Save** writes, undone like any other edit, and it is what the

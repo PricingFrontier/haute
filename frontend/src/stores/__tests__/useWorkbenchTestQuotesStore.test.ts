@@ -40,6 +40,7 @@ import useWorkbenchFormStore from "../useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { type Pricer } from "../useWorkbenchPricingStore"
 import useWorkbenchTestQuotesStore, { runIsStale } from "../useWorkbenchTestQuotesStore"
+import { BLANK_THEME } from "../../utils/workbenchForm"
 
 const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
   id,
@@ -67,7 +68,7 @@ const policy: SchemaTable = {
   columns: [column("c1", "exposure", { type: "float", required: true, min: 0 })],
 }
 const pricing: SchemaTable = { id: "t2", name: "pricing_output", role: "output", rows: "one", columns: [column("c2", "premium", { type: "float" })] }
-const form: FormSpec = { version: 1, name: "t", schema: { tables: [policy, pricing] }, pages: [sheet("p", "Sheet 1")], sample: {} }
+const form: FormSpec = { version: 1, name: "t", theme: { ...BLANK_THEME }, schema: { tables: [policy, pricing] }, pages: [sheet("p", "Sheet 1")], sample: {} }
 const workbench: WorkbenchTablesResponse = { tables: [], sample: {}, response_tables: [] }
 const priced = (premium: number): PricedSample => ({ tables: { pricing_output: [{ premium }] } })
 const summary = (id: string, name: string): WorkbenchTestQuoteSummary => ({

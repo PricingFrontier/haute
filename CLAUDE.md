@@ -18,6 +18,10 @@ Run the Codex commands in the background and keep their state in the session scr
 
 Do not delegate review to Claude subagents and do not run Claude-vs-Claude review workflows. The main session still inspects every subagent diff itself (that is verification, not review) and owns the completion decision after Codex findings are resolved or rebutted.
 
+# UI text
+
+Instructions for using the UI belong in `docs/`, not on screen. Not every box needs a description: give a control its label, and leave out hint or helper text beside it unless the control cannot be understood without it.
+
 # Tests and CI
 
 Run only the affected tests locally, as AGENTS.md's "Targeted verification" describes, and never the full backend or frontend suite unless the user asks; this applies to subagents too. Push and let CI run the full suite. Watch the PR's checks with a `Monitor` on `gh pr checks`, not a sleep loop. On red, read the failing job's log with `gh`, reproduce only that test locally if the cause is unclear, fix it, and push again until CI is green.

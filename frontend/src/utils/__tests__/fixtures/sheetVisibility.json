@@ -4,6 +4,7 @@
     "quote": {
       "version": 1,
       "name": "quote",
+      "theme": {"sheet_color": null, "background_color": null, "border_color": null, "font_color": null, "input_cell_color": null, "output_cell_color": null},
       "schema": {
         "tables": [
           {
@@ -296,7 +297,10 @@
                     {"table": "t_policy", "column": "c_si"}
                   ],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 },
                 {
                   "id": "w_premium",
@@ -308,7 +312,10 @@
                   "title": "",
                   "fields": [{"table": "t_out", "column": "c_premium"}],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 },
                 {
                   "id": "w_chart",
@@ -368,7 +375,10 @@
                   "title": "",
                   "fields": [{"table": "t_bi", "column": "c_bi_si"}, {"table": "t_bi", "column": "c_bi_more"}],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 }
               ]
             }
@@ -398,7 +408,10 @@
                   "title": "",
                   "fields": [{"table": "t_ext", "column": "c_ext_days"}],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 }
               ]
             }
@@ -437,7 +450,9 @@
                   "density": "compact",
                   "gridlines": "rows",
                   "striped": true,
-                  "fixed_rows": false
+                  "fixed_rows": false,
+                  "header": "caps",
+                  "frame": true
                 },
                 {
                   "id": "w_fleet",
@@ -452,7 +467,10 @@
                     "match": "all",
                     "conditions": [{"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Fleet"]}]
                   },
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 }
               ]
             }
@@ -464,6 +482,7 @@
     "tests": {
       "version": 1,
       "name": "tests",
+      "theme": {"sheet_color": null, "background_color": null, "border_color": null, "font_color": null, "input_cell_color": null, "output_cell_color": null},
       "schema": {
         "tables": [
           {
@@ -699,7 +718,10 @@
                     {"table": "t_in", "column": "c_day"}
                   ],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 },
                 {
                   "id": "w_many",
@@ -716,7 +738,9 @@
                   "density": "compact",
                   "gridlines": "rows",
                   "striped": true,
-                  "fixed_rows": false
+                  "fixed_rows": false,
+                  "header": "caps",
+                  "frame": true
                 },
                 {
                   "id": "w_out",
@@ -728,7 +752,10 @@
                   "title": "",
                   "fields": [{"table": "t_out", "column": "c_o"}],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 }
               ]
             }
@@ -755,7 +782,10 @@
                   "title": "",
                   "fields": [{"table": "t_target", "column": "c_x"}],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 }
               ]
             }
@@ -767,6 +797,7 @@
     "sections": {
       "version": 1,
       "name": "sections",
+      "theme": {"sheet_color": null, "background_color": null, "border_color": null, "font_color": null, "input_cell_color": null, "output_cell_color": null},
       "schema": {
         "tables": [
           {
@@ -992,7 +1023,10 @@
                     {"table": "t_policy", "column": "c_name"}
                   ],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 },
                 {
                   "id": "w_premium",
@@ -1004,7 +1038,10 @@
                   "title": "",
                   "fields": [{"table": "t_out", "column": "c_premium"}],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 }
               ]
             },
@@ -1045,7 +1082,10 @@
                     {"table": "t_flood", "column": "c_barrier"}
                   ],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 },
                 {
                   "id": "w_flood_extra",
@@ -1067,7 +1107,10 @@
                       }
                     ]
                   },
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 }
               ]
             },
@@ -1095,7 +1138,10 @@
                     {"table": "t_policy", "column": "c_name"}
                   ],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 }
               ]
             },
@@ -1120,7 +1166,10 @@
                   "title": "",
                   "fields": [{"table": "t_policy", "column": "c_note"}],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 }
               ]
             }
@@ -1152,7 +1201,10 @@
                   "title": "",
                   "fields": [{"table": "t_policy", "column": "c_class"}],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 }
               ]
             }

@@ -3,9 +3,9 @@
  * which of the view's sections shows (the sheets or the schema while building, or
  * Preview), which sheet, the selected component, the selected section or the sheet's own
  * panel, the sheet's zoom, a component being dragged out of the palette, a section being
- * moved by its header, the properties panel's width, and the sheet and viewport elements
- * that drops are placed on and the zoom fits to. None of it is part of the form, so none is
- * saved or undone.
+ * moved by its header, the properties panel's width and the pane it last showed for each
+ * component, and the sheet and viewport elements that drops are placed on and the zoom fits
+ * to. None of it is part of the form, so none is saved or undone.
  */
 import { create } from "zustand"
 import type { FormSpec, Page, Section } from "../api/types"
@@ -30,6 +30,9 @@ export interface MovingSection {
   id: string
   to: number
 }
+
+/** A Table's or a Collection's properties pane: the data it shows, or how it shows it. */
+export type WidgetPane = "config" | "display"
 
 /** How far one Zoom In or Zoom Out changes the zoom. */
 export const ZOOM_STEP = 0.1
@@ -74,6 +77,8 @@ interface WorkbenchViewState {
   movingSection: MovingSection | null
   /** The properties panel's width, kept between openings. */
   panelWidth: number
+  /** The pane each component's properties panel last showed, by component id; Config until another is chosen. */
+  widgetPanes: Record<string, WidgetPane>
   /** The sheet element and its scrolling viewport, while the sheets section shows. */
   sheet: HTMLElement | null
   viewport: HTMLElement | null
@@ -97,6 +102,7 @@ interface WorkbenchViewState {
   setCreating: (creating: Creating | null) => void
   setMovingSection: (moving: MovingSection | null) => void
   setPanelWidth: (width: number) => void
+  setWidgetPane: (id: string, pane: WidgetPane) => void
   setSheet: (element: HTMLElement | null) => void
   setViewport: (element: HTMLElement | null) => void
 }
@@ -112,6 +118,7 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   creating: null,
   movingSection: null,
   panelWidth: DEFAULT_PANEL_WIDTH,
+  widgetPanes: {},
   sheet: null,
   viewport: null,
   showSection: (section) => set({ section, selectedId: null, sheetSelected: false, sectionId: null }),
@@ -140,6 +147,7 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   setCreating: (creating) => set({ creating }),
   setMovingSection: (movingSection) => set({ movingSection }),
   setPanelWidth: (panelWidth) => set({ panelWidth }),
+  setWidgetPane: (id, pane) => set((s) => ({ widgetPanes: { ...s.widgetPanes, [id]: pane } })),
   setSheet: (sheet) => set({ sheet }),
   setViewport: (viewport) => set({ viewport }),
 }))

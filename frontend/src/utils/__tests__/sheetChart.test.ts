@@ -10,7 +10,7 @@ import type { ChartThemeTokens } from "../../panels/explore/chartOptions"
 import { chartMessage, hasValues, sheetChartData, sheetChartOptions, type ChartData, type ChartValues } from "../sheetChart"
 import type { PricedRows, RowsByTable } from "../sheetValues"
 import { quotedSchema, sheetVisibility } from "../sheetVisibility"
-import { addWidget, createWidget, TABLE_OPTIONS, type SampleRow } from "../workbenchForm"
+import { addWidget, BLANK_THEME, COLLECTION_OPTIONS, createWidget, TABLE_OPTIONS, type SampleRow } from "../workbenchForm"
 
 const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
   id,
@@ -50,6 +50,7 @@ const field = (tableId: string, columnId: string): FieldRef => ({ table: tableId
 const motorForm = (): FormSpec => ({
   version: 1,
   name: "motor",
+  theme: { ...BLANK_THEME },
   schema: {
     tables: [
       table("policy", {
@@ -103,8 +104,8 @@ const motorForm = (): FormSpec => ({
           height: 700,
           show_when: always,
           widgets: [
-            { id: "w_policy", type: "collection", x: 0, y: 0, w: 400, h: 120, title: "Policy", columns: 3, fields: [field("policy", "state"), field("policy", "sum_insured"), field("policy", "cover")], show_when: always },
-            { id: "w_excess", type: "collection", x: 0, y: 140, w: 400, h: 120, title: "Excess", columns: 1, fields: [field("policy", "excess")], show_when: whileCovered },
+            { id: "w_policy", type: "collection", x: 0, y: 0, w: 400, h: 120, title: "Policy", columns: 3, ...COLLECTION_OPTIONS, fields: [field("policy", "state"), field("policy", "sum_insured"), field("policy", "cover")], show_when: always },
+            { id: "w_excess", type: "collection", x: 0, y: 140, w: 400, h: 120, title: "Excess", columns: 1, ...COLLECTION_OPTIONS, fields: [field("policy", "excess")], show_when: whileCovered },
             {
               id: "w_equipment",
               type: "tableInput",

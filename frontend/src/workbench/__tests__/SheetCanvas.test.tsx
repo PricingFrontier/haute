@@ -19,7 +19,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { CHART_OPTIONS, findSection, findWidget, HEADING_OPTIONS, TABLE_OPTIONS, updateWidget } from "../../utils/workbenchForm"
+import { CHART_OPTIONS, COLLECTION_OPTIONS, findSection, findWidget, HEADING_OPTIONS, TABLE_OPTIONS, updateWidget } from "../../utils/workbenchForm"
 import PropertiesPanel from "../PropertiesPanel"
 import SheetCanvas from "../SheetCanvas"
 import WorkbenchPalette from "../WorkbenchPalette"
@@ -128,7 +128,7 @@ describe("SheetCanvas", () => {
   })
 
   it("marks a component that shows nothing or a column that is gone, naming the problem", () => {
-    loadForm({ ...sheetForm(), pages: [sheet("p1", "Sheet 1", [{ id: "w", type: "collection", x: 0, y: 0, w: 200, h: 100, title: "", columns: 3, fields: [], show_when: { match: "all" as const, conditions: [] } }])] })
+    loadForm({ ...sheetForm(), pages: [sheet("p1", "Sheet 1", [{ id: "w", type: "collection", x: 0, y: 0, w: 200, h: 100, title: "", columns: 3, ...COLLECTION_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }])] })
     render(<SheetCanvas />)
 
     expect(screen.getByTitle("A Collection shows no fields")).toBeInTheDocument()
@@ -335,12 +335,12 @@ describe("SheetCanvas", () => {
     pointer("pointermove", 153, 121)
     pointer("pointerup", 153, 121)
     expect(widget("w_boxes")).toMatchObject({ x: 72, y: 40 })
-    expect(currentForm().sample).toEqual({ equipment: [{ "equipment.item": "Pump" }] })
+    expect(currentForm().sample).toEqual({ equipment: [{ "equipment.item": "Pump" }, {}, {}] })
     // The commit and the drag are a step each: one undo takes back the drag, the value staying.
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
     act(() => useWorkbenchFormStore.getState().undo())
     expect(widget("w_boxes")).toMatchObject({ x: 16, y: 16 })
-    expect(currentForm().sample).toEqual({ equipment: [{ "equipment.item": "Pump" }] })
+    expect(currentForm().sample).toEqual({ equipment: [{ "equipment.item": "Pump" }, {}, {}] })
 
     // So with a handle of the Table the cell is in, selected by the press in the cell.
     typeInto(2, "Hose")
@@ -348,7 +348,7 @@ describe("SheetCanvas", () => {
     pointer("pointermove", 776, 394)
     pointer("pointerup", 776, 394)
     expect(widget("w_grid")).toMatchObject({ x: 16, y: 160, w: 760, h: 232 })
-    expect(currentForm().sample).toEqual({ equipment: [{ "equipment.item": "Pump" }, { "equipment.item": "Hose" }] })
+    expect(currentForm().sample).toEqual({ equipment: [{ "equipment.item": "Pump" }, { "equipment.item": "Hose" }, {}] })
   })
 
   it("keeps a title typed in the panel, not yet committed, as another component is dragged or the one it names resized", () => {
@@ -358,8 +358,9 @@ describe("SheetCanvas", () => {
         <PropertiesPanel />
       </>,
     )
-    /** Type `text` into the panel's title, leaving it focused and uncommitted. */
+    /** Type `text` into the panel's title, on its Display pane, leaving it focused and uncommitted. */
     const retitle = (text: string) => {
+      fireEvent.click(screen.getByRole("tab", { name: "Display" }))
       const title = screen.getByRole("textbox", { name: "Title" })
       act(() => title.focus())
       fireEvent.change(title, { target: { value: text } })
@@ -380,6 +381,27 @@ describe("SheetCanvas", () => {
     pointer("pointermove", 512, 194)
     pointer("pointerup", 512, 194)
     expect(widget("w_boxes")).toMatchObject({ title: "Policy details", x: 72, y: 40, w: 440, h: 152 })
+  })
+
+  it("keeps a value typed in the panel, not yet committed, as the empty sheet is pressed and the panel closes", () => {
+    render(
+      <>
+        <SheetCanvas />
+        <PropertiesPanel />
+      </>,
+    )
+    fireEvent.pointerDown(frame("w_grid"), { button: 0 })
+    releasePointer()
+    fireEvent.click(screen.getByRole("tab", { name: "Display" }))
+    const rows = screen.getByTestId("widget-rows")
+    act(() => rows.focus())
+    fireEvent.change(rows, { target: { value: "5" } })
+
+    fireEvent.pointerDown(screen.getByTestId("sheet-viewport"), { button: 0 })
+    expect(useWorkbenchViewStore.getState().selectedId).toBeNull()
+    expect(screen.queryByTestId("widget-rows")).not.toBeInTheDocument()
+    expect(widget("w_grid")).toMatchObject({ rows: 5 })
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
   })
 
   it("keeps a section's title or height typed in its panel, not yet committed, as a Section is dragged out of the palette or its handle dragged, each its own undo step", () => {
@@ -495,7 +517,7 @@ describe("SheetCanvas", () => {
 
     // 400 down the sheet is 376 down the section, under its bar.
     const added = widgetsOf(currentForm())[2]
-    expect(added).toMatchObject({ type: "collection", x: 288, y: 376, w: 720, h: 120, fields: [], columns: 3 })
+    expect(added).toMatchObject({ type: "collection", x: 288, y: 376, w: 720, h: 120, fields: [], columns: 3, ...COLLECTION_OPTIONS })
     // Inside the section, which keeps its height.
     expect(heights()).toEqual([560])
     expect(useWorkbenchViewStore.getState().selectedId).toBe(added.id)
@@ -1156,7 +1178,7 @@ describe("SheetCanvas", () => {
   it("in Preview keeps the section holding the focus in place on the screen as a section opens above it", () => {
     const form = sectionedForm()
     // The policy's year in Notes, under its Heading.
-    addTo(form, { id: "w_year", type: "collection", x: 16, y: 72, w: 400, h: 120, title: "Year", columns: 2, fields: [{ table: "policy", column: "policy.year" }], show_when: { match: "all", conditions: [] } }, 0, 2)
+    addTo(form, { id: "w_year", type: "collection", x: 16, y: 72, w: 400, h: 120, title: "Year", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "policy", column: "policy.year" }], show_when: { match: "all", conditions: [] } }, 0, 2)
     loadForm(form)
     useWorkbenchViewStore.setState({ section: "preview" })
     render(<SheetCanvas />)

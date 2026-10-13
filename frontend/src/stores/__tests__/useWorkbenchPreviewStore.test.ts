@@ -15,7 +15,7 @@ import type { CollectionWidget, FormSchema, FormSpec, SchemaColumn, SchemaTable,
 import { fetchWorkbenchFormTables } from "../../api/workbench"
 import { cellKey, quoteProblems, valuesBasis } from "../../utils/sheetValues"
 import { columnKey } from "../../utils/sheetVisibility"
-import type { SampleRow } from "../../utils/workbenchForm"
+import { BLANK_THEME, COLLECTION_OPTIONS, type SampleRow } from "../../utils/workbenchForm"
 import type { PricedSample } from "../../utils/workbenchTables"
 import { section, sheet } from "../../workbench/__tests__/fixtures"
 import useWorkbenchFormStore from "../useWorkbenchFormStore"
@@ -51,6 +51,7 @@ const pricing: SchemaTable = { id: "t2", name: "pricing_output", role: "output",
 const form: FormSpec = {
   version: 1,
   name: "t",
+  theme: { ...BLANK_THEME },
   schema: { tables: [policy, pricing] },
   pages: [sheet("p", "Sheet 1")],
   sample: { t1: [{ c1: "100000" }] },
@@ -58,7 +59,7 @@ const form: FormSpec = {
 
 /** A Collection of the policy's columns, always shown. */
 const boxes = (id: string, columns: string[]): CollectionWidget => ({
-  id, type: "collection", x: 0, y: 0, w: 400, h: 100, title: "", columns: 2, show_when: { match: "all", conditions: [] },
+  id, type: "collection", x: 0, y: 0, w: 400, h: 100, title: "", columns: 2, ...COLLECTION_OPTIONS, show_when: { match: "all", conditions: [] },
   fields: columns.map((columnId) => ({ table: "t1", column: columnId })),
 })
 /** The schema with a box, cover, and a name beside the policy's required exposure. */

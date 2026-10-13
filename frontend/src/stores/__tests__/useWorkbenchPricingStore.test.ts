@@ -12,7 +12,7 @@ vi.mock("../../api/workbench", async (importOriginal) => ({
 
 import type { FormSpec, SchemaColumn, SchemaTable, WorkbenchTablesResponse } from "../../api/types"
 import { fetchWorkbenchFormTables } from "../../api/workbench"
-import { pricingBasis, withSampleCell } from "../../utils/workbenchForm"
+import { BLANK_THEME, pricingBasis, withSampleCell } from "../../utils/workbenchForm"
 import type { PricedSample } from "../../utils/workbenchTables"
 import useWorkbenchFormStore from "../useWorkbenchFormStore"
 import useWorkbenchPricingStore, { PRICING_DELAY_MS } from "../useWorkbenchPricingStore"
@@ -39,6 +39,7 @@ const pricing: SchemaTable = { id: "t2", name: "pricing_output", role: "output",
 const form: FormSpec = {
   version: 1,
   name: "t",
+  theme: { ...BLANK_THEME },
   schema: { tables: [policy, pricing] },
   pages: [
     {

@@ -8,6 +8,7 @@ import useWorkbenchTestQuotesStore from "../stores/useWorkbenchTestQuotesStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
 import { quoteFilled } from "../utils/sheetValues"
 import { quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
+import WorkbenchDisplay from "./WorkbenchDisplay"
 
 interface WorkbenchToolbarProps {
   /** Save: the host's project save, the one the pipeline toolbar's Save runs. */
@@ -23,7 +24,8 @@ interface WorkbenchToolbarProps {
 
 /**
  * The toolbar while the workbench's view shows (specs/workbench): the brand; Build over
- * Preview; while building, Sheets over Schema, the form's Undo and Redo and, while the
+ * Preview; while building, Sheets over Schema, Display and the box of the sheets' colours
+ * it opens, the form's Undo and Redo and, while the
  * sheets show, Zoom In over Zoom Out and why pricing the sample last failed; in Preview,
  * Price over Clear for the quote, Test quotes, the zoom, and why the quote has no price; and the
  * project's controls, the host's and the same as the pipeline toolbar's: Save saves the
@@ -110,6 +112,9 @@ export default function WorkbenchToolbar({ onSave, onCommit, editingDisabled = f
               <ToolbarButton icon={Database} aria-pressed={section === "schema"} onClick={() => showSection("schema")} title="The tables the sheets work with">
                 Schema
               </ToolbarButton>
+            </ToolbarColumn>
+            <ToolbarColumn role="group" aria-label="Display">
+              <WorkbenchDisplay />
             </ToolbarColumn>
             <UndoRedo canUndo={ready && canUndo} canRedo={ready && canRedo} onUndo={undo} onRedo={redo} />
           </>

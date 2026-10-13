@@ -12,6 +12,7 @@ import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchTestQuotesStore from "../../stores/useWorkbenchTestQuotesStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
+import { BLANK_THEME, COLLECTION_OPTIONS } from "../../utils/workbenchForm"
 import WorkbenchToolbar from "../WorkbenchToolbar"
 
 vi.mock("../../components/BranchIndicator", () => ({
@@ -21,6 +22,7 @@ vi.mock("../../components/BranchIndicator", () => ({
 const blank: FormSpec = {
   version: 1,
   name: "motor",
+  theme: { ...BLANK_THEME },
   schema: { tables: [] },
   pages: [
     {
@@ -145,6 +147,15 @@ describe("WorkbenchToolbar", () => {
     expect(useWorkbenchViewStore.getState().section).toBe("sheets")
   })
 
+  it("has Display while building, opening the box of the sheets' colours, and none in Preview", () => {
+    renderToolbar()
+    fireEvent.click(screen.getByRole("button", { name: "Display" }))
+    expect(screen.getByRole("dialog", { name: "Display" })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }))
+    expect(screen.queryByRole("button", { name: "Display" })).not.toBeInTheDocument()
+  })
+
   it("opens and closes the test quotes from Preview alone", () => {
     useWorkbenchTestQuotesStore.setState({ open: false })
     renderToolbar()
@@ -159,7 +170,7 @@ describe("WorkbenchToolbar", () => {
   })
 
   it("prices nothing while the only values typed are in cells the sheets hide, though Clear clears them", () => {
-    const boxes = { id: "w", type: "collection" as const, x: 0, y: 0, w: 400, h: 100, title: "", columns: 2, fields: [{ table: "t1", column: "c1" }], show_when: { match: "all" as const, conditions: [] } }
+    const boxes = { id: "w", type: "collection" as const, x: 0, y: 0, w: 400, h: 100, title: "", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "t1", column: "c1" }], show_when: { match: "all" as const, conditions: [] } }
     useWorkbenchFormStore.setState({
       form: {
         ...form,

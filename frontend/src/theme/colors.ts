@@ -77,6 +77,12 @@ export const PIVOT_CHART_COLORS = {
   },
 } as const
 
+/** White, light grey, dark grey and black: the neutrals the workbench's sheets' colours offer before the hues. */
+export const NEUTRAL_SWATCHES = ["#FFFFFF", "#D1D5DB", "#4B5563", "#000000"] as const
+
+/** A colour wheel's hues round a square: what a colour of one's own is picked from. */
+export const COLOUR_WHEEL_GRADIENT = "conic-gradient(#FF0000, #FFFF00, #00FF00, #00FFFF, #0000FF, #FF00FF, #FF0000)"
+
 export const PIVOT_CONDITIONAL_FORMAT_COLORS = {
   low: { hex: "#F8696B", rgb: [248, 105, 107] },
   midpoint: { hex: "#FFEB84", rgb: [255, 235, 132] },

@@ -5,7 +5,7 @@ import useWorkbenchViewStore, { activePage, previewSections, shownPage } from ".
 import { GRID, readingOrder, SECTION_HEADER, SHEET_PADDING, sheetHeight, sheetWidth, stackBottom, stackSections } from "../utils/sheetGeometry"
 import { pageWidgets, showWhenText, shownFields, widgetProblems } from "../utils/workbenchForm"
 import SectionHeaders from "./SectionHeaders"
-import { dropAt, sectionDropAt } from "./sheetInteractions"
+import { dropAt, leaveField, sectionDropAt } from "./sheetInteractions"
 import SheetWidget from "./SheetWidget"
 import { useHeldWhilePressed, useKeptPlace } from "./steadyPreview"
 import { SheetValuesContext, usePreviewValues, useSampleValues } from "./useSheetValues"
@@ -25,13 +25,15 @@ const NO_SECTIONS: readonly Section[] = []
  * up the space of those that do not, held while a pointer is pressed on the sheet and kept
  * in the underwriter's view as they move. The components are drawn in the order they are
  * read, section by section and, within each, row by row and left to right along each row
- * (`readingOrder`), so a screen reader and Tab follow the layout, and stacked in the form's
+ * (`readingOrder`), so a screen reader and Tab follow the layout, on the sheet's background
+ * (the form's `theme`, else the editor's own), and stacked in the form's
  * order, so where two overlap the one added later covers the other (a copy its original),
  * the selected one covers both and the ghost covers all. Pressing the empty sheet
- * deselects. The sheet and its viewport are registered with the view store, which places
- * drops on them and fits the zoom to them; what is on the sheet is fitted to the viewport
- * when the sheets first show for a form, and a zoom chosen since is kept across a trip to
- * the schema or the pipeline editor.
+ * deselects, a field being typed into in the panel committing first. The sheet and its
+ * viewport are registered with the view store, which places drops on them and fits the
+ * zoom to them; what is on the sheet is fitted to the viewport when the sheets first show
+ * for a form, and a zoom chosen since is kept across a trip to the schema or the pipeline
+ * editor.
  */
 export default function SheetCanvas() {
   const form = useWorkbenchFormStore((s) => s.form)
@@ -100,7 +102,10 @@ export default function SheetCanvas() {
       data-testid="sheet-viewport"
       className="min-h-0 flex-1 overflow-auto"
       style={{ background: "var(--bg-canvas)", overflowAnchor: "none" }}
-      onPointerDown={() => select(null)}
+      onPointerDown={(event) => {
+        leaveField(event.currentTarget)
+        select(null)
+      }}
     >
       {page === null ? (
         <div className="grid h-full place-items-center text-xs" style={{ color: "var(--text-muted)" }}>
@@ -120,7 +125,7 @@ export default function SheetCanvas() {
               height,
               transform: `scale(${zoom})`,
               transformOrigin: "0 0",
-              background: "var(--bg-base)",
+              backgroundColor: form.theme.sheet_color ?? "var(--bg-base)",
               boxShadow: "0 0 0 1px var(--border)",
               backgroundImage: "radial-gradient(circle, var(--border) 1px, transparent 1px)",
               backgroundSize: `${GRID * 2}px ${GRID * 2}px`,

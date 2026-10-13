@@ -61,6 +61,16 @@ ALWAYS: dict[str, Any] = {"match": "all", "conditions": []}
 FORM: dict[str, Any] = {
     "version": 1,
     "name": "Contractors' equipment",
+    # Its sheets blue on dark slate, the borders amber, the input cells red and the outputs
+    # purple, the components' background left the editor's own.
+    "theme": {
+        "sheet_color": "#1E293B",
+        "background_color": None,
+        "border_color": "#D97706",
+        "font_color": "#2563EB",
+        "input_cell_color": "#DC2626",
+        "output_cell_color": "#9333EA",
+    },
     "schema": {
         "tables": [
             {
@@ -127,6 +137,10 @@ FORM: dict[str, Any] = {
                             ],
                             "show_when": ALWAYS,
                             "columns": 2,
+                            # Its labels beside its boxes, compact and without a frame.
+                            "labels": "beside",
+                            "density": "compact",
+                            "frame": False,
                         },
                         {
                             "id": "w_layers",
@@ -155,6 +169,9 @@ FORM: dict[str, Any] = {
                             "gridlines": "all",
                             "striped": False,
                             "fixed_rows": True,
+                            # Its header in capitals, without a frame.
+                            "header": "caps",
+                            "frame": False,
                         },
                         {
                             "id": "w_limits",
@@ -249,6 +266,15 @@ def test_the_blank_form_is_one_empty_sheet_named_after_the_project() -> None:
     assert json.loads(text) == {
         "version": 1,
         "name": "motor",
+        # The sheets in the editor's own colours.
+        "theme": {
+            "sheet_color": None,
+            "background_color": None,
+            "border_color": None,
+            "font_color": None,
+            "input_cell_color": None,
+            "output_cell_color": None,
+        },
         "schema": {"tables": [quote_details_table().model_dump(mode="json")]},
         "pages": [
             {
@@ -326,10 +352,12 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
     # Collection's and the Heading's show_when and the sample, as a builder that leaves
     # defaults out would write it.
     display = ("help", "placeholder", "number_format", "decimal_places", "use_grouping")
-    options = ("row_numbers", "density", "gridlines", "striped", "fixed_rows")
+    options = ("row_numbers", "density", "gridlines", "striped", "fixed_rows", "header", "frame")
+    collection_options = ("labels", "density", "frame")
     chart_options = ("category", "chart_type", "orientation", "stacked", "legend", "data_labels")
     sparse = json.loads(json.dumps(FORM))
     del sparse["sample"]
+    del sparse["theme"]
     for table in sparse["schema"]["tables"]:
         for col in table["columns"]:
             del col["index"]
@@ -338,6 +366,8 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
     sparse["schema"]["tables"][1]["columns"][0]["index"] = True
     for field in options:
         del widgets(sparse)[1][field]
+    for field in collection_options:
+        del widgets(sparse)[0][field]
     for field in chart_options:
         del widgets(sparse)[2][field]
     for field in ("text", "description", "show_when", "size", "align"):
@@ -363,6 +393,24 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         "gridlines": "rows",
         "striped": True,
         "fixed_rows": False,
+        "header": "plain",
+        "frame": True,
+    }
+    # A Collection labelled above its boxes, comfortable and framed.
+    boxes = widgets(written)[0]
+    assert {field: boxes[field] for field in collection_options} == {
+        "labels": "above",
+        "density": "comfortable",
+        "frame": True,
+    }
+    # The sheets in the editor's own colours.
+    assert written["theme"] == {
+        "sheet_color": None,
+        "background_color": None,
+        "border_color": None,
+        "font_color": None,
+        "input_cell_color": None,
+        "output_cell_color": None,
     }
     chart = widgets(written)[2]
     # Its rows numbered, drawn as upright columns, unstacked, the legend at the bottom and
@@ -399,8 +447,24 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         (lambda f: widgets(f)[1].update(rows=51), "rows"),
         (lambda f: widgets(f)[1].update(density="roomy"), "density"),
         (lambda f: widgets(f)[1].update(gridlines="dotted"), "gridlines"),
-        # A Collection has none of a Table's options.
+        # A Collection has none of a Table's own options, and a Table none of a Collection's.
         (lambda f: widgets(f)[0].update(striped=True), "striped"),
+        (lambda f: widgets(f)[0].update(header="caps"), "header"),
+        (lambda f: widgets(f)[1].update(labels="above"), "labels"),
+        (lambda f: widgets(f)[0].update(labels="under"), "labels"),
+        (lambda f: widgets(f)[0].update(density="roomy"), "density"),
+        (lambda f: widgets(f)[1].update(header="bold"), "header"),
+        # Only a Table and a Collection have a frame and a density.
+        (lambda f: widgets(f)[2].update(frame=False), "frame"),
+        # The colours are the sheets', on the form: a component has none of its own.
+        (lambda f: widgets(f)[1].update(font_color="#2563EB"), "font_color"),
+        (lambda f: widgets(f)[0].update(background_color="#2563EB"), "background_color"),
+        # A colour is #RRGGBB in capitals: one spelling, as the picker writes it.
+        (lambda f: f["theme"].update(font_color="red"), "font_color"),
+        (lambda f: f["theme"].update(input_cell_color="#ABC"), "input_cell_color"),
+        (lambda f: f["theme"].update(sheet_color="#1e293b"), "sheet_color"),
+        (lambda f: f["theme"].update(shadow_color="#000000"), "shadow_color"),
+        (lambda f: widgets(f)[3].update(density="compact"), "density"),
         (lambda f: widgets(f)[2].update(chart_type="bar"), "chart_type"),
         (lambda f: widgets(f)[2].update(legend="inside"), "legend"),
         # A Chart has none of a Table's options, and a Table and a Collection none of a

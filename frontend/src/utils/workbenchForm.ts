@@ -5,11 +5,11 @@
  * pipeline's tables or a sheet, a section or a component showing what it should. Each
  * operation returns a new form and leaves its input untouched.
  */
-import type { ChartWidget, Condition, FieldRef, FormSchema, FormSpec, HeadingWidget, Page, SchemaColumn, SchemaTable, Section, ShowWhen } from "../api/types"
+import type { ChartWidget, Condition, FieldRef, FormSchema, FormSpec, HeadingWidget, Page, SchemaColumn, SchemaTable, Section, ShowWhen, Theme } from "../api/types"
 import { ASCII_IDENTIFIER_RE, apiInputLabelIssue, apiInputLabelIssueMessage } from "./apiInputPorts"
 import { PYTHON_KEYWORDS } from "./globalConstants"
 import { BLANK_SECTION_HEIGHT, NEW_SECTION_HEIGHT, fittedSectionHeight, leastSectionHeight, type Rect } from "./sheetGeometry"
-import { parseTypedNumber, pricedRows, valuesBasis, type PricedRows, type RowsByTable } from "./sheetValues"
+import { filled, parseTypedNumber, pricedRows, valuesBasis, type PricedRows, type RowsByTable } from "./sheetValues"
 import { columnKey, conditionFault, fieldKeys, neverShown, sheetVisibility, testLabel } from "./sheetVisibility"
 
 /** A section's widget: a Table, a Collection, a Chart or a Heading. */
@@ -22,7 +22,9 @@ export type FieldsWidget = Exclude<Widget, HeadingWidget>
 /** A column's type: the Quote Input's column types. */
 export type ColumnType = SchemaColumn["type"]
 /** How a Table's grid looks, and whether its rows are fixed: no Add row and no delete. */
-export type TableOptions = Pick<Extract<Widget, { type: "tableInput" }>, "row_numbers" | "density" | "gridlines" | "striped" | "fixed_rows">
+export type TableOptions = Pick<Extract<Widget, { type: "tableInput" }>, "row_numbers" | "density" | "gridlines" | "striped" | "fixed_rows" | "header" | "frame">
+/** How a Collection's boxes look. */
+export type CollectionOptions = Pick<Extract<Widget, { type: "collection" }>, "labels" | "density" | "frame">
 /** What names a Chart's rows, and how it draws. */
 export type ChartOptions = Pick<ChartWidget, "category" | "chart_type" | "orientation" | "stacked" | "legend" | "data_labels">
 /** How a Heading's text shows. */
@@ -262,6 +264,15 @@ export interface ShownField {
 export const shownFields = (spec: FormSpec, widget: Widget): ShownField[] =>
   showsFields(widget) ? widget.fields.map((field) => ({ key: `${field.table}:${field.column}`, found: fieldColumn(spec, field) })) : []
 
+/** The input tables a Table's grid takes rows of, in its order: those of the many-row columns it shows that are typed into. */
+export const gridInputTables = (fields: readonly ShownField[]): SchemaTable[] => [
+  ...new Map(
+    fields.flatMap(({ found }) =>
+      found !== null && found.table.role === "input" && found.table.rows === "many" && !found.column.index ? [[found.table.id, found.table] as const] : [],
+    ),
+  ).values(),
+]
+
 // ─── Sheets, sections and components ─────────────────────────────────────
 
 function pageOf(spec: FormSpec, id: string): Page {
@@ -450,8 +461,19 @@ function fieldsWidgetOf(spec: FormSpec, id: string): FieldsWidget {
   return widget
 }
 
-/** A new Table's options: numbered, compact, lined between rows, striped and not fixed. */
-export const TABLE_OPTIONS: Readonly<TableOptions> = { row_numbers: true, density: "compact", gridlines: "rows", striped: true, fixed_rows: false }
+/** A new Table's options: numbered, compact, lined between rows, striped, not fixed, its header as written and framed. */
+export const TABLE_OPTIONS: Readonly<TableOptions> = {
+  row_numbers: true,
+  density: "compact",
+  gridlines: "rows",
+  striped: true,
+  fixed_rows: false,
+  header: "plain",
+  frame: true,
+}
+
+/** A new Collection's options: its labels above its boxes, comfortable and framed. */
+export const COLLECTION_OPTIONS: Readonly<CollectionOptions> = { labels: "above", density: "comfortable", frame: true }
 
 /** A new Chart's options: its rows numbered, columns, upright, unstacked, its legend at the bottom and no data labels. */
 export const CHART_OPTIONS: Readonly<ChartOptions> = {
@@ -475,7 +497,7 @@ export function createWidget(type: WidgetType, rect: Rect): Widget {
   const showing = { title: "", fields: [] as FieldRef[], show_when: alwaysShown() }
   switch (type) {
     case "collection":
-      return { ...placed, type, ...showing, columns: 3 }
+      return { ...placed, type, ...showing, columns: 3, ...COLLECTION_OPTIONS }
     case "chart":
       return { ...placed, type, ...showing, ...CHART_OPTIONS }
     case "tableInput":
@@ -484,6 +506,25 @@ export function createWidget(type: WidgetType, rect: Rect): Widget {
       return { ...placed, type, text: "", description: "", show_when: alwaysShown(), ...HEADING_OPTIONS }
   }
 }
+
+/** One of the sheets' colours: a key of the form's `theme`. */
+export type ThemeColour = keyof Theme
+
+/** The sheets' colours before any is chosen: the editor's own throughout, in the file's order. */
+export const BLANK_THEME: Readonly<Theme> = {
+  sheet_color: null,
+  background_color: null,
+  border_color: null,
+  font_color: null,
+  input_cell_color: null,
+  output_cell_color: null,
+}
+
+/** The form with one of the sheets' colours set, or the editor's own again for null. */
+export const setThemeColour = (spec: FormSpec, key: ThemeColour, colour: string | null): FormSpec =>
+  edit(spec, (draft) => {
+    draft.theme[key] = colour
+  })
 
 /** Add a component to a section, kept inside it (`keptInside`); only one taller than the section grows it. */
 export const addWidget = (spec: FormSpec, sectionId: string, widget: Widget): FormSpec =>
@@ -496,8 +537,9 @@ export const addWidget = (spec: FormSpec, sectionId: string, widget: Widget): Fo
 
 /**
  * What any component can be given; `rows` and the Table's options are a Table's alone,
- * `columns` a Collection's, the Chart's options a Chart's, and `text`, `description` and
- * the Heading's options a Heading's, which has no `title` or `fields`.
+ * `columns` and the Collection's options a Collection's, but for the `density` and `frame`
+ * the two share, the Chart's options a Chart's, and `text`, `description` and the
+ * Heading's options a Heading's, which has no `title` or `fields`.
  */
 export type WidgetPatch = Partial<Rect> & {
   title?: string
@@ -508,10 +550,14 @@ export type WidgetPatch = Partial<Rect> & {
   text?: string
   description?: string
 } & Partial<TableOptions> &
+  Partial<CollectionOptions> &
   Partial<ChartOptions> &
   Partial<HeadingOptions>
 
-const TABLE_ONLY = ["rows", ...Object.keys(TABLE_OPTIONS)]
+/** What a Table and a Collection both have: how dense they are, and whether they are framed. */
+const TABLE_OR_COLLECTION = ["density", "frame"]
+const TABLE_ONLY = ["rows", ...Object.keys(TABLE_OPTIONS).filter((key) => !TABLE_OR_COLLECTION.includes(key))]
+const COLLECTION_ONLY = ["columns", ...Object.keys(COLLECTION_OPTIONS).filter((key) => !TABLE_OR_COLLECTION.includes(key))]
 const CHART_ONLY = Object.keys(CHART_OPTIONS)
 const HEADING_ONLY = ["text", "description", ...Object.keys(HEADING_OPTIONS)]
 /** What every component but a Heading has. */
@@ -529,7 +575,10 @@ export const updateWidget = (spec: FormSpec, id: string, patch: WidgetPatch): Fo
     const { widget, section } = found
     const tableOnly = TABLE_ONLY.find((key) => key in patch)
     if (tableOnly !== undefined && widget.type !== "tableInput") throw new Error(`Only a Table has ${tableOnly}`)
-    if ("columns" in patch && widget.type !== "collection") throw new Error("Only a Collection has columns")
+    const collectionOnly = COLLECTION_ONLY.find((key) => key in patch)
+    if (collectionOnly !== undefined && widget.type !== "collection") throw new Error(`Only a Collection has ${collectionOnly}`)
+    const shared = TABLE_OR_COLLECTION.find((key) => key in patch)
+    if (shared !== undefined && widget.type !== "tableInput" && widget.type !== "collection") throw new Error(`Only a Table or a Collection has ${shared}`)
     const chartOnly = CHART_ONLY.find((key) => key in patch)
     if (chartOnly !== undefined && widget.type !== "chart") throw new Error(`Only a Chart has ${chartOnly}`)
     const headingOnly = HEADING_ONLY.find((key) => key in patch)
@@ -685,6 +734,33 @@ export const withSampleRows = (spec: FormSpec, rowsByTable: Record<string, Sampl
   edit(spec, (draft) => {
     for (const [tableId, rows] of Object.entries(rowsByTable)) draft.sample[tableId] = rows
   })
+
+/** `rows` with empty rows added to make `length`. */
+export const padRows = (rows: readonly SampleRow[], length: number): SampleRow[] => [
+  ...rows,
+  ...Array.from({ length: Math.max(0, length - rows.length) }, (): SampleRow => ({})),
+]
+
+/** How many of `rows` there are up to the last with a value typed in any column. */
+const typedRows = (rows: readonly SampleRow[]): number => rows.reduce((last, row, index) => (Object.values(row).some(filled) ? index + 1 : last), 0)
+
+/**
+ * Set the rows a Table's grid starts with, and start its grid in the sample again at them,
+ * so the change shows while building: the input tables it shows keep their rows up to the
+ * last with a value typed in any of them, empty rows making up the rest of its rows; with
+ * nothing typed they hold no rows, so the grid shows its start. No value typed is dropped.
+ */
+export const setTableRows = (spec: FormSpec, widgetId: string, rows: number): FormSpec => {
+  const next = updateWidget(spec, widgetId, { rows })
+  const tables = gridInputTables(shownFields(next, widgetOf(next, widgetId))).map((table) => table.id)
+  const kept = Math.max(0, ...tables.map((id) => typedRows(next.sample[id] ?? [])))
+  return edit(next, (draft) => {
+    for (const id of tables) {
+      if (kept === 0) delete draft.sample[id]
+      else draft.sample[id] = padRows((draft.sample[id] ?? []).slice(0, kept), Math.max(kept, rows))
+    }
+  })
+}
 
 const bases = new WeakMap<FormSpec, string>()
 

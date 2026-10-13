@@ -315,14 +315,19 @@ Out of scope:
   dropped or moved into a section shorter than itself. A section never shrinks of its own
   accord. A component is drawn in its
   section where the form places it: a Table as a grid of its rows with a column per field it shows, the index
-  column numbering the rows, under a header of its labels in capitals that stays in view as
+  column numbering the rows, under a header of its labels, as written unless `header` is
+  `caps`, in capitals, that stays in view as
   the rows scroll and is ruled off from them whatever the gridlines, drawn as its options
   say: its rows numbered in a column of their own unless `row_numbers` is off, compact rows
   (28px) or comfortable ones (36px), a line between rows and before each output column
   (`rows`), between every column too (`all`) or none at all (`none`), every other row
   shaded unless `striped` is off, and Add row under the last row and a delete on each row
-  unless its rows are fixed; a Collection as boxes with their labels above, its columns
-  across; a Chart as its type draws the values it plots (Charts, below); a Heading as its
+  unless its rows are fixed; a Collection as boxes, its columns across, their labels above
+  them or, while `labels` is `beside`, beside them, a tick box in a box as the other fields
+  are, the boxes compact (28px) or comfortable (36px) as its `density` says; each of the two in a frame, a border round the panel's
+  colour, unless `frame` is off, when it sits on the sheet as its title and fields alone,
+  all in the sheets' colours (below);
+  a Chart as its type draws the values it plots (Charts, below); a Heading as its
   text (Headings, below). Each field of a
   Table or a Collection shows its label (its column's, or the name made readable), a star for
   a required input, a mark showing its help when it has some, a hint at its type (a
@@ -338,7 +343,8 @@ Out of scope:
   divided by the zoom, and a move or a resize is one undo step, a click that does not
   move, or a drag held at a limit or brought back where it began, recording nothing, so
   redo still stands. A field in the panel typed into and not yet committed commits, as an
-  undo step of its own, as any drag on the sheet or out of the palette starts. Pressing the empty sheet deselects. A component takes the
+  undo step of its own, as any drag on the sheet or out of the palette starts, and as the
+  empty sheet is pressed. Pressing the empty sheet deselects. A component takes the
   keyboard's focus too: reached by Tab, it is selected, so the sheet's keys work without a
   pointer. The components are read, and reached by Tab, in the order they sit on the sheet,
   section by section and, within a section, row by row from the top and left to right along
@@ -383,9 +389,11 @@ Out of scope:
 - **The properties panel.** Selecting a component opens its panel on the right, Haute's
   side panel resized from its left edge, where the Git and Assistant panels open while
   they are closed: the component's kind and its title; its Show when (below); once it shows a field, its layout,
-  a Table's rows (1 to 50) and whether they are fixed, or a Collection's columns across (1
+  the rows a Table's grid starts with (1 to 50) and whether they are fixed, or a Collection's columns across (1
   to 12), a value outside the range refused at the field, a Table's look (its density, its
-  gridlines, its row numbers and its stripes), a Chart's chart (its type, Column, Line,
+  gridlines, its header, Capitals or As written, its row numbers, its stripes and its
+  frame), a Collection's look (its labels, Above or Beside, its density and its frame), a
+  Chart's chart (its type, Column, Line,
   Area or Pie; while it plots many-row tables, what labels its rows, "Row number" or a
   column of a table whose rows line up with its fields, other than an index, by table and
   label; its legend, Bottom, Top, Left, Right or None; and whether it is stacked, horizontal
@@ -405,7 +413,12 @@ Out of scope:
   keyed alike line up. A Chart's fields and the column labelling its rows line up the
   same way, the first of them deciding, and one-row tables all line up with one another.
   With no table of the component's kind in the schema, the panel says so and offers the
-  schema. A Heading's panel has its text in the title's place and its description under
+  schema. A Table's and a Collection's panel puts these in two panes under its header, as
+  Haute's node panel puts an Explore node's in panes: **Config**, the data it shows, its
+  order and its fields, and **Display**, how it shows them, its title, its Show when, its
+  layout and its look; the tabs are drawn in the component's colour, Config first,
+  and the pane chosen for a component is kept for it while the editor is open. A Chart's
+  panel stays one list. A Heading's panel has its text in the title's place and its description under
   it, each committed on blur or Enter, its Show when, and its look: its size, Large, Medium
   or Small, and its alignment, Left, Centre or Right, one of three toggles the arrow keys
   also move between. While building, the showing sheet's tab has a settings
@@ -440,13 +453,40 @@ Out of scope:
   asking first when components are in it, while another section remains on the sheet; with
   the section's panel open, Escape closes it. None of that from a text
   field or a select, whose own keys pick an option.
+- **The sheets' colours.** While building, Display in the toolbar opens a box under it,
+  Haute's toolbar dropdown rather than a dialog so the sheet stays in view, holding the
+  sheets' colours: the sheet's background, the components' background, their borders, the
+  font, the input cells and the output cells, each Automatic (the editor's own), one of the
+  swatches, white, light grey, dark grey and black and then Haute's eight hues, or a colour
+  of its own from a square of a colour wheel's rainbow, chosen as an Explore chart's colour
+  is; a colour
+  of its own shows on the sheet at each step of its pick, and the whole pick is one undo
+  step. Pressing outside the box, or Escape, closes it. The colours are the form's `theme`,
+  each `#RRGGBB` in capitals or null for the editor's own, and colour the sheets wherever
+  they show, the underwriter app's included: the sheet's background behind its sections, its
+  dots and outline staying the editor's; the background of framed components, Tables,
+  Collections and Charts, an unframed one sitting on the sheet; their borders, a frame's,
+  the rule under a title, a Table's header rule, its gridlines and the line before an output
+  column, and a Collection's boxes'; the font, the text of Headings, their descriptions too,
+  and of components' titles, labels and values, an output's label too, while a column that
+  is gone stays amber, a required input's star red and the index's numbers muted, and a
+  Chart's text stays the chart's own; the fill of input cells and boxes; and that of output
+  cells and boxes, in place of their shade. A Table's header strip takes the components'
+  background while one is set, or the sheet's while the Table is unframed, else keeps its
+  own; its stripes, a light shade, show whatever is under them.
 - **The sample.** Typing into a component's input columns while building types the form's
   sample. A Collection's boxes hold its one-row tables' one row; a Table's grid holds its
   many-row tables' rows, row by row, with Add row and a delete on each row, unless its rows
   are fixed, adding and deleting a row in every input table the grid shows at once, so
   their cells stay side by side; a one-row table's column in a grid shows that table's one
-  value on every row, and a grid shows at least its rows and every row the values hold,
-  its rows fixed or not. Each cell is the control its column calls for: a tick box
+  value on every row. A grid starts with its rows: while its input tables hold no rows it
+  shows that many empty ones, which the first value typed into it keeps; once they hold
+  rows it shows every row they hold, so a row can be deleted below its rows, deleting the
+  last starting it again, and a grid of fixed rows never shows fewer than its rows.
+  Changing a Table's rows starts its grid in the sample again at them, so the change
+  shows while building: each of its input tables keeps its rows up to the last with a
+  value typed, empty rows making up the rest, in the same undo step; nothing typed is
+  dropped. Each cell is the control its column calls for: a tick box
   for True/false, a dropdown of the allowed values, a date picker, else a text field, a
   number's right-aligned. A text field commits on blur or Enter, a dropdown, a tick box and
   a date on change, each commit one undo step. Values are held as typed, text or a tick, by

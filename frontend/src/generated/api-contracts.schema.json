@@ -741,12 +741,26 @@
           "title": "Columns",
           "type": "integer"
         },
+        "density": {
+          "default": "comfortable",
+          "enum": [
+            "compact",
+            "comfortable"
+          ],
+          "title": "Density",
+          "type": "string"
+        },
         "fields": {
           "items": {
             "$ref": "#/$defs/FieldRef"
           },
           "title": "Fields",
           "type": "array"
+        },
+        "frame": {
+          "default": true,
+          "title": "Frame",
+          "type": "boolean"
         },
         "h": {
           "exclusiveMinimum": 0,
@@ -755,6 +769,15 @@
         },
         "id": {
           "title": "Id",
+          "type": "string"
+        },
+        "labels": {
+          "default": "above",
+          "enum": [
+            "above",
+            "beside"
+          ],
+          "title": "Labels",
           "type": "string"
         },
         "show_when": {
@@ -796,7 +819,10 @@
         "title",
         "fields",
         "show_when",
-        "columns"
+        "columns",
+        "labels",
+        "density",
+        "frame"
       ],
       "title": "CollectionWidget",
       "type": "object"
@@ -5582,6 +5608,9 @@
         "schema": {
           "$ref": "#/$defs/FormSchema"
         },
+        "theme": {
+          "$ref": "#/$defs/Theme"
+        },
         "version": {
           "const": 1,
           "default": 1,
@@ -5592,6 +5621,7 @@
       "required": [
         "version",
         "name",
+        "theme",
         "schema",
         "pages",
         "sample"
@@ -12618,7 +12648,7 @@
     },
     "TableInputWidget": {
       "additionalProperties": false,
-      "description": "A Table: a grid of at least ``rows`` rows showing columns of many-row schema tables.",
+      "description": "A Table: a grid showing columns of many-row schema tables.",
       "properties": {
         "density": {
           "default": "compact",
@@ -12641,6 +12671,11 @@
           "title": "Fixed Rows",
           "type": "boolean"
         },
+        "frame": {
+          "default": true,
+          "title": "Frame",
+          "type": "boolean"
+        },
         "gridlines": {
           "default": "rows",
           "enum": [
@@ -12655,6 +12690,15 @@
           "exclusiveMinimum": 0,
           "title": "H",
           "type": "integer"
+        },
+        "header": {
+          "default": "plain",
+          "enum": [
+            "caps",
+            "plain"
+          ],
+          "title": "Header",
+          "type": "string"
         },
         "id": {
           "title": "Id",
@@ -12721,7 +12765,9 @@
         "density",
         "gridlines",
         "striped",
-        "fixed_rows"
+        "fixed_rows",
+        "header",
+        "frame"
       ],
       "title": "TableInputWidget",
       "type": "object"
@@ -12770,6 +12816,100 @@
         "tables"
       ],
       "title": "TableListResponse",
+      "type": "object"
+    },
+    "Theme": {
+      "additionalProperties": false,
+      "description": "The sheets' colours, wherever they show, each the editor's own while None.",
+      "properties": {
+        "background_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Background Color"
+        },
+        "border_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Border Color"
+        },
+        "font_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Font Color"
+        },
+        "input_cell_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Cell Color"
+        },
+        "output_cell_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Cell Color"
+        },
+        "sheet_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sheet Color"
+        }
+      },
+      "required": [
+        "sheet_color",
+        "background_color",
+        "border_color",
+        "font_color",
+        "input_cell_color",
+        "output_cell_color"
+      ],
+      "title": "Theme",
       "type": "object"
     },
     "TrainEstimateResponse": {

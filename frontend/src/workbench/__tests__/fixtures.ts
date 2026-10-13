@@ -10,7 +10,9 @@ import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { BLANK_SECTION_HEIGHT } from "../../utils/sheetGeometry"
 import {
+  BLANK_THEME,
   CHART_OPTIONS,
+  COLLECTION_OPTIONS,
   findWidget,
   HEADING_OPTIONS,
   QUOTE_DETAILS_COLUMNS,
@@ -88,6 +90,7 @@ export const detailsTable = (labels: Record<string, string> = {}): SchemaTable =
 export const sheetForm = (): FormSpec => ({
   version: 1,
   name: "motor",
+  theme: { ...BLANK_THEME },
   schema: {
     tables: [
       table("policy", "policy", { columns: [column("policy.state", "state", { options: ["CA", "NY"], required: true }), column("policy.year", "year", { type: "int" })] }),
@@ -104,7 +107,7 @@ export const sheetForm = (): FormSpec => ({
   },
   pages: [
     sheet("p1", "Sheet 1", [
-      { id: "w_boxes", type: "collection", x: 16, y: 16, w: 400, h: 120, title: "Policy", columns: 2, fields: [{ table: "policy", column: "policy.state" }], show_when: { match: "all", conditions: [] } },
+      { id: "w_boxes", type: "collection", x: 16, y: 16, w: 400, h: 120, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "policy", column: "policy.state" }], show_when: { match: "all", conditions: [] } },
       {
         id: "w_grid",
         type: "tableInput",
@@ -176,7 +179,7 @@ export const coverForm = (): FormSpec => {
         title: "Year",
         fields: [{ table: "policy", column: "policy.year" }],
         show_when: { match: "all", conditions: [] },
-        columns: 2,
+        columns: 2, ...COLLECTION_OPTIONS,
       },
     ],
     { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [] }] },
@@ -229,6 +232,7 @@ export function loadForm(form: FormSpec = sheetForm()): void {
     fitted: false,
     creating: null,
     movingSection: null,
+    widgetPanes: {},
     sheet: null,
     viewport: null,
   })

@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest"
 import fixture from "./fixtures/sheetVisibility.json"
 import type { Condition, FormSpec, Page, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
 import type { RowsByTable } from "../sheetValues"
+import { BLANK_THEME, COLLECTION_OPTIONS } from "../workbenchForm"
 import {
   CONDITION_TESTS,
   columnKey,
@@ -116,7 +117,7 @@ const collection = (id: string, fields: [string, string][], showWhen: ShowWhen =
   y: 0,
   w: 720,
   h: 120,
-  columns: 3,
+  columns: 3, ...COLLECTION_OPTIONS,
   fields: fields.map(([table, columnId]) => ({ table, column: columnId })),
   show_when: showWhen,
 })
@@ -135,6 +136,7 @@ const page = (id: string, widgets: Widget[], showWhen: ShowWhen = ALWAYS): Page 
 const formOf = (pages: Page[], tables: SchemaTable[] = [policy, items, premium]): FormSpec => ({
   version: 1,
   name: "form",
+  theme: { ...BLANK_THEME },
   schema: { tables },
   pages,
   sample: {},

@@ -42,12 +42,22 @@ ColumnFormat = Literal[
     "general", "number", "percent", "currency_gbp", "currency_usd", "currency_eur"
 ]
 
-#: How tall a Table's rows are: Haute's compact rows, or roomier ones.
-TableDensity = Literal["compact", "comfortable"]
+#: How tall a Table's rows or a Collection's boxes are: Haute's compact ones, or roomier ones.
+Density = Literal["compact", "comfortable"]
 
 #: The lines a Table draws: between its rows and before each output column, between every
 #: column too, or none.
 TableGridlines = Literal["rows", "all", "none"]
+
+#: How a Table's header shows its labels: as written, or in capitals.
+TableHeader = Literal["caps", "plain"]
+
+#: Where a Collection's labels sit: above its boxes, or beside them.
+CollectionLabels = Literal["above", "beside"]
+
+#: A colour the sheets are drawn in, as ``#RRGGBB`` in capitals: one spelling, as the picker
+#: writes it.
+Colour = Annotated[str, Field(pattern=r"^#[0-9A-F]{6}$")]
 
 #: How a Chart draws its values: as columns, a line, a filled area, or the slices of a pie.
 ChartType = Literal["column", "line", "area", "pie"]
@@ -138,7 +148,7 @@ class ShowWhen(_Strict):
 
 
 class TableInputWidget(_Placed):
-    """A Table: a grid of at least ``rows`` rows showing columns of many-row schema tables."""
+    """A Table: a grid showing columns of many-row schema tables."""
 
     type: Literal["tableInput"]
     title: str = ""
@@ -146,12 +156,15 @@ class TableInputWidget(_Placed):
     show_when: ShowWhen = Field(default_factory=ShowWhen)
     rows: int = Field(default=3, ge=1, le=50)
     # How the grid looks, and whether its rows are a set structure with no Add row and no
-    # delete: by default numbered, compact, lined between rows, striped and not fixed.
+    # delete: by default numbered, compact, lined between rows, striped, not fixed, its
+    # header as written and framed.
     row_numbers: bool = True
-    density: TableDensity = "compact"
+    density: Density = "compact"
     gridlines: TableGridlines = "rows"
     striped: bool = True
     fixed_rows: bool = False
+    header: TableHeader = "plain"
+    frame: bool = True
 
 
 class CollectionWidget(_Placed):
@@ -162,6 +175,10 @@ class CollectionWidget(_Placed):
     fields: list[FieldRef] = Field(default_factory=list)
     show_when: ShowWhen = Field(default_factory=ShowWhen)
     columns: int = Field(default=3, ge=1, le=12)
+    # How its boxes look: by default labelled above, comfortable and framed.
+    labels: CollectionLabels = "above"
+    density: Density = "comfortable"
+    frame: bool = True
 
 
 class ChartWidget(_Placed):
@@ -278,6 +295,21 @@ class FormSchema(_Strict):
     tables: list[SchemaTable] = Field(default_factory=list)
 
 
+class Theme(_Strict):
+    """The sheets' colours, wherever they show, each the editor's own while None."""
+
+    #: The sheet behind its sections.
+    sheet_color: Colour | None = None
+    #: Framed components' background and their borders: frames, rules, gridlines and boxes.
+    background_color: Colour | None = None
+    border_color: Colour | None = None
+    #: The text of Headings and of components' titles, labels and values.
+    font_color: Colour | None = None
+    #: The fill of input cells and boxes, and of output cells and boxes.
+    input_cell_color: Colour | None = None
+    output_cell_color: Colour | None = None
+
+
 class FormSpec(_Strict):
     """The form: what the workbench edits and ``forms/form.json`` stores."""
 
@@ -285,6 +317,7 @@ class FormSpec(_Strict):
 
     version: Literal[1] = 1
     name: str
+    theme: Theme = Field(default_factory=Theme)
     #: ``schema`` in the file; ``BaseModel`` already has a ``schema`` attribute.
     data_schema: FormSchema = Field(default_factory=FormSchema, alias="schema")
     pages: list[Page] = Field(min_length=1)

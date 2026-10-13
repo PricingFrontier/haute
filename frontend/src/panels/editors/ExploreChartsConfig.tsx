@@ -11,7 +11,8 @@ import useNodeResultsStore, { explorePivotResultKey } from "../../stores/useNode
 import useSettingsStore from "../../stores/useSettingsStore"
 import { exploreDataView } from "../explore/exploreDataView"
 import useUIStore from "../../stores/useUIStore"
-import { NODE_GROUP_COLORS, PIVOT_CHART_COLORS } from "../../theme/colors"
+import { ColourSwatches } from "../../components/form"
+import { NODE_GROUP_COLORS } from "../../theme/colors"
 import {
   applyChartPreset,
   CHART_AXES,
@@ -561,78 +562,12 @@ function ColourControl({
   value: string | null
   onCommit: (value: string | null) => void
 }) {
-  const swatch = "h-5 w-5 rounded border"
   return (
     <div className="col-span-2">
       <Field label={`Colour for ${suffix}`}>
-        <div className="flex flex-wrap items-center gap-1">
-          <button
-            type="button"
-            aria-label={`Automatic colour for ${suffix}`}
-            aria-pressed={value === null}
-            onClick={() => onCommit(null)}
-            className="rounded px-1.5 py-0.5 text-[10px] font-semibold"
-            style={{
-              border: `1px solid ${value === null ? "var(--text-secondary)" : "var(--border)"}`,
-              color: "var(--text-secondary)",
-            }}
-          >
-            Automatic
-          </button>
-          {PIVOT_CHART_COLORS.defaultSeries.map((hex) => (
-            <button
-              key={hex}
-              type="button"
-              aria-label={`Colour ${hex} for ${suffix}`}
-              aria-pressed={value === hex}
-              onClick={() => onCommit(hex)}
-              className={swatch}
-              style={{
-                background: hex,
-                borderColor:
-                  value === hex ? "var(--text-primary)" : "var(--border)",
-              }}
-            />
-          ))}
-          <CustomColourInput
-            key={value ?? "automatic"}
-            suffix={suffix}
-            value={value}
-            onCommit={onCommit}
-          />
-        </div>
+        <ColourSwatches name={suffix} value={value} onCommit={onCommit} />
       </Field>
     </div>
-  )
-}
-
-function CustomColourInput({
-  suffix,
-  value,
-  onCommit,
-}: {
-  suffix: string
-  value: string | null
-  onCommit: (value: string) => void
-}) {
-  // The native picker fires an input event per drag tick; committing each
-  // tick would persist one graph edit (and one undo step) per tick. Track a
-  // local draft and commit once on blur, like the other committed controls.
-  // The parent remounts this input (keyed on the committed value) whenever
-  // an external change lands, discarding the stale draft.
-  const [draft, setDraft] = useState<string | null>(null)
-  return (
-    <input
-      type="color"
-      aria-label={`Custom colour for ${suffix}`}
-      className="h-5 w-7 cursor-pointer rounded border"
-      style={{ borderColor: "var(--border)", padding: 0 }}
-      value={draft ?? value ?? PIVOT_CHART_COLORS.defaultSeries[0]}
-      onChange={(event) => setDraft(event.target.value.toUpperCase())}
-      onBlur={() => {
-        if (draft !== null && draft !== value) onCommit(draft)
-      }}
-    />
   )
 }
 

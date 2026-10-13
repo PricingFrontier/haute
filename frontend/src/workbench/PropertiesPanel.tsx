@@ -1,16 +1,20 @@
 /**
  * The properties panel (specs/workbench): what opens on the right, on Haute's side panel,
- * when a component on the sheet is selected. Its title, when it shows, its layout (a
- * Table's rows and whether they are fixed, a Collection's columns), a Table's look (its
- * density, gridlines, row numbers and stripes), a Chart's chart (`ChartSettings`), the
- * order of the fields it shows, and the fields themselves, ticked from the schema tables
- * of its kind: many-row tables for a Table, one-row tables for a Collection, any table for
- * a Chart, which plots number columns alone. A grid holds one kind of row, so once a Table
- * or a Chart shows a field, tables whose rows do not line up with it are greyed out. A
- * Heading's panel is its text and description, when it shows, and its size and alignment.
- * Opened from the showing sheet's tab instead, it is the sheet's panel: its title and when
- * it shows; opened from a section's header, the section's: its title, when it shows, its
- * height, and adding a section under it or deleting it.
+ * when a component on the sheet is selected. Its title, when it shows, its layout (the
+ * rows a Table's grid starts with and whether they are fixed, a Collection's columns), its
+ * look (a Table's density, gridlines, header, row numbers, stripes and frame, a
+ * Collection's labels, density and frame), a Chart's chart
+ * (`ChartSettings`), the order of the fields it shows, and the fields themselves, ticked
+ * from the schema tables of its kind: many-row tables for a Table, one-row tables for a
+ * Collection, any table for a Chart, which plots number columns alone. A grid holds one
+ * kind of row, so once a Table or a Chart shows a field, tables whose rows do not line up
+ * with it are greyed out. A Table's and a Collection's are in two panes, as Haute's node
+ * panel puts an Explore node's in panes: Config, the fields and their order, and Display,
+ * the rest; a Chart's are one list. A Heading's panel is its text and description, when it
+ * shows, and its size and alignment. Opened from the showing sheet's tab instead, it is the
+ * sheet's panel: its title and when it shows; opened from a section's header, the
+ * section's: its title, when it shows, its height, and adding a section under it or
+ * deleting it.
  */
 import { ChevronDown, ChevronRight, GripVertical, Plus, Rows3, Sheet, TextAlignCenter, TextAlignEnd, TextAlignStart, Trash2, X, type LucideIcon } from "lucide-react"
 import { useState, type KeyboardEvent, type ReactNode } from "react"
@@ -20,8 +24,9 @@ import ToggleButtonGroup from "../components/ToggleButtonGroup"
 import { SidePanel } from "../haute-ui"
 import useListReorder, { type RowDrag } from "../hooks/useListReorder"
 import { INPUT_STYLE } from "../panels/editors/_shared"
+import PreviewPanelTabs, { type PreviewPanelTab } from "../panels/PreviewPanelTabs"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
-import useWorkbenchViewStore, { activePage } from "../stores/useWorkbenchViewStore"
+import useWorkbenchViewStore, { activePage, type WidgetPane } from "../stores/useWorkbenchViewStore"
 import { leastSectionHeight } from "../utils/sheetGeometry"
 import {
   addSection,
@@ -40,9 +45,11 @@ import {
   setPageShowWhen,
   setSectionHeight,
   setSectionShowWhen,
+  setTableRows,
   tableGrain,
   toggleField,
   updateWidget,
+  type CollectionOptions,
   type FieldsWidget,
   type TableOptions,
 } from "../utils/workbenchForm"
@@ -65,6 +72,14 @@ const GRIDLINES: ReadonlyArray<{ value: TableOptions["gridlines"]; label: string
   { value: "all", label: "Full grid" },
   { value: "none", label: "None" },
 ]
+const HEADERS: ReadonlyArray<{ value: TableOptions["header"]; label: string }> = [
+  { value: "plain", label: "As written" },
+  { value: "caps", label: "Capitals" },
+]
+const LABEL_PLACES: ReadonlyArray<{ value: CollectionOptions["labels"]; label: string }> = [
+  { value: "above", label: "Above" },
+  { value: "beside", label: "Beside" },
+]
 const HEADING_SIZES: ReadonlyArray<{ value: HeadingWidget["size"]; label: string }> = [
   { value: "large", label: "Large" },
   { value: "medium", label: "Medium" },
@@ -75,6 +90,11 @@ const HEADING_ALIGNS: ReadonlyArray<{ value: HeadingWidget["align"]; label: stri
   { value: "center", label: "Centre", icon: TextAlignCenter },
   { value: "right", label: "Right", icon: TextAlignEnd },
 ]
+/** A Table's and a Collection's panes: the data it shows and their order, and how it shows them. */
+const WIDGET_PANES = [
+  { key: "config", label: "Config" },
+  { key: "display", label: "Display" },
+] as const satisfies readonly PreviewPanelTab<WidgetPane>[]
 
 const fieldKey = (field: FieldRef) => `${field.table}:${field.column}`
 
@@ -301,6 +321,34 @@ function HeadingSettings({ form, widget }: { form: FormSpec; widget: HeadingWidg
   )
 }
 
+/** A setting chosen from a few: its label, then a select of the choices. */
+function ChoiceRow<T extends string>({
+  label,
+  value,
+  choices,
+  onChange,
+}: {
+  label: string
+  value: T
+  choices: ReadonlyArray<{ value: T; label: string }>
+  onChange: (value: T) => void
+}) {
+  return (
+    <label className="flex items-center gap-2">
+      <span className="w-14" style={{ color: "var(--text-muted)" }}>
+        {label}
+      </span>
+      <select aria-label={label} value={value} onChange={(event) => onChange(event.target.value as T)} className={FIELD_CLASS} style={INPUT_STYLE}>
+        {choices.map((choice) => (
+          <option key={choice.value} value={choice.value}>
+            {choice.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
 function Section({ title, aside, children }: { title: string; aside?: string; children: ReactNode }) {
   return (
     <section className="flex flex-col gap-1.5" aria-label={title}>
@@ -338,157 +386,163 @@ function FieldsSettings({ form, widget }: { form: FormSpec; widget: FieldsWidget
   const wholeNumber = (min: number, max: number) => (text: string) =>
     /^\d+$/.test(text.trim()) && Number(text) >= min && Number(text) <= max ? null : `Enter a whole number from ${min} to ${max}.`
 
+  const kind = WIDGET_KINDS[widget.type]
+  // A Table's and a Collection's settings are in two panes, as Haute's node panel puts an
+  // Explore node's in panes; a Chart's are one list.
+  const paned = widget.type !== "chart"
+  const pane = useWorkbenchViewStore((s) => s.widgetPanes[widget.id] ?? "config")
+  const setWidgetPane = useWorkbenchViewStore((s) => s.setWidgetPane)
+  const shows = (section: WidgetPane) => !paned || pane === section
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-3 py-3 text-xs">
-      <Section title="Title">
-        <CommittedTextField
-          aria-label="Title"
-          value={widget.title}
-          placeholder="None"
-          onCommit={(title) => change((spec) => updateWidget(spec, widget.id, { title }))}
-          className={`${FIELD_CLASS} w-full`}
-          style={INPUT_STYLE}
+    <>
+      {paned && (
+        <PreviewPanelTabs
+          tabs={WIDGET_PANES}
+          activeTab={pane}
+          onChange={(next) => setWidgetPane(widget.id, next)}
+          ariaLabel={`${kind.label} panes`}
+          accentColor={kind.color}
+          equalWidth
+          idPrefix="component"
         />
-      </Section>
-      <Section title="Show when">
-        <ShowWhenEditor
-          form={form}
-          showWhen={widget.show_when}
-          onChange={(next) => change((spec) => updateWidget(spec, widget.id, { show_when: next }))}
-        />
-      </Section>
-      {widget.type !== "chart" && widget.fields.length > 0 && (
-        <Section title="Layout">
-          <label className="flex items-center gap-2">
-            <span className="w-14" style={{ color: "var(--text-muted)" }}>
-              {widget.type === "collection" ? "Columns" : "Rows"}
-            </span>
-            {widget.type === "collection" ? (
-              <ValidatedTextField
-                dataTestId="widget-columns"
-                value={String(widget.columns)}
-                onCommit={(text) => change((spec) => updateWidget(spec, widget.id, { columns: Number(text) }))}
-                validate={wholeNumber(1, 12)}
-                containerClassName="w-16"
-                className={`${FIELD_CLASS} w-full tabular-nums`}
-                style={INPUT_STYLE}
-              />
-            ) : (
-              <ValidatedTextField
-                dataTestId="widget-rows"
-                value={String(widget.rows)}
-                onCommit={(text) => change((spec) => updateWidget(spec, widget.id, { rows: Number(text) }))}
-                validate={wholeNumber(1, 50)}
-                containerClassName="w-16"
-                className={`${FIELD_CLASS} w-full tabular-nums`}
-                style={INPUT_STYLE}
-              />
+      )}
+      <div
+        id={paned ? `component-${pane}-pane` : undefined}
+        role={paned ? "tabpanel" : undefined}
+        aria-labelledby={paned ? `component-${pane}-tab` : undefined}
+        className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-3 py-3 text-xs"
+      >
+        {shows("display") && (
+          <Section title="Title">
+            <CommittedTextField
+              aria-label="Title"
+              value={widget.title}
+              placeholder="None"
+              onCommit={(title) => change((spec) => updateWidget(spec, widget.id, { title }))}
+              className={`${FIELD_CLASS} w-full`}
+              style={INPUT_STYLE}
+            />
+          </Section>
+        )}
+        {shows("display") && (
+          <Section title="Show when">
+            <ShowWhenEditor
+              form={form}
+              showWhen={widget.show_when}
+              onChange={(next) => change((spec) => updateWidget(spec, widget.id, { show_when: next }))}
+            />
+          </Section>
+        )}
+        {shows("display") && widget.type !== "chart" && widget.fields.length > 0 && (
+          <Section title="Layout">
+            <label className="flex items-center gap-2">
+              <span className="w-14" style={{ color: "var(--text-muted)" }}>
+                {widget.type === "collection" ? "Columns" : "Rows"}
+              </span>
+              {widget.type === "collection" ? (
+                <ValidatedTextField
+                  dataTestId="widget-columns"
+                  value={String(widget.columns)}
+                  onCommit={(text) => change((spec) => updateWidget(spec, widget.id, { columns: Number(text) }))}
+                  validate={wholeNumber(1, 12)}
+                  containerClassName="w-16"
+                  className={`${FIELD_CLASS} w-full tabular-nums`}
+                  style={INPUT_STYLE}
+                />
+              ) : (
+                <ValidatedTextField
+                  dataTestId="widget-rows"
+                  value={String(widget.rows)}
+                  onCommit={(text) => change((spec) => setTableRows(spec, widget.id, Number(text)))}
+                  validate={wholeNumber(1, 50)}
+                  containerClassName="w-16"
+                  className={`${FIELD_CLASS} w-full tabular-nums`}
+                  style={INPUT_STYLE}
+                />
+              )}
+            </label>
+            {widget.type === "tableInput" && (
+              <div className="flex items-center gap-2">
+                <span className="w-14 shrink-0" aria-hidden="true" />
+                <ConfigCheckbox
+                  label="Fixed rows"
+                  checked={widget.fixed_rows}
+                  onChange={(fixed_rows) => change((spec) => updateWidget(spec, widget.id, { fixed_rows }))}
+                />
+              </div>
             )}
-            <span style={{ color: "var(--text-muted)" }}>
-              {widget.type === "collection" ? "boxes across; the rows follow" : "rows the grid shows"}
-            </span>
-          </label>
-          {widget.type === "tableInput" && (
+          </Section>
+        )}
+        {shows("display") && widget.type === "tableInput" && widget.fields.length > 0 && (
+          <Section title="Look">
+            <ChoiceRow label="Density" value={widget.density} choices={DENSITIES} onChange={(density) => change((spec) => updateWidget(spec, widget.id, { density }))} />
+            <ChoiceRow label="Gridlines" value={widget.gridlines} choices={GRIDLINES} onChange={(gridlines) => change((spec) => updateWidget(spec, widget.id, { gridlines }))} />
+            <ChoiceRow label="Header" value={widget.header} choices={HEADERS} onChange={(header) => change((spec) => updateWidget(spec, widget.id, { header }))} />
             <div className="flex items-center gap-2">
               <span className="w-14 shrink-0" aria-hidden="true" />
-              <ConfigCheckbox
-                label="Fixed rows"
-                checked={widget.fixed_rows}
-                onChange={(fixed_rows) => change((spec) => updateWidget(spec, widget.id, { fixed_rows }))}
-              />
-              <span style={{ color: "var(--text-muted)" }}>no Add row or delete</span>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                <ConfigCheckbox
+                  label="Row numbers"
+                  checked={widget.row_numbers}
+                  onChange={(row_numbers) => change((spec) => updateWidget(spec, widget.id, { row_numbers }))}
+                />
+                <ConfigCheckbox
+                  label="Striped rows"
+                  checked={widget.striped}
+                  onChange={(striped) => change((spec) => updateWidget(spec, widget.id, { striped }))}
+                />
+                <ConfigCheckbox label="Frame" checked={widget.frame} onChange={(frame) => change((spec) => updateWidget(spec, widget.id, { frame }))} />
+              </div>
             </div>
-          )}
-        </Section>
-      )}
-      {widget.type === "tableInput" && widget.fields.length > 0 && (
-        <Section title="Look">
-          <label className="flex items-center gap-2">
-            <span className="w-14" style={{ color: "var(--text-muted)" }}>
-              Density
-            </span>
-            <select
-              aria-label="Density"
-              value={widget.density}
-              onChange={(event) => change((spec) => updateWidget(spec, widget.id, { density: event.target.value as TableOptions["density"] }))}
-              className={FIELD_CLASS}
-              style={INPUT_STYLE}
-            >
-              {DENSITIES.map(({ value, label }) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex items-center gap-2">
-            <span className="w-14" style={{ color: "var(--text-muted)" }}>
-              Gridlines
-            </span>
-            <select
-              aria-label="Gridlines"
-              value={widget.gridlines}
-              onChange={(event) => change((spec) => updateWidget(spec, widget.id, { gridlines: event.target.value as TableOptions["gridlines"] }))}
-              className={FIELD_CLASS}
-              style={INPUT_STYLE}
-            >
-              {GRIDLINES.map(({ value, label }) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="flex items-center gap-2">
-            <span className="w-14 shrink-0" aria-hidden="true" />
-            <div className="flex items-center gap-4">
-              <ConfigCheckbox
-                label="Row numbers"
-                checked={widget.row_numbers}
-                onChange={(row_numbers) => change((spec) => updateWidget(spec, widget.id, { row_numbers }))}
-              />
-              <ConfigCheckbox
-                label="Striped rows"
-                checked={widget.striped}
-                onChange={(striped) => change((spec) => updateWidget(spec, widget.id, { striped }))}
-              />
-            </div>
-          </div>
-        </Section>
-      )}
-      {widget.type === "chart" && widget.fields.length > 0 && (
-        <Section title="Chart">
-          <ChartSettings form={form} widget={widget} />
-        </Section>
-      )}
-      {widget.fields.length > 0 && (
-        <Section title="Order" aside="drag, or Alt+Up and Alt+Down">
-          <FieldOrder form={form} widget={widget} />
-        </Section>
-      )}
-      <Section title="Fields" aside={`${widget.fields.length} shown`}>
-        {tables.length === 0 ? (
-          <p style={{ color: "var(--text-muted)" }}>
-            The schema has no {rows === null ? "" : rows === "one" ? "one-row " : "many-row "}tables yet.{" "}
-            <button type="button" onClick={() => showSection("schema")} className="quiet-action focus-ring rounded">
-              Open the schema
-            </button>
-          </p>
-        ) : (
-          tables.map((table) => (
-            <TableFields
-              key={table.id}
-              widget={widget}
-              table={table}
-              usable={grain === null || tableGrain(table) === grain}
-              plots={widget.type === "chart"}
-              collapsed={collapsed.has(table.id)}
-              onToggle={() => toggleCollapsed(table.id)}
-            />
-          ))
+          </Section>
         )}
-      </Section>
-    </div>
+        {shows("display") && widget.type === "collection" && widget.fields.length > 0 && (
+          <Section title="Look">
+            <ChoiceRow label="Labels" value={widget.labels} choices={LABEL_PLACES} onChange={(labels) => change((spec) => updateWidget(spec, widget.id, { labels }))} />
+            <ChoiceRow label="Density" value={widget.density} choices={DENSITIES} onChange={(density) => change((spec) => updateWidget(spec, widget.id, { density }))} />
+            <div className="flex items-center gap-2">
+              <span className="w-14 shrink-0" aria-hidden="true" />
+              <ConfigCheckbox label="Frame" checked={widget.frame} onChange={(frame) => change((spec) => updateWidget(spec, widget.id, { frame }))} />
+            </div>
+          </Section>
+        )}
+        {widget.type === "chart" && widget.fields.length > 0 && (
+          <Section title="Chart">
+            <ChartSettings form={form} widget={widget} />
+          </Section>
+        )}
+        {shows("config") && widget.fields.length > 0 && (
+          <Section title="Order">
+            <FieldOrder form={form} widget={widget} />
+          </Section>
+        )}
+        {shows("config") && (
+          <Section title="Fields" aside={`${widget.fields.length} shown`}>
+            {tables.length === 0 ? (
+              <p style={{ color: "var(--text-muted)" }}>
+                The schema has no {rows === null ? "" : rows === "one" ? "one-row " : "many-row "}tables yet.{" "}
+                <button type="button" onClick={() => showSection("schema")} className="quiet-action focus-ring rounded">
+                  Open the schema
+                </button>
+              </p>
+            ) : (
+              tables.map((table) => (
+                <TableFields
+                  key={table.id}
+                  widget={widget}
+                  table={table}
+                  usable={grain === null || tableGrain(table) === grain}
+                  plots={widget.type === "chart"}
+                  collapsed={collapsed.has(table.id)}
+                  onToggle={() => toggleCollapsed(table.id)}
+                />
+              ))
+            )}
+          </Section>
+        )}
+      </div>
+    </>
   )
 }
 

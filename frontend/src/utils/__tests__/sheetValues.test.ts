@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest"
 import type { SchemaColumn, SchemaTable } from "../../api/types"
 import { cellKey, cellProblem, filled, formattedNumber, parseTypedNumber, pricedRows, quoteFilled, quoteProblems, rowFilled, valuesBasis } from "../sheetValues"
 import { columnKey, quotedSchema } from "../sheetVisibility"
-import { pricingBasis, type SampleRow } from "../workbenchForm"
+import { BLANK_THEME, pricingBasis, type SampleRow } from "../workbenchForm"
 
 const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
   id,
@@ -134,7 +134,7 @@ describe("quoteProblems", () => {
 
 describe("valuesBasis", () => {
   it("is what pricing the sample depends on, the schema, the columns hidden and the values", () => {
-    const form = { version: 1 as const, name: "x", schema: { tables: [policy] }, pages: [], sample: { policy: [{ state: "NY" }] } }
+    const form = { version: 1 as const, name: "x", theme: { ...BLANK_THEME }, schema: { tables: [policy] }, pages: [], sample: { policy: [{ state: "NY" }] } }
     expect(pricingBasis(form)).toBe(valuesBasis(form.schema, new Set(), form.sample))
     expect(valuesBasis(form.schema, new Set(), { policy: [{ state: "CA" }] })).not.toBe(pricingBasis(form))
     expect(valuesBasis(form.schema, new Set(["policy:state"]), form.sample)).not.toBe(pricingBasis(form))
