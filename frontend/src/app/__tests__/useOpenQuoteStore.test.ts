@@ -230,6 +230,25 @@ describe("useOpenQuoteStore", () => {
     expect(readDraft(draftKey("motor", "ana@example.com", "q1"))?.values).toEqual({ policy: [{ "policy.state": "CA", "policy.year": "2028" }] })
   })
 
+  it("offers back what was kept of a quote archived with typing once it is restored, and keeps it", async () => {
+    const key = draftKey("motor", "ana@example.com", "q1")
+    const archived = { latest: 2, archived: true, archived_at: "2026-10-12T11:00:00+00:00" }
+    vi.mocked(openAppQuote).mockResolvedValueOnce(answer()).mockResolvedValueOnce(answer(archived))
+    vi.mocked(changeAppQuote).mockResolvedValueOnce(changed(archived)).mockResolvedValueOnce(changed({ latest: 3 }))
+    await store().openQuote("q1", null)
+    preview().setCell("policy", 0, "policy.state", "CA")
+    await store().change("archive")
+    store().close()
+
+    await store().openQuote("q1", null)
+    expect(store().recovered).toBeNull()
+    await store().change("restore")
+    expect(store().recovered?.values).toEqual({ policy: [{ "policy.state": "CA" }] })
+    store().close()
+
+    expect(readDraft(key)?.values).toEqual({ policy: [{ "policy.state": "CA" }] })
+  })
+
   it("keeps nothing and saves nothing while a quote is being opened, the quote before off the sheets", async () => {
     const fresh = draftKey("motor", "ana@example.com", "new")
     writeDraft(fresh, { values: { policy: [{ "policy.state": "UNSAVED-NEW" }] }, version: null, latest: null, formRevision: "rev-9", keptAt: "2026-10-12T10:00:00Z" })

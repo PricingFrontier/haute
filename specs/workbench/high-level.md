@@ -735,8 +735,8 @@ Out of scope:
   quote; a page drawn for an earlier release says so and offers to reload. Values not
   yet saved are kept in the browser as they are typed, at once as the quote is left, and
   again after a save for what was typed during it, and offered back when the quote is
-  opened again, as not saved to the server, until they are saved or discarded; only a
-  quote that may change as it is shown offers them, and they are put back on its sheets'
+  opened again, or restored or reopened, as not saved to the server, until they are saved
+  or discarded; only a quote that may change as it is shown offers them, and they are put back on its sheets'
   columns alone, the details the app sets as the quote has them. Leaving a quote with
   unsaved values asks first, Back and Forward too, the history's entries kept as they
   were, and closing the tab warns. Archiving says so with Undo, which restores the quote

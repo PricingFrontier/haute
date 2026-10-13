@@ -438,11 +438,14 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
         // An archive leaves the quote read only: what was typed, before the change or while
         // it was made, is kept in this browser while the quote may still change.
         keepDraft()
+        const wasReadOnly = readOnlyReason(get()) !== null
         set({ quote: changed })
         if (written !== null && written !== undefined) adopt(written)
         if (!get().past && get().olderSheets === null) {
           useWorkbenchPreviewStore.getState().setReadOnly(readOnlyReason(get()) !== null)
         }
+        // Restored or reopened, it may change again: what this browser kept of it is offered back.
+        if (wasReadOnly && readOnlyReason(get()) === null) offerDraft()
         if (get().historyOpen) void get().loadHistory()
         return changed
       } catch (error: unknown) {
