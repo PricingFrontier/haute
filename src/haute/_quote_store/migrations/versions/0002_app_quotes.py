@@ -64,6 +64,7 @@ def upgrade() -> None:
         sa.Column("id", sa.String(64), primary_key=True),
         sa.Column("quote_id", sa.String(36), sa.ForeignKey("haute_quotes.id"), nullable=False),
         sa.Column("number", sa.Integer, nullable=False),
+        sa.Column("event", sa.Integer, nullable=False),
         sa.Column("actor", sa.String(320), nullable=False),
     )
     compat = op.create_table(

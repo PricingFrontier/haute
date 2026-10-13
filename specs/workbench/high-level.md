@@ -715,7 +715,8 @@ Out of scope:
   one of an earlier release, is new). A save and a change name the version the values
   were opened or saved at, which a note does not move, so a save over a quote a colleague
   moved on meanwhile is refused rather than written over theirs; an answer arriving once
-  another quote is open is that quote's no longer and is dropped. The cells of `reference`,
+  another quote is open, or the quote was left, is that quote's no longer and is dropped,
+  and a quote being opened takes nothing typed and saves nothing until it is read. The cells of `reference`,
   `stage`, `assignee` and `archived` take no typing and Clear leaves them; assigning,
   archiving, restoring, marking final and reopening each write a revision of the newest
   with those details changed, its values and prices kept, which the sheets take on, what
@@ -1048,7 +1049,7 @@ Out of scope:
   transaction that makes it; a save
   carries an operation key, and one repeated with a key already written answers what
   that key wrote, the quote as that write left it at the revision it wrote whatever was
-  saved since, with nothing priced or written again; two at once with one key write once,
+  saved or noted since, with nothing priced or written again; two at once with one key write once,
   the second answered as a repeat. A final quote takes no save until it is reopened,
   giving a reason, which names the revision pinned final; marking one final needs its
   newest revision priced on the running release; an archived quote takes no change but

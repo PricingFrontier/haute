@@ -445,14 +445,20 @@ class QuoteBook:
         with self._engine.connect() as connection:
             return self._operation(connection, operation, actor, quote_id)
 
-    def _full(self, connection: Connection, quote_id: str, at: int | None = None) -> AppQuote:
+    def _full(
+        self,
+        connection: Connection,
+        quote_id: str,
+        at: int | None = None,
+        until: int | None = None,
+    ) -> AppQuote:
         """The quote with what its events say of it, read on *connection*: a write answers
-        with the quote as its own transaction left it. Given *at*, as it stood at revision
-        *at*, its events since left out."""
+        with the quote as its own transaction left it. Given *at* and *until*, as a write left
+        it: at revision *at*, its events after event *until* (a note among them) left out."""
         quote = self._get(connection, quote_id, at)
         events = self._events(connection, quote_id)
-        if at is not None:
-            events = [event for event in events if event.revision is None or event.revision <= at]
+        if until is not None:
+            events = [event for event in events if event.id <= until]
         extras: dict[str, Any] = {}
         for event in events:
             if event.kind == "finalised" and quote.stage == "final":
@@ -744,8 +750,8 @@ class QuoteBook:
                     "relation": source.relation,
                 }
                 self._event(connection, origin.id, actor, "derived", source.revision, made, at=now)
-            self._event(connection, revision.quote_id, actor, "created", 1, created, at=now)
-            self._remember(connection, operation, revision.quote_id, 1, actor)
+            event = self._event(connection, revision.quote_id, actor, "created", 1, created, at=now)
+            self._remember(connection, operation, revision.quote_id, 1, event, actor)
             return self._full(connection, revision.quote_id)
 
     def save(
@@ -815,7 +821,7 @@ class QuoteBook:
             )
             details = {**details_of(inputs), **self.managed(quote, priced=response is not None)}
             self._write_details(connection, quote_id, revision.number, details)
-            self._event(
+            event = self._event(
                 connection,
                 quote_id,
                 actor,
@@ -824,7 +830,7 @@ class QuoteBook:
                 {"priced": response is not None, "release": release},
                 at=now,
             )
-            self._remember(connection, operation, quote_id, revision.number, actor)
+            self._remember(connection, operation, quote_id, revision.number, event, actor)
             return self._full(connection, quote_id)
 
     # ── Changing ──────────────────────────────────────────────────────────
@@ -1003,8 +1009,9 @@ class QuoteBook:
         detail: dict[str, Any],
         *,
         at: datetime,
-    ) -> None:
-        connection.execute(
+    ) -> int:
+        """Write an event; answer its id."""
+        written = connection.execute(
             insert(QUOTE_EVENTS).values(
                 quote_id=quote_id,
                 at=at,
@@ -1014,6 +1021,10 @@ class QuoteBook:
                 detail=json.dumps(detail, ensure_ascii=False),
             )
         )
+        key = written.inserted_primary_key
+        if key is None:
+            raise QuoteStoreError("The quote store did not number an event it wrote.")
+        return int(key[0])
 
     def _next_reference(self, connection: Connection) -> str:
         """The next reference, taken from the counter in this transaction: two transactions
@@ -1049,13 +1060,19 @@ class QuoteBook:
             raise QuoteStoreError(
                 "This save's operation key was used for another save: save again."
             )
-        return self._full(connection, row["quote_id"], at=row["number"])
+        return self._full(connection, row["quote_id"], at=row["number"], until=row["event"])
 
     def _remember(
-        self, connection: Connection, operation: str, quote_id: str, number: int, actor: str
+        self,
+        connection: Connection,
+        operation: str,
+        quote_id: str,
+        number: int,
+        event: int,
+        actor: str,
     ) -> None:
         connection.execute(
             insert(QUOTE_OPERATIONS).values(
-                id=operation, quote_id=quote_id, number=number, actor=actor
+                id=operation, quote_id=quote_id, number=number, event=event, actor=actor
             )
         )

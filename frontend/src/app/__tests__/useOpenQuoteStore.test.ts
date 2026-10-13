@@ -182,6 +182,84 @@ describe("useOpenQuoteStore", () => {
     expect(keys[2]).not.toBe(keys[1])
   })
 
+  it("keeps a save as new's operation key for a retry after a lost answer", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    vi.mocked(saveAppQuote).mockRejectedValue(stale())
+    vi.mocked(createAppQuote).mockRejectedValueOnce(new TypeError("Failed to fetch")).mockResolvedValue(answer({ id: "q2", reference: "Q-000002" }))
+    await store().openQuote("q1", null)
+    preview().setCell("policy", 0, "policy.state", "CA")
+    await store().save()
+
+    expect(await store().saveAsNew()).toBeNull()
+    expect((await store().saveAsNew())?.reference).toBe("Q-000002")
+
+    const keys = vi.mocked(createAppQuote).mock.calls.map((call) => call[0].operation)
+    expect(keys).toHaveLength(2)
+    expect(keys[1]).toBe(keys[0])
+  })
+
+  it("puts the details the app set on the sheets after a first save, though typed over since", async () => {
+    let creating: (value: WorkbenchAppQuoteResponse) => void = () => {}
+    vi.mocked(createAppQuote).mockReturnValue(new Promise((resolve) => (creating = resolve)))
+    await store().openNew(null)
+    preview().setCell("policy", 0, "policy.state", "CA")
+
+    const saving = store().save()
+    preview().setCell("policy", 0, "policy.year", "2027")
+    const details = { qd_reference: "Q-000001", qd_stage: "draft", qd_assignee: "ana@example.com", qd_archived: false }
+    creating(answer({ stage: "draft" }, { tables: null, values: { policy: [{ "policy.state": "CA" }], quote_details: [details] } }))
+    await saving
+
+    expect(preview().quote).toEqual({ policy: [{ "policy.state": "CA", "policy.year": "2027" }], quote_details: [details] })
+    expect(store().quote?.reference).toBe("Q-000001")
+  })
+
+  it("keeps what is typed before a change that holds the quote read only", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    vi.mocked(changeAppQuote).mockResolvedValue(changed({ latest: 2, archived: true, archived_at: "2026-10-12T11:00:00+00:00" }))
+    await store().openQuote("q1", null)
+    preview().setCell("policy", 0, "policy.state", "CA")
+
+    await store().change("archive")
+
+    expect(preview().readOnly).toBe(true)
+    expect(readDraft(draftKey("motor", "ana@example.com", "q1"))?.values).toEqual({ policy: [{ "policy.state": "CA" }] })
+  })
+
+  it("keeps nothing and saves nothing while a quote is being opened, the quote before off the sheets", async () => {
+    const fresh = draftKey("motor", "ana@example.com", "new")
+    writeDraft(fresh, { values: { policy: [{ "policy.state": "UNSAVED-NEW" }] }, version: null, latest: null, formRevision: "rev-9", keptAt: "2026-10-12T10:00:00Z" })
+    let reading: (value: WorkbenchAppQuoteResponse) => void = () => {}
+    vi.mocked(openAppQuote).mockResolvedValueOnce(answer()).mockReturnValueOnce(new Promise((resolve) => (reading = resolve)))
+    await store().openQuote("q1", null)
+
+    const opening = store().openQuote("q2", null)
+    expect(preview()).toMatchObject({ quote: {}, readOnly: true })
+    expect(store().keepDraft()).toBe(true)
+    expect(await store().save()).toBeNull()
+    reading(answer({ id: "q2", reference: "Q-000002" }))
+    await opening
+
+    expect(readDraft(fresh)?.values).toEqual({ policy: [{ "policy.state": "UNSAVED-NEW" }] })
+    expect(createAppQuote).not.toHaveBeenCalled()
+  })
+
+  it("drops a save's answer once the quote is left, keeping what was typed", async () => {
+    let creating: (value: WorkbenchAppQuoteResponse) => void = () => {}
+    vi.mocked(createAppQuote).mockReturnValue(new Promise((resolve) => (creating = resolve)))
+    await store().openNew(null)
+    preview().setCell("policy", 0, "policy.state", "CA")
+    const saving = store().save()
+    preview().setCell("policy", 0, "policy.year", "2027")
+
+    store().close()
+    creating(answer())
+
+    expect(await saving).toBeNull()
+    expect(store()).toMatchObject({ status: "idle", quote: null })
+    expect(readDraft(draftKey("motor", "ana@example.com", "new"))?.values).toEqual({ policy: [{ "policy.state": "CA", "policy.year": "2027" }] })
+  })
+
   it("saves nothing while nothing is typed", async () => {
     await store().openNew(null)
 

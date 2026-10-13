@@ -100,7 +100,8 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
   const historyOpen = useOpenQuoteStore((s) => s.historyOpen)
   const values = useWorkbenchPreviewStore((s) => s.quote)
   const reason = readOnlyReason({ quote, past, olderSheets })
-  const dirty = reason === null && valuesKey(values) !== baseline
+  // Only a quote open, and as it may change, has values of its own not yet saved.
+  const dirty = status === "ready" && reason === null && valuesKey(values) !== baseline
   const [unkept, setUnkept] = useState(false)
 
   const routeKey = route.page === "new" ? `new:${route.from?.quoteId ?? ""}:${route.from?.revision ?? ""}:${route.from?.relation ?? ""}` : `quote:${route.id}:${route.revision ?? ""}`
@@ -160,6 +161,9 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
       flush()
     }
   }, [routeKey])
+
+  // Leaving the quote for the Quotes page ends it: an answer still to come opens nothing.
+  useEffect(() => () => useOpenQuoteStore.getState().close(), [])
 
   // Ctrl+S saves and Ctrl+Enter prices, a field being typed in committed first.
   useEffect(() => {

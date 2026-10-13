@@ -165,6 +165,8 @@ QUOTE_OPERATIONS = Table(
     Column("id", String(OPERATION_LENGTH), primary_key=True),
     Column("quote_id", String(ID_LENGTH), ForeignKey("haute_quotes.id"), nullable=False),
     Column("number", Integer, nullable=False),
+    # The event the write made, which a repeat reads the quote's events up to.
+    Column("event", Integer, nullable=False),
     Column("actor", String(PRINCIPAL_LENGTH), nullable=False),
 )
 

@@ -18,6 +18,7 @@ vi.mock("../../api/app", () => ({
 
 import { carryAppQuote, changeAppQuote, createAppQuote, fetchAppPeople, fetchAppQuoteHistory, openAppQuote, saveAppQuote } from "../../api/app"
 import { ApiError } from "../../api/client"
+import type { WorkbenchAppQuoteResponse } from "../../api/types"
 import ToastContainer from "../../components/Toast"
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
@@ -94,6 +95,21 @@ describe("QuoteView", () => {
     expect(await screen.findByText("Saved Q-000001, revision 1")).toBeInTheDocument()
     expect(openAppQuote).not.toHaveBeenCalled()
     expect(screen.getByTestId("quote-reference")).toHaveTextContent("Q-000001")
+  })
+
+  it("stays on the Quotes page when a new quote's save answers after it was left", async () => {
+    await navigate("/quotes/new", { force: true })
+    let creating: (value: WorkbenchAppQuoteResponse) => void = () => {}
+    vi.mocked(createAppQuote).mockReturnValue(new Promise((resolve) => (creating = resolve)))
+    const view = await opened({ page: "new", from: null })
+    type("NY")
+    fireEvent.click(screen.getByTestId("save-quote"))
+
+    await navigate("/", { force: true })
+    view.unmount()
+    await act(async () => creating(answer({ stage: "draft" }, { tables: null })))
+
+    expect(window.location.pathname).toBe("/")
   })
 
   it("shows the revision, who saved it and the release that priced it, and saves on Ctrl+S", async () => {

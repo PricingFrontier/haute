@@ -250,12 +250,15 @@ def test_a_save_repeated_after_a_colleague_saved_answers_what_its_key_wrote(
     saving = _op()
     mine = _save(book, quote, operation=saving, inputs=_values(broker="Marsh"))
     _save(book, mine, actor=JO, inputs=_values(broker="Aon"))
+    book.set_note(quote.id, actor=JO, note="Aon quoted lower")
 
     again = _save(book, quote, operation=saving, inputs=_values(broker="Marsh"))
 
     # The quote as the key left it: its revision, its details, and so its version, which a
-    # save over it now finds stale rather than writing over the colleague's.
+    # save over it now finds stale rather than writing over the colleague's; the note
+    # written since is not yet its.
     assert (again.latest, again.details["broker"], again.last_saved_by) == (2, "Marsh", ANA)
+    assert again.note == ""
     assert book.get(quote.id).latest == 3
     with pytest.raises(StaleQuoteError):
         _save(book, again)
