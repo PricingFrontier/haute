@@ -710,7 +710,12 @@ Out of scope:
   Beneath are its revision, who saved it and when, the release that priced it and the
   quote it came from. Save keeps the quote priced when the sheets show a price for the
   values as they are, and unpriced otherwise, which its title says; with nothing typed,
-  the details the app sets aside, there is nothing to save. The cells of `reference`,
+  the details the app sets aside, there is nothing to save, and nothing new to save while
+  the values are as saved and priced as saved on this release (a price made since, or
+  one of an earlier release, is new). A save and a change name the version the values
+  were opened or saved at, which a note does not move, so a save over a quote a colleague
+  moved on meanwhile is refused rather than written over theirs; an answer arriving once
+  another quote is open is that quote's no longer and is dropped. The cells of `reference`,
   `stage`, `assignee` and `archived` take no typing and Clear leaves them; assigning,
   archiving, restoring, marking final and reopening each write a revision of the newest
   with those details changed, its values and prices kept, which the sheets take on, what
@@ -727,10 +732,14 @@ Out of scope:
   change over a quote moved on since it was opened names who moved it, keeps the
   underwriter's values, and offers to open the newest or to save the values as a new
   quote; a page drawn for an earlier release says so and offers to reload. Values not
-  yet saved are kept in the browser as they are typed and offered back when the quote is
-  opened again, as not saved to the server, until they are saved or discarded; leaving a
-  quote with unsaved values asks first, and closing the tab warns. Archiving says so
-  with Undo. History, on the right, holds the handover note, edited there, the
+  yet saved are kept in the browser as they are typed, at once as the quote is left, and
+  again after a save for what was typed during it, and offered back when the quote is
+  opened again, as not saved to the server, until they are saved or discarded; only a
+  quote that may change as it is shown offers them, and they are put back on its sheets'
+  columns alone, the details the app sets as the quote has them. Leaving a quote with
+  unsaved values asks first, Back and Forward too, the history's entries kept as they
+  were, and closing the tab warns. Archiving says so with Undo, which restores the quote
+  archived whichever is open by then. History, on the right, holds the handover note, edited there, the
   revisions, each opened as it was, what was done to the quote, by whom and when, and
   the quotes it came from or that were made from it. Ctrl+S saves and Ctrl+Enter prices.
   Without a quote store the app opens on a blank quote with Price and Clear, and says it
@@ -1038,10 +1047,13 @@ Out of scope:
   as its own transaction left it; each writes an event of who did what and when in the
   transaction that makes it; a save
   carries an operation key, and one repeated with a key already written answers what
-  that key wrote and writes nothing more. A final quote takes no new revision until it
-  is reopened, giving a reason, its final kept among its events; marking one final
-  needs its newest revision priced on the running release; an archived quote takes no
-  change but being restored, and a final one stays final through both. The app's lists
+  that key wrote, the quote as that write left it at the revision it wrote whatever was
+  saved since, with nothing priced or written again; two at once with one key write once,
+  the second answered as a repeat. A final quote takes no save until it is reopened,
+  giving a reason, which names the revision pinned final; marking one final needs its
+  newest revision priced on the running release; an archived quote takes no change but
+  being restored; and a final one stays final through being assigned, archived and
+  restored, each a revision of its own that keeps the pinned final. The app's lists
   are read a page at a time: the quotes assigned to the signed-in underwriter, the
   team's, or the archive, of one stage when asked, matching every word searched for in
   the reference, quote name, insured or broker, newest saved first, newest reference

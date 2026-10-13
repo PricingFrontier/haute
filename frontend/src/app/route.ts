@@ -82,6 +82,14 @@ let guard: LeaveGuard | null = null
 const listeners = new Set<() => void>()
 let current = `${window.location.pathname}${window.location.search}`
 
+/** Each entry the app makes holds its place in the history, so Back and Forward know how far they went. */
+const placeOf = (state: unknown): number =>
+  typeof state === "object" && state !== null && typeof (state as { place?: unknown }).place === "number" ? (state as { place: number }).place : 0
+let place = placeOf(window.history.state)
+window.history.replaceState({ ...(window.history.state as object | null), place }, "")
+/** A traversal the app made itself: back to where the page was while the guard asks, or on once it allows. */
+let traversing: "back" | "on" | null = null
+
 const notify = () => {
   current = `${window.location.pathname}${window.location.search}`
   for (const listener of listeners) listener()
@@ -96,24 +104,38 @@ export function setLeaveGuard(leaving: LeaveGuard | null): void {
 export async function navigate(path: string, { replace = false, force = false } = {}): Promise<boolean> {
   if (path === current) return true
   if (!force && guard !== null && !(await guard())) return false
-  if (replace) window.history.replaceState(null, "", path)
-  else window.history.pushState(null, "", path)
+  if (replace) window.history.replaceState({ place }, "", path)
+  else window.history.pushState({ place: ++place }, "", path)
   notify()
   window.scrollTo?.(0, 0)
   return true
 }
 
-/** Back and Forward ask the leave guard too: the page goes back to where it was until the guard lets it move. */
-function onPopState(): void {
-  const target = `${window.location.pathname}${window.location.search}`
-  if (guard === null) {
-    notify()
+/**
+ * Back and Forward ask the leave guard too: the history goes back to where the page was
+ * while the guard asks, then on to where it was going once it allows, its entries as they
+ * were, so Forward still leads where it did.
+ */
+function onPopState(event: PopStateEvent): void {
+  const target = placeOf(event.state)
+  if (traversing === "back") {
+    traversing = null
     return
   }
   const leaving = guard
-  window.history.pushState(null, "", current)
+  const delta = place - target
+  if (traversing === "on" || leaving === null || delta === 0) {
+    traversing = null
+    place = target
+    notify()
+    return
+  }
+  traversing = "back"
+  window.history.go(delta)
   void leaving().then((allowed) => {
-    if (allowed) void navigate(target, { force: true })
+    if (!allowed) return
+    traversing = "on"
+    window.history.go(-delta)
   })
 }
 

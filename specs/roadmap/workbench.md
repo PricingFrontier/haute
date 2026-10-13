@@ -335,8 +335,8 @@ priced again on the server, a handover note, an assignee, a
 final revision reopened with a reason, an archive, and the duplicates, renewals and
 alternatives made from it, with a history of who did what; a reader sees every quote and
 changes none. What underwriters still keep elsewhere is the rest of a quote's commercial
-life: two revisions cannot be compared side by side; a quote has no validity date, so
-nothing says which offers are about to lapse; nothing records whether a final quote was
+life: two revisions cannot be compared side by side; nothing reads a quote's validity
+date, so nothing says which offers are about to lapse; nothing records whether a final quote was
 bound, declined or not taken up, so the lists cannot tell open work from closed; and
 archiving or reassigning many quotes is done one at a time.
 

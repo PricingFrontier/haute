@@ -31,7 +31,7 @@ import { navigate, setLeaveGuard, type AppRoute } from "../route"
 import { QuestionDialog } from "../ui"
 import useAppStore from "../useAppStore"
 import useOpenQuoteStore from "../useOpenQuoteStore"
-import { answer, appQuote, release, VALUES } from "./fixtures"
+import { answer, appQuote, changed, release, VALUES } from "./fixtures"
 
 type QuoteRoute = Extract<AppRoute, { page: "new" } | { page: "quote" }>
 
@@ -139,13 +139,14 @@ describe("QuoteView", () => {
   it("marks a priced quote final once asked, and reopens it giving a reason", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     vi.mocked(changeAppQuote)
-      .mockResolvedValueOnce({ quote: appQuote({ stage: "final", final_revision: 1, final_by: "ana@example.com", final_at: "2026-10-12T10:00:00+00:00", version: 2 }), revision: null })
-      .mockResolvedValueOnce({ quote: appQuote({ version: 3 }), revision: null })
+      .mockResolvedValueOnce(changed({ stage: "final", final_revision: 2, final_by: "ana@example.com", final_at: "2026-10-12T10:00:00+00:00", latest: 2, version: 2 }))
+      .mockResolvedValueOnce(changed({ latest: 3, version: 3 }))
     await opened()
 
     fireEvent.click(screen.getByRole("button", { name: "Mark final" }))
     confirmQuestion("Mark final")
-    expect(await screen.findByTestId("notice-final")).toHaveTextContent("Final at revision 1")
+    expect(await screen.findByTestId("notice-final")).toHaveTextContent("Final at revision 2")
+    expect(screen.getByTestId("quote-line")).toHaveTextContent("Revision 2")
     expect(screen.getByRole("button", { name: "Price" })).toBeDisabled()
 
     fireEvent.click(screen.getByRole("button", { name: "Reopen" }))
@@ -220,9 +221,9 @@ describe("QuoteView", () => {
   it("restores an archived quote from its notice, and archives one with Undo", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer({ archived: true, archived_at: "2026-10-12T10:00:00+00:00", archived_by: "jo@example.com" }))
     vi.mocked(changeAppQuote)
-      .mockResolvedValueOnce({ quote: appQuote({ version: 2 }), revision: null })
-      .mockResolvedValueOnce({ quote: appQuote({ version: 3, archived: true, archived_at: "2026-10-12T11:00:00+00:00" }), revision: null })
-      .mockResolvedValueOnce({ quote: appQuote({ version: 4 }), revision: null })
+      .mockResolvedValueOnce(changed({ latest: 2 }))
+      .mockResolvedValueOnce(changed({ latest: 3, archived: true, archived_at: "2026-10-12T11:00:00+00:00" }))
+      .mockResolvedValueOnce(changed({ latest: 4 }))
     await opened()
     expect(screen.getByTestId("notice-archived")).toHaveTextContent("Archived by jo@example.com")
 
@@ -232,7 +233,48 @@ describe("QuoteView", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }))
     fireEvent.click(await screen.findByRole("button", { name: "Undo" }))
 
-    await vi.waitFor(() => expect(vi.mocked(changeAppQuote).mock.calls.map((call) => call[1])).toEqual(["restore", "archive", "restore"]))
+    await vi.waitFor(() => expect(vi.mocked(changeAppQuote).mock.calls.map((call) => call.slice(1, 3))).toEqual([["restore", 1], ["archive", 2], ["restore", 3]]))
+  })
+
+  it("undoes an archive on the quote it archived, though another is open by then", async () => {
+    vi.mocked(openAppQuote).mockResolvedValueOnce(answer()).mockResolvedValueOnce(answer({ id: "q2", reference: "Q-000002", archived: true, archived_at: "2026-10-12T09:00:00+00:00" }))
+    vi.mocked(changeAppQuote).mockResolvedValue(changed({ latest: 2, archived: true, archived_at: "2026-10-12T11:00:00+00:00" }))
+    const view = await opened()
+    fireEvent.click(screen.getByTestId("quote-more"))
+    fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }))
+    const undo = await screen.findByRole("button", { name: "Undo" })
+
+    view.rerender(
+      <>
+        <QuoteView route={{ page: "quote", id: "q2", revision: null }} />
+        <QuestionDialog />
+        <ToastContainer />
+      </>,
+    )
+    await vi.waitFor(() => expect(screen.getByTestId("quote-reference")).toHaveTextContent("Q-000002"))
+    fireEvent.click(undo)
+
+    await vi.waitFor(() => expect(changeAppQuote).toHaveBeenLastCalledWith("q1", "restore", 2))
+    expect(useOpenQuoteStore.getState().quote?.id).toBe("q2")
+  })
+
+  it("offers Save for a price made since the quote was saved, or one of another release", async () => {
+    vi.mocked(openAppQuote).mockResolvedValueOnce(answer()).mockResolvedValueOnce(answer({ release: "rel-0" }, { release: "rel-0" }))
+    const view = await opened()
+    const save = screen.getByTestId("save-quote")
+    expect(save).toBeDisabled()
+    expect(save).toHaveAttribute("title", "Nothing has changed since the quote was saved")
+
+    // Priced again with the values as they are: the price kept would change.
+    act(() => {
+      const { price } = useWorkbenchPreviewStore.getState()
+      if (price !== null) useWorkbenchPreviewStore.setState({ price: { ...price, tables: { premiums: [{ item: "Crane", premium: 130 }] } } })
+    })
+    expect(save).toBeEnabled()
+
+    view.unmount()
+    await opened()
+    expect(screen.getByTestId("save-quote")).toBeEnabled()
   })
 
   it("starts a renewal from the menu at the revision showing", async () => {
@@ -270,7 +312,9 @@ describe("QuoteView", () => {
 
   it("assigns the quote to someone from the people, or to a name typed", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(changeAppQuote).mockResolvedValueOnce({ quote: appQuote({ assignee: "jo@example.com", version: 2 }), revision: null }).mockResolvedValueOnce({ quote: appQuote({ assignee: "sam@example.com", version: 3 }), revision: null })
+    vi.mocked(changeAppQuote)
+      .mockResolvedValueOnce(changed({ assignee: "jo@example.com", latest: 2, version: 2 }))
+      .mockResolvedValueOnce(changed({ assignee: "sam@example.com", latest: 3, version: 3 }))
     await opened()
     await screen.findByRole("option", { name: "jo@example.com" })
 
@@ -349,7 +393,7 @@ describe("QuoteView", () => {
 
     fireEvent.change(within(panel).getByLabelText("Handover note"), { target: { value: "Call the broker" } })
     fireEvent.click(within(panel).getByRole("button", { name: "Save note" }))
-    await vi.waitFor(() => expect(changeAppQuote).toHaveBeenCalledWith("q1", "note", 1, { note: "Call the broker" }))
+    await vi.waitFor(() => expect(changeAppQuote).toHaveBeenCalledWith("q1", "note", 2, { note: "Call the broker" }))
     expect(await within(panel).findByText(/By ana@example.com/)).toBeInTheDocument()
   })
 

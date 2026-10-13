@@ -26,16 +26,19 @@ from typing import Any, Literal
 from sqlalchemy import (
     ColumnElement,
     Connection,
+    Integer,
     RowMapping,
     Select,
     and_,
     func,
     insert,
+    literal,
     or_,
     select,
     union,
     update,
 )
+from sqlalchemy.exc import IntegrityError
 
 from haute._quote_store._store import (
     QuoteNotFoundError,
@@ -310,26 +313,26 @@ def _quote(row: RowMapping) -> AppQuote:
     )
 
 
-def _newest() -> Select[Any]:
+def _newest(at: int | None = None) -> Select[Any]:
     """Each app quote's newest revision with its details: the quotes that have details, which
-    the test quotes do not."""
+    the test quotes do not. Given *at*, revision *at* in its place, as the quote stood when
+    that revision was its newest: what a save repeated with its key answers."""
+    revision = QUOTE_DETAILS.c.revision
+    newest = QUOTES.c.latest == revision if at is None else revision == at
+    latest = QUOTES.c.latest if at is None else literal(at, Integer).label("latest")
     return (
         select(
             QUOTE_DETAILS,
             QUOTES.c.owner,
             QUOTES.c.created_at,
-            QUOTES.c.latest,
+            latest,
             QUOTE_REVISIONS.c.release,
             QUOTE_REVISIONS.c.form_revision,
             QUOTE_REVISIONS.c.saved_by,
             QUOTE_REVISIONS.c.saved_at,
             QUOTE_REVISIONS.c.response.is_not(None).label("priced"),
         )
-        .join(
-            QUOTES,
-            (QUOTES.c.id == QUOTE_DETAILS.c.quote_id)
-            & (QUOTES.c.latest == QUOTE_DETAILS.c.revision),
-        )
+        .join(QUOTES, (QUOTES.c.id == QUOTE_DETAILS.c.quote_id) & newest)
         .join(
             QUOTE_REVISIONS,
             (QUOTE_REVISIONS.c.quote_id == QUOTE_DETAILS.c.quote_id)
@@ -363,13 +366,13 @@ def _sort_key(sort: Sort) -> Any:
     return func.lower(func.coalesce(QUOTE_DETAILS.c.insured, ""))
 
 
-def _encode_cursor(sort: Sort, quote: AppQuote) -> str:
-    key: str = {
-        "saved": quote.last_saved_at.isoformat(),
-        "reference": quote.reference,
-        "insured": str(quote.details.get("insured", "")).lower(),
-    }[sort]
-    raw = json.dumps([sort, key, quote.id]).encode("utf-8")
+def _encode_cursor(sort: Sort, row: RowMapping) -> str:
+    """The cursor after *row*: its sort key as the database made it (``sort_key``), so the
+    next page compares like with like whatever the engine's case rules, and its id."""
+    key = row["sort_key"]
+    if isinstance(key, datetime):
+        key = key.isoformat()
+    raw = json.dumps([sort, key, row["quote_id"]]).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii")
 
 
@@ -434,11 +437,22 @@ class QuoteBook:
         with self._engine.connect() as connection:
             return self._full(connection, quote_id)
 
-    def _full(self, connection: Connection, quote_id: str) -> AppQuote:
+    def replayed(self, operation: str, actor: str, quote_id: str | None = None) -> AppQuote | None:
+        """The quote as *operation*'s key left it, at the revision that key wrote, when it has
+        been written: a save repeated after its answer was lost answers that, whatever was
+        saved since. Refused when the key was another person's or another quote's."""
+        _check_operation(operation)
+        with self._engine.connect() as connection:
+            return self._operation(connection, operation, actor, quote_id)
+
+    def _full(self, connection: Connection, quote_id: str, at: int | None = None) -> AppQuote:
         """The quote with what its events say of it, read on *connection*: a write answers
-        with the quote as its own transaction left it."""
-        quote = self._get(connection, quote_id)
+        with the quote as its own transaction left it. Given *at*, as it stood at revision
+        *at*, its events since left out."""
+        quote = self._get(connection, quote_id, at)
         events = self._events(connection, quote_id)
+        if at is not None:
+            events = [event for event in events if event.revision is None or event.revision <= at]
         extras: dict[str, Any] = {}
         for event in events:
             if event.kind == "finalised" and quote.stage == "final":
@@ -464,9 +478,9 @@ class QuoteBook:
                 )
         return replace(quote, **extras)
 
-    def _get(self, connection: Connection, quote_id: str) -> AppQuote:
+    def _get(self, connection: Connection, quote_id: str, at: int | None = None) -> AppQuote:
         row = (
-            connection.execute(_newest().where(QUOTE_DETAILS.c.quote_id == quote_id))
+            connection.execute(_newest(at).where(QUOTE_DETAILS.c.quote_id == quote_id))
             .mappings()
             .one_or_none()
         )
@@ -519,7 +533,13 @@ class QuoteBook:
             listed.append(QUOTE_DETAILS.c.stage == stage)
         if cursor is not None:
             listed.append(_cursor_filter(sort, cursor))
-        query = _newest().where(*listed).order_by(*_order(sort)).limit(limit + 1)
+        query = (
+            _newest()
+            .add_columns(_sort_key(sort).label("sort_key"))
+            .where(*listed)
+            .order_by(*_order(sort))
+            .limit(limit + 1)
+        )
         views: tuple[View, ...] = ("mine", "team", "archived")
         stages: tuple[Stage, ...] = ("draft", "priced", "final")
         with self._engine.connect() as connection:
@@ -532,7 +552,7 @@ class QuoteBook:
         quotes = [_quote(row) for row in rows[:limit]]
         return QuotePage(
             quotes=quotes,
-            next_cursor=_encode_cursor(sort, quotes[-1]) if len(rows) > limit else None,
+            next_cursor=_encode_cursor(sort, rows[limit - 1]) if len(rows) > limit else None,
             counts=counts,
         )
 
@@ -660,10 +680,27 @@ class QuoteBook:
     ) -> AppQuote:
         """A new quote with its first revision and a reference of its own, with *actor*, its
         details from *inputs* with the app's set over them; made from *source* when given.
-        Repeated with *operation*'s key, it answers the quote that key made and writes
+        Repeated with *operation*'s key, it answers the quote as that key made it and writes
         nothing."""
         _check_operation(operation)
         actor = _check_principal(actor, "Who saves a quote")
+
+        def write() -> AppQuote:
+            return self._create(operation, actor, form, inputs, request, response, release, source)
+
+        return self._or_replayed(write, operation, actor, None)
+
+    def _create(
+        self,
+        operation: str,
+        actor: str,
+        form: FormSpec,
+        inputs: Values,
+        request: dict[str, Any],
+        response: dict[str, Any] | None,
+        release: str | None,
+        source: Source | None,
+    ) -> AppQuote:
         with self._engine.begin() as connection:
             done = self._operation(connection, operation, actor, None)
             if done is not None:
@@ -727,9 +764,30 @@ class QuoteBook:
         """The quote's next revision, saved over revision *version*: its values and details
         from *inputs*, with the app's set over them (:meth:`managed`). Refused with nothing
         written when the quote has moved past *version*, is final or is archived; repeated
-        with *operation*'s key, it answers the quote and writes nothing more."""
+        with *operation*'s key, it answers the quote as that key left it and writes nothing
+        more."""
         _check_operation(operation)
         actor = _check_principal(actor, "Who saves a quote")
+
+        def write() -> AppQuote:
+            return self._save(
+                quote_id, operation, version, actor, form, inputs, request, response, release
+            )
+
+        return self._or_replayed(write, operation, actor, quote_id)
+
+    def _save(
+        self,
+        quote_id: str,
+        operation: str,
+        version: int,
+        actor: str,
+        form: FormSpec,
+        inputs: Values,
+        request: dict[str, Any],
+        response: dict[str, Any] | None,
+        release: str | None,
+    ) -> AppQuote:
         with self._engine.begin() as connection:
             done = self._operation(connection, operation, actor, quote_id)
             if done is not None:
@@ -837,7 +895,7 @@ class QuoteBook:
             if quote.stage != "final":
                 raise QuoteLockedError(f"{quote.reference} is not final.")
             stage = _stage_of(quote.priced)
-            return {"stage": stage}, {"reason": reason, "final_revision": quote.latest}
+            return {"stage": stage}, {"reason": reason, "final_revision": quote.final_revision}
 
         return self._revise(quote_id, version, actor, "reopened", change)
 
@@ -856,6 +914,23 @@ class QuoteBook:
             return self._full(connection, quote_id)
 
     # ── Within a transaction ──────────────────────────────────────────────
+
+    def _or_replayed(
+        self,
+        write: Callable[[], AppQuote],
+        operation: str,
+        actor: str,
+        quote_id: str | None,
+    ) -> AppQuote:
+        """*write*, or, when it lost a race to the first write of the same key (refused as
+        stale, or the key already taken, before that write was seen), what that write left."""
+        try:
+            return write()
+        except (StaleQuoteError, IntegrityError):
+            replay = self.replayed(operation, actor, quote_id)
+            if replay is None:
+                raise
+            return replay
 
     def _revise(
         self,
@@ -892,9 +967,9 @@ class QuoteBook:
             return self._full(connection, quote_id)
 
     def _current(self, connection: Connection, quote_id: str, version: int) -> AppQuote:
-        """The quote, refused as stale unless its newest revision is *version*, naming who
-        moved it on."""
-        quote = self._get(connection, quote_id)
+        """The quote with what its events say of it, refused as stale unless its newest
+        revision is *version*, naming who moved it on."""
+        quote = self._full(connection, quote_id)
         if quote.latest != version:
             last = connection.execute(
                 select(QUOTE_EVENTS.c.actor, QUOTE_EVENTS.c.kind, QUOTE_EVENTS.c.at)
@@ -960,8 +1035,9 @@ class QuoteBook:
     def _operation(
         self, connection: Connection, operation: str, actor: str, quote_id: str | None
     ) -> AppQuote | None:
-        """The quote *operation*'s key wrote, when it was written: one repeated after its
-        answer was lost. Refused when the key was another person's or another quote's."""
+        """The quote as *operation*'s key left it, at the revision it wrote, when it was
+        written: one repeated after its answer was lost. Refused when the key was another
+        person's or another quote's."""
         row = (
             connection.execute(select(QUOTE_OPERATIONS).where(QUOTE_OPERATIONS.c.id == operation))
             .mappings()
@@ -973,7 +1049,7 @@ class QuoteBook:
             raise QuoteStoreError(
                 "This save's operation key was used for another save: save again."
             )
-        return self._full(connection, row["quote_id"])
+        return self._full(connection, row["quote_id"], at=row["number"])
 
     def _remember(
         self, connection: Connection, operation: str, quote_id: str, number: int, actor: str

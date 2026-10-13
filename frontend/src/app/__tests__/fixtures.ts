@@ -1,5 +1,5 @@
 /** Quotes as the underwriter app's routes answer them, for its tests. */
-import type { WorkbenchAppQuote, WorkbenchAppQuoteResponse, WorkbenchAppReleaseResponse } from "../../api/types"
+import type { WorkbenchAppQuote, WorkbenchAppQuoteChangeResponse, WorkbenchAppQuoteResponse, WorkbenchAppReleaseResponse } from "../../api/types"
 
 export const release: WorkbenchAppReleaseResponse = {
   id: "rel-1",
@@ -45,7 +45,7 @@ export function appQuote(overrides: Partial<WorkbenchAppQuote> = {}): WorkbenchA
     source_reference: null,
     source_revision: null,
     relation: null,
-    version: 1,
+    version: overrides.latest ?? 1,
     ...overrides,
   }
 }
@@ -71,3 +71,11 @@ export function answer(quote: Partial<WorkbenchAppQuote> = {}, revision: Partial
   }
 }
 
+/**
+ * A change's answer as the server gives it: the quote with `latest` and `version` the
+ * revision the change wrote, and that revision.
+ */
+export function changed(quote: Partial<WorkbenchAppQuote>, revision: Partial<WorkbenchAppQuoteResponse["revision"]> = {}): WorkbenchAppQuoteChangeResponse {
+  const made = answer(quote, revision)
+  return { quote: made.quote, revision: made.revision }
+}

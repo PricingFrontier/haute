@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from haute import _workbench_app_quotes
 from haute._quote_store import (
     QuoteStoreNotMigratedError,
     migrate_store,
@@ -236,6 +237,32 @@ def test_a_save_repeated_with_its_operation_key_writes_one_revision(page: Page) 
         saved = page.client.post(f"/api/app/quotes/{quote['id']}/revisions", json=body, headers=ANA)
         assert saved.status_code == 200
     assert saved.json()["quote"]["latest"] == 2
+
+
+def test_a_save_repeated_after_a_colleague_saved_answers_what_its_key_wrote(
+    page: Page, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    quote = page.create().json()["quote"]
+    body = page.body(version=quote["version"])
+    first = page.client.post(f"/api/app/quotes/{quote['id']}/revisions", json=body, headers=ANA)
+    assert page.save(first.json()["quote"], headers=JO).json()["quote"]["latest"] == 3
+
+    def priced_again(*_: Any) -> Any:
+        raise AssertionError("a save repeated with its key is neither priced nor written again")
+
+    monkeypatch.setattr(_workbench_app_quotes, "_prepared", priced_again)
+    shown = {"pricing_output": [{"premium": 1.0}]}
+    again = page.client.post(
+        f"/api/app/quotes/{quote['id']}/revisions", json={**body, "shown": shown}, headers=ANA
+    )
+
+    assert again.status_code == 200, again.text
+    answered = again.json()
+    # What the key wrote: revision 2 at version 2, so a save over it is refused as stale
+    # rather than writing over Jo's; moved said of the prices that write kept.
+    assert (answered["quote"]["version"], answered["revision"]["number"]) == (2, 2)
+    assert answered["revision"]["saved_by"] == "ana@example.com"
+    assert answered["moved"] is True
 
 
 # ── Lists, history and people ─────────────────────────────────────────────

@@ -28,6 +28,21 @@ export function normalisedValues(values: Readonly<Record<string, readonly Sample
 /** What identifies `values` as a quote: the same for the same values, however blanks were left. */
 export const valuesKey = (values: Readonly<Record<string, readonly SampleRow[]>>): string => canonicalJson(normalisedValues(values))
 
+/**
+ * `values` on `form`'s sheets: the cells of its input tables' columns alone, by id, as
+ * values typed into other sheets, a draft kept before a release, are put back.
+ */
+export function onSheets(form: FormSpec, values: Values): Values {
+  const kept: Values = {}
+  for (const table of form.schema.tables) {
+    const rows = values[table.id]
+    if (table.role !== "input" || rows === undefined) continue
+    const columns = new Set(table.columns.map((column) => column.id))
+    kept[table.id] = rows.map((row) => Object.fromEntries(Object.entries(row).filter(([id]) => columns.has(id))))
+  }
+  return kept
+}
+
 /** The basis the sheets read `values` on `form` for: a price for another is out of date. */
 export const basisOf = (form: FormSpec, values: Values): string =>
   valuesBasis(form.schema, sheetVisibility(form, values).hidden, values)

@@ -21,13 +21,17 @@ import {
   MoreHorizontal,
   RefreshCcw,
 } from "lucide-react"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
+import { changeAppQuote } from "../api/app"
+import { apiErrorMessage } from "../api/errors"
+import type { WorkbenchAppQuote } from "../api/types"
 import { CommittedTextField } from "../components/form"
 import { ToolbarButton, ToolbarColumn, ZoomInOut } from "../haute-ui"
 import { hasModifier, inModalDialog, saveCommittingField } from "../hooks/keyboardTargets"
 import useToastStore from "../stores/useToastStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
+import { canonicalJson } from "../utils/canonicalJson"
 import { quoteFilled } from "../utils/sheetValues"
 import { quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS_ID } from "../utils/workbenchForm"
@@ -35,11 +39,11 @@ import PageTabs from "../workbench/PageTabs"
 import SheetCanvas from "../workbench/SheetCanvas"
 import AppHeader from "./AppHeader"
 import HistoryPanel from "./HistoryPanel"
-import { basisOf, fullTime, relativeTime, valuesKey, writeDraft } from "./quoteValues"
+import { basisOf, fullTime, relativeTime, valuesKey } from "./quoteValues"
 import { followLink, navigate, newQuotePath, quotePath, revisionPath, setLeaveGuard, type AppRoute } from "./route"
 import { BUTTON, Menu, Notice, StageChip, type MenuItem } from "./ui"
 import useAppStore, { confirm } from "./useAppStore"
-import useOpenQuoteStore, { canEdit, openDraftKey, readOnlyReason } from "./useOpenQuoteStore"
+import useOpenQuoteStore, { canEdit, readOnlyReason } from "./useOpenQuoteStore"
 
 type QuoteRoute = Extract<AppRoute, { page: "new" } | { page: "quote" }>
 
@@ -61,6 +65,20 @@ async function saveOpen(): Promise<void> {
     await navigate(quotePath(quote.id), { replace: true, force: true })
   }
   useToastStore.getState().addToast("success", `Saved ${quote.reference}, revision ${quote.latest}`)
+}
+
+/** Restore `archived`, as its archive left it: through the open quote while it is open, else on its own. */
+async function undoArchive(archived: WorkbenchAppQuote): Promise<void> {
+  const open = useOpenQuoteStore.getState()
+  if (open.quote?.id === archived.id) {
+    await open.change("restore")
+    return
+  }
+  try {
+    await changeAppQuote(archived.id, "restore", archived.version)
+  } catch (reason: unknown) {
+    useToastStore.getState().addToast("error", `Could not restore ${archived.reference}: ${apiErrorMessage(reason)}`)
+  }
 }
 
 /** Save the values on the sheets as a new quote and open it. */
@@ -118,24 +136,30 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
     }
   }, [dirty])
 
-  // Values not saved are kept in the browser as they are typed.
+  // Values not saved are kept in the browser as they are typed, and at once as the quote is
+  // left or the page goes, so the last keys typed are kept too.
+  const typing = useRef(false)
   useEffect(() => {
     if (!dirty) return
+    typing.current = true
     const timer = window.setTimeout(() => {
-      const open = useOpenQuoteStore.getState()
-      const key = openDraftKey(open)
-      if (key === null) return
-      const kept = writeDraft(key, {
-        values,
-        version: open.quote?.version ?? null,
-        latest: open.quote?.latest ?? null,
-        formRevision: useAppStore.getState().revision,
-        keptAt: new Date().toISOString(),
-      })
-      setUnkept(!kept)
+      typing.current = false
+      setUnkept(!useOpenQuoteStore.getState().keepDraft())
     }, 400)
     return () => window.clearTimeout(timer)
   }, [dirty, values])
+  useEffect(() => {
+    const flush = () => {
+      if (!typing.current) return
+      typing.current = false
+      useOpenQuoteStore.getState().keepDraft()
+    }
+    window.addEventListener("pagehide", flush)
+    return () => {
+      window.removeEventListener("pagehide", flush)
+      flush()
+    }
+  }, [routeKey])
 
   // Ctrl+S saves and Ctrl+Enter prices, a field being typed in committed first.
   useEffect(() => {
@@ -221,8 +245,13 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   const closed = reason !== null
   // The quote's name is its quote_details.quote_name cell, on the sheets or not.
   const name = values[QUOTE_DETAILS_ID]?.[0]?.[NAME_COLUMN]
-  // A saved quote whose values are as saved, priced as saved, has nothing new to save.
-  const nothingNew = quote !== null && !dirty && priced === (quote.stage !== "draft")
+  // A saved quote whose values are as saved, priced as saved on this release, or unpriced as
+  // saved, has nothing new to save; a price made since, or one of another release, has.
+  const savedTables = revision?.tables ?? null
+  const samePrice = priced
+    ? savedTables !== null && revision?.release === release?.id && canonicalJson(price.tables) === canonicalJson(savedTables)
+    : savedTables === null
+  const nothingNew = quote !== null && !dirty && samePrice
 
   const saveTitle = closed
     ? "This quote does not take changes as it is"
@@ -271,7 +300,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
     if (quote === null) return
     const archived = await change("archive")
     if (archived === null) return
-    addToast("success", `Archived ${quote.reference}`, { label: "Undo", run: () => void useOpenQuoteStore.getState().change("restore") })
+    addToast("success", `Archived ${quote.reference}`, { label: "Undo", run: () => void undoArchive(archived) })
   }
 
   const derive = (relation: "duplicate" | "renewal" | "alternative") => {

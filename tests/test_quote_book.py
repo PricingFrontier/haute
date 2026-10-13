@@ -243,6 +243,46 @@ def test_a_creation_or_save_repeated_with_its_operation_key_writes_once(book: Qu
     assert _create(book).reference == "Q-000002"
 
 
+def test_a_save_repeated_after_a_colleague_saved_answers_what_its_key_wrote(
+    book: QuoteBook,
+) -> None:
+    quote = _create(book)
+    saving = _op()
+    mine = _save(book, quote, operation=saving, inputs=_values(broker="Marsh"))
+    _save(book, mine, actor=JO, inputs=_values(broker="Aon"))
+
+    again = _save(book, quote, operation=saving, inputs=_values(broker="Marsh"))
+
+    # The quote as the key left it: its revision, its details, and so its version, which a
+    # save over it now finds stale rather than writing over the colleague's.
+    assert (again.latest, again.details["broker"], again.last_saved_by) == (2, "Marsh", ANA)
+    assert book.get(quote.id).latest == 3
+    with pytest.raises(StaleQuoteError):
+        _save(book, again)
+
+
+def test_a_save_that_lost_a_race_to_its_own_key_answers_the_first_write(
+    book: QuoteBook, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    quote = _create(book)
+    saving = _op()
+    first = _save(book, quote, operation=saving)
+    real = QuoteBook._operation
+    looked: list[str] = []
+
+    def unseen_once(self: QuoteBook, *args: Any) -> Any:
+        # The second request's own look finds nothing, as one made before the first
+        # committed would; its save is then refused as stale, and the key answers it.
+        looked.append("look")
+        return None if len(looked) == 1 else real(self, *args)
+
+    monkeypatch.setattr(QuoteBook, "_operation", unseen_once)
+    again = _save(book, quote, operation=saving)
+
+    assert (again.id, again.latest) == (first.id, first.latest)
+    assert book.get(quote.id).latest == 2
+
+
 def test_an_operation_key_used_by_someone_else_or_another_quote_is_refused(
     book: QuoteBook,
 ) -> None:
@@ -362,14 +402,18 @@ def test_pages_follow_on_without_repeating_or_missing_a_quote_saved_at_the_same_
     [
         ("saved", ["Q-000003", "Q-000002", "Q-000001"]),
         ("reference", ["Q-000003", "Q-000002", "Q-000001"]),
-        ("insured", ["Q-000002", "Q-000003", "Q-000001"]),
+        ("insured", ["Q-000002", "Q-000003", "Q-000001", "Q-000004", "Q-000005"]),
     ],
 )
 def test_a_list_is_read_newest_saved_newest_reference_or_by_insured(
     book: QuoteBook, sort: Any, expected: list[str]
 ) -> None:
-    for insured in ("zeta", "Alpha", "beta"):
+    # Capitals with accents, which SQLite's lower() leaves as they are: a page's cursor
+    # holds the key as the database ordered it, so paging one at a time skips none.
+    for insured in ("zeta", "Alpha", "beta", "Ärzt", "Öresund"):
         _create(book, inputs=_values(insured=insured))
+    if sort != "insured":
+        expected = ["Q-000005", "Q-000004", *expected]
 
     seen: list[str] = []
     cursor = None
@@ -484,6 +528,12 @@ def test_reopening_a_final_quote_needs_a_reason_and_keeps_the_final_in_its_histo
     ]
     with pytest.raises(QuoteLockedError, match="not final"):
         book.reopen(quote.id, version=4, actor=JO, reason="again")
+    # The final it reopens is the one pinned, whatever was written over it since.
+    again = book.finalise(quote.id, version=4, actor=ANA, revision=4, release=RELEASE)
+    archived = book.archive(quote.id, version=again.latest, actor=ANA)
+    restored = book.restore(quote.id, version=archived.latest, actor=ANA)
+    book.reopen(quote.id, version=restored.latest, actor=ANA, reason="Cover changed")
+    assert book.timeline(quote.id).events[-1].detail["final_revision"] == 5
 
 
 def test_an_archived_final_quote_stays_final_when_restored(book: QuoteBook) -> None:

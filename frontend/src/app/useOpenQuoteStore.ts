@@ -2,9 +2,10 @@
  * The quote open in the underwriter app (specs/workbench): a saved quote at its newest
  * revision or an earlier one, or a new quote not yet saved, perhaps made from another's
  * revision; its values on the sheets through Preview's store, read only while the quote may
- * not change; its saves and changes, each over the version it was opened at, a change's
- * details taken onto the sheets; and what a save or change that could not be made offers
- * instead.
+ * not change; its saves and changes, each over the version the values were opened or saved
+ * at (`base`), a change's details taken onto the sheets, and each answer the open quote's
+ * alone, dropped when another was opened meanwhile; the values kept in this browser while
+ * they are not saved; and what a save or change that could not be made offers instead.
  */
 import { create } from "zustand"
 import {
@@ -26,7 +27,7 @@ import { canonicalJson } from "../utils/canonicalJson"
 import { quoteFilled } from "../utils/sheetValues"
 import { quotedSchema } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, type SampleRow } from "../utils/workbenchForm"
-import { basisOf, clearDraft, draftKey, operationKey, readDraft, savedPrice, valuesKey, type Draft, type Values } from "./quoteValues"
+import { basisOf, clearDraft, draftKey, onSheets, operationKey, readDraft, savedPrice, valuesKey, writeDraft, type Draft, type Values } from "./quoteValues"
 import useAppStore from "./useAppStore"
 
 /** A new quote's origin: the quote and revision it is made from, and how. */
@@ -47,6 +48,14 @@ interface OpenQuoteState {
   quote: WorkbenchAppQuote | null
   /** The revision on the sheets; null for a new quote. */
   revision: WorkbenchAppQuoteRevision | null
+  /**
+   * The quote's version the values on the sheets are edited over, which a save and a change
+   * name: the newest revision as it was opened, saved or written by a change made here.
+   * Anything else that refreshes the quote, a note, leaves it, so a save over a quote moved
+   * on meanwhile is refused rather than written over it. Null for a new quote, or one shown
+   * at an earlier revision.
+   */
+  base: number | null
   /** The revision on the sheets is not the newest. */
   past: boolean
   /** The sheets the revision was keyed into, installed in place of the release's. */
@@ -80,6 +89,11 @@ interface OpenQuoteState {
   /** Save the values on the sheets as a new quote made from the quote they were opened as. */
   saveAsNew: () => Promise<WorkbenchAppQuote | null>
   change: (change: QuoteChange, fields?: Record<string, string | number>) => Promise<WorkbenchAppQuote | null>
+  /**
+   * Keep the values on the sheets in this browser while they are not saved, and drop what it
+   * kept once they are; false when the browser would not keep them.
+   */
+  keepDraft: () => boolean
   moveToCurrentSheets: () => Promise<void>
   restoreDraft: () => void
   discardDraft: () => void
@@ -94,6 +108,7 @@ type Closed = Omit<OpenQuoteState, "status" | "loadError" | "historyOpen" | { [K
 const CLOSED: Closed = {
   quote: null,
   revision: null,
+  base: null,
   past: false,
   olderSheets: null,
   source: null,
@@ -149,13 +164,23 @@ function withAppDetails(values: Values, saved: Values): Values {
   const pick = (row: SampleRow | undefined, set: boolean): SampleRow =>
     Object.fromEntries(Object.entries(row ?? {}).filter(([id]) => QUOTE_DETAILS_MANAGED.has(id) === set))
   const row = { ...pick(values[QUOTE_DETAILS_ID]?.[0], false), ...pick(saved[QUOTE_DETAILS_ID]?.[0], true) }
-  return { ...values, [QUOTE_DETAILS_ID]: [row] }
+  const others = Object.fromEntries(Object.entries(values).filter(([table]) => table !== QUOTE_DETAILS_ID))
+  return Object.keys(row).length === 0 ? others : { ...others, [QUOTE_DETAILS_ID]: [row] }
+}
+
+/** Drop the draft kept under `key` when it holds `sent`, a save's values, which landed. */
+function forgetSaved(key: string | null, sent: Values): void {
+  const draft = key === null ? null : readDraft(key)
+  if (key !== null && draft !== null && valuesKey(draft.values) === valuesKey(sent)) clearDraft(key)
 }
 
 /** A page drawn for another release: 409 without a code of the store's. */
 const releaseMoved = (error: unknown): boolean => apiErrorStatus(error) === 409 && apiErrorCode(error) === null
 
-/** The open quote's loads, newest wins. */
+/**
+ * The open quote's loads, newest wins: a save, a change or a read started under one load
+ * answers that load alone, and its answer is dropped once another has started.
+ */
 let opening = 0
 
 const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
@@ -184,14 +209,34 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     useWorkbenchPreviewStore
       .getState()
       .open(values, savedPrice(sheets, values, answer.revision.tables, answer.revision.request), readOnlyReason(state) !== null)
-    set({ ...state, revision: answer.revision, baseline: valuesKey(values) })
+    set({ ...state, revision: answer.revision, base: past ? null : answer.revision.number, baseline: valuesKey(values) })
   }
 
-  /** Offer back what this browser kept of the open quote, when it differs from what is saved. */
+  /**
+   * Offer back what this browser kept of the open quote, when it differs from what is saved
+   * and the quote may change as it is shown.
+   */
   const offerDraft = (): void => {
     const key = openDraftKey(get())
-    const draft = key === null ? null : readDraft(key)
+    const draft = key === null || readOnlyReason(get()) !== null ? null : readDraft(key)
     set({ recovered: draft !== null && valuesKey(draft.values) !== get().baseline ? draft : null })
+  }
+
+  const keepDraft = (): boolean => {
+    const key = openDraftKey(get())
+    if (key === null || readOnlyReason(get()) !== null) return true
+    const values = useWorkbenchPreviewStore.getState().quote
+    if (valuesKey(values) === get().baseline) {
+      clearDraft(key)
+      return true
+    }
+    return writeDraft(key, {
+      values,
+      version: get().base,
+      latest: get().quote?.latest ?? null,
+      formRevision: useAppStore.getState().revision,
+      keptAt: new Date().toISOString(),
+    })
   }
 
   /** Values on the sheets as a save sends them, or null when there is nothing to save. */
@@ -204,16 +249,18 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     if (!quoteFilled(quotedSchema(form.schema, preview.locked), values)) return null
     const price = preview.price
     const shown = price !== null && price.basis === basisOf(form, values) ? (price.tables as QuoteSave["shown"]) : null
-    const basis = `${valuesKey(values)}|${get().quote?.version ?? "new"}|${shown === null ? "draft" : canonicalJson(shown)}`
+    const basis = `${valuesKey(values)}|${get().base ?? "new"}|${shown === null ? "draft" : canonicalJson(shown)}`
     const pending = get().pending
     const operation = pending !== null && pending.basis === basis ? pending.key : operationKey()
     return { body: { operation, form_revision: revision, release: release.id, values, shown }, basis, values }
   }
 
-  /** A save's answer adopted: the quote as saved, and its values and price on the sheets unless typed over since. */
+  /**
+   * A save's answer adopted: the quote as saved, its values and price on the sheets unless
+   * typed over since, and what this browser keeps of them, the typing since kept again.
+   */
   const saved = (answer: WorkbenchAppQuoteResponse, sent: Values): void => {
-    const draft = openDraftKey(get())
-    if (draft !== null) clearDraft(draft)
+    forgetSaved(openDraftKey(get()), sent)
     const { form } = useAppStore.getState()
     const preview = useWorkbenchPreviewStore.getState()
     const values = answer.revision.values as Values
@@ -223,6 +270,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     set({
       quote: answer.quote,
       revision: answer.revision,
+      base: answer.revision.number,
       past: false,
       olderSheets: null,
       source: null,
@@ -235,24 +283,26 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       recovered: null,
       history: null,
     })
+    keepDraft()
     if (get().historyOpen) void get().loadHistory()
   }
 
   /**
    * The revision a change wrote adopted: the details it set on the sheets in place of those
    * there, what was typed kept, and a price shown for the values kept current, as the change
-   * kept the revision's prices.
+   * kept the revision's prices. A change made from an earlier revision, or on earlier sheets,
+   * leaves the sheets as they are.
    */
   const adopt = (written: WorkbenchAppQuoteRevision): void => {
     const { form } = useAppStore.getState()
-    if (form === null || get().past || get().olderSheets !== null) return
+    if (form === null || get().base === null || get().olderSheets !== null) return
     const preview = useWorkbenchPreviewStore.getState()
     const saved = written.values as Values
     const values = withAppDetails(preview.quote, saved)
     const { price } = preview
     const current = price !== null && price.basis === basisOf(form, preview.quote)
     useWorkbenchPreviewStore.setState({ quote: values, price: current ? { ...price, basis: basisOf(form, values) } : price })
-    set({ revision: written, baseline: valuesKey(saved) })
+    set({ revision: written, base: written.number, baseline: valuesKey(saved) })
   }
 
   return {
@@ -303,26 +353,32 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     },
 
     save: async () => {
-      const { quote, source, saving } = get()
-      if (saving || readOnlyReason(get()) !== null) return null
+      const { quote, source, saving, base } = get()
+      if (saving || readOnlyReason(get()) !== null || (quote !== null && base === null)) return null
       const prepared = saveBody()
       if (prepared === null) return null
+      const session = opening
+      const key = openDraftKey(get())
       set({ saving: true, error: null, moved: false, pending: { key: prepared.body.operation, basis: prepared.basis } })
       try {
         const answer =
-          quote === null
+          quote === null || base === null
             ? await createAppQuote(
                 prepared.body,
                 source === null ? null : { quote_id: source.quoteId, revision: source.revision, relation: source.relation },
               )
-            : await saveAppQuote(quote.id, prepared.body, quote.version)
+            : await saveAppQuote(quote.id, prepared.body, base)
+        if (session !== opening) {
+          forgetSaved(key, prepared.values)
+          return null
+        }
         saved(answer, prepared.values)
         return answer.quote
       } catch (error: unknown) {
-        failed(error)
+        if (session === opening) failed(error)
         return null
       } finally {
-        set({ saving: false })
+        if (session === opening) set({ saving: false })
       }
     },
 
@@ -332,25 +388,33 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       if (origin === null || !canEdit()) return null
       const prepared = saveBody()
       if (prepared === null) return null
+      const session = opening
+      const key = openDraftKey(get())
       set({ saving: true, error: null })
       try {
         const answer = await createAppQuote(prepared.body, { quote_id: origin.id, revision: origin.latest, relation: "duplicate" })
+        if (session !== opening) {
+          forgetSaved(key, prepared.values)
+          return null
+        }
         saved(answer, prepared.values)
         return answer.quote
       } catch (error: unknown) {
-        failed(error)
+        if (session === opening) failed(error)
         return null
       } finally {
-        set({ saving: false })
+        if (session === opening) set({ saving: false })
       }
     },
 
     change: async (change, fields = {}) => {
-      const { quote, changing } = get()
+      const { quote, changing, base } = get()
       if (quote === null || changing || !canEdit()) return null
+      const session = opening
       set({ changing: true, error: null })
       try {
-        const { quote: changed, revision: written } = await changeAppQuote(quote.id, change, quote.version, fields)
+        const { quote: changed, revision: written } = await changeAppQuote(quote.id, change, base ?? quote.version, fields)
+        if (session !== opening) return changed
         set({ quote: changed })
         if (written !== null && written !== undefined) adopt(written)
         if (!get().past && get().olderSheets === null) {
@@ -359,32 +423,41 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
         if (get().historyOpen) void get().loadHistory()
         return changed
       } catch (error: unknown) {
-        failed(error)
+        if (session === opening) failed(error)
         return null
       } finally {
-        set({ changing: false })
+        if (session === opening) set({ changing: false })
       }
     },
+
+    keepDraft,
 
     moveToCurrentSheets: async () => {
       const { quote, revision, olderSheets } = get()
       const { form } = useAppStore.getState()
       if (quote === null || revision === null || olderSheets === null || form === null) return
+      const session = opening
       try {
         const carried = await carryAppQuote(quote.id, revision.number)
+        if (session !== opening) return
         installSheets(form)
         set({ olderSheets: null, past: false, dropped: carried.dropped })
         useWorkbenchPreviewStore.getState().open(carried.values as Values, null, readOnlyReason(get()) !== null)
       } catch (error: unknown) {
-        failed(error)
+        if (session === opening) failed(error)
       }
     },
 
     restoreDraft: () => {
       const { recovered } = get()
-      if (recovered === null) return
-      useWorkbenchPreviewStore.getState().open(recovered.values, null, false)
+      const { form } = useAppStore.getState()
+      if (recovered === null || form === null) return
       set({ recovered: null })
+      // Nothing typed is put back on a quote that may not change as it is shown.
+      if (readOnlyReason(get()) !== null) return
+      // Kept on these sheets alone, the details the app sets as the quote has them now.
+      const values = withAppDetails(onSheets(form, recovered.values), useWorkbenchPreviewStore.getState().quote)
+      useWorkbenchPreviewStore.getState().open(values, null, false)
     },
 
     discardDraft: () => {
@@ -396,11 +469,12 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     loadHistory: async () => {
       const { quote } = get()
       if (quote === null) return
+      const session = opening
       try {
         const history = await fetchAppQuoteHistory(quote.id)
-        if (get().quote?.id === quote.id) set({ history })
+        if (session === opening && get().quote?.id === quote.id) set({ history })
       } catch (error: unknown) {
-        set({ error: `The quote's history could not be read: ${apiErrorMessage(error)}` })
+        if (session === opening) set({ error: `The quote's history could not be read: ${apiErrorMessage(error)}` })
       }
     },
 

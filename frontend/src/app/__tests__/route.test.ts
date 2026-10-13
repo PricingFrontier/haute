@@ -12,6 +12,13 @@ const at = (path: string) => {
   return routeOf({ pathname, search })
 }
 
+/** The history traversals made since, each a popstate, which the browser fires after the task that asks it. */
+function traversals(): () => number {
+  let made = 0
+  window.addEventListener("popstate", () => (made += 1))
+  return () => made
+}
+
 describe("routeOf", () => {
   it("reads the Quotes page with its list, a new quote with what it is made from, a quote and a revision", () => {
     expect(at("/")).toEqual({ page: "quotes", query: { view: "mine", stage: null, search: "", assignee: null, sort: "saved" } })
@@ -68,19 +75,32 @@ describe("navigate", () => {
     expect(guard).toHaveBeenCalledTimes(1)
   })
 
-  it("puts Back's page back while the guard is asked, and goes once it says yes", async () => {
+  it("puts Back's page back while the guard is asked, and goes once it says yes, the history as it was", async () => {
     renderHook(() => useAppRoute())
+    await navigate("/")
     await navigate("/quotes/abc")
+    const entries = window.history.length
     let answer: (yes: boolean) => void = () => {}
-    setLeaveGuard(() => new Promise((resolve) => (answer = resolve)))
+    const asked = vi.fn(() => new Promise<boolean>((resolve) => (answer = resolve)))
+    setLeaveGuard(asked)
+    const made = traversals()
 
-    window.history.replaceState(null, "", "/")
-    await act(async () => {
-      window.dispatchEvent(new PopStateEvent("popstate"))
-    })
+    // Back, then the app's own way back to where the page was while it asks.
+    window.history.back()
+    await act(async () => vi.waitFor(() => expect(made()).toBe(2)))
+    expect(asked).toHaveBeenCalledTimes(1)
     expect(window.location.pathname).toBe("/quotes/abc")
 
-    await act(async () => answer(true))
+    answer(true)
+    await act(async () => vi.waitFor(() => expect(made()).toBe(3)))
     expect(window.location.pathname).toBe("/")
+    expect(window.history.length).toBe(entries)
+
+    // Forward leads where it did, the guard gone once the page left.
+    setLeaveGuard(null)
+    window.history.forward()
+    await act(async () => vi.waitFor(() => expect(made()).toBe(4)))
+    expect(window.location.pathname).toBe("/quotes/abc")
+    expect(asked).toHaveBeenCalledTimes(1)
   })
 })

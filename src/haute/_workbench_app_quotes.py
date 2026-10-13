@@ -207,21 +207,20 @@ async def _body(http: Request, model: type[M]) -> M:
 
 @dataclass(frozen=True)
 class _Prepared:
-    """A save as it is kept: the values with the app's details over them, the request priced,
-    its prices (none unpriced) and whether they moved from what the page showed."""
+    """A save as it is kept: the values with the app's details over them, the request priced
+    and its prices (none unpriced)."""
 
     values: WorkbenchValues
     request: dict[str, Any]
     tables: WorkbenchPricedTables | None
-    moved: bool
 
 
 async def _prepared(
     app: QuoteApp, body: WorkbenchAppQuoteSaveRequest, managed: dict[str, Any]
 ) -> _Prepared:
     """*body*'s save made ready: refused (409) for another sheets' revision or release; its
-    details' app columns set to *managed*; unpriced, refused (422) with nothing typed, or
-    priced again here and compared with what the page showed."""
+    details' app columns set to *managed*; refused (422) with nothing typed; unpriced, or
+    priced again here."""
     if body.form_revision != app.form_revision or body.release != app.release_id:
         raise HTTPException(
             409,
@@ -237,10 +236,17 @@ async def _prepared(
         raise HTTPException(422, "Type the quote first")
     values = with_details(typed, {**details, **managed})
     if body.shown is None:
-        return _Prepared(values, quote_request(app.form, values), None, False)
+        return _Prepared(values, quote_request(app.form, values), None)
     tables, request = await app.price(values)
-    moved = bool(response_changes(tables, body.shown, ACCEPTED_TOLERANCE))
-    return _Prepared(values, request, tables, moved)
+    return _Prepared(values, request, tables)
+
+
+def _moved(revision: QuoteRevision, shown: WorkbenchPricedTables | None) -> bool:
+    """Whether the prices *revision* keeps moved from those the page *shown*: a save's, or,
+    for a save repeated with its key, those its first write kept."""
+    if shown is None or revision.response is None:
+        return False
+    return bool(response_changes(revision.response, shown, ACCEPTED_TOLERANCE))
 
 
 def quote_router(app: QuoteApp) -> APIRouter:
@@ -251,6 +257,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
     def answer(
         quote: AppQuote, revision: QuoteRevision, *, moved: bool = False
     ) -> WorkbenchAppQuoteResponse:
+        """*quote* with *revision*, the sheets it was keyed into when not the release's."""
         form = None
         if revision.form_revision != app.form_revision:
             form = book.store.form(revision.form_revision)
@@ -289,10 +296,31 @@ def quote_router(app: QuoteApp) -> APIRouter:
             counts=page.counts,
         )
 
+    def saved(quote: AppQuote, shown: WorkbenchPricedTables | None) -> WorkbenchAppQuoteResponse:
+        """A save's answer: *quote* as the save left it, with the revision it wrote, read by
+        its number, and whether its prices moved from those the page *shown*."""
+        revision = book.revision(quote.id, quote.latest)
+        return answer(quote, revision, moved=_moved(revision, shown))
+
+    async def replayed(
+        body: WorkbenchAppQuoteSaveRequest, actor: str, quote_id: str | None
+    ) -> WorkbenchAppQuoteResponse | None:
+        """A save repeated with its key after its answer was lost: what that key wrote, with
+        nothing priced or written again; None for a key not written."""
+
+        def read() -> WorkbenchAppQuoteResponse | None:
+            quote = book.replayed(body.operation, actor, quote_id)
+            return None if quote is None else saved(quote, body.shown)
+
+        return await _call(app, read, quote_id)
+
     @router.post("/quotes", response_model=WorkbenchAppQuoteResponse)
     async def create_quote(http: Request) -> WorkbenchAppQuoteResponse:
         actor = _editor(http)
         body = await _body(http, WorkbenchAppQuoteCreateRequest)
+        replay = await replayed(body, actor, None)
+        if replay is not None:
+            return replay
         managed = {**QuoteBook.managed(None, priced=body.shown is not None), "assignee": actor}
         ready = await _prepared(app, body, managed)
         source = (
@@ -312,7 +340,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
                 release=None if ready.tables is None else app.release_id,
                 source=source,
             )
-            return answer(quote, book.revision(quote.id, quote.latest), moved=ready.moved)
+            return saved(quote, body.shown)
 
         return await _call(app, create)
 
@@ -347,6 +375,9 @@ def quote_router(app: QuoteApp) -> APIRouter:
     async def save_quote(quote_id: str, http: Request) -> WorkbenchAppQuoteResponse:
         actor = _editor(http)
         body = await _body(http, WorkbenchAppQuoteReviseRequest)
+        replay = await replayed(body, actor, quote_id)
+        if replay is not None:
+            return replay
         current = await _call(app, lambda: book.get(quote_id))
         ready = await _prepared(
             app, body, QuoteBook.managed(current, priced=body.shown is not None)
@@ -364,7 +395,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
                 response=ready.tables,
                 release=None if ready.tables is None else app.release_id,
             )
-            return answer(quote, book.revision(quote_id, quote.latest), moved=ready.moved)
+            return saved(quote, body.shown)
 
         return await _call(app, save, quote_id)
 
