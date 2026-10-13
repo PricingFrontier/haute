@@ -1,8 +1,8 @@
 /**
  * Placing sections and components on a sheet (specs/workbench): a snap grid on a sheet
- * that fills the width it is shown in and, like a spreadsheet, has no right or bottom edge:
- * it widens and lengthens to hold what is on it. Its sections are strips across it stacked
- * one under the next, and a component sits in one, placed from its top-left corner.
+ * that fills the width it is shown in and, like a spreadsheet, has no right edge: it widens
+ * to hold what is on it. Its sections are strips across it stacked one under the next, the
+ * sheet ending with the last, and a component sits in one, placed from its top-left corner.
  * Positions and sizes are in unzoomed pixels.
  */
 
@@ -19,13 +19,10 @@ export interface Size {
 }
 
 export const GRID = 8
-export const MIN_SHEET_HEIGHT = 800
 /** Around the sheet, inside its viewport. */
 export const SHEET_PADDING = 32
 /** The sheet reaches at least this far past its rightmost component. */
 export const SHEET_EDGE = GRID * 4
-/** Past the sheet's last section, so it has room to grow. */
-const ROOM_BELOW = 240
 /** The least a section can be, holding components or none. */
 export const MIN_SECTION_HEIGHT = 48
 /** What Fit leaves under a section's lowest component. */
@@ -35,11 +32,10 @@ export const NEW_SECTION_HEIGHT = 160
 /** The bar above each section while building, naming it; Preview has none. */
 export const SECTION_HEADER = 24
 /**
- * A new sheet's one section: the least sheet height less the room below, so the whole
- * sheet is one section until another is added, as the server's blank form has it
- * (`BLANK_SECTION_HEIGHT` in `src/haute/_workbench_form.py`).
+ * A new sheet's one section, the whole sheet until another is added, as the server's blank
+ * form has it (`BLANK_SECTION_HEIGHT` in `src/haute/_workbench_form.py`).
  */
-export const BLANK_SECTION_HEIGHT = MIN_SHEET_HEIGHT - ROOM_BELOW
+export const BLANK_SECTION_HEIGHT = 560
 
 export const snap = (value: number): number => Math.round(value / GRID) * GRID
 const clamp = (value: number, low: number, high: number): number => Math.min(Math.max(value, low), Math.max(low, high))
@@ -149,8 +145,11 @@ export function sectionAt<T extends { height: number }>(stack: readonly Stacked<
   return stack.find(({ section, top }) => y < top + section.height) ?? stack.at(-1) ?? null
 }
 
-/** The sheet's height: at least `MIN_SHEET_HEIGHT`, and room below the bottom of its sections. */
-export const sheetHeight = (bottom: number): number => Math.max(MIN_SHEET_HEIGHT, bottom + ROOM_BELOW)
+/**
+ * The sheet's height: the bottom of its sections, nothing under the last, so a taller section
+ * is a longer sheet; `MIN_SECTION_HEIGHT` for a sheet showing none, its every section hidden.
+ */
+export const sheetHeight = (bottom: number): number => Math.max(MIN_SECTION_HEIGHT, bottom)
 
 /** The sheet's width: the viewport's at this zoom, or wider to hold its components. */
 export const sheetWidth = (viewportWidth: number, zoom: number, rects: readonly Rect[]): number =>

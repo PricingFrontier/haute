@@ -286,15 +286,16 @@ Out of scope:
   the underwriter types their placeholders and rules, while `reference`, `stage`,
   `assignee` and `archived` say they are set by the app and take a label and help alone.
 - **The sheets.** A sheet is a canvas on an 8px snap grid that fills its viewport across
-  at the zoom and, like a spreadsheet, has no right or bottom edge: it widens and
-  lengthens to hold what is on it. Its tabs run along the top: the sheet showing is
+  at the zoom and, like a spreadsheet, has no right edge: it widens to hold what is on
+  it, and lengthens with its sections. Its tabs run along the top: the sheet showing is
   marked, a plus adds a sheet named in turn, double-click renames one, a tab dragged onto
   another moves its sheet there, as Alt+Left and Alt+Right move the focused tab's sheet a
   place, the tab keeping the focus, each move one undo step and the sheet showing still
   the one that shows, and the showing sheet's cross
   deletes it, asking first when components are on it, while another sheet remains; the
   schema and the sample are untouched. A sheet is a stack of its sections, each a strip
-  across its whole width as tall as its height, one under the next in their order; a new
+  across its whole width as tall as its height, one under the next in their order, the
+  sheet ending where the last one ends, so a taller section is a longer sheet; a new
   sheet holds one, 560 tall, so the whole sheet is one section until another is added. A
   section is added from the palette (below) like a component, and drawn on the sheet:
   while building, each section sits under a bar 24 tall across the sheet that names it,

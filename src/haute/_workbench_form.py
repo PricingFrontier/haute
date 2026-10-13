@@ -83,9 +83,8 @@ ConditionTest = Literal[
 #: A sample cell as typed: text, or a tick. Strict, so a number or a null is refused.
 Cell = Annotated[str, Strict()] | Annotated[bool, Strict()]
 
-#: How tall a new sheet's one section is: the view's least sheet height less the room it
-#: leaves below the sections (``frontend/src/utils/sheetGeometry.ts``), so the whole sheet
-#: is one section until another is added.
+#: How tall a new sheet's one section is: the whole sheet until another is added, as the
+#: view starts a new sheet (``frontend/src/utils/sheetGeometry.ts``).
 BLANK_SECTION_HEIGHT = 560
 
 

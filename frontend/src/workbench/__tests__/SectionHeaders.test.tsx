@@ -236,10 +236,11 @@ describe("SectionHeaders", () => {
     expect(undoSteps()).toBe(2)
   })
 
-  it("draws the handle under the selected section alone, its drag setting the height on the grid, never below what its components reach or 48, each one undo step", () => {
+  it("draws the handle under the selected section alone, its drag setting the height on the grid, never below what its components reach or 48, each one undo step, the sheet ending with the last section", () => {
     loadForm(emptyNotes())
     render(<SheetCanvas />)
     expect(screen.queryAllByTestId(/^section-edge-/)).toHaveLength(0)
+    expect(screen.getByTestId("sheet")).toHaveStyle({ height: "528px" })
 
     fireEvent.click(bar("s_flood"))
     expect(screen.getAllByTestId(/^section-edge-/)).toEqual([edge("s_flood")])
@@ -253,6 +254,8 @@ describe("SectionHeaders", () => {
     expect(view().sectionId).toBe("s_flood")
     expect(band("s_notes")).toHaveStyle({ top: "496px" })
     expect(edge("s_flood")).toHaveStyle({ top: "468px" })
+    // The sheet lengthened as far.
+    expect(screen.getByTestId("sheet")).toHaveStyle({ height: "568px" })
 
     // Up past its Table's bottom, 16 + 200: kept there.
     act(() => drag(edge("s_flood"), [500, 472], [500, 300]))

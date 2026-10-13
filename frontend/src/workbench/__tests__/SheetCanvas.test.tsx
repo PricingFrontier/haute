@@ -294,8 +294,8 @@ describe("SheetCanvas", () => {
     expect(heights()).toEqual([536, 232, 72])
     expect(band("s_flood")).toHaveStyle({ top: "584px" })
     expect(band("s_notes")).toHaveStyle({ top: "840px" })
-    // The sections' 840 and their bars' 72, and room below them.
-    expect(screen.getByTestId("sheet")).toHaveStyle({ height: "1152px" })
+    // The sections' 840 and their bars' 72, nothing under them.
+    expect(screen.getByTestId("sheet")).toHaveStyle({ height: "912px" })
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
   })
 
