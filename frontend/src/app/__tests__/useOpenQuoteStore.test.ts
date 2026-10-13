@@ -19,7 +19,7 @@ vi.mock("../../api/app", () => ({
 
 import { carryAppQuote, changeAppQuote, createAppQuote, fetchAppQuoteHistory, openAppQuote, saveAppQuote } from "../../api/app"
 import { ApiError } from "../../api/client"
-import type { FormSpec, WorkbenchAppQuoteResponse } from "../../api/types"
+import type { FormSpec, WorkbenchAppQuoteChangeResponse, WorkbenchAppQuoteResponse } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import { detailsTable, sheetForm } from "../../workbench/__tests__/fixtures"
@@ -214,16 +214,20 @@ describe("useOpenQuoteStore", () => {
     expect(store().quote?.reference).toBe("Q-000001")
   })
 
-  it("keeps what is typed before a change that holds the quote read only", async () => {
+  it("keeps what is typed before and during a change that holds the quote read only", async () => {
+    let archiving: (value: WorkbenchAppQuoteChangeResponse) => void = () => {}
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(changeAppQuote).mockResolvedValue(changed({ latest: 2, archived: true, archived_at: "2026-10-12T11:00:00+00:00" }))
+    vi.mocked(changeAppQuote).mockReturnValue(new Promise((resolve) => (archiving = resolve)))
     await store().openQuote("q1", null)
     preview().setCell("policy", 0, "policy.state", "CA")
 
-    await store().change("archive")
+    const change = store().change("archive")
+    preview().setCell("policy", 0, "policy.year", "2028")
+    archiving(changed({ latest: 2, archived: true, archived_at: "2026-10-12T11:00:00+00:00" }))
+    await change
 
     expect(preview().readOnly).toBe(true)
-    expect(readDraft(draftKey("motor", "ana@example.com", "q1"))?.values).toEqual({ policy: [{ "policy.state": "CA" }] })
+    expect(readDraft(draftKey("motor", "ana@example.com", "q1"))?.values).toEqual({ policy: [{ "policy.state": "CA", "policy.year": "2028" }] })
   })
 
   it("keeps nothing and saves nothing while a quote is being opened, the quote before off the sheets", async () => {

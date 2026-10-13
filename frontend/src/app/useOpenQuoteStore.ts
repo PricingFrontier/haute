@@ -430,13 +430,14 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     change: async (change, fields = {}) => {
       const { quote, changing, base } = get()
       if (quote === null || changing || !canEdit()) return null
-      // An archive leaves the quote read only: what was typed is kept in this browser first.
-      keepDraft()
       const session = opening
       set({ changing: true, error: null })
       try {
         const { quote: changed, revision: written } = await changeAppQuote(quote.id, change, base ?? quote.version, fields)
         if (session !== opening) return changed
+        // An archive leaves the quote read only: what was typed, before the change or while
+        // it was made, is kept in this browser while the quote may still change.
+        keepDraft()
         set({ quote: changed })
         if (written !== null && written !== undefined) adopt(written)
         if (!get().past && get().olderSheets === null) {
