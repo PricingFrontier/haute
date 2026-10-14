@@ -107,10 +107,10 @@ async function trainFamilyAndSaveModel(
   const modelFilePath = page.getByLabel("Filename or path *")
   await modelFilePath.fill(name)
   await modelFilePath.press("Enter")
-  await expect(page.getByText("Destination: models/" + name + suffix)).toBeVisible()
+  await expect(page.getByText("Destination: rating/files/models/" + name + suffix)).toBeVisible()
   await page.getByRole("button", { name: "Save model to file" }).click()
-  await expect(page.getByText("Saved model to models/" + name + suffix)).toBeVisible()
-  await expect(page.getByText("Feature contract: models/" + name + ".feature_contract.json")).toBeVisible()
+  await expect(page.getByText("Saved model to rating/files/models/" + name + suffix)).toBeVisible()
+  await expect(page.getByText("Feature contract: rating/files/models/" + name + ".feature_contract.json")).toBeVisible()
 }
 
 test.describe.configure({ mode: "serial" })
@@ -204,10 +204,10 @@ test.describe("core browser flows", () => {
     const modelFilePath = page.getByLabel("Filename or path *")
     await modelFilePath.fill("browser_model")
     await modelFilePath.press("Enter")
-    await expect(page.getByText("Destination: models/browser_model.cbm")).toBeVisible()
+    await expect(page.getByText("Destination: rating/files/models/browser_model.cbm")).toBeVisible()
     await page.getByRole("button", { name: "Save model to file" }).click()
-    await expect(page.getByText("Saved model to models/browser_model.cbm")).toBeVisible()
-    await expect(page.getByText("Feature contract: models/browser_model.feature_contract.json")).toBeVisible()
+    await expect(page.getByText("Saved model to rating/files/models/browser_model.cbm")).toBeVisible()
+    await expect(page.getByText("Feature contract: rating/files/models/browser_model.feature_contract.json")).toBeVisible()
   })
 
   test("configures a GLM through the terms pane and trains it", async ({ page }) => {

@@ -18,7 +18,7 @@ const optimiserConfigPath = resolve(
   "optimisation",
   "browser_optimiser.json",
 )
-const optimiserArtifactApplyPath = "output/optimiser_browser_optimiser_browser_optimiser.json"
+const optimiserArtifactApplyPath = "rating/files/models/optimiser_browser_optimiser_browser_optimiser.json"
 const optimiserArtifactPath = resolve(e2eProjectRoot, optimiserArtifactApplyPath)
 const desktopViewport = { width: 1440, height: 900 }
 const narrowViewport = { width: 1024, height: 768 }
