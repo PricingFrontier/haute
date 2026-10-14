@@ -1049,6 +1049,9 @@ export interface TraceCellArgs {
   row_limit?: number
   source?: string
   row_values?: Record<string, unknown>
+  /** The table of the preview being traced: a Workbench Output's cell is
+   * traced from the node connected to that table. */
+  port_label?: string
   /** The `seed_plan` of the preview being traced: the trace reads exactly
    * those generations, and none when it is empty. */
   seed_plan: TraceSeedPlanEntry[]

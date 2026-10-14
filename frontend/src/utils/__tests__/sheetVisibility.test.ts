@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest"
 import fixture from "./fixtures/sheetVisibility.json"
 import type { Condition, FormSpec, Page, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
 import type { RowsByTable } from "../sheetValues"
+import { BLANK_THEME, COLLECTION_OPTIONS } from "../workbenchForm"
 import {
   CONDITION_TESTS,
   columnKey,
@@ -81,6 +82,8 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   index: false,
   help: "",
   placeholder: "",
+  group: "",
+  default_value: "",
   number_format: "general",
   decimal_places: null,
   use_grouping: true,
@@ -116,7 +119,7 @@ const collection = (id: string, fields: [string, string][], showWhen: ShowWhen =
   y: 0,
   w: 720,
   h: 120,
-  columns: 3,
+  columns: 3, ...COLLECTION_OPTIONS,
   fields: fields.map(([table, columnId]) => ({ table, column: columnId })),
   show_when: showWhen,
 })
@@ -129,12 +132,13 @@ const section = (id: string, widgets: Widget[], showWhen: ShowWhen = ALWAYS): Se
   widgets,
 })
 /** A sheet of `sections`. */
-const sectioned = (id: string, sections: Section[], showWhen: ShowWhen = ALWAYS): Page => ({ id, title: id, show_when: showWhen, sections })
+const sectioned = (id: string, sections: Section[], showWhen: ShowWhen = ALWAYS): Page => ({ id, title: id, width: 1280, show_when: showWhen, sections })
 /** A sheet of one section, `s_` and its id, holding `widgets`. */
 const page = (id: string, widgets: Widget[], showWhen: ShowWhen = ALWAYS): Page => sectioned(id, [section(`s_${id}`, widgets)], showWhen)
 const formOf = (pages: Page[], tables: SchemaTable[] = [policy, items, premium]): FormSpec => ({
   version: 1,
   name: "form",
+  theme: { ...BLANK_THEME },
   schema: { tables },
   pages,
   sample: {},

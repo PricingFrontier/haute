@@ -1,6 +1,6 @@
 /**
- * The workbench's palette (specs/workbench): Table, Collection, Chart and Heading, then a
- * Section, in Haute's palette shell with the switcher under them, collapsing with the node
+ * The workbench's palette (specs/workbench): a Section, then Heading, Collection, Table and
+ * Chart, in Haute's palette shell with the switcher under them, collapsing with the node
  * palette, and disabled in Preview.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -23,16 +23,16 @@ describe("WorkbenchPalette", () => {
     useWorkbenchViewStore.setState({ section: "sheets", creating: null })
   })
 
-  it("offers a Table, a Collection, a Chart and a Heading, then a Section, with the switcher at the bottom", () => {
+  it("offers a Section, then a Heading, a Collection, a Table and a Chart, with the switcher at the bottom", () => {
     render(<WorkbenchPalette />)
 
     expect(screen.getByRole("heading", { name: "Components" })).toBeInTheDocument()
     expect(screen.getAllByTestId(/^palette-item-/).map((item) => item.dataset.testid)).toEqual([
-      "palette-item-tableInput",
-      "palette-item-collection",
-      "palette-item-chart",
-      "palette-item-heading",
       "palette-item-section",
+      "palette-item-heading",
+      "palette-item-collection",
+      "palette-item-tableInput",
+      "palette-item-chart",
     ])
     expect(screen.getByTestId("palette-item-tableInput")).toHaveTextContent("Table")
     expect(screen.getByTestId("palette-item-collection")).toHaveTextContent("Collection")

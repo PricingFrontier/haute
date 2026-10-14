@@ -12,7 +12,7 @@ import pytest
 
 from haute._node_snapshots import NodeSnapshotStore
 from haute._seed_plans import ListedSeed
-from haute._types import GraphNode, NodeType, PipelineGraph
+from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from tests.test_preview_snapshot_seeding import (
     _ROWS,
     _code,
@@ -190,6 +190,58 @@ def test_first_preview_then_trace_reads_the_capture(project: Path, api: Any) -> 
     steps = _steps(trace)
     assert steps["banding"]["output_values"] == row
     assert steps["join"]["snapshot_generation_id"] == first["seed_plan"][0]["generation_id"]
+
+
+def test_a_workbench_outputs_cell_reads_its_own_tables_seeds(project: Path, api: Any) -> None:
+    # Each table is filled through its own join. The preview ran every table and listed both
+    # joins; the cell's trace reads its own table's join and never the other's.
+    def columns(*specs: tuple[str, str]) -> list[dict[str, str]]:
+        return [{"name": name, "type": kind} for name, kind in specs]
+
+    tables = [
+        {"name": "a_table", "rows": "many", "columns": columns(("id", "int"), ("a", "int"))},
+        {"name": "d_table", "rows": "many", "columns": columns(("id", "int"), ("d", "float"))},
+    ]
+    graph = _graph(
+        project,
+        [
+            ("policies", NodeType.DATA_INPUT, _parquet(project / "policies.parquet")),
+            ("claims", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("first", NodeType.POLARS, _code("df = policies.join(claims, on='id', how='left')")),
+            ("second", NodeType.POLARS, _code("df = claims.join(policies, on='id', how='left')")),
+            ("response", NodeType.WORKBENCH_OUTPUT, {"tables": tables}),
+        ],
+        [("policies", "first"), ("claims", "first"), ("claims", "second"), ("policies", "second")],
+    )
+    graph = graph.model_copy(
+        update={
+            "edges": [
+                *graph.edges,
+                GraphEdge(id="to_a", source="first", target="response", targetHandle="a_table"),
+                GraphEdge(id="to_d", source="second", target="response", targetHandle="d_table"),
+            ]
+        }
+    )
+    preview = _post_preview(api, graph, "response", port_label="a_table")
+    listed = {entry["node_id"]: entry for entry in preview["seed_plan"]}
+    assert set(listed) == {"first", "second"}
+    row = preview["preview"][0]
+
+    trace = _trace(
+        api,
+        graph,
+        "response",
+        _listed(preview["seed_plan"]),
+        row=row,
+        column="a",
+        port_label="a_table",
+    )
+
+    steps = _steps(trace)
+    assert trace["trace"]["target_node_id"] == "first"
+    assert steps["first"]["output_values"]["a"] == row["a"]
+    assert steps["first"]["snapshot_generation_id"] == listed["first"]["generation_id"]
+    assert "second" not in steps
 
 
 def _diamond(project: Path) -> PipelineGraph:

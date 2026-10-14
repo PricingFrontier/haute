@@ -61,8 +61,8 @@ describe("QuoteView", () => {
     const form = sheetForm()
     useAppStore.setState({ release, form, revision: "rev-9", people: [], question: null })
     useWorkbenchFormStore.setState({ form, status: "ready" })
-    useWorkbenchViewStore.setState({ section: "preview", pageId: null, zoom: 1, fitted: false, viewport: null, sheet: null })
-    useWorkbenchPreviewStore.setState({ quote: {}, checked: false, price: null, error: null, pricing: false, readOnly: false, locked: APP_SET_COLUMNS })
+    useWorkbenchViewStore.setState({ section: "preview", underwriterApp: true, pageId: null, zoom: 1, fitted: false, viewport: null, sheet: null })
+    useWorkbenchPreviewStore.setState({ quote: {}, price: null, error: null, pricing: false, readOnly: false, locked: APP_SET_COLUMNS })
     useOpenQuoteStore.setState({ status: "idle", quote: null, revision: null, past: false, olderSheets: null, source: null, pending: null, conflict: null, error: null, historyOpen: false, history: null })
     useToastStore.setState({ toasts: [] })
     vi.mocked(fetchAppPeople).mockResolvedValue({ people: ["jo@example.com"] })
@@ -88,7 +88,11 @@ describe("QuoteView", () => {
     expect(save).toBeDisabled()
     expect(screen.getByTestId("quote-reference")).toHaveTextContent("New quote")
     type("NY")
-    expect(save).toHaveTextContent("Save unpriced")
+    // Priced as it is typed: a save keeps the price the values settle on.
+    expect(save).toHaveTextContent("Save")
+    expect(save).toHaveAttribute("title", "Save the quote with its price (Ctrl+S)")
+    expect(screen.queryByRole("button", { name: "Price" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Clear" })).toBeNull()
     fireEvent.click(save)
 
     await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/q1"))
@@ -163,7 +167,7 @@ describe("QuoteView", () => {
     confirmQuestion("Mark final")
     expect(await screen.findByTestId("notice-final")).toHaveTextContent("Final at revision 2")
     expect(screen.getByTestId("quote-line")).toHaveTextContent("Revision 2")
-    expect(screen.getByRole("button", { name: "Price" })).toBeDisabled()
+    expect(screen.getByTestId("save-quote")).toBeDisabled()
 
     fireEvent.click(screen.getByRole("button", { name: "Reopen" }))
     const reopen = within(screen.getByTestId("app-question")).getByRole("button", { name: "Reopen" })
@@ -181,7 +185,7 @@ describe("QuoteView", () => {
 
     const final = screen.getByRole("button", { name: "Mark final" })
     expect(final).toBeDisabled()
-    expect(final).toHaveAttribute("title", "Priced on an earlier release: price it again and save it first")
+    expect(final).toHaveAttribute("title", "Priced on an earlier release: save it again first")
     expect(screen.getByTestId("quote-line")).toHaveTextContent("Priced on release rel-0")
   })
 
@@ -272,6 +276,19 @@ describe("QuoteView", () => {
 
     await vi.waitFor(() => expect(changeAppQuote).toHaveBeenLastCalledWith("q1", "restore", 2))
     expect(useOpenQuoteStore.getState().quote?.id).toBe("q2")
+  })
+
+  it("offers to save a quote unpriced once its pricing failed, saying why", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    await opened()
+
+    type("CA")
+    act(() => useWorkbenchPreviewStore.setState({ price: null, error: "Pricing failed: The pipeline refused it." }))
+
+    const save = screen.getByTestId("save-quote")
+    expect(save).toHaveTextContent("Save unpriced")
+    expect(save).toHaveAttribute("title", "Save the quote unpriced: it could not be priced (Ctrl+S)")
+    expect(screen.getByTestId("app-pricing-error")).toHaveTextContent("Pricing failed: The pipeline refused it.")
   })
 
   it("offers Save for a price made since the quote was saved, or one of another release", async () => {

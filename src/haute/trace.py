@@ -57,7 +57,7 @@ from haute._expression_parser import (
     parse_expression_chain,
 )
 from haute._global_constants import node_code_globals
-from haute._graph_utils import edge_input_name
+from haute._graph_utils import edge_input_name, upstream_node_ids
 from haute._graph_walker import CollectPolicy, walk_graph
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._json_safe import to_json_safe
@@ -101,6 +101,7 @@ from haute._trace_enrichment import enrich_steps as _enrich_steps
 from haute._trace_lineage import ColumnRead, JoinInputs, ValueLineage, trace_value_lineage
 from haute._trace_waterfall import build_waterfall_from_steps
 from haute._types import REQUEST_INPUT_NODE_TYPES
+from haute._workbench_output import workbench_output_mapping, workbench_output_tables
 from haute.errors import BoundedMemoryUnsupportedError, TraceCorrelationUnsupportedError
 from haute.executor import (
     PREVIEW_CACHE_MAX_BYTES,
@@ -380,6 +381,7 @@ def execute_trace(
     fingerprint_memo: GraphFingerprintMemo | None = None,
     execution_context: ExecutionContext | None = None,
     seed_plan: Sequence[ListedSeed] | None = None,
+    port_label: str | None = None,
 ) -> TraceResult:
     """Execute a pipeline graph and return a single-row trace.
 
@@ -411,6 +413,9 @@ def execute_trace(
                  graph no longer produces at its point, raises
                  :class:`~haute.errors.SeedPlanExpiredError`. Empty or ``None``
                  seeds nothing, even if snapshots now exist.
+        port_label: The table of a Workbench Output target the row is from (the
+                 only table when ``None``): the cell is traced from the node
+                 connected to that table. Ignored for any other target.
 
     Returns:
         TraceResult with per-node steps showing how the row was produced.
@@ -450,9 +455,23 @@ def execute_trace(
                 fingerprint_memo=fingerprint_memo,
                 execution_context=admitted_context,
                 seed_plan=seed_plan,
+                port_label=port_label,
             )
         finally:
             admitted_context.release_admission(preserve_primary_error=True)
+
+    missing_column_error = None
+    if graph.node_map[target_node_id].data.nodeType == NodeType.WORKBENCH_OUTPUT:
+        (target_node_id, column, row_values, seed_plan, missing_column_error) = (
+            _workbench_output_trace_target(
+                graph,
+                target_node_id,
+                port_label=port_label,
+                column=column,
+                row_values=row_values,
+                seed_plan=seed_plan,
+            )
+        )
 
     core = functools.partial(
         _execute_trace_core,
@@ -467,6 +486,7 @@ def execute_trace(
         fingerprint_memo=fingerprint_memo,
         execution_context=execution_context,
         t_start=t_start,
+        missing_column_error=missing_column_error,
     )
     if not seed_plan:
         return core(snapshot_plan=None)
@@ -526,6 +546,78 @@ def _open_trace_seed_plan(
         return plan
     plan.close()
     return open_listed_seed_plan(request, seed_plan)
+
+
+def _workbench_output_trace_target(
+    graph: PipelineGraph,
+    target_node_id: str,
+    *,
+    port_label: str | None,
+    column: str | None,
+    row_values: dict[str, Any] | None,
+    seed_plan: Sequence[ListedSeed] | None,
+) -> tuple[str, str | None, dict[str, Any] | None, list[ListedSeed] | None, str | None]:
+    """A Workbench Output's cell, traced from the node connected to its table.
+
+    The table holds that node's rows, so the row is the same one; the column and the
+    clicked values are renamed to the frame columns that fill them, the mapping's pick or
+    else the column's own name. The preview listed the seeds of every table, so only
+    those in the node's lineage are kept. The last item is the refusal for a column filled
+    by its own name from a frame without it, which only the traced frame can tell.
+    """
+    config = graph.node_map[target_node_id].data.config
+    tables = workbench_output_tables(config)
+    names = ", ".join(repr(table.name) for table in tables)
+    if port_label is None:
+        if len(tables) > 1:
+            raise ValueError(
+                f"Target node {target_node_id!r} is a Workbench Output: name the table the "
+                f"row is from, one of {names}."
+            )
+        port_label = tables[0].name
+    table = next((table for table in tables if table.name == port_label), None)
+    if table is None:
+        raise ValueError(
+            f"Target node {target_node_id!r} is a Workbench Output with no {port_label!r} "
+            f"table; its tables are {names}."
+        )
+    edge = next(
+        (e for e in graph.edges if e.target == target_node_id and e.targetHandle == port_label),
+        None,
+    )
+    if edge is None:
+        raise ValueError(
+            f"Target node {target_node_id!r} is a Workbench Output with nothing connected to "
+            f"its {port_label!r} table: connect a frame to it."
+        )
+    picks = workbench_output_mapping(config, tables).get(port_label, {})
+
+    def filled_from(name: str) -> str | None:
+        return picks[name] if name in picks else name
+
+    unfilled = None
+    if column is not None:
+        if column not in {c.name for c in table.columns}:
+            raise ValueError(
+                f"Target node {target_node_id!r} is a Workbench Output whose {port_label!r} "
+                f"table has no {column!r} column."
+            )
+        unfilled = (
+            f"Target node {target_node_id!r} is a Workbench Output whose {port_label!r} "
+            f"table fills {column!r} with nothing, so it has no value to trace."
+        )
+        if filled_from(column) is None:
+            raise ValueError(unfilled)
+        column = filled_from(column)
+    if row_values is not None:
+        row_values = {
+            filling: value
+            for name, value in row_values.items()
+            if (filling := filled_from(name)) is not None
+        }
+    lineage = {edge.source, *upstream_node_ids(edge.source, graph.parents_of)}
+    listed = None if seed_plan is None else [s for s in seed_plan if s.node_id in lineage]
+    return edge.source, column, row_values, listed, unfilled
 
 
 #: Why the ancestors of a seed are not traced, completing "Not traced above the
@@ -897,8 +989,12 @@ def _execute_trace_core(
     execution_context: ExecutionContext,
     snapshot_plan: SeedPlan | None,
     t_start: float,
+    missing_column_error: str | None = None,
 ) -> TraceResult:
-    """One trace, under the plan its preview listed when that plan seeds anything."""
+    """One trace, under the plan its preview listed when that plan seeds anything.
+
+    *missing_column_error* is raised when the target's frame lacks the traced column.
+    """
     nodes = graph.nodes
     requested_columns = _requested_preview_columns_from_row(row_values, column)
     # A cold trace executes the graph itself, so it prepares its own snapshot
@@ -1046,18 +1142,16 @@ def _execute_trace_core(
     # downstream of a specific frame, never the bundle itself.
     target_output = eager_outputs.get(target_node_id)
     if isinstance(target_output, dict):
-        target = node_map.get(target_node_id)
-        if target is not None and target.data.nodeType == NodeType.WORKBENCH_OUTPUT:
-            # Its tables are its result, and nothing is downstream of it.
-            raise ValueError(
-                f"Target node {target_node_id!r} is a Workbench Output, whose tables are "
-                "filled by the nodes connected to them; trace the node connected to the "
-                "table instead."
-            )
         raise ValueError(
             f"Target node {target_node_id!r} emits multiple frames; "
             "trace a node downstream of a specific frame instead."
         )
+    if (
+        missing_column_error is not None
+        and isinstance(target_output, pl.DataFrame)
+        and column not in target_output.columns
+    ):
+        raise ValueError(missing_column_error)
 
     # Preserve every physical edge.  Edge Join input roles are defined by
     # targetHandle, and a multi-frame source can feed both roles of one join.

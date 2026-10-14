@@ -4,7 +4,8 @@
  * with a component selected Escape deselects, Delete removes, Ctrl+D duplicates and the
  * arrows nudge as one undo step per burst, kept inside its section, top and bottom, never
  * growing it; none of the sheet's keys from a field or a select, nor on the schema
- * section, nor in Preview, where only Ctrl+1 applies.
+ * section, nor in Preview, where Ctrl+1 applies, and undo and redo for the sample typed
+ * there.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react"
@@ -236,21 +237,24 @@ describe("useWorkbenchShortcuts on the sheets", () => {
     expect(widgets()).toHaveLength(2)
   })
 
-  it("in Preview, fits the sheet on Ctrl+1 but neither edits the sheet nor undoes", () => {
+  it("in Preview, fits the sheet on Ctrl+1 and undoes and redoes, the sample typed there, but never edits the sheet", () => {
     const fitZoom = vi.fn()
     const undo = vi.fn()
+    const redo = vi.fn()
     useWorkbenchViewStore.setState({ section: "preview", fitZoom })
-    useWorkbenchFormStore.setState({ undo })
+    useWorkbenchFormStore.setState({ undo, redo })
 
     key({ key: "1", ctrlKey: true })
     key({ key: "Delete" })
     key({ key: "d", ctrlKey: true })
     key({ key: "ArrowRight" })
     key({ key: "z", ctrlKey: true })
+    key({ key: "z", ctrlKey: true, shiftKey: true })
 
     expect(fitZoom).toHaveBeenCalledTimes(1)
     expect(widgets()).toHaveLength(2)
     expect(widgets()[0]).toMatchObject({ x: 16, y: 16 })
-    expect(undo).not.toHaveBeenCalled()
+    expect(undo).toHaveBeenCalledTimes(1)
+    expect(redo).toHaveBeenCalledTimes(1)
   })
 })

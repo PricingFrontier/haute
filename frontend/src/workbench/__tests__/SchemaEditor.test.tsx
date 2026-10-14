@@ -8,6 +8,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import { BLANK_THEME, COLLECTION_OPTIONS } from "../../utils/workbenchForm"
 import SchemaEditor from "../SchemaEditor"
 import { detailsTable } from "./fixtures"
 
@@ -24,6 +25,8 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   index: false,
   help: "",
   placeholder: "",
+  group: "",
+  default_value: "",
   number_format: "general",
   decimal_places: null,
   use_grouping: true,
@@ -42,11 +45,13 @@ const table = (id: string, name: string, overrides: Partial<SchemaTable> = {}): 
 const form = (...tables: SchemaTable[]): FormSpec => ({
   version: 1,
   name: "motor",
+  theme: { ...BLANK_THEME },
   schema: { tables },
   pages: [
     {
       id: "page_1",
       title: "Sheet 1",
+      width: 1280,
       show_when: { match: "all", conditions: [] },
       sections: [{ id: "section_1", title: "Section 1", height: 560, show_when: { match: "all", conditions: [] }, widgets: [] }],
     },
@@ -123,17 +128,31 @@ describe("SchemaEditor", () => {
     expect(within(details).queryByRole("button", { name: "Add column" })).toBeNull()
     expect(within(details).queryByRole("combobox", { name: /^Type of/ })).toBeNull()
     for (const name of within(details).getAllByRole("textbox", { name: "Column name" })) expect(name).toHaveAttribute("readonly")
-    expect(within(details).getAllByText("set by the app")).toHaveLength(4)
+    // The columns the app sets are not marked so beside their names.
+    expect(within(details).queryByText("set by the app")).toBeNull()
 
-    // A column the underwriter types takes a label and rules; one the app sets, a label alone.
+    // A column the underwriter types takes a label, a default and rules; one the app sets, a
+    // label and a group alone.
     fireEvent.click(screen.getByRole("button", { name: "Label and rules of insured" }))
     commit(screen.getByRole("textbox", { name: "Label of insured" }), "Client")
+    commit(screen.getByRole("textbox", { name: "Default of insured" }), "Acme Ltd")
     fireEvent.click(screen.getByRole("checkbox", { name: "insured is required" }))
     fireEvent.click(screen.getByRole("button", { name: "Label and rules of stage" }))
     commit(screen.getByRole("textbox", { name: "Label of stage" }), "Status")
+    commit(screen.getByRole("combobox", { name: "Group of stage" }), "Workflow")
     expect(screen.queryByRole("checkbox", { name: "stage is required" })).toBeNull()
-    expect(current().schema.tables[0].columns.find((column) => column.name === "insured")).toMatchObject({ label: "Client", required: true })
-    expect(current().schema.tables[0].columns.find((column) => column.name === "stage")).toMatchObject({ label: "Status", required: false })
+    expect(screen.queryByLabelText("Default of stage")).toBeNull()
+    expect(current().schema.tables[0].columns.find((column) => column.name === "insured")).toMatchObject({
+      label: "Client",
+      required: true,
+      default_value: "Acme Ltd",
+    })
+    expect(current().schema.tables[0].columns.find((column) => column.name === "stage")).toMatchObject({
+      label: "Status",
+      group: "Workflow",
+      required: false,
+      default_value: "",
+    })
   })
 
   it("adds a table, whose name takes the focus, and records it for undo", () => {
@@ -264,7 +283,7 @@ describe("SchemaEditor", () => {
   it("asks before removing a column or a table a sheet shows, and takes it off the sheet", () => {
     const shown = form(POLICY, LAYERS)
     shown.pages[0].sections[0].widgets = [
-      { id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, fields: [{ table: "t_policy", column: "c_state" }], show_when: { match: "all", conditions: [] } },
+      { id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "t_policy", column: "c_state" }], show_when: { match: "all", conditions: [] } },
     ]
     load(shown)
     render(<SchemaEditor />)
@@ -290,7 +309,7 @@ describe("SchemaEditor", () => {
     const condition = { table: "t_policy", column: "c_state", op: "filled" as const, values: [] }
     tested.pages[0].show_when = { match: "all", conditions: [condition] }
     tested.pages[0].sections[0].widgets = [
-      { id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, fields: [{ table: "t_policy", column: "c_state" }], show_when: { match: "all", conditions: [] } },
+      { id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "t_policy", column: "c_state" }], show_when: { match: "all", conditions: [] } },
     ]
     load(tested)
     render(<SchemaEditor />)
@@ -341,10 +360,12 @@ describe("SchemaEditor", () => {
     expect(columnNames("layers")).toEqual(["row_number", "layer", "limit"])
     expect(current().schema.tables[1].columns[0]).toMatchObject({ name: "row_number", type: "int", index: true })
     expect(screen.queryByRole("combobox", { name: "Type of row_number" })).not.toBeInTheDocument()
-    // Nothing is typed into the index, so it has no format to show.
+    expect(within(tableNamed("layers")).queryByText("row number")).toBeNull()
+    // Nothing is typed into the index, so it has no format or default to show.
     fireEvent.click(screen.getByRole("button", { name: "Label and rules of row_number" }))
     expect(screen.getByRole("textbox", { name: "Label of row_number" })).toBeInTheDocument()
     expect(screen.queryByRole("combobox", { name: "Format of row_number" })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Default of row_number")).not.toBeInTheDocument()
     expect(screen.queryByRole("checkbox", { name: "Add index to policy_details" })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Add index to layers" }))
@@ -364,6 +385,73 @@ describe("SchemaEditor", () => {
     expect(within(block).getByText("1 col, 2 problems")).toBeInTheDocument()
     expect(within(block).getByText(/cannot be a Python hard keyword/)).toBeInTheDocument()
     expect(within(block).getByText('Table "class" has many rows, so it needs a key column')).toBeInTheDocument()
+  })
+
+  it("holds no hint text in a column's details", () => {
+    render(<SchemaEditor />)
+
+    for (const name of ["exposure", "state", "limit"]) {
+      fireEvent.click(screen.getByRole("button", { name: `Label and rules of ${name}` }))
+      expect(screen.getByRole("textbox", { name: `Label of ${name}` })).toBeInTheDocument()
+      expect(document.querySelectorAll("[placeholder]")).toHaveLength(0)
+    }
+  })
+
+  it("puts a column in a group, offering the groups its table's columns are in", () => {
+    render(<SchemaEditor />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of exposure" }))
+    commit(screen.getByRole("combobox", { name: "Group of exposure" }), " Cover ")
+    expect(current().schema.tables[0].columns[1].group).toBe("Cover")
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of state" }))
+    const group = screen.getByRole("combobox", { name: "Group of state" })
+    const offered = document.getElementById(group.getAttribute("list") ?? "")
+    expect([...(offered?.querySelectorAll("option") ?? [])].map((option) => option.value)).toEqual(["Cover"])
+  })
+
+  it("starts a new quote with a one-row input column's default, taken as its cells take a value", () => {
+    const flags = table("t_flags", "flags", { columns: [column("c_ok", "ok", { type: "bool" }), column("c_on", "on", { type: "date" })] })
+    load(form(POLICY, LAYERS, flags, table("t_out", "pricing", { role: "output", columns: [column("c_premium", "premium", { type: "float" })] })))
+    render(<SchemaEditor />)
+
+    // Typed, trimmed; and named in the table's problems while its rules refuse it.
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of exposure" }))
+    commit(screen.getByRole("textbox", { name: "Default of exposure" }), " lots ")
+    expect(current().schema.tables[0].columns[1].default_value).toBe("lots")
+    expect(
+      within(tableNamed("policy_details")).getByText('Column "exposure" in Table "policy_details" has a default its rules refuse: Not a number'),
+    ).toBeInTheDocument()
+    commit(screen.getByRole("textbox", { name: "Default of exposure" }), "250,000")
+    expect(within(tableNamed("policy_details")).queryByText(/has a default its rules refuse/)).toBeNull()
+
+    // One of the allowed values, or none.
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of state" }))
+    const state = screen.getByRole("combobox", { name: "Default of state" })
+    expect([...state.querySelectorAll("option")].map((option) => option.getAttribute("value"))).toEqual(["", "CA", "NY"])
+    fireEvent.change(state, { target: { value: "NY" } })
+    expect(current().schema.tables[0].columns[0].default_value).toBe("NY")
+
+    // Ticked or not: a tick, or none.
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of ok" }))
+    fireEvent.click(screen.getByRole("checkbox", { name: "ok starts ticked" }))
+    expect(current().schema.tables[2].columns[0].default_value).toBe(true)
+    fireEvent.click(screen.getByRole("checkbox", { name: "ok starts ticked" }))
+    expect(current().schema.tables[2].columns[0].default_value).toBe("")
+
+    // A day.
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of on" }))
+    const day = screen.getByLabelText("Default of on")
+    expect(day).toHaveAttribute("type", "date")
+    commit(day, "2026-10-13")
+    expect(current().schema.tables[2].columns[1].default_value).toBe("2026-10-13")
+
+    // A many-row table's columns, and an output's, take none.
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of limit" }))
+    expect(screen.queryByLabelText("Default of limit")).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of premium" }))
+    expect(screen.queryByLabelText("Default of premium")).toBeNull()
   })
 
   it("collapses a table's columns", () => {

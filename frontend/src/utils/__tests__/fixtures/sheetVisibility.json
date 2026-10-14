@@ -4,6 +4,7 @@
     "quote": {
       "version": 1,
       "name": "quote",
+      "theme": {"sheet_color": null, "background_color": null, "border_color": null, "font_color": null, "input_cell_color": null, "output_cell_color": null},
       "schema": {
         "tables": [
           {
@@ -17,6 +18,7 @@
                 "name": "bi_cover",
                 "type": "bool",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -25,6 +27,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -34,6 +37,7 @@
                 "name": "class_of_business",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -42,6 +46,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -51,6 +56,7 @@
                 "name": "assured_name",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -59,6 +65,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -68,6 +75,7 @@
                 "name": "sum_insured",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -76,6 +84,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -85,6 +94,7 @@
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -93,6 +103,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -102,6 +113,7 @@
                 "name": "rate",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -110,6 +122,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -127,6 +140,7 @@
                 "name": "bi_sum_insured",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -135,6 +149,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -144,6 +159,7 @@
                 "name": "bi_extensions",
                 "type": "bool",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -152,6 +168,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -169,6 +186,7 @@
                 "name": "extension_days",
                 "type": "int",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -177,6 +195,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -194,6 +213,7 @@
                 "name": "row_number",
                 "type": "int",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -202,6 +222,7 @@
                 "index": true,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -211,6 +232,7 @@
                 "name": "item",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": true,
                 "required": false,
                 "min": null,
@@ -219,6 +241,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -228,6 +251,7 @@
                 "name": "value",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -236,6 +260,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -253,6 +278,7 @@
                 "name": "premium",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -261,6 +287,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -273,6 +300,7 @@
         {
           "id": "p_main",
           "title": "Main",
+          "width": 1280,
           "show_when": {"match": "all", "conditions": []},
           "sections": [
             {
@@ -296,7 +324,10 @@
                     {"table": "t_policy", "column": "c_si"}
                   ],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 },
                 {
                   "id": "w_premium",
@@ -308,7 +339,10 @@
                   "title": "",
                   "fields": [{"table": "t_out", "column": "c_premium"}],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 },
                 {
                   "id": "w_chart",
@@ -347,6 +381,7 @@
         {
           "id": "p_bi",
           "title": "Business interruption",
+          "width": 1280,
           "show_when": {
             "match": "all",
             "conditions": [{"table": "t_policy", "column": "c_bi", "op": "ticked", "values": []}]
@@ -368,7 +403,10 @@
                   "title": "",
                   "fields": [{"table": "t_bi", "column": "c_bi_si"}, {"table": "t_bi", "column": "c_bi_more"}],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 }
               ]
             }
@@ -377,6 +415,7 @@
         {
           "id": "p_ext",
           "title": "Extensions",
+          "width": 1280,
           "show_when": {
             "match": "all",
             "conditions": [{"table": "t_bi", "column": "c_bi_more", "op": "ticked", "values": []}]
@@ -398,7 +437,10 @@
                   "title": "",
                   "fields": [{"table": "t_ext", "column": "c_ext_days"}],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 }
               ]
             }
@@ -407,6 +449,7 @@
         {
           "id": "p_items",
           "title": "Items",
+          "width": 1280,
           "show_when": {"match": "all", "conditions": []},
           "sections": [
             {
@@ -437,7 +480,11 @@
                   "density": "compact",
                   "gridlines": "rows",
                   "striped": true,
-                  "fixed_rows": false
+                  "fixed_rows": false,
+                  "header": "caps",
+                  "frame": true,
+                  "transposed": false,
+                  "groups": false
                 },
                 {
                   "id": "w_fleet",
@@ -452,7 +499,10 @@
                     "match": "all",
                     "conditions": [{"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Fleet"]}]
                   },
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 }
               ]
             }
@@ -464,6 +514,7 @@
     "tests": {
       "version": 1,
       "name": "tests",
+      "theme": {"sheet_color": null, "background_color": null, "border_color": null, "font_color": null, "input_cell_color": null, "output_cell_color": null},
       "schema": {
         "tables": [
           {
@@ -477,6 +528,7 @@
                 "name": "tick",
                 "type": "bool",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -485,6 +537,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -494,6 +547,7 @@
                 "name": "text",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -502,6 +556,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -511,6 +566,7 @@
                 "name": "choice",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -519,6 +575,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -528,6 +585,7 @@
                 "name": "count",
                 "type": "int",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -536,6 +594,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -545,6 +604,7 @@
                 "name": "amount",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -553,6 +613,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -562,6 +623,7 @@
                 "name": "day",
                 "type": "date",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -570,6 +632,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -587,6 +650,7 @@
                 "name": "key",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": true,
                 "required": false,
                 "min": null,
@@ -595,6 +659,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -604,6 +669,7 @@
                 "name": "v",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -612,6 +678,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -629,6 +696,7 @@
                 "name": "o",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -637,6 +705,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -654,6 +723,7 @@
                 "name": "x",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -662,6 +732,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -674,6 +745,7 @@
         {
           "id": "p_main",
           "title": "Main",
+          "width": 1280,
           "show_when": {"match": "all", "conditions": []},
           "sections": [
             {
@@ -699,7 +771,10 @@
                     {"table": "t_in", "column": "c_day"}
                   ],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 },
                 {
                   "id": "w_many",
@@ -716,7 +791,11 @@
                   "density": "compact",
                   "gridlines": "rows",
                   "striped": true,
-                  "fixed_rows": false
+                  "fixed_rows": false,
+                  "header": "caps",
+                  "frame": true,
+                  "transposed": false,
+                  "groups": false
                 },
                 {
                   "id": "w_out",
@@ -728,7 +807,10 @@
                   "title": "",
                   "fields": [{"table": "t_out", "column": "c_o"}],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 }
               ]
             }
@@ -737,6 +819,7 @@
         {
           "id": "p_target",
           "title": "Target",
+          "width": 1280,
           "show_when": {"match": "all", "conditions": []},
           "sections": [
             {
@@ -755,7 +838,10 @@
                   "title": "",
                   "fields": [{"table": "t_target", "column": "c_x"}],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 }
               ]
             }
@@ -767,6 +853,7 @@
     "sections": {
       "version": 1,
       "name": "sections",
+      "theme": {"sheet_color": null, "background_color": null, "border_color": null, "font_color": null, "input_cell_color": null, "output_cell_color": null},
       "schema": {
         "tables": [
           {
@@ -780,6 +867,7 @@
                 "name": "cover",
                 "type": "bool",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -788,6 +876,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -797,6 +886,7 @@
                 "name": "flood",
                 "type": "bool",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -805,6 +895,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -814,6 +905,7 @@
                 "name": "class",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -822,6 +914,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -831,6 +924,7 @@
                 "name": "name",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -839,6 +933,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -848,6 +943,7 @@
                 "name": "area",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -856,6 +952,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -865,6 +962,7 @@
                 "name": "note",
                 "type": "str",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -873,6 +971,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -882,6 +981,7 @@
                 "name": "rate",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -890,6 +990,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -907,6 +1008,7 @@
                 "name": "depth",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -915,6 +1017,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -924,6 +1027,7 @@
                 "name": "barrier",
                 "type": "bool",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -932,6 +1036,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -949,6 +1054,7 @@
                 "name": "premium",
                 "type": "float",
                 "label": "",
+                "group": "",
                 "key": false,
                 "required": false,
                 "min": null,
@@ -957,6 +1063,7 @@
                 "index": false,
                 "help": "",
                 "placeholder": "",
+                "default_value": "",
                 "number_format": "general",
                 "decimal_places": null,
                 "use_grouping": true
@@ -969,6 +1076,7 @@
         {
           "id": "p_quote",
           "title": "Quote",
+          "width": 1280,
           "show_when": {"match": "all", "conditions": []},
           "sections": [
             {
@@ -992,7 +1100,10 @@
                     {"table": "t_policy", "column": "c_name"}
                   ],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 },
                 {
                   "id": "w_premium",
@@ -1004,7 +1115,10 @@
                   "title": "",
                   "fields": [{"table": "t_out", "column": "c_premium"}],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 }
               ]
             },
@@ -1045,7 +1159,10 @@
                     {"table": "t_flood", "column": "c_barrier"}
                   ],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 },
                 {
                   "id": "w_flood_extra",
@@ -1067,7 +1184,10 @@
                       }
                     ]
                   },
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 }
               ]
             },
@@ -1095,7 +1215,10 @@
                     {"table": "t_policy", "column": "c_name"}
                   ],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 }
               ]
             },
@@ -1120,7 +1243,10 @@
                   "title": "",
                   "fields": [{"table": "t_policy", "column": "c_note"}],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 }
               ]
             }
@@ -1129,6 +1255,7 @@
         {
           "id": "p_other",
           "title": "Other",
+          "width": 1280,
           "show_when": {
             "match": "all",
             "conditions": [
@@ -1152,7 +1279,10 @@
                   "title": "",
                   "fields": [{"table": "t_policy", "column": "c_class"}],
                   "show_when": {"match": "all", "conditions": []},
-                  "columns": 3
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true
                 }
               ]
             }

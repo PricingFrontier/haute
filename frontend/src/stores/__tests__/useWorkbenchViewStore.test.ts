@@ -7,7 +7,7 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import { SHEET_PADDING, fitZoom } from "../../utils/sheetGeometry"
 import { sheetVisibility } from "../../utils/sheetVisibility"
-import { pageWidgets } from "../../utils/workbenchForm"
+import { withSampleCell } from "../../utils/workbenchForm"
 import { coverForm, loadForm, sectionedForm, sheetForm, widgetsOf } from "../../workbench/__tests__/fixtures"
 import useWorkbenchFormStore from "../useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../useWorkbenchPreviewStore"
@@ -60,7 +60,7 @@ describe("useWorkbenchViewStore", () => {
     loadForm()
     store().setViewport(viewport(400))
     store().fitZoom()
-    expect(store().zoom).toBe(fitZoom(400 - SHEET_PADDING * 2, pageWidgets(sheetForm().pages[0])))
+    expect(store().zoom).toBe(fitZoom(400 - SHEET_PADDING * 2, sheetForm().pages[0].width))
     expect(store().zoom).toBeLessThan(1)
     expect(store().zoom).toBeGreaterThanOrEqual(MIN_ZOOM)
   })
@@ -154,45 +154,38 @@ describe("useWorkbenchViewStore", () => {
     expect(notes.widgets.map((widget) => widget.id)).toEqual(["w_note"])
   })
 
-  it("fits Preview's sheet to the components the quote shows on it", () => {
+  it("fits the sheet showing across: while building the one chosen, in Preview the one the sample shows, or in the underwriter app its quote", () => {
+    // Sheet 1 is 2000 across and the Cover sheet, shown only while cover is ticked, 800, in
+    // a viewport holding 1000 inside its padding.
     const form = coverForm()
-    widgetsOf(form)[1].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"] }] }
+    form.pages[0].width = 2000
+    form.pages[1].width = 800
     loadForm(form)
-    useWorkbenchPreviewStore.getState().clear()
     const store = useWorkbenchViewStore.getState
-    store().setViewport(viewport(400))
-    store().showSection("preview")
+    store().setViewport(viewport(1000 + SHEET_PADDING * 2))
+    store().showPage("p2")
 
+    // While building, the sheet chosen, shown or not, never past 100%.
     store().fitZoom()
-    expect(store().zoom).toBe(fitZoom(400 - SHEET_PADDING * 2, [widgetsOf(form)[0]]))
-    useWorkbenchPreviewStore.getState().setCell("policy", 0, "policy.state", "NY")
-    store().fitZoom()
-    expect(store().zoom).toBe(fitZoom(400 - SHEET_PADDING * 2, widgetsOf(form)))
-  })
-
-  it("fits Preview's sheet to the components of the sections the quote shows, and every section's while building", () => {
-    const form = sectionedForm()
-    loadForm(form)
-    useWorkbenchPreviewStore.getState().clear()
-    const store = useWorkbenchViewStore.getState
-    store().setViewport(viewport(400))
-    const width = 400 - SHEET_PADDING * 2
-    const [boxes, grid, note] = pageWidgets(form.pages[0])
-
-    // While building, every section's components, the hidden Flood's wide Table included.
-    store().fitZoom()
-    expect(store().zoom).toBe(fitZoom(width, [boxes, grid, note]))
-
-    // In Preview, with Flood hidden while cover is unticked, its Table reaches nothing,
-    // though it has no conditions of its own.
+    expect(store().zoom).toBe(1)
+    // In Preview, with cover unticked, the first sheet shows in its place.
     store().showSection("preview")
     store().fitZoom()
-    expect(store().zoom).toBe(fitZoom(width, [boxes, note]))
-    expect(store().zoom).toBeGreaterThan(fitZoom(width, [boxes, grid, note]))
-
-    useWorkbenchPreviewStore.getState().setCell("policy", 0, "policy.cover", true)
+    expect(store().zoom).toBe(0.5)
+    useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy", 0, "policy.cover", true))
     store().fitZoom()
-    expect(store().zoom).toBe(fitZoom(width, [boxes, grid, note]))
+    expect(store().zoom).toBe(1)
+
+    // The app's quote, not the sample, decides there.
+    loadForm(form)
+    useWorkbenchViewStore.setState({ underwriterApp: true, viewport: viewport(1000 + SHEET_PADDING * 2), pageId: "p2" })
+    store().showSection("preview")
+    useWorkbenchPreviewStore.setState({ quote: {} })
+    store().fitZoom()
+    expect(store().zoom).toBe(0.5)
+    useWorkbenchPreviewStore.setState({ quote: { policy: [{ "policy.cover": true }] } })
+    store().fitZoom()
+    expect(store().zoom).toBe(1)
   })
 
   it("keeps the properties panel's width between openings", () => {

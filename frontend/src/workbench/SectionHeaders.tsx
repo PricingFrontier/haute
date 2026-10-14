@@ -16,7 +16,7 @@ const HANDLE = { w: 40, h: 8 }
 /**
  * The sections' bars while building (specs/workbench), drawn on the sheet with it, each
  * across the sheet just above its section: a grip, its title, an eye while it has
- * conditions (struck through, the bar faded, while the sample hides it) and the warning
+ * conditions (struck through, the bar faded, while a new quote hides it) and the warning
  * colour's mark while it has a problem, its conditions and its problem told to a screen
  * reader as the bar's descriptions. Pressing a bar selects its section, and dragging it
  * moves the section past others, a line marking where it would go; Alt+Up and Alt+Down move
@@ -125,7 +125,7 @@ export default function SectionHeaders({ page, stack, zoom, layer }: { page: Pag
             </button>
             {conditions !== null && (
               <span id={`${section.id}-conditions`} className="sr-only">
-                {hidden ? `Hidden for the sample. ${conditions}` : conditions}
+                {hidden ? `Hidden for a new quote. ${conditions}` : conditions}
               </span>
             )}
             {problem !== undefined && (

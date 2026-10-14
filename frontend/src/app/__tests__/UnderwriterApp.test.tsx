@@ -1,10 +1,11 @@
 /**
  * The underwriter app (specs/workbench): the release's sheets drawn as Preview draws them,
- * nothing of the builder, the release and who is signed in, and a quote priced through the
- * app's own route on the form revision the page was drawn from.
+ * its quote's values rather than a sample, nothing of the builder, the release and who is
+ * signed in, and a quote priced as it is typed through the app's own route on the form
+ * revision the page was drawn from.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { act, cleanup, render, screen } from "@testing-library/react"
 
 vi.mock("../../api/app", () => ({
   fetchAppRelease: vi.fn(),
@@ -51,8 +52,8 @@ describe("UnderwriterApp", () => {
     vi.mocked(fetchAppRelease).mockResolvedValue(release)
     vi.mocked(fetchAppForm).mockResolvedValue({ form: sheetForm(), revision: "rev-9" })
     useWorkbenchFormStore.setState({ form: null, status: "idle" })
-    useWorkbenchViewStore.setState({ section: "sheets", pageId: null, zoom: 1, fitted: false, viewport: null, sheet: null })
-    useWorkbenchPreviewStore.setState({ quote: {}, checked: false, price: null, error: null, pricing: false })
+    useWorkbenchViewStore.setState({ section: "sheets", underwriterApp: false, pageId: null, zoom: 1, fitted: false, viewport: null, sheet: null })
+    useWorkbenchPreviewStore.setState({ quote: {}, price: null, error: null, pricing: false })
     useWorkbenchPricingStore.setState({ pricer: null, quotePricer: null })
   })
 
@@ -71,22 +72,22 @@ describe("UnderwriterApp", () => {
     expect(screen.getByTestId("app-principal")).toHaveTextContent("Signed in as uw@example.com")
     expect(screen.getByRole("tab", { name: "Sheet 1" })).toBeInTheDocument()
     expect(screen.getByText("Equipment")).toBeInTheDocument()
-    expect(useWorkbenchViewStore.getState().section).toBe("preview")
+    expect(useWorkbenchViewStore.getState()).toMatchObject({ section: "preview", underwriterApp: true })
     for (const builder of ["Build", "Preview", "Sheets", "Schema", "Save", "Test quotes"]) {
       expect(screen.queryByRole("button", { name: builder })).toBeNull()
     }
-    expect(screen.getByRole("button", { name: "Price" })).toBeDisabled()
+    // The quote is priced as it is typed, and nothing empties it.
+    expect(screen.queryByRole("button", { name: "Price" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Clear" })).toBeNull()
   })
 
-  it("prices the quote through the app's route on the revision the page was drawn from", async () => {
+  it("prices the quote as it is typed, through the app's route on the revision the page was drawn from", async () => {
     vi.mocked(priceAppQuote).mockResolvedValue({
       tables: { premiums: [{ item: "Crane", premium: 120 }] },
       request: { policy: { state: "NY" } },
     })
     await opened()
     act(() => useWorkbenchPreviewStore.getState().setCell("policy", 0, "policy.state", "NY"))
-
-    fireEvent.click(screen.getByRole("button", { name: "Price" }))
 
     await vi.waitFor(() => expect(useWorkbenchPreviewStore.getState().price).not.toBeNull())
     expect(priceAppQuote).toHaveBeenCalledWith("rev-9", "0a1b2c3d4e5f", { policy: [{ "policy.state": "NY" }] })
@@ -101,8 +102,6 @@ describe("UnderwriterApp", () => {
     vi.mocked(priceAppQuote).mockRejectedValue(new ApiError("HTTP 409", 409, refusal))
     await opened()
     act(() => useWorkbenchPreviewStore.getState().setCell("policy", 0, "policy.state", "NY"))
-
-    fireEvent.click(screen.getByRole("button", { name: "Price" }))
 
     expect(await screen.findByTestId("app-pricing-error")).toHaveTextContent(`Pricing failed: ${refusal}`)
   })
@@ -121,6 +120,17 @@ describe("UnderwriterApp", () => {
     await opened()
 
     expect(screen.getByTestId("notice-no-store")).toHaveTextContent("This app keeps no quotes")
+  })
+
+  it("starts its one quote as a new quote, holding its columns' defaults and priced once something is typed", async () => {
+    const form = sheetForm()
+    form.schema.tables[0].columns[0].default_value = "NY"
+    vi.mocked(fetchAppForm).mockResolvedValue({ form, revision: "rev-9" })
+    await opened()
+
+    expect(screen.getByRole("combobox", { name: "State" })).toHaveValue("NY")
+    await act(() => useWorkbenchPreviewStore.getState().settle())
+    expect(priceAppQuote).not.toHaveBeenCalled()
   })
 
   it("opens on the Quotes page when it keeps quotes, and a quote at its own address", async () => {

@@ -10,11 +10,10 @@ import {
   BLANK_SECTION_HEIGHT,
   GRID,
   MIN_SECTION_HEIGHT,
-  MIN_SHEET_HEIGHT,
   NEW_SECTION_HEIGHT,
   SECTION_FIT_GAP,
   SECTION_HEADER,
-  SHEET_EDGE,
+  MIN_SHEET_WIDTH,
   clearLine,
   contentBottom,
   contentRight,
@@ -22,13 +21,13 @@ import {
   fittedSectionHeight,
   fitZoom,
   leastSectionHeight,
+  leastSheetWidth,
   moveRect,
   placeAt,
   readingOrder,
   resizeRect,
   sectionAt,
   sheetHeight,
-  sheetWidth,
   snap,
   stackBottom,
   stackSections,
@@ -95,11 +94,11 @@ describe("sheetGeometry", () => {
     expect(fittedSectionHeight([])).toBe(MIN_SECTION_HEIGHT)
   })
 
-  it("adds a section 160 tall, and starts a sheet with one as tall as the least sheet less the room below it", () => {
+  it("adds a section 160 tall, and starts a sheet with one 560 tall, the whole sheet", () => {
     expect(NEW_SECTION_HEIGHT).toBe(160)
     // The server's blank form holds one section this tall too.
     expect(BLANK_SECTION_HEIGHT).toBe(560)
-    expect(sheetHeight(BLANK_SECTION_HEIGHT)).toBe(MIN_SHEET_HEIGHT)
+    expect(sheetHeight(BLANK_SECTION_HEIGHT)).toBe(BLANK_SECTION_HEIGHT)
   })
 
   it("stacks sections one under the next, each one's top the heights above it summed", () => {
@@ -205,21 +204,21 @@ describe("sheetGeometry", () => {
     expect(clearLine(touching, 100)).toBe(100)
   })
 
-  it("sizes the sheet to its viewport at the zoom, or wider to hold its components and taller to hold its sections", () => {
-    expect(sheetWidth(1000, 1, [])).toBe(1000)
-    expect(sheetWidth(1000, 0.5, [])).toBe(2000)
-    expect(sheetWidth(1000, 1, [{ x: 1200, y: 0, w: 300, h: 10 }])).toBe(1500 + SHEET_EDGE)
-    // Room below the bottom of its sections, so it lengthens once they reach past the least sheet less that room.
-    expect(sheetHeight(0)).toBe(MIN_SHEET_HEIGHT)
-    expect(sheetHeight(561)).toBe(MIN_SHEET_HEIGHT + 1)
-    expect(sheetHeight(1000)).toBe(1240)
+  it("keeps a sheet as wide as its components reach, never under the least a sheet can be, and as long as its sections", () => {
+    expect(leastSheetWidth([])).toBe(MIN_SHEET_WIDTH)
+    expect(leastSheetWidth([{ x: 0, y: 0, w: 100, h: 10 }])).toBe(MIN_SHEET_WIDTH)
+    expect(leastSheetWidth([{ x: 1200, y: 0, w: 300, h: 10 }, rect])).toBe(1500)
+    // Ending where its sections end, nothing under them; a sheet showing none is the least a section can be.
+    expect(sheetHeight(584)).toBe(584)
+    expect(sheetHeight(1000)).toBe(1000)
+    expect(sheetHeight(0)).toBe(MIN_SECTION_HEIGHT)
   })
 
-  it("fits the components to the viewport across, in steps of 5%, never past 100%", () => {
-    expect(fitZoom(1000, [])).toBe(1)
-    expect(fitZoom(1000, [{ x: 0, y: 0, w: 400, h: 10 }])).toBe(1)
-    expect(fitZoom(1000, [{ x: 0, y: 0, w: 1968, h: 10 }])).toBe(0.5)
-    expect(fitZoom(1000, [{ x: 0, y: 0, w: 3000, h: 10 }])).toBe(0.3)
+  it("fits the sheet's width to the viewport across, in steps of 5%, never past 100%", () => {
+    expect(fitZoom(1000, 400)).toBe(1)
+    expect(fitZoom(1000, 1000)).toBe(1)
+    expect(fitZoom(1000, 2000)).toBe(0.5)
+    expect(fitZoom(1000, 3000)).toBe(0.3)
   })
 
   it("reads components row by row from the top, each row left to right, a tie in the order given, leaving its input as it was", () => {

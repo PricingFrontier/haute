@@ -778,11 +778,22 @@ class TestInitWorkbench:
         assert form == {
             "version": 1,
             "name": "motor",
+            "theme": dict.fromkeys(
+                (
+                    "sheet_color",
+                    "background_color",
+                    "border_color",
+                    "font_color",
+                    "input_cell_color",
+                    "output_cell_color",
+                )
+            ),
             "schema": {"tables": [quote_details_table().model_dump(mode="json")]},
             "pages": [
                 {
                     "id": "page_1",
                     "title": "Sheet 1",
+                    "width": 1280,
                     "show_when": {"match": "all", "conditions": []},
                     "sections": [
                         {

@@ -53,6 +53,7 @@ vi.mock("../api/workbench", () => ({
     form: {
       version: 1,
       name: "motor",
+      theme: { sheet_color: null, background_color: null, border_color: null, font_color: null, input_cell_color: null, output_cell_color: null },
       schema: { tables: [] },
       pages: [{
         id: "page_1",

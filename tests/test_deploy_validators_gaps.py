@@ -370,6 +370,7 @@ def _workbench_project(root: Path, *, enabled: bool = True, form: bool = True) -
                     {
                         "id": "p",
                         "title": "Sheet 1",
+                        "width": 1280,
                         "sections": [{"id": "s", "title": "s", "height": 120, "widgets": []}],
                     }
                 ],

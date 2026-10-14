@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { FormSpec } from "../../api/types"
 import { makeGitWorkingBranch } from "../../test-utils/factories"
-import { addWidget, createWidget, withSampleCell, withSampleRows } from "../../utils/workbenchForm"
+import { addWidget, BLANK_THEME, createWidget, withSampleCell, withSampleRows } from "../../utils/workbenchForm"
 import { resetIdentityPromptForTests } from "../identityPrompt"
 import type { SaveCapture } from "../saveCapture"
 import useDocumentStatusStore from "../useDocumentStatusStore"
@@ -20,11 +20,13 @@ import useWorkbenchStore from "../useWorkbenchStore"
 const blank: FormSpec = {
   version: 1,
   name: "motor",
+  theme: { ...BLANK_THEME },
   schema: { tables: [] },
   pages: [
     {
       id: "page_1",
       title: "Sheet 1",
+      width: 1280,
       show_when: { match: "all", conditions: [] },
       sections: [{ id: "section_1", title: "Section 1", height: 560, show_when: { match: "all", conditions: [] }, widgets: [] }],
     },

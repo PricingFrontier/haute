@@ -1,19 +1,17 @@
 /**
  * A quote in the underwriter app (specs/workbench): the sheets under the quote's bar (back
- * to Quotes, its reference, name and stage, Price and Clear, Save and Mark final or Reopen,
- * a menu of what else it takes, History, and the zoom), a line of its revision, who saved
- * it, the release that priced it, where it came from and who it is with, and the notices
- * of anything that stands in the way. Values not saved are kept in the browser and leaving
- * with them asks first.
+ * to Quotes, its reference, name and stage, Save and Mark final or Reopen, a menu of what
+ * else it takes, History, the zoom, and why it has no price), a line of its revision, who
+ * saved it, the release that priced it, where it came from and who it is with, and the
+ * notices of anything that stands in the way. The quote is priced as it is typed. Values
+ * not saved are kept in the browser and leaving with them asks first.
  */
 import {
   Archive,
   ArchiveRestore,
   ArrowLeft,
   BadgeCheck,
-  Calculator,
   Copy,
-  Eraser,
   GitBranchPlus,
   History,
   Link2,
@@ -32,8 +30,8 @@ import useToastStore from "../stores/useToastStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
 import { canonicalJson } from "../utils/canonicalJson"
-import { quoteFilled } from "../utils/sheetValues"
-import { quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
+import { quoteTyped } from "../utils/sheetValues"
+import { quotedSchema } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS_ID } from "../utils/workbenchForm"
 import PageTabs from "../workbench/PageTabs"
 import SheetCanvas from "../workbench/SheetCanvas"
@@ -165,16 +163,13 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
   // Leaving the quote for the Quotes page ends it: an answer still to come opens nothing.
   useEffect(() => () => useOpenQuoteStore.getState().close(), [])
 
-  // Ctrl+S saves and Ctrl+Enter prices, a field being typed in committed first.
+  // Ctrl+S saves, a field being typed in committed first.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.defaultPrevented || inModalDialog(event.target) || !hasModifier(event)) return
       if (event.key.toLowerCase() === "s") {
         event.preventDefault()
         saveCommittingField(event.target, () => void saveOpen())
-      } else if (event.key === "Enter") {
-        event.preventDefault()
-        saveCommittingField(event.target, () => void useWorkbenchPreviewStore.getState().priceQuote())
       }
     }
     window.addEventListener("keydown", onKey)
@@ -233,19 +228,17 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   const appSet = useWorkbenchPreviewStore((s) => s.locked)
   const setCell = useWorkbenchPreviewStore((s) => s.setCell)
   const price = useWorkbenchPreviewStore((s) => s.price)
-  const pricing = useWorkbenchPreviewStore((s) => s.pricing)
   const error = useWorkbenchPreviewStore((s) => s.error)
-  const priceQuote = useWorkbenchPreviewStore((s) => s.priceQuote)
-  const clear = useWorkbenchPreviewStore((s) => s.clear)
   const zoomBy = useWorkbenchViewStore((s) => s.zoomBy)
   const addToast = useToastStore((s) => s.addToast)
   const reason = readOnlyReason({ quote, past, olderSheets })
   const editor = release?.can_edit ?? true
   const ready = status === "ready" && form !== null
-  // The details the app sets are not typing.
-  const typed = form !== null && quoteFilled(quotedSchema(form.schema, appSet), values)
-  const shownTyped = form !== null && quoteFilled(quotedSchema(quotedSchema(form.schema, sheetVisibility(form, values).hidden), appSet), values)
+  // The details the app sets are not typing, nor are the defaults a new quote starts with.
+  const typed = form !== null && quoteTyped(quotedSchema(form.schema, appSet), values)
   const priced = form !== null && price !== null && price.basis === basisOf(form, values)
+  // Its last pricing failed: a save keeps it unpriced.
+  const unpriceable = !priced && error !== null
   const closed = reason !== null
   // The quote's name is its quote_details.quote_name cell, on the sheets or not.
   const name = values[QUOTE_DETAILS_ID]?.[0]?.[NAME_COLUMN]
@@ -261,9 +254,9 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
     ? "This quote does not take changes as it is"
     : !typed
       ? "Type the quote first"
-      : priced
-        ? "Save the quote with its price (Ctrl+S)"
-        : "Save the quote unpriced: price it first to keep its price (Ctrl+S)"
+      : unpriceable
+        ? "Save the quote unpriced: it could not be priced (Ctrl+S)"
+        : "Save the quote with its price (Ctrl+S)"
 
   const finalBlock = !editor
     ? "Changing quotes needs the app's edit role"
@@ -272,9 +265,9 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
       : dirty
         ? "Save your changes first"
         : !quote.release || quote.stage === "draft"
-          ? "Price and save the quote first"
+          ? "Save the quote with its price first"
           : quote.release !== release?.id
-            ? "Priced on an earlier release: price it again and save it first"
+            ? "Priced on an earlier release: save it again first"
             : closed
               ? "This quote does not take changes as it is"
               : null
@@ -369,26 +362,9 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
           style={{ background: "transparent", border: "1px solid var(--border-subtle)", color: "var(--text-primary)" }}
         />
       </div>
-      <ToolbarColumn role="group" aria-label="Quote">
-        <ToolbarButton icon={Calculator} onClick={() => void priceQuote()} disabled={!ready || pricing || closed || !shownTyped} title={closed ? "This quote does not take changes as it is" : shownTyped ? "Check the quote and price it (Ctrl+Enter)" : "Type the quote first"}>
-          {pricing ? "Pricing…" : "Price"}
-        </ToolbarButton>
-        <ToolbarButton
-          icon={Eraser}
-          onClick={() => {
-            void confirm("Clear the quote?", "Every cell on the sheets is emptied. Nothing saved is changed until you save.", "Clear").then((yes) => {
-              if (yes) clear()
-            })
-          }}
-          disabled={!ready || closed || !typed}
-          title="Empty the sheets"
-        >
-          Clear
-        </ToolbarButton>
-      </ToolbarColumn>
       <ToolbarColumn role="group" aria-label="Save">
         <button type="button" className="toolbar-fill toolbar-fill-save" onClick={() => void saveOpen()} disabled={!ready || saving || closed || !typed || nothingNew} title={nothingNew ? "Nothing has changed since the quote was saved" : saveTitle} data-testid="save-quote">
-          {saving ? "Saving…" : priced || closed ? "Save" : "Save unpriced"}
+          {saving ? "Saving…" : unpriceable && !closed ? "Save unpriced" : "Save"}
         </button>
         {quote?.stage === "final" ? (
           <ToolbarButton icon={LockOpen} onClick={() => void reopen()} disabled={changing || !editor || past || olderSheets !== null || quote.archived} title="Reopen the quote for an amendment, giving a reason">

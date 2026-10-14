@@ -1,13 +1,13 @@
 /**
  * The conditions on the sheets, sections and components (specs/workbench): the tests each
  * column's type takes and their words, what stops a condition holding as written, and which
- * sheets, sections and components show for values typed into the sheets, the sample while
- * building or an underwriter's quote in Preview, and so which input columns a quote leaves
- * out. The server applies the same rules in src/haute/_workbench_visibility.py, and both
+ * sheets, sections and components show for values typed into the sheets, none while
+ * building, the sample or the underwriter app's quote in Preview, and so which input
+ * columns a quote leaves out. The server applies the same rules in src/haute/_workbench_visibility.py, and both
  * are held to the cases in __tests__/fixtures/sheetVisibility.json.
  */
 import type { Condition, FormSchema, FormSpec, SchemaColumn, SchemaTable, Section, ShowWhen } from "../api/types"
-import { filled, parseTypedNumber, type RowsByTable } from "./sheetValues"
+import { filled, isDay, parseTypedNumber, type RowsByTable } from "./sheetValues"
 
 export type ConditionTest = Condition["op"]
 type ColumnType = SchemaColumn["type"]
@@ -86,22 +86,6 @@ const NOT_A_VALUE: Readonly<Record<ColumnType, string>> = {
   int: "a whole number",
   float: "a number",
   date: "a day written YYYY-MM-DD",
-}
-
-const DAY = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/
-
-/**
- * Whether stripped text names a real calendar day as YYYY-MM-DD, as the server's dates
- * do: year 1 or later. JavaScript's Date is no use here, as it reads years before 100 as
- * the 1900s and takes the year 0.
- */
-function isDay(text: string): boolean {
-  if (!DAY.test(text)) return false
-  const [year, month, day] = text.split("-").map(Number)
-  if (year < 1 || month < 1 || month > 12 || day < 1) return false
-  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
-  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]
-  return day <= days
 }
 
 /** Whether stripped text is of a column's type: a number, whole for an Integer; a day; any text. */

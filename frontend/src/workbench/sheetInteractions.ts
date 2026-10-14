@@ -71,7 +71,10 @@ export interface SectionDrop {
   place: { split: string; at: number } | { index: number }
 }
 
-/** The showing sheet and a pointer's place on it, unzoomed, or null off the viewport or above or left of the sheet. */
+/**
+ * The showing sheet and a pointer's place on it, unzoomed, or null off the viewport or above
+ * the sheet; beside the sheet, left or right of it, is on it, a component landing at its edge.
+ */
 function onSheet(clientX: number, clientY: number): { page: Page; px: number; py: number } | null {
   const { sheet, viewport, zoom, pageId } = useWorkbenchViewStore.getState()
   const { form } = useWorkbenchFormStore.getState()
@@ -81,26 +84,26 @@ function onSheet(clientX: number, clientY: number): { page: Page; px: number; py
   const origin = sheet.getBoundingClientRect()
   const px = (clientX - origin.left) / zoom
   const py = (clientY - origin.top) / zoom
-  if (px < 0 || py < 0) return null
+  if (py < 0) return null
   return { page: activePage(form, pageId), px, py }
 }
 
 /**
  * The place in its section, snapped and kept inside it, never across its top or its bottom
- * (`keptInside`), of a component whose place on the sheet is `rect`, in the section its top
- * edge is over among `stack`.
+ * or the right edge of a sheet `width` wide (`keptInside`), of a component whose place on
+ * the sheet is `rect`, in the section its top edge is over among `stack`.
  */
-function landing<T extends { id: string; height: number }>(stack: readonly Stacked<T>[], rect: Rect): { section: Stacked<T>; rect: Rect } | null {
+function landing<T extends { id: string; height: number }>(stack: readonly Stacked<T>[], rect: Rect, width: number): { section: Stacked<T>; rect: Rect } | null {
   const section = sectionAt(stack, rect.y)
   if (section === null) return null
-  return { section, rect: { ...rect, y: keptInside(snap(rect.y - section.top), rect.h, section.section.height) } }
+  return { section, rect: { ...rect, x: keptInside(rect.x, rect.w, width), y: keptInside(snap(rect.y - section.top), rect.h, section.section.height) } }
 }
 
 /** Where dropping a palette item at this pointer position would put a component, or null off the sheet. */
 export function dropAt(type: WidgetType, clientX: number, clientY: number): Drop | null {
   const point = onSheet(clientX, clientY)
   if (point === null) return null
-  const landed = landing(buildStack(point.page), placeAt(point.px - GRAB.x, point.py - GRAB.y, WIDGET_KINDS[type].size))
+  const landed = landing(buildStack(point.page), placeAt(point.px - GRAB.x, point.py - GRAB.y, WIDGET_KINDS[type].size), point.page.width)
   if (landed === null) return null
   const { section, rect } = landed
   return { sectionId: section.section.id, rect, at: { ...rect, y: section.top + rect.y } }
@@ -173,12 +176,12 @@ function track(
 
 /**
  * Commit a field being typed into before a gesture reads the form. A press whose default is
- * prevented does not move the focus, so the field would keep what was typed, lost when the
- * panel it is in goes or written over by the gesture; a field left commits what was typed
- * into it as it blurs, so the form is read after that, and the edit is an undo step apart
- * from the gesture's.
+ * prevented does not move the focus, and a press on the empty sheet closes the panel before
+ * the focus moves, so the field would keep what was typed, lost when the panel it is in goes
+ * or written over by the gesture; a field left commits what was typed into it as it blurs,
+ * so the form is read after that, and the edit is an undo step apart from the gesture's.
  */
-function leaveField(pressed: EventTarget): void {
+export function leaveField(pressed: EventTarget): void {
   if (document.activeElement instanceof HTMLElement && document.activeElement !== pressed) document.activeElement.blur()
 }
 
@@ -256,7 +259,7 @@ export function startTransform(e: ReactPointerEvent, id: string, handle?: Handle
         store.setFormRaw(updateWidget(pressed, id, resizeRect(original, handle, dx / zoom, dy / zoom, min)))
         return
       }
-      const landed = landing(stack, moveRect({ ...original, y: top + original.y }, dx / zoom, dy / zoom))
+      const landed = landing(stack, moveRect({ ...original, y: top + original.y }, dx / zoom, dy / zoom), found.page.width)
       if (landed !== null) store.setFormRaw(placeWidget(pressed, id, landed.section.section.id, landed.rect))
     },
     // Released or cancelled where it is: one undo step, none for a gesture that changed nothing.

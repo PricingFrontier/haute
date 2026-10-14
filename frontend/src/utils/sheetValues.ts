@@ -1,6 +1,6 @@
 /**
- * The values typed into a sheet's cells (specs/workbench), the sample while building or
- * an underwriter's quote in Preview: which rows count as filled, as the server counts
+ * The values typed into a sheet's cells (specs/workbench), the sample in Preview or the
+ * underwriter app's quote: which rows count as filled, as the server counts
  * them; what breaks a column's rules; how a number column shows a value; what pricing the
  * values depends on; and the rows of a priced output table lined up with a grid's input
  * rows by key.
@@ -34,11 +34,59 @@ export const rowFilled = (table: SchemaTable, row: SampleRow | undefined): boole
  * so it does not count.
  */
 export const quoteFilled = (schema: FormSchema, rows: RowsByTable): boolean =>
-  schema.tables.some((table) => {
-    if (table.role !== "input") return false
-    const held = rows[table.id] ?? []
-    return (table.rows === "one" ? held.slice(0, 1) : held).some((row) => rowFilled(table, row))
-  })
+  schema.tables.some((table) => table.role === "input" && quotedRows(table, rows).some((row) => rowFilled(table, row)))
+
+/** An input table's rows as the server reads them: a one-row table's first alone. */
+const quotedRows = (table: SchemaTable, rows: RowsByTable): readonly SampleRow[] => {
+  const held = rows[table.id] ?? []
+  return table.rows === "one" ? held.slice(0, 1) : held
+}
+
+/**
+ * What a new quote starts a column with: its default, in a one-row input table, as if
+ * typed; null for none, and for any other table's column, which takes none.
+ */
+export const startingValue = (table: SchemaTable, column: SchemaColumn): SampleValue | null =>
+  table.role === "input" && table.rows === "one" && !column.index && filled(column.default_value) ? column.default_value : null
+
+const startingValues = new WeakMap<FormSchema, RowsByTable>()
+
+/**
+ * What a new quote starts with: each one-row input table's row holding its columns'
+ * defaults, a table with none left out; the same for the same schema, so what reads it
+ * once reads it again unchanged.
+ */
+export function newQuoteValues(schema: FormSchema): RowsByTable {
+  let values = startingValues.get(schema)
+  if (values === undefined) {
+    const started: Record<string, SampleRow[]> = {}
+    for (const table of schema.tables) {
+      const row: SampleRow = {}
+      for (const column of table.columns) {
+        const value = startingValue(table, column)
+        if (value !== null) row[column.id] = value
+      }
+      if (Object.keys(row).length > 0) started[table.id] = [row]
+    }
+    values = started
+    startingValues.set(schema, values)
+  }
+  return values
+}
+
+/**
+ * Whether anything is typed beyond what a new quote starts with: as `quoteFilled` counts
+ * it, a cell holding its column's default aside, so a new quote waits for the
+ * underwriter's typing as a blank one does.
+ */
+export const quoteTyped = (schema: FormSchema, rows: RowsByTable): boolean =>
+  schema.tables.some(
+    (table) =>
+      table.role === "input" &&
+      quotedRows(table, rows).some((row) =>
+        table.columns.some((column) => !column.index && filled(row[column.id]) && row[column.id] !== startingValue(table, column)),
+      ),
+  )
 
 /** A decimal number as the server reads one, once a currency sign, separators and spaces are gone. */
 const NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/
@@ -65,10 +113,27 @@ export function formattedNumber(column: SchemaColumn, value: unknown): string | 
   return formatPivotNumber(typeof value === "string" ? parseTypedNumber(value) : value, column)
 }
 
+const DAY = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/
+
+/**
+ * Whether stripped text names a real calendar day as YYYY-MM-DD, as the server's dates
+ * do: year 1 or later. JavaScript's Date is no use here, as it reads years before 100 as
+ * the 1900s and takes the year 0.
+ */
+export function isDay(text: string): boolean {
+  if (!DAY.test(text)) return false
+  const [year, month, day] = text.split("-").map(Number)
+  if (year < 1 || month < 1 || month > 12 || day < 1) return false
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]
+  return day <= days
+}
+
 /**
  * What breaks an input column's rules in a typed value, or null: required and empty; a
  * number column holding text that is not a number, or a whole-number column a fraction
- * (the server would keep either as typed, for the pipeline to refuse); a number outside
+ * (the server would keep either as typed, for the pipeline to refuse); a Date column
+ * holding text that is not a day, as a column retyped to a Date may; a number outside
  * the column's range; a value that is not one of the allowed values. A tick box and the
  * index break nothing.
  */
@@ -76,6 +141,7 @@ export function cellProblem(column: SchemaColumn, value: SampleValue | undefined
   if (column.type === "bool" || column.index) return null
   const text = typeof value === "string" ? value.trim() : ""
   if (text === "") return column.required ? "Required" : null
+  if (column.type === "date" && !isDay(text)) return "Not a date"
   if (column.type === "int" || column.type === "float") {
     const number = parseTypedNumber(text)
     if (number === null) return "Not a number"

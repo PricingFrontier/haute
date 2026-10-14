@@ -9,10 +9,11 @@ import type { FormSpec, WorkbenchTestQuoteSummary } from "../../api/types"
 import useGraphStore from "../../stores/useGraphStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchTestQuotesStore, { currentBasis, type QuoteRun } from "../../stores/useWorkbenchTestQuotesStore"
+import { BLANK_THEME } from "../../utils/workbenchForm"
 import { sheet } from "./fixtures"
 import TestQuotesPanel from "../TestQuotesPanel"
 
-const form: FormSpec = { version: 1, name: "t", schema: { tables: [] }, pages: [sheet("p", "Sheet 1")], sample: {} }
+const form: FormSpec = { version: 1, name: "t", theme: { ...BLANK_THEME }, schema: { tables: [] }, pages: [sheet("p", "Sheet 1")], sample: {} }
 const summary = (id: string, name: string): WorkbenchTestQuoteSummary => ({
   id, name, number: 1, saved_by: "ana@example.com", saved_at: "2026-10-12T09:00:00", priced: true,
 })

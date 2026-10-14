@@ -1,17 +1,18 @@
 /**
  * Zustand store for the workbench view's own state while it shows (specs/workbench):
  * which of the view's sections shows (the sheets or the schema while building, or
- * Preview), which sheet, the selected component, the selected section or the sheet's own
+ * Preview), whose values Preview shows (the form's sample, or the underwriter app's
+ * quote), which sheet, the selected component, the selected section or the sheet's own
  * panel, the sheet's zoom, a component being dragged out of the palette, a section being
- * moved by its header, the properties panel's width, and the sheet and viewport elements
- * that drops are placed on and the zoom fits to. None of it is part of the form, so none is
- * saved or undone.
+ * moved by its header, the properties panel's width and the pane it last showed for each
+ * component, and the sheet and viewport elements that drops are placed on and the zoom fits
+ * to. None of it is part of the form, so none is saved or undone.
  */
 import { create } from "zustand"
 import type { FormSpec, Page, Section } from "../api/types"
 import { SHEET_PADDING, fitZoom as zoomToFit } from "../utils/sheetGeometry"
 import { sheetVisibility, type SheetVisibility } from "../utils/sheetVisibility"
-import { pageWidgets, type PaletteType } from "../utils/workbenchForm"
+import type { PaletteType } from "../utils/workbenchForm"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "./useWorkbenchPreviewStore"
 
@@ -30,6 +31,9 @@ export interface MovingSection {
   id: string
   to: number
 }
+
+/** A Table's or a Collection's properties pane: the data it shows, or how it shows it. */
+export type WidgetPane = "config" | "display"
 
 /** How far one Zoom In or Zoom Out changes the zoom. */
 export const ZOOM_STEP = 0.1
@@ -59,6 +63,11 @@ export const previewSections = (page: Page, visibility: SheetVisibility): Sectio
 
 interface WorkbenchViewState {
   section: WorkbenchSection
+  /**
+   * The sheets are the underwriter app's: Preview shows its quote, the Preview store's,
+   * rather than the form's sample. The app sets it as it opens its release.
+   */
+  underwriterApp: boolean
   /** The sheet showing; null until one is chosen, which `activePage` reads as the first. */
   pageId: string | null
   /** The selected component, whose properties panel is open. */
@@ -74,6 +83,8 @@ interface WorkbenchViewState {
   movingSection: MovingSection | null
   /** The properties panel's width, kept between openings. */
   panelWidth: number
+  /** The pane each component's properties panel last showed, by component id; Config until another is chosen. */
+  widgetPanes: Record<string, WidgetPane>
   /** The sheet element and its scrolling viewport, while the sheets section shows. */
   sheet: HTMLElement | null
   viewport: HTMLElement | null
@@ -89,20 +100,21 @@ interface WorkbenchViewState {
   setZoom: (zoom: number) => void
   zoomBy: (step: number) => void
   /**
-   * Zoom so what is on the sheet fits the viewport across, never past 100%, and count the
-   * sheets fitted: in Preview, the components that show in the sections that show on the
-   * sheet that shows.
+   * Zoom so the sheet showing, in Preview the one the values show, fits the viewport
+   * across, never past 100%, and count the sheets fitted.
    */
   fitZoom: () => void
   setCreating: (creating: Creating | null) => void
   setMovingSection: (moving: MovingSection | null) => void
   setPanelWidth: (width: number) => void
+  setWidgetPane: (id: string, pane: WidgetPane) => void
   setSheet: (element: HTMLElement | null) => void
   setViewport: (element: HTMLElement | null) => void
 }
 
 const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   section: "sheets",
+  underwriterApp: false,
   pageId: null,
   selectedId: null,
   sheetSelected: false,
@@ -112,6 +124,7 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   creating: null,
   movingSection: null,
   panelWidth: DEFAULT_PANEL_WIDTH,
+  widgetPanes: {},
   sheet: null,
   viewport: null,
   showSection: (section) => set({ section, selectedId: null, sheetSelected: false, sectionId: null }),
@@ -123,23 +136,23 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   setZoom: (zoom) => set({ zoom: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom)) }),
   zoomBy: (step) => get().setZoom(get().zoom + step),
   fitZoom: () => {
-    const { viewport, pageId, section } = get()
+    const { viewport, pageId, section, underwriterApp } = get()
     const { form } = useWorkbenchFormStore.getState()
     if (viewport === null || form === null) return
-    let widgets = pageWidgets(activePage(form, pageId))
+    let page: Page | null = activePage(form, pageId)
     if (section === "preview") {
-      const visibility = sheetVisibility(form, useWorkbenchPreviewStore.getState().quote)
-      const page = shownPage(form, pageId, visibility.pages)
-      widgets = page === null ? [] : previewSections(page, visibility).flatMap((shown) => shown.widgets)
+      const visibility = sheetVisibility(form, underwriterApp ? useWorkbenchPreviewStore.getState().quote : form.sample)
+      page = shownPage(form, pageId, visibility.pages)
     }
     // Through the same bounds as the other zoom controls: a very wide sheet fits at the
     // minimum, never at nothing.
-    get().setZoom(zoomToFit(viewport.clientWidth - SHEET_PADDING * 2, widgets))
+    get().setZoom(page === null ? 1 : zoomToFit(viewport.clientWidth - SHEET_PADDING * 2, page.width))
     set({ fitted: true })
   },
   setCreating: (creating) => set({ creating }),
   setMovingSection: (movingSection) => set({ movingSection }),
   setPanelWidth: (panelWidth) => set({ panelWidth }),
+  setWidgetPane: (id, pane) => set((s) => ({ widgetPanes: { ...s.widgetPanes, [id]: pane } })),
   setSheet: (sheet) => set({ sheet }),
   setViewport: (viewport) => set({ viewport }),
 }))

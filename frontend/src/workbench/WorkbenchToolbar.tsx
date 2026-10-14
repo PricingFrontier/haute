@@ -1,13 +1,11 @@
-import { Calculator, Database, Eraser, Eye, FlaskConical, Sheet, Wrench } from "lucide-react"
+import { Database, Eye, FlaskConical, Sheet, Wrench } from "lucide-react"
 import ProjectControls from "../components/ProjectControls"
 import { ToolbarBrand, ToolbarButton, ToolbarColumn, UndoRedo, ZoomInOut } from "../haute-ui"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
-import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
 import useWorkbenchTestQuotesStore from "../stores/useWorkbenchTestQuotesStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
-import { quoteFilled } from "../utils/sheetValues"
-import { quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
+import WorkbenchDisplay from "./WorkbenchDisplay"
 
 interface WorkbenchToolbarProps {
   /** Save: the host's project save, the one the pipeline toolbar's Save runs. */
@@ -23,11 +21,12 @@ interface WorkbenchToolbarProps {
 
 /**
  * The toolbar while the workbench's view shows (specs/workbench): the brand; Build over
- * Preview; while building, Sheets over Schema, the form's Undo and Redo and, while the
- * sheets show, Zoom In over Zoom Out and why pricing the sample last failed; in Preview,
- * Price over Clear for the quote, Test quotes, the zoom, and why the quote has no price; and the
- * project's controls, the host's and the same as the pipeline toolbar's: Save saves the
- * project, the form and then the pipeline, and Commit records a milestone after that save.
+ * Preview; while building, Sheets over Schema, and Display and the box of the sheets'
+ * colours it opens; in Preview, Test quotes; the form's Undo and Redo; while the sheets
+ * show, building or in Preview, Zoom In over Zoom Out; in Preview, why pricing the sample
+ * last failed; and the project's controls, the host's and the same as the pipeline
+ * toolbar's: Save saves the project, the form and then the pipeline, and Commit records a
+ * milestone after that save.
  */
 export default function WorkbenchToolbar({ onSave, onCommit, editingDisabled = false }: WorkbenchToolbarProps) {
   const ready = useWorkbenchFormStore((s) => s.status === "ready")
@@ -38,24 +37,10 @@ export default function WorkbenchToolbar({ onSave, onCommit, editingDisabled = f
   const section = useWorkbenchViewStore((s) => s.section)
   const showSection = useWorkbenchViewStore((s) => s.showSection)
   const zoomBy = useWorkbenchViewStore((s) => s.zoomBy)
-  const sampleError = useWorkbenchPricingStore((s) => s.error)
-  const previewError = useWorkbenchPreviewStore((s) => s.error)
-  const pricing = useWorkbenchPreviewStore((s) => s.pricing)
-  const form = useWorkbenchFormStore((s) => s.form)
-  const quote = useWorkbenchPreviewStore((s) => s.quote)
-  // Judged by the tables the schema has now: a value typed in a column since removed is
-  // nothing to price or to clear, as the server leaves it out of the quote. Nor is one the
-  // sheets hide anything to price, though Clear still clears it.
-  const empty = form === null || !quoteFilled(form.schema, quote)
-  const blank = form === null || !quoteFilled(quotedSchema(form.schema, sheetVisibility(form, quote).hidden), quote)
-  const priceQuote = useWorkbenchPreviewStore((s) => s.priceQuote)
-  const clear = useWorkbenchPreviewStore((s) => s.clear)
+  const error = useWorkbenchPricingStore((s) => s.error)
   const testQuotesOpen = useWorkbenchTestQuotesStore((s) => s.open)
   const setTestQuotesOpen = useWorkbenchTestQuotesStore((s) => s.setOpen)
   const previewing = section === "preview"
-  const note = previewing
-    ? previewError === null ? null : { text: previewError, title: previewError }
-    : sampleError === null ? null : { text: `Pricing failed: ${sampleError}`, title: sampleError }
 
   return (
     <header role="toolbar" aria-label="Workbench toolbar" className="toolbar flex-wrap gap-y-2 [&>div]:shrink-0">
@@ -69,26 +54,6 @@ export default function WorkbenchToolbar({ onSave, onCommit, editingDisabled = f
             Preview
           </ToolbarButton>
         </ToolbarColumn>
-        {previewing ? (
-          <ToolbarColumn role="group" aria-label="Quote">
-            <ToolbarButton
-              icon={Calculator}
-              onClick={() => { void priceQuote() }}
-              disabled={!ready || pricing || blank}
-              title={blank ? "Type the quote first" : "Check the quote and price it on the pipeline"}
-            >
-              Price
-            </ToolbarButton>
-            <ToolbarButton
-              icon={Eraser}
-              onClick={() => { if (window.confirm("Clear the quote? Every cell will be emptied.")) clear() }}
-              disabled={empty}
-              title="Start a new quote"
-            >
-              Clear
-            </ToolbarButton>
-          </ToolbarColumn>
-        ) : null}
         {previewing ? (
           <ToolbarColumn role="group" aria-label="Test quotes">
             <ToolbarButton
@@ -111,18 +76,21 @@ export default function WorkbenchToolbar({ onSave, onCommit, editingDisabled = f
                 Schema
               </ToolbarButton>
             </ToolbarColumn>
-            <UndoRedo canUndo={ready && canUndo} canRedo={ready && canRedo} onUndo={undo} onRedo={redo} />
+            <ToolbarColumn role="group" aria-label="Display">
+              <WorkbenchDisplay />
+            </ToolbarColumn>
           </>
         )}
+        <UndoRedo canUndo={ready && canUndo} canRedo={ready && canRedo} onUndo={undo} onRedo={redo} />
         {section !== "schema" && <ZoomInOut onZoomIn={() => zoomBy(ZOOM_STEP)} onZoomOut={() => zoomBy(-ZOOM_STEP)} />}
-        {note !== null && (
+        {previewing && error !== null && (
           <span
             data-testid="workbench-pricing-error"
             className="max-w-72 truncate text-xs"
             style={{ color: "var(--warning)" }}
-            title={note.title}
+            title={error}
           >
-            {note.text}
+            Pricing failed: {error}
           </span>
         )}
       </div>

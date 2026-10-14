@@ -40,6 +40,7 @@ def _form(*tables: dict[str, Any]) -> FormSpec:
                 {
                     "id": "p",
                     "title": "Sheet 1",
+                    "width": 1280,
                     "sections": [{"id": "s", "title": "s", "height": 120, "widgets": []}],
                 }
             ],

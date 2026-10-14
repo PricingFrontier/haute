@@ -31,7 +31,7 @@ def form(*tables: dict[str, Any], sample: dict[str, Any] | None = None) -> dict[
         "version": 1,
         "name": "x",
         "schema": {"tables": list(tables)},
-        "pages": [{"id": "p", "title": "Sheet 1", "sections": [section("s")]}],
+        "pages": [{"id": "p", "title": "Sheet 1", "width": 1280, "sections": [section("s")]}],
         "sample": sample or {},
     }
 
@@ -195,6 +195,7 @@ def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path
         "name": "exposure",
         "type": "float",
         "label": "",
+        "group": "",
         "key": False,
         "required": False,
         "min": None,
@@ -203,6 +204,7 @@ def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path
         "index": False,
         "help": "",
         "placeholder": "",
+        "default_value": "",
         "number_format": "general",
         "decimal_places": None,
         "use_grouping": True,
@@ -490,6 +492,7 @@ def test_a_value_typed_on_a_sheet_that_does_not_show_is_left_out_of_the_sample(
             {
                 "id": "p_main",
                 "title": "Main",
+                "width": 1280,
                 "sections": [
                     section(
                         "s_main",
@@ -509,6 +512,7 @@ def test_a_value_typed_on_a_sheet_that_does_not_show_is_left_out_of_the_sample(
                 "show_when": {
                     "conditions": [{"table": "t1", "column": "c_bi_cover", "op": "ticked"}]
                 },
+                "width": 1280,
                 "sections": [
                     section(
                         "s_bi",

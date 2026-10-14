@@ -1,14 +1,17 @@
 /**
- * Zustand store for the sample priced live while building (specs/workbench): the form's
- * sample priced on the pipeline open in the editor, through the pricer the view host
- * gives it, whenever the schema or the sample changes once typing pauses; what the last
- * pricing gave, with the basis it was priced for, and why it last failed. `priceForm`,
- * the pricing itself, is Preview's too.
+ * Zustand store for the sample priced live in Preview (specs/workbench): the form's sample
+ * priced on the pipeline open in the editor, through the pricer the view host gives it,
+ * whenever the schema or the sample changes once typing pauses, whatever its cells hold,
+ * a sample with nothing typed in the cells the sheets show priced not at all; what the
+ * last pricing gave, with the basis it was priced for, and why it last failed.
+ * `priceForm`, the pricing itself, is the test quotes' too.
  */
 import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
 import type { FormSpec, WorkbenchTablesResponse } from "../api/types"
 import { fetchWorkbenchFormTables } from "../api/workbench"
+import { quoteFilled } from "../utils/sheetValues"
+import { quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
 import { pricingBasis, type SampleRow } from "../utils/workbenchForm"
 import type { PricedSample } from "../utils/workbenchTables"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
@@ -33,8 +36,8 @@ export interface PricedValues extends PricedSample {
 
 /**
  * Prices a quote typed into a form's sheets in place of the pipeline open in the editor:
- * the underwriter app's, through its own route. Preview's quote is priced through it when
- * one is set.
+ * the underwriter app's, through its own route, which the Preview store's quote is priced
+ * through.
  */
 export type QuotePricer = (form: FormSpec, quote: Record<string, SampleRow[]>) => Promise<PricedValues>
 
@@ -62,7 +65,7 @@ interface WorkbenchPricingState {
   /** The view host's fixed pricers while the view shows, for test quotes; null otherwise. */
   snapshot: Snapshot | null
   setSnapshot: (snapshot: Snapshot | null) => void
-  /** The quote pricer the host set, which Preview's quote is priced through; null for the pipeline's. */
+  /** The quote pricer the underwriter app set, which its quote is priced through; null in the builder. */
   quotePricer: QuotePricer | null
   setQuotePricer: (quotePricer: QuotePricer | null) => void
   /** What the last pricing gave; output columns show it, dimmed once the basis has moved on. */
@@ -74,8 +77,15 @@ interface WorkbenchPricingState {
   /** Price the sample once typing pauses (`PRICING_DELAY_MS`). */
   schedule: () => void
   /**
-   * Price the sample as the form has it now. One pricing runs at a time: asked again
-   * meanwhile, it prices once more when it finishes, on the form as it is then.
+   * Drop the pricing waiting for typing to pause and the one more asked for meanwhile, as
+   * when Preview is left: nothing is priced while building. A pricing under way finishes.
+   */
+  cancel: () => void
+  /**
+   * Price the sample as the form has it now, or, with nothing typed in the cells the sheets
+   * show, have no price and nothing to say: a deployed request never holds a blank quote.
+   * One pricing runs at a time: asked again meanwhile, it prices once more when it
+   * finishes, on the form as it is then.
    */
   priceNow: () => Promise<void>
 }
@@ -95,10 +105,7 @@ const useWorkbenchPricingStore = create<WorkbenchPricingState>()((set, get) => (
   error: null,
   pricing: false,
   setPricer: (pricer) => {
-    if (pricer === null && timer !== null) {
-      clearTimeout(timer)
-      timer = null
-    }
+    if (pricer === null) get().cancel()
     set({ pricer })
   },
   schedule: () => {
@@ -109,6 +116,11 @@ const useWorkbenchPricingStore = create<WorkbenchPricingState>()((set, get) => (
       void get().priceNow()
     }, PRICING_DELAY_MS)
   },
+  cancel: () => {
+    if (timer !== null) clearTimeout(timer)
+    timer = null
+    again = false
+  },
   priceNow: () => {
     if (run !== null) {
       again = true
@@ -118,6 +130,10 @@ const useWorkbenchPricingStore = create<WorkbenchPricingState>()((set, get) => (
       const { pricer } = get()
       const { form, status } = useWorkbenchFormStore.getState()
       if (pricer === null || form === null || status !== "ready") return
+      if (!quoteFilled(quotedSchema(form.schema, sheetVisibility(form, form.sample).hidden), form.sample)) {
+        set({ price: null, error: null })
+        return
+      }
       const basis = pricingBasis(form)
       set({ pricing: true })
       try {

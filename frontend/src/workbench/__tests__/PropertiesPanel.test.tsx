@@ -4,8 +4,8 @@
  * fields ticked from the schema tables of its kind (a Chart's from every table, the columns
  * it cannot plot disabled), with tables whose rows do not line up greyed out; a Heading's
  * text, description, size, alignment and Show when; the showing sheet's own panel, its
- * title and its Show when; and a section's panel, its title, its Show when, its height and
- * Fit, a section added below it, and its deletion.
+ * title, its Show when and its width; and a section's panel, its title, its Show when, its
+ * height and Fit, a section added below it, and its deletion.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
@@ -14,6 +14,7 @@ import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { findSection, findWidget } from "../../utils/workbenchForm"
 import PropertiesPanel from "../PropertiesPanel"
 import type { FieldRef, FormSpec, Section } from "../../api/types"
+import { COMPONENT_COLOR } from "../widgetKinds"
 import { addTo, chartWidget, column, coverForm, currentForm, fieldsWidget, headingWidget, loadForm, sectionedForm, sheetForm, table, widgetsOf } from "./fixtures"
 
 const grid = () => fieldsWidget(currentForm(), "w_grid")
@@ -21,6 +22,8 @@ const select = (id: string | null) => useWorkbenchViewStore.setState({ selectedI
 const chart = () => fieldsWidget(currentForm(), "w_chart")
 /** Open a section's panel, as pressing its header does. */
 const openSection = (id: string) => act(() => useWorkbenchViewStore.getState().selectSection(id))
+/** Show a Table's or a Collection's pane, as pressing its tab does. */
+const showPane = (name: "Config" | "Display") => fireEvent.click(screen.getByRole("tab", { name }))
 const sectionIds = () => currentForm().pages[0].sections.map((candidate) => candidate.id)
 
 /** The form's section `id`, as it is now. */
@@ -52,6 +55,7 @@ describe("PropertiesPanel", () => {
     select("w_grid")
     rerender(<PropertiesPanel />)
     expect(screen.getByText("Table")).toBeInTheDocument()
+    showPane("Display")
     const title = screen.getByRole("textbox", { name: "Title" })
     expect(title).toHaveValue("Equipment")
     fireEvent.change(title, { target: { value: "Schedule" } })
@@ -71,22 +75,119 @@ describe("PropertiesPanel", () => {
     expect(useWorkbenchViewStore.getState().selectedId).toBeNull()
   })
 
-  it("sets a Table's fixed rows and its look, which a Collection does not have", () => {
+  it("puts a Table's and a Collection's settings in two panes, Config with the data it shows and Display with how, keeping each component's pane", () => {
     select("w_grid")
     const { rerender } = render(<PropertiesPanel />)
+    const pane = () => screen.getByRole("tabpanel")
+    const regions = () => within(pane()).getAllByRole("region").map((region) => region.getAttribute("aria-label"))
+
+    // Config first, in the component's colour: its order and its fields.
+    expect(within(screen.getByRole("tablist", { name: "Table panes" })).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Config", "Display"])
+    const config = screen.getByRole("tab", { name: "Config" })
+    expect(config).toHaveAttribute("aria-selected", "true")
+    expect(config).toHaveStyle({ color: COMPONENT_COLOR })
+    expect(pane()).toHaveAttribute("aria-labelledby", "component-config-tab")
+    expect(regions()).toEqual(["Order", "Fields"])
+    // Display: its title, when it shows, its layout and its look.
+    showPane("Display")
+    expect(regions()).toEqual(["Title", "Show when", "Layout", "Look"])
+
+    // Each component keeps its own: a Collection opens on Config.
+    select("w_boxes")
+    rerender(<PropertiesPanel />)
+    expect(screen.getByRole("tablist", { name: "Collection panes" })).toBeInTheDocument()
+    expect(screen.getByRole("tab", { name: "Config" })).toHaveAttribute("aria-selected", "true")
+    showPane("Display")
+    expect(regions()).toEqual(["Title", "Show when", "Layout", "Look"])
+    select("w_grid")
+    rerender(<PropertiesPanel />)
+    expect(screen.getByRole("tab", { name: "Display" })).toHaveAttribute("aria-selected", "true")
+    // The pane is the view's, not the form's: nothing to undo.
+    expect(useWorkbenchFormStore.getState().undoStack).toEqual([])
+  })
+
+  it("starts a Table's grid in the sample again at the rows it is given, keeping every value typed, each one undo step", () => {
+    const form = sheetForm()
+    form.sample = { equipment: [{}, { "equipment.item": "Crane" }, {}, {}, {}] }
+    loadForm(form)
+    select("w_grid")
+    render(<PropertiesPanel />)
+    showPane("Display")
+    const setRows = (text: string) => {
+      const rows = screen.getByTestId("widget-rows")
+      fireEvent.change(rows, { target: { value: text } })
+      fireEvent.blur(rows)
+    }
+
+    // Fewer: the empty rows after the last typed go, down to it.
+    setRows("1")
+    expect(grid()).toMatchObject({ rows: 1 })
+    expect(currentForm().sample.equipment).toEqual([{}, { "equipment.item": "Crane" }])
+    // More: empty rows make them up.
+    setRows("4")
+    expect(currentForm().sample.equipment).toEqual([{}, { "equipment.item": "Crane" }, {}, {}])
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
+    act(() => useWorkbenchFormStore.getState().undo())
+    expect(grid()).toMatchObject({ rows: 1 })
+    expect(currentForm().sample.equipment).toEqual([{}, { "equipment.item": "Crane" }])
+  })
+
+  it("sets a Table's fixed rows, transposed, and its look, its groups too, and a Collection's look, each with its own", () => {
+    select("w_grid")
+    const { rerender } = render(<PropertiesPanel />)
+    showPane("Display")
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Fixed rows" }))
+    fireEvent.click(within(screen.getByRole("region", { name: "Layout" })).getByRole("checkbox", { name: "Transposed" }))
     const look = screen.getByRole("region", { name: "Look" })
     fireEvent.change(within(look).getByRole("combobox", { name: "Density" }), { target: { value: "comfortable" } })
     fireEvent.change(within(look).getByRole("combobox", { name: "Gridlines" }), { target: { value: "none" } })
+    const header = within(look).getByRole("combobox", { name: "Header" })
+    expect([...header.querySelectorAll("option")].map((option) => [option.value, option.textContent])).toEqual([
+      ["plain", "As written"],
+      ["caps", "Capitals"],
+    ])
+    fireEvent.change(header, { target: { value: "caps" } })
     fireEvent.click(within(look).getByRole("checkbox", { name: "Row numbers" }))
+    fireEvent.click(within(look).getByRole("checkbox", { name: "Groups" }))
     fireEvent.click(within(look).getByRole("checkbox", { name: "Striped rows" }))
-    expect(grid()).toMatchObject({ fixed_rows: true, density: "comfortable", gridlines: "none", row_numbers: false, striped: false })
+    fireEvent.click(within(look).getByRole("checkbox", { name: "Frame" }))
+    expect(grid()).toMatchObject({
+      fixed_rows: true,
+      transposed: true,
+      density: "comfortable",
+      gridlines: "none",
+      header: "caps",
+      row_numbers: false,
+      groups: true,
+      striped: false,
+      frame: false,
+    })
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(9)
 
+    // A Collection's look is its labels, its density and its frame, none of a Table's own.
     select("w_boxes")
     rerender(<PropertiesPanel />)
-    expect(screen.queryByRole("region", { name: "Look" })).not.toBeInTheDocument()
+    showPane("Display")
+    expect(screen.getByTestId("widget-columns")).toHaveValue("2")
     expect(screen.queryByRole("checkbox", { name: "Fixed rows" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("checkbox", { name: "Transposed" })).not.toBeInTheDocument()
+    const boxesLook = screen.getByRole("region", { name: "Look" })
+    expect(within(boxesLook).queryByRole("combobox", { name: "Gridlines" })).not.toBeInTheDocument()
+    expect(within(boxesLook).queryByRole("combobox", { name: "Header" })).not.toBeInTheDocument()
+    expect(within(boxesLook).queryByRole("checkbox", { name: "Groups" })).not.toBeInTheDocument()
+    const labels = within(boxesLook).getByRole("combobox", { name: "Labels" })
+    expect([...labels.querySelectorAll("option")].map((option) => [option.value, option.textContent])).toEqual([
+      ["above", "Above"],
+      ["beside", "Beside"],
+    ])
+    expect(labels).toHaveValue("above")
+    expect(within(boxesLook).getByRole("combobox", { name: "Density" })).toHaveValue("comfortable")
+    fireEvent.change(labels, { target: { value: "beside" } })
+    fireEvent.change(within(boxesLook).getByRole("combobox", { name: "Density" }), { target: { value: "compact" } })
+    fireEvent.click(within(boxesLook).getByRole("checkbox", { name: "Frame" }))
+    expect(fieldsWidget(currentForm(), "w_boxes")).toMatchObject({ labels: "beside", density: "compact", frame: false })
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(12)
   })
 
   it("sets a Chart's type, what labels its rows, its legend, stacked, horizontal and data labels, each one undo step", () => {
@@ -94,6 +195,8 @@ describe("PropertiesPanel", () => {
     select("w_chart")
     const { rerender } = render(<PropertiesPanel />)
     expect(screen.getByText("Chart")).toBeInTheDocument()
+    // A Chart's settings are one list, with no panes.
+    expect(screen.queryByRole("tablist")).not.toBeInTheDocument()
     expect(screen.queryByRole("region", { name: "Layout" })).not.toBeInTheDocument()
     // Nothing to chart: no settings until it plots a field.
     expect(screen.queryByRole("region", { name: "Chart" })).not.toBeInTheDocument()
@@ -227,6 +330,7 @@ describe("PropertiesPanel", () => {
   it("sets when a component shows, each change one undo step", () => {
     select("w_grid")
     render(<PropertiesPanel />)
+    showPane("Display")
     const showWhen = screen.getByRole("region", { name: "Show when" })
 
     expect(within(showWhen).getByText("Always")).toBeInTheDocument()
@@ -331,8 +435,31 @@ describe("PropertiesPanel", () => {
     expect(sheet().show_when.conditions).toEqual([{ table: "policy", column: "policy.cover", op: "not_ticked", values: [] }])
 
     act(() => useWorkbenchViewStore.getState().select("w_year"))
+    showPane("Display")
     expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Year")
     expect(useWorkbenchViewStore.getState().sheetSelected).toBe(false)
+  })
+
+  it("sets the showing sheet's width in its panel, in whole pixels, never under what its components reach, as one undo step", () => {
+    loadForm(sheetForm())
+    useWorkbenchViewStore.setState({ pageId: "p1", sheetSelected: true })
+    render(<PropertiesPanel />)
+    const width = within(screen.getByRole("region", { name: "Layout" })).getByTestId("sheet-width")
+    expect(width).toHaveValue("936")
+
+    // Its Table, 16 across and 720 wide, reaches 736; 400 nines are Infinity as a number.
+    for (const typed of ["700", "800.5", "wide", "9".repeat(400)]) {
+      fireEvent.change(width, { target: { value: typed } })
+      fireEvent.blur(width)
+      expect(screen.getByTestId("sheet-width-error")).toHaveTextContent("Enter a whole number of pixels, 736 or more.")
+      expect(currentForm().pages[0].width).toBe(936)
+    }
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(0)
+    fireEvent.change(width, { target: { value: "1600" } })
+    fireEvent.blur(width)
+    expect(currentForm().pages[0].width).toBe(1600)
+    expect(screen.queryByTestId("sheet-width-error")).not.toBeInTheDocument()
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
   })
 
   it("is a section's own panel while the section is selected: its title, a blank one kept out, and when it shows, each one undo step", () => {
@@ -526,6 +653,7 @@ describe("PropertiesPanel", () => {
 
     act(() => useWorkbenchViewStore.getState().select("w_grid"))
     expect(screen.queryByRole("textbox", { name: "Section title" })).not.toBeInTheDocument()
+    showPane("Display")
     expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Equipment")
     expect(useWorkbenchViewStore.getState()).toMatchObject({ selectedId: "w_grid", sectionId: null })
   })

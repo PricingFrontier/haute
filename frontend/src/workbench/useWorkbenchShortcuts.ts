@@ -11,8 +11,8 @@ const NUDGE_BURST_MS = 800
 /**
  * The workbench view's keyboard shortcuts, registered while it shows (specs/workbench):
  * Ctrl+S saves the project through the host, as the toolbar's Save does, with a focused
- * field's edit included; while building, Ctrl+Z and Ctrl+Shift+Z (or Ctrl+Y) undo and
- * redo an edit outside a text field. While the sheets show, building or in Preview,
+ * field's edit included; building or in Preview, Ctrl+Z and Ctrl+Shift+Z (or Ctrl+Y) undo
+ * and redo an edit outside a text field. While the sheets show, building or in Preview,
  * Ctrl+1 fits the sheet to its viewport; while building, Escape closes the sheet's own
  * panel or the section's and, with a component selected, Escape deselects it, Delete or
  * Backspace removes it, Ctrl+D duplicates it and the arrow keys nudge it by a grid step
@@ -39,12 +39,12 @@ export default function useWorkbenchShortcuts(onSave: () => void): void {
       if (isTypingTarget(e.target)) return
       const view = useWorkbenchViewStore.getState()
       const previewing = view.section === "preview"
-      if (!previewing && mod && key === "z" && !e.shiftKey) {
+      if (mod && key === "z" && !e.shiftKey) {
         e.preventDefault()
         forms.undo()
         return
       }
-      if (!previewing && mod && ((key === "z" && e.shiftKey) || key === "y")) {
+      if (mod && ((key === "z" && e.shiftKey) || key === "y")) {
         e.preventDefault()
         forms.redo()
         return

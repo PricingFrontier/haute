@@ -1,7 +1,8 @@
 /**
- * The sample priced live while building (specs/workbench): priced as the form stands,
- * once typing pauses, one pricing at a time with one more for changes made meanwhile, the
- * last values kept and dimmed until the next answer, and the reason when pricing fails.
+ * The sample priced live in Preview (specs/workbench): priced as the form stands, once
+ * typing pauses, one pricing at a time with one more for changes made meanwhile, the last
+ * values kept and dimmed until the next answer, the reason when pricing fails, and a
+ * sample with nothing typed in the cells the sheets show not priced at all.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -12,7 +13,7 @@ vi.mock("../../api/workbench", async (importOriginal) => ({
 
 import type { FormSpec, SchemaColumn, SchemaTable, WorkbenchTablesResponse } from "../../api/types"
 import { fetchWorkbenchFormTables } from "../../api/workbench"
-import { pricingBasis, withSampleCell } from "../../utils/workbenchForm"
+import { BLANK_THEME, COLLECTION_OPTIONS, pricingBasis, withSampleCell } from "../../utils/workbenchForm"
 import type { PricedSample } from "../../utils/workbenchTables"
 import useWorkbenchFormStore from "../useWorkbenchFormStore"
 import useWorkbenchPricingStore, { PRICING_DELAY_MS } from "../useWorkbenchPricingStore"
@@ -26,6 +27,8 @@ const column = (id: string, name: string, type: SchemaColumn["type"]): SchemaCol
   index: false,
   help: "",
   placeholder: "",
+  group: "",
+  default_value: "",
   number_format: "general",
   decimal_places: null,
   use_grouping: true,
@@ -39,11 +42,13 @@ const pricing: SchemaTable = { id: "t2", name: "pricing_output", role: "output",
 const form: FormSpec = {
   version: 1,
   name: "t",
+  theme: { ...BLANK_THEME },
   schema: { tables: [policy, pricing] },
   pages: [
     {
       id: "p",
       title: "Sheet 1",
+      width: 1280,
       show_when: { match: "all", conditions: [] },
       sections: [{ id: "section_1", title: "Section 1", height: 560, show_when: { match: "all", conditions: [] }, widgets: [] }],
     },
@@ -157,6 +162,27 @@ describe("useWorkbenchPricingStore", () => {
     expect(useWorkbenchPricingStore.getState().pricing).toBe(false)
   })
 
+  it("drops the pricing waiting for the pause and the one more asked for meanwhile once cancelled, as Preview is left", async () => {
+    vi.useFakeTimers()
+    const { pricer, asked } = pricerOnRequest()
+    useWorkbenchPricingStore.getState().setPricer(pricer)
+    const first = useWorkbenchPricingStore.getState().priceNow()
+    await vi.waitFor(() => expect(asked).toHaveLength(1))
+
+    // A change asked for while the first is priced, and another waiting for the pause.
+    type("150000")
+    void useWorkbenchPricingStore.getState().priceNow()
+    useWorkbenchPricingStore.getState().schedule()
+    useWorkbenchPricingStore.getState().cancel()
+    asked[0].answer()
+    await first
+    await vi.advanceTimersByTimeAsync(PRICING_DELAY_MS)
+
+    // The pricing under way finished; neither of the others ran.
+    expect(pricer).toHaveBeenCalledOnce()
+    expect(premium()).toEqual({ value: 2000, stale: true })
+  })
+
   it("shows nothing and says why when pricing fails, until it next succeeds", async () => {
     useWorkbenchPricingStore.getState().setPricer(() => Promise.resolve(priced(2000)))
     await useWorkbenchPricingStore.getState().priceNow()
@@ -170,6 +196,26 @@ describe("useWorkbenchPricingStore", () => {
     await useWorkbenchPricingStore.getState().priceNow()
     expect(premium().value).toBeNull()
     expect(useWorkbenchPricingStore.getState().error).toBeNull()
+  })
+
+  it("prices nothing, and says nothing, while the sample holds nothing typed in the cells the sheets show", async () => {
+    const pricer = vi.fn((_workbench: WorkbenchTablesResponse) => Promise.resolve(priced(1)))
+    useWorkbenchPricingStore.getState().setPricer(pricer)
+    useWorkbenchPricingStore.setState({ price: { basis: "b", sample: {}, tables: priced(1).tables }, error: "x" })
+    // Nothing typed, or only a value in a column since removed.
+    for (const sample of [{}, { t1: [{ gone: "1" }] }] as FormSpec["sample"][]) {
+      useWorkbenchFormStore.setState({ form: { ...form, sample } })
+      await useWorkbenchPricingStore.getState().priceNow()
+      expect(pricer).not.toHaveBeenCalled()
+      expect(useWorkbenchPricingStore.getState()).toMatchObject({ price: null, error: null })
+    }
+    // The exposure's box on a sheet that shows only once it is 0: hidden, it is nothing typed.
+    const hiding = { match: "all" as const, conditions: [{ table: "t1", column: "c1", op: "equals" as const, values: ["0"] }] }
+    const exposure = { id: "w", type: "collection" as const, x: 0, y: 0, w: 400, h: 100, title: "", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "t1", column: "c1" }], show_when: { match: "all" as const, conditions: [] } }
+    const [sheet] = form.pages
+    useWorkbenchFormStore.setState({ form: { ...form, pages: [{ ...sheet, show_when: hiding, sections: [{ ...sheet.sections[0], widgets: [exposure] }] }] } })
+    await useWorkbenchPricingStore.getState().priceNow()
+    expect(pricer).not.toHaveBeenCalled()
   })
 
   it("prices nothing without a pricer or before the form is read", async () => {

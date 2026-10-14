@@ -298,11 +298,71 @@ def test_the_editor_previews_a_table_at_a_time(project: Path) -> None:
 
 
 def test_a_workbench_outputs_cell_is_traced_from_the_node_filling_its_table(project: Path) -> None:
-    with pytest.raises(ValueError, match="trace the node connected to the table instead"):
-        execute_trace(_priced(), row_index=0, target_node_id="response", column="premium")
+    # The table holds that node's rows: the same row, as the clicked values confirm.
+    traced = execute_trace(
+        _priced(),
+        row_index=1,
+        target_node_id="response",
+        column="premium",
+        row_values=_RESPONSE[0]["item_prices"][1],
+        port_label="item_prices",
+    )
 
-    traced = execute_trace(_priced(), row_index=0, target_node_id="item_premiums", column="premium")
+    assert (traced.target_node_id, traced.column, traced.output_value) == (
+        "item_premiums",
+        "premium",
+        60.0,
+    )
     assert [step.node_id for step in traced.steps] == ["request", "item_premiums"]
+    # A Workbench Output with one table needs no table named.
+    one_table = _priced([_RESPONSE_TABLES[0]])
+    one_table.edges = [edge for edge in one_table.edges if edge.source != "item_premiums"]
+    traced = execute_trace(one_table, target_node_id="response", column="premium")
+    assert (traced.target_node_id, traced.output_value) == ("priced", 100.0)
+
+
+def test_a_workbench_outputs_cell_is_traced_through_the_column_filling_it(project: Path) -> None:
+    graph = _mapped(
+        {"pricing": {"premium": "limit", "limit": "premium", "referral": None}},
+        ("discount", "float"),
+    )
+    row = {"premium": 1000.0, "limit": 100.0, "referral": None, "discount": None}
+
+    traced = execute_trace(
+        graph, target_node_id="response", column="premium", row_values=row, port_label="pricing"
+    )
+
+    assert (traced.target_node_id, traced.column, traced.output_value) == ("priced", "limit", 1000)
+    # Nothing fills `referral` by pick, nor `discount` by name: neither has a value to trace.
+    for unfilled in ("referral", "discount"):
+        with pytest.raises(ValueError, match=f"fills '{unfilled}' with nothing, so it has no"):
+            execute_trace(graph, target_node_id="response", column=unfilled, port_label="pricing")
+
+
+@pytest.mark.parametrize(
+    ("port_label", "column", "message"),
+    [
+        (None, "premium", "name the table the row is from, one of 'pricing', 'item_prices'"),
+        ("quotes", "premium", "with no 'quotes' table; its tables are 'pricing', 'item_prices'"),
+        ("pricing", "state", "whose 'pricing' table has no 'state' column"),
+    ],
+)
+def test_a_workbench_outputs_cell_it_cannot_place_says_why(
+    project: Path, port_label: str | None, column: str, message: str
+) -> None:
+    refusal = f"^Target node 'response' is a Workbench Output.*{message}"
+    with pytest.raises(ValueError, match=refusal):
+        execute_trace(_priced(), target_node_id="response", column=column, port_label=port_label)
+
+
+def test_a_workbench_output_table_with_nothing_connected_has_nothing_to_trace(
+    project: Path,
+) -> None:
+    graph = _priced()
+    graph.edges = [edge for edge in graph.edges if edge.targetHandle != "pricing"]
+
+    with pytest.raises(ValueError, match="nothing connected to its 'pricing' table"):
+        execute_trace(graph, target_node_id="response", column="premium", port_label="pricing")
 
 
 def test_generated_code_runs_a_workbench_output(project: Path) -> None:

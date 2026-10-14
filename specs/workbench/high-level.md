@@ -5,7 +5,7 @@
 The workbench is where a pricing team lays out the quote an underwriter keys in: a schema
 of typed tables, the sheets, each a stack of sections holding Tables and Collections that
 show those tables' columns, Charts that plot them and Headings that name them, and the
-sample quote typed into them while building. It is part of Haute, switched on per
+sample quote typed into them in Preview. It is part of Haute, switched on per
 project in `haute.toml`, and its form is a file in the project, `forms/form.json`, versioned
 beside the pipeline.
 
@@ -19,8 +19,8 @@ This component owns the switch, the form file with its reading, its saving and i
 revision, the routes that serve the form and its tables to the editor, the
 `haute init --workbench` scaffold, the Workbench view in which the form is edited inside
 Haute (its host beside the pipeline editor, its toolbar and shortcuts, its schema editor,
-its sheets, the sample typed into them and priced live, and Preview, the sheets as an
-underwriter uses them, with a quote checked against the columns' rules and priced), and
+its sheets, drawn while building as an underwriter's new quote opens, and Preview, the
+sheets as an underwriter uses them, with the sample typed into them and priced live), and
 the two workbench node types: where their tables come from, how the editor keeps them
 current, what a Workbench Input gives without a request and how a Workbench Output's
 frames fill the response.
@@ -44,10 +44,9 @@ In scope:
 - The Workbench view: how it is shown beside the pipeline editor and what the pipeline
   editor does meanwhile, its toolbar and keyboard shortcuts, its schema editor, its sheets
   (the canvas and its sections, the Table, the Collection, the Chart and the Heading, their
-  palette and properties panel, and the sheet tabs), the sample typed into the components and
-  priced live on the pipeline,
-  Preview, where an underwriter's quote is keyed into the sheets, checked against the
-  columns' rules and priced, and how the form is read into it and saved from it.
+  palette and properties panel, and the sheet tabs), drawn while building as a new quote,
+  Preview, where the sample is keyed into the sheets as an underwriter keys a quote and
+  priced live on the pipeline, and how the form is read into it and saved from it.
 - The Workbench Input, the node type that holds a copy of the tables and sample, which the
   editor keeps current and shows, and previews on.
 - The Workbench Output, the node type that holds a copy of the output tables, which the
@@ -108,11 +107,15 @@ Out of scope:
   refused. A schema table has an id, a name, a `role` (`input`, sent to the pricing engine,
   or `output`, returned by it), `rows` (`one` per quote, such as policy details, or `many`,
   such as an equipment schedule) and its columns, each with an id, a name, a `type` of the
-  Quote Input's column types (`str`, `int`, `float`, `bool`, `date`), a `label`, whether it
+  Quote Input's column types (`str`, `int`, `float`, `bool`, `date`), a `label`, its
+  `group` (a name it shares with the columns grouped with it, `""` for none, which a
+  Table showing groups draws over its labels), whether it
   is a `key` (a many-row table's keys say which row is which), its rules (`required`, `min`,
   `max`, `options`), whether it is the table's `index`, the column numbering its rows
   from 1, and how the sheets show it: its `help`, shown beside its label, its
-  `placeholder`, what an empty input cell shows, and a number's format as an Explore
+  `placeholder`, what an empty input cell shows, its `default_value`, what a new quote
+  starts with in it (text as typed, or `true` for a tick, `""` for none; only a one-row
+  input table's columns start a new quote with theirs), and a number's format as an Explore
   pivot's values take one, `number_format` (`general`, `number`, `percent`,
   `currency_gbp`, `currency_usd`, `currency_eur`), `decimal_places` (0 to 10, or null for
   automatic) and `use_grouping`. Every schema holds Haute's own table of a quote's
@@ -122,16 +125,18 @@ Out of scope:
   `archived` a True/false and the rest Text, each with the id `qd_` and its name. A form
   read or saved without it takes it on; one whose `quote_details` is not Haute's (the
   name on another table, or its role, rows, columns, keys or index changed) is refused,
-  as is a rule on `reference`, `stage`, `assignee` or `archived`, which the underwriter
-  app sets. Its labels, help and placeholders are the project's, as are the rules of the
-  columns the underwriter types; the sheets show its columns, and the pipeline receives
-  it, as any other input table's. A sheet has an id, a title, when it shows (`show_when`) and
-  its sections (`sections`, at least one): strips across the sheet's whole width, stacked in
+  as is a rule or a default on `reference`, `stage`, `assignee` or `archived`, which the
+  underwriter app sets. Its labels, groups, help and placeholders are the project's, as are
+  the rules and defaults of the columns the underwriter types; the sheets show its columns, and the pipeline receives
+  it, as any other input table's. A sheet has an id, a title, its `width` in pixels, when it
+  shows (`show_when`) and its sections (`sections`, at least one): strips across the sheet's
+  whole width, stacked in
   their order, each with an id, a `title`, its `height` in pixels, when it shows
   (`show_when`) and its components (`widgets` in the file): a Table (`tableInput`, a grid of at
-  least `rows` rows showing columns of many-row tables, with its look and whether its rows
-  are fixed: `row_numbers`, `density` (`compact` or `comfortable`), `gridlines` (`rows`,
-  `all` or `none`), `striped` and `fixed_rows`), a Collection (`collection`, boxes
+  least `rows` rows showing columns of many-row tables, with its look, whether its rows
+  are fixed and whether it is transposed: `row_numbers`, `density` (`compact` or
+  `comfortable`), `gridlines` (`rows`, `all` or `none`), `striped`, `fixed_rows`,
+  `transposed` and `groups`), a Collection (`collection`, boxes
   showing columns of one-row tables, `columns` across), a Chart (`chart`, plotting number
   columns, with what labels the rows of its many-row tables, `category`, a schema column
   named as a field is or null to number them, and how it draws: `chart_type` (`column`,
@@ -140,7 +145,8 @@ Out of scope:
   its `text`, naming a section of the sheet, the `description` under it, its `size`,
   `large`, `medium` or `small`, and its `align`, `left`, `center` or `right`),
   each placed in its section by its `x`, `y`, `w`, `h`, measured from the section's top-left
-  corner and inside it, its `y` plus its `h` at most the section's `height`, and with a
+  corner and inside it, its `y` plus its `h` at most the section's `height` and its `x` plus
+  its `w` at most the sheet's `width`, and with a
   `show_when` of its own, and each but a
   Heading with a `title` and showing its `fields`, schema columns named by table id and
   column id so a rename keeps them. A `show_when` holds `conditions` and whether `all`
@@ -152,7 +158,8 @@ Out of scope:
   `below` or `at_most`, with one, for a number or a Date column. The sample holds, by table
   id, rows keyed by column id, each value as typed: text or a tick. Haute reads the file whole whenever it needs it and never keeps it in memory, so an
   edit made outside the view reaches the next request. A file that does not exist is the
-  blank form, never saved: one sheet holding one section 560 tall, no tables, no sample. A
+  blank form, never saved: one sheet 1280 wide holding one section 560 tall, no tables, no
+  sample. A
   sheet holding `widgets` of its own, as sheets did before sections, is refused by name
   (Failure model).
 - **Status.** `GET /api/workbench` answers `enabled` and, while enabled, `form`, the path as
@@ -203,9 +210,9 @@ Out of scope:
     | Mode | The view's controls |
     |---|---|
     | Building or Preview | Build over Preview |
-    | Building, the sheets showing | Sheets over Schema, the form's Undo and Redo, Zoom In over Zoom Out, and why pricing the sample last failed |
-    | Building, the schema showing | Sheets over Schema, and Undo and Redo |
-    | Preview | Price over Clear for the quote (both disabled while nothing is typed in the tables the schema has now), Zoom In over Zoom Out, and why the quote has no price |
+    | Building, the sheets showing | Sheets over Schema, Display, the form's Undo and Redo, and Zoom In over Zoom Out |
+    | Building, the schema showing | Sheets over Schema, Display, and Undo and Redo |
+    | Preview | Test quotes, the form's Undo and Redo, Zoom In over Zoom Out, and why pricing the sample last failed; no Price and no Clear |
 
   - **Save.** Save and Ctrl/Cmd+S save the project, the same from either toolbar, with a
     focused field's edit included: the form is saved first when it holds unsaved edits or
@@ -260,42 +267,54 @@ Out of scope:
   the pricing engine, or Output, returned by it), its rows (One row per quote, or Many
   rows) and its columns; each column with its type, drawn as the step editor's marker for
   the kind (a number, text, true/false, a date) in the data preview's colour and changed
-  from it, its name and, in a many-row table, whether it is a key. A column's label and help
-  open beside it; for an Integer or a Decimal other than the index, its format, decimal
+  from it, its name and, in a many-row table, whether it is a key. A column's label, group
+  and help open beside it, the group offered from those its table's columns have, the boxes
+  holding no hint text; for an Integer or a Decimal other than the index, its format, decimal
   places and thousands separators, separators ticked under General making it a Number as
-  an Explore pivot does; and, in an input table, its placeholder for any type but
+  an Explore pivot does; and, in an input table, its default in a one-row table (ticked or
+  not for True/false, one of the allowed values while it has some, a date for a Date, else
+  typed), its placeholder for any type but
   True/false and Date and its rules: required, a range for an Integer or a Decimal, and the
   allowed values, typed comma-separated, for any type but True/false and Date. Changing a
-  column's type drops the rules and the format the new type cannot have. Every text field
+  column's type drops the rules and the format the new type cannot have, and its default
+  when it becomes or stops being True/false, or becomes a Date while it is not a day.
+  Every text field
   commits on blur or Enter, so an edit is one undo step; Enter in a column's name adds the
   next column, Alt+Up and Alt+Down move one, and a new table's or column's name takes the
   focus. A many-row table can have an index: a column first in the table, `row_number`
   until renamed, an Integer whose type cannot change, numbering the rows from 1, which
   Alt+Up and Alt+Down neither move nor pass; switching a table to one row clears its keys
-  and drops its index, with what shows it. Removing a column or a table a sheet shows, or a
+  and drops its index, with what shows it, and switching it to many rows clears its
+  columns' defaults. Removing a column or a table a sheet shows, or a
   sheet's, a section's or a component's condition tests, asks first, and takes it off the
   sheet, out of those conditions and out of the sample. The editor says what would stop
   the schema being the pipeline's tables: a table's name is held to the port rules the
   Quote Input's labels are held to (an identifier, none of the document's reserved labels,
   unique whatever its case), a column's name is an identifier that is not a Python keyword,
   as the server holds it, unique in its table, a many-row table needs a key, an input
-  column's range must not be inverted and its allowed values must be of its type, and
-  True/false and Date columns can have none. Haute's `quote_details` table, first, keeps
+  column's range must not be inverted and its allowed values must be of its type,
+  True/false and Date columns can have none, and a default must be a value its column
+  takes: a tick for True/false, else text of its type, within its range and one of its
+  allowed values. Haute's `quote_details` table, first, keeps
   its structure: its name, role and rows and its columns' names and types are fixed, and
-  it is neither deleted nor given a column; its columns take labels and help, and those
-  the underwriter types their placeholders and rules, while `reference`, `stage`,
-  `assignee` and `archived` say they are set by the app and take a label and help alone.
-- **The sheets.** A sheet is a canvas on an 8px snap grid that fills its viewport across
-  at the zoom and, like a spreadsheet, has no right or bottom edge: it widens and
-  lengthens to hold what is on it. Its tabs run along the top: the sheet showing is
+  it is neither deleted nor given a column; its columns take labels, groups and help, and
+  those the underwriter types their defaults, placeholders and rules, while `reference`,
+  `stage`, `assignee` and `archived`, which the app sets, take a label, a group and help
+  alone.
+- **The sheets.** A sheet is a canvas on an 8px snap grid as wide as its width and as
+  long as its sections, drawn at the zoom from its viewport's top-left corner, so it
+  stays beside the palette and under the tabs: zooming out draws it smaller, the canvas
+  to its right and below it, and it is scrolled across while wider than the viewport. Its tabs run along the top: the sheet showing is
   marked, a plus adds a sheet named in turn, double-click renames one, a tab dragged onto
   another moves its sheet there, as Alt+Left and Alt+Right move the focused tab's sheet a
   place, the tab keeping the focus, each move one undo step and the sheet showing still
   the one that shows, and the showing sheet's cross
   deletes it, asking first when components are on it, while another sheet remains; the
   schema and the sample are untouched. A sheet is a stack of its sections, each a strip
-  across its whole width as tall as its height, one under the next in their order; a new
-  sheet holds one, 560 tall, so the whole sheet is one section until another is added. A
+  across its whole width as tall as its height, one under the next in their order, the
+  sheet ending where the last one ends, so a taller section is a longer sheet; a new
+  sheet is as wide as the last and holds one section, 560 tall, so the whole sheet is one
+  section until another is added. A
   section is added from the palette (below) like a component, and drawn on the sheet:
   while building, each section sits under a bar 24 tall across the sheet that names it,
   with a grip, its title, an eye while it has conditions (Shown when, below) and a mark in
@@ -312,16 +331,36 @@ Out of scope:
   moves into another section only as its top edge goes over that one; resized past the
   bottom, it grows the section, pushing the sections under it down, as does a component
   dropped or moved into a section shorter than itself. A section never shrinks of its own
-  accord. A component is drawn in its
+  accord. So a component stays inside the sheet's width: dragged, nudged, dropped or
+  copied, it stops at the sheet's left and right edges, one dropped beside the sheet
+  landing at the nearer; resized past the right edge, it widens the sheet, as does
+  a component dropped onto a sheet narrower than itself, and the sheet never narrows of
+  its own accord. A component is drawn in its
   section where the form places it: a Table as a grid of its rows with a column per field it shows, the index
-  column numbering the rows, under a header of its labels in capitals that stays in view as
+  column numbering the rows, under a header of its labels, as written unless `header` is
+  `caps`, in capitals, that stays in view as
   the rows scroll and is ruled off from them whatever the gridlines, drawn as its options
   say: its rows numbered in a column of their own unless `row_numbers` is off, compact rows
   (28px) or comfortable ones (36px), a line between rows and before each output column
   (`rows`), between every column too (`all`) or none at all (`none`), every other row
   shaded unless `striped` is off, and Add row under the last row and a delete on each row
-  unless its rows are fixed; a Collection as boxes with their labels above, its columns
-  across; a Chart as its type draws the values it plots (Charts, below); a Heading as its
+  unless its rows are fixed; transposed (`transposed`), the same grid on its side: a line
+  per field, labelled at its start in the header's look, the labels staying in view as
+  the rows scroll across and ruled off from them, and a column per row, numbered above
+  unless `row_numbers` is off, the numbers staying in view as the fields scroll down,
+  with a delete over each and an add after the last unless its rows are fixed; its
+  stripes and gridlines are its lines' as drawn, a full grid lining its columns too, and
+  an output field is ruled off above its line; showing groups (`groups`), while a field
+  it shows is in a schema group, each run of fields side by side in one group headed
+  by one cell naming it, a row of them over the labels with each name ruled under
+  inside its cell, so groups side by side stay apart, and a blank cell over a field in
+  none, the numbers and the deletes, or, transposed, a column of them before the
+  labels, which stay in view beside it; a Collection as boxes, its columns across, their labels above
+  them or, while `labels` is `beside`, beside them, a tick box in a box as the other fields
+  are, the boxes compact (28px) or comfortable (36px) as its `density` says; each of the two in a frame, a border round the panel's
+  colour, unless `frame` is off, when it sits on the sheet as its title and fields alone,
+  all in the sheets' colours (below);
+  a Chart as its type draws the values it plots (Charts, below); a Heading as its
   text (Headings, below). Each field of a
   Table or a Collection shows its label (its column's, or the name made readable), a star for
   a required input, a mark showing its help when it has some, a hint at its type (a
@@ -337,7 +376,8 @@ Out of scope:
   divided by the zoom, and a move or a resize is one undo step, a click that does not
   move, or a drag held at a limit or brought back where it began, recording nothing, so
   redo still stands. A field in the panel typed into and not yet committed commits, as an
-  undo step of its own, as any drag on the sheet or out of the palette starts. Pressing the empty sheet deselects. A component takes the
+  undo step of its own, as any drag on the sheet or out of the palette starts, and as the
+  empty sheet is pressed. Pressing the empty sheet deselects. A component takes the
   keyboard's focus too: reached by Tab, it is selected, so the sheet's keys work without a
   pointer. The components are read, and reached by Tab, in the order they sit on the sheet,
   section by section and, within a section, row by row from the top and left to right along
@@ -352,12 +392,12 @@ Out of scope:
   a screen reader. One with no fields asks for them, while building, from the panel on
   the right; in Preview, which has no panel, it is its frame alone, as a Heading with no
   text is. The zoom runs from 25% to
-  200% in steps of 10%; what is on the sheet is fitted to the viewport, never past 100%,
+  200% in steps of 10%; the sheet showing is fitted across the viewport, never past 100%,
   when the sheets first show for a form read (a zoom chosen since is kept across a trip to
   the schema or the pipeline editor) and on Ctrl/Cmd+1.
-- **The palette.** The view's left column is Haute's palette shell with a Table and a
-  Collection, in the entry colour, a Chart, in Explore's colour, a Heading and a Section,
-  in the structure colour, and the switcher under them. A Section dragged onto the sheet
+- **The palette.** The view's left column is Haute's palette shell with a Section and a
+  Heading, in the structure colour, a Collection and a Table, in the entry colour, a Chart,
+  in Explore's colour, and the switcher under them. A Section dragged onto the sheet
   shows a line across it where the new section would start, and released there starts it:
   inside a section, at the grid line nearest the pointer, moved to the nearer edge of any
   component the line would cut through, so it never runs through one, and never less than
@@ -382,9 +422,12 @@ Out of scope:
 - **The properties panel.** Selecting a component opens its panel on the right, Haute's
   side panel resized from its left edge, where the Git and Assistant panels open while
   they are closed: the component's kind and its title; its Show when (below); once it shows a field, its layout,
-  a Table's rows (1 to 50) and whether they are fixed, or a Collection's columns across (1
+  the rows a Table's grid starts with (1 to 50), whether they are fixed and whether it is
+  transposed, or a Collection's columns across (1
   to 12), a value outside the range refused at the field, a Table's look (its density, its
-  gridlines, its row numbers and its stripes), a Chart's chart (its type, Column, Line,
+  gridlines, its header, Capitals or As written, its row numbers, its groups, its
+  stripes and its frame), a Collection's look (its labels, Above or Beside, its density and its frame), a
+  Chart's chart (its type, Column, Line,
   Area or Pie; while it plots many-row tables, what labels its rows, "Row number" or a
   column of a table whose rows line up with its fields, other than an index, by table and
   label; its legend, Bottom, Top, Left, Right or None; and whether it is stacked, horizontal
@@ -404,12 +447,19 @@ Out of scope:
   keyed alike line up. A Chart's fields and the column labelling its rows line up the
   same way, the first of them deciding, and one-row tables all line up with one another.
   With no table of the component's kind in the schema, the panel says so and offers the
-  schema. A Heading's panel has its text in the title's place and its description under
+  schema. A Table's and a Collection's panel puts these in two panes under its header, as
+  Haute's node panel puts an Explore node's in panes: **Config**, the data it shows, its
+  order and its fields, and **Display**, how it shows them, its title, its Show when, its
+  layout and its look; the tabs are drawn in the component's colour, Config first,
+  and the pane chosen for a component is kept for it while the editor is open. A Chart's
+  panel stays one list. A Heading's panel has its text in the title's place and its description under
   it, each committed on blur or Enter, its Show when, and its look: its size, Large, Medium
   or Small, and its alignment, Left, Centre or Right, one of three toggles the arrow keys
   also move between. While building, the showing sheet's tab has a settings
   mark beside its cross that opens the sheet's own panel in the same place, with its
-  title and its Show when, and a section's bar opens the section's panel there: its
+  title, its Show when and its layout, its width in whole pixels (no less than 240 or
+  than its components reach, a value below that refused at the field), and a section's
+  bar opens the section's panel there: its
   title, committed on blur or Enter (a blank one kept out), its Show when, and its layout,
   its height in whole pixels (no less than 48 or than its components reach, a value below
   that refused at the field) with Fit beside it, Add section below, adding a section 160 tall
@@ -439,25 +489,74 @@ Out of scope:
   asking first when components are in it, while another section remains on the sheet; with
   the section's panel open, Escape closes it. None of that from a text
   field or a select, whose own keys pick an option.
-- **The sample.** Typing into a component's input columns while building types the form's
-  sample. A Collection's boxes hold its one-row tables' one row; a Table's grid holds its
+- **The sheets' colours.** While building, Display in the toolbar opens a box under it,
+  Haute's toolbar dropdown rather than a dialog so the sheet stays in view, holding the
+  sheets' colours: the sheet's background, the components' background, their borders, the
+  font, the input cells and the output cells, each Automatic (the editor's own), one of the
+  swatches, white, light grey, dark grey and black and then Haute's eight hues, or a colour
+  of its own from a square of a colour wheel's rainbow, chosen as an Explore chart's colour
+  is; a colour
+  of its own shows on the sheet at each step of its pick, and the whole pick is one undo
+  step. Pressing outside the box, or Escape, closes it. The colours are the form's `theme`,
+  each `#RRGGBB` in capitals or null for the editor's own, and colour the sheets wherever
+  they show, the underwriter app's included: the sheet's background behind its sections, its
+  dots and outline staying the editor's; the background of framed components, Tables,
+  Collections and Charts, an unframed one sitting on the sheet; their borders, a frame's,
+  the rule under a title, a Table's header rule, its gridlines and the line before an output
+  column, and a Collection's boxes'; the font, the text of Headings, their descriptions too,
+  and of components' titles, labels and values, an output's label too, while a column that
+  is gone stays amber, a required input's star red and the index's numbers muted, and a
+  Chart's text stays the chart's own; the fill of input cells and boxes; and that of output
+  cells and boxes, in place of their shade. A Table's header strip takes the components'
+  background while one is set, or the sheet's while the Table is unframed, else keeps its
+  own; its stripes, a light shade, show whatever is under them.
+- **A new quote while building.** While building, the sheets are drawn as an underwriter's
+  new quote opens: every input cell empty but those a column's default fills, every output
+  a dash, every Chart with nothing but defaults to chart, each grid showing the rows it
+  starts with, and what shows decided by a quote holding its defaults alone (Shown when,
+  below). The cells are inert, drawn as a new quote's
+  rather than as a read-only quote's: they take no typing, and a press on one is a press
+  on its component, which selects and moves it. Nothing is priced while building.
+- **Defaults.** A new quote starts with each one-row input table's row holding its
+  columns' defaults, as if typed: while building, and in the underwriter app's new quote.
+  The sample keeps what was typed into it, and a quote made from another quote's revision
+  its values. A default is not typing: a quote holding nothing else typed, the details the
+  app sets aside, is neither marked nor priced nor saved, as a blank one is not, and a value
+  typed equal to its column's default counts as the default. A many-row table's columns
+  take no default.
+- **The sample.** Typing into a component's input columns in Preview types the form's
+  sample: the quote an analyst keys in as an underwriter would, saved with the form and
+  what the pipeline's previews run on (the Workbench Input, below). A Collection's boxes
+  hold its one-row tables' one row; a Table's grid holds its
   many-row tables' rows, row by row, with Add row and a delete on each row, unless its rows
   are fixed, adding and deleting a row in every input table the grid shows at once, so
   their cells stay side by side; a one-row table's column in a grid shows that table's one
-  value on every row, and a grid shows at least its rows and every row the values hold,
-  its rows fixed or not. Each cell is the control its column calls for: a tick box
+  value on every row. A grid starts with its rows: while its input tables hold no rows it
+  shows that many empty ones, which the first value typed into it keeps; once they hold
+  rows it shows every row they hold, so a row can be deleted below its rows, deleting the
+  last starting it again, and a grid of fixed rows never shows fewer than its rows.
+  Changing a Table's rows starts its grid in the sample again at them, so Preview shows
+  the change: each of its input tables keeps its rows up to the last with a value typed,
+  empty rows making up the rest, in the same undo step; nothing typed is dropped. Each
+  cell is the control its column calls for: a tick box
   for True/false, a dropdown of the allowed values, a date picker, else a text field, a
   number's right-aligned. A text field commits on blur or Enter, a dropdown, a tick box and
   a date on change, each commit one undo step. Values are held as typed, text or a tick, by
   table id and column id; the server types them by their columns when the tables are made.
-  Pressing a cell types there and selects its component rather than moving it. The sample
-  is part of the form: saved with it, undone like any edit, and dropped with a column or
-  table removed from the schema.
-- **Priced live.** While the view shows, the sample is priced on the pipeline open in the
+  Pressing a cell types there. The sample is part of the form: saved with it, undone like
+  any edit, in Preview as while building, and dropped with a column or table removed from
+  the schema.
+- **Priced live.** While Preview shows, the sample is priced on the pipeline open in the
   editor whenever the schema, the sample or which of the sample's values are left out
-  (Shown when, below) changes, once typing pauses for 300ms, and when the sheets show, as
+  (Shown when, below) changes, 300ms after the last value entered (a text or number cell's
+  when Enter or Tab is pressed or the cell is left, a tick, a choice or a date as it is
+  made), and when Preview shows, as
   the pipeline may have changed meanwhile; laying the sheet out differently prices
-  nothing. A pricing asks `POST /api/workbench/tables` for the tables
+  nothing, and nothing is priced while building. There is no Price and no Clear. The
+  sample is priced whatever its cells hold, a value that breaks its column's rules
+  included; with nothing typed in the cells the sheets show it is not priced, as a
+  deployed request never holds a blank quote, and its outputs show dashes with nothing
+  said. A pricing asks `POST /api/workbench/tables` for the tables
   and sample Haute takes from the form as it stands, then previews the Workbench Output a
   table at a time through the preview route on the document as the editor holds it, the
   whole pipeline even while a submodel is open, with the active source: the document's
@@ -475,8 +574,9 @@ Out of scope:
   row), found through the first many-row input table the grid shows that is keyed alike;
   a grid row with nothing typed, or none keyed like it, shows a dash, and a price for other
   values is dimmed on every row.
-- **Charts.** A Chart plots its fields' values as the sheets hold them, the sample while
-  building and the quote in Preview, with what pricing them gave. An input column's value
+- **Charts.** A Chart plots its fields' values as the sheets hold them, a new quote's
+  defaults alone while building, and in Preview the sample or the underwriter app's
+  quote, with what pricing them gave. An input column's value
   is read as the server reads it, a number typed with a currency sign or separators being
   that number; text that is not a number, a cell left blank and a value the sheets hide
   (Shown when, below) are gaps. An output column's value is the last answer's, nothing
@@ -518,45 +618,38 @@ Out of scope:
   one under the next and each component where it sits in its section, read and
   tabbed through in the order they sit, no section bars, their
   tabs only switching sheets, the components neither selected nor moved, the palette's
-  components disabled, no properties panel, no Undo or Redo, and the zoom. An
-  underwriter's quote is keyed into the components' input cells as the sample is, through
-  the same controls, and is kept apart from the sample: it lasts while the editor is open,
-  through Build and back, is never saved with the form and never undone. Price is disabled
-  while nothing is typed in the input tables the schema has now (a value typed in a column
-  since removed, in a second row of a table now with one row per quote, or in a column the
-  sheets hide, counts for nothing, as the server leaves it out of the quote), and refuses
-  such a quote with "Type the quote first" however it is asked: a deployed request never
-  holds a blank quote, and the server would read one as the null quote. Price checks the
-  quote against the columns' rules first: a required cell left empty, text that is not a
-  number in a number column or not a whole number in a whole-number column, a number
-  outside the column's range, a value that is not one of the allowed values; a one-row
-  table's one row is always checked, a many-row table's filled rows only, a cell the sheets
-  hide never, and a tick box and the index never fault. A quote that breaks a rule is not priced: each such cell is
-  outlined, naming its problem on hover, the toolbar says how many cells need attention,
-  and from then on the marks follow the cells as they are edited, until the quote is
-  cleared. A quote that passes is priced as the sample is, on the pipeline open in the
-  editor with the quote in the sample's place, read as a request is, so it prices as it
-  would deployed, and every output column shows its value, a
-  Collection's its table's one row and a Table's the row keyed like each grid row, and every
-  Chart plots it, dimmed
-  once the quote changes until Price again; a pricing that fails shows its reason in the
-  toolbar. Clear, after a confirmation, empties the quote, its marks and its price, and an
-  answer to a pricing still on its way is dropped, as one is once the view has left.
-  Ctrl/Cmd+S still saves the project in Preview and Ctrl/Cmd+1 fits the sheet; the sheet's
-  editing keys and undo do nothing.
+  components disabled, no properties panel, and the zoom. The sheets are drawn as the
+  underwriter app draws them, through the same components. The analyst keys the sample in
+  as an underwriter keys a quote, through the same controls, and it is priced live
+  (above), read as a request is, so it prices as it would deployed: every output column
+  shows its value, a Collection's its table's one row and a Table's the row keyed like each
+  grid row, and every Chart plots it. A value typed in a column since removed, in a second
+  row of a table now with one row per quote, or in a column the sheets hide counts for
+  nothing, as the server leaves it out of the quote. Once anything is typed, each cell that
+  breaks its column's rules is outlined, naming its problem on hover: a required cell left
+  empty, text that is not a number in a number column or not a whole number in a
+  whole-number column, text that is not a day in a Date column, a number outside the
+  column's range, a value that is not one of the
+  allowed values; a one-row table's one row is always checked, a many-row table's filled
+  rows only, a cell the sheets hide never, and a tick box and the index never fault. The
+  marks never stop the pricing. Ctrl/Cmd+S still saves the project in Preview, Ctrl/Cmd+1
+  fits the sheet, and Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z (or Ctrl/Cmd+Y) undo and redo
+  outside a text field, as Undo and Redo do; the sheet's editing keys do nothing.
 - **Test quotes.** An analyst keeps test quotes in Preview, in the project's test-quote
   file: `test_quotes.sqlite` in the test-quote directory (`[test_quotes] dir` of
   `haute.toml`, `tests/quotes` when absent), held by the quote store. The toolbar's Test
   quotes, in Preview, opens a panel beside the sheets that lists them, the most recently
   saved first:
-  - **Saved.** The quote on the sheets, under a name, with its values, the request built
-    from them as Price builds it (the cells the sheets hide left out), and the response its
+  - **Saved.** The quote on the sheets, the sample, under a name, with its values whatever
+    its cells hold (one with nothing typed in the cells the sheets show is refused, "Type
+    the quote first"), the request built from them as a pricing builds it (the cells the
+    sheets hide left out), and the response its
     pricing gave as a deployed pipeline answers it: each output table under its name, a
     one-row table as an object of its columns and a many-row table as a list of them. A
     response that Preview cut short, past its row or cell limit, is refused naming the
     table and its rows, and so is a one-row table priced with other than one row. The form
     as the view holds it is kept with the quote.
-  - **Opened.** A test quote's values replace the quote on the sheets, carried onto the
+  - **Opened.** A test quote's values replace the sample, one undo step, carried onto the
     form as the view holds it by the stable ids; each filled value with no place on it is
     named, by the names it was saved under.
   - **Run.** Run prices every test quote, or those ticked, one request each, on the
@@ -627,13 +720,17 @@ Out of scope:
   refuses it, asking for the project to be saved in the editor. The app
   serves the sheets on a page of their own, drawn as Preview draws them, with the same
   components filled from the app's routes rather than the builder's and nothing of the
-  builder mounted: the sheets' tabs, the sheet showing, Price and Clear, the release and
-  who is signed in. A quote keyed in is checked against the columns' rules as Preview
-  checks it, then priced by the app through `POST /api/app/price`, which takes the values
-  and the form revision and release the page was loaded with. A page drawn for another
+  builder mounted: the sheets' tabs, the sheet showing, the release and who is signed in,
+  and no Price and no Clear. A quote keyed in is marked against the columns' rules as
+  Preview marks the sample, and priced as Preview prices it, 300ms after the last value
+  entered,
+  whatever its cells hold, a quote with nothing typed in the cells the sheets show, the
+  details the app sets and its defaults aside, marked nowhere and priced not at all; the app prices it through
+  `POST /api/app/price`, which takes the values and the form revision and release the page
+  was loaded with. A page drawn for another
   revision or another release is refused (409), so a page loaded from an earlier release
   reloads rather than price on a newer contract or model, a release that changed the
-  model alone included. The request is built as Price builds it and priced through the deployed
+  model alone included. The request is built as Preview's pricing builds it and priced through the deployed
   pipeline's engine, one quote per request, off the server's event loop, under the deploy's
   admission limit and a timeout, and answered whole: each output table's rows, with the
   request priced. `GET /api/app/release` and `GET /api/app/form` serve the release and the
@@ -705,27 +802,32 @@ Out of scope:
   back to Quotes, its reference, its name (its `quote_details.quote_name`, typed in the
   bar as on the sheets and saved with the next Save), its stage and, when archived,
   Archived, who it is with (reassigned from the people quotes are with, or a name typed),
-  Price, Save, Mark final or, for a final quote, Reopen, which asks why, a menu of
-  Duplicate, Renew, Create alternative, Archive or Restore and Copy link, and History.
-  Beneath are its revision, who saved it and when, the release that priced it and the
-  quote it came from. Save keeps the quote priced when the sheets show a price for the
-  values as they are, and unpriced otherwise, which its title says; with nothing typed,
-  the details the app sets aside, there is nothing to save, and nothing new to save while
+  Save, Mark final or, for a final quote, Reopen, which asks why, a menu of Duplicate,
+  Renew, Create alternative, Archive or Restore and Copy link, History, and why the quote
+  has no price. Beneath are its revision, who saved it and when, the release that priced
+  it and the quote it came from. The quote is priced as it is typed, and as it opens while
+  it may change and has no price of this release, unpriced or priced on an earlier one.
+  Save waits for that pricing to settle, a value entered while it waits priced too, and
+  keeps the quote priced when the values settle on a price, and unpriced when they could
+  not be priced, which its label ("Save
+  unpriced") and title say; with nothing typed,
+  the details the app sets and the defaults aside, there is nothing to save, and nothing new to save while
   the values are as saved and priced as saved on this release (a price made since, or
   one of an earlier release, is new). A save and a change name the version the values
   were opened or saved at, which a note does not move, so a save over a quote a colleague
   moved on meanwhile is refused rather than written over theirs; an answer arriving once
   another quote is open, or the quote was left, is that quote's no longer and is dropped,
   and a quote being opened takes nothing typed and saves nothing until it is read. The cells of `reference`,
-  `stage`, `assignee` and `archived` take no typing and Clear leaves them; assigning,
+  `stage`, `assignee` and `archived` take no typing; assigning,
   archiving, restoring, marking final and reopening each write a revision of the newest
   with those details changed, its values and prices kept, which the sheets take on, what
-  was typed kept. A new quote, at `/quotes/new`, is saved by its first Save,
+  was typed kept. A new quote, at `/quotes/new`, opens holding its columns' defaults and
+  is saved by its first Save,
   which gives it its reference and its own address; one made from another quote's
   revision (Duplicate, Renew, Create alternative) opens with that revision's values
-  carried onto the current sheets, unpriced, naming what it was made from and any value
-  that no longer fits. The sheets take no typing, and Price, Save and Clear are off, while
-  the quote is final, archived, shown at an earlier revision (at
+  carried onto the current sheets and priced afresh, naming what it was made from and any
+  value that no longer fits. The sheets take no typing and are not priced, and Save is
+  off, while the quote is final, archived, shown at an earlier revision (at
   `/quotes/{id}/revisions/{n}`, with Open the newest) or saved on earlier sheets (opened
   on those sheets, with Move to current sheets, which carries its values onto the
   current ones as unsaved values naming any that no longer fits). A save the server
@@ -742,14 +844,15 @@ Out of scope:
   were, and closing the tab warns. Archiving says so with Undo, which restores the quote
   archived whichever is open by then. History, on the right, holds the handover note, edited there, the
   revisions, each opened as it was, what was done to the quote, by whom and when, and
-  the quotes it came from or that were made from it. Ctrl+S saves and Ctrl+Enter prices.
-  Without a quote store the app opens on a blank quote with Price and Clear, and says it
+  the quotes it came from or that were made from it. Ctrl+S saves.
+  Without a quote store the app opens on a new quote, priced as it is typed, and says it
   keeps no quotes. One who may only read quotes is offered nothing that changes them: no
   New quote, Duplicate, Archive or Restore on the Quotes page, and every quote read only,
   saying that changing it needs the app's edit role.
 - **Shown when.** A sheet, a section or a component with conditions shows only while they
-  hold on the values typed into the sheets, the sample while building and the quote in
-  Preview; a section on a sheet that does not show does not show either, nor does a
+  hold on the values typed into the sheets: a new quote's defaults alone while building, and in
+  Preview the sample or the underwriter app's quote; a section on a sheet that does not
+  show does not show either, nor does a
   component in a section that does not show.
   - **A condition holds** while its column is in a one-row input table and on a Table or a
     Collection that shows, and the value typed into it passes the test, read as the server types it:
@@ -783,14 +886,14 @@ Out of scope:
     values are kept, not cleared: they stay in the sample and the
     quote as typed, the sample saved with them, and are in the quote again once their
     column shows. The server leaves them out where it makes a quote of the form's values,
-    so the sample priced live, the sample the Workbench Input's copy holds and the quote
-    priced in Preview leave out the same values.
-  - **While building** the sample decides: a hidden sheet's tab, a hidden section and a
+    so the sample priced in Preview, the sample the Workbench Input's copy holds and the
+    app's quote leave out the same values.
+  - **While building** a new quote decides, its defaults alone typed: a hidden sheet's tab, a hidden section and a
     hidden component are drawn faded, still shown, selected and edited like any other, the
     sheet's sections keeping their places, and a sheet, a section or a component with
     conditions carries an eye (a section's in its bar), struck through while it is
     hidden, that names its conditions on hover.
-  - **In Preview** the quote decides, as it is typed: a hidden sheet has no tab; a hidden
+  - **In Preview** the values decide as they are typed, the sample or the app's quote: a hidden sheet has no tab; a hidden
     section is not drawn and the sections under it move up to close the space it took; and
     a hidden component is not drawn, its place in its section left empty, since the
     components are placed freely in it. While the sheet chosen is hidden, the first sheet
@@ -965,8 +1068,10 @@ Out of scope:
     Integer column or any number for a Decimal one, and when it is categorical for a Text one.
     A one-row table holds exactly one row; a many-row table holds any number. Clicking the node
     previews its tables as dataframes, one at a time, chosen from the preview's table picker
-    when there are several, the first table first. A value in them is traced from the node
-    connected to its table: tracing one of the tables' own cells says so.
+    when there are several, the first table first. Clicking a value in them traces it from
+    the node connected to its table: the same row of that node's frame, and the column that
+    fills the value's column. A column nothing fills has no value to trace, and tracing it
+    says so.
   - **The response.** The tables are what a priced quote's output tables are filled with. Where
     the pipeline answers a request, its tables become the response for one quote: a list of one
     object holding each one-row table as an object under its name and each many-row table as a
@@ -1134,28 +1239,48 @@ Out of scope:
 - **One reorder.** The step editor's cards, a component's fields and the sheets' tabs are
   dragged into order through one hook, a row dropped on another put there, rather than a
   second drag model with markers of its own.
-- **A pause in typing.** The sample is priced 300ms after the last change rather than on
-  each commit: the pause is the sign that a value is complete, a heuristic about the typist,
-  not a rule about what an edit is, and undo never depends on it.
+- **Priced once entered.** The sample and the app's quote are priced 300ms after the last
+  value entered, as a spreadsheet recalculates once a cell is entered: a text or number
+  cell's value reaches the quote on Enter, Tab or leaving the cell, so a half-typed number
+  is never priced and each entry is one undo step, and the pause lets a run of entries,
+  tabbing along a row, price once. While a cell is being typed in, the sheets show the
+  pipeline's answer for the values entered.
 - **The form as it stands.** Pricing asks the server for the tables of the unsaved form
   rather than reading the saved file, so a Collection shows the pipeline's answer for what
   is on the sheet now, as a rater's cell would; the pipeline's own Workbench Input still
   follows the saved form, so a save is still what changes the pipeline.
-- **One sheet, two sets of values.** The components draw the sample and the quote through
-  one set of values given to the sheet, rather than a second body for Preview: what a cell
-  holds, how it changes, what the last pricing gave and which cells are marked come from
-  the form store while building and from the preview store in Preview, so a change to how
-  a cell looks or a row is matched is made once.
-- **Price on request.** The quote is priced when Price is pressed, not as it is typed: an
-  underwriter fills a quote in before wanting its price, the check against the rules would
-  otherwise mark every required cell at the first keystroke, and the pipeline is spared a
-  pricing per pause. The sample, priced while building, keeps its pause.
+- **One sheet, three sets of values.** The components draw a new quote, the sample and
+  the app's quote through one set of values given to the sheet, rather than a body for
+  each: what a cell holds, how it changes, what the last pricing gave and which cells are
+  marked come from a new quote's defaults while building, from the form store in Preview and from the
+  Preview store in the underwriter app, so a change to how a cell looks or a row is
+  matched is made once.
+- **Build is a new quote, Preview the quote.** Building draws the sheets as an
+  underwriter first meets them, so a layout is judged on what a new quote shows, and the
+  values an analyst keys in live in Preview, which draws the sheets as the app does. The
+  sample is typed there because it is the quote Preview prices and the pipeline's previews
+  run on: one set of values, saved with the form, rather than a sample and a second quote
+  that lasts only while the editor is open.
+- **A default starts a new quote, and is not typing.** A default is what a quote holds
+  before the underwriter types, so it fills a new quote alone: the sample is a quote
+  already typed, and a quote made from another carries that one's values. Counting a
+  default as typing would price a new quote, and mark its required cells, before anyone
+  touched it, so a quote holding only its defaults waits as a blank one does. A many-row
+  table's rows are started by typing into them, and defaults for them would make a row of
+  defaults alone a row priced, so its columns take none for now.
+- **Priced as typed, never stopped by the rules.** The sample and the app's quote are
+  priced once entered, so what the sheets show is always the pipeline's answer for
+  what is entered on them and nothing needs pressing, and an underwriter's Save keeps the price the
+  values settle on. A column's rules mark the cells that break them but never stop a
+  pricing: refusing a quote is for validations, to come. Clear is gone: it emptied a quote
+  at one press, and Preview's quote is the saved sample, while Undo takes back what was
+  typed.
 - **Rows matched as the server typed them.** A Table's output rows are matched through
   the typed sample the pricing answers with, not the text in the grid: the server leaves
   empty rows out and numbers the index as the grid does, so the filled grid rows are its
   typed rows in order, and a key typed as "$1,000" matches an output row holding 1000.
 - **A Chart is a picture of the sheets.** A Chart plots the values the components are
-  given, the sample while building and the quote in Preview, with their price, rather than
+  given, the sample in Preview or the app's quote, with their price, rather than
   values of its own, so it shows what was typed and what it priced at together, its rows
   lined up as a Table's are and dimmed as its output cells are. Its fields are held and
   lined up as a Table's are, by table and column id, so a column renamed, retyped or
@@ -1168,9 +1293,9 @@ Out of scope:
   Leaving hidden values out makes a quote what its sheets show, whatever order it was
   typed in; keeping them, rather than clearing them, means hiding a section and showing it
   again loses nothing. The server leaves them out where it makes the quote, the one place
-  the sample priced live, the Workbench Input's copy and Preview's quote all come from, and
-  the view, which hides and shows as each value is typed and checks the quote before it is
-  sent, applies the same rules, the two held to one set of cases both test against.
+  the sample priced in Preview, the Workbench Input's copy and the app's quote all come
+  from, and the view, which hides and shows as each value is typed, applies the same
+  rules, the two held to one set of cases both test against.
 - **Decided at once, by hiding.** Conditions test the values as typed, except that a
   condition on a column no component that shows has never holds, so hiding only ever hides
   more: starting from everything shown and hiding until nothing changes gives one answer
@@ -1293,8 +1418,9 @@ Out of scope:
 - **Preview's drawing, the app's data.** Preview already shows the sheets as an
   underwriter uses them: nothing selected or moved, the tabs read-only, no section bars.
   The app mounts the same components over the same stores, which it fills from its own
-  routes, so what an analyst sees in Preview is what an underwriter sees, and the
-  builder's palette, toolbar, schema editor, panels and shortcuts are never mounted.
+  routes, its quote in the sample's place, priced as it is typed as the sample is, so what
+  an analyst sees in Preview is what an underwriter sees, and the builder's palette,
+  toolbar, schema editor, panels and shortcuts are never mounted.
 - **One release.** The form, the sheets and the pipeline ship in one release, so form
   v12 prices on pipeline v12 by construction, and a page that holds another release's
   form is refused rather than priced on a contract it was not drawn for.
@@ -1404,7 +1530,9 @@ Out of scope:
   a form: "<form> is not a workbench form: pages.N.widgets was removed; a sheet's
   components now sit in its sections (pages.N.sections[].widgets)", N the sheet's place.
   Nor is a section that a component reaches below (its `y` plus its `h` above the section's
-  `height`): the message names the section's place and the component. A fetch of the tables that fails shows one
+  `height`): the message names the section's place and the component; nor a sheet a
+  component reaches past (its `x` plus its `w` above the sheet's `width`), or one without a
+  `width`: the message names the sheet's place, and the component. A fetch of the tables that fails shows one
   error toast and changes no Workbench Input or Workbench Output; a fetch made for an
   earlier document never changes the current one, and an update it started that is still
   waiting on identity resolution is dropped with the commit controller's usual message. A
@@ -1430,7 +1558,8 @@ Out of scope:
   too, after a confirmation; a sheet's last section cannot be removed, and the view never
   offers to. A layout value outside its range (a Table's
   rows 1 to 50, a Collection's columns 1 to 12, a section's height below 48 or below what
-  its components reach) is refused at the field, which says the
+  its components reach, a sheet's width below 240 or below what its components reach) is
+  refused at the field, which says the
   range. A component dropped outside the sheet's viewport is not added. Fit never takes
   the zoom below its minimum: a sheet too wide to fit at 25% fits at 25%.
 - A Chart's problems are refused nowhere: the form reads and saves with them, and the view
@@ -1450,10 +1579,10 @@ Out of scope:
   its tables or the preview route's failure, shows as the toolbar's reason and empties the
   output columns, never as a toast; an answer that arrives after the view has left is
   dropped.
-- A quote that breaks a column's rule is not priced: the cells are marked, the toolbar
-  says how many need attention, and nothing is sent. A pricing of the quote that fails
-  shows "Pricing failed: …" in the toolbar and empties the output columns, as the sample's
-  does; a press of Price while one runs does nothing.
+- A quote that breaks a column's rule is priced all the same: its cells are marked once
+  anything is typed, and nothing is refused. A pricing of the app's quote that fails shows
+  "Pricing failed: …" in its bar and empties the output columns, as the sample's does, and
+  a save then keeps the quote unpriced.
 - The schema editor refuses nothing: a problem is shown beside its table, and a save
   writes the form as it is. The tables route then answers the structured 422 for a table
   the pipeline cannot take, which the tables fetch shows as one toast, so the problem is

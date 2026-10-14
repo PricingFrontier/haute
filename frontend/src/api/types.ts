@@ -531,6 +531,7 @@ export type {
   Section,
   ShowWhen,
   TableInputWidget,
+  Theme,
   WorkbenchAppCarryResponse,
   WorkbenchAppFormResponse,
   WorkbenchAppPeopleResponse,

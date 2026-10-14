@@ -14,7 +14,7 @@ import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { pricingBasis, shownFields, updateSchemaColumn, withSampleCell, type ChartOptions } from "../../utils/workbenchForm"
-import { SheetValuesContext, usePreviewValues, useSampleValues } from "../useSheetValues"
+import { SheetValuesContext, useNewQuoteValues, useQuoteValues, useSampleValues } from "../useSheetValues"
 import WidgetBody from "../WidgetBody"
 import { addTo, chartWidget, currentForm, loadForm, sheetForm, widgetsOf } from "./fixtures"
 
@@ -63,16 +63,20 @@ const chart = () => {
   return found
 }
 
-/** The sheet's values around a component: the sample, or the quote in Preview. */
-function OnSheet({ preview = false, children }: { preview?: boolean; children: ReactNode }) {
+/** Whose values the sheet holds: a new quote's while building, the sample in Preview, or the underwriter app's quote. */
+type Values = "new" | "sample" | "quote"
+
+/** The sheet's values around a component. */
+function OnSheet({ values, children }: { values: Values; children: ReactNode }) {
+  const newQuote = useNewQuoteValues()
   const sample = useSampleValues()
-  const quote = usePreviewValues()
-  return <SheetValuesContext value={preview ? quote : sample}>{children}</SheetValuesContext>
+  const quote = useQuoteValues()
+  return <SheetValuesContext value={values === "new" ? newQuote : values === "quote" ? quote : sample}>{children}</SheetValuesContext>
 }
 
-function renderChart(preview = false) {
+function renderChart(values: Values = "sample") {
   return render(
-    <OnSheet preview={preview}>
+    <OnSheet values={values}>
       <WidgetBody widget={chart()} fields={shownFields(currentForm(), chart())} />
     </OnSheet>,
   )
@@ -102,7 +106,7 @@ describe("ChartBody", () => {
     vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }))
     loadForm()
     useWorkbenchPricingStore.setState({ price: null, error: null })
-    useWorkbenchPreviewStore.setState({ quote: {}, checked: false, price: null, error: null, pricing: false })
+    useWorkbenchPreviewStore.setState({ quote: {}, price: null, error: null, pricing: false })
     useWorkbenchViewStore.setState({ section: "sheets" })
   })
 
@@ -154,7 +158,7 @@ describe("ChartBody", () => {
 
     cleanup()
     useWorkbenchViewStore.setState({ section: "preview" })
-    renderChart(true)
+    renderChart()
     expect(screen.queryByText(/panel on the right/)).not.toBeInTheDocument()
     expect(screen.queryByRole("figure")).not.toBeInTheDocument()
   })
@@ -205,13 +209,20 @@ describe("ChartBody", () => {
     expect(screen.getByRole("figure", { name: "Values insured: 2 categories and 1 series." })).toBeInTheDocument()
   })
 
-  it("plots the sample while building and the quote in Preview", async () => {
+  it("plots nothing on a new quote while building, the sample in Preview, and the underwriter app's quote in the app", async () => {
     const form = chartForm([VALUE])
     form.sample = { equipment: [{ "equipment.value": "100" }] }
     loadForm(form)
     useWorkbenchPreviewStore.setState({ quote: { equipment: [{ "equipment.value": "300" }] } })
 
-    renderChart()
+    renderChart("new")
+    expect(screen.getByText("Nothing to chart yet")).toBeInTheDocument()
+    await act(async () => {})
+    expect(createComboChart).not.toHaveBeenCalled()
+    cleanup()
+
+    useWorkbenchViewStore.setState({ section: "preview" })
+    renderChart("sample")
     await waitFor(() => expect(plotted()).toEqual([[100]]))
     expect(readOut("Chart values")).toEqual([
       ["Category", "Value"],
@@ -219,8 +230,7 @@ describe("ChartBody", () => {
     ])
     cleanup()
 
-    useWorkbenchViewStore.setState({ section: "preview" })
-    renderChart(true)
+    renderChart("quote")
     await waitFor(() => expect(plotted()).toEqual([[300]]))
     expect(readOut("Chart values")[1]).toEqual(["1", "300"])
   })

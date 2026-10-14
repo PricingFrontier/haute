@@ -22,6 +22,7 @@ import { ApiError } from "../../api/client"
 import type { FormSpec, WorkbenchAppQuoteChangeResponse, WorkbenchAppQuoteResponse } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
+import useWorkbenchPricingStore, { type QuotePricer } from "../../stores/useWorkbenchPricingStore"
 import { detailsTable, sheetForm } from "../../workbench/__tests__/fixtures"
 import { basisOf, draftKey, readDraft, writeDraft } from "../quoteValues"
 import useAppStore from "../useAppStore"
@@ -40,11 +41,14 @@ describe("useOpenQuoteStore", () => {
     form = sheetForm()
     useAppStore.setState({ release, form, revision: "rev-9", people: [], question: null })
     useWorkbenchFormStore.setState({ form, status: "ready" })
-    useWorkbenchPreviewStore.setState({ quote: {}, checked: false, price: null, error: null, pricing: false, readOnly: false })
+    useWorkbenchPreviewStore.setState({ quote: {}, price: null, error: null, pricing: false, readOnly: false })
     useOpenQuoteStore.setState({ status: "idle", quote: null, revision: null, base: null, past: false, olderSheets: null, source: null, pending: null, conflict: null, error: null, historyOpen: false })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    // A pricing a test left waiting or running is settled with no pricer, pricing nothing.
+    useWorkbenchPricingStore.setState({ quotePricer: null })
+    await useWorkbenchPreviewStore.getState().settle()
     vi.clearAllMocks()
     window.localStorage.clear()
   })
@@ -119,6 +123,7 @@ describe("useOpenQuoteStore", () => {
     await store().openQuote("q1", null)
 
     const saving = store().save()
+    await vi.waitFor(() => expect(saveAppQuote).toHaveBeenCalled())
     preview().setCell("policy", 0, "policy.state", "CA")
     release_(answer({ latest: 2, version: 2 }, { number: 2 }))
     await saving
@@ -127,6 +132,34 @@ describe("useOpenQuoteStore", () => {
     expect(store().baseline).not.toBe(JSON.stringify(preview().quote))
     // What was typed during the save is kept in this browser over the revision it saved.
     expect(readDraft(draftKey("motor", "ana@example.com", "q1"))).toMatchObject({ values: { policy: [{ "policy.state": "CA" }] }, version: 2 })
+  })
+
+  it("saves once the quote's pricing settles, keeping the price it settles on", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    vi.mocked(saveAppQuote).mockResolvedValue(answer({ latest: 2, version: 2 }, { number: 2 }))
+    const tables = { premiums: [{ item: "Crane", premium: 9 }] }
+    useWorkbenchPricingStore.setState({ quotePricer: vi.fn<QuotePricer>(() => Promise.resolve({ tables, sample: {} })) })
+    await store().openQuote("q1", null)
+
+    // Typed and saved at once: the save waits for the pricing the typing asked for.
+    preview().setCell("policy", 0, "policy.state", "CA")
+    await store().save()
+
+    expect(saveAppQuote).toHaveBeenCalledWith("q1", expect.objectContaining({ values: { policy: [{ "policy.state": "CA" }] }, shown: tables }), 1)
+  })
+
+  it("opens a quote that may change, priced on another release, to be priced again on this one", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer({ release: "rel-0" }, { release: "rel-0" }))
+    const tables = { premiums: [{ item: "Crane", premium: 130 }] }
+    const quotePricer = vi.fn<QuotePricer>(() => Promise.resolve({ tables, sample: {} }))
+    useWorkbenchPricingStore.setState({ quotePricer })
+
+    await store().openQuote("q1", null)
+    expect(preview().price).toBeNull()
+    await preview().settle()
+
+    expect(quotePricer).toHaveBeenCalledWith(form, VALUES)
+    expect(preview().price).toMatchObject({ tables, basis: basisOf(form, VALUES) })
   })
 
   it("reads a save over a quote moved on into an offer, keeping the values", async () => {
@@ -205,6 +238,7 @@ describe("useOpenQuoteStore", () => {
     preview().setCell("policy", 0, "policy.state", "CA")
 
     const saving = store().save()
+    await vi.waitFor(() => expect(createAppQuote).toHaveBeenCalled())
     preview().setCell("policy", 0, "policy.year", "2027")
     const details = { qd_reference: "Q-000001", qd_stage: "draft", qd_assignee: "ana@example.com", qd_archived: false }
     creating(answer({ stage: "draft" }, { tables: null, values: { policy: [{ "policy.state": "CA" }], quote_details: [details] } }))
@@ -273,6 +307,7 @@ describe("useOpenQuoteStore", () => {
     await store().openNew(null)
     preview().setCell("policy", 0, "policy.state", "CA")
     const saving = store().save()
+    await vi.waitFor(() => expect(createAppQuote).toHaveBeenCalled())
     preview().setCell("policy", 0, "policy.year", "2027")
 
     store().close()
@@ -288,6 +323,28 @@ describe("useOpenQuoteStore", () => {
 
     expect(await store().save()).toBeNull()
     expect(createAppQuote).not.toHaveBeenCalled()
+  })
+
+  it("opens a new quote holding its columns' defaults, which are not typing: nothing saved, and no draft kept", async () => {
+    form.schema.tables[0].columns[0].default_value = "NY"
+    const fresh = draftKey("motor", "ana@example.com", "new")
+    await store().openNew(null)
+
+    expect(preview().quote).toEqual({ policy: [{ "policy.state": "NY" }] })
+    expect(await store().save()).toBeNull()
+    expect(createAppQuote).not.toHaveBeenCalled()
+    store().close()
+    expect(readDraft(fresh)).toBeNull()
+
+    // Typed, what was typed is kept with the defaults; a quote made from another keeps its values.
+    await store().openNew(null)
+    preview().setCell("policy", 0, "policy.year", "2027")
+    store().close()
+    expect(readDraft(fresh)?.values).toEqual({ policy: [{ "policy.state": "NY", "policy.year": "2027" }] })
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    vi.mocked(carryAppQuote).mockResolvedValue({ values: { policy: [{ "policy.year": "2026" }] }, dropped: [] })
+    await store().openNew({ quoteId: "q1", revision: 1, relation: "duplicate" })
+    expect(preview().quote).toEqual({ policy: [{ "policy.year": "2026" }] })
   })
 
   it("creates a quote made from another's revision with its source", async () => {
@@ -417,6 +474,7 @@ describe("useOpenQuoteStore", () => {
     preview().setCell("policy", 0, "policy.state", "CA")
     writeDraft(draftKey("motor", "ana@example.com", "q1"), { values: preview().quote, version: 1, latest: 1, formRevision: "rev-9", keptAt: "2026-10-12T10:00:00Z" })
     const saved = store().save()
+    await vi.waitFor(() => expect(saveAppQuote).toHaveBeenCalled())
     const assigning = store().change("assignee", { assignee: "jo@example.com" })
     await store().openQuote("q2", null)
 

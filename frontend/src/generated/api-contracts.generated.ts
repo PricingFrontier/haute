@@ -2430,10 +2430,12 @@ export interface FormSpec {
     }[];
   };
   schema: FormSchema;
+  theme: Theme;
   version: 1;
 }
 /**
- * A sheet: when it shows, and its sections, stacked one under the next.
+ * A sheet: ``width`` pixels wide, when it shows, and its sections, stacked one under
+ * the next.
  */
 export interface Page {
   id: string;
@@ -2443,6 +2445,7 @@ export interface Page {
   sections: Section[];
   show_when: ShowWhen;
   title: string;
+  width: number;
 }
 /**
  * A section of a sheet: a strip across the sheet's whole width, ``height`` pixels tall,
@@ -2490,20 +2493,24 @@ export interface Condition {
   values: string[];
 }
 /**
- * A Table: a grid of at least ``rows`` rows showing columns of many-row schema tables.
+ * A Table: a grid showing columns of many-row schema tables.
  */
 export interface TableInputWidget {
   density: 'compact' | 'comfortable';
   fields: FieldRef[];
   fixed_rows: boolean;
+  frame: boolean;
   gridlines: 'rows' | 'all' | 'none';
+  groups: boolean;
   h: number;
+  header: 'caps' | 'plain';
   id: string;
   row_numbers: boolean;
   rows: number;
   show_when: ShowWhen;
   striped: boolean;
   title: string;
+  transposed: boolean;
   type: 'tableInput';
   w: number;
   x: number;
@@ -2521,9 +2528,12 @@ export interface FieldRef {
  */
 export interface CollectionWidget {
   columns: number;
+  density: 'compact' | 'comfortable';
   fields: FieldRef[];
+  frame: boolean;
   h: number;
   id: string;
+  labels: 'above' | 'beside';
   show_when: ShowWhen;
   title: string;
   type: 'collection';
@@ -2584,6 +2594,8 @@ export interface SchemaTable {
 }
 export interface SchemaColumn {
   decimal_places: number | null;
+  default_value: string | boolean;
+  group: string;
   help: string;
   id: string;
   index: boolean;
@@ -2598,6 +2610,17 @@ export interface SchemaColumn {
   required: boolean;
   type: 'int' | 'float' | 'str' | 'bool' | 'date';
   use_grouping: boolean;
+}
+/**
+ * The sheets' colours, wherever they show, each the editor's own while None.
+ */
+export interface Theme {
+  background_color: string | null;
+  border_color: string | null;
+  font_color: string | null;
+  input_cell_color: string | null;
+  output_cell_color: string | null;
+  sheet_color: string | null;
 }
 /**
  * The form as written, with its new revision and the save's version capture.

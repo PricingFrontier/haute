@@ -137,7 +137,12 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // 1,663 KiB restores about 1.9 KiB.
 // Haute's quote_details table (its columns, the schema editor's lock on it and the cells
 // the underwriter app sets) brings it to 1,663.1 KiB; 1,664 KiB restores about 0.9 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1664
+// The Workbench's panes, looks and colours (the Display box and the colour swatches it
+// shares with Explore), its views priced as entered, the sheets' widths, the columns'
+// defaults and groups, and a Table transposed or under its groups, all in the lazy
+// workbench chunks with the initial bundle unchanged, bring it to 1,668.1 KiB; 1,670 KiB
+// restores about 1.9 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1670
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

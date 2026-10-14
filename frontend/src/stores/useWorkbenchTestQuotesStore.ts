@@ -2,8 +2,9 @@
  * Zustand store for the test quotes an analyst keeps in Preview (specs/workbench): the
  * project's test quotes, the panel that lists them, and the last run's results.
  *
- * A save prices the quote on the sheets in full, through a pricer fixed on the pipeline as
- * it is, and keeps it with its values and the form as the view holds it. A run fixes the
+ * A save prices the quote on the sheets, the form's sample, in full, through a pricer fixed
+ * on the pipeline as it is, and keeps it with its values and the form as the view holds it;
+ * an open puts a test quote's values in the sample's place, one undo step. A run fixes the
  * pipeline, the data source and the form when it starts and prices each test quote on them,
  * one request each, its values carried onto that form, then asks the server what changed
  * since the revision it read; a change to any of the three afterwards makes the run stale.
@@ -31,14 +32,14 @@ import {
 import { apiErrorMessage } from "../api/errors"
 import type { FormSpec, WorkbenchTestQuoteSummary, WorkbenchTestQuoteWriteResponse } from "../api/types"
 import { canonicalJson } from "../utils/canonicalJson"
-import { quoteFilled, quoteProblems } from "../utils/sheetValues"
+import { quoteFilled } from "../utils/sheetValues"
 import { quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
+import { withSample } from "../utils/workbenchForm"
 import { reportSaveCapture } from "./saveCapture"
 import useDocumentStatusStore from "./useDocumentStatusStore"
 import useGraphStore from "./useGraphStore"
 import useSettingsStore from "./useSettingsStore"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
-import useWorkbenchPreviewStore from "./useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { priceForm, type Pricer } from "./useWorkbenchPricingStore"
 
 export type RunStatus = "running" | "unchanged" | "changed" | "failed"
@@ -89,6 +90,7 @@ interface WorkbenchTestQuotesState {
   load: () => Promise<void>
   /** Save the quote on the sheets as a new test quote; whether it was saved. */
   save: (name: string) => Promise<boolean>
+  /** Put a test quote's values in the sample's place, one undo step, naming what has no place on the sheets. */
   openQuote: (id: string) => Promise<void>
   toggle: (id: string) => void
   /** Run the ticked test quotes, or every one when none is ticked. */
@@ -136,12 +138,13 @@ function fixedPricer(): Pricer {
   return snapshot()
 }
 
-/** Why the quote on the sheets cannot be priced as Price would refuse it, or null. */
+/**
+ * Why the quote on the sheets cannot be saved as a test quote, or null: nothing typed in
+ * the cells the sheets show is no quote. Its values are priced whatever their cells hold,
+ * as Preview prices them.
+ */
 function quoteRefusal(form: FormSpec, quote: SheetQuote): string | null {
-  const quoted = quotedSchema(form.schema, sheetVisibility(form, quote).hidden)
-  if (!quoteFilled(quoted, quote)) return "Type the quote first"
-  const problems = Object.keys(quoteProblems(quoted, quote)).length
-  return problems === 0 ? null : `${problems} ${problems === 1 ? "cell needs" : "cells need"} attention`
+  return quoteFilled(quotedSchema(form.schema, sheetVisibility(form, quote).hidden), quote) ? null : "Type the quote first"
 }
 
 /** The run asked for last: an answer for an earlier one is nobody's. */
@@ -207,8 +210,8 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
   },
   save: (name) => tracked(async () => {
     const { form } = useWorkbenchFormStore.getState()
-    const { quote } = useWorkbenchPreviewStore.getState()
     if (form === null || get().saving) return false
+    const quote = form.sample
     const refusal = quoteRefusal(form, quote)
     if (refusal !== null) {
       set({ error: refusal })
@@ -222,7 +225,7 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
       // The branch the save starts on, which the server holds it to: a checkout outside the
       // editor that changes nothing but the test-quote file adopts no document.
       const branch = await fetchTestQuotesBranch()
-      const { tables } = await priceForm({ ...form, sample: quote }, fixedPricer())
+      const { tables } = await priceForm(form, fixedPricer())
       if (useDocumentStatusStore.getState().executionGeneration !== document) {
         set({ error: "Not saved: the branch changed while the quote was priced. Save it again on this one." })
         return false
@@ -243,9 +246,8 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
     if (form === null) return
     try {
       const opened = await openTestQuote(id, form)
-      const preview = useWorkbenchPreviewStore.getState()
-      preview.clear()
-      preview.setRows(opened.values)
+      // In the sample's place, one undo step.
+      useWorkbenchFormStore.getState().change((spec) => withSample(spec, opened.values))
       set({
         error: null,
         notice: opened.dropped.length === 0

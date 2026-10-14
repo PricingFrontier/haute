@@ -5,17 +5,19 @@ import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { canonicalJson } from "../utils/canonicalJson"
+import { newQuoteValues } from "../utils/sheetValues"
 import { columnKey } from "../utils/sheetVisibility"
-import { QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED } from "../utils/workbenchForm"
+import { QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, type SampleRow } from "../utils/workbenchForm"
 
 /** The quote_details columns the app sets itself, which take no typing on its sheets. */
 export const APP_SET_COLUMNS: ReadonlySet<string> = new Set([...QUOTE_DETAILS_MANAGED].map((id) => columnKey(QUOTE_DETAILS_ID, id)))
 
 /**
  * Put the underwriter app's release (specs/workbench) in the stores Preview draws from:
- * the form read as at `revision`, Preview showing, the columns the app sets locked, and the
- * quote priced through the app's own route on that revision of release `release` rather
- * than on a pipeline in an editor.
+ * the form read as at `revision`, Preview showing the app's quote rather than a sample, the
+ * columns the app sets locked, the quote priced through the app's own route on that
+ * revision of release `release` rather than on a pipeline in an editor, and a new quote,
+ * holding its columns' defaults, the quote of an app without a quote store.
  */
 export function openRelease(form: FormSpec, revision: string, release: string): void {
   useWorkbenchFormStore.setState({
@@ -28,10 +30,12 @@ export function openRelease(form: FormSpec, revision: string, release: string): 
     undoStack: [],
     redoStack: [],
   })
+  useWorkbenchViewStore.setState({ underwriterApp: true })
   useWorkbenchViewStore.getState().showSection("preview")
   useWorkbenchPreviewStore.getState().setLocked(APP_SET_COLUMNS)
   useWorkbenchPricingStore.getState().setQuotePricer(async (_form, quote) => {
     const { tables, request } = await priceAppQuote(revision, release, quote)
     return { tables, sample: request }
   })
+  useWorkbenchPreviewStore.getState().open(structuredClone(newQuoteValues(form.schema)) as Record<string, SampleRow[]>, null, false)
 }

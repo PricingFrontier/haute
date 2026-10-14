@@ -599,7 +599,7 @@ class TestSmokeTestQuoteFile:
             {
                 "name": "m",
                 "schema": {"tables": []},
-                "pages": [{"id": "p", "title": "S", "sections": [blank]}],
+                "pages": [{"id": "p", "title": "S", "width": 1280, "sections": [blank]}],
             }
         )
         with open_store(url) as store:

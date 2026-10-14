@@ -11,9 +11,11 @@ import {
   addSchemaTable,
   addSection,
   addWidget,
+  BLANK_THEME,
   changeSchemaColumnType,
   CHART_OPTIONS,
   chartGrain,
+  COLLECTION_OPTIONS,
   conditionText,
   conditionUses,
   createIndexColumn,
@@ -54,9 +56,12 @@ import {
   sectionName,
   sectionProblems,
   setPageShowWhen,
+  setPageWidth,
   setSchemaTableRows,
   setSectionHeight,
   setSectionShowWhen,
+  setTableRows,
+  setThemeColour,
   shownFields,
   showsFields,
   showWhenText,
@@ -71,6 +76,7 @@ import {
   widgetName,
   widgetProblems,
   withCell,
+  withSample,
   withSampleCell,
   withSampleRows,
   type Widget,
@@ -86,12 +92,13 @@ const section = (id: string, title: string, height: number, widgets: Widget[] = 
   widgets,
 })
 
-/** A blank form: one sheet, `p`, holding one empty section, `s`, 560 tall. */
+/** A blank form: one sheet, `p`, 1280 wide, holding one empty section, `s`, 560 tall. */
 const blank = (): FormSpec => ({
   version: 1,
   name: "t",
+  theme: { ...BLANK_THEME },
   schema: { tables: [] },
-  pages: [{ id: "p", title: "Sheet 1", show_when: { match: "all", conditions: [] }, sections: [section("s", "Section 1", 560)] }],
+  pages: [{ id: "p", title: "Sheet 1", width: 1280, show_when: { match: "all", conditions: [] }, sections: [section("s", "Section 1", 560)] }],
   sample: {},
 })
 
@@ -111,6 +118,8 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   index: false,
   help: "",
   placeholder: "",
+  group: "",
+  default_value: "",
   number_format: "general",
   decimal_places: null,
   use_grouping: true,
@@ -149,9 +158,9 @@ describe("names", () => {
     spec = addSchemaColumn(spec, first.id, createSchemaColumn(spec, first.id))
 
     expect(spec.schema.tables.map((t) => t.name)).toEqual(["table", "table_2"])
-    expect(spec.schema.tables[0].columns.map((c) => [c.name, c.type, c.index])).toEqual([
-      ["column", "str", false],
-      ["column_2", "str", false],
+    expect(spec.schema.tables[0].columns.map((c) => [c.name, c.type, c.index, c.group, c.default_value])).toEqual([
+      ["column", "str", false, "", ""],
+      ["column_2", "str", false, "", ""],
     ])
     expect(messages(spec)).toEqual([])
   })
@@ -192,8 +201,13 @@ describe("problems", () => {
   })
 
   it("needs a key in a many-row table, and drops keys and the index when a table goes back to one row", () => {
-    let spec = setSchemaTableRows(withTable(column("a", "item"), column("b", "value")), "t", "many")
+    let spec = setSchemaTableRows(withTable(column("a", "item", { default_value: "Laptop" }), column("b", "value", { group: "Cover" })), "t", "many")
     expect(messages(spec)).toEqual(['Table "t" has many rows, so it needs a key column'])
+    // A many-row table's columns take no default; a group stays.
+    expect(spec.schema.tables[0].columns.map((c) => [c.default_value, c.group])).toEqual([
+      ["", ""],
+      ["", "Cover"],
+    ])
 
     spec = updateSchemaColumn(spec, "t", "a", { key: true })
     expect(messages(spec)).toEqual([])
@@ -238,6 +252,25 @@ describe("problems", () => {
     expect(spec.schema.tables[0].columns[0]).toMatchObject({ type: "date", options: [] })
     spec = changeSchemaColumnType(spec, "t", "a", "int")
     expect(spec.schema.tables[0].columns[0]).toMatchObject({ type: "int", min: null, max: null, options: [] })
+
+    // A default is text, kept between the types that take text, or a tick, kept while a
+    // tick box stays one.
+    spec = updateSchemaColumn(spec, "t", "a", { default_value: "5" })
+    spec = changeSchemaColumnType(spec, "t", "a", "str")
+    expect(spec.schema.tables[0].columns[0].default_value).toBe("5")
+    spec = changeSchemaColumnType(spec, "t", "a", "bool")
+    expect(spec.schema.tables[0].columns[0].default_value).toBe("")
+    spec = updateSchemaColumn(spec, "t", "a", { default_value: true })
+    spec = changeSchemaColumnType(spec, "t", "a", "date")
+    expect(spec.schema.tables[0].columns[0].default_value).toBe("")
+    // A date's box shows a day alone: text that is not one goes as the column becomes a
+    // Date, and a day stays.
+    spec = updateSchemaColumn(changeSchemaColumnType(spec, "t", "a", "str"), "t", "a", { default_value: "not-a-date" })
+    spec = changeSchemaColumnType(spec, "t", "a", "date")
+    expect(spec.schema.tables[0].columns[0].default_value).toBe("")
+    spec = updateSchemaColumn(changeSchemaColumnType(spec, "t", "a", "str"), "t", "a", { default_value: "2026-01-01" })
+    spec = changeSchemaColumnType(spec, "t", "a", "date")
+    expect(spec.schema.tables[0].columns[0].default_value).toBe("2026-01-01")
   })
 
   it("checks an input column's rules, which an output table ignores", () => {
@@ -253,6 +286,36 @@ describe("problems", () => {
       `Column "year" in Table "t" allows "2020.5", which isn't a whole number`,
       `Column "deductible" in Table "t" allows "lots", which isn't a number`,
     ])
+    expect(messages(updateSchemaTable(spec, "t", { role: "output" }))).toEqual([])
+  })
+
+  it("checks a one-row input column's default against its rules, as a cell typed into it is", () => {
+    const spec = withTable(
+      column("a", "value", { type: "float", min: 10, default_value: "5" }),
+      column("b", "years", { type: "int", default_value: "2.5" }),
+      column("c", "cover", { options: ["ACV", "RC"], default_value: "New" }),
+      column("d", "smoker", { type: "bool", default_value: "yes" }),
+      column("e", "name", { default_value: true }),
+      // Kept: a number as the server reads one, an allowed value, a tick, a blank or an unticked box.
+      column("f", "limit", { type: "float", min: 0, default_value: "£250,000" }),
+      column("g", "basis", { options: ["ACV", "RC"], default_value: "RC" }),
+      column("h", "vat", { type: "bool", default_value: true }),
+      column("i", "note", { required: true, default_value: " " }),
+      column("j", "flag", { type: "bool", default_value: false }),
+      column("k", "expiry", { type: "date", default_value: "2026-12-31" }),
+      // Refused: a Date's default that is not a day, as a hand-edited file may hold.
+      column("l", "inception", { type: "date", default_value: "2026-02-30" }),
+    )
+
+    expect(messages(spec)).toEqual([
+      'Column "value" in Table "t" has a default its rules refuse: At least 10',
+      'Column "years" in Table "t" has a default its rules refuse: Not a whole number',
+      'Column "cover" in Table "t" has a default its rules refuse: Not one of the allowed values',
+      'Column "smoker" in Table "t" has a default its rules refuse: Not a tick',
+      'Column "name" in Table "t" has a default its rules refuse: Not text',
+      'Column "inception" in Table "t" has a default its rules refuse: Not a date',
+    ])
+    // An output table takes no default to check, as it takes no rules.
     expect(messages(updateSchemaTable(spec, "t", { role: "output" }))).toEqual([])
   })
 })
@@ -312,10 +375,11 @@ describe("what the sheets show", () => {
         {
           id: "p",
           title: "Sheet 1",
+          width: 1280,
           show_when: { match: "all", conditions: [] },
           sections: [
             section("s", "Section 1", 560, [
-              { id: "w_boxes", type: "collection", x: 0, y: 0, w: 720, h: 120, title: "Policy", columns: 3, fields: [{ table: "policy", column: "policy.state" }], show_when: { match: "all", conditions: [] } },
+              { id: "w_boxes", type: "collection", x: 0, y: 0, w: 720, h: 120, title: "Policy", columns: 3, ...COLLECTION_OPTIONS, fields: [{ table: "policy", column: "policy.state" }], show_when: { match: "all", conditions: [] } },
               {
                 id: "w_grid",
                 type: "tableInput",
@@ -378,10 +442,11 @@ describe("what the sheets show", () => {
     expect(JSON.stringify(before)).toBe(snapshot)
   })
 
-  it("names new sheets uniquely, each holding one section 560 tall, renames them, and keeps the last one", () => {
+  it("names new sheets uniquely, each as wide as the last and holding one section 560 tall, renames them, and keeps the last one", () => {
     let spec = blank()
     const second = createPage(spec)
     expect(second.title).toBe("Sheet 2")
+    expect(second.width).toBe(1280)
     // The whole sheet is one section until another is added.
     expect(second.sections).toEqual([
       { id: expect.stringMatching(/^section_/), title: "Section 1", height: 560, show_when: { match: "all", conditions: [] }, widgets: [] },
@@ -390,6 +455,8 @@ describe("what the sheets show", () => {
     spec = renamePage(spec, second.id, "Equipment")
     expect(spec.pages.map((page) => page.title)).toEqual(["Sheet 1", "Equipment"])
     expect(createPage(spec).title).toBe("Sheet 3")
+    expect(createPage(setPageWidth(spec, second.id, 1600)).width).toBe(1600)
+    expect(createPage(setPageWidth(spec, "p", 1600)).width).toBe(1280)
 
     spec = removePage(spec, "p")
     expect(spec.pages.map((page) => page.id)).toEqual([second.id])
@@ -412,13 +479,16 @@ describe("what the sheets show", () => {
     let spec = blank()
     const grid = createWidget("tableInput", { x: 0, y: 0, w: 720, h: 200 })
     const boxes = createWidget("collection", { x: 0, y: 240, w: 720, h: 120 })
-    // A Table as the server's defaults have it: numbered, compact, lined between rows, striped, not fixed.
-    expect(grid).toMatchObject({ type: "tableInput", title: "", fields: [], rows: 3, row_numbers: true, density: "compact", gridlines: "rows", striped: true, fixed_rows: false })
-    expect(boxes).toMatchObject({ type: "collection", title: "", fields: [], columns: 3 })
+    // A Table as the server's defaults have it: numbered, compact, lined between rows, striped, not
+    // fixed, its header as written and framed; a Collection labelled above its boxes, comfortable
+    // and framed.
+    expect(grid).toMatchObject({ type: "tableInput", title: "", fields: [], rows: 3, row_numbers: true, density: "compact", gridlines: "rows", striped: true, fixed_rows: false, header: "plain", frame: true })
+    expect(boxes).toMatchObject({ type: "collection", title: "", fields: [], columns: 3, labels: "above", density: "comfortable", frame: true })
     expect(grid).not.toHaveProperty("columns")
-    expect(boxes).not.toHaveProperty("density")
+    expect(boxes).not.toHaveProperty("gridlines")
     // In the file's order, so a component the view made compares equal to it saved.
-    expect(Object.keys(grid)).toEqual(["id", "x", "y", "w", "h", "type", "title", "fields", "show_when", "rows", "row_numbers", "density", "gridlines", "striped", "fixed_rows"])
+    expect(Object.keys(grid)).toEqual(["id", "x", "y", "w", "h", "type", "title", "fields", "show_when", "rows", "row_numbers", "density", "gridlines", "striped", "fixed_rows", "header", "frame", "transposed", "groups"])
+    expect(Object.keys(boxes)).toEqual(["id", "x", "y", "w", "h", "type", "title", "fields", "show_when", "columns", "labels", "density", "frame"])
 
     spec = addWidget(addWidget(spec, "s", grid), "s", boxes)
     spec = updateWidget(spec, grid.id, { title: "Equipment", rows: 5, x: 16, gridlines: "all", fixed_rows: true })
@@ -430,7 +500,13 @@ describe("what the sheets show", () => {
     })
     expect(() => updateWidget(spec, grid.id, { columns: 2 })).toThrow("Only a Collection has columns")
     expect(() => updateWidget(spec, boxes.id, { rows: 2 })).toThrow("Only a Table has rows")
-    expect(() => updateWidget(spec, boxes.id, { density: "comfortable" })).toThrow("Only a Table has density")
+    // A Collection takes its own look, the density and the frame a Table has too, and none of a Table's own.
+    spec = updateWidget(spec, boxes.id, { labels: "beside", density: "compact", frame: false })
+    expect(findWidget(spec, boxes.id)?.widget).toMatchObject({ labels: "beside", density: "compact", frame: false })
+    expect(() => updateWidget(spec, boxes.id, { header: "caps" })).toThrow("Only a Table has header")
+    expect(() => updateWidget(spec, boxes.id, { transposed: true })).toThrow("Only a Table has transposed")
+    expect(() => updateWidget(spec, boxes.id, { groups: true })).toThrow("Only a Table has groups")
+    expect(() => updateWidget(spec, grid.id, { labels: "beside" })).toThrow("Only a Collection has labels")
     expect(() => updateWidget(spec, "missing", { title: "x" })).toThrow("No sheet has a component missing")
 
     const copied = duplicateWidget(spec, grid.id)
@@ -463,6 +539,8 @@ describe("what the sheets show", () => {
     expect(() => updateWidget(spec, boxes.id, { chart_type: "line" })).toThrow("Only a Chart has chart_type")
     expect(() => updateWidget(spec, chart.id, { rows: 2 })).toThrow("Only a Table has rows")
     expect(() => updateWidget(spec, chart.id, { columns: 2 })).toThrow("Only a Collection has columns")
+    expect(() => updateWidget(spec, chart.id, { frame: false })).toThrow("Only a Table or a Collection has frame")
+    expect(() => updateWidget(spec, chart.id, { density: "compact" })).toThrow("Only a Table or a Collection has density")
 
     const copied = duplicateWidget(spec, chart.id)
     expect(findWidget(copied.spec, copied.id)).toMatchObject({ index: 1, widget: { type: "chart", title: "Premiums", x: 16, y: 16, ...options } })
@@ -525,6 +603,24 @@ describe("what the sheets show", () => {
     expect(fields(spec, "w_grid")).toEqual(["equipment.value", "equipment.item"])
   })
 
+  it("sets one of the sheets' colours, leaving the others the editor's own, and the editor's own again", () => {
+    expect(BLANK_THEME).toEqual({ sheet_color: null, background_color: null, border_color: null, font_color: null, input_cell_color: null, output_cell_color: null })
+    const spec = sheet()
+    const coloured = setThemeColour(spec, "border_color", "#2563EB")
+    expect(coloured.theme).toEqual({ ...BLANK_THEME, border_color: "#2563EB" })
+    expect(spec.theme).toEqual(BLANK_THEME)
+    expect(setThemeColour(coloured, "border_color", null).theme).toEqual(BLANK_THEME)
+  })
+
+  it("replaces the sample whole, as a test quote opened does, leaving the values given untouched", () => {
+    const values = { equipment: [{ "equipment.item": "Z" }] }
+    const spec = withSample(sheet(), values)
+    expect(spec.sample).toEqual({ equipment: [{ "equipment.item": "Z" }] })
+    expect(spec.sample).not.toBe(values)
+    spec.sample.equipment[0]["equipment.item"] = "Y"
+    expect(values.equipment[0]["equipment.item"]).toBe("Z")
+  })
+
   it("sets a sample cell, adding empty rows up to it, and replaces several tables' rows as one edit", () => {
     let spec = withSampleCell(sheet(), "equipment", 3, "equipment.item", "C")
     expect(spec.sample.equipment).toEqual([{ "equipment.item": "A", "equipment.value": "100" }, { "equipment.item": "B" }, {}, { "equipment.item": "C" }])
@@ -536,6 +632,22 @@ describe("what the sheets show", () => {
     expect(spec.sample.equipment).toEqual([{ "equipment.item": "B" }])
     expect(spec.sample.premiums).toEqual([{ "premiums.item": "B" }])
     expect(spec.sample.policy).toEqual([{ "policy.state": "NY", "policy.year": true }])
+  })
+
+  it("sets the rows a Table's grid starts with, starting its grid in the sample again at them and keeping every value typed", () => {
+    // Its table keeps its rows up to the last with a value typed, made up to the rows with empty ones.
+    let spec = withSampleRows(sheet(), { equipment: [{ "equipment.item": "A" }, {}, { "equipment.item": "C" }, { "equipment.item": " " }, {}] })
+    expect(setTableRows(spec, "w_grid", 1).sample.equipment).toEqual([{ "equipment.item": "A" }, {}, { "equipment.item": "C" }])
+    const more = setTableRows(spec, "w_grid", 5)
+    expect(more.sample.equipment).toEqual([{ "equipment.item": "A" }, {}, { "equipment.item": "C" }, {}, {}])
+    expect(widgetsOf(more)[1]).toMatchObject({ rows: 5 })
+    // A value in a column the grid does not show is typed too.
+    expect(setTableRows(withSampleRows(spec, { equipment: [{}, { "equipment.gone": "x" }, {}] }), "w_grid", 1).sample.equipment).toEqual([{}, { "equipment.gone": "x" }])
+
+    // With nothing typed it holds no rows, so the grid shows those it starts with; the policy's row stays.
+    spec = withSampleRows(spec, { equipment: [{}, { "equipment.value": "" }] })
+    expect(setTableRows(spec, "w_grid", 4).sample).toEqual({ policy: [{ "policy.state": "NY" }] })
+    expect(() => setTableRows(spec, "w_boxes", 2)).toThrow("Only a Table has rows")
   })
 
   it("prices on the schema and the sample alone: laying the sheet out differently changes nothing", () => {
@@ -936,6 +1048,49 @@ describe("sections", () => {
     expect(heights(roomy.spec)).toEqual([400, 232, 48])
   })
 
+  it("keeps a component inside its sheet's width as it is added, placed, moved or copied, the sheet widening only for one wider than it or resized past its right edge", () => {
+    // 1280 wide.
+    const spec = stacked()
+    const width = (form: FormSpec) => form.pages[0].width
+    const note = { ...createWidget("heading", { x: 1000, y: 0, w: 480, h: 48 }), id: "w_note" }
+
+    // Past the right edge it stops there, 1280 less its width across, and the sheet keeps its width.
+    expect(findWidget(addWidget(spec, "s_notes", note), "w_note")?.widget.x).toBe(800)
+    expect(findWidget(placeWidget(spec, "w_boxes", "s_equipment", { x: 1000, y: 16, w: 400, h: 120 }), "w_boxes")?.widget.x).toBe(880)
+    const moved = moveWidget(spec, "w_grid", { x: 900, y: 16 })
+    expect(findWidget(moved, "w_grid")?.widget.x).toBe(560)
+    expect(width(moved)).toBe(1280)
+    // A copy of one at the edge stays at it, 16 below its original.
+    const copied = duplicateWidget(moved, "w_grid")
+    expect(findWidget(copied.spec, copied.id)?.widget).toMatchObject({ x: 560, y: 32 })
+    // Wider than the sheet, it sits at its left edge, and the sheet widens to hold it.
+    const wide = addWidget(spec, "s_notes", { ...note, w: 1500 })
+    expect(findWidget(wide, "w_note")?.widget.x).toBe(0)
+    expect(width(wide)).toBe(1500)
+    // Resized past the right edge, the sheet widens to hold it, and never narrows of its own accord.
+    const resized = updateWidget(spec, "w_grid", { x: 16, y: 16, w: 1400, h: 200 })
+    expect(width(resized)).toBe(1416)
+    expect(width(updateWidget(resized, "w_grid", { w: 400 }))).toBe(1416)
+  })
+
+  it("sets a sheet's width in whole pixels, never under what its components reach or 240, the form as given while it is that already or for a width the file cannot hold", () => {
+    // Its Table reaches 736 across.
+    const spec = stacked()
+    const width = (form: FormSpec) => form.pages[0].width
+
+    expect(width(setPageWidth(spec, "p", 1600))).toBe(1600)
+    expect(width(setPageWidth(spec, "p", 900.4))).toBe(900)
+    expect(width(setPageWidth(spec, "p", 500))).toBe(736)
+    expect(width(setPageWidth(blank(), "p", 100))).toBe(240)
+    // Its components stay where they are.
+    expect(setPageWidth(spec, "p", 1600).pages[0].sections).toEqual(spec.pages[0].sections)
+    expect(setPageWidth(spec, "p", 1280)).toBe(spec)
+    expect(setPageWidth(spec, "p", Infinity)).toBe(spec)
+    expect(setPageWidth(spec, "p", NaN)).toBe(spec)
+    expect(setPageWidth(spec, "p", 2 ** 53)).toBe(spec)
+    expect(() => setPageWidth(spec, "missing", 1000)).toThrow("The form has no sheet missing")
+  })
+
   it("leaves its input untouched", () => {
     const before = stacked()
     const snapshot = JSON.stringify(before)
@@ -954,6 +1109,7 @@ describe("sections", () => {
     moveWidget(before, "w_boxes", { x: 0, y: 400 })
     duplicateWidget(before, "w_grid")
     removeWidget(before, "w_grid")
+    setPageWidth(before, "p", 2000)
 
     expect(JSON.stringify(before)).toBe(snapshot)
   })
@@ -972,7 +1128,7 @@ describe("when sheets and components show", () => {
     title,
     fields: columns.map(([tableId, columnId]) => ({ table: tableId, column: columnId })),
     show_when: showWhen,
-    columns: 3,
+    columns: 3, ...COLLECTION_OPTIONS,
   })
   /**
    * A tick box and a class on the main sheet, in its section "Policy", and a sheet of
@@ -994,8 +1150,8 @@ describe("when sheets and components show", () => {
       ],
     },
     pages: [
-      { id: "p", title: "Main", show_when: always(), sections: [section("s_main", "Policy", 136, [collection("w_policy", "Policy", [["policy", "policy.bi"], ["policy", "policy.class"]])])] },
-      { id: "p_bi", title: "BI", show_when: { match: "all", conditions: [ticked] }, sections: [section("s_bi", "Limits", 136, [collection("w_bi", "Limits", [["bi", "bi.limit"]])])] },
+      { id: "p", title: "Main", width: 1280, show_when: always(), sections: [section("s_main", "Policy", 136, [collection("w_policy", "Policy", [["policy", "policy.bi"], ["policy", "policy.class"]])])] },
+      { id: "p_bi", title: "BI", width: 1280, show_when: { match: "all", conditions: [ticked] }, sections: [section("s_bi", "Limits", 136, [collection("w_bi", "Limits", [["bi", "bi.limit"]])])] },
     ],
     sample: { bi: [{ "bi.limit": "500,000" }] },
   })

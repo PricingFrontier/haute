@@ -2,16 +2,17 @@
  * The toolbar while the workbench's view shows (specs/workbench): the brand, Build over
  * Preview, the sections, the form's Undo and Redo, the sheet's zoom, the project's
  * controls, Save and Commit, both the host's as the pipeline toolbar's are, and in
- * Preview Price and Clear for the quote.
+ * Preview Test quotes and why pricing the sample failed, with no Price or Clear: the
+ * sample is priced as it is typed.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import type { FormSpec } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
-import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchTestQuotesStore from "../../stores/useWorkbenchTestQuotesStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
+import { BLANK_THEME } from "../../utils/workbenchForm"
 import WorkbenchToolbar from "../WorkbenchToolbar"
 
 vi.mock("../../components/BranchIndicator", () => ({
@@ -21,11 +22,13 @@ vi.mock("../../components/BranchIndicator", () => ({
 const blank: FormSpec = {
   version: 1,
   name: "motor",
+  theme: { ...BLANK_THEME },
   schema: { tables: [] },
   pages: [
     {
       id: "page_1",
       title: "Sheet 1",
+      width: 1280,
       show_when: { match: "all", conditions: [] },
       sections: [{ id: "section_1", title: "Section 1", height: 560, show_when: { match: "all", conditions: [] }, widgets: [] }],
     },
@@ -43,7 +46,7 @@ const form: FormSpec = {
         name: "policy",
         role: "input",
         rows: "one",
-        columns: [{ id: "c1", name: "limit", type: "str", label: "", key: false, required: false, min: null, max: null, options: [], index: false, help: "", placeholder: "", number_format: "general", decimal_places: null, use_grouping: true }],
+        columns: [{ id: "c1", name: "limit", type: "str", label: "", key: false, required: false, min: null, max: null, options: [], index: false, help: "", placeholder: "", group: "", default_value: "", number_format: "general", decimal_places: null, use_grouping: true }],
       },
     ],
   },
@@ -55,13 +58,11 @@ const renderToolbar = () => render(<WorkbenchToolbar onSave={onSave} onCommit={o
 
 describe("WorkbenchToolbar", () => {
   const actions = { undo: vi.fn(), redo: vi.fn() }
-  const quote = { priceQuote: vi.fn(async () => {}), clear: vi.fn() }
 
   beforeEach(() => {
     useWorkbenchFormStore.setState({ form, status: "ready", saving: false, undoStack: [], redoStack: [], ...actions })
     useWorkbenchViewStore.setState({ section: "sheets", zoom: 1 })
     useWorkbenchPricingStore.setState({ error: null })
-    useWorkbenchPreviewStore.setState({ quote: {}, error: null, pricing: false, ...quote })
   })
 
   afterEach(() => {
@@ -100,7 +101,7 @@ describe("WorkbenchToolbar", () => {
     expect(useWorkbenchViewStore.getState().section).toBe("sheets")
   })
 
-  it("switches to Preview, which has the zoom and the quote's Price and Clear in place of the sections and the history, and back to Build", () => {
+  it("switches to Preview, which has the zoom and the form's Undo and Redo, no sections and no Price or Clear, and back to Build", () => {
     useWorkbenchViewStore.setState({ section: "schema" })
     renderToolbar()
 
@@ -108,41 +109,23 @@ describe("WorkbenchToolbar", () => {
     expect(useWorkbenchViewStore.getState().section).toBe("preview")
     expect(screen.getByRole("button", { name: "Preview" })).toHaveAttribute("aria-pressed", "true")
     expect(screen.queryByRole("button", { name: "Sheets" })).not.toBeInTheDocument()
-    expect(screen.queryByTestId("toolbar-undo")).not.toBeInTheDocument()
+    expect(screen.getByTestId("toolbar-undo")).toBeInTheDocument()
     expect(screen.getByTestId("toolbar-zoom-in")).toBeInTheDocument()
-
-    // Nothing typed: nothing to price, as a deployed request never holds a blank quote,
-    // and nothing to clear. Typed: Price prices it, and Clear asks, then starts over.
-    expect(screen.getByRole("button", { name: "Price" })).toBeDisabled()
-    expect(screen.getByRole("button", { name: "Price" })).toHaveAttribute("title", "Type the quote first")
-    expect(screen.getByRole("button", { name: "Clear" })).toBeDisabled()
-    // A value in a column the schema no longer has, or in a second row of a table now
-    // with one row per quote, counts for nothing: the server leaves it out.
-    act(() => {
-      useWorkbenchPreviewStore.setState({ quote: { t1: [{ gone: "x" }, { c1: "z" }], gone: [{ c1: "y" }] } })
-    })
-    expect(screen.getByRole("button", { name: "Price" })).toBeDisabled()
-    expect(screen.getByRole("button", { name: "Clear" })).toBeDisabled()
-    act(() => {
-      useWorkbenchPreviewStore.setState({ quote: { t1: [{ c1: "x" }] } })
-    })
-    fireEvent.click(screen.getByRole("button", { name: "Price" }))
-    expect(quote.priceQuote).toHaveBeenCalledTimes(1)
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false)
-    fireEvent.click(screen.getByRole("button", { name: "Clear" }))
-    expect(confirm).toHaveBeenCalledWith("Clear the quote? Every cell will be emptied.")
-    expect(quote.clear).not.toHaveBeenCalled()
-    confirm.mockReturnValue(true)
-    fireEvent.click(screen.getByRole("button", { name: "Clear" }))
-    expect(quote.clear).toHaveBeenCalledTimes(1)
-
-    act(() => {
-      useWorkbenchPreviewStore.setState({ pricing: true })
-    })
-    expect(screen.getByRole("button", { name: "Price" })).toBeDisabled()
+    // The sample is priced as it is typed, and nothing empties it.
+    expect(screen.queryByRole("button", { name: "Price" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Clear" })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button", { name: "Build" }))
     expect(useWorkbenchViewStore.getState().section).toBe("sheets")
+  })
+
+  it("has Display while building, opening the box of the sheets' colours, and none in Preview", () => {
+    renderToolbar()
+    fireEvent.click(screen.getByRole("button", { name: "Display" }))
+    expect(screen.getByRole("dialog", { name: "Display" })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }))
+    expect(screen.queryByRole("button", { name: "Display" })).not.toBeInTheDocument()
   })
 
   it("opens and closes the test quotes from Preview alone", () => {
@@ -156,28 +139,6 @@ describe("WorkbenchToolbar", () => {
     expect(screen.getByRole("button", { name: "Test quotes" })).toHaveAttribute("aria-pressed", "true")
     fireEvent.click(screen.getByRole("button", { name: "Test quotes" }))
     expect(useWorkbenchTestQuotesStore.getState().open).toBe(false)
-  })
-
-  it("prices nothing while the only values typed are in cells the sheets hide, though Clear clears them", () => {
-    const boxes = { id: "w", type: "collection" as const, x: 0, y: 0, w: 400, h: 100, title: "", columns: 2, fields: [{ table: "t1", column: "c1" }], show_when: { match: "all" as const, conditions: [] } }
-    useWorkbenchFormStore.setState({
-      form: {
-        ...form,
-        pages: [
-          {
-            ...blank.pages[0],
-            show_when: { match: "all", conditions: [{ table: "t1", column: "c1", op: "equals", values: ["never"] }] },
-            sections: [{ ...blank.pages[0].sections[0], widgets: [boxes] }],
-          },
-        ],
-      },
-    })
-    useWorkbenchViewStore.setState({ section: "preview" })
-    useWorkbenchPreviewStore.setState({ quote: { t1: [{ c1: "x" }] } })
-    renderToolbar()
-
-    expect(screen.getByRole("button", { name: "Price" })).toBeDisabled()
-    expect(screen.getByRole("button", { name: "Clear" })).toBeEnabled()
   })
 
   it("zooms the sheet in and out by a step", () => {
@@ -214,32 +175,34 @@ describe("WorkbenchToolbar", () => {
     expect(screen.getByTestId("toolbar-undo")).toBeDisabled()
   })
 
-  it("says why pricing the sample last failed while building, and why the quote has no price in Preview", () => {
+  it("says why pricing the sample last failed in Preview, and nothing of it while building, which prices nothing", () => {
+    useWorkbenchPricingStore.setState({ error: "Connect a frame to the Workbench Output's 'pricing_output' table." })
     const { rerender } = renderToolbar()
     expect(screen.queryByTestId("workbench-pricing-error")).not.toBeInTheDocument()
 
-    useWorkbenchPricingStore.setState({ error: "Connect a frame to the Workbench Output's 'pricing_output' table." })
+    useWorkbenchViewStore.setState({ section: "preview" })
     rerender(<WorkbenchToolbar onSave={onSave} onCommit={onCommit} />)
     const note = screen.getByTestId("workbench-pricing-error")
     expect(note).toHaveTextContent("Pricing failed: Connect a frame to the Workbench Output's 'pricing_output' table.")
     expect(note).toHaveAttribute("title", "Connect a frame to the Workbench Output's 'pricing_output' table.")
 
-    useWorkbenchViewStore.setState({ section: "preview" })
+    useWorkbenchPricingStore.setState({ error: null })
     rerender(<WorkbenchToolbar onSave={onSave} onCommit={onCommit} />)
     expect(screen.queryByTestId("workbench-pricing-error")).not.toBeInTheDocument()
-    useWorkbenchPreviewStore.setState({ error: "2 cells need attention" })
-    rerender(<WorkbenchToolbar onSave={onSave} onCommit={onCommit} />)
-    expect(screen.getByTestId("workbench-pricing-error")).toHaveTextContent("2 cells need attention")
   })
 
-  it("undoes and redoes the form's history", () => {
+  it("undoes and redoes the form's history, building or in Preview, where the sample is typed", () => {
     useWorkbenchFormStore.setState({ undoStack: [blank], redoStack: [blank] })
-    renderToolbar()
+    const { rerender } = renderToolbar()
 
     fireEvent.click(screen.getByTestId("toolbar-undo"))
     fireEvent.click(screen.getByTestId("toolbar-redo"))
+    useWorkbenchViewStore.setState({ section: "preview" })
+    rerender(<WorkbenchToolbar onSave={onSave} onCommit={onCommit} />)
+    fireEvent.click(screen.getByTestId("toolbar-undo"))
+    fireEvent.click(screen.getByTestId("toolbar-redo"))
 
-    expect(actions.undo).toHaveBeenCalledTimes(1)
-    expect(actions.redo).toHaveBeenCalledTimes(1)
+    expect(actions.undo).toHaveBeenCalledTimes(2)
+    expect(actions.redo).toHaveBeenCalledTimes(2)
   })
 })

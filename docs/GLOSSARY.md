@@ -66,7 +66,7 @@ Two naming notes:
 
 - **workbench** — the project's view where a pricing team lays out the sheets an underwriter keys a quote into, enabled by `[workbench]` in `haute.toml`, with its sheets saved in `forms/form.json`. In user-facing text say "the workbench" (lower case) and "the sheets" or `forms/form.json`, never "the form".
 
-- **sheet** — one page of the workbench: a canvas of sections the components are laid out in. `pages` in the file.
+- **sheet** — one page of the workbench: a canvas of a set width, its sections stacked down it, the components laid out in them. `pages` in the file.
 
 - **section (of a sheet)** — a strip across a sheet's whole width, one of the sheet's stack, holding components placed freely in it, with a height and its own Show when; hidden, it closes up in Preview. `sections` in the file. Not the view's sections (the sheets, the schema, Preview).
 
@@ -86,6 +86,6 @@ Two naming notes:
 
 - **index** — a many-row schema table's row-number column, `row_number` until renamed, an Integer numbering the rows from 1.
 
-- **the sample** — the quote typed into the sheets while building: saved with the sheets, priced live, and what the Workbench Input's previews run on, read as a request is read.
+- **the sample** — the quote typed into the sheets in Preview: saved with the sheets, priced live, and what the Workbench Input's previews run on, read as a request is read.
 
-- **Build / Preview** — the workbench's two modes: Build lays out the sheets and edits the schema; Preview shows the sheets as an underwriter uses them, with a quote kept apart from the sample and never saved.
+- **Build / Preview** — the workbench's two modes: Build lays out the sheets and edits the schema, the sheets drawn as an underwriter's new quote opens; Preview shows the sheets as an underwriter uses them, drawn as the underwriter app draws them, with the sample typed in and priced as it is typed.

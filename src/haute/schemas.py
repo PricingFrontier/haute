@@ -1848,6 +1848,9 @@ class TraceRequest(BaseModel):
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: str = "live"
     row_values: dict[str, Any] | None = None
+    # The table of a Workbench Output target the row is from: the cell is traced
+    # from the node connected to it. Ignored for any other target.
+    port_label: str | None = None
     # The ``seed_plan`` of the preview this trace explains: the trace reads
     # exactly those generations and nothing else, even if snapshots now exist.
     seed_plan: list[TraceSeedPlanEntry]

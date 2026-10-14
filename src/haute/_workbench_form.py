@@ -42,12 +42,22 @@ ColumnFormat = Literal[
     "general", "number", "percent", "currency_gbp", "currency_usd", "currency_eur"
 ]
 
-#: How tall a Table's rows are: Haute's compact rows, or roomier ones.
-TableDensity = Literal["compact", "comfortable"]
+#: How tall a Table's rows or a Collection's boxes are: Haute's compact ones, or roomier ones.
+Density = Literal["compact", "comfortable"]
 
 #: The lines a Table draws: between its rows and before each output column, between every
 #: column too, or none.
 TableGridlines = Literal["rows", "all", "none"]
+
+#: How a Table's header shows its labels: as written, or in capitals.
+TableHeader = Literal["caps", "plain"]
+
+#: Where a Collection's labels sit: above its boxes, or beside them.
+CollectionLabels = Literal["above", "beside"]
+
+#: A colour the sheets are drawn in, as ``#RRGGBB`` in capitals: one spelling, as the picker
+#: writes it.
+Colour = Annotated[str, Field(pattern=r"^#[0-9A-F]{6}$")]
 
 #: How a Chart draws its values: as columns, a line, a filled area, or the slices of a pie.
 ChartType = Literal["column", "line", "area", "pie"]
@@ -83,10 +93,12 @@ ConditionTest = Literal[
 #: A sample cell as typed: text, or a tick. Strict, so a number or a null is refused.
 Cell = Annotated[str, Strict()] | Annotated[bool, Strict()]
 
-#: How tall a new sheet's one section is: the view's least sheet height less the room it
-#: leaves below the sections (``frontend/src/utils/sheetGeometry.ts``), so the whole sheet
-#: is one section until another is added.
+#: How tall a new sheet's one section is: the whole sheet until another is added, as the
+#: view starts a new sheet (``frontend/src/utils/sheetGeometry.ts``).
 BLANK_SECTION_HEIGHT = 560
+
+#: How wide a new form's sheet is, as the view starts one (``frontend/src/utils/sheetGeometry.ts``).
+BLANK_SHEET_WIDTH = 1280
 
 
 class WorkbenchFormError(WorkbenchError):
@@ -139,20 +151,27 @@ class ShowWhen(_Strict):
 
 
 class TableInputWidget(_Placed):
-    """A Table: a grid of at least ``rows`` rows showing columns of many-row schema tables."""
+    """A Table: a grid showing columns of many-row schema tables."""
 
     type: Literal["tableInput"]
     title: str = ""
     fields: list[FieldRef] = Field(default_factory=list)
     show_when: ShowWhen = Field(default_factory=ShowWhen)
     rows: int = Field(default=3, ge=1, le=50)
-    # How the grid looks, and whether its rows are a set structure with no Add row and no
-    # delete: by default numbered, compact, lined between rows, striped and not fixed.
+    # How the grid looks, whether its rows are a set structure with no Add row and no
+    # delete, whether it is transposed, its fields down its side and its rows across, and
+    # whether its fields' schema groups head their labels: by default numbered, compact,
+    # lined between rows, striped, not fixed, its header as written, framed, not
+    # transposed and without groups.
     row_numbers: bool = True
-    density: TableDensity = "compact"
+    density: Density = "compact"
     gridlines: TableGridlines = "rows"
     striped: bool = True
     fixed_rows: bool = False
+    header: TableHeader = "plain"
+    frame: bool = True
+    transposed: bool = False
+    groups: bool = False
 
 
 class CollectionWidget(_Placed):
@@ -163,6 +182,10 @@ class CollectionWidget(_Placed):
     fields: list[FieldRef] = Field(default_factory=list)
     show_when: ShowWhen = Field(default_factory=ShowWhen)
     columns: int = Field(default=3, ge=1, le=12)
+    # How its boxes look: by default labelled above, comfortable and framed.
+    labels: CollectionLabels = "above"
+    density: Density = "comfortable"
+    frame: bool = True
 
 
 class ChartWidget(_Placed):
@@ -226,12 +249,25 @@ class Section(_Strict):
 
 
 class Page(_Strict):
-    """A sheet: when it shows, and its sections, stacked one under the next."""
+    """A sheet: ``width`` pixels wide, when it shows, and its sections, stacked one under
+    the next."""
 
     id: str
     title: str
+    width: int = Field(gt=0)
     show_when: ShowWhen = Field(default_factory=ShowWhen)
     sections: list[Section] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _holds_its_widgets(self) -> Page:
+        for section in self.sections:
+            for widget in section.widgets:
+                if widget.x + widget.w > self.width:
+                    raise ValueError(
+                        f"widget {widget.id} reaches {widget.x + widget.w}px across, past the "
+                        f"sheet's width of {self.width}px"
+                    )
+        return self
 
 
 class SchemaColumn(_Strict):
@@ -240,6 +276,8 @@ class SchemaColumn(_Strict):
     type: ColumnType = "str"
     #: What widgets call it; empty means the name, made readable.
     label: str = ""
+    #: The group it is in, a name it shares with the columns grouped with it; empty for none.
+    group: str = ""
     #: In a many-row table, part of what says which row is which.
     key: bool = False
     # The rules an input column's value must meet. Output tables ignore them.
@@ -254,6 +292,9 @@ class SchemaColumn(_Strict):
     help: str = ""
     #: What an empty input cell shows, in place of the blank.
     placeholder: str = ""
+    #: What a new quote starts with in it, as if typed: text, or a tick; empty, or an
+    #: unticked box, for none. Only a one-row input table's columns start a quote with one.
+    default_value: Cell = ""
     # How a number shows wherever the sheets show it, as an Explore pivot's values show:
     # a percent is the value times 100, a currency's sign before it. ``general`` with no
     # decimal places leaves an input as typed and an output as the data preview shows a
@@ -279,6 +320,21 @@ class FormSchema(_Strict):
     tables: list[SchemaTable] = Field(default_factory=list)
 
 
+class Theme(_Strict):
+    """The sheets' colours, wherever they show, each the editor's own while None."""
+
+    #: The sheet behind its sections.
+    sheet_color: Colour | None = None
+    #: Framed components' background and their borders: frames, rules, gridlines and boxes.
+    background_color: Colour | None = None
+    border_color: Colour | None = None
+    #: The text of Headings and of components' titles, labels and values.
+    font_color: Colour | None = None
+    #: The fill of input cells and boxes, and of output cells and boxes.
+    input_cell_color: Colour | None = None
+    output_cell_color: Colour | None = None
+
+
 class FormSpec(_Strict):
     """The form: what the workbench edits and ``forms/form.json`` stores."""
 
@@ -286,6 +342,7 @@ class FormSpec(_Strict):
 
     version: Literal[1] = 1
     name: str
+    theme: Theme = Field(default_factory=Theme)
     #: ``schema`` in the file; ``BaseModel`` already has a ``schema`` attribute.
     data_schema: FormSchema = Field(default_factory=FormSchema, alias="schema")
     pages: list[Page] = Field(min_length=1)
@@ -341,8 +398,8 @@ def quote_details_table() -> SchemaTable:
 
 def _check_quote_details(table: SchemaTable) -> None:
     """Refuse a ``quote_details`` table that is not Haute's: another id under its name, or its
-    structure changed. Its columns' labels, help and placeholders are the project's, as are
-    the rules of the columns the app does not set."""
+    structure changed. Its columns' labels, groups, help and placeholders are the project's,
+    as are the rules and defaults of the columns the app does not set."""
     if table.id != QUOTE_DETAILS_ID or table.name != QUOTE_DETAILS_ID:
         raise ValueError(
             f"{QUOTE_DETAILS_ID} is Haute's own table of a quote's details: name yours otherwise"
@@ -361,10 +418,15 @@ def _check_quote_details(table: SchemaTable) -> None:
         )
     for column in table.columns:
         if column.id in QUOTE_DETAILS_MANAGED and (
-            column.required or column.options or column.min is not None or column.max is not None
+            column.required
+            or column.options
+            or column.min is not None
+            or column.max is not None
+            or column.default_value not in ("", False)
         ):
             raise ValueError(
-                f"{QUOTE_DETAILS_ID}.{column.name} is set by the underwriter app and takes no rules"
+                f"{QUOTE_DETAILS_ID}.{column.name} is set by the underwriter app and takes no "
+                "rules or default"
             )
 
 
@@ -392,9 +454,8 @@ def blank_form(name: str) -> FormSpec:
     """The form a project starts with: one blank sheet holding one section, Haute's
     ``quote_details`` table alone, no sample."""
     section = Section(id="section_1", title="Section 1", height=BLANK_SECTION_HEIGHT)
-    return with_quote_details(
-        FormSpec(name=name, pages=[Page(id="page_1", title="Sheet 1", sections=[section])])
-    )
+    page = Page(id="page_1", title="Sheet 1", width=BLANK_SHEET_WIDTH, sections=[section])
+    return with_quote_details(FormSpec(name=name, pages=[page]))
 
 
 def render_form(spec: FormSpec) -> str:
