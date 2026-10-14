@@ -69,7 +69,10 @@ _PROBLEMS: dict[PathProblem, str] = {
 
 
 def _refusal(status: int, code: str, message: str) -> HTTPException:
-    return HTTPException(status_code=status, detail={"error_code": code, "message": message})
+    """A refusal in the flat error contract (#76): the message is the detail, and the case's
+    code goes to the log."""
+    logger.info("project_file_refused", code=code, status=status)
+    return HTTPException(status_code=status, detail=message)
 
 
 @dataclass(frozen=True, slots=True)

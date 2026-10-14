@@ -608,7 +608,10 @@ without replacing a file that appeared since (create) or with the bounded Window
 happen (no working branch, no identity, a Git failure) leaves the file `new`, swept by the next
 Commit, and says so in `identity_required` and `warnings`. A delete checks the path, the place
 and the revision the same way, unlinks under the same locks, and captures the removal in the
-pipeline place. A download returns a `FileResponse` attachment for a regular file.
+pipeline place. A download returns a `FileResponse` attachment for a regular file. Every
+refusal answers the flat error contract: the detail is a plain message naming the file and
+what to do, and the case named in the route table (`file_exists`, `file_changed` and the
+rest) goes to the log as `project_file_refused`.
 
 **Node-data build and profile** (`routes/_node_data_service.py`): the background supervisor
 remains a parent thread only to bridge the synchronous one-shot worker into the job lifecycle.

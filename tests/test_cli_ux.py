@@ -330,7 +330,7 @@ class TestInitForceFlag:
         """Existing .gitignore entries are matched line-by-line.
 
         Substrings like ``metadata/`` or ``mlruns-old/`` must not satisfy
-        Haute's required ``data/`` or ``mlruns/`` entries.
+        Haute's required ``/data/`` or ``mlruns/`` entries.
         """
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".gitignore").write_text(
@@ -342,7 +342,7 @@ class TestInitForceFlag:
         assert result.exit_code == 0, result.output
 
         lines = (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
-        assert "data/" in lines
+        assert "/data/" in lines
         assert "mlruns/" in lines
         assert ".env" in lines
 

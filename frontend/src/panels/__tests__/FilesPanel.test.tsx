@@ -238,10 +238,8 @@ describe("FilesPanel", () => {
 
   it("shows a failed upload's message from the server", async () => {
     mockList.mockResolvedValue(listing("pipeline", "", []))
-    const refusal = Object.assign(new Error("HTTP 413"), {
-      status: 413,
-      rawDetail: { error_code: "too_large_for_history", message: "rating/files/big.parquet is 412.0 MiB." },
-    })
+    const message = "rating/files/big.parquet is 412.0 MiB."
+    const refusal = Object.assign(new Error("HTTP 413"), { status: 413, detail: message, rawDetail: message })
     mockUpload.mockImplementation(() => ({ promise: Promise.reject(refusal), abort: vi.fn() }))
     render(<FilesPanel place="pipeline" onClose={vi.fn()} />)
     await screen.findByText("Empty folder")

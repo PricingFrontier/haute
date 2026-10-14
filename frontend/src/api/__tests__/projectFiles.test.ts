@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { apiErrorCode, apiErrorMessage } from "../errors"
+import { apiErrorMessage } from "../errors"
 import { deleteProjectFile, listProjectFiles, projectFileDownloadUrl, uploadProjectFile } from "../projectFiles"
 
 const WRITTEN = {
@@ -90,13 +90,14 @@ describe("project files client", () => {
     expect(xhr.url).toBe("/api/project-files/content?place=local&path=data%2Fx.csv&replace_revision=1-99")
   })
 
-  it("turns a refusal into an ApiError carrying the server's code and message", async () => {
+  it("turns a refusal into an ApiError carrying the server's message", async () => {
     const upload = uploadProjectFile("pipeline", "data/big.parquet", new Blob(["x"]))
     const xhr = await sentRequest()
-    xhr.respond(413, { detail: { error_code: "too_large_for_history", message: "data/big.parquet is too large." } })
+    // The flat error contract: the detail is the plain message.
+    xhr.respond(413, { detail: "data/big.parquet is too large." })
 
     const caught = await upload.promise.catch((error: unknown) => error)
-    expect(apiErrorCode(caught)).toBe("too_large_for_history")
+    expect(caught).toMatchObject({ status: 413 })
     expect(apiErrorMessage(caught)).toBe("data/big.parquet is too large.")
   })
 

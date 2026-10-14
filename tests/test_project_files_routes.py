@@ -60,8 +60,11 @@ def _entries(listing: dict) -> dict[str, dict]:
     return {entry["name"]: entry for entry in listing["entries"]}
 
 
-def _code(response) -> str:
-    return response.json()["detail"]["error_code"]
+def _refused(response) -> str:
+    """The refusal's message: a plain-string detail, the flat error contract (#76)."""
+    detail = response.json()["detail"]
+    assert isinstance(detail, str) and detail
+    return detail
 
 
 def _ledger_files(project: Path) -> list[str]:
@@ -178,14 +181,14 @@ def test_a_pipeline_at_the_project_root_has_no_pipeline_place(
     response = client.get("/api/project-files", params={"place": "pipeline"})
 
     assert response.status_code == 409
-    assert _code(response) == "no_pipeline_folder"
+    assert "has no pipeline folder" in _refused(response)
 
 
 def test_a_folder_that_is_not_there_is_404(client: TestClient) -> None:
     response = client.get("/api/project-files", params={"place": "pipeline", "path": "nope"})
 
     assert response.status_code == 404
-    assert _code(response) == "folder_missing"
+    assert "doesn't exist" in _refused(response)
 
 
 # ── writing ────────────────────────────────────────────────────────────────
@@ -226,10 +229,10 @@ def test_an_existing_file_is_replaced_only_at_the_revision_confirmed(
     first = _put(client, "pipeline", "models/freq.cbm", b"v1").json()
 
     exists = _put(client, "pipeline", "models/freq.cbm", b"v2")
-    assert exists.status_code == 409 and _code(exists) == "file_exists"
+    assert exists.status_code == 409 and "already exists" in _refused(exists)
 
     stale = _put(client, "pipeline", "models/freq.cbm", b"v2", replace_revision="0-0")
-    assert stale.status_code == 412 and _code(stale) == "file_changed"
+    assert stale.status_code == 412 and "changed since you chose" in _refused(stale)
 
     replaced = _put(
         client, "pipeline", "models/freq.cbm", b"v2", replace_revision=first["revision"]
@@ -250,25 +253,25 @@ def test_a_local_file_is_written_but_never_versioned(client: TestClient, project
 
 
 @pytest.mark.parametrize(
-    ("place", "path", "status", "code"),
+    ("place", "path", "status", "reason"),
     [
-        ("pipeline", "../escape.csv", 400, "invalid_path"),
-        ("pipeline", "data/.env", 400, "invalid_path"),
-        ("pipeline", "data/CON.csv", 400, "invalid_path"),
-        ("pipeline", "data/a:b.csv", 400, "invalid_path"),
-        ("pipeline", "/etc/passwd", 400, "invalid_path"),
-        ("local", "outputs/scored.parquet", 403, "read_only"),
-        ("local", "notes.txt", 404, "folder_missing"),
-        ("local", "data", 400, "invalid_path"),
+        ("pipeline", "../escape.csv", 400, "isn't a path the Files panels can use"),
+        ("pipeline", "data/.env", 400, "isn't a path the Files panels can use"),
+        ("pipeline", "data/CON.csv", 400, "isn't a name a project file can have"),
+        ("pipeline", "data/a:b.csv", 400, "isn't a name a project file can have"),
+        ("pipeline", "/etc/passwd", 400, "isn't a path the Files panels can use"),
+        ("local", "outputs/scored.parquet", 403, "only download from"),
+        ("local", "notes.txt", 404, "Local files holds only data and outputs"),
+        ("local", "data", 400, "names a folder, not a file"),
     ],
 )
 def test_a_write_outside_an_ordinary_writable_name_is_refused(
-    client: TestClient, project: Path, place: str, path: str, status: int, code: str
+    client: TestClient, project: Path, place: str, path: str, status: int, reason: str
 ) -> None:
     response = _put(client, place, path, b"x")
 
     assert response.status_code == status, response.text
-    assert _code(response) == code
+    assert reason in _refused(response)
 
 
 def test_a_pipeline_file_over_the_limit_is_refused_before_it_is_read(
@@ -279,7 +282,7 @@ def test_a_pipeline_file_over_the_limit_is_refused_before_it_is_read(
     response = _put(client, "pipeline", "data/big.csv", b"12345")
 
     assert response.status_code == 413
-    assert _code(response) == "too_large_for_history"
+    assert "version history takes files up to" in _refused(response)
     assert not (project / "rating/files/data/big.csv").exists()
 
 
@@ -291,8 +294,7 @@ def test_a_pipeline_file_gitignore_would_ignore_is_refused_naming_the_rule(
     response = _put(client, "pipeline", "data/postcodes.csv", b"x")
 
     assert response.status_code == 409
-    assert _code(response) == "ignored"
-    assert ".gitignore:1:data/" in response.json()["detail"]["message"]
+    assert "would be ignored by .gitignore (.gitignore:1:data/)" in _refused(response)
 
 
 def test_a_hosted_app_refuses_local_files(
@@ -303,7 +305,7 @@ def test_a_hosted_app_refuses_local_files(
     response = _put(client, "local", "data/portfolio.parquet", b"rows")
 
     assert response.status_code == 403
-    assert _code(response) == "hosted_local_files"
+    assert "This hosted app keeps only what version history keeps" in _refused(response)
     assert _put(client, "pipeline", "data/table.csv", b"a\n").status_code == 200
 
 
@@ -318,7 +320,7 @@ def test_a_branch_change_while_uploading_writes_nothing(
     response = _put(client, "pipeline", "data/table.csv", b"a\n")
 
     assert response.status_code == 409
-    assert _code(response) == "branch_changed"
+    assert "The branch changed while the file was uploading" in _refused(response)
     assert not (project / "rating/files/data/table.csv").exists()
     assert os.listdir(project / "rating/files/data") == []
 
@@ -335,7 +337,7 @@ def test_a_body_shorter_than_its_length_leaves_nothing_behind(
     )
 
     assert response.status_code == 400
-    assert _code(response) == "length_mismatch"
+    assert "ended before it was complete" in _refused(response)
     assert os.listdir(project / "data") == []
     assert os.listdir(project / ".haute" / "uploads") == []
 
@@ -380,7 +382,7 @@ def test_a_write_through_a_junction_is_refused(
     response = _put(client, "local", "data/escape.csv", b"x")
 
     assert response.status_code == 400
-    assert _code(response) == "invalid_path"
+    assert "is reached through a link or junction" in _refused(response)
     assert list(target.iterdir()) == []
 
 
@@ -402,7 +404,7 @@ def test_a_staging_folder_reached_through_a_junction_is_refused(
     response = _put(client, "local", "data/portfolio.parquet", b"rows")
 
     assert response.status_code == 409
-    assert _code(response) == "staging_unavailable"
+    assert "Uploads are staged in the project's .haute/uploads/ folder" in _refused(response)
     assert list(inside.iterdir()) == []
 
 
