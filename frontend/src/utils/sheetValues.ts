@@ -113,10 +113,27 @@ export function formattedNumber(column: SchemaColumn, value: unknown): string | 
   return formatPivotNumber(typeof value === "string" ? parseTypedNumber(value) : value, column)
 }
 
+const DAY = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/
+
+/**
+ * Whether stripped text names a real calendar day as YYYY-MM-DD, as the server's dates
+ * do: year 1 or later. JavaScript's Date is no use here, as it reads years before 100 as
+ * the 1900s and takes the year 0.
+ */
+export function isDay(text: string): boolean {
+  if (!DAY.test(text)) return false
+  const [year, month, day] = text.split("-").map(Number)
+  if (year < 1 || month < 1 || month > 12 || day < 1) return false
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]
+  return day <= days
+}
+
 /**
  * What breaks an input column's rules in a typed value, or null: required and empty; a
  * number column holding text that is not a number, or a whole-number column a fraction
- * (the server would keep either as typed, for the pipeline to refuse); a number outside
+ * (the server would keep either as typed, for the pipeline to refuse); a Date column
+ * holding text that is not a day, as a column retyped to a Date may; a number outside
  * the column's range; a value that is not one of the allowed values. A tick box and the
  * index break nothing.
  */
@@ -124,6 +141,7 @@ export function cellProblem(column: SchemaColumn, value: SampleValue | undefined
   if (column.type === "bool" || column.index) return null
   const text = typeof value === "string" ? value.trim() : ""
   if (text === "") return column.required ? "Required" : null
+  if (column.type === "date" && !isDay(text)) return "Not a date"
   if (column.type === "int" || column.type === "float") {
     const number = parseTypedNumber(text)
     if (number === null) return "Not a number"

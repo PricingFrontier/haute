@@ -9,7 +9,7 @@ import type { ChartWidget, Condition, FieldRef, FormSchema, FormSpec, HeadingWid
 import { ASCII_IDENTIFIER_RE, apiInputLabelIssue, apiInputLabelIssueMessage } from "./apiInputPorts"
 import { PYTHON_KEYWORDS } from "./globalConstants"
 import { BLANK_SECTION_HEIGHT, BLANK_SHEET_WIDTH, NEW_SECTION_HEIGHT, fittedSectionHeight, leastSectionHeight, leastSheetWidth, type Rect } from "./sheetGeometry"
-import { cellProblem, filled, parseTypedNumber, pricedRows, valuesBasis, type PricedRows, type RowsByTable } from "./sheetValues"
+import { cellProblem, filled, isDay, parseTypedNumber, pricedRows, valuesBasis, type PricedRows, type RowsByTable } from "./sheetValues"
 import { columnKey, conditionFault, fieldKeys, neverShown, sheetVisibility, testLabel } from "./sheetVisibility"
 
 /** A section's widget: a Table, a Collection, a Chart or a Heading. */
@@ -211,7 +211,8 @@ export const takesOptions = (type: SchemaColumn["type"]): boolean => type !== "b
  * Change a column's type, dropping the rules the new type cannot have: the range and the
  * number format of a column no longer a number, and the allowed values of one now a tick
  * box or a date, which would otherwise still rule its cells; and the default of one that
- * becomes or stops being a tick box, a tick or text no longer its kind of value.
+ * becomes or stops being a tick box, a tick or text no longer its kind of value, or that
+ * becomes a date while its default is not a day, which a date's box cannot show.
  */
 export const changeSchemaColumnType = (
   spec: FormSpec,
@@ -221,7 +222,9 @@ export const changeSchemaColumnType = (
 ): FormSpec =>
   edit(spec, (draft) => {
     const column = schemaColumnOf(schemaTableOf(draft, tableId), columnId)
+    const { default_value: value } = column
     if ((type === "bool") !== (column.type === "bool")) column.default_value = ""
+    else if (type === "date" && typeof value === "string" && !isDay(value.trim())) column.default_value = ""
     column.type = type
     if (type !== "int" && type !== "float") {
       column.min = null

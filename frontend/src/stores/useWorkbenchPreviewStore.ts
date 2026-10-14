@@ -57,8 +57,9 @@ interface WorkbenchPreviewState {
    */
   priceNow: () => Promise<void>
   /**
-   * Price now what waits for typing to pause, and wait for the pricing under way to finish:
-   * a save keeps the price the quote has once it settles.
+   * Price now what waits for typing to pause, and wait for the pricing under way to finish,
+   * again for a value entered meanwhile, until nothing waits and nothing runs: a save keeps
+   * the price the quote has once it settles.
    */
   settle: () => Promise<void>
 }
@@ -159,11 +160,15 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => {
       return run
     },
     settle: async () => {
-      if (timer !== null) {
-        stopWaiting()
-        await get().priceNow()
-      } else if (run !== null) {
-        await run
+      // A value entered while it waits is priced before it settles: it settles once
+      // nothing waits for the pause and nothing is being priced.
+      while (timer !== null || run !== null) {
+        if (timer !== null) {
+          stopWaiting()
+          await get().priceNow()
+        } else {
+          await run
+        }
       }
     },
   }

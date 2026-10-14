@@ -285,6 +285,28 @@ describe("useWorkbenchPreviewStore", () => {
     expect(store()).toMatchObject({ pricing: false, price: { basis: valuesBasis(form.schema, new Set(), { t1: [{ c1: "200" }] }), ...answered(200) } })
   })
 
+  it("settles a value entered after the save began: the save waits for its pricing too", async () => {
+    const { quotePricer, answers } = heldPricer()
+    useWorkbenchPricingStore.setState({ quotePricer })
+    useWorkbenchPreviewStore.setState({ quote: { t1: [{ c1: "100" }] } })
+
+    const first = store().priceNow()
+    await vi.waitFor(() => expect(store().pricing).toBe(true))
+    // A save starts while 100 is priced, and 200 is entered while it waits.
+    const settling = store()
+      .settle()
+      .then(() => ({ priced: quotePricer.mock.calls.length, basis: store().price?.basis }))
+    store().setCell("t1", 0, "c1", "200")
+    // 100's answer comes before the pause after 200 has passed: 200 is priced at once.
+    answers[0].resolve(answered(100))
+    await vi.waitFor(() => expect(quotePricer).toHaveBeenCalledTimes(2))
+    expect(quotePricer).toHaveBeenLastCalledWith(form, { t1: [{ c1: "200" }] })
+    answers[1].resolve(answered(200))
+    // When the save reads them, the values and their price agree.
+    expect(await settling).toEqual({ priced: 2, basis: valuesBasis(form.schema, new Set(), { t1: [{ c1: "200" }] }) })
+    await first
+  })
+
   it("drops an answer that arrives after another quote was opened, or after the host dropped its pricer", async () => {
     const { quotePricer, answers } = heldPricer()
     useWorkbenchPricingStore.setState({ quotePricer })

@@ -152,6 +152,16 @@ describe("cellProblem", () => {
     expect(cellProblem(policy.columns[0], "NY")).toBeNull()
   })
 
+  it("takes a Date as a real day written YYYY-MM-DD, as the server reads one", () => {
+    const inception = column("c", "inception", { type: "date" })
+    expect(cellProblem(inception, "2026-02-28")).toBeNull()
+    expect(cellProblem(inception, "")).toBeNull()
+    // Text a column retyped to a Date may still hold.
+    expect(cellProblem(inception, "not-a-date")).toBe("Not a date")
+    expect(cellProblem(inception, "2026-02-30")).toBe("Not a date")
+    expect(cellProblem(inception, "28/02/2026")).toBe("Not a date")
+  })
+
   it("never faults a tick box or the index", () => {
     expect(cellProblem(column("c", "c", { type: "bool", required: true }), undefined)).toBeNull()
     expect(cellProblem(equipment.columns[0], "x")).toBeNull()

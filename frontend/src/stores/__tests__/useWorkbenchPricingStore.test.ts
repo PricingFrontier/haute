@@ -162,6 +162,27 @@ describe("useWorkbenchPricingStore", () => {
     expect(useWorkbenchPricingStore.getState().pricing).toBe(false)
   })
 
+  it("drops the pricing waiting for the pause and the one more asked for meanwhile once cancelled, as Preview is left", async () => {
+    vi.useFakeTimers()
+    const { pricer, asked } = pricerOnRequest()
+    useWorkbenchPricingStore.getState().setPricer(pricer)
+    const first = useWorkbenchPricingStore.getState().priceNow()
+    await vi.waitFor(() => expect(asked).toHaveLength(1))
+
+    // A change asked for while the first is priced, and another waiting for the pause.
+    type("150000")
+    void useWorkbenchPricingStore.getState().priceNow()
+    useWorkbenchPricingStore.getState().schedule()
+    useWorkbenchPricingStore.getState().cancel()
+    asked[0].answer()
+    await first
+    await vi.advanceTimersByTimeAsync(PRICING_DELAY_MS)
+
+    // The pricing under way finished; neither of the others ran.
+    expect(pricer).toHaveBeenCalledOnce()
+    expect(premium()).toEqual({ value: 2000, stale: true })
+  })
+
   it("shows nothing and says why when pricing fails, until it next succeeds", async () => {
     useWorkbenchPricingStore.getState().setPricer(() => Promise.resolve(priced(2000)))
     await useWorkbenchPricingStore.getState().priceNow()

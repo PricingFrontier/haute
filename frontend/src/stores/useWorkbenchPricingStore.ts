@@ -77,6 +77,11 @@ interface WorkbenchPricingState {
   /** Price the sample once typing pauses (`PRICING_DELAY_MS`). */
   schedule: () => void
   /**
+   * Drop the pricing waiting for typing to pause and the one more asked for meanwhile, as
+   * when Preview is left: nothing is priced while building. A pricing under way finishes.
+   */
+  cancel: () => void
+  /**
    * Price the sample as the form has it now, or, with nothing typed in the cells the sheets
    * show, have no price and nothing to say: a deployed request never holds a blank quote.
    * One pricing runs at a time: asked again meanwhile, it prices once more when it
@@ -100,10 +105,7 @@ const useWorkbenchPricingStore = create<WorkbenchPricingState>()((set, get) => (
   error: null,
   pricing: false,
   setPricer: (pricer) => {
-    if (pricer === null && timer !== null) {
-      clearTimeout(timer)
-      timer = null
-    }
+    if (pricer === null) get().cancel()
     set({ pricer })
   },
   schedule: () => {
@@ -113,6 +115,11 @@ const useWorkbenchPricingStore = create<WorkbenchPricingState>()((set, get) => (
       timer = null
       void get().priceNow()
     }, PRICING_DELAY_MS)
+  },
+  cancel: () => {
+    if (timer !== null) clearTimeout(timer)
+    timer = null
+    again = false
   },
   priceNow: () => {
     if (run !== null) {

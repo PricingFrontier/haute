@@ -63,6 +63,7 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
   const setPricer = useWorkbenchPricingStore((s) => s.setPricer)
   const setSnapshot = useWorkbenchPricingStore((s) => s.setSnapshot)
   const schedule = useWorkbenchPricingStore((s) => s.schedule)
+  const cancel = useWorkbenchPricingStore((s) => s.cancel)
   const formPath = useWorkbenchStore((s) => s.formPath) ?? "forms/form.json"
   const gitOpen = useUIStore((s) => s.gitOpen)
   const setGitOpen = useUIStore((s) => s.setGitOpen)
@@ -88,9 +89,13 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
       setSnapshot(null)
     }
   }, [resolveGraph, setPricer, setSnapshot])
+  // Preview prices the sample; leaving it drops what waits to be priced, so nothing is
+  // priced while building.
   useEffect(() => {
-    if (section === "preview" && basis !== null) schedule()
-  }, [basis, section, schedule])
+    if (section !== "preview" || basis === null) return
+    schedule()
+    return cancel
+  }, [basis, section, schedule, cancel])
 
   return (
     <div className="absolute inset-0 flex" data-testid="workbench-view" style={{ background: "var(--bg-base)" }}>

@@ -263,6 +263,14 @@ describe("problems", () => {
     spec = updateSchemaColumn(spec, "t", "a", { default_value: true })
     spec = changeSchemaColumnType(spec, "t", "a", "date")
     expect(spec.schema.tables[0].columns[0].default_value).toBe("")
+    // A date's box shows a day alone: text that is not one goes as the column becomes a
+    // Date, and a day stays.
+    spec = updateSchemaColumn(changeSchemaColumnType(spec, "t", "a", "str"), "t", "a", { default_value: "not-a-date" })
+    spec = changeSchemaColumnType(spec, "t", "a", "date")
+    expect(spec.schema.tables[0].columns[0].default_value).toBe("")
+    spec = updateSchemaColumn(changeSchemaColumnType(spec, "t", "a", "str"), "t", "a", { default_value: "2026-01-01" })
+    spec = changeSchemaColumnType(spec, "t", "a", "date")
+    expect(spec.schema.tables[0].columns[0].default_value).toBe("2026-01-01")
   })
 
   it("checks an input column's rules, which an output table ignores", () => {
@@ -294,6 +302,9 @@ describe("problems", () => {
       column("h", "vat", { type: "bool", default_value: true }),
       column("i", "note", { required: true, default_value: " " }),
       column("j", "flag", { type: "bool", default_value: false }),
+      column("k", "expiry", { type: "date", default_value: "2026-12-31" }),
+      // Refused: a Date's default that is not a day, as a hand-edited file may hold.
+      column("l", "inception", { type: "date", default_value: "2026-02-30" }),
     )
 
     expect(messages(spec)).toEqual([
@@ -302,6 +313,7 @@ describe("problems", () => {
       'Column "cover" in Table "t" has a default its rules refuse: Not one of the allowed values',
       'Column "smoker" in Table "t" has a default its rules refuse: Not a tick',
       'Column "name" in Table "t" has a default its rules refuse: Not text',
+      'Column "inception" in Table "t" has a default its rules refuse: Not a date',
     ])
     // An output table takes no default to check, as it takes no rules.
     expect(messages(updateSchemaTable(spec, "t", { role: "output" }))).toEqual([])

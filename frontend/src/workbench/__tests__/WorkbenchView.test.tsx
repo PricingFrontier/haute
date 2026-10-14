@@ -5,13 +5,15 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+import { fetchWorkbenchFormTables } from "../../api/workbench"
 import useUIStore from "../../stores/useUIStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
-import useWorkbenchPricingStore from "../../stores/useWorkbenchPricingStore"
+import useWorkbenchPricingStore, { PRICING_DELAY_MS } from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { BLANK_THEME } from "../../utils/workbenchForm"
 import WorkbenchView from "../WorkbenchView"
+import { sheetForm } from "./fixtures"
 
 vi.mock("../SchemaEditor", () => ({
   default: () => (
@@ -27,6 +29,13 @@ vi.mock("../PageTabs", () => ({
 vi.mock("../PropertiesPanel", () => ({ default: () => <div data-testid="properties-panel" /> }))
 vi.mock("../../panels/GitPanel", () => ({ default: () => <div data-testid="git-panel" /> }))
 vi.mock("../../panels/assistant/AssistantPanel", () => ({ default: () => <div data-testid="assistant-panel" /> }))
+vi.mock("../../api/workbench", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../api/workbench")>()),
+  fetchWorkbenchFormTables: vi.fn(),
+}))
+
+/** The pricing store as it is, before a test stands in for its schedule. */
+const realPricing = useWorkbenchPricingStore.getState()
 
 const onSave = vi.fn(async () => true)
 const onSaveShortcut = vi.fn()
@@ -57,6 +66,7 @@ describe("WorkbenchView", () => {
   afterEach(() => {
     cleanup()
     vi.clearAllMocks()
+    vi.useRealTimers()
     useWorkbenchStore.setState({ enabled: false, activeView: "pipeline", formPath: null })
   })
 
@@ -213,6 +223,26 @@ describe("WorkbenchView", () => {
 
     unmount()
     expect(pricing.setPricer).toHaveBeenLastCalledWith(null)
+  })
+
+  it("drops the sample's pricing waiting for the pause when Preview is left, so nothing is priced while building", async () => {
+    vi.useFakeTimers()
+    // The pricing store's own timer, not a stand-in for it.
+    useWorkbenchPricingStore.setState({ setPricer: realPricing.setPricer, schedule: realPricing.schedule, cancel: realPricing.cancel })
+    vi.mocked(fetchWorkbenchFormTables).mockRejectedValue(new Error("offline"))
+    useWorkbenchFormStore.setState({ form: { ...sheetForm(), sample: { policy: [{ "policy.state": "CA" }] } } })
+    renderView()
+
+    act(() => useWorkbenchViewStore.getState().showSection("preview"))
+    await act(() => vi.advanceTimersByTimeAsync(PRICING_DELAY_MS - 100))
+    act(() => useWorkbenchViewStore.getState().showSection("sheets"))
+    await act(() => vi.advanceTimersByTimeAsync(PRICING_DELAY_MS))
+    expect(fetchWorkbenchFormTables).not.toHaveBeenCalled()
+
+    // Left in Preview, the sample is priced once the pause has passed.
+    act(() => useWorkbenchViewStore.getState().showSection("preview"))
+    await act(() => vi.advanceTimersByTimeAsync(PRICING_DELAY_MS))
+    expect(fetchWorkbenchFormTables).toHaveBeenCalledTimes(1)
   })
 
   it("opens the Git and Assistant panels beside the view, in the properties panel's place", async () => {

@@ -83,7 +83,8 @@ typed, and a value typed equal to its default counts as the default.
   and its allowed values must be of its type, a True/false or Date column can have none,
   and a default must be a value the column takes (of its type, in its range, one of its
   allowed values). Changing a column's type drops the rules and the format the new type
-  cannot have, and the default when it becomes or stops being True/false; switching a
+  cannot have, and the default when it becomes or stops being True/false, or becomes a Date
+  while it is not a date; switching a
   table to many rows clears its defaults.
 - Removing a column or a table a sheet shows asks first, and takes it off the sheet.
 
@@ -282,8 +283,9 @@ field. An empty cell is blank, or shows its column's placeholder. The sample is 
 what **Save** writes, and **Undo** and **Redo** take back what you type, in Preview as
 while building.
 
-The sample is **priced live**: whenever the schema or the sample changes and typing
-pauses, and each time you open Preview, Haute prices it on the pipeline open in the
+The sample is **priced live**: 300ms after the schema or the sample changes, a value
+counting once it is entered (press Enter or Tab, or leave a text or number cell; a tick,
+a choice or a date counts as you make it), and each time you open Preview, Haute prices it on the pipeline open in the
 editor, as it stands, saved or not, exactly as a deployed pipeline would price it. Every
 output column shows its value, a Collection's its table's one row and a Table's the row in
 the answer keyed like each grid row, dimmed while a newer answer is on its way, and every
@@ -291,7 +293,7 @@ Chart plots the sample with what pricing it gave. There is no **Price** to press
 **Clear**: a sample with nothing typed is not priced, and its outputs show dashes. The
 sample is priced whatever its cells hold. Once anything is typed, a cell that breaks its
 column's rules (a required cell left empty, a number that is not one, a whole number that
-is not whole, a number outside its range, a value that is not one of the allowed ones) is
+is not whole, a date that is not one, a number outside its range, a value that is not one of the allowed ones) is
 outlined, naming the problem when you hover, and priced all the same. When pricing fails —
 no Workbench Output on the pipeline, a table with nothing connected, a value that does not
 fit its column — the toolbar says why. Ctrl+S still saves the project in Preview.
@@ -387,7 +389,7 @@ a new one, holding the columns' defaults; `/` jumps to the search.
 A quote opens at its own address, under a bar holding its reference (`Q-000123`), its
 name (its `quote_name`, saved with the next **Save**), its stage, and:
 
-- **Save**. The quote is priced as you type it, as Preview prices the sample, with no
+- **Save**. The quote is priced as you enter it, as Preview prices the sample, with no
   **Price** to press and no **Clear**, and a quote opened that can change is priced again
   when it was saved unpriced or priced on an earlier release. **Save** waits for that
   pricing and keeps the quote with its price, or unpriced when it could not be priced (the

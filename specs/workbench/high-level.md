@@ -277,7 +277,8 @@ Out of scope:
   True/false and Date and its rules: required, a range for an Integer or a Decimal, and the
   allowed values, typed comma-separated, for any type but True/false and Date. Changing a
   column's type drops the rules and the format the new type cannot have, and its default
-  when it becomes or stops being True/false. Every text field
+  when it becomes or stops being True/false, or becomes a Date while it is not a day.
+  Every text field
   commits on blur or Enter, so an edit is one undo step; Enter in a column's name adds the
   next column, Alt+Up and Alt+Down move one, and a new table's or column's name takes the
   focus. A many-row table can have an index: a column first in the table, `row_number`
@@ -547,7 +548,9 @@ Out of scope:
   the schema.
 - **Priced live.** While Preview shows, the sample is priced on the pipeline open in the
   editor whenever the schema, the sample or which of the sample's values are left out
-  (Shown when, below) changes, once typing pauses for 300ms, and when Preview shows, as
+  (Shown when, below) changes, 300ms after the last value entered (a text or number cell's
+  when Enter or Tab is pressed or the cell is left, a tick, a choice or a date as it is
+  made), and when Preview shows, as
   the pipeline may have changed meanwhile; laying the sheet out differently prices
   nothing, and nothing is priced while building. There is no Price and no Clear. The
   sample is priced whatever its cells hold, a value that breaks its column's rules
@@ -625,7 +628,8 @@ Out of scope:
   nothing, as the server leaves it out of the quote. Once anything is typed, each cell that
   breaks its column's rules is outlined, naming its problem on hover: a required cell left
   empty, text that is not a number in a number column or not a whole number in a
-  whole-number column, a number outside the column's range, a value that is not one of the
+  whole-number column, text that is not a day in a Date column, a number outside the
+  column's range, a value that is not one of the
   allowed values; a one-row table's one row is always checked, a many-row table's filled
   rows only, a cell the sheets hide never, and a tick box and the index never fault. The
   marks never stop the pricing. Ctrl/Cmd+S still saves the project in Preview, Ctrl/Cmd+1
@@ -718,7 +722,8 @@ Out of scope:
   components filled from the app's routes rather than the builder's and nothing of the
   builder mounted: the sheets' tabs, the sheet showing, the release and who is signed in,
   and no Price and no Clear. A quote keyed in is marked against the columns' rules as
-  Preview marks the sample, and priced as Preview prices it, once typing pauses for 300ms,
+  Preview marks the sample, and priced as Preview prices it, 300ms after the last value
+  entered,
   whatever its cells hold, a quote with nothing typed in the cells the sheets show, the
   details the app sets and its defaults aside, marked nowhere and priced not at all; the app prices it through
   `POST /api/app/price`, which takes the values and the form revision and release the page
@@ -802,8 +807,9 @@ Out of scope:
   has no price. Beneath are its revision, who saved it and when, the release that priced
   it and the quote it came from. The quote is priced as it is typed, and as it opens while
   it may change and has no price of this release, unpriced or priced on an earlier one.
-  Save waits for that pricing to settle and keeps the quote priced when the values settle
-  on a price, and unpriced when they could not be priced, which its label ("Save
+  Save waits for that pricing to settle, a value entered while it waits priced too, and
+  keeps the quote priced when the values settle on a price, and unpriced when they could
+  not be priced, which its label ("Save
   unpriced") and title say; with nothing typed,
   the details the app sets and the defaults aside, there is nothing to save, and nothing new to save while
   the values are as saved and priced as saved on this release (a price made since, or
@@ -1233,10 +1239,12 @@ Out of scope:
 - **One reorder.** The step editor's cards, a component's fields and the sheets' tabs are
   dragged into order through one hook, a row dropped on another put there, rather than a
   second drag model with markers of its own.
-- **A pause in typing.** The sample and the app's quote are priced 300ms after the last
-  change rather than on each commit: the pause is the sign that a value is complete, a
-  heuristic about the typist, not a rule about what an edit is, and undo never depends on
-  it.
+- **Priced once entered.** The sample and the app's quote are priced 300ms after the last
+  value entered, as a spreadsheet recalculates once a cell is entered: a text or number
+  cell's value reaches the quote on Enter, Tab or leaving the cell, so a half-typed number
+  is never priced and each entry is one undo step, and the pause lets a run of entries,
+  tabbing along a row, price once. While a cell is being typed in, the sheets show the
+  pipeline's answer for the values entered.
 - **The form as it stands.** Pricing asks the server for the tables of the unsaved form
   rather than reading the saved file, so a Collection shows the pipeline's answer for what
   is on the sheet now, as a rater's cell would; the pipeline's own Workbench Input still
@@ -1261,8 +1269,8 @@ Out of scope:
   table's rows are started by typing into them, and defaults for them would make a row of
   defaults alone a row priced, so its columns take none for now.
 - **Priced as typed, never stopped by the rules.** The sample and the app's quote are
-  priced once typing pauses, so what the sheets show is always the pipeline's answer for
-  what is on them and nothing needs pressing, and an underwriter's Save keeps the price the
+  priced once entered, so what the sheets show is always the pipeline's answer for
+  what is entered on them and nothing needs pressing, and an underwriter's Save keeps the price the
   values settle on. A column's rules mark the cells that break them but never stop a
   pricing: refusing a quote is for validations, to come. Clear is gone: it emptied a quote
   at one press, and Preview's quote is the saved sample, while Undo takes back what was
