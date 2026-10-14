@@ -247,6 +247,22 @@ separator shapes the columns; reader settings the scanner cannot take return 400
 and binding its contract exactly as scoring does; a file scoring would refuse returns 400
 with the scoring error, and a path outside the project is refused as for every runtime
 input.
+
+**Project files.** `/api/project-files` lists, takes, downloads and deletes the files the
+toolbar's Pipeline files and Local files panels show, in two places
+([pipeline-config](../pipeline-config/high-level.md)). The pipeline place is the pipeline
+folder's `files/`: it is versioned, so a file written or deleted there is recorded at once as
+a save on the ledger, and a file larger than 100 MiB, or one `.gitignore` would ignore, is
+refused. The local place is the root's `data/`, which takes and deletes files, and `outputs/`,
+which only downloads. Neither local folder is versioned, and a hosted app refuses files there
+because its disk does not survive a restart
+([hosted-project-storage](../hosted-project-storage/high-level.md)). Every operation refuses
+a path that leaves its place, names a dot-file or `__pycache__`, or passes through a link. A
+file is written whole: it streams to a hidden staging file and appears in one rename, never
+replacing a file unless the request names the revision it replaces, and never one that
+changed since. Nothing interlocks a replace with a run already reading the file; on Windows
+such a replace fails while the file is open, and the panel re-runs previews after one
+succeeds. Downloads are attachments, never served inline.
 `GET /api/io-capabilities` exposes provider groups, the Polars I/O
 format registry (read/write capability, modes, accepted arguments, missing optional engines),
 and cache/materialisation capabilities so the dataInput/dataOutput node editors never

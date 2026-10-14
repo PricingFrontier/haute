@@ -190,6 +190,15 @@ def test_the_app_reads_what_the_pipeline_ships_from_the_release(release: Any) ->
     assert _get_project_root() == directory.resolve()
 
 
+def test_the_app_offers_underwriters_no_project_files(release: Any) -> None:
+    """The Files panels are the analysts', in haute serve; the app has no such route."""
+    app = create_app(release())
+
+    paths = {getattr(route, "path", "") for route in app.routes}
+
+    assert not {path for path in paths if path.startswith(("/api/project-files", "/api/files"))}
+
+
 # ── Sign-in ───────────────────────────────────────────────────────────────
 
 

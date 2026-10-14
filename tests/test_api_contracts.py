@@ -774,6 +774,25 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             },
         },
     },
+    "/api/project-files": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/ProjectFolderResponse"},
+        },
+    },
+    "/api/project-files/content": {
+        "DELETE": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/ProjectFileDeleteResponse"},
+        },
+        # The file itself, as an attachment: no JSON body.
+        "GET": {"request_ref": None, "success_schema": {}},
+        # The raw file is the body, read as a stream rather than a declared model.
+        "PUT": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/ProjectFileWriteResponse"},
+        },
+    },
     "/api/rating/levels": {
         "POST": {
             "request_ref": "#/components/schemas/RatingLevelsRequest",

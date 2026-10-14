@@ -65,7 +65,9 @@ Out of scope (owned by neighbouring components):
 
 **The branch-pair model.** Every working branch `<W>` the user creates is paired with a
 save ledger `<W>-save`. Ordinary "saves" are commits on the ledger — one commit per save,
-scoped to exactly the files that changed, the pipeline's files or the workbench's form.
+scoped to exactly the files that changed: the pipeline's files, the workbench's form, or a
+file added, replaced or deleted in the pipeline folder's `files/` through the Pipeline files
+panel ([server-api](../server-api/high-level.md)).
 HEAD lives on the ledger during normal use, so
 the user is always looking at their latest saved state. "Commit" (a milestone) first
 sweeps into one final ledger save every modified file already tracked by Git and every new

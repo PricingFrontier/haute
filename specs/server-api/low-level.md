@@ -23,6 +23,7 @@
 | `src/haute/routes/_helpers.py` | Re-exports the core sidecar read contract and `load_pipeline_editor_document` for route consumers; path/index/watcher/WebSocket helpers; strict `parse_pipeline_to_graph`; the sidecar write path (`save_sidecar`); historical-commit parsing; and the shared `save_lock`. |
 | `src/haute/routes/pipeline.py` | `/api/pipelines`, `/api/pipeline`, `/api/pipeline/{name}`, `/api/pipeline/editor-identities`, `/api/pipeline/polars-steps/render`, `/api/pipeline/polars-steps/free-code-columns`, `/api/pipeline/save`, `/api/pipeline/repair/remove/dry-run`, `/api/pipeline/repair/remove/apply`, `/api/pipeline/read-json`, `/api/pipeline/trace`, `/api/pipeline/preview`, `/api/pipeline/preview/inputs`, `/api/pipeline/recovery-preview`, `/api/pipeline/write-output`, `/api/pipeline/output-destination` — plus the supersession-key builders, shared output-request preparation, `_prepare_runtime_graph` request containment, runtime-input/output path validators, and memory-limit-to-HTTP-exception translators shared across graph-executing route families. |
 | `src/haute/routes/files.py` | `/api/files` (directory browse), `/api/schema` (flat-file plus XML structured-record schema/preview) and `/api/model-file` (model-file inspection for the Model Scoring editor). |
+| `src/haute/routes/project_files.py` | `/api/project-files`: list, write (raw streamed body), download and delete the files of the two places, the pipeline folder's versioned `files/` and the root's local `data/` and `outputs/`, with the save-ledger capture of a pipeline-place write or delete. |
 | `src/haute/routes/io_capabilities.py` | `/api/io-capabilities`, the versioned provider/format/cache capability contract consumed by the input and output editors. |
 | `src/haute/routes/_preview_progress.py` | The in-flight previews' step progress by client request id: opened when a preview starts, updated from its walk, closed (and remembered for five minutes) when it settles; read by `GET /api/pipeline/preview/progress/{request_id}`. |
 | `src/haute/routes/input_cache.py` | `/api/input-cache/*`, the shared build/status/cancel/clear lifecycle for snapshot-backed inputs. |
@@ -41,7 +42,7 @@
 | `src/haute/routes/_error_handlers.py` | The application exception handlers, installed by `install_exception_handlers(app)`: public contract errors → `contract_error_http_exception`, `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → `memory_limit_http_exception`, `GitError` → `git_error_http_exception`, `PathOutsideProjectError` / `InvalidPathError` → 403 / 400 with the bare message. A handler reached from a WebSocket re-raises, because an HTTP response cannot answer it. |
 | `src/haute/routes/_runtime_path_errors.py` | Closed HTTP mapping for runtime-path failures: malformed path → 400, project-root escape → 403, selected by concrete exception type rather than message text. |
 | `src/haute/_node_config_recovery.py` | Current contracts and field reconciliation. |
-| `src/haute/_artifact_paths.py` | Contained project-relative artifact paths (traversal/alias/reparse-point rejection) and bounded artifact reads shared by recovery and the mutation lock. |
+| `src/haute/_artifact_paths.py` | Contained project-relative artifact paths (traversal/alias/reparse-point rejection) and bounded artifact reads shared by recovery and the mutation lock; `ordinary_path_problem` reports which rule a path breaks, so recovery and project files word their refusals themselves. |
 | `src/haute/_recovery_sources.py` | Raw authored settings/code evidence and scaffold matching for the recover action. For a stepped node type it reconciles the recovered `steps` against the extracted body through the parser's own `_reconcile_steps`, so a hand-edited body is never regenerated from stale steps when the candidate materialises; a discarded list is reported as a `/steps` `removed` change. A step list the parser rejects outright (a malformed container, or a list beside an `inputMapping` an edges surface refuses) is dropped with the same change record rather than propagated, because recovery never raises on a bad field and the route would otherwise answer HTTP 500; the key is removed rather than defaulted to `[]`, which would materialise as empty code and discard the authored body. |
 | `src/haute/_recovery_schemas.py` | Engine field-outcome and issue types. |
 | `src/haute/_project_mutation_lock.py` | Cross-process project writer lock: an `asyncio.Lock` plus a `FileLock` of its own, polled without blocking so cancellation never strands it. |
@@ -262,6 +263,10 @@ when a path/query/body fails model validation):
 | `PATCH /api/pipeline-settings` | `PipelineSettingsValues`: only the keys present change, and `null` restores automatic. Each key is validated as the file is (`chunk_rows` 1..10000000, `caching` a boolean, `cache_size_gb`/`preview_memory_gb` > 0, `kept_free_gb` >= 0, time limits > 0 and <= 10080, no bools for numbers, no unknown keys), so an invalid body answers 422 and writes nothing | The `PipelineSettingsResponse` after the update is written. The server applies the written `chunk_rows` at once, so server-thread executions and workers started afterwards, and the next task on each warm interactive worker, run with them; every other key is read when each execution starts. An invalid existing file answers 409 and is left as it is |
 | `POST /api/pipeline/output-destination` | `OutputDestinationRequest {graph, node_id}` | Safe destination display path, format, and suffix-mismatch flag; performs no graph execution or filesystem write |
 | `GET /api/files` | Query `dir="."`, `extensions=null`; omission derives readable extensions from the I/O registry | `BrowseFilesResponse {dir, items:[{name,path,type,size?}]}`; files have numeric byte size, directories serialize `size: null` |
+| `GET /api/project-files` | Query `place` (`pipeline` or `local`), `path=""` (a folder relative to the place) | `ProjectFolderResponse {place, path, root, writable, entries:[{name, path, kind: file\|folder, size, modified, revision, status: new\|ignored\|null}]}`: `root` is the place's folder relative to the project root (`rating/files`, or `""` for local); folders come first, then files, ignoring case. The pipeline place's root also lists `data` and `models`, and the local root exactly `data` and `outputs`, each even before it exists. In the pipeline place `status` is `new` for a file not yet in version history and `ignored` for one `.gitignore` ignores. Dot-names, `__pycache__`, links and junctions are never listed. 400 `invalid_path`, 404 `folder_missing`, 409 `no_pipeline_folder` |
+| `PUT /api/project-files/content` | Query `place`, `path` (the file, relative to the place), optional `replace_revision`; raw `application/octet-stream` body with `Content-Length` | `ProjectFileWriteResponse {path, size, revision, replaced, status, git_sha, identity_required, warnings}`. Without `replace_revision` an existing file is 409 `file_exists`; with it, a file whose revision differs (or that is gone) is 412 `file_changed`. Also 411 without a length, 413 `too_large_for_history` over 100 MiB in the pipeline place, 403 `read_only` outside a writable folder, 403 `hosted_local_files` for the local place in a hosted app, 409 `ignored` naming the `.gitignore` rule, 409 `branch_changed`, 409 `file_in_use`, 400 `length_mismatch`, 400 `invalid_path`, 507 `disk_full` |
+| `GET /api/project-files/content` | Query `place`, `path` | The file as an attachment (`application/octet-stream`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`); 404 `file_missing`, 400 `invalid_path` |
+| `DELETE /api/project-files/content` | Query `place`, `path`, `revision` | `ProjectFileDeleteResponse {path, git_sha, identity_required, warnings}`; 412 `file_changed`, 404 `file_missing`, 403 `read_only`, 400 `invalid_path` |
 | `GET /api/model-file` | Required query `path` (project-relative) | `ModelFileInspectionResponse {model_path, flavor, label, task?, features, categorical_features, offset_column?, offset_link?, contract_path?}` from `inspect_model_file`; a `ConfigError` or `FeatureMismatchError` (missing file, unsupported suffix, undeclared offset, contract mismatch) is 400 with its message; a path outside the project is the shared runtime-path refusal (403) |
 | `GET /api/io-capabilities` | No body | Versioned provider groups, format capabilities, modes, accepted arguments, optional engines, cache modes, and materialisation diagnostics |
 | `GET /api/schema` | Required query `path`; optional `format` and `arguments` (a JSON object, only with `format`) read the file as that Data Input format's scanner would, without the `schema` argument; XML uses the structured API-input decoder | `SchemaResponse {path, columns, row_count?, row_count_estimated=false, column_count, preview=[]}`; invalid/unsafe XML, arguments without a format or not a JSON object, an unknown format and arguments the scanner rejects are 400 |
@@ -567,6 +572,37 @@ bounded result; no non-transactional parent replay is introduced. Timeout/cancel
 worker and removes a known file staging artifact before returning 504. The sole file-publication
 and directory-fsync section runs under the same short gate that records route cancellation, so a
 result/cancel race has one linearized winner and cannot pass through a check/rename gap.
+
+**Project files** (`routes/project_files.py`). A place's folder comes from
+`_project_layout.pipeline_files_folder` (pipeline, 409 `no_pipeline_folder` when the pipeline
+sits at the root) or `LOCAL_FOLDERS` (local). Every path is checked twice: lexically (no
+empty, absolute, drive, `..` or `:` part, no dot-name or `__pycache__` component) and then
+by `_artifact_paths.ordinary_path_problem` on the project-relative path (no link or junction on
+any part, no hard-linked or non-regular target), each refusal worded for the analyst as 400
+`invalid_path`. A listing reads one folder with `os.scandir`; in the pipeline place it asks Git
+once for the folder's states (`_git.pipeline_file_states`: `git status --porcelain=v1 -z
+--untracked-files=all --ignored=matching`), so a file is `new` when untracked and `ignored`
+when it or a parent folder is ignored. A `revision` is the file's size and nanosecond mtime.
+A write first checks everything it can before reading the body: the path and place, the
+length (411; 413 above `VERSIONED_FILE_LIMIT_BYTES` in the pipeline place), the hosted
+refusal for the local place (`databricks_app_environment()`), the `.gitignore` rule that
+would ignore the target (`_git.ignore_rule`, 409 `ignored` naming the rule and the anchored
+spelling that fixes it), and `ensure_disk_headroom` (507) after creating the target's parent
+folder inside the place. It records the working branch, then streams the body chunk by chunk
+to a dot-named sibling staging file, each chunk written off the event loop; a body longer or
+shorter than its length is 400 `length_mismatch`, and a disconnect or any failure deletes the
+staging file and leaves the target untouched. It then publishes under `save_lock` and, in a
+worker thread, the repository's `repository_mutation` lock, as the test-quote write does:
+the working branch must be the one recorded (409 `branch_changed`), the path is checked again,
+the target must be absent (409 `file_exists`) or carry the confirmed revision (412
+`file_changed`), and `_file_ops.publish_staged_file` renames the staging file into place,
+without replacing a file that appeared since (create) or with the bounded Windows retry
+(replace, 409 `file_in_use` when it is exhausted). A pipeline-place write is then captured with
+`capture_save_in_ledger` (message `Added <path>` or `Replaced <path>`); a capture that cannot
+happen (no working branch, no identity, a Git failure) leaves the file `new`, swept by the next
+Commit, and says so in `identity_required` and `warnings`. A delete checks the path, the place
+and the revision the same way, unlinks under the same locks, and captures the removal in the
+pipeline place. A download returns a `FileResponse` attachment for a regular file.
 
 **Node-data build and profile** (`routes/_node_data_service.py`): the background supervisor
 remains a parent thread only to bridge the synchronous one-shot worker into the job lifecycle.
@@ -1026,6 +1062,16 @@ entirely and leave every touched file in whatever state it happened to be in."
 
 ## Testing
 
+- `tests/test_project_files_routes.py` covers `/api/project-files`: each place's listing (the
+  known folders before they exist, dot-names and `__pycache__` hidden, a new and an ignored
+  file's status, a project with its pipeline at the root); a write that creates, one that
+  replaces its confirmed revision, and the refusals of an existing file, a changed revision,
+  `..`, a dot-name, a reserved name, `a:b`, a junction parent, the read-only `outputs/`, the
+  local place in a hosted app, an ignored target and a pipeline file over the limit; a body
+  shorter than its length leaving no staging file; a branch changed mid-write; the capture of
+  a pipeline-place write and delete, and none for the local place; a name with glob characters
+  captured alone; the download's headers; a delete's revision check; the session token and
+  Origin required for a write; and that the underwriter app has no such route.
 - `tests/test_cache_nodes_routes.py` covers `POST /api/cache/nodes`: every node of the graph
   reported including one with nothing cached, a re-cache replacing rather than adding to a
   node's dataset, two nodes resolving to one input snapshot reporting its bytes once with the

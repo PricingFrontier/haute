@@ -97,6 +97,7 @@ from haute.routes.node_data import router as node_data_router
 from haute.routes.optimiser import router as optimiser_router
 from haute.routes.output_assemble import router as output_assemble_router
 from haute.routes.pipeline import router as pipeline_router
+from haute.routes.project_files import router as project_files_router
 from haute.routes.rating import router as rating_router
 from haute.routes.submodel import router as submodel_router
 from haute.routes.utility import router as utility_router
@@ -619,6 +620,7 @@ app.include_router(assistant_router)
 app.include_router(output_assemble_router)
 app.include_router(databricks_router)
 app.include_router(files_router)
+app.include_router(project_files_router)
 app.include_router(io_capabilities_router)
 app.include_router(input_cache_router)
 app.include_router(json_cache_router)

@@ -11980,6 +11980,245 @@
       "title": "PolarsStepsRenderResponse",
       "type": "object"
     },
+    "ProjectFileDeleteResponse": {
+      "description": "A deleted file, with the save-ledger capture of a pipeline-place delete.",
+      "properties": {
+        "git_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Git Sha"
+        },
+        "identity_required": {
+          "default": false,
+          "title": "Identity Required",
+          "type": "boolean"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "path",
+        "git_sha",
+        "identity_required",
+        "warnings"
+      ],
+      "title": "ProjectFileDeleteResponse",
+      "type": "object"
+    },
+    "ProjectFileEntry": {
+      "description": "A file or folder in a Files panel listing; ``path`` is relative to its place.\n\n``modified`` is in seconds since the epoch, and absent for a known folder that does not\nexist yet. ``revision`` (size and nanosecond mtime) is what a replace or delete names.\n``status`` marks a pipeline-place file not yet in version history (``new``) or one\n``.gitignore`` ignores.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "file",
+            "folder"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "modified": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Modified"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "revision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Revision"
+        },
+        "size": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Size"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "enum": [
+                "new",
+                "ignored"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        }
+      },
+      "required": [
+        "name",
+        "path",
+        "kind",
+        "size",
+        "modified",
+        "revision",
+        "status"
+      ],
+      "title": "ProjectFileEntry",
+      "type": "object"
+    },
+    "ProjectFileWriteResponse": {
+      "description": "A written file, with the save-ledger capture of a pipeline-place write.",
+      "properties": {
+        "git_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Git Sha"
+        },
+        "identity_required": {
+          "default": false,
+          "title": "Identity Required",
+          "type": "boolean"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "replaced": {
+          "title": "Replaced",
+          "type": "boolean"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        },
+        "size": {
+          "title": "Size",
+          "type": "integer"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "enum": [
+                "new",
+                "ignored"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "path",
+        "size",
+        "revision",
+        "replaced",
+        "status",
+        "git_sha",
+        "identity_required",
+        "warnings"
+      ],
+      "title": "ProjectFileWriteResponse",
+      "type": "object"
+    },
+    "ProjectFolderResponse": {
+      "description": "One folder of a place; ``root`` is the place's folder relative to the project.",
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/ProjectFileEntry"
+          },
+          "title": "Entries",
+          "type": "array"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "place": {
+          "enum": [
+            "pipeline",
+            "local"
+          ],
+          "title": "Place",
+          "type": "string"
+        },
+        "root": {
+          "title": "Root",
+          "type": "string"
+        },
+        "writable": {
+          "title": "Writable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "place",
+        "path",
+        "root",
+        "writable",
+        "entries"
+      ],
+      "title": "ProjectFolderResponse",
+      "type": "object"
+    },
     "RatingLevelColumn": {
       "description": "What one column offers as rating levels.\n\n`distinct_count` counts the levels that could be chosen — neither missing\nnor blank — so it is the number `values` would hold without the cap.",
       "properties": {
@@ -16141,6 +16380,15 @@
     "PolarsStepsRenderResponse": {
       "$ref": "#/$defs/PolarsStepsRenderResponse"
     },
+    "ProjectFileDeleteResponse": {
+      "$ref": "#/$defs/ProjectFileDeleteResponse"
+    },
+    "ProjectFileWriteResponse": {
+      "$ref": "#/$defs/ProjectFileWriteResponse"
+    },
+    "ProjectFolderResponse": {
+      "$ref": "#/$defs/ProjectFolderResponse"
+    },
     "RatingLevelsResponse": {
       "$ref": "#/$defs/RatingLevelsResponse"
     },
@@ -16321,6 +16569,9 @@
     "SessionStatusResponse",
     "BrowseFilesResponse",
     "ModelFileInspectionResponse",
+    "ProjectFolderResponse",
+    "ProjectFileWriteResponse",
+    "ProjectFileDeleteResponse",
     "EditorIdentitiesResponse",
     "PolarsStepsRenderResponse",
     "PolarsFreeCodeColumnsResponse",
@@ -16428,7 +16679,10 @@
     "session": [
       "SessionStatusResponse",
       "BrowseFilesResponse",
-      "ModelFileInspectionResponse"
+      "ModelFileInspectionResponse",
+      "ProjectFolderResponse",
+      "ProjectFileWriteResponse",
+      "ProjectFileDeleteResponse"
     ],
     "training": [
       "TrainResponse",

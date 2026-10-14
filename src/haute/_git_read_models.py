@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 # The command core is the sole process boundary.  Its helpers are imported
 # explicitly into this domain's namespace so extracted functions retain their
@@ -15,6 +16,7 @@ from haute._git_core import (
     _list_branches_with_tips,
     _merge_base,
     _rev_parse,
+    _run_git,
     _run_git_ok,
     branch_category,
     git_binary_available,
@@ -26,7 +28,52 @@ from haute._git_setup import get_identity
 from haute._git_transactions import check_invariants
 from haute.schemas import GitManagedBranch, GitWorkingBranchesResponse, GitWorkingBranchResponse
 
-__all__ = ["working_branch_status", "working_branches"]
+__all__ = ["ignore_rule", "pipeline_file_states", "working_branch_status", "working_branches"]
+
+#: A project file's place outside version history, as the Pipeline files panel marks it.
+FileState = Literal["new", "ignored"]
+
+
+def pipeline_file_states(folder: str, cwd: Path | None = None) -> dict[str, FileState]:
+    """Untracked (``new``) and ignored files under *folder*, keyed by repo-relative path.
+
+    An ignored folder appears once, with a trailing ``/``: everything under it is ignored.
+    Outside a git repository nothing is versioned, and the answer is empty.
+    """
+    if not _is_git_repo(cwd):
+        return {}
+    listed = _run_git(
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--ignored=matching",
+        "--",
+        f":(literal){folder}",
+        cwd=cwd,
+    )
+    states: dict[str, FileState] = {}
+    for entry in listed.split("\0"):
+        if entry.startswith("?? "):
+            states[entry[3:]] = "new"
+        elif entry.startswith("!! "):
+            states[entry[3:]] = "ignored"
+    return states
+
+
+def ignore_rule(path: str, cwd: Path | None = None) -> str | None:
+    """The ``.gitignore`` rule ignoring repo-relative *path*, as ``source:line:pattern``.
+
+    ``None`` when nothing ignores it, including outside a git repository.
+    """
+    if not _is_git_repo(cwd):
+        return None
+    ok, out = _run_git_ok("check-ignore", "--verbose", "--no-index", "--", path, cwd=cwd)
+    rule = out.partition("\t")[0]
+    # A negated pattern ("!...") matching means the path is NOT ignored.
+    if not ok or not rule or rule.rpartition(":")[2].startswith("!"):
+        return None
+    return rule
 
 
 def _eligible_working_branches(cwd: Path | None = None) -> list[str]:

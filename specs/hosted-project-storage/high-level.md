@@ -103,6 +103,10 @@ Invariants:
   publish after the restart records the branch the user chose.
 - Local mode is untouched: every behaviour above is gated on the hosted
   environment contract.
+- Only what git keeps survives a restart, so the Local files panel's `data/`
+  takes no files in a hosted app: a write there is refused with the reason
+  ([server-api](../server-api/high-level.md)). Files added through Pipeline files
+  are saves, published like any other.
 
 Known limitation (measured, not designed around): saves do not wait on
 the *network*, but git serialises operations per repository, so a save
