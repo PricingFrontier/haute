@@ -63,7 +63,12 @@ from haute._git_history import (
     pending_ledger_saves,
     working_milestones,
 )
-from haute._git_read_models import working_branch_status, working_branches
+from haute._git_read_models import (
+    ignore_rule,
+    pipeline_file_states,
+    working_branch_status,
+    working_branches,
+)
 from haute._git_remote import (
     _fetch_expected_default,
     _inspect_remote,
@@ -178,6 +183,7 @@ __all__ = [
     "get_prefs",
     "git_binary_available",
     "graph_topology",
+    "ignore_rule",
     "is_eligible_working_branch",
     "ledger_name",
     "list_remotes",
@@ -186,6 +192,7 @@ __all__ = [
     "move_to_commit",
     "pair_divergence",
     "pending_ledger_saves",
+    "pipeline_file_states",
     "push_working_pair",
     "remote_has_content",
     "remote_url",

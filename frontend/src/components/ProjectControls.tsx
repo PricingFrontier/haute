@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { BookOpen, Bot, Bug, CircleHelp, Keyboard, Loader2 } from "lucide-react"
-import { SaveCommit } from "../haute-ui"
+import { BookOpen, Bot, Bug, CircleHelp, FolderGit2, FolderOpen, Keyboard, Loader2 } from "lucide-react"
+import { SaveCommit, ToolbarButton, ToolbarColumn } from "../haute-ui"
 import useClickOutside from "../hooks/useClickOutside"
 import useUIStore from "../stores/useUIStore"
 import { DOCUMENTATION_URL } from "../utils/documentation"
@@ -23,8 +23,8 @@ interface ProjectControlsProps {
 
 /**
  * The project's controls at the toolbar's right, the same in the pipeline editor's
- * toolbar and the workbench's (specs/frontend-shared): the Assistant and Help column,
- * and the branch indicator with Save and Commit. 10px is the toolbar's one spacing value:
+ * toolbar and the workbench's (specs/frontend-shared): Pipeline files over Local files,
+ * the Assistant and Help column, and the branch indicator with Save and Commit. 10px is the toolbar's one spacing value:
  * between adjacent buttons and between sections alike.
  */
 export default function ProjectControls({
@@ -43,6 +43,8 @@ export default function ProjectControls({
       ? "The assistant finished while the panel was closed"
       : null
   const setShortcutsOpen = useUIStore((s) => s.setShortcutsOpen)
+  const filesPlace = useUIStore((s) => s.filesPlace)
+  const setFilesPlace = useUIStore((s) => s.setFilesPlace)
   const [helpOpen, setHelpOpen] = useState(false)
   const helpRef = useRef<HTMLDivElement>(null)
   const closeHelp = useCallback(() => setHelpOpen(false), [])
@@ -57,6 +59,26 @@ export default function ProjectControls({
 
   return (
     <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2.5">
+      <ToolbarColumn role="group" aria-label="Files">
+        <ToolbarButton
+          data-testid="toolbar-pipeline-files"
+          icon={FolderGit2}
+          aria-pressed={filesPlace === "pipeline"}
+          onClick={() => setFilesPlace(filesPlace === "pipeline" ? null : "pipeline")}
+          title="Files kept with the pipeline, in version history"
+        >
+          Pipeline files
+        </ToolbarButton>
+        <ToolbarButton
+          data-testid="toolbar-local-files"
+          icon={FolderOpen}
+          aria-pressed={filesPlace === "local"}
+          onClick={() => setFilesPlace(filesPlace === "local" ? null : "local")}
+          title="Files on this machine: data/ and outputs/"
+        >
+          Local files
+        </ToolbarButton>
+      </ToolbarColumn>
       {/* Assistant and Help column — equal width, paired with branch name & save/commit */}
       <div className="flex flex-col gap-1 w-fit">
         {/* A running turn fences the canvas, but the panel that shows and

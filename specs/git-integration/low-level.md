@@ -8,7 +8,7 @@
 | `src/haute/_git_core.py` | Sole Git command and repository-mutation boundary: exception taxonomy, prompt-proof subprocess adapters, fetch serialization/cooldowns, ref validation and branch-pair naming, guardrails, immutable object/ref queries, and content-addressed primitive caches (including parsed graph-log rows). Domain modules depend on this layer; it depends on none of them. |
 | `src/haute/_git_setup.py` | Repository and clone setup: repository readiness, identity, default/working-branch association, unborn-repository seeding, and Git preferences. |
 | `src/haute/_git_transactions.py` | Working/ledger branch-pair transactions: path-scoped saves, invariant checks, milestone merge/ref transaction, and branch creation/fork replay with compensating rollback. |
-| `src/haute/_git_read_models.py` | Immutable panel read models for repository/working-branch readiness and managed working-branch listings. It performs no mutation or fetch. |
+| `src/haute/_git_read_models.py` | Immutable panel read models for repository/working-branch readiness and managed working-branch listings, and the project-file reads behind the Pipeline files panel: `pipeline_file_states` (how each file in a folder stands against version history: `new`, `changed` or `ignored`) and `ignore_rule` (the `.gitignore` rule that ignores a path). It performs no mutation or fetch. |
 | `src/haute/_git_history.py` | Immutable history projection and safe historical materialisation: milestones, ledger saves, commit context, forest topology, use of the core's object-addressed log cache, and bounded archive extraction. |
 | `src/haute/_git_remote.py` | Deliberate remote synchronization and transport: remote configuration/listing, clone/bundle flows, pair divergence, fetch, push/bootstrap, fast-forward, and branch-away resolution. It uses the core command boundary and never owns clone-state files. |
 | `src/haute/_git_archive.py` | Local branch-pair movement and archive lifecycle: detached historical move, archive, delete/tombstone, undelete, and restore transactions with compensating rollback. |
@@ -97,9 +97,13 @@ In steady state a clone-state read performs one marker `stat` plus cache lookup,
 repository with no callers leaves no permanent registry entry.
 
 **Gitignore guards** (`_gitignore_guard.py`): `GITIGNORE_GUARD_ENTRIES` is exactly
-`.env`, `.haute/`, `impact_report.md`, `.haute_cache/`, `mlruns/`, `data/`, `.venv/`, and
-SQLite's side files `*.sqlite-journal`, `*.sqlite-wal` and `*.sqlite-shm`, which never sit
-beside a committed test-quote file ([workbench](../workbench/high-level.md)).
+`.env`, `.haute/`, `impact_report.md`, `.haute_cache/`, `mlruns/`, `/data/`, `/outputs/`,
+`/.cache/`, `.haute_build/`, `__pycache__/`, `.venv/`, and SQLite's side files
+`*.sqlite-journal`, `*.sqlite-wal` and `*.sqlite-shm`, which never sit beside a committed
+test-quote file ([workbench](../workbench/high-level.md)). `/data/`, `/outputs/` and
+`/.cache/` are anchored to the project root, so the pipeline folder's `files/data/` stays
+versioned; an unanchored `data/` line in an existing project ignores it, and the project
+fixes that line by hand.
 `ensure_gitignore_guards(project_dir)` creates `.gitignore` with those lines when absent or
 appends only missing exact lines under a `# Haute` block. Existing non-UTF-8 bytes are decoded
 with replacement for membership testing. It deliberately does not ignore `*.haute.json`,
@@ -153,7 +157,9 @@ lazily-spawn the ledger at the working branch's current tip, checkout if not alr
 current) → `git status --porcelain -- <paths>` to check anything in *paths* actually
 changed (idempotent no-op returns `None`) → `_settle_sqlite_journals` (a `*.sqlite` path with a non-empty `-journal` beside it is opened and read, which plays a hot journal back as SQLite's next open would; an open that fails raises `GitDomainError` naming the path, nothing committed) → `git add -- <paths>` → `git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `git commit -m <msg> --
 <paths>` (pathspec-scoped, so it commits only those paths' working-tree state regardless of
-what else the user may have pre-staged) → returns the new SHA. A canvas save passes no
+what else the user may have pre-staged) → returns the new SHA. Every path reaches Git as a
+`:(literal)` pathspec, so a filename holding `*`, `?` or `[` names only itself, as in the
+unborn-repo seed. A canvas save passes no
 message, so the default names the changed files; an assistant apply passes its change
 headline and an assistant undo `Undo: ` and that headline, through
 `SavePipelineService.save_graph_transactionally(commit_message=...)`.
@@ -165,13 +171,21 @@ lock. Pure Git history/object readers do not acquire the engine lock, but every 
 reader in `_git_state.py` acquires it for the file read so it cannot overlap an atomic state
 transaction.
 
-**Milestone.** `commit_milestone(message, project_root, version_label, cwd, allow_fork)` →
-reads the recorded working branch from `_git_state.read_working_branch` → unless
-`allow_fork`, calls `divergence_state(working)` (local-refs-only, no fetch) and raises
+**Milestone.** `commit_milestone(message, project_root, version_label, cwd, allow_fork,
+pipeline_folder)` → reads the recorded working branch from `_git_state.read_working_branch` →
+unless `allow_fork`, calls `divergence_state(working)` (local-refs-only, no fetch) and raises
 `GitMilestoneForkError` if the leg is `"behind"` or `"diverged"` → before the merge,
-`_residual_tracked_changes` enumerates every modified path already tracked by Git and, when
-non-empty, records all of them in one final ledger save with the fixed message `"Updated
-tracked project files"`; untracked paths are deliberately excluded → `merge_to_working`
+`_residual_tracked_changes` enumerates every modified path already tracked by Git, and
+`_pipeline_folder_new_files(pipeline_folder)` adds every new file under the pipeline folder
+(`git ls-files --others --exclude-standard -z` on its literal pathspec). That sweep leaves out
+`__pycache__/` and `.haute_build/` folders and `*.pyc` files even where `.gitignore` lacks
+them, and a file `.gitignore` ignores stays out. The route passes `pipeline_folder` from
+`_project_layout.pipeline_folder`; `None` (no pipeline folder below the root) adds nothing.
+Any swept path inside the pipeline folder that is a file larger than
+`VERSIONED_FILE_LIMIT_BYTES` raises `GitDomainError` naming it, its size and the root's
+`data/` as the place for it, before anything is committed. A non-empty sweep is recorded in
+one final ledger save with the fixed message `"Updated project files"`; a new file outside
+the pipeline folder is never included → `merge_to_working`
 validates the message (non-empty, no C0 control characters — a stray record-separator would
 corrupt the ledger-save parser's delimiter), runs `check_invariants` (see below) and raises
 `GitDomainError` on any violation, computes `merge_base(working_tip, ledger_tip)` and raises
@@ -224,7 +238,9 @@ equals the last-merged ledger commit's tree, not an ancestor relationship.
 
 **Move (`move_to_commit`).** Refuses if a git op is in progress (`_assert_no_git_op_in_progress`
 checks `MERGE_HEAD`/`CHERRY_PICK_HEAD`/`REVERT_HEAD`/`rebase-merge`/`rebase-apply` under
-the git dir) or if tracked files are dirty. Wipes `_VOLATILE_ARTEFACTS` (best-effort),
+the git dir) or if tracked files are dirty. Wipes `_VOLATILE_ARTEFACTS` (best-effort: the
+root's `__pycache__`, `outputs`, `.haute_cache`, `.cache` and tool caches, but not `output`,
+where optimiser results Apply Optimisation prices from were published by default),
 `git checkout --detach <sha>`, then `_git_state.clear_working_branch` — HEAD moves but no
 ref is created or updated, so the prior branch stays fully reachable.
 
@@ -543,7 +559,10 @@ process failures, and precise ref-movement races deterministic.
   modules, organized into
   focused test classes covering: slugification, branch-category naming, ledger
   resolve/spawn, `commit_save` (including idempotent-no-op saves, a SQLite file's hot
-  journal played back before the commit and one SQLite cannot settle refusing it),
+  journal played back before the commit and one SQLite cannot settle refusing it, and a
+  filename with glob characters committing only itself), the milestone sweep of the pipeline
+  folder (a new file there recorded, a new file outside it, an ignored file, `__pycache__/`
+  and `.haute_build/` left out, and a file over the limit refusing the Commit by name),
   milestone merge and its
   invariant checks, git identity get/set, working-branch status across all seven readiness states,
   `set_working_branch` including the unborn-repo seed path and its gitignore-guard

@@ -236,14 +236,28 @@ boundary (x = 181px). Adjacent columns house the source selector stacked above a
 Pipeline control that shares its width and opens the pipeline settings pane
 (preview/chunk row limits and the cached-data inventory), integer-ms timing and memory breakdowns, undo/redo with
 text labels, zoom in/out, centre/layout, Submodel/Instance selection actions, Utility above Constants,
-assistant and a Help menu (Documentation, Hotkeys, Report a bug), and the working branch indicator stacked above
+Pipeline files above Local files, assistant and a Help menu (Documentation, Hotkeys, Report a bug), and the working branch indicator stacked above
 equal-width Save and Commit buttons. The Pipeline control reports the pipeline's live state:
 the calculation mode while the server is reachable, and "Offline" once live sync has lost
 the server. The toolbar carries no unsaved-changes indicator. Its frame, brand, Undo/Redo
 and Zoom In/Zoom Out columns and Save/Commit pair are `haute-ui` components, the same ones
-the workbench's toolbar is built from. Its right-hand group, Assistant, Help
-and the branch indicator with Save and Commit, is `ProjectControls`, which the workbench's
-toolbar ends with too ([workbench](../workbench/high-level.md)).
+the workbench's toolbar is built from. Its right-hand group, Pipeline files over Local
+files, Assistant over Help, and the branch indicator with Save and Commit, is
+`ProjectControls`, which the workbench's toolbar ends with too
+([workbench](../workbench/high-level.md)).
+Pipeline files and Local files each open the Files panel on its place
+([server-api](../server-api/high-level.md)): Pipeline files on the pipeline folder's
+versioned `files/`, Local files on the project root's `data/` and `outputs/`. The panel
+shows one folder at a time under a breadcrumb, a file's size and when it changed, and in
+Pipeline files a file not yet in version history (New), one edited since it was
+committed (Changed), or one `.gitignore` ignores (Ignored). Files
+dropped on it, or picked through Upload, go into the folder showing or the folder row they
+are dropped on (at Local files' root, into `data/`), one at a time with their progress; a
+name already there asks before replacing it, a dropped folder is refused, and a folder that
+only downloads takes none. Each file offers Download, and Delete where files can be added.
+A pipeline-place write or delete is a save, reported as a save is. A replace raises the
+node-data epoch, so a displayed preview is fetched again. A file dropped anywhere that does
+not take files is ignored rather than opened by the browser.
 `NodeSearch` is the Ctrl+K command palette, windowed to
 render only visible rows for large graphs; the application loads its module
 only when the palette is opened, so this user-triggered surface is not part

@@ -1706,22 +1706,7 @@ class TestClampRowLimit:
 
 
 class TestOutputDirDefault:
-    """The default output_dir for training should be <pipeline_dir>/outputs."""
-
-    def test_default_output_dir_uses_pipeline_dir(self):
-        from haute.executor import _pipeline_dir
-        from tests.conftest import make_graph
-
-        graph = make_graph(
-            {
-                "nodes": [],
-                "edges": [],
-                "source_file": "/projects/rating/main.py",
-            }
-        )
-        p_dir = _pipeline_dir(graph)
-        assert p_dir is not None
-        assert str(p_dir / "outputs").replace("\\", "/").endswith("rating/outputs")
+    """A scripted TrainingJob writes into outputs/ by default."""
 
     def test_default_output_dir_without_source_file(self):
         from haute.executor import _pipeline_dir
@@ -5034,7 +5019,8 @@ class TestExportScriptDirect:
         body = ExportScriptRequest(graph=graph, node_id="m1")
         result = await export_script(body)
         assert "TrainingJob" in result.script
-        assert "output/" in result.script
+        # Where a Data Output with that bare name writes its file.
+        assert "outputs/my_model.parquet" in result.script
 
     @pytest.mark.asyncio
     async def test_missing_node_raises_404(self):

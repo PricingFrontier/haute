@@ -16,7 +16,8 @@ class TestGuardEntryList:
         assert ".env" in GITIGNORE_GUARD_ENTRIES
         assert ".haute/" in GITIGNORE_GUARD_ENTRIES  # per-clone state — lockout class
         assert ".haute_cache/" in GITIGNORE_GUARD_ENTRIES
-        assert "data/" in GITIGNORE_GUARD_ENTRIES
+        assert {"/data/", "/outputs/", "/.cache/"} <= set(GITIGNORE_GUARD_ENTRIES)
+        assert {".haute_build/", "__pycache__/"} <= set(GITIGNORE_GUARD_ENTRIES)
         assert "mlruns/" in GITIGNORE_GUARD_ENTRIES
         assert "impact_report.md" in GITIGNORE_GUARD_ENTRIES
         assert ".venv/" in GITIGNORE_GUARD_ENTRIES  # matches the *.py seed pathspec otherwise
@@ -26,6 +27,25 @@ class TestGuardEntryList:
     def test_stable_layer_json_is_not_ignored(self) -> None:
         """<pipeline>.haute.json is stable-layer (tracked) — must NOT be ignored."""
         assert not any("haute.json" in entry for entry in GITIGNORE_GUARD_ENTRIES)
+
+    def test_ignores_the_root_local_folders_but_not_the_pipeline_folder(
+        self, tmp_path: Path
+    ) -> None:
+        """The root's data/ and outputs/ stay local; the pipeline's files/data/ is versioned."""
+        from tests._git_helpers import git_run, init_repo
+
+        init_repo(tmp_path)
+        ensure_gitignore_guards(tmp_path)
+        paths = [
+            "data/portfolio.parquet",
+            "outputs/scored.parquet",
+            ".cache/models/x.cbm",
+            "rating/__pycache__/main.pyc",
+            "rating/files/data/postcodes.csv",
+            "rating/files/models/freq.cbm",
+        ]
+        ignored = git_run(tmp_path, "check-ignore", "--no-index", *paths).splitlines()
+        assert ignored == paths[:4]
 
 
 class TestEnsureGitignoreGuards:

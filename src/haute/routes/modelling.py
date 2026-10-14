@@ -636,7 +636,7 @@ async def export_script(body: ExportScriptRequest) -> ExportScriptResponse:
 
     from haute.modelling import generate_training_script
 
-    data_path = body.data_path or f"output/{config.get('name', 'model')}.parquet"
+    data_path = body.data_path or f"outputs/{config.get('name', 'model')}.parquet"
     try:
         script = generate_training_script(config, data_path)
     except TrainingConfigError as exc:

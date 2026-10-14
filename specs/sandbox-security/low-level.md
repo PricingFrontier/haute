@@ -76,8 +76,11 @@
   or an already-valid credential for absent-Origin non-browser calls.
 - **`GITIGNORE_GUARD_ENTRIES: tuple[str, ...]`** (`_gitignore_guard.py`) — the
   ordered, fixed set of paths every project's `.gitignore` must contain:
-  `.env`, `.haute/`, `impact_report.md`, `.haute_cache/`, `mlruns/`, `data/`,
-  `.venv/`, `*.sqlite-journal`, `*.sqlite-wal`, `*.sqlite-shm`.
+  `.env`, `.haute/`, `impact_report.md`, `.haute_cache/`, `mlruns/`, `/data/`,
+  `/outputs/`, `/.cache/`, `.haute_build/`, `__pycache__/`, `.venv/`,
+  `*.sqlite-journal`, `*.sqlite-wal`, `*.sqlite-shm`. The root folders are anchored so
+  nothing in the versioned pipeline folder is ignored
+  ([git-integration](../git-integration/low-level.md)).
 
 ## Control flow
 

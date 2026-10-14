@@ -1521,8 +1521,15 @@ export type {
   BrowseFilesResponse,
   FileItem as FileListItem,
   ModelFileInspectionResponse,
+  ProjectFileDeleteResponse,
+  ProjectFileEntry,
+  ProjectFileWriteResponse,
+  ProjectFolderResponse,
   SessionStatusResponse,
 } from "../generated/api-contracts.generated"
+
+/** The Files panel's two places: the pipeline folder's versioned files/, and local data/ and outputs/. */
+export type ProjectFilePlace = import("../generated/api-contracts.generated").ProjectFolderResponse["place"]
 
 // ---------------------------------------------------------------------------
 // Utility types

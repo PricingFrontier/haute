@@ -21,6 +21,7 @@
 | `src/haute/_graph_shape.py` | Topology-only invariants independent of any single node's config (`validate_graph_shape_contracts`, `validate_pipeline_graph_shape_contracts`), including submodel child graphs. |
 | `src/haute/_scaffold.py` | `haute init` template strings: `haute.toml`, `.env.example`, CI YAML for 3 providers × 7 deploy targets, starter pipeline/tests/utilities, pre-commit hook. |
 | `src/haute/_project.py` | Project-root discovery (`get_project_root`, `is_haute_project`) and pipeline-file resolution (`resolve_pipeline_file`, 4-tier fallback). |
+| `src/haute/_project_layout.py` | The project's folder layout: `PIPELINE_FILES_FOLDER` and `PIPELINE_FILES_SUBFOLDERS` (the pipeline folder's `files/` with `data/` and `models/`), `LOCAL_FOLDERS` (the root's unversioned `data/` and `outputs/`), `VERSIONED_FILE_LIMIT_BYTES`, `pipeline_folder` (the configured pipeline folder when it lies below the project root), `pipeline_files_folder` and `default_model_folder`. |
 | `haute.toml` (repo root) | Concrete instance of the schema emitted by `src/haute/_scaffold.py::haute_toml`; `[project].pipeline` is read back by `src/haute/_project.py::_toml_configured_pipeline`, the one reader behind pipeline binding, `src/haute/_builders.py::_configured_pipeline_dir` and `src/haute/routes/_helpers.py::pipeline_dir`. |
 
 ## Key types and data structures
@@ -317,6 +318,18 @@ Malformed/unreadable TOML raises `ConfigError` before discovery. Deploy resolves
 project through this helper immediately before binding a pipeline. The plural GUI discovery API
 shares the configured-path checks but additionally lists valid sibling pipelines.
 
+**Project layout (`_project_layout.py`).** `pipeline_folder(project_root)` reads
+`[project].pipeline` through `_toml_configured_pipeline` (so malformed TOML raises
+`ConfigError`) and returns the parent folder, relative to the root in POSIX form, when that
+folder lies strictly below the root. It returns `None` when nothing is configured or the
+pipeline sits at the root, because then there is no folder to version as a whole.
+`pipeline_files_folder(project_root)` is that folder's `files/` (`PIPELINE_FILES_FOLDER`), or
+`None`. `default_model_folder(project_root)` is `<pipeline folder>/files/models`, or `models`
+without a pipeline folder: the folder a bare model or optimiser-result filename lands in.
+`VERSIONED_FILE_LIMIT_BYTES` is 100 MiB (104,857,600 bytes); Commit refuses to version a
+larger file from the pipeline folder ([git-integration](../git-integration/low-level.md)).
+`LOCAL_FOLDERS` names the root's `data` and `outputs`, which stay out of version history.
+
 **Scaffold generation (`src/haute/_scaffold.py`, driven by `src/haute/cli/_init_cmd.py::handle_init`).** Every
 template function is parameterised by `target`/`ci` and looks up per-target facts through
 `TARGETS`/`_get_target` rather than branching on the target string directly, so adding a
@@ -324,8 +337,9 @@ target means adding one registry entry, not touching every template function.
 `starter_pipeline(name)` emits imports plus a named `haute.Pipeline` declaration and no decorated
 nodes. `starter_test(name)` parses that file and asserts only the configured pipeline name.
 `handle_init` creates a populated `rating/utility/` package (with generated `rating/utility/__init__.py` and
-`rating/utility/features.py`) alongside empty `config`, `data`, `models`, and `outputs` placeholder
-subdirectories under `rating/`, but no node sidecars or `prompts/` directory, and removes
+`rating/utility/features.py`) alongside an empty `rating/config/` and the empty
+`rating/files/data/` and `rating/files/models/` folders (`PIPELINE_FILES_SUBFOLDERS`),
+but no node sidecars or `prompts/` directory, and removes
 any root `main.py` before writing `rating/main.py`.
 `haute_toml()` assembles `[project]`/`[deploy]`/`[test_quotes]`/`[safety]`/`[safety.approval]`
 (`min_approvers` hardcoded to 2 in the template — solo users lower it by hand)/`[ci]`/
@@ -767,6 +781,9 @@ API and real JSON round-trips rather than mocks:
 - **`test_project_root.py`** + **`test_project_gaps.py`** — `get_project_root` walk-up
   behaviour, `is_haute_project`, and the full `resolve_pipeline_file` four-tier fallback
   (`TestResolvePipelineFile`, `TestTomlConfiguredPipeline`, `TestLooksLikePipelineFile`).
+- **`test_project_layout.py`** — the pipeline folder for a nested, a root-level and an
+  unconfigured pipeline, a malformed `haute.toml` refused, and the default model folder in
+  each case.
 - **`test_node_builder.py`** — `NodeBuildHooks`/`wrap_builder` interception semantics.
 - **`test_executor_builders.py`** + **`test_codegen_builders*.py`** — per-`NodeType` builder
   and column-contract behaviour; this is shared fixture territory between this component's

@@ -100,11 +100,13 @@ class TestInitCreatesProjectStructure:
     ):
         monkeypatch.chdir(tmp_path)
         runner.invoke(cli, ["init"], catch_exceptions=False)
-        for sub in ("config", "data", "outputs"):
-            assert (tmp_path / "rating" / sub).is_dir()
-        # Saved model files go to the project-root models/ folder the modelling
-        # Export pane writes, so the pipeline folder gets no models/ of its own.
-        assert not (tmp_path / "rating" / "models").exists()
+        assert (tmp_path / "rating" / "config").is_dir()
+        # The versioned home for the data and model files the pipeline reads.
+        for sub in ("data", "models"):
+            assert (tmp_path / "rating" / "files" / sub).is_dir()
+        # Nothing used the old rating/data and rating/outputs placeholders.
+        assert not (tmp_path / "rating" / "data").exists()
+        assert not (tmp_path / "rating" / "outputs").exists()
 
     def test_creates_starter_pipeline(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -3,13 +3,12 @@ import { optimiserResultSavePath } from "../optimiserHelpers"
 
 describe("optimiserResultSavePath", () => {
   it("gives case-variant labels on distinct nodes distinct paths", () => {
-    // "Foo" and "FOO" are legal coexisting node labels; a label-only path
-    // sent both to the same file and the backend save route has no
-    // overwrite guard.
+    // "Foo" and "FOO" are legal coexisting node labels; a label-only name
+    // sent both to the same file.
     const a = optimiserResultSavePath("Foo", "optimiser_1")
     const b = optimiserResultSavePath("FOO", "optimiser_2")
-    expect(a).toBe("output/optimiser_Foo_optimiser_1.json")
-    expect(b).toBe("output/optimiser_FOO_optimiser_2.json")
+    expect(a).toBe("optimiser_Foo_optimiser_1.json")
+    expect(b).toBe("optimiser_FOO_optimiser_2.json")
     expect(a).not.toBe(b)
   })
 
@@ -23,7 +22,7 @@ describe("optimiserResultSavePath", () => {
     // portableKey: space → underscore, ASCII punctuation stripped,
     // casing preserved (NOT the old ad-hoc lowercase rule).
     expect(optimiserResultSavePath("My Node!", "opt_1")).toBe(
-      "output/optimiser_My_Node_opt_1.json",
+      "optimiser_My_Node_opt_1.json",
     )
   })
 
@@ -31,7 +30,7 @@ describe("optimiserResultSavePath", () => {
     // Real ids are filename-safe (<type>_<n> or Python func names); anything
     // odd is still flattened by portableKey rather than reaching the path.
     expect(optimiserResultSavePath("Foo", "weird id!")).toBe(
-      "output/optimiser_Foo_weird_id.json",
+      "optimiser_Foo_weird_id.json",
     )
   })
 })

@@ -2002,6 +2002,55 @@ export interface ModelFileInspectionResponse {
   offset_link: 'log' | 'identity' | null;
   task: 'regression' | 'classification' | null;
 }
+/**
+ * One folder of a place; ``root`` is the place's folder relative to the project.
+ */
+export interface ProjectFolderResponse {
+  entries: ProjectFileEntry[];
+  path: string;
+  place: 'pipeline' | 'local';
+  root: string;
+  writable: boolean;
+}
+/**
+ * A file or folder in a Files panel listing; ``path`` is relative to its place.
+ *
+ * ``modified`` is in seconds since the epoch, and absent for a known folder that does not
+ * exist yet. ``revision`` (size and nanosecond mtime) is what a replace or delete names.
+ * ``status`` marks a pipeline-place file version history does not hold as it is: ``new``
+ * (no committed version), ``changed`` (edited since it was committed) or ``ignored``.
+ */
+export interface ProjectFileEntry {
+  kind: 'file' | 'folder';
+  modified: number | null;
+  name: string;
+  path: string;
+  revision: string | null;
+  size: number | null;
+  status: 'new' | 'changed' | 'ignored' | null;
+}
+/**
+ * A written file, with the save-ledger capture of a pipeline-place write.
+ */
+export interface ProjectFileWriteResponse {
+  git_sha: string | null;
+  identity_required: boolean;
+  path: string;
+  replaced: boolean;
+  revision: string;
+  size: number;
+  status: 'new' | 'changed' | 'ignored' | null;
+  warnings: string[];
+}
+/**
+ * A deleted file, with the save-ledger capture of a pipeline-place delete.
+ */
+export interface ProjectFileDeleteResponse {
+  git_sha: string | null;
+  identity_required: boolean;
+  path: string;
+  warnings: string[];
+}
 export interface TrainResponse {
   actual_vs_predicted: {
     [k: string]: number;

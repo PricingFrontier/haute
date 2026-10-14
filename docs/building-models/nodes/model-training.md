@@ -572,7 +572,8 @@ evidence as artifacts.
 
 **FILENAME OR PATH** chooses where **Save model to file** writes a copy of the trained model
 and its feature contract, the same way a Data Output writes a file: type a name or pick a
-file. A bare filename saves in the project's `models/` folder, paths are relative to the
+file. A bare filename saves in the pipeline folder's `files/models/`, where Commit versions it
+([Project Files](../project-files.md)), paths are relative to the
 project root, and the model's extension (`.cbm`, `.ubj`, `.lgbm`, `.tboost`, `.ebm` or `.rsglm`, by
 family) is added if you leave it off. The pane shows the **Destination:** before you save,
 refuses an extension that does not match the model format, and asks before replacing a file

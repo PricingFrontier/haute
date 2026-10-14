@@ -27,6 +27,7 @@ import ExplorePreview from "./panels/ExplorePreview"
 import OptimiserDataPreview from "./panels/OptimiserDataPreview"
 
 import { TraceStatePanel } from "./panels/TraceStatePanel"
+import type { ProjectFilePlace } from "./api/types"
 import type { TraceResult } from "./types/trace"
 import ToastContainer from "./components/Toast"
 import { ErrorBoundary } from "./components/ErrorBoundary"
@@ -58,6 +59,7 @@ import useTracing, { type TraceRequestState } from "./hooks/useTracing"
 import useSubmodelNavigation, { type SubmodelCreateResult } from "./hooks/useSubmodelNavigation"
 import useSubmodelBoundaryEditing from "./hooks/useSubmodelBoundaryEditing"
 import useKeyboardShortcuts from "./hooks/useKeyboardShortcuts"
+import useWindowFileDropGuard from "./hooks/useWindowFileDropGuard"
 import useNodeHandlers from "./hooks/useNodeHandlers"
 import useEdgeHandlers from "./hooks/useEdgeHandlers"
 import usePanelGraphContext from "./hooks/usePanelGraphContext"
@@ -121,6 +123,7 @@ const IdentityPromptModal = lazy(() => import("./components/IdentityPromptModal"
 const PipelineRepairDialog = lazy(() => import("./components/PipelineRepairDialog"))
 const ConnectionDropMenu = lazy(() => import("./components/ConnectionDropMenu"))
 const GitPanel = lazy(() => import("./panels/GitPanel"))
+const FilesPanel = lazy(() => import("./panels/FilesPanel"))
 const UtilityPanel = lazy(() => import("./panels/UtilityPanel"))
 const GlobalConstantsPanel = lazy(() => import("./panels/GlobalConstantsPanel"))
 const AssistantPanel = lazy(() => import("./panels/assistant/AssistantPanel"))
@@ -523,10 +526,13 @@ function FlowEditorOverlays({
 
 type NodePropertiesPanelProps = {
   gitOpen: boolean
+  /** The Files panel's place, or null while it is closed. */
+  filesPlace: ProjectFilePlace | null
   utilityOpen: boolean
   constantsOpen: boolean
   assistantOpen: boolean
   onCloseGit: () => void
+  onCloseFiles: () => void
   onCloseUtility: () => void
   onCloseConstants: () => void
   onSave: () => Promise<boolean>
@@ -564,10 +570,12 @@ type NodePropertiesPanelProps = {
 
 function NodePropertiesPanel({
   gitOpen,
+  filesPlace,
   utilityOpen,
   constantsOpen,
   assistantOpen,
   onCloseGit,
+  onCloseFiles,
   onCloseUtility,
   onCloseConstants,
   onSave,
@@ -610,6 +618,12 @@ function NodePropertiesPanel({
     content = (
       <Suspense fallback={null}>
         <GitPanel onClose={onCloseGit} onSave={onSave} />
+      </Suspense>
+    )
+  } else if (filesPlace !== null) {
+    content = (
+      <Suspense fallback={null}>
+        <FilesPanel key={filesPlace} place={filesPlace} onClose={onCloseFiles} />
       </Suspense>
     )
   } else if (utilityOpen) {
@@ -747,6 +761,8 @@ function FlowEditor() {
   const setConstantsOpen = useUIStore((s) => s.setConstantsOpen)
   const gitOpen = useUIStore((s) => s.gitOpen)
   const setGitOpen = useUIStore((s) => s.setGitOpen)
+  const filesPlace = useUIStore((s) => s.filesPlace)
+  const setFilesPlace = useUIStore((s) => s.setFilesPlace)
   const assistantOpen = useUIStore((s) => s.assistantOpen)
   const setAssistantOpen = useUIStore((s) => s.setAssistantOpen)
   const assistantTurnRunning = useUIStore((s) => s.assistantTurn !== null)
@@ -2069,10 +2085,12 @@ function FlowEditor() {
 
         <NodePropertiesPanel
           gitOpen={gitOpen}
+          filesPlace={filesPlace}
           utilityOpen={utilityOpen}
           constantsOpen={constantsOpen}
           assistantOpen={assistantOpen}
           onCloseGit={() => setGitOpen(false)}
+          onCloseFiles={() => setFilesPlace(null)}
           onCloseUtility={() => setUtilityOpen(false)}
           onCloseConstants={() => setConstantsOpen(false)}
           onSave={saveProject}
@@ -2154,6 +2172,7 @@ function FlowEditor() {
 }
 
 function App() {
+  useWindowFileDropGuard()
   return (
     <ReactFlowProvider>
       <BackgroundJobPolling />

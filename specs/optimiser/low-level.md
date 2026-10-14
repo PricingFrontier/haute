@@ -861,7 +861,9 @@ validation) or attach it as an MLflow run artifact alongside metrics/params and 
 frontier-points CSV (`frontier.csv`, the typed points written back as price-contour's flat rows,
 see Typed frontier points). Save resolves `output_path` with `contained_path(_get_project_root(), ...)`
 — a relative path against the project root, the base `/pipeline/read-json` uses, and an absolute
-path only inside it. `OptimiserSaveRequest.overwrite` (default `false`) guards an existing
+path only inside it. A bare filename (no `/` or `\`) is placed under
+`_project_layout.default_model_folder` first, the pipeline folder's `files/models/`, so Commit
+versions it with the pipeline. `OptimiserSaveRequest.overwrite` (default `false`) guards an existing
 destination: under a per-destination lock, an existing file without `overwrite` is a `409` with
 the structured detail `{"error_code": "optimiser_result_exists", "message": ...}` and nothing is
 written. `OptimiserSaveResponse` carries `path` (absolute), `apply_path` (the written file

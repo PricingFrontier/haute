@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import stat
 from pathlib import Path
+from typing import Literal
 
 from haute._config_io import is_windows_reserved_filename
 from haute._pipeline_repair import PipelineRepairError
@@ -12,13 +13,32 @@ from haute.errors import PathOutsideProjectError
 
 MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
 
+#: Which rule a project-relative path breaks: not an ordinary relative name, a link or
+#: junction on the way, a multiply linked file, something other than a file or folder, or a
+#: path that leaves the root.
+PathProblem = Literal["not_ordinary", "link", "multiply_linked", "not_a_file", "outside"]
+
+_RECOVERY_REFUSALS: dict[PathProblem, str] = {
+    "not_ordinary": "Recovery requires an ordinary project-relative artifact path.",
+    "link": "Recovery cannot operate through a symlink or directory junction.",
+    "multiply_linked": "Recovery cannot replace a multiply linked artifact.",
+    "not_a_file": "Recovery artifacts must be ordinary files.",
+    "outside": "Recovery artifact is outside the project.",
+}
+
 
 def conflict(message: str, code: str = "recovery_conflict") -> PipelineRepairError:
     return PipelineRepairError(code, message)
 
 
-def safe_path(root: Path, relative: str, *, private: bool = False) -> Path:
-    """Reject traversal and filesystem aliases, including Windows reparse points."""
+def ordinary_path_problem(
+    root: Path, relative: str, *, private: bool = False
+) -> tuple[Path, PathProblem | None]:
+    """Resolve *relative* under *root* and report the first rule it breaks, if any.
+
+    Rejects traversal and filesystem aliases, including Windows reparse points. Callers
+    word the refusal themselves.
+    """
     root = root.resolve()
     rel = Path(relative)
     if (
@@ -33,7 +53,7 @@ def safe_path(root: Path, relative: str, *, private: bool = False) -> Path:
         or (not private and any(part.casefold() == ".haute" for part in rel.parts))
         or ":" in relative
     ):
-        raise conflict("Recovery requires an ordinary project-relative artifact path.")
+        return root, "not_ordinary"
     current = root
     for part in rel.parts:
         current = current / part
@@ -42,16 +62,24 @@ def safe_path(root: Path, relative: str, *, private: bool = False) -> Path:
         except FileNotFoundError:
             continue
         if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
-            raise conflict("Recovery cannot operate through a symlink or directory junction.")
+            return current, "link"
         if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
-            raise conflict("Recovery cannot replace a multiply linked artifact.")
+            return current, "multiply_linked"
         if not stat.S_ISREG(info.st_mode) and not stat.S_ISDIR(info.st_mode):
-            raise conflict("Recovery artifacts must be ordinary files.")
+            return current, "not_a_file"
     try:
         contained_path(root, current)
     except PathOutsideProjectError:
-        raise conflict("Recovery artifact is outside the project.") from None
-    return current
+        return current, "outside"
+    return current, None
+
+
+def safe_path(root: Path, relative: str, *, private: bool = False) -> Path:
+    """Reject traversal and filesystem aliases, including Windows reparse points."""
+    path, problem = ordinary_path_problem(root, relative, private=private)
+    if problem is not None:
+        raise conflict(_RECOVERY_REFUSALS[problem])
+    return path
 
 
 def read_artifact(root: Path, relative: str) -> bytes | None:

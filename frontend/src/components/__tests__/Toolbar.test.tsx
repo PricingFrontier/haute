@@ -175,6 +175,25 @@ describe("Toolbar", () => {
     expect(assistantColumn!.compareDocumentPosition(branchIndicator) & 4).toBeTruthy()
   })
 
+  it("renders Pipeline files over Local files before Assistant, each opening its place's panel", () => {
+    useUIStore.setState({ filesPlace: null })
+    render(<Toolbar {...makeProps()} />)
+    const pipelineBtn = screen.getByTestId("toolbar-pipeline-files")
+    const localBtn = screen.getByTestId("toolbar-local-files")
+
+    expect(pipelineBtn.parentElement).toContainElement(localBtn)
+    expect(pipelineBtn.compareDocumentPosition(screen.getByTestId("toolbar-assistant")) & 4).toBeTruthy()
+
+    fireEvent.click(pipelineBtn)
+    expect(useUIStore.getState().filesPlace).toBe("pipeline")
+    expect(pipelineBtn).toHaveAttribute("aria-pressed", "true")
+    fireEvent.click(localBtn)
+    expect(useUIStore.getState().filesPlace).toBe("local")
+    expect(pipelineBtn).toHaveAttribute("aria-pressed", "false")
+    fireEvent.click(localBtn)
+    expect(useUIStore.getState().filesPlace).toBeNull()
+  })
+
   it("renders Centre on top of Layout in a column next to Submodel/Instance", () => {
     render(<Toolbar {...makeProps()} />)
     const centreBtn = screen.getByTestId("toolbar-centre")

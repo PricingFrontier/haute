@@ -8,6 +8,7 @@
  * `lastSavedSnapshot` live in useGraphStore.
  */
 import { create } from "zustand"
+import type { ProjectFilePlace } from "../api/types"
 
 export type RatingStepEditorSection = "tables" | "combined"
 export type ExplorePane = "code" | "overview" | "pivots" | "charts" | "export"
@@ -52,6 +53,9 @@ interface UIState {
   clearAssistantPreviewError: () => void
   gitOpen: boolean
   setGitOpen: (open: boolean) => void
+  /** The place the Files panel shows, or null while it is closed. */
+  filesPlace: ProjectFilePlace | null
+  setFilesPlace: (place: ProjectFilePlace | null) => void
   shortcutsOpen: boolean
   setShortcutsOpen: (open: boolean | ((prev: boolean) => boolean)) => void
   /** MLflow tracking-settings dialog — an overlay like shortcuts, outside
@@ -126,15 +130,16 @@ const useUIStore = create<UIState>()((set) => ({
   paletteOpen: true,
   setPaletteOpen: (open) => set({ paletteOpen: open }),
   utilityOpen: false,
-  setUtilityOpen: (open) => set({ utilityOpen: open, constantsOpen: false, assistantOpen: false, gitOpen: false }),
+  setUtilityOpen: (open) => set({ utilityOpen: open, constantsOpen: false, assistantOpen: false, gitOpen: false, filesPlace: null }),
   constantsOpen: false,
-  setConstantsOpen: (open) => set({ constantsOpen: open, utilityOpen: false, assistantOpen: false, gitOpen: false }),
+  setConstantsOpen: (open) => set({ constantsOpen: open, utilityOpen: false, assistantOpen: false, gitOpen: false, filesPlace: null }),
   assistantOpen: false,
   setAssistantOpen: (open) => set({
     assistantOpen: open,
     utilityOpen: false,
     constantsOpen: false,
     gitOpen: false,
+    filesPlace: null,
     ...(open ? { assistantUnseenOutcome: false } : {}),
   }),
   assistantTurn: null,
@@ -151,11 +156,14 @@ const useUIStore = create<UIState>()((set) => ({
     utilityOpen: false,
     constantsOpen: false,
     gitOpen: false,
+    filesPlace: null,
     assistantUnseenOutcome: false,
   }),
   clearAssistantPreviewError: () => set({ assistantPreviewErrorNodeId: null }),
   gitOpen: false,
-  setGitOpen: (open) => set({ gitOpen: open, utilityOpen: false, constantsOpen: false, assistantOpen: false }),
+  setGitOpen: (open) => set({ gitOpen: open, utilityOpen: false, constantsOpen: false, assistantOpen: false, filesPlace: null }),
+  filesPlace: null,
+  setFilesPlace: (place) => set({ filesPlace: place, utilityOpen: false, constantsOpen: false, assistantOpen: false, gitOpen: false }),
   mlflowSettingsOpen: false,
   setMlflowSettingsOpen: (open) => set({ mlflowSettingsOpen: open }),
   shortcutsOpen: false,

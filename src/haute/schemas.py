@@ -2839,6 +2839,65 @@ class BrowseFilesResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# /api/project-files
+# ---------------------------------------------------------------------------
+
+#: The Files panels' two places: the pipeline folder's versioned ``files/``, and the
+#: project root's local ``data/`` and ``outputs/``.
+ProjectFilePlace = Literal["pipeline", "local"]
+
+
+class ProjectFileEntry(BaseModel):
+    """A file or folder in a Files panel listing; ``path`` is relative to its place.
+
+    ``modified`` is in seconds since the epoch, and absent for a known folder that does not
+    exist yet. ``revision`` (size and nanosecond mtime) is what a replace or delete names.
+    ``status`` marks a pipeline-place file version history does not hold as it is: ``new``
+    (no committed version), ``changed`` (edited since it was committed) or ``ignored``.
+    """
+
+    name: str
+    path: str
+    kind: Literal["file", "folder"]
+    size: int | None = None
+    modified: float | None = None
+    revision: str | None = None
+    status: Literal["new", "changed", "ignored"] | None = None
+
+
+class ProjectFolderResponse(BaseModel):
+    """One folder of a place; ``root`` is the place's folder relative to the project."""
+
+    place: ProjectFilePlace
+    path: str
+    root: str
+    writable: bool
+    entries: list[ProjectFileEntry]
+
+
+class ProjectFileWriteResponse(BaseModel):
+    """A written file, with the save-ledger capture of a pipeline-place write."""
+
+    path: str
+    size: int
+    revision: str
+    replaced: bool
+    status: Literal["new", "changed", "ignored"] | None = None
+    git_sha: str | None = None
+    identity_required: bool = False
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ProjectFileDeleteResponse(BaseModel):
+    """A deleted file, with the save-ledger capture of a pipeline-place delete."""
+
+    path: str
+    git_sha: str | None = None
+    identity_required: bool = False
+    warnings: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # /api/schema
 # ---------------------------------------------------------------------------
 

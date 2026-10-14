@@ -27,6 +27,18 @@ def test_bare_filename_lands_in_models_with_the_model_extension(project: Path) -
     assert destination.suffix_mismatch is False
 
 
+def test_bare_filename_lands_in_the_pipeline_folders_files_models(project: Path) -> None:
+    # The pipeline folder is versioned as a whole, so a saved model reaches CI with it.
+    (project / "haute.toml").write_text('[project]\npipeline = "rating/main.py"\n')
+
+    destination = resolve_model_export_destination(
+        "frequency", model_suffix=".cbm", project_root=project
+    )
+
+    assert destination.display_path == "rating/files/models/frequency.cbm"
+    assert destination.path == (project / "rating" / "files" / "models" / "frequency.cbm").resolve()
+
+
 def test_paths_with_a_folder_are_project_root_relative(project: Path) -> None:
     destination = resolve_model_export_destination(
         "rating\\models\\severity", model_suffix=".rsglm", project_root=project

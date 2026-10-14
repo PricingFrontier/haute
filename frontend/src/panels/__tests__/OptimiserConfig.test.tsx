@@ -2893,8 +2893,8 @@ describe("OptimiserConfig", () => {
       const config = seedSolve()
       mockSaveOptimiser.mockResolvedValue({
         status: "ok",
-        path: "C:/proj/output/optimiser_My_Optimiser_opt_1.json",
-        apply_path: "output/optimiser_My_Optimiser_opt_1.json",
+        path: "C:/proj/rating/files/models/optimiser_My_Optimiser_opt_1.json",
+        apply_path: "rating/files/models/optimiser_My_Optimiser_opt_1.json",
         message: "Saved",
       })
       const onUpdateNodeConfig = vi.fn(() => ({ ok: true as const }))
@@ -2907,22 +2907,22 @@ describe("OptimiserConfig", () => {
       fireEvent.click(screen.getByRole("button", { name: "Save to file" }))
       await waitFor(() => expect(mockSaveOptimiser).toHaveBeenCalledWith({
         job_id: "job_pub",
-        output_path: "output/optimiser_My_Optimiser_opt_1.json",
+        output_path: "optimiser_My_Optimiser_opt_1.json",
         point_index: undefined,
         version: "",
         overwrite: false,
         stale: false,
       }))
       const receipt = await screen.findByTestId("optimiser-save-receipt")
-      expect(receipt).toHaveTextContent("Saved the solved result to output/optimiser_My_Optimiser_opt_1.json")
+      expect(receipt).toHaveTextContent("Saved the solved result to rating/files/models/optimiser_My_Optimiser_opt_1.json")
 
       fireEvent.change(within(receipt).getByRole("combobox", { name: "Apply Optimisation node" }), { target: { value: "apply_1" } })
       fireEvent.click(within(receipt).getByRole("button", { name: "Use in Apply node" }))
       expect(onUpdateNodeConfig).toHaveBeenCalledWith("apply_1", {
         sourceType: "file",
-        artifact_path: "output/optimiser_My_Optimiser_opt_1.json",
+        artifact_path: "rating/files/models/optimiser_My_Optimiser_opt_1.json",
       })
-      expect(receipt).toHaveTextContent("Apply Rates now loads output/optimiser_My_Optimiser_opt_1.json.")
+      expect(receipt).toHaveTextContent("Apply Rates now loads rating/files/models/optimiser_My_Optimiser_opt_1.json.")
     })
 
     it("asks before replacing an existing file and retries with overwrite", async () => {

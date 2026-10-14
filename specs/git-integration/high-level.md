@@ -65,11 +65,17 @@ Out of scope (owned by neighbouring components):
 
 **The branch-pair model.** Every working branch `<W>` the user creates is paired with a
 save ledger `<W>-save`. Ordinary "saves" are commits on the ledger — one commit per save,
-scoped to exactly the files that changed, the pipeline's files or the workbench's form.
+scoped to exactly the files that changed: the pipeline's files, the workbench's form, or a
+file added, replaced or deleted in the pipeline folder's `files/` through the Pipeline files
+panel ([server-api](../server-api/high-level.md)).
 HEAD lives on the ledger during normal use, so
 the user is always looking at their latest saved state. "Commit" (a milestone) first
-sweeps every modified file that is already tracked by Git into one final ledger save (new
-untracked files are never included implicitly), then folds every pending ledger commit into
+sweeps into one final ledger save every modified file already tracked by Git and every new
+file in the pipeline folder, which is versioned as a whole
+([pipeline-config](../pipeline-config/high-level.md)). A new file elsewhere is never included
+implicitly, and neither is one that `.gitignore` ignores. A file in the pipeline folder
+larger than 100 MiB refuses the Commit, naming the file, before anything is recorded. Commit
+then folds every pending ledger commit into
 a single, always-real merge commit on the working branch, with the user's own message and an
 optional version-label tag. The branch advance and optional annotated tag ref are one atomic
 ref transaction, so a rejected or failed label cannot leave an unlabelled milestone behind.

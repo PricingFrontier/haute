@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 # The command core is the sole process boundary.  Its helpers are imported
 # explicitly into this domain's namespace so extracted functions retain their
@@ -37,6 +37,7 @@ from haute._git_core import (
 )
 from haute._git_setup import resolve_ledger, set_working_branch
 from haute._logging import get_logger
+from haute._project_layout import VERSIONED_FILE_LIMIT_BYTES
 from haute.schemas import GitCommitResponse, GitCreateWorkingBranchResponse, GitMilestoneFork
 
 logger = get_logger(component="git")
@@ -93,21 +94,23 @@ def commit_save(
 
     ledger = resolve_ledger(working, cwd=cwd)
 
-    ok, status = _run_git_ok("status", "--porcelain", "--", *paths, cwd=cwd)
+    # :(literal) so a filename holding glob characters names only itself.
+    pathspecs = [_literal(path) for path in paths]
+    ok, status = _run_git_ok("status", "--porcelain", "--", *pathspecs, cwd=cwd)
     if not ok or not status.strip():
         return None
 
     _settle_sqlite_journals(paths, cwd)
     # New files must be known to git before a pathspec'd commit can include
     # them; the explicit-path add also stages deletions of tracked paths.
-    _run_git("add", "--", *paths, cwd=cwd)
+    _run_git("add", "--", *pathspecs, cwd=cwd)
     # A stale index entry can make porcelain report ``MM`` even when the
     # working-tree content already matches HEAD. The add above reconciles that
     # entry; if no net path change remains, there is nothing to commit. The
     # staged name list (not porcelain status, whose fixed-width prefix can
     # begin with a space) is also what names the files in the message.
     staged = _run_git(
-        "diff", "--cached", "--name-only", "--no-renames", "HEAD", "--", *paths, cwd=cwd
+        "diff", "--cached", "--name-only", "--no-renames", "HEAD", "--", *pathspecs, cwd=cwd
     )
     changed = staged.splitlines()
     if not changed:
@@ -115,11 +118,84 @@ def commit_save(
     msg = message if message is not None else _generate_commit_message(changed)
     # `git commit -- <paths>` commits the working-tree state of exactly those
     # paths, bypassing unrelated index content the user may have pre-staged.
-    _run_git("commit", "-m", msg, "--", *paths, cwd=cwd)
+    _run_git("commit", "-m", msg, "--", *pathspecs, cwd=cwd)
 
     sha = _run_git("rev-parse", "HEAD", cwd=cwd).strip()
     logger.info("save_committed", ledger=ledger, sha=sha, files=len(changed))
     return sha
+
+
+def _literal(path: str) -> str:
+    return f":(literal){path}"
+
+
+# Never versioned from the pipeline folder, whatever the project's .gitignore says.
+_MACHINERY_FOLDERS = frozenset({"__pycache__", ".haute_build"})
+
+
+def _pipeline_folder_new_files(pipeline_folder: str | None, cwd: Path | None = None) -> list[str]:
+    """New files under *pipeline_folder*, which is versioned as a whole: untracked ones
+    ``.gitignore`` does not ignore, and ones staged but never committed (``git add`` by
+    hand, or a save whose commit failed after its add).
+
+    Bytecode and deploy build folders stay out even where ``.gitignore`` lacks them.
+    """
+    if pipeline_folder is None:
+        return []
+    untracked = _run_git(
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+        "--",
+        _literal(pipeline_folder),
+        cwd=cwd,
+    )
+    staged = _run_git(
+        "diff",
+        "--cached",
+        "--name-only",
+        "--diff-filter=A",
+        "-z",
+        "HEAD",
+        "--",
+        _literal(pipeline_folder),
+        cwd=cwd,
+    )
+    return [
+        path
+        for path in dict.fromkeys(untracked.split("\0") + staged.split("\0"))
+        if path
+        and not path.endswith(".pyc")
+        and not _MACHINERY_FOLDERS.intersection(PurePosixPath(path).parts[:-1])
+    ]
+
+
+def _mib(size: int) -> str:
+    return f"{size / (1024 * 1024):.4g} MiB"
+
+
+def _refuse_unversionable(paths: list[str], pipeline_folder: str, project_root: Path) -> None:
+    """Refuse a sweep holding a pipeline-folder file too large for version history."""
+    folder = PurePosixPath(pipeline_folder)
+    too_large: list[str] = []
+    for path in paths:
+        if not PurePosixPath(path).is_relative_to(folder):
+            continue
+        target = project_root / path
+        if not target.is_file():
+            continue  # a deletion
+        size = target.stat().st_size
+        if size > VERSIONED_FILE_LIMIT_BYTES:
+            too_large.append(f"{path} ({_mib(size)})")
+    if too_large:
+        one = len(too_large) == 1
+        raise GitDomainError(
+            f"{', '.join(too_large)} {'is' if one else 'are'} too large for version history, "
+            f"which takes files up to {_mib(VERSIONED_FILE_LIMIT_BYTES)}. Move "
+            f"{'it' if one else 'them'} to the project's data/ folder, which stays on this "
+            "machine, and commit again."
+        )
 
 
 def _residual_tracked_changes(cwd: Path | None = None) -> list[str]:
@@ -516,10 +592,15 @@ def commit_milestone(
     version_label: str | None = None,
     cwd: Path | None = None,
     allow_fork: bool = False,
+    pipeline_folder: str | None = None,
 ) -> GitCommitResponse:
     """Promote the ledger's accumulated saves to a milestone on the working
     branch (a real `--no-ff`-shaped merge commit via plumbing), with the
     user's *message* and an optional version-label tag (S7/S18).
+
+    *pipeline_folder* (relative to *project_root*, POSIX) is versioned as a whole:
+    its new files join the milestone's sweep, and one too large for version
+    history refuses the milestone before anything is recorded.
 
     Fork-gate (U4/D4): if the working branch is behind/diverged from its canonical
     remote on locally-known refs, a milestone would branch off the shared copy —
@@ -552,13 +633,20 @@ def commit_milestone(
 
     # The canvas save immediately preceding this action captures Haute-owned
     # generated files. A project can also have changes to already-tracked files
-    # made by dependency tooling or a code editor (uv.lock is a common example).
-    # Fold those into the ledger before creating the milestone so an explicit
-    # "Save & commit" leaves the tracked project clean. Newly-added/untracked
-    # files remain untouched and cannot ride into history implicitly.
-    residual = _residual_tracked_changes(cwd)
+    # made by dependency tooling or a code editor (uv.lock is a common example),
+    # and new files in the pipeline folder, which is versioned as a whole. Fold
+    # those into the ledger before creating the milestone so an explicit "Save &
+    # commit" leaves the project clean. A new file anywhere else stays untouched
+    # and cannot ride into history implicitly.
+    residual = list(
+        dict.fromkeys(
+            _residual_tracked_changes(cwd) + _pipeline_folder_new_files(pipeline_folder, cwd)
+        )
+    )
+    if residual and pipeline_folder is not None:
+        _refuse_unversionable(residual, pipeline_folder, project_root)
     if residual:
-        commit_save(residual, working, cwd=cwd, message="Updated tracked project files")
+        commit_save(residual, working, cwd=cwd, message="Updated project files")
 
     sha = merge_to_working(working, message, tag_label=version_label, cwd=cwd)
     logger.info("milestone_committed", working=working, sha=sha, tag=version_label or "")

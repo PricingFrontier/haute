@@ -1152,11 +1152,14 @@ and codegen, and classified as node config for the execution cache like its MLfl
 Training never reads it; `build_training_job_kwargs` does not emit it.
 
 `haute.modelling._model_export` owns the destination rules, mirroring
-`resolve_data_output_path` for a file Data Output with `models/` in place of `outputs/`.
-`MODEL_FILE_SUFFIXES` (`catboost` → `.cbm`, `glm` → `.rsglm`) is the single extension map;
-`TrainingJob` names its model file from it. `resolve_model_export_destination(raw_path, *,
-model_suffix, project_root)` normalises separators (rejecting NUL bytes), places a path with no
-separator under `models/`, and appends `model_suffix` when the path has no suffix; that
+`resolve_data_output_path` for a file Data Output with the default model folder in place of
+`outputs/`. `MODEL_FILE_SUFFIXES` (`catboost` → `.cbm`, `glm` → `.rsglm`) is the single
+extension map; `TrainingJob` names its model file from it.
+`resolve_model_export_destination(raw_path, *, model_suffix, project_root)` normalises
+separators (rejecting NUL bytes), places a path with no separator under
+`_project_layout.default_model_folder(project_root)` (the pipeline folder's `files/models/`,
+or `models/` for a pipeline at the root), and appends `model_suffix` when the path has no
+suffix; that
 forward-slash spelling is the display path. It rejects reserved device names
 (`MalformedRuntimePathError`) and drive-relative Windows paths, resolves the path against the
 project root (an absolute path stands alone), and raises `RuntimePathOutsideProjectError` when

@@ -161,6 +161,24 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
         tmp.write_bytes(data)
 
 
+def publish_staged_file(staged: Path, target: Path, *, replace: bool) -> None:
+    """Publish a caller's complete *staged* sibling file as *target* in one rename.
+
+    ``replace=True`` replaces *target* with the bounded Windows contention retry.
+    ``replace=False`` never clobbers: a *target* that appeared since the caller looked
+    raises ``FileExistsError`` and *staged* is left for the caller to remove.
+    """
+    if replace:
+        _replace_with_windows_contention_retry(staged, target)
+    elif _IS_WINDOWS:
+        # MoveFileExW without MOVEFILE_REPLACE_EXISTING refuses an existing target.
+        os.rename(staged, target)
+    else:
+        # rename(2) would replace; link(2) refuses an existing target atomically.
+        os.link(staged, target)
+        staged.unlink()
+
+
 def atomic_copy_files(pairs: Sequence[tuple[Path, Path]]) -> None:
     """Copy each (source, target) pair transactionally: all targets change or none do.
 

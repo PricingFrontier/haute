@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 # The command core is the sole process boundary.  Its helpers are imported
 # explicitly into this domain's namespace so extracted functions retain their
@@ -15,6 +16,7 @@ from haute._git_core import (
     _list_branches_with_tips,
     _merge_base,
     _rev_parse,
+    _run_git,
     _run_git_ok,
     branch_category,
     git_binary_available,
@@ -26,7 +28,70 @@ from haute._git_setup import get_identity
 from haute._git_transactions import check_invariants
 from haute.schemas import GitManagedBranch, GitWorkingBranchesResponse, GitWorkingBranchResponse
 
-__all__ = ["working_branch_status", "working_branches"]
+__all__ = ["ignore_rule", "pipeline_file_states", "working_branch_status", "working_branches"]
+
+#: How a project file stands against version history, as the Pipeline files panel marks it:
+#: ``new`` has no committed version (untracked, or staged but never committed),
+#: ``changed`` differs from its committed version, ``ignored`` is never versioned.
+FileState = Literal["new", "changed", "ignored"]
+
+
+def pipeline_file_states(folder: str, cwd: Path | None = None) -> dict[str, FileState]:
+    """Every file under *folder* that version history does not hold as it is on disk,
+    keyed by repo-relative path; a file missing from the answer is committed as it is.
+
+    An ignored folder appears once, with a trailing ``/``: everything under it is ignored.
+    Outside a git repository nothing is versioned, and the answer is empty.
+    """
+    if not _is_git_repo(cwd):
+        return {}
+    # Porcelain v2: every entry starts with its kind, so the stripped output loses nothing
+    # (a v1 entry for a file changed only in the work tree starts with a space).
+    listed = _run_git(
+        "status",
+        "--porcelain=v2",
+        "-z",
+        "--untracked-files=all",
+        "--ignored=matching",
+        "--",
+        f":(literal){folder}",
+        cwd=cwd,
+    )
+    states: dict[str, FileState] = {}
+    tokens = iter(listed.split("\0"))
+    for entry in tokens:
+        kind = entry[:1]
+        if kind == "?":
+            states[entry[2:]] = "new"
+        elif kind == "!":
+            states[entry[2:]] = "ignored"
+        elif kind in ("1", "2", "u"):
+            # "1 XY sub mH mI mW hH hI path", "2 ... Xscore path" then the original path,
+            # "u XY sub m1 m2 m3 mW h1 h2 h3 path".
+            fields = entry.split(" ", {"1": 8, "2": 9, "u": 10}[kind])
+            if kind == "2":
+                next(tokens, None)
+            code, path = fields[1], fields[-1]
+            if "A" in code:
+                states[path] = "new"
+            elif "D" not in code:
+                states[path] = "changed"
+    return states
+
+
+def ignore_rule(path: str, cwd: Path | None = None) -> str | None:
+    """The ``.gitignore`` rule ignoring repo-relative *path*, as ``source:line:pattern``.
+
+    ``None`` when nothing ignores it, including outside a git repository.
+    """
+    if not _is_git_repo(cwd):
+        return None
+    ok, out = _run_git_ok("check-ignore", "--verbose", "--no-index", "--", path, cwd=cwd)
+    rule = out.partition("\t")[0]
+    # A negated pattern ("!...") matching means the path is NOT ignored.
+    if not ok or not rule or rule.rpartition(":")[2].startswith("!"):
+        return None
+    return rule
 
 
 def _eligible_working_branches(cwd: Path | None = None) -> list[str]:

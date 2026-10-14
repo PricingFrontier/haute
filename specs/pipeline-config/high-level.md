@@ -199,6 +199,19 @@ supported deploy targets, and with `--workbench` the `[workbench]` table and a b
 `forms/form.json` ([workbench](../workbench/high-level.md)). The blank pipeline declares its `Pipeline` object but no nodes. Init
 removes a root `main.py`, creates no `prompts/` directory, and creates no node sidecars.
 
+**Project layout.** The pipeline folder, the folder holding `[project].pipeline` (`rating/`
+in a new project), is versioned as a whole: Commit takes every file in it into version
+history ([git-integration](../git-integration/high-level.md)). Its `files/` folder holds the
+files the pipeline reads that are not code: `files/data/` for the tables and data the
+pipeline ships with, and `files/models/` for model files with their feature contracts and
+optimiser results. `haute init` creates both. Outside the pipeline folder, the project
+root's `data/` holds local data and `outputs/` holds what runs write. Neither is versioned,
+and moving to another version deletes `outputs/`. A bare filename given to the Export pane's
+"Save model to file" or to an optimiser result's Publish lands in `files/models/`. A project
+whose pipeline sits at its root has no pipeline folder, and a bare filename there lands in
+the root's `models/`. A file larger than 100 MiB, GitHub's per-file limit, cannot be
+versioned, so the pipeline folder takes none.
+
 **CI/CD generation.** `haute init --ci` supports three providers today — GitHub Actions,
 GitLab CI, Azure DevOps — plus `none`, which writes no workflow files at all, crossed against
 five `--target` deploy targets (`databricks`, `container`, `azure-container-apps`, `aws-ecs`,

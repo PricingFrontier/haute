@@ -27,8 +27,8 @@ versioned beside the pipeline.
 editor; **Pricing** brings the pipeline back. The pipeline editor keeps everything it had
 (its document, its undo history, live sync) while the workbench shows; its keyboard
 shortcuts are off meanwhile, so nothing you press in the workbench edits the pipeline. The
-toolbar keeps Haute's project controls (Assistant, Help, the branch, **Save** and
-**Commit**) and shows the workbench's own: **Build** over **Preview**, then, while building,
+toolbar keeps Haute's project controls (**Pipeline files** and **Local files**, Assistant,
+Help, the branch, **Save** and **Commit**) and shows the workbench's own: **Build** over **Preview**, then, while building,
 **Sheets** over **Schema** and **Display**, in Preview **Test quotes**, then **Undo** over
 **Redo**, and **Zoom In** over **Zoom Out** on the sheets.
 
