@@ -134,13 +134,15 @@ _MACHINERY_FOLDERS = frozenset({"__pycache__", ".haute_build"})
 
 
 def _pipeline_folder_new_files(pipeline_folder: str | None, cwd: Path | None = None) -> list[str]:
-    """New, not ignored files under *pipeline_folder*, which is versioned as a whole.
+    """New files under *pipeline_folder*, which is versioned as a whole: untracked ones
+    ``.gitignore`` does not ignore, and ones staged but never committed (``git add`` by
+    hand, or a save whose commit failed after its add).
 
     Bytecode and deploy build folders stay out even where ``.gitignore`` lacks them.
     """
     if pipeline_folder is None:
         return []
-    listed = _run_git(
+    untracked = _run_git(
         "ls-files",
         "--others",
         "--exclude-standard",
@@ -149,9 +151,20 @@ def _pipeline_folder_new_files(pipeline_folder: str | None, cwd: Path | None = N
         _literal(pipeline_folder),
         cwd=cwd,
     )
+    staged = _run_git(
+        "diff",
+        "--cached",
+        "--name-only",
+        "--diff-filter=A",
+        "-z",
+        "HEAD",
+        "--",
+        _literal(pipeline_folder),
+        cwd=cwd,
+    )
     return [
         path
-        for path in listed.split("\0")
+        for path in dict.fromkeys(untracked.split("\0") + staged.split("\0"))
         if path
         and not path.endswith(".pyc")
         and not _MACHINERY_FOLDERS.intersection(PurePosixPath(path).parts[:-1])

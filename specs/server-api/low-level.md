@@ -589,7 +589,9 @@ refusal for the local place (`databricks_app_environment()`), the `.gitignore` r
 would ignore the target (`_git.ignore_rule`, 409 `ignored` naming the rule and the anchored
 spelling that fixes it), and `ensure_disk_headroom` (507) after creating the target's parent
 folder inside the place. It records the working branch, then streams the body chunk by chunk
-to a dot-named sibling staging file, each chunk written off the event loop; a body longer or
+to a staging file in `.haute/uploads/`, each chunk written off the event loop. The staging
+file never sits in the pipeline folder, so a Commit while a file streams cannot version a
+partial one; a body longer or
 shorter than its length is 400 `length_mismatch`, and a disconnect or any failure deletes the
 staging file and leaves the target untouched. It then publishes under `save_lock` and, in a
 worker thread, the repository's `repository_mutation` lock, as the test-quote write does:
@@ -1068,7 +1070,8 @@ entirely and leave every touched file in whatever state it happened to be in."
   replaces its confirmed revision, and the refusals of an existing file, a changed revision,
   `..`, a dot-name, a reserved name, `a:b`, a junction parent, the read-only `outputs/`, the
   local place in a hosted app, an ignored target and a pipeline file over the limit; a body
-  shorter than its length leaving no staging file; a branch changed mid-write; the capture of
+  shorter than its length leaving no staging file; an upload staged outside the pipeline
+  folder; a branch changed mid-write; the capture of
   a pipeline-place write and delete, and none for the local place; a name with glob characters
   captured alone; the download's headers; a delete's revision check; the session token and
   Origin required for a write; and that the underwriter app has no such route.

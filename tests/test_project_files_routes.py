@@ -316,6 +316,30 @@ def test_a_body_shorter_than_its_length_leaves_nothing_behind(
     assert response.status_code == 400
     assert _code(response) == "length_mismatch"
     assert os.listdir(project / "data") == []
+    assert os.listdir(project / ".haute" / "uploads") == []
+
+
+def test_an_upload_stages_outside_the_pipeline_folder(
+    client: TestClient, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Commit while a file streams must find no partial file in rating/ to version."""
+    from haute._file_ops import publish_staged_file
+
+    staged_at: list[Path] = []
+
+    def publish_spy(staged: Path, target: Path, *, replace: bool) -> None:
+        staged_at.append(staged)
+        # The moment before publishing: the bytes are all there, none of them in rating/.
+        assert [
+            p for p in (project / "rating").rglob("*") if p.is_file() and p.name != "main.py"
+        ] == []
+        publish_staged_file(staged, target, replace=replace)
+
+    monkeypatch.setattr("haute.routes.project_files.publish_staged_file", publish_spy)
+
+    assert _put(client, "pipeline", "data/table.csv", b"a\n").status_code == 200
+    assert staged_at[0].parent == (project / ".haute" / "uploads").resolve()
+    assert list((project / ".haute" / "uploads").iterdir()) == []
 
 
 def test_a_write_through_a_junction_is_refused(

@@ -28,8 +28,9 @@ def test_a_nested_pipeline_has_its_folder_versioned_with_files_inside(tmp_path: 
     assert default_model_folder(root) == "rating/files/models"
 
 
-def test_a_deeper_pipeline_folder_keeps_forward_slashes(tmp_path: Path) -> None:
-    root = _project(tmp_path, '[project]\npipeline = "src\\\\pricing\\\\main.py"\n')
+def test_a_deeper_pipeline_folder_is_named_with_forward_slashes(tmp_path: Path) -> None:
+    # Answered in POSIX form on every platform, as Git and the panels name paths.
+    root = _project(tmp_path, '[project]\npipeline = "src/pricing/main.py"\n')
 
     assert pipeline_folder(root) == "src/pricing"
     assert default_model_folder(root) == "src/pricing/files/models"

@@ -125,7 +125,7 @@ describe("FilesPanel", () => {
 
     const dialog = await screen.findByTestId("files-replace-dialog")
     expect(within(dialog).getByText("Replace rates.csv in rating/files?")).toBeInTheDocument()
-    expect(within(dialog).getByText("The versions they replace stay in version history.")).toBeInTheDocument()
+    expect(within(dialog).getByText("The version it replaces stays in version history.")).toBeInTheDocument()
     expect(mockUpload).not.toHaveBeenCalled()
     fireEvent.click(screen.getByTestId("files-replace-confirm"))
 
@@ -194,6 +194,21 @@ describe("FilesPanel", () => {
       ]),
     )
     expect(mockUpload).not.toHaveBeenCalled()
+  })
+
+  it("says a New file's version can't be recovered when it is replaced or deleted", async () => {
+    mockList.mockResolvedValue(listing("pipeline", "", [file("copied.csv", "copied.csv", { status: "new" })]))
+    render(<FilesPanel place="pipeline" onClose={vi.fn()} />)
+    await screen.findByText("copied.csv")
+
+    dropFiles(screen.getByTestId("files-drop-zone"), [new File(["v2"], "copied.csv")])
+    const replace = await screen.findByTestId("files-replace-dialog")
+    expect(within(replace).getByText("The version it replaces isn't in version history yet, so it can't be recovered.")).toBeInTheDocument()
+    fireEvent.click(within(replace).getByText("Cancel"))
+
+    fireEvent.click(screen.getByLabelText("Delete copied.csv"))
+    const remove = await screen.findByTestId("files-delete-dialog")
+    expect(within(remove).getByText("It isn't in version history yet, so it can't be recovered.")).toBeInTheDocument()
   })
 
   it("asks before deleting and deletes the revision shown", async () => {

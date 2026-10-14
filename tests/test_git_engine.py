@@ -378,6 +378,37 @@ class TestMilestoneMerge:
         assert not committed & set(left_out)
         assert not committed & {".gitignore"}
 
+    def test_milestone_versions_a_pipeline_file_left_staged_by_a_failed_save(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        real_run = git_core._run_git
+
+        def fail_commit(*args: str, **kwargs: object) -> str:
+            if args[:1] == ("commit",):
+                raise GitError("injected commit failure")
+            return real_run(*args, **kwargs)  # type: ignore[arg-type]
+
+        # The save's add lands, its commit does not: the file is staged, not untracked.
+        monkeypatch.setattr(git_transactions, "_run_git", fail_commit)
+        with pytest.raises(GitError):
+            _write_and_save(repo, WORKING, {"rating/files/data/rates.csv": "a,b\n"})
+        monkeypatch.undo()
+        staged = _git(repo, "status", "--porcelain", "--", "rating/files/data/rates.csv")
+        assert staged.startswith("A")
+
+        milestone = commit_milestone(
+            "With the staged file", repo, cwd=repo, pipeline_folder="rating"
+        ).sha
+
+        assert (
+            "rating/files/data/rates.csv"
+            in _git(repo, "ls-tree", "-r", "--name-only", milestone).splitlines()
+        )
+
     def test_milestone_without_a_pipeline_folder_leaves_new_files_alone(self, repo: Path) -> None:
         from haute._git_state import write_working_branch
 

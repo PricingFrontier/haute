@@ -258,7 +258,8 @@ which only downloads. Neither local folder is versioned, and a hosted app refuse
 because its disk does not survive a restart
 ([hosted-project-storage](../hosted-project-storage/high-level.md)). Every operation refuses
 a path that leaves its place, names a dot-file or `__pycache__`, or passes through a link. A
-file is written whole: it streams to a hidden staging file and appears in one rename, never
+file is written whole: it streams to a staging file in the project's ignored `.haute/`, never
+beside its target, and appears in one rename, never
 replacing a file unless the request names the revision it replaces, and never one that
 changed since. Nothing interlocks a replace with a run already reading the file; on Windows
 such a replace fails while the file is open, and the panel re-runs previews after one

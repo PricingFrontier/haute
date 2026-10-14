@@ -29,7 +29,7 @@ interface UploadRow {
 }
 
 type Confirmation =
-  | { kind: "replace"; folder: string; files: File[]; revisions: Map<string, string> }
+  | { kind: "replace"; folder: string; files: File[]; revisions: Map<string, string>; versioned: Set<string> }
   | { kind: "delete"; entry: ProjectFileEntry }
 
 function joinPath(folder: string, name: string): string {
@@ -45,6 +45,28 @@ function folderTakesFiles(place: ProjectFilePlace, folder: string): boolean {
 /** Where a drop on the open folder lands: Local files' root sends it to data/. */
 function dropFolder(place: ProjectFilePlace, path: string): string {
   return place === "local" && path === "" ? LOCAL_WRITABLE_FOLDER : path
+}
+
+/** Whether version history holds *entry* as it is: a pipeline file neither New nor Ignored. */
+function inHistory(place: ProjectFilePlace, entry: ProjectFileEntry): boolean {
+  return place === "pipeline" && entry.status === null
+}
+
+/** What deleting or replacing one file means for the version that goes. */
+function fateOf(place: ProjectFilePlace, kept: boolean, what: string): string {
+  if (kept) return `${what} stays in version history.`
+  if (place === "pipeline") return `${what} isn't in version history yet, so it can't be recovered.`
+  return `${what} can't be recovered.`
+}
+
+/** The same, for several replaced files, *lost* of them outside version history. */
+function fateOfMany(place: ProjectFilePlace, count: number, lost: number): string {
+  if (lost === 0) return "The versions they replace stay in version history."
+  if (place === "local") return "The files they replace can't be recovered."
+  if (lost === count) return "None of them is in version history yet, so they can't be recovered."
+  return lost === 1
+    ? "One of them isn't in version history yet, so it can't be recovered."
+    : `${lost} of them aren't in version history yet, so those can't be recovered.`
 }
 
 function isAbort(error: unknown): boolean {
@@ -170,11 +192,15 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
       }
     }
     const revisions = new Map<string, string>()
+    // The files version history holds as they are, so a replace keeps the version it replaces.
+    const versioned = new Set<string>()
     for (const entry of entries) {
-      if (entry.kind === "file" && entry.revision !== null) revisions.set(entry.name, entry.revision)
+      if (entry.kind !== "file" || entry.revision === null) continue
+      revisions.set(entry.name, entry.revision)
+      if (inHistory(place, entry)) versioned.add(entry.name)
     }
     if (files.some((file) => revisions.has(file.name))) {
-      setConfirmation({ kind: "replace", folder, files, revisions })
+      setConfirmation({ kind: "replace", folder, files, revisions, versioned })
       return
     }
     await uploadAll(folder, files, new Map())
@@ -415,12 +441,11 @@ function ConfirmDialog({
   onReplace: (files: File[], revisions: Map<string, string>) => void
   onDelete: (entry: ProjectFileEntry) => void
 }) {
-  const recoverable = place === "pipeline"
   if (confirmation.kind === "delete") {
     return (
       <ModalShell ariaLabel={`Delete ${confirmation.entry.name}`} onClose={onCancel} testId="files-delete-dialog">
         <ModalFormHeader title={`Delete ${confirmation.entry.name}?`}>
-          {recoverable ? "It stays in version history." : "It can't be recovered."}
+          {fateOf(place, inHistory(place, confirmation.entry), "It")}
         </ModalFormHeader>
         <div className="flex justify-end gap-2 p-4">
           <button type="button" className={DIALOG_BUTTON} style={{ color: "var(--text-secondary)" }} onClick={onCancel}>Cancel</button>
@@ -437,8 +462,12 @@ function ConfirmDialog({
       </ModalShell>
     )
   }
-  const { folder, files, revisions } = confirmation
+  const { folder, files, revisions, versioned } = confirmation
   const clashing = files.filter((file) => revisions.has(file.name))
+  const lost = clashing.filter((file) => !versioned.has(file.name)).length
+  const fate = clashing.length === 1
+    ? fateOf(place, lost === 0, "The version it replaces")
+    : fateOfMany(place, clashing.length, lost)
   const fresh = files.filter((file) => !revisions.has(file.name))
   const title = clashing.length === 1
     ? `Replace ${clashing[0].name} in ${shownFolder(folder)}?`
@@ -446,7 +475,7 @@ function ConfirmDialog({
   return (
     <ModalShell ariaLabel={title} onClose={onCancel} width="w-[420px]" testId="files-replace-dialog">
       <ModalFormHeader title={title}>
-        {recoverable ? "The versions they replace stay in version history." : "The files they replace can't be recovered."}
+        {fate}
       </ModalFormHeader>
       {clashing.length > 1 && (
         <ul className="max-h-40 overflow-y-auto px-4 pt-2 text-[12px]">

@@ -52,6 +52,9 @@ router = APIRouter(prefix="/api/project-files", tags=["project-files"])
 
 _WRITABLE_LOCAL_FOLDER = "data"
 _STAGING_SUFFIX = ".upload"
+# Uploads stage in the per-clone, ignored .haute/, never beside their target: a Commit while
+# one streams must not find a partial file in the pipeline folder to version.
+_STAGING_FOLDER = (".haute", "uploads")
 _WRITE_BUFFER_BYTES = 1024 * 1024
 _REPARSE_POINT = 0x400
 
@@ -275,6 +278,7 @@ class _WritePlan:
     target: _Target
     length: int
     branch: str | None
+    staging: Path
 
 
 def _plan_write(place: ProjectFilePlace, path: str, length_header: str | None) -> _WritePlan:
@@ -322,7 +326,10 @@ def _plan_write(place: ProjectFilePlace, path: str, length_header: str | None) -
             raise _refusal(507, "disk_full", f"There isn't room on disk for {display}.") from None
         raise
     branch = read_working_branch(project_root) if target.place.name == "pipeline" else None
-    return _WritePlan(target, length, branch)
+    staging_folder = project_root.joinpath(*_STAGING_FOLDER)
+    staging_folder.mkdir(parents=True, exist_ok=True)
+    staging = staging_folder / f"{uuid.uuid4().hex}{_STAGING_SUFFIX}"
+    return _WritePlan(target, length, branch, staging)
 
 
 def _publish_write(
@@ -392,11 +399,9 @@ async def write_project_file(
     path: str,
     replace_revision: str | None = None,
 ) -> ProjectFileWriteResponse:
-    """Write one file whole: stream it to a hidden staging file, then publish it."""
+    """Write one file whole: stream it to a staging file in .haute/uploads/, then publish it."""
     plan = await run_in_threadpool(_plan_write, place, path, request.headers.get("content-length"))
-    staging = plan.target.path.with_name(
-        f".{plan.target.path.name}.{uuid.uuid4().hex[:8]}{_STAGING_SUFFIX}"
-    )
+    staging = plan.staging
     display = plan.target.project_relative
     try:
         handle = await run_in_threadpool(staging.open, "xb")
