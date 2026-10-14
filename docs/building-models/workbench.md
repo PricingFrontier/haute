@@ -78,6 +78,18 @@ values (gone, unreadable, with no values or more than 5,000) says why under them
 an older form may hold, are named among the schema's problems until they are read from a
 params file.
 
+In a many-row input table, **Rows** under a column's allowed values gives the table **a row
+for each** of them, in their order. A `coverage` table whose `peril` column takes its values
+from `perils.csv` (AOP, EQ, NW, WD, SCS, FLD) then has exactly six rows, one for each peril,
+and the underwriter types the other columns on each. The Tables that show it have those rows
+and no Add row or delete; the peril cells show the peril and take no typing. Every row goes
+to the pipeline once the quote is priced, a peril with nothing else typed included, but the
+perils alone are not typing: a quote holding nothing else is not priced, marked or saved.
+The rows follow the params file: refresh the values, or build the app, and a new peril gets
+a row, while what was typed for a peril stays with it. Only one column in a table gives its
+rows, so ticking another unticks the first. Make the column the table's key if an output
+table keyed by peril should line up with the rows.
+
 A column's **default** is the value a new quote starts with in it, as if the underwriter
 had typed it: ticked or not for a True/false, one of its allowed values when it has some,
 a date for a Date, or typed. Only a one-row input table's columns take one. Build shows a
@@ -94,11 +106,13 @@ typed, and a value typed equal to its default counts as the default.
   whatever its case), a column's name is an identifier that is not a Python keyword, unique
   in its table, a many-row table needs a key, an input column's range must not be inverted
   and its allowed values must be of its type and read from a params file, a True/false or
-  Date column can have none, and a default must be a value the column takes (of its type,
-  in its range, one of its allowed values). Changing a column's type drops the rules and
-  the format the new type cannot have, and the default when it becomes or stops being
+  Date column can have none, a default must be a value the column takes (of its type,
+  in its range, one of its allowed values), and only one column in a table gives it a row
+  for each value. Changing a column's type drops the rules and
+  the format the new type cannot have, a row for each value going with the allowed values,
+  and the default when it becomes or stops being
   True/false, or becomes a Date while it is not a date; switching a table to many rows
-  clears its defaults.
+  clears its defaults, and to one row its keys and its row for each value.
 - Removing a column or a table a sheet shows asks first, and takes it off the sheet.
 
 ### Quote details
@@ -290,7 +304,9 @@ the row in every input table the grid shows, so the cells stay side by side). A 
 starts with its rows, empty; the first value you type keeps them, and from then on the
 rows are yours to add and delete, fewer than it started with too, though a Table of fixed
 rows never shows fewer. Change a Table's rows while building and Preview shows it: empty
-rows after the last one you typed into go, or more are added. Each cell is the control its
+rows after the last one you typed into go, or more are added. A Table showing a table that
+has a row for each value (see [Schema](#schema)) shows those rows whatever its own rows
+say. Each cell is the control its
 column calls for: a tick box, a dropdown of the allowed values, a date picker, or a text
 field. An empty cell is blank, or shows its column's placeholder. The sample is part of
 what **Save** writes, and **Undo** and **Redo** take back what you type, in Preview as

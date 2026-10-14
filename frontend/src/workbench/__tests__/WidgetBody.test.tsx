@@ -132,6 +132,51 @@ describe("WidgetBody", () => {
     expect(screen.getByRole("textbox", { name: "Item row 1" })).toHaveValue("Crane")
   })
 
+  it("shows the rows a column gives its table whatever the grid starts with, each value as text, and writes them all as a value is typed", () => {
+    const given = updateSchemaColumn(sheetForm(), "equipment", "equipment.item", {
+      options: ["Crane", "Digger", "Lift", "Hoist"],
+      options_source: { file: "plant.csv", column: "item" },
+      row_per_value: true,
+    })
+    // A value held for the lift, as a quote opened or a refresh may leave it.
+    given.sample = { equipment: [{ "equipment.item": "Lift", "equipment.value": "3" }] }
+    loadForm(updateWidget(given, "w_grid", { rows: 2 }))
+    renderBody("w_grid")
+    const bodyRows = () => screen.getAllByRole("row").slice(1)
+
+    expect(bodyRows().map((row) => row.children[1].textContent)).toEqual(["Crane", "Digger", "Lift", "Hoist"])
+    expect(screen.getByRole("textbox", { name: "Value row 3" })).toHaveValue("3")
+    // Its values take no typing, and no row is added or deleted.
+    expect(screen.queryByRole("textbox", { name: "Item row 1" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Add row" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Delete row 1" })).not.toBeInTheDocument()
+
+    const value = screen.getByRole("textbox", { name: "Value row 1" })
+    fireEvent.change(value, { target: { value: "5000" } })
+    fireEvent.blur(value)
+    expect(currentForm().sample.equipment).toEqual([
+      { "equipment.item": "Crane", "equipment.value": "5000" },
+      { "equipment.item": "Digger" },
+      { "equipment.item": "Lift", "equipment.value": "3" },
+      { "equipment.item": "Hoist" },
+    ])
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
+    cleanup()
+
+    // The underwriter app's quote the same, a new one starting with the rows alone.
+    renderBody("w_grid", "quote")
+    expect(bodyRows().map((row) => row.children[1].textContent)).toEqual(["Crane", "Digger", "Lift", "Hoist"])
+    const quoted = screen.getByRole("textbox", { name: "Value row 2" })
+    fireEvent.change(quoted, { target: { value: "70" } })
+    fireEvent.blur(quoted)
+    expect(useWorkbenchPreviewStore.getState().quote.equipment).toEqual([
+      { "equipment.item": "Crane" },
+      { "equipment.item": "Digger", "equipment.value": "70" },
+      { "equipment.item": "Lift" },
+      { "equipment.item": "Hoist" },
+    ])
+  })
+
   it("draws a Table as its options say, and with its rows fixed shows every row typed but no Add row or delete", () => {
     const bodyRows = () => screen.getAllByRole("row").slice(1)
     const cellOf = (name: string) => screen.getByRole("textbox", { name }).closest("td")

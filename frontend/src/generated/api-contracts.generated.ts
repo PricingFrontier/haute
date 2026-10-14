@@ -2658,6 +2658,7 @@ export interface SchemaColumn {
   options_source: OptionsSource | null;
   placeholder: string;
   required: boolean;
+  row_per_value: boolean;
   type: 'int' | 'float' | 'str' | 'bool' | 'date';
   use_grouping: boolean;
 }

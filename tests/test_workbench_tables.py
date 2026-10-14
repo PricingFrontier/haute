@@ -1,18 +1,21 @@
 """The workbench's tables as the pipeline holds them (specs/workbench): the Workbench
 Input's and Workbench Output's tables, each its name, one row per quote or many, and its
-typed columns; the sample quote as a request holds it; and the tables the pipeline refuses."""
+typed columns; the sample quote as a request holds it, a table's rows as a column gives
+them; and the tables the pipeline refuses."""
 
 from __future__ import annotations
 
 import copy
+import json
 import re
+from pathlib import Path
 from typing import Any
 
 import polars as pl
 import pytest
 
 from haute._json_shred._shred import _POLARS_TYPE_MAP
-from haute._workbench_form import FormSpec
+from haute._workbench_form import FormSpec, SchemaTable
 from haute._workbench_input import workbench_request_frames, workbench_table_frames
 from haute._workbench_tables import (
     COLUMN_DTYPES,
@@ -22,6 +25,7 @@ from haute._workbench_tables import (
     output_tables,
     parse_workbench_tables,
     port_tables,
+    preset_rows,
     quote_schema,
     sample_quote,
     workbench_tables,
@@ -371,6 +375,59 @@ def test_a_tables_index_is_an_integer_column_numbering_the_rows_as_they_stand() 
     # Each row's number as the rows stand: the empty second row is not sent.
     assert sample_quote(spec) == {
         "equipment": [{"line": 1, "item_id": "A"}, {"line": 3, "item_id": "B", "value": 5.0}]
+    }
+
+
+#: The cases the view's ``presetRows`` holds itself to as well.
+PRESET_CASES: list[dict[str, Any]] = json.loads(
+    (
+        Path(__file__).resolve().parents[1]
+        / "frontend/src/utils/__tests__/fixtures/presetRows.json"
+    ).read_text(encoding="utf-8")
+)["cases"]
+
+
+@pytest.mark.parametrize("case", PRESET_CASES, ids=[case["name"] for case in PRESET_CASES])
+def test_the_rows_a_column_gives_a_table_are_read_by_the_rule_the_view_applies(
+    case: dict[str, Any],
+) -> None:
+    table = SchemaTable.model_validate({"id": "t_cover", "name": "coverage", **case["table"]})
+
+    assert preset_rows(table, case["rows"]) == case["read"]
+
+
+def test_the_sample_sends_every_row_a_column_gives_in_the_values_order() -> None:
+    spec = form(
+        {
+            "id": "t1",
+            "name": "coverage",
+            "role": "input",
+            "rows": "many",
+            "columns": [
+                {**column("line", "str"), "index": True},
+                column("peril", key=True, options=["AOP", "EQ", "NW"], row_per_value=True),
+                column("limit", "float"),
+            ],
+        }
+    )
+    # A value typed for NW alone, its row held first, and a row for a peril no longer allowed.
+    spec.sample = {"t1": [{"c_peril": "NW", "c_limit": "3"}, {"c_peril": "WD", "c_limit": "9"}]}
+
+    # Every peril's row is sent, a row holding its peril alone included, numbered as they stand.
+    assert sample_quote(spec) == {
+        "coverage": [
+            {"line": 1, "peril": "AOP"},
+            {"line": 2, "peril": "EQ"},
+            {"line": 3, "peril": "NW", "limit": 3.0},
+        ]
+    }
+    spec.sample = {}
+    assert sample_quote(spec) == {
+        "coverage": [
+            {"line": 1, "peril": "AOP"},
+            {"line": 2, "peril": "EQ"},
+            {"line": 3, "peril": "NW"},
+        ]
     }
 
 

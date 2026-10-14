@@ -15,7 +15,7 @@ import { INPUT_STYLE } from "../panels/editors/_shared"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { formatValue } from "../utils/formatValue"
-import { cellKey, formattedNumber } from "../utils/sheetValues"
+import { cellKey, formattedNumber, presetColumn } from "../utils/sheetValues"
 import { columnKey } from "../utils/sheetVisibility"
 import {
   BLANK_THEME,
@@ -397,7 +397,9 @@ function groupRuns(fields: ShownField[]): { group: string; start: number; size: 
  * is for other values. Its options say whether the rows are numbered, how tall they are,
  * which lines it draws, whether every other row is shaded, whether its header's labels are
  * in capitals and whether rows can be added and deleted; fixed, it never shows fewer than
- * `rows`, and fixed or not, it shows every row the values hold. Transposed, its fields run
+ * `rows`, and fixed or not, it shows every row the values hold. Showing a table a column
+ * gives a row for each value, it shows those rows, fixed, that column's cells holding each
+ * row's value as text, and a value typed writes them whole. Transposed, its fields run
  * down its side, each labelled at the start of its line, and its rows across, numbered
  * above with a delete over each and an add at the end; the shading and the lines are the
  * grid's as drawn, an output field ruled off above its line. Showing groups, while a field
@@ -419,12 +421,15 @@ function FieldGrid({
   const oneRow = (found: Fillable) => found.table.rows === "one"
   const inputs = gridInputTables(fields)
   const inputTables = inputs.map((table) => table.id)
+  // A table a column gives a row for each value has those rows: none is added or deleted.
+  const given = inputs.map(presetColumn).find((column) => column !== null) ?? null
   const holding = Math.max(0, ...inputTables.map((id) => held[id]?.length ?? 0))
-  const count = holding === 0 ? rows : options.fixed_rows ? Math.max(rows, holding) : holding
+  const count = given !== null ? given.options.length : holding === 0 ? rows : options.fixed_rows ? Math.max(rows, holding) : holding
   // Each input table's rows as the grid shows them.
   const shownRows = (id: string) => padRows(held[id] ?? [], count)
+  // Its rows as shown are written whole until its tables hold rows, and always while a column gives them.
   const setValue = (tableId: string, row: number, columnId: string, value: SampleValue) => {
-    if (holding > 0 || !inputTables.includes(tableId)) setCell(tableId, row, columnId, value)
+    if (!inputTables.includes(tableId) || (holding > 0 && given === null)) setCell(tableId, row, columnId, value)
     else setRows(Object.fromEntries(inputTables.map((id) => [id, id === tableId ? withCell(shownRows(id), row, columnId, value) : shownRows(id)])))
   }
   const addRow = () => setRows(Object.fromEntries(inputTables.map((id) => [id, padRows(held[id] ?? [], count + 1)])))
@@ -437,8 +442,8 @@ function FieldGrid({
     found.table.rows === "one" ? price?.tables[found.table.name]?.[0]?.[found.column.name] : matched.get(found.table.id)?.[row]?.[found.column.name]
 
   const { row_numbers: numbered, gridlines, striped, transposed } = options
-  // Rows are not added or deleted in a grid of fixed rows, or while the values are read only.
-  const fixed = options.fixed_rows || readOnly
+  // Rows are not added or deleted in a grid of fixed rows, or of rows a column gives, or while the values are read only.
+  const fixed = options.fixed_rows || given !== null || readOnly
   const height = ROW_HEIGHT[options.density]
   // The line before a field's column: an output's, and every column's in a full grid; none
   // without gridlines, or at the grid's left edge.
@@ -467,6 +472,19 @@ function FieldGrid({
 
   /** A field's cell in one of the grid's rows, ruled as `rules` say: one in its line when transposed. */
   const valueCell = ({ key, found }: ShownField, row: number, rules: CSSProperties) => {
+    if (found !== null && presetColumn(found.table)?.id === found.column.id) {
+      // The column giving its table's rows shows each row's value, and takes no typing.
+      const value = held[found.table.id]?.[row]?.[found.column.id]
+      return (
+        <td
+          key={transposed ? row : key}
+          className={`${height} px-2.5 ${isNumeric(found.column.type) ? "text-right tabular-nums" : ""}`}
+          style={{ ...rules, color: colours.font ?? "var(--text-primary)" }}
+        >
+          {typeof value === "string" ? (formattedNumber(found.column, value) ?? value) : null}
+        </td>
+      )
+    }
     if (fillable(found)) {
       const at = oneRow(found) ? 0 : row
       return (

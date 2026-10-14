@@ -9,7 +9,7 @@ import type { ChartWidget, Condition, FieldRef, FormSchema, FormSpec, HeadingWid
 import { ASCII_IDENTIFIER_RE, apiInputLabelIssue, apiInputLabelIssueMessage } from "./apiInputPorts"
 import { PYTHON_KEYWORDS } from "./globalConstants"
 import { BLANK_SECTION_HEIGHT, BLANK_SHEET_WIDTH, NEW_SECTION_HEIGHT, fittedSectionHeight, leastSectionHeight, leastSheetWidth, type Rect } from "./sheetGeometry"
-import { cellProblem, filled, isDay, parseTypedNumber, pricedRows, valuesBasis, type PricedRows, type RowsByTable } from "./sheetValues"
+import { cellProblem, filled, isDay, parseTypedNumber, presetColumn, pricedRows, valuesBasis, type PricedRows, type RowsByTable } from "./sheetValues"
 import { columnKey, conditionFault, fieldKeys, neverShown, sheetVisibility, testLabel } from "./sheetVisibility"
 
 /** A section's widget: a Table, a Collection, a Chart or a Heading. */
@@ -100,6 +100,7 @@ export const createSchemaColumn = (spec: FormSpec, tableId: string): SchemaColum
   max: null,
   options: [],
   options_source: null,
+  row_per_value: false,
   index: false,
   help: "",
   placeholder: "",
@@ -158,10 +159,10 @@ export const removeSchemaTable = (spec: FormSpec, id: string): FormSpec =>
   })
 
 /**
- * A table with one row per quote has no keys, which say which of many rows is which, and
- * no index, which numbers them: switching to one row drops both, the index column with
- * what shows it and its sample values, as removing a column does. A many-row table's
- * columns take no default: switching to many rows clears them.
+ * A table with one row per quote has no keys, which say which of many rows is which, no
+ * index, which numbers them, and no row for each value: switching to one row drops them,
+ * the index column with what shows it and its sample values, as removing a column does. A
+ * many-row table's columns take no default: switching to many rows clears them.
  */
 export const setSchemaTableRows = (spec: FormSpec, id: string, rows: SchemaTable["rows"]): FormSpec => {
   const index = rows === "one" ? schemaTableOf(spec, id).columns.find((column) => column.index) : undefined
@@ -170,11 +171,25 @@ export const setSchemaTableRows = (spec: FormSpec, id: string, rows: SchemaTable
     const table = schemaTableOf(draft, id)
     table.rows = rows
     for (const column of table.columns) {
-      if (rows === "one") column.key = false
-      else column.default_value = ""
+      if (rows === "one") {
+        column.key = false
+        column.row_per_value = false
+      } else column.default_value = ""
     }
   })
 }
+
+/**
+ * Give a table a row for each of a column's allowed values, unticking any other column of
+ * the table that gave its rows, as only one does; or stop it.
+ */
+export const setRowPerValue = (spec: FormSpec, tableId: string, columnId: string, on: boolean): FormSpec =>
+  edit(spec, (draft) => {
+    for (const column of schemaTableOf(draft, tableId).columns) {
+      if (column.id === columnId) column.row_per_value = on
+      else if (on) column.row_per_value = false
+    }
+  })
 
 /** Add a column at `index`, or at the end. */
 export const addSchemaColumn = (spec: FormSpec, tableId: string, column: SchemaColumn, index?: number): FormSpec =>
@@ -211,8 +226,8 @@ export const takesOptions = (type: SchemaColumn["type"]): boolean => type !== "b
 /**
  * Change a column's type, dropping the rules the new type cannot have: the range and the
  * number format of a column no longer a number, and the allowed values of one now a tick
- * box or a date, with the params file they came from, which would otherwise still rule its
- * cells; and the default of one that
+ * box or a date, with the params file they came from and a row for each, which would
+ * otherwise still rule its cells; and the default of one that
  * becomes or stops being a tick box, a tick or text no longer its kind of value, or that
  * becomes a date while its default is not a day, which a date's box cannot show.
  */
@@ -238,6 +253,7 @@ export const changeSchemaColumnType = (
     if (!takesOptions(type)) {
       column.options = []
       column.options_source = null
+      column.row_per_value = false
     }
   })
 
@@ -1067,9 +1083,10 @@ const isNumber = (text: string, whole: boolean): boolean => {
  * What would stop the schema being the pipeline's tables. A table's name is a port's
  * name, so it is held to the Quote Input's label rules (`apiInputLabelIssue`, with the
  * document's reserved labels); a column's name is an identifier, unique in its table; a
- * many-row table needs a key; an input column's rules must make sense (a range that is
- * not inverted, allowed values of its type, read from a params file rather than typed in),
- * and a one-row input column's default must be a value they take.
+ * many-row table needs a key, and one column at most gives it a row for each value; an
+ * input column's rules must make sense (a range that is not inverted, allowed values of its
+ * type, read from a params file rather than typed in), and a one-row input column's
+ * default must be a value they take.
  */
 export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<string>): SchemaProblem[] {
   const problems: SchemaProblem[] = []
@@ -1086,6 +1103,12 @@ export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<strin
     if (issue !== null) problems.push({ tableId: table.id, message: `${name}: ${issue}` })
     if (table.rows === "many" && !table.columns.some((column) => column.key)) {
       problems.push({ tableId: table.id, message: `${name} has many rows, so it needs a key column` })
+    }
+    const given = presetColumn(table)
+    for (const column of table.columns) {
+      if (given !== null && column !== given && column.row_per_value && !column.index && column.options.length > 0) {
+        problems.push({ tableId: table.id, message: `${name} has a row for each value of ${given.name}, so ${column.name} gives it none` })
+      }
     }
     const columnNames = new Set<string>()
     for (const column of table.columns) {

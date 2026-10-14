@@ -32,10 +32,12 @@ import {
   removeSchemaColumn,
   removeSchemaTable,
   schemaProblems,
+  setRowPerValue,
   setSchemaTableRows,
   updateSchemaColumn,
   updateSchemaTable,
 } from "../utils/workbenchForm"
+import { presetColumn } from "../utils/sheetValues"
 import { PIVOT_DECIMAL_PLACES_MAX, PIVOT_NUMBER_FORMATS } from "../panels/explore/pivotConfig"
 import { NUMBER_FORMAT_LABELS } from "../panels/explore/pivotNumberFormat"
 import { COLUMN_TYPES, COLUMN_TYPE_OPTIONS, isNumeric } from "./columnTypes"
@@ -68,8 +70,8 @@ function currentForm(): FormSpec {
   return form
 }
 
-/** An input column's rules in a few words, shown beside its name. */
-function rulesSummary(column: SchemaColumn): string {
+/** An input column's rules in a few words, shown beside its name, and whether it gives its table's rows. */
+function rulesSummary(table: SchemaTable, column: SchemaColumn): string {
   const parts: string[] = []
   if (column.required) parts.push("required")
   if (isNumeric(column.type) && (column.min !== null || column.max !== null)) {
@@ -79,6 +81,7 @@ function rulesSummary(column: SchemaColumn): string {
     const values = `${column.options.length} ${column.options.length === 1 ? "value" : "values"}`
     parts.push(column.options_source === null ? values : `${values} from ${column.options_source.file}`)
   }
+  if (presetColumn(table)?.id === column.id) parts.push("a row each")
   return parts.join(" · ")
 }
 
@@ -336,7 +339,7 @@ function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, o
   const { label, icon: Icon, color } = COLUMN_TYPES[column.type]
   // A column the underwriter app sets takes no rules.
   const managed = locked && QUOTE_DETAILS_MANAGED.has(column.id)
-  const summary = table.role === "input" ? rulesSummary(column) : ""
+  const summary = table.role === "input" ? rulesSummary(table, column) : ""
   const set = (patch: Partial<SchemaColumn>) => change((f) => updateSchemaColumn(f, table.id, column.id, patch))
 
   // Enter adds the next column; Alt+Up and Alt+Down move this one.
@@ -444,7 +447,8 @@ function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, o
 
 /**
  * A column's label, group and help; in an input table, what a new quote starts with in it
- * (in a one-row table), what an empty cell shows and the rules its value must meet; for a
+ * (in a one-row table), what an empty cell shows, the rules its value must meet and, in a
+ * many-row table while it has allowed values, whether the table has a row for each; for a
  * number, how the sheets show it. The boxes hold no hint text: the docs say what each is.
  */
 function ColumnDetails({
@@ -458,6 +462,7 @@ function ColumnDetails({
   managed: boolean
   set: (patch: Partial<SchemaColumn>) => void
 }) {
+  const change = useWorkbenchFormStore((s) => s.change)
   // The index takes no rules, nor does a column the app sets: nothing is typed into them.
   const input = table.role === "input" && !column.index && !managed
   // The groups the table's columns are in, offered as one is typed.
@@ -598,6 +603,16 @@ function ColumnDetails({
               <AllowedField column={column} set={set} />
             </>
           )}
+          {table.rows === "many" && column.type !== "bool" && column.type !== "date" && column.options.length > 0 && (
+            <>
+              <span style={{ color: "var(--text-muted)" }}>Rows</span>
+              <ConfigCheckbox
+                label="A row for each"
+                checked={column.row_per_value}
+                onChange={(on) => change((f) => setRowPerValue(f, table.id, column.id, on))}
+              />
+            </>
+          )}
         </>
       )}
     </div>
@@ -610,8 +625,8 @@ const isCsv = (name: string): boolean => name.toLowerCase().endsWith(".csv")
 /**
  * A column's allowed values: the distinct values of a column of a CSV in the pipeline's params
  * folder, its file chosen and then its column, copied in and read from the file again by
- * Refresh. The blank choice takes them away. Why a file or a column cannot give values shows
- * under them.
+ * Refresh. The blank choice takes them away, with a row for each. Why a file or a column
+ * cannot give values shows under them.
  */
 function AllowedField({ column, set }: { column: SchemaColumn; set: (patch: Partial<SchemaColumn>) => void }) {
   const source = column.options_source
@@ -670,7 +685,7 @@ function AllowedField({ column, set }: { column: SchemaColumn; set: (patch: Part
     if (chosen !== "") setPendingFile(chosen === source?.file ? null : chosen)
     else {
       setPendingFile(null)
-      if (source !== null || column.options.length > 0) set({ options: [], options_source: null })
+      if (source !== null || column.options.length > 0) set({ options: [], options_source: null, row_per_value: false })
     }
   }
   const chooseColumn = (name: string) =>

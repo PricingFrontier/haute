@@ -272,7 +272,7 @@ def sample_quote(spec: FormSpec) -> dict[str, Any]:
     for table in spec.data_schema.tables:
         if table.role != "input":
             continue
-        rows = spec.sample.get(table.id, [])
+        rows = preset_rows(table, spec.sample.get(table.id, []))
         columns = [column for column in table.columns if (table.id, column.id) not in hidden]
         # Numbered as the rows stand, from 1, so deleting a row renumbers those after it.
         records = [
@@ -283,6 +283,57 @@ def sample_quote(spec: FormSpec) -> dict[str, Any]:
         if records:
             sample[table.name] = records if table.rows == "many" else records[0]
     return sample
+
+
+def preset_column(table: SchemaTable) -> SchemaColumn | None:
+    """The column giving *table* a row for each of its allowed values: in a many-row input
+    table, the first marked ``row_per_value`` that is not the index and has values; None
+    for none."""
+    if table.role != "input" or table.rows != "many":
+        return None
+    return next(
+        (
+            column
+            for column in table.columns
+            if column.row_per_value and not column.index and column.options
+        ),
+        None,
+    )
+
+
+def preset_rows(
+    table: SchemaTable, rows: Sequence[dict[str, str | bool]]
+) -> list[dict[str, str | bool]]:
+    """*rows* as *table* holds them: with a column giving it a row for each value, those
+    rows in the values' order, each value's row the first holding it there, the rows holding
+    nothing there filling the rows left in order, each holding its value, and any other row
+    left out; else *rows* as they are.
+
+    The view reads a table's rows by the same rule (``presetRows`` in
+    ``frontend/src/utils/sheetValues.ts``), so a grid's rows are the rows priced; the cases
+    in ``frontend/src/utils/__tests__/fixtures/presetRows.json`` hold both to it.
+    """
+    column = preset_column(table)
+    if column is None:
+        return list(rows)
+    places: dict[str, int] = {}
+    for place, value in enumerate(column.options):
+        places.setdefault(value, place)
+    placed: list[dict[str, str | bool] | None] = [None] * len(column.options)
+    loose: list[dict[str, str | bool]] = []
+    for row in rows:
+        raw = row.get(column.id)
+        if not _filled(raw):
+            loose.append(row)
+            continue
+        at = places.get(raw.strip()) if isinstance(raw, str) else None
+        if at is not None and placed[at] is None:
+            placed[at] = row
+    free = iter(loose)
+    return [
+        {**(row if row is not None else next(free, {})), column.id: value}
+        for row, value in zip(placed, column.options, strict=True)
+    ]
 
 
 def _record(

@@ -297,6 +297,9 @@ class SchemaColumn(_Strict):
     #: in when picked or refreshed, and read again when the underwriter app is built. None
     #: while they are typed.
     options_source: OptionsSource | None = None
+    #: In a many-row input table, the table has a row for each of ``options``, in their
+    #: order, each holding its value here (``haute._workbench_tables.preset_rows``).
+    row_per_value: bool = False
     #: The table's index: each row's number, from 1, as the rows stand. Nothing is typed
     #: into it, and it is an Integer.
     index: bool = False
@@ -421,7 +424,7 @@ def _check_quote_details(table: SchemaTable) -> None:
         table.role != "input"
         or table.rows != "one"
         or shape != list(QUOTE_DETAILS_COLUMNS)
-        or any(column.key or column.index for column in table.columns)
+        or any(column.key or column.index or column.row_per_value for column in table.columns)
     ):
         raise ValueError(
             f"{QUOTE_DETAILS_ID} is Haute's: a one-row input table of the columns "

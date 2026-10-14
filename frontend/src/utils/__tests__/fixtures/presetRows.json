@@ -1,0 +1,165 @@
+{
+  "about": "The rows a column gives a table: each case's table (its columns spelt with what they set, the rest as a new column's), the rows held, and the rows read. frontend/src/utils/__tests__/sheetValues.test.ts holds presetRows to every case and tests/test_workbench_tables.py holds preset_rows to them: one rule in two languages.",
+  "cases": [
+    {
+      "name": "no column gives a row for each value: the rows as they are",
+      "table": {
+        "role": "input",
+        "rows": "many",
+        "columns": [
+          { "id": "c_peril", "name": "peril", "options": ["AOP", "EQ", "NW"] },
+          { "id": "c_limit", "name": "limit" }
+        ]
+      },
+      "rows": [{ "c_limit": "5" }, {}, { "c_peril": "WD" }],
+      "read": [{ "c_limit": "5" }, {}, { "c_peril": "WD" }]
+    },
+    {
+      "name": "nothing held: a row for each value, each holding it, in the values' order",
+      "table": {
+        "role": "input",
+        "rows": "many",
+        "columns": [
+          { "id": "c_peril", "name": "peril", "options": ["AOP", "EQ", "NW"], "row_per_value": true },
+          { "id": "c_limit", "name": "limit" }
+        ]
+      },
+      "rows": [],
+      "read": [{ "c_peril": "AOP" }, { "c_peril": "EQ" }, { "c_peril": "NW" }]
+    },
+    {
+      "name": "each value's row is the first holding it there, its values kept",
+      "table": {
+        "role": "input",
+        "rows": "many",
+        "columns": [
+          { "id": "c_peril", "name": "peril", "options": ["AOP", "EQ", "NW"], "row_per_value": true },
+          { "id": "c_limit", "name": "limit" },
+          { "id": "c_included", "name": "included", "type": "bool" }
+        ]
+      },
+      "rows": [
+        { "c_peril": "NW", "c_limit": "3", "c_included": true },
+        { "c_peril": "AOP", "c_limit": "1" }
+      ],
+      "read": [
+        { "c_peril": "AOP", "c_limit": "1" },
+        { "c_peril": "EQ" },
+        { "c_peril": "NW", "c_limit": "3", "c_included": true }
+      ]
+    },
+    {
+      "name": "the rows holding nothing there fill the rows left, in order",
+      "table": {
+        "role": "input",
+        "rows": "many",
+        "columns": [
+          { "id": "c_peril", "name": "peril", "options": ["AOP", "EQ", "NW"], "row_per_value": true },
+          { "id": "c_limit", "name": "limit" }
+        ]
+      },
+      "rows": [
+        { "c_limit": "1" },
+        { "c_peril": "EQ", "c_limit": "2" },
+        { "c_peril": "  ", "c_limit": "3" },
+        { "c_peril": false, "c_limit": "4" }
+      ],
+      "read": [
+        { "c_peril": "AOP", "c_limit": "1" },
+        { "c_peril": "EQ", "c_limit": "2" },
+        { "c_peril": "NW", "c_limit": "3" }
+      ]
+    },
+    {
+      "name": "any other row is left out: a value no longer allowed, a value's second row, a tick, and the rows past the last",
+      "table": {
+        "role": "input",
+        "rows": "many",
+        "columns": [
+          { "id": "c_peril", "name": "peril", "options": ["AOP", "EQ", "NW"], "row_per_value": true },
+          { "id": "c_limit", "name": "limit" }
+        ]
+      },
+      "rows": [
+        { "c_peril": "WD", "c_limit": "9" },
+        { "c_peril": "AOP", "c_limit": "1" },
+        { "c_peril": "AOP", "c_limit": "2" },
+        { "c_peril": true, "c_limit": "5" },
+        { "c_limit": "a" },
+        { "c_limit": "b" },
+        { "c_limit": "c" }
+      ],
+      "read": [
+        { "c_peril": "AOP", "c_limit": "1" },
+        { "c_peril": "EQ", "c_limit": "a" },
+        { "c_peril": "NW", "c_limit": "b" }
+      ]
+    },
+    {
+      "name": "a value held with spaces round it is its value's, written as allowed",
+      "table": {
+        "role": "input",
+        "rows": "many",
+        "columns": [
+          { "id": "c_peril", "name": "peril", "options": ["AOP", "EQ"], "row_per_value": true },
+          { "id": "c_limit", "name": "limit" }
+        ]
+      },
+      "rows": [{ "c_peril": " EQ ", "c_limit": "2" }],
+      "read": [{ "c_peril": "AOP" }, { "c_peril": "EQ", "c_limit": "2" }]
+    },
+    {
+      "name": "the first column giving the rows gives them",
+      "table": {
+        "role": "input",
+        "rows": "many",
+        "columns": [
+          { "id": "c_zone", "name": "zone", "options": ["North", "South"], "row_per_value": true },
+          { "id": "c_peril", "name": "peril", "options": ["AOP", "EQ", "NW"], "row_per_value": true }
+        ]
+      },
+      "rows": [{ "c_zone": "South", "c_peril": "EQ" }],
+      "read": [{ "c_zone": "North" }, { "c_zone": "South", "c_peril": "EQ" }]
+    },
+    {
+      "name": "a one-row table's column gives none",
+      "table": {
+        "role": "input",
+        "rows": "one",
+        "columns": [{ "id": "c_peril", "name": "peril", "options": ["AOP", "EQ"], "row_per_value": true }]
+      },
+      "rows": [{ "c_peril": "EQ" }],
+      "read": [{ "c_peril": "EQ" }]
+    },
+    {
+      "name": "an output table's column gives none",
+      "table": {
+        "role": "output",
+        "rows": "many",
+        "columns": [{ "id": "c_peril", "name": "peril", "options": ["AOP", "EQ"], "row_per_value": true }]
+      },
+      "rows": [],
+      "read": []
+    },
+    {
+      "name": "a column without allowed values gives none",
+      "table": {
+        "role": "input",
+        "rows": "many",
+        "columns": [{ "id": "c_peril", "name": "peril", "row_per_value": true }]
+      },
+      "rows": [{ "c_peril": "EQ" }],
+      "read": [{ "c_peril": "EQ" }]
+    },
+    {
+      "name": "the index gives none",
+      "table": {
+        "role": "input",
+        "rows": "many",
+        "columns": [{ "id": "c_row", "name": "row_number", "type": "int", "index": true, "options": ["1", "2"], "row_per_value": true }]
+      },
+      "rows": [],
+      "read": []
+    }
+  ]
+}

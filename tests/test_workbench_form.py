@@ -45,6 +45,7 @@ def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
         "max": None,
         "options": [],
         "options_source": None,
+        "row_per_value": False,
         "index": False,
         "help": "",
         "placeholder": "",
@@ -706,6 +707,10 @@ def test_a_form_holding_hautes_quote_details_reads_and_writes_as_it_is(tmp_path:
         (lambda t: t["columns"][1].update(name="title"), "is Haute's: a one-row input table"),
         (lambda t: t["columns"][4].update(type="str"), "is Haute's: a one-row input table"),
         (
+            lambda t: t["columns"][1].update(row_per_value=True),
+            "is Haute's: a one-row input table",
+        ),
+        (
             lambda t: t["columns"][0].update(required=True),
             "reference is set by the underwriter app",
         ),
@@ -735,6 +740,7 @@ def test_a_form_holding_hautes_quote_details_reads_and_writes_as_it_is(tmp_path:
         "column-gone",
         "renamed",
         "retyped",
+        "row-per-value",
         "rule",
         "options",
         "options-source",

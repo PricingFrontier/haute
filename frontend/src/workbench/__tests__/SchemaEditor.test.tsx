@@ -49,6 +49,7 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   max: null,
   options: [],
   options_source: null,
+  row_per_value: false,
   index: false,
   help: "",
   placeholder: "",
@@ -309,6 +310,52 @@ describe("SchemaEditor", () => {
     expect(current().schema.tables[0].columns[0]).toMatchObject({ options: [], options_source: null })
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
     expect(screen.queryByRole("combobox", { name: "Column the allowed values of state come from" })).toBeNull()
+  })
+
+  it("gives a many-row table a row for each of a column's allowed values, one column at a time, each tick one undo step", () => {
+    const perils = { options: ["AOP", "EQ", "NW"], options_source: { file: "perils.csv", column: "peril" } }
+    load(
+      form(
+        POLICY,
+        table("t_cover", "coverage", {
+          rows: "many",
+          columns: [column("c_zone", "zone", { options: ["N", "S"], options_source: { file: "zones.csv", column: "zone" }, row_per_value: true }), column("c_peril", "peril", { key: true, ...perils }), column("c_limit", "limit", { type: "float" })],
+        }),
+      ),
+    )
+    render(<SchemaEditor />)
+    const cover = tableNamed("coverage")
+    expect(within(cover).getByText("2 values from zones.csv · a row each")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of peril" }))
+    fireEvent.click(screen.getByRole("checkbox", { name: "A row for each" }))
+
+    expect(current().schema.tables[1].columns.map((c) => c.row_per_value)).toEqual([false, true, false])
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
+    expect(within(cover).getByText("3 values from perils.csv · a row each")).toBeInTheDocument()
+    expect(within(cover).getByText("2 values from zones.csv")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("checkbox", { name: "A row for each" }))
+    expect(current().schema.tables[1].columns.map((c) => c.row_per_value)).toEqual([false, false, false])
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
+
+    // Not offered without allowed values, nor in a one-row table.
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of limit" }))
+    expect(screen.queryByRole("checkbox", { name: "A row for each" })).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of state" }))
+    expect(screen.queryByRole("checkbox", { name: "A row for each" })).toBeNull()
+  })
+
+  it("takes a column's row for each value away with its allowed values, and names a second column giving a table's rows", async () => {
+    const perils = { options: ["AOP", "EQ"], options_source: { file: "perils.csv", column: "peril" }, row_per_value: true }
+    load(form(table("t_cover", "coverage", { rows: "many", columns: [column("c_peril", "peril", { key: true, ...perils }), column("c_zone", "zone", { ...perils })] })))
+    render(<SchemaEditor />)
+
+    expect(within(tableNamed("coverage")).getByText('Table "coverage" has a row for each value of peril, so zone gives it none')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of peril" }))
+    fireEvent.change(await screen.findByRole("combobox", { name: "Where the allowed values of peril come from" }), { target: { value: "" } })
+
+    expect(current().schema.tables[0].columns[0]).toMatchObject({ options: [], options_source: null, row_per_value: false })
+    expect(screen.queryByRole("checkbox", { name: "A row for each" })).toBeNull()
   })
 
   it("names allowed values typed in, as an older form holds them, among its table's problems", () => {

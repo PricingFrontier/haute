@@ -5,7 +5,8 @@
  * rows by table, how a cell or a grid's rows change, what the last pricing of those values
  * gave with the basis it was priced for, the cells that break their column's rules, which
  * sheets and components the values show, and the schema as the values' quote reads it,
- * without the columns the sheets hide.
+ * without the columns the sheets hide. Each reads a table a column gives its rows as those
+ * rows (`withPresetRows`), as the server prices them.
  */
 import { createContext, useContext, useMemo } from "react"
 import type { FormSchema } from "../api/types"
@@ -13,7 +14,7 @@ import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { type SamplePrice } from "../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
-import { newQuoteValues, quoteFilled, quoteProblems, quoteTyped, valuesBasis, type RowsByTable } from "../utils/sheetValues"
+import { newQuoteValues, quoteFilled, quoteProblems, quoteTyped, valuesBasis, withPresetRows, type RowsByTable } from "../utils/sheetValues"
 import { quotedSchema, sheetVisibility, type SheetVisibility } from "../utils/sheetVisibility"
 import { pricingBasis, withSampleCell, withSampleRows, type SampleRow, type SampleValue } from "../utils/workbenchForm"
 
@@ -64,7 +65,7 @@ const TYPE_NOTHING = () => {}
 export function useNewQuoteValues(): SheetValues {
   const form = useWorkbenchFormStore((s) => s.form)
   return useMemo<SheetValues>(() => {
-    const rows = form === null ? NO_ROWS : newQuoteValues(form.schema)
+    const rows = form === null ? NO_ROWS : withPresetRows(form.schema, newQuoteValues(form.schema))
     const visibility = form === null ? NO_VISIBILITY : sheetVisibility(form, rows)
     return {
       rows,
@@ -93,7 +94,7 @@ export function useSampleValues(): SheetValues {
   return useMemo<SheetValues>(() => {
     const visibility = form === null ? NO_VISIBILITY : sheetVisibility(form, form.sample)
     const quoted = form === null ? NO_SCHEMA : quotedSchema(form.schema, visibility.hidden)
-    const rows = form?.sample ?? NO_ROWS
+    const rows = form === null ? NO_ROWS : withPresetRows(form.schema, form.sample)
     return {
       rows,
       setCell: (tableId, row, columnId, value) => change((spec) => withSampleCell(spec, tableId, row, columnId, value)),
@@ -127,13 +128,14 @@ export function useQuoteValues(): SheetValues {
     const quoted = form === null ? NO_SCHEMA : quotedSchema(form.schema, visibility.hidden)
     // The details the app sets are not typing, nor are the defaults a new quote starts with.
     const typed = !readOnly && quoteTyped(quotedSchema(quoted, locked), quote)
+    const rows = form === null ? quote : withPresetRows(form.schema, quote)
     return {
-      rows: quote,
+      rows,
       setCell,
       setRows,
       price,
       basis: form === null ? "" : valuesBasis(form.schema, visibility.hidden, quote),
-      problems: typed ? quoteProblems(quoted, quote) : NO_PROBLEMS,
+      problems: typed ? quoteProblems(quoted, rows) : NO_PROBLEMS,
       visibility,
       quoted,
       readOnly,

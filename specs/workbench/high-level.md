@@ -115,7 +115,8 @@ Out of scope:
   is a `key` (a many-row table's keys say which row is which), its rules (`required`, `min`,
   `max`, `options`, and `options_source`, the `file` in the pipeline folder's
   `files/params/` and the `column` the allowed values were read from, `null` for none,
-  or for values typed in, which only an older form holds), whether it is the table's
+  or for values typed in, which only an older form holds), whether it gives its table a
+  row for each of its allowed values (`row_per_value`, below), whether it is the table's
   `index`, the column numbering its rows
   from 1, and how the sheets show it: its `help`, shown beside its label, its
   `placeholder`, what an empty input cell shows, its `default_value`, what a new quote
@@ -541,12 +542,32 @@ Out of scope:
   app sets aside, is neither marked nor priced nor saved, as a blank one is not, and a value
   typed equal to its column's default counts as the default. A many-row table's columns
   take no default.
+- **A row for each value.** A column of a many-row input table that has allowed values can
+  give the table a row for each of them, in their order (`row_per_value`), such as a
+  coverage table with a row for each peril: the table then has those rows, each holding
+  its value in that column, a new quote's included, and since its allowed values come from
+  a params file, the rows follow a refresh and `haute app build`. The rows are read so
+  wherever a table's values are read, on the sheets and in what the server prices, whatever
+  the sample, a quote or a test quote holds: each value's row is the first holding it there,
+  the rows holding nothing there fill the rows left in order, and any other row is left
+  out. Each row is filled by its value, so every one goes to the pipeline (while the sheets
+  hide that column, its value is left out, as any hidden value is), a Chart plots each and a
+  Table's output columns line up with each; but a row's value is not typing: a
+  quote holding nothing else typed is neither marked nor priced nor saved, as a blank one
+  is not. A grid showing the table shows its rows, whatever its rows and fixed rows, with no
+  Add row and no delete, the column's cells showing each row's value as text, which takes
+  no typing, and a value typed into the grid writes all its rows. The first such column in
+  a table gives its rows: ticking another unticks it, and a form holding two names the
+  second among the schema's problems. A column of a one-row or an output table, the index
+  and one without allowed values give none; taking a column's allowed values away,
+  retyping it to True/false or a Date, or switching its table to one row unticks it, and
+  unticked, its rows stay as values typed.
 - **The sample.** Typing into a component's input columns in Preview types the form's
   sample: the quote an analyst keys in as an underwriter would, saved with the form and
   what the pipeline's previews run on (the Workbench Input, below). A Collection's boxes
   hold its one-row tables' one row; a Table's grid holds its
   many-row tables' rows, row by row, with Add row and a delete on each row, unless its rows
-  are fixed, adding and deleting a row in every input table the grid shows at once, so
+  are fixed or a column gives them (above), adding and deleting a row in every input table the grid shows at once, so
   their cells stay side by side; a one-row table's column in a grid shows that table's one
   value on every row. A grid starts with its rows: while its input tables hold no rows it
   shows that many empty ones, which the first value typed into it keeps; once they hold

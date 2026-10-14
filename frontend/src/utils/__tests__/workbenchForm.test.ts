@@ -57,6 +57,7 @@ import {
   sectionProblems,
   setPageShowWhen,
   setPageWidth,
+  setRowPerValue,
   setSchemaTableRows,
   setSectionHeight,
   setSectionShowWhen,
@@ -116,6 +117,7 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   max: null,
   options: [],
   options_source: null,
+  row_per_value: false,
   index: false,
   help: "",
   placeholder: "",
@@ -365,6 +367,26 @@ describe("columns", () => {
     spec = updateSchemaColumn(spec, "t", index.id, { key: true })
     expect(messages(spec)).toEqual([])
     expect(createIndexColumn(spec, "t").name).toBe("row_number_2")
+  })
+
+  it("gives a table a row for each of one column's allowed values, until the table has one row or the column's type takes none", () => {
+    const values = { options: ["AOP", "EQ"], options_source: { file: "perils.csv", column: "peril" } }
+    let spec = setSchemaTableRows(withTable(column("a", "peril", { key: true, ...values }), column("b", "zone", values)), "t", "many")
+    const given = () => spec.schema.tables[0].columns.map((c) => c.row_per_value)
+
+    spec = setRowPerValue(spec, "t", "a", true)
+    expect(given()).toEqual([true, false])
+    // Ticking another unticks the first, as one column gives a table its rows.
+    spec = setRowPerValue(spec, "t", "b", true)
+    expect(given()).toEqual([false, true])
+    spec = setRowPerValue(spec, "t", "b", false)
+    expect(given()).toEqual([false, false])
+
+    spec = setRowPerValue(spec, "t", "a", true)
+    expect(given()).toEqual([true, false])
+    expect(setSchemaTableRows(spec, "t", "one").schema.tables[0].columns.map((c) => c.row_per_value)).toEqual([false, false])
+    expect(changeSchemaColumnType(spec, "t", "a", "date").schema.tables[0].columns[0]).toMatchObject({ options: [], row_per_value: false })
+    expect(changeSchemaColumnType(spec, "t", "a", "int").schema.tables[0].columns[0].row_per_value).toBe(true)
   })
 
   it("refuses to edit a table or column that is not in the schema", () => {

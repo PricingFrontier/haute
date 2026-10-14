@@ -1,9 +1,9 @@
 /**
  * The values typed into a sheet's cells (specs/workbench), the sample in Preview or the
- * underwriter app's quote: which rows count as filled, as the server counts
- * them; what breaks a column's rules; how a number column shows a value; what pricing the
- * values depends on; and the rows of a priced output table lined up with a grid's input
- * rows by key.
+ * underwriter app's quote: which rows count as filled, as the server counts them; the rows
+ * a column gives a table, as the server reads them; what breaks a column's rules; how a
+ * number column shows a value; what pricing the values depends on; and the rows of a
+ * priced output table lined up with a grid's input rows by key.
  */
 import type { FormSchema, SchemaColumn, SchemaTable } from "../api/types"
 import { formatPivotNumber } from "../panels/explore/pivotNumberFormat"
@@ -28,13 +28,72 @@ export const rowFilled = (table: SchemaTable, row: SampleRow | undefined): boole
   row !== undefined && table.columns.some((column) => !column.index && filled(row[column.id]))
 
 /**
+ * The column giving a table a row for each of its allowed values: in a many-row input
+ * table, the first marked `row_per_value` that is not the index and has values; null for
+ * none (`preset_column` on the server).
+ */
+export const presetColumn = (table: SchemaTable): SchemaColumn | null =>
+  table.role === "input" && table.rows === "many"
+    ? (table.columns.find((column) => column.row_per_value && !column.index && column.options.length > 0) ?? null)
+    : null
+
+/**
+ * `rows` as `table` holds them: with a column giving it a row for each value, those rows in
+ * the values' order, each value's row the first holding it there, the rows holding nothing
+ * there filling the rows left in order, each holding its value, and any other row left
+ * out; else `rows` as they are. The server reads a table's rows by the same rule
+ * (`preset_rows` in `src/haute/_workbench_tables.py`), so a grid's rows are the rows priced.
+ */
+export function presetRows(table: SchemaTable, rows: readonly SampleRow[]): readonly SampleRow[] {
+  const column = presetColumn(table)
+  if (column === null) return rows
+  const places = new Map<string, number>()
+  column.options.forEach((value, place) => {
+    if (!places.has(value)) places.set(value, place)
+  })
+  const placed: (SampleRow | undefined)[] = column.options.map(() => undefined)
+  const loose: SampleRow[] = []
+  for (const row of rows) {
+    const value = row[column.id]
+    if (!filled(value)) {
+      loose.push(row)
+      continue
+    }
+    const place = typeof value === "string" ? places.get(value.trim()) : undefined
+    if (place !== undefined && placed[place] === undefined) placed[place] = row
+  }
+  let next = 0
+  return column.options.map((value, place) => ({ ...(placed[place] ?? loose[next++] ?? {}), [column.id]: value }))
+}
+
+/** The values with each table a column gives a row for each value read as `presetRows` reads it; the values themselves while none has one. */
+export function withPresetRows(schema: FormSchema, values: RowsByTable): RowsByTable {
+  const tables = schema.tables.filter((table) => presetColumn(table) !== null)
+  if (tables.length === 0) return values
+  const read: Record<string, readonly SampleRow[]> = { ...values }
+  for (const table of tables) read[table.id] = presetRows(table, values[table.id] ?? [])
+  return read
+}
+
+/** A table's columns whose values are typing: all but the index and the column giving the table its rows. */
+const typingColumns = (table: SchemaTable): SchemaColumn[] => {
+  const given = presetColumn(table)
+  return table.columns.filter((column) => !column.index && column !== given)
+}
+
+/**
  * Whether anything is typed in the input tables the schema has now, as the server counts
  * it: a value in a column or a table since removed from the schema, or in a row past the
  * first of a table now with one row per quote, is left out of the quote the server types,
- * so it does not count.
+ * so it does not count; nor does a row's value in the column giving its table's rows,
+ * which is not typing.
  */
 export const quoteFilled = (schema: FormSchema, rows: RowsByTable): boolean =>
-  schema.tables.some((table) => table.role === "input" && quotedRows(table, rows).some((row) => rowFilled(table, row)))
+  schema.tables.some((table) => {
+    if (table.role !== "input") return false
+    const columns = typingColumns(table)
+    return quotedRows(table, rows).some((row) => columns.some((column) => filled(row[column.id])))
+  })
 
 /** An input table's rows as the server reads them: a one-row table's first alone. */
 const quotedRows = (table: SchemaTable, rows: RowsByTable): readonly SampleRow[] => {
@@ -80,13 +139,13 @@ export function newQuoteValues(schema: FormSchema): RowsByTable {
  * underwriter's typing as a blank one does.
  */
 export const quoteTyped = (schema: FormSchema, rows: RowsByTable): boolean =>
-  schema.tables.some(
-    (table) =>
-      table.role === "input" &&
-      quotedRows(table, rows).some((row) =>
-        table.columns.some((column) => !column.index && filled(row[column.id]) && row[column.id] !== startingValue(table, column)),
-      ),
-  )
+  schema.tables.some((table) => {
+    if (table.role !== "input") return false
+    const columns = typingColumns(table)
+    return quotedRows(table, rows).some((row) =>
+      columns.some((column) => filled(row[column.id]) && row[column.id] !== startingValue(table, column)),
+    )
+  })
 
 /** A decimal number as the server reads one, once a currency sign, separators and spaces are gone. */
 const NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/

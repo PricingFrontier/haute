@@ -12495,6 +12495,11 @@
           "title": "Required",
           "type": "boolean"
         },
+        "row_per_value": {
+          "default": false,
+          "title": "Row Per Value",
+          "type": "boolean"
+        },
         "type": {
           "default": "str",
           "enum": [
@@ -12525,6 +12530,7 @@
         "max",
         "options",
         "options_source",
+        "row_per_value",
         "index",
         "help",
         "placeholder",
