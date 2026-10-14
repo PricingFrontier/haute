@@ -2655,10 +2655,19 @@ export interface SchemaColumn {
   name: string;
   number_format: 'general' | 'number' | 'percent' | 'currency_gbp' | 'currency_usd' | 'currency_eur';
   options: string[];
+  options_source: OptionsSource | null;
   placeholder: string;
   required: boolean;
   type: 'int' | 'float' | 'str' | 'bool' | 'date';
   use_grouping: boolean;
+}
+/**
+ * A column of a CSV in the pipeline's ``files/params/`` folder: the file by its name in
+ * that folder, and the column by its name in the file's header.
+ */
+export interface OptionsSource {
+  column: string;
+  file: string;
 }
 /**
  * The sheets' colours, wherever they show, each the editor's own while None.
@@ -2685,6 +2694,14 @@ export interface WorkbenchFormSaveResponse {
   identity_required: boolean;
   revision: string | null;
   warnings: string[];
+}
+/**
+ * A params file's header, and the distinct values of the column asked for: the allowed
+ * values a schema column copies in, ``[]`` while no column was asked for.
+ */
+export interface WorkbenchParamFileResponse {
+  columns: string[];
+  values: string[];
 }
 /**
  * The project's test quotes, the most recently saved first.

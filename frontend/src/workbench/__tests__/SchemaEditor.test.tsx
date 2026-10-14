@@ -3,14 +3,40 @@
  * field an edit of the form store once it commits, with what a sheet shows protected
  * by a confirmation.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
-import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { ApiError } from "../../api/client"
+import { listProjectFiles } from "../../api/projectFiles"
+import type { FormSpec, ProjectFolderResponse, SchemaColumn, SchemaTable } from "../../api/types"
+import { fetchParamFile } from "../../api/workbench"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { BLANK_THEME, COLLECTION_OPTIONS } from "../../utils/workbenchForm"
 import SchemaEditor from "../SchemaEditor"
 import { detailsTable } from "./fixtures"
+
+vi.mock("../../api/projectFiles", () => ({ listProjectFiles: vi.fn() }))
+vi.mock("../../api/workbench", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../api/workbench")>()),
+  fetchParamFile: vi.fn(),
+}))
+
+/** The params folder as the Pipeline files panel lists it, holding `names`. */
+const paramsFolder = (...names: string[]): ProjectFolderResponse => ({
+  place: "pipeline",
+  path: "params",
+  root: "rating/files",
+  writable: true,
+  entries: names.map((name) => ({
+    name,
+    path: `params/${name}`,
+    kind: name.includes(".") ? "file" : "folder",
+    modified: null,
+    revision: null,
+    size: null,
+    status: null,
+  })),
+})
 
 const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
   id,
@@ -22,6 +48,7 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   min: null,
   max: null,
   options: [],
+  options_source: null,
   index: false,
   help: "",
   placeholder: "",
@@ -97,12 +124,14 @@ function commit(input: HTMLElement, value: string): void {
 describe("SchemaEditor", () => {
   beforeEach(() => {
     load(form(POLICY, LAYERS))
+    vi.mocked(listProjectFiles).mockResolvedValue(paramsFolder())
   })
 
   afterEach(() => {
     cleanup()
     useWorkbenchFormStore.setState({ form: null, status: "idle", undoStack: [], redoStack: [] })
     useDocumentStatusStore.setState({ capabilities: null })
+    vi.mocked(fetchParamFile).mockReset()
   })
 
   it("lists the tables with their columns' names and types, each type shown as its marker", () => {
@@ -235,6 +264,68 @@ describe("SchemaEditor", () => {
     })
     expect(screen.getByTestId("schema-column-c_exposure-max-error")).toHaveTextContent("Enter a number.")
     expect(within(tableNamed("policy_details")).getByText("required · 0 to … · 2 values")).toBeInTheDocument()
+  })
+
+  it("reads a column's allowed values from a CSV in the params folder, its file then its column, as one undo step", async () => {
+    vi.mocked(listProjectFiles).mockResolvedValue(paramsFolder("sic_codes.csv", "notes.txt", "old", "LEGACY.CSV"))
+    vi.mocked(fetchParamFile).mockImplementation(async (_file, column) => ({
+      columns: ["occupancy", "sic_name"],
+      values: column === "sic_name" ? ["Food", "Cloth"] : [],
+    }))
+    render(<SchemaEditor />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of state" }))
+    const from = await screen.findByRole("combobox", { name: "Where the allowed values of state come from" })
+    expect(within(from).getAllByRole("option").map((option) => option.textContent)).toEqual(["Typed", "sic_codes.csv", "LEGACY.CSV"])
+    fireEvent.change(from, { target: { value: "sic_codes.csv" } })
+    // The form changes once a column is picked.
+    const columnSelect = await screen.findByRole("combobox", { name: "Column the allowed values of state come from" })
+    await waitFor(() => expect(within(columnSelect).getAllByRole("option").map((option) => option.textContent)).toEqual(["", "occupancy", "sic_name"]))
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(0)
+    fireEvent.change(columnSelect, { target: { value: "sic_name" } })
+
+    await waitFor(() =>
+      expect(current().schema.tables[0].columns[0]).toMatchObject({
+        options: ["Food", "Cloth"],
+        options_source: { file: "sic_codes.csv", column: "sic_name" },
+      }),
+    )
+    expect(fetchParamFile).toHaveBeenLastCalledWith("sic_codes.csv", "sic_name")
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
+    expect(within(tableNamed("policy_details")).getByText("2 values from sic_codes.csv")).toBeInTheDocument()
+  })
+
+  it("keeps the values a file gave as typed values once Typed is chosen", async () => {
+    load(form(table("t_policy", "policy_details", {
+      columns: [column("c_state", "state", { options: ["Food", "Cloth"], options_source: { file: "sic_codes.csv", column: "sic_name" } })],
+    })))
+    vi.mocked(fetchParamFile).mockResolvedValue({ columns: ["sic_name"], values: [] })
+    render(<SchemaEditor />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of state" }))
+    fireEvent.change(await screen.findByRole("combobox", { name: "Where the allowed values of state come from" }), { target: { value: "" } })
+
+    expect(current().schema.tables[0].columns[0]).toMatchObject({ options: ["Food", "Cloth"], options_source: null })
+    expect(screen.getByRole("textbox", { name: "Allowed values of state" })).toHaveValue("Food, Cloth")
+  })
+
+  it("reads a column's values from its file again, and says why the file cannot give them", async () => {
+    load(form(table("t_policy", "policy_details", {
+      columns: [column("c_state", "state", { options: ["Food"], options_source: { file: "sic_codes.csv", column: "sic_name" } })],
+    })))
+    vi.mocked(fetchParamFile).mockResolvedValue({ columns: ["sic_name"], values: ["Food", "Hangars"] })
+    render(<SchemaEditor />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of state" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Read the allowed values of state again" }))
+    await waitFor(() => expect(current().schema.tables[0].columns[0].options).toEqual(["Food", "Hangars"]))
+
+    const gone = "rating/files/params/sic_codes.csv doesn't exist."
+    vi.mocked(fetchParamFile).mockRejectedValue(new ApiError("HTTP 409", 409, gone))
+    fireEvent.click(screen.getByRole("button", { name: "Read the allowed values of state again" }))
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(gone)
+    expect(current().schema.tables[0].columns[0].options).toEqual(["Food", "Hangars"])
   })
 
   it("shows a column's help, placeholder and number format, each saved as it commits", () => {

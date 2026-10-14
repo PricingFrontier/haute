@@ -99,6 +99,7 @@ export const createSchemaColumn = (spec: FormSpec, tableId: string): SchemaColum
   min: null,
   max: null,
   options: [],
+  options_source: null,
   index: false,
   help: "",
   placeholder: "",
@@ -210,7 +211,8 @@ export const takesOptions = (type: SchemaColumn["type"]): boolean => type !== "b
 /**
  * Change a column's type, dropping the rules the new type cannot have: the range and the
  * number format of a column no longer a number, and the allowed values of one now a tick
- * box or a date, which would otherwise still rule its cells; and the default of one that
+ * box or a date, with the params file they came from, which would otherwise still rule its
+ * cells; and the default of one that
  * becomes or stops being a tick box, a tick or text no longer its kind of value, or that
  * becomes a date while its default is not a day, which a date's box cannot show.
  */
@@ -233,7 +235,10 @@ export const changeSchemaColumnType = (
       column.decimal_places = null
       column.use_grouping = true
     }
-    if (!takesOptions(type)) column.options = []
+    if (!takesOptions(type)) {
+      column.options = []
+      column.options_source = null
+    }
   })
 
 /**

@@ -216,6 +216,14 @@ class WorkbenchFormTablesRequest(BaseModel):
     form: FormSpec
 
 
+class WorkbenchParamFileResponse(BaseModel):
+    """A params file's header, and the distinct values of the column asked for: the allowed
+    values a schema column copies in, ``[]`` while no column was asked for."""
+
+    columns: list[str]
+    values: list[str] = Field(default_factory=list)
+
+
 #: Values typed into the sheets: by table id, rows keyed by column id, as typed.
 WorkbenchValues = dict[str, list[dict[str, Cell]]]
 #: Priced output tables: each table's rows by its name, as Preview's pricing gives them.

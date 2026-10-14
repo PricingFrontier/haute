@@ -10,7 +10,7 @@ the pipeline. The local folders at the project root stay on your machine.
 | `rating/` | The pipeline: `main.py`, its layout file, node settings in `config/`, shared Python in `utility/` | Yes |
 | `rating/files/data/` | Tables and data the pipeline ships with, such as a postcode lookup | Yes |
 | `rating/files/models/` | Model files with their feature contracts, and optimiser results | Yes |
-| `rating/files/params/` | Parameter files the pipeline reads | Yes |
+| `rating/files/params/` | Parameter files the pipeline reads; a Workbench column's allowed values can come from one | Yes |
 | `data/` | Local data: portfolios, extracts, anything large or personal | No |
 | `outputs/` | What runs write: Data Output files and exported data | No |
 

@@ -24,6 +24,7 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   min: null,
   max: null,
   options: [],
+  options_source: null,
   index: false,
   help: "",
   placeholder: "",

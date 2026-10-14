@@ -115,6 +115,7 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   min: null,
   max: null,
   options: [],
+  options_source: null,
   index: false,
   help: "",
   placeholder: "",
@@ -224,16 +225,27 @@ describe("problems", () => {
 
   it("changes a column's type, dropping the rules the new type cannot have", () => {
     let spec = withTable(
-      column("a", "value", { type: "float", min: 1, max: 5, options: ["1", "2"], number_format: "percent", decimal_places: 1, use_grouping: false }),
+      column("a", "value", {
+        type: "float",
+        min: 1,
+        max: 5,
+        options: ["1", "2"],
+        options_source: { file: "bands.csv", column: "band" },
+        number_format: "percent",
+        decimal_places: 1,
+        use_grouping: false,
+      }),
     )
 
-    // Between Decimal and Integer, a number keeps its range, its allowed values and its format.
+    // Between Decimal and Integer, a number keeps its range, its allowed values, the file
+    // they came from, and its format.
     spec = changeSchemaColumnType(spec, "t", "a", "int")
     expect(spec.schema.tables[0].columns[0]).toMatchObject({
       type: "int",
       min: 1,
       max: 5,
       options: ["1", "2"],
+      options_source: { file: "bands.csv", column: "band" },
       number_format: "percent",
       decimal_places: 1,
       use_grouping: false,
@@ -249,7 +261,7 @@ describe("problems", () => {
       use_grouping: true,
     })
     spec = changeSchemaColumnType(spec, "t", "a", "date")
-    expect(spec.schema.tables[0].columns[0]).toMatchObject({ type: "date", options: [] })
+    expect(spec.schema.tables[0].columns[0]).toMatchObject({ type: "date", options: [], options_source: null })
     spec = changeSchemaColumnType(spec, "t", "a", "int")
     expect(spec.schema.tables[0].columns[0]).toMatchObject({ type: "int", min: null, max: null, options: [] })
 

@@ -65,6 +65,17 @@ values. A number shows in its format wherever the sheets show it, a percentage a
 value times 100, so you type 0.125 for 12.5%; while you type into a cell it shows as
 typed, and what is typed is what is saved and priced.
 
+A column's **allowed values** are typed, separated by commas, or read from a CSV in the
+pipeline's params folder (`rating/files/params/`, **params** in the Pipeline files panel).
+Choose the file beside **Allowed**, then its column: the column's distinct values become
+the allowed values, each as written (a code like `01234` keeps its zero), trimmed, blanks
+left out, in the order the file first gives them. A CSV saved from Excel reads as it is.
+The values are copied in when you choose them; after the file changes, the refresh button
+beside them reads them again, and `haute app build` always reads them from the file as it
+is, so the underwriter app allows what the file holds. A file or column that cannot give
+values (gone, unreadable, with no values or more than 5,000) says why under them, and stops
+`haute app build`. **Typed** keeps the values, to edit by hand.
+
 A column's **default** is the value a new quote starts with in it, as if the underwriter
 had typed it: ticked or not for a True/false, one of its allowed values when it has some,
 a date for a Date, or typed. Only a one-row input table's columns take one. Build shows a

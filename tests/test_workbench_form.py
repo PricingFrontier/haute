@@ -44,6 +44,7 @@ def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
         "min": None,
         "max": None,
         "options": [],
+        "options_source": None,
         "index": False,
         "help": "",
         "placeholder": "",
@@ -676,7 +677,12 @@ def test_a_form_holding_hautes_quote_details_reads_and_writes_as_it_is(tmp_path:
     held = _with_details_table(
         lambda table: table["columns"][1].update(label="Quote", help="As the broker calls it")
     )
-    held["schema"]["tables"][0]["columns"][7].update(options=["GBP", "USD"], default_value="GBP")
+    # Its currency's allowed values read from a params file, as any column it types can.
+    held["schema"]["tables"][0]["columns"][7].update(
+        options=["GBP", "USD"],
+        options_source={"file": "currencies.csv", "column": "code"},
+        default_value="GBP",
+    )
     held["schema"]["tables"][0]["columns"][0]["group"] = "Quote"
     held["schema"]["tables"][0]["columns"][10]["default_value"] = False
     (tmp_path / "forms").mkdir()
@@ -708,6 +714,12 @@ def test_a_form_holding_hautes_quote_details_reads_and_writes_as_it_is(tmp_path:
             "stage is set by the underwriter app",
         ),
         (
+            lambda t: t["columns"][8].update(
+                options_source={"file": "stages.csv", "column": "stage"}
+            ),
+            "stage is set by the underwriter app",
+        ),
+        (
             lambda t: t["columns"][9].update(default_value="Underwriting"),
             "assignee is set by the underwriter app and takes no rules or default",
         ),
@@ -725,6 +737,7 @@ def test_a_form_holding_hautes_quote_details_reads_and_writes_as_it_is(tmp_path:
         "retyped",
         "rule",
         "options",
+        "options-source",
         "default",
         "ticked-default",
         "own-id",

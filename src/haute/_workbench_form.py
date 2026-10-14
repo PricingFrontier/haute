@@ -270,6 +270,14 @@ class Page(_Strict):
         return self
 
 
+class OptionsSource(_Strict):
+    """A column of a CSV in the pipeline's ``files/params/`` folder: the file by its name in
+    that folder, and the column by its name in the file's header."""
+
+    file: str
+    column: str
+
+
 class SchemaColumn(_Strict):
     id: str
     name: str
@@ -285,6 +293,10 @@ class SchemaColumn(_Strict):
     min: float | None = None
     max: float | None = None
     options: list[str] = Field(default_factory=list)
+    #: Where ``options`` were read from: a params file's column, its distinct values copied
+    #: in when picked or refreshed, and read again when the underwriter app is built. None
+    #: while they are typed.
+    options_source: OptionsSource | None = None
     #: The table's index: each row's number, from 1, as the rows stand. Nothing is typed
     #: into it, and it is an Integer.
     index: bool = False
@@ -420,6 +432,7 @@ def _check_quote_details(table: SchemaTable) -> None:
         if column.id in QUOTE_DETAILS_MANAGED and (
             column.required
             or column.options
+            or column.options_source is not None
             or column.min is not None
             or column.max is not None
             or column.default_value not in ("", False)

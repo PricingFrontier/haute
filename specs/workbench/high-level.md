@@ -41,6 +41,8 @@ In scope:
   `POST /api/workbench/tables`, the same of a form the view holds, saved or not.
 - `GET /api/workbench/form`, the form with its file's revision, and
   `PUT /api/workbench/form`, which writes the form unless the file changed since it was read.
+- `GET /api/workbench/params`, a params file's header and a column's distinct values,
+  which a column's allowed values are read from.
 - The Workbench view: how it is shown beside the pipeline editor and what the pipeline
   editor does meanwhile, its toolbar and keyboard shortcuts, its schema editor, its sheets
   (the canvas and its sections, the Table, the Collection, the Chart and the Heading, their
@@ -111,7 +113,9 @@ Out of scope:
   `group` (a name it shares with the columns grouped with it, `""` for none, which a
   Table showing groups draws over its labels), whether it
   is a `key` (a many-row table's keys say which row is which), its rules (`required`, `min`,
-  `max`, `options`), whether it is the table's `index`, the column numbering its rows
+  `max`, `options`, and `options_source`, the `file` in the pipeline folder's
+  `files/params/` and the `column` the allowed values were read from, `null` while they
+  are typed), whether it is the table's `index`, the column numbering its rows
   from 1, and how the sheets show it: its `help`, shown beside its label, its
   `placeholder`, what an empty input cell shows, its `default_value`, what a new quote
   starts with in it (text as typed, or `true` for a tick, `""` for none; only a one-row
@@ -175,6 +179,11 @@ Out of scope:
   `POST /api/workbench/tables` answers the same for a form sent in the request, saved or
   not, checked the same way and 404 while the workbench is not enabled alike; it writes
   nothing.
+- **Params files.** `GET /api/workbench/params` with a `file` answers the header of that
+  CSV in the pipeline folder's `files/params/` and, given a `column`, the column's
+  distinct values: each as written, every value text, read as UTF-8 or else
+  Windows-1252 (as Excel saves a CSV on Windows), trimmed, blanks left out, in the order
+  the file first gives them. It writes nothing.
 - **The form, served and saved.** `GET /api/workbench/form` answers the form as its file
   holds it now and the file's `revision`, the content hash of its bytes: `null` while the
   file does not exist, when the form is the blank one. `PUT /api/workbench/form` takes the
@@ -275,7 +284,13 @@ Out of scope:
   not for True/false, one of the allowed values while it has some, a date for a Date, else
   typed), its placeholder for any type but
   True/false and Date and its rules: required, a range for an Integer or a Decimal, and the
-  allowed values, typed comma-separated, for any type but True/false and Date. Changing a
+  allowed values for any type but True/false and Date: typed comma-separated, or read
+  from a CSV in the pipeline folder's `files/params/`, offered beside Typed while there is
+  one: its file chosen, then its column from the file's header, and the column's distinct
+  values, as written, trimmed, blanks left out and in the order the file first gives
+  them, copied in with where they came from as one edit; the refresh button beside them
+  reads them again, an edit only when they changed, and Typed keeps them as typed
+  values. What stops a file or a column giving them shows under them. Changing a
   column's type drops the rules and the format the new type cannot have, and its default
   when it becomes or stops being True/false, or becomes a Date while it is not a day.
   Every text field
@@ -708,7 +723,8 @@ Out of scope:
 - **The underwriter app.** The sheets reach underwriters through an app Haute builds from
   the project, apart from the builder. `haute app build` writes a release: the pipeline's
   bundle as a deploy builds it (the sample left out), the form without its sample
-  (`form.json`), what the release is (`release.json`: an id taken from the form and the
+  (`form.json`), each input column's allowed values from a params file read again from
+  the file as the project holds it, what the release is (`release.json`: an id taken from the form and the
   bundle, the form's revision, the pipeline's name, the Haute version that built it and
   when) and an entry point, `app.py`, serving it through the app Haute maintains.
   With `[deploy.container] base_image` set, pinned as a container deploy pins it, the
@@ -1538,6 +1554,13 @@ Out of scope:
   waiting on identity resolution is dropped with the commit controller's usual message. A
   read of the form that fails is shown in the view in place of the schema editor, with a
   way to try again.
+- `GET /api/workbench/params` answers 404 while the workbench is not enabled, and 409
+  with why a file or a column cannot give values: the project has no pipeline folder,
+  the name is not a CSV directly in `files/params/`, the file does not exist, is empty,
+  is neither UTF-8 nor Windows-1252 or cannot be read as a CSV, or the column is not in its header, holds no
+  values or holds more than 5,000. `haute app build` refuses a form with an input column
+  whose file can no longer give its values, naming the form and the column, before the
+  release directory is touched.
 - `PUT /api/workbench/form` answers 404 while the workbench is not enabled; 409
   "stale_document_revision: <form> changed on disk after the workbench read it. Reload the
   workbench before saving." when the file's revision is not the `base_revision` quoted (a
