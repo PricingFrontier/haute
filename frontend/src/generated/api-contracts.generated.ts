@@ -2501,6 +2501,7 @@ export interface TableInputWidget {
   fixed_rows: boolean;
   frame: boolean;
   gridlines: 'rows' | 'all' | 'none';
+  groups: boolean;
   h: number;
   header: 'caps' | 'plain';
   id: string;
@@ -2509,6 +2510,7 @@ export interface TableInputWidget {
   show_when: ShowWhen;
   striped: boolean;
   title: string;
+  transposed: boolean;
   type: 'tableInput';
   w: number;
   x: number;

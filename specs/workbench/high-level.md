@@ -108,8 +108,8 @@ Out of scope:
   or `output`, returned by it), `rows` (`one` per quote, such as policy details, or `many`,
   such as an equipment schedule) and its columns, each with an id, a name, a `type` of the
   Quote Input's column types (`str`, `int`, `float`, `bool`, `date`), a `label`, its
-  `group` (a name it shares with the columns grouped with it, `""` for none, which the
-  sheets do not draw yet), whether it
+  `group` (a name it shares with the columns grouped with it, `""` for none, which a
+  Table showing groups draws over its labels), whether it
   is a `key` (a many-row table's keys say which row is which), its rules (`required`, `min`,
   `max`, `options`), whether it is the table's `index`, the column numbering its rows
   from 1, and how the sheets show it: its `help`, shown beside its label, its
@@ -133,9 +133,10 @@ Out of scope:
   whole width, stacked in
   their order, each with an id, a `title`, its `height` in pixels, when it shows
   (`show_when`) and its components (`widgets` in the file): a Table (`tableInput`, a grid of at
-  least `rows` rows showing columns of many-row tables, with its look and whether its rows
-  are fixed: `row_numbers`, `density` (`compact` or `comfortable`), `gridlines` (`rows`,
-  `all` or `none`), `striped` and `fixed_rows`), a Collection (`collection`, boxes
+  least `rows` rows showing columns of many-row tables, with its look, whether its rows
+  are fixed and whether it is transposed: `row_numbers`, `density` (`compact` or
+  `comfortable`), `gridlines` (`rows`, `all` or `none`), `striped`, `fixed_rows`,
+  `transposed` and `groups`), a Collection (`collection`, boxes
   showing columns of one-row tables, `columns` across), a Chart (`chart`, plotting number
   columns, with what labels the rows of its many-row tables, `category`, a schema column
   named as a field is or null to number them, and how it draws: `chart_type` (`column`,
@@ -342,7 +343,18 @@ Out of scope:
   (28px) or comfortable ones (36px), a line between rows and before each output column
   (`rows`), between every column too (`all`) or none at all (`none`), every other row
   shaded unless `striped` is off, and Add row under the last row and a delete on each row
-  unless its rows are fixed; a Collection as boxes, its columns across, their labels above
+  unless its rows are fixed; transposed (`transposed`), the same grid on its side: a line
+  per field, labelled at its start in the header's look, the labels staying in view as
+  the rows scroll across and ruled off from them, and a column per row, numbered above
+  unless `row_numbers` is off, the numbers staying in view as the fields scroll down,
+  with a delete over each and an add after the last unless its rows are fixed; its
+  stripes and gridlines are its lines' as drawn, a full grid lining its columns too, and
+  an output field is ruled off above its line; showing groups (`groups`), while a field
+  it shows is in a schema group, each run of fields side by side in one group headed
+  by one cell naming it, a row of them over the labels with each name ruled under
+  inside its cell, so groups side by side stay apart, and a blank cell over a field in
+  none, the numbers and the deletes, or, transposed, a column of them before the
+  labels, which stay in view beside it; a Collection as boxes, its columns across, their labels above
   them or, while `labels` is `beside`, beside them, a tick box in a box as the other fields
   are, the boxes compact (28px) or comfortable (36px) as its `density` says; each of the two in a frame, a border round the panel's
   colour, unless `frame` is off, when it sits on the sheet as its title and fields alone,
@@ -409,10 +421,11 @@ Out of scope:
 - **The properties panel.** Selecting a component opens its panel on the right, Haute's
   side panel resized from its left edge, where the Git and Assistant panels open while
   they are closed: the component's kind and its title; its Show when (below); once it shows a field, its layout,
-  the rows a Table's grid starts with (1 to 50) and whether they are fixed, or a Collection's columns across (1
+  the rows a Table's grid starts with (1 to 50), whether they are fixed and whether it is
+  transposed, or a Collection's columns across (1
   to 12), a value outside the range refused at the field, a Table's look (its density, its
-  gridlines, its header, Capitals or As written, its row numbers, its stripes and its
-  frame), a Collection's look (its labels, Above or Beside, its density and its frame), a
+  gridlines, its header, Capitals or As written, its row numbers, its groups, its
+  stripes and its frame), a Collection's look (its labels, Above or Beside, its density and its frame), a
   Chart's chart (its type, Column, Line,
   Area or Pie; while it plots many-row tables, what labels its rows, "Row number" or a
   column of a table whose rows line up with its fields, other than an index, by table and

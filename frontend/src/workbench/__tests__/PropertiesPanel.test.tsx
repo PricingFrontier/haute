@@ -132,12 +132,13 @@ describe("PropertiesPanel", () => {
     expect(currentForm().sample.equipment).toEqual([{}, { "equipment.item": "Crane" }])
   })
 
-  it("sets a Table's fixed rows and its look, and a Collection's look, each with its own", () => {
+  it("sets a Table's fixed rows, transposed, and its look, its groups too, and a Collection's look, each with its own", () => {
     select("w_grid")
     const { rerender } = render(<PropertiesPanel />)
     showPane("Display")
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Fixed rows" }))
+    fireEvent.click(within(screen.getByRole("region", { name: "Layout" })).getByRole("checkbox", { name: "Transposed" }))
     const look = screen.getByRole("region", { name: "Look" })
     fireEvent.change(within(look).getByRole("combobox", { name: "Density" }), { target: { value: "comfortable" } })
     fireEvent.change(within(look).getByRole("combobox", { name: "Gridlines" }), { target: { value: "none" } })
@@ -148,10 +149,21 @@ describe("PropertiesPanel", () => {
     ])
     fireEvent.change(header, { target: { value: "caps" } })
     fireEvent.click(within(look).getByRole("checkbox", { name: "Row numbers" }))
+    fireEvent.click(within(look).getByRole("checkbox", { name: "Groups" }))
     fireEvent.click(within(look).getByRole("checkbox", { name: "Striped rows" }))
     fireEvent.click(within(look).getByRole("checkbox", { name: "Frame" }))
-    expect(grid()).toMatchObject({ fixed_rows: true, density: "comfortable", gridlines: "none", header: "caps", row_numbers: false, striped: false, frame: false })
-    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(7)
+    expect(grid()).toMatchObject({
+      fixed_rows: true,
+      transposed: true,
+      density: "comfortable",
+      gridlines: "none",
+      header: "caps",
+      row_numbers: false,
+      groups: true,
+      striped: false,
+      frame: false,
+    })
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(9)
 
     // A Collection's look is its labels, its density and its frame, none of a Table's own.
     select("w_boxes")
@@ -159,9 +171,11 @@ describe("PropertiesPanel", () => {
     showPane("Display")
     expect(screen.getByTestId("widget-columns")).toHaveValue("2")
     expect(screen.queryByRole("checkbox", { name: "Fixed rows" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("checkbox", { name: "Transposed" })).not.toBeInTheDocument()
     const boxesLook = screen.getByRole("region", { name: "Look" })
     expect(within(boxesLook).queryByRole("combobox", { name: "Gridlines" })).not.toBeInTheDocument()
     expect(within(boxesLook).queryByRole("combobox", { name: "Header" })).not.toBeInTheDocument()
+    expect(within(boxesLook).queryByRole("checkbox", { name: "Groups" })).not.toBeInTheDocument()
     const labels = within(boxesLook).getByRole("combobox", { name: "Labels" })
     expect([...labels.querySelectorAll("option")].map((option) => [option.value, option.textContent])).toEqual([
       ["above", "Above"],
@@ -173,7 +187,7 @@ describe("PropertiesPanel", () => {
     fireEvent.change(within(boxesLook).getByRole("combobox", { name: "Density" }), { target: { value: "compact" } })
     fireEvent.click(within(boxesLook).getByRole("checkbox", { name: "Frame" }))
     expect(fieldsWidget(currentForm(), "w_boxes")).toMatchObject({ labels: "beside", density: "compact", frame: false })
-    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(10)
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(12)
   })
 
   it("sets a Chart's type, what labels its rows, its legend, stacked, horizontal and data labels, each one undo step", () => {

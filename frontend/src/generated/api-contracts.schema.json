@@ -12711,6 +12711,11 @@
           "title": "Gridlines",
           "type": "string"
         },
+        "groups": {
+          "default": false,
+          "title": "Groups",
+          "type": "boolean"
+        },
         "h": {
           "exclusiveMinimum": 0,
           "title": "H",
@@ -12754,6 +12759,11 @@
           "title": "Title",
           "type": "string"
         },
+        "transposed": {
+          "default": false,
+          "title": "Transposed",
+          "type": "boolean"
+        },
         "type": {
           "const": "tableInput",
           "title": "Type",
@@ -12792,7 +12802,9 @@
         "striped",
         "fixed_rows",
         "header",
-        "frame"
+        "frame",
+        "transposed",
+        "groups"
       ],
       "title": "TableInputWidget",
       "type": "object"

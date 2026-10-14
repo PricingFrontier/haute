@@ -179,9 +179,12 @@ FORM: dict[str, Any] = {
                             "gridlines": "all",
                             "striped": False,
                             "fixed_rows": True,
-                            # Its header in capitals, without a frame.
+                            # Its header in capitals, without a frame, transposed and showing
+                            # its fields' groups.
                             "header": "caps",
                             "frame": False,
+                            "transposed": True,
+                            "groups": True,
                         },
                         {
                             "id": "w_limits",
@@ -371,7 +374,17 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         "decimal_places",
         "use_grouping",
     )
-    options = ("row_numbers", "density", "gridlines", "striped", "fixed_rows", "header", "frame")
+    options = (
+        "row_numbers",
+        "density",
+        "gridlines",
+        "striped",
+        "fixed_rows",
+        "header",
+        "frame",
+        "transposed",
+        "groups",
+    )
     collection_options = ("labels", "density", "frame")
     chart_options = ("category", "chart_type", "orientation", "stacked", "legend", "data_labels")
     sparse = json.loads(json.dumps(FORM))
@@ -415,6 +428,8 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         "fixed_rows": False,
         "header": "plain",
         "frame": True,
+        "transposed": False,
+        "groups": False,
     }
     # A Collection labelled above its boxes, comfortable and framed.
     boxes = widgets(written)[0]

@@ -21,8 +21,15 @@ export type PaletteType = WidgetType | "section"
 export type FieldsWidget = Exclude<Widget, HeadingWidget>
 /** A column's type: the Quote Input's column types. */
 export type ColumnType = SchemaColumn["type"]
-/** How a Table's grid looks, and whether its rows are fixed: no Add row and no delete. */
-export type TableOptions = Pick<Extract<Widget, { type: "tableInput" }>, "row_numbers" | "density" | "gridlines" | "striped" | "fixed_rows" | "header" | "frame">
+/**
+ * How a Table's grid looks, whether its rows are fixed: no Add row and no delete, whether it
+ * is transposed: its fields down its side, its rows across, and whether its fields' schema
+ * groups head their labels.
+ */
+export type TableOptions = Pick<
+  Extract<Widget, { type: "tableInput" }>,
+  "row_numbers" | "density" | "gridlines" | "striped" | "fixed_rows" | "header" | "frame" | "transposed" | "groups"
+>
 /** How a Collection's boxes look. */
 export type CollectionOptions = Pick<Extract<Widget, { type: "collection" }>, "labels" | "density" | "frame">
 /** What names a Chart's rows, and how it draws. */
@@ -488,7 +495,7 @@ function fieldsWidgetOf(spec: FormSpec, id: string): FieldsWidget {
   return widget
 }
 
-/** A new Table's options: numbered, compact, lined between rows, striped, not fixed, its header as written and framed. */
+/** A new Table's options: numbered, compact, lined between rows, striped, not fixed, its header as written, framed, not transposed and without groups. */
 export const TABLE_OPTIONS: Readonly<TableOptions> = {
   row_numbers: true,
   density: "compact",
@@ -497,6 +504,8 @@ export const TABLE_OPTIONS: Readonly<TableOptions> = {
   fixed_rows: false,
   header: "plain",
   frame: true,
+  transposed: false,
+  groups: false,
 }
 
 /** A new Collection's options: its labels above its boxes, comfortable and framed. */

@@ -475,7 +475,7 @@ describe("what the sheets show", () => {
     expect(grid).not.toHaveProperty("columns")
     expect(boxes).not.toHaveProperty("gridlines")
     // In the file's order, so a component the view made compares equal to it saved.
-    expect(Object.keys(grid)).toEqual(["id", "x", "y", "w", "h", "type", "title", "fields", "show_when", "rows", "row_numbers", "density", "gridlines", "striped", "fixed_rows", "header", "frame"])
+    expect(Object.keys(grid)).toEqual(["id", "x", "y", "w", "h", "type", "title", "fields", "show_when", "rows", "row_numbers", "density", "gridlines", "striped", "fixed_rows", "header", "frame", "transposed", "groups"])
     expect(Object.keys(boxes)).toEqual(["id", "x", "y", "w", "h", "type", "title", "fields", "show_when", "columns", "labels", "density", "frame"])
 
     spec = addWidget(addWidget(spec, "s", grid), "s", boxes)
@@ -492,6 +492,8 @@ describe("what the sheets show", () => {
     spec = updateWidget(spec, boxes.id, { labels: "beside", density: "compact", frame: false })
     expect(findWidget(spec, boxes.id)?.widget).toMatchObject({ labels: "beside", density: "compact", frame: false })
     expect(() => updateWidget(spec, boxes.id, { header: "caps" })).toThrow("Only a Table has header")
+    expect(() => updateWidget(spec, boxes.id, { transposed: true })).toThrow("Only a Table has transposed")
+    expect(() => updateWidget(spec, boxes.id, { groups: true })).toThrow("Only a Table has groups")
     expect(() => updateWidget(spec, grid.id, { labels: "beside" })).toThrow("Only a Collection has labels")
     expect(() => updateWidget(spec, "missing", { title: "x" })).toThrow("No sheet has a component missing")
 

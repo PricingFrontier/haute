@@ -158,9 +158,11 @@ class TableInputWidget(_Placed):
     fields: list[FieldRef] = Field(default_factory=list)
     show_when: ShowWhen = Field(default_factory=ShowWhen)
     rows: int = Field(default=3, ge=1, le=50)
-    # How the grid looks, and whether its rows are a set structure with no Add row and no
-    # delete: by default numbered, compact, lined between rows, striped, not fixed, its
-    # header as written and framed.
+    # How the grid looks, whether its rows are a set structure with no Add row and no
+    # delete, whether it is transposed, its fields down its side and its rows across, and
+    # whether its fields' schema groups head their labels: by default numbered, compact,
+    # lined between rows, striped, not fixed, its header as written, framed, not
+    # transposed and without groups.
     row_numbers: bool = True
     density: Density = "compact"
     gridlines: TableGridlines = "rows"
@@ -168,6 +170,8 @@ class TableInputWidget(_Placed):
     fixed_rows: bool = False
     header: TableHeader = "plain"
     frame: bool = True
+    transposed: bool = False
+    groups: bool = False
 
 
 class CollectionWidget(_Placed):

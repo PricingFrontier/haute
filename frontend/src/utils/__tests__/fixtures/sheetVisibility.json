@@ -482,7 +482,9 @@
                   "striped": true,
                   "fixed_rows": false,
                   "header": "caps",
-                  "frame": true
+                  "frame": true,
+                  "transposed": false,
+                  "groups": false
                 },
                 {
                   "id": "w_fleet",
@@ -791,7 +793,9 @@
                   "striped": true,
                   "fixed_rows": false,
                   "header": "caps",
-                  "frame": true
+                  "frame": true,
+                  "transposed": false,
+                  "groups": false
                 },
                 {
                   "id": "w_out",

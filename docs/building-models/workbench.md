@@ -55,7 +55,7 @@ draws a value of that kind and changed from its marker), a name and, in a many-r
 whether it is a **key**, part of what says which row is which. **Label, help, rules and
 format** beside a column opens its details: its label; its **group**, a name you give the
 columns that belong together (type the same group on each; the table's groups are offered
-as you type), which the sheets do not show yet; its **help**, shown as a
+as you type), which a Table can show over its labels; its **help**, shown as a
 small mark beside the label on the sheets; for an Integer or a Decimal, its **format**
 (General, Number, Percentage or a currency), decimal places and thousands separators, as
 the Explore pivot offers them; and, in an input table, its **default**, its
@@ -145,10 +145,10 @@ sheets show, Preview and the underwriter app included.
 
 Select a component to open its properties on the right: its title, when it shows (see
 [Showing sheets, sections and components conditionally](#showing-sheets-sections-and-components-conditionally)), its layout (the rows a
-Table starts with and whether they are **fixed**, with no Add row or delete, or a Collection's columns
-across), a Table's **look** (compact or comfortable rows; gridlines between the rows, a full
-grid or none; a header as written or in capitals; row numbers; striped rows; a frame or
-none), a Collection's **look** (labels above or beside the boxes; compact or comfortable
+Table starts with, whether they are **fixed**, with no Add row or delete, and whether it is
+**transposed**, or a Collection's columns across), a Table's **look** (compact or comfortable rows; gridlines between the rows, a full
+grid or none; a header as written or in capitals; row numbers; **groups**; striped rows;
+a frame or none), a Collection's **look** (labels above or beside the boxes; compact or comfortable
 boxes; a frame or none), the **order** of the fields it shows (drag, or
 Alt+Up and Alt+Down), and its **fields**, ticked from the schema tables of its kind. A
 Chart's settings are its **Type** (Column, Line, Area or Pie), **Rows** (what labels the
@@ -157,7 +157,14 @@ rows of many-row tables, or Row number), its **Legend**, and whether it is **Sta
 other than an index. A grid holds one kind of row, so once a Table or a Chart shows a
 field, tables whose rows do not line up with it (keyed differently) are greyed out; an
 input table and an output table with the same key line up, so each row can show its
-premium. Output columns are shaded. A Table's and a Collection's properties are in two
+premium. Output columns are shaded. A transposed Table turns its grid on its side: each
+field is a line, labelled at its left, and each row is a column, numbered along the top,
+with **+** at the end of the numbers to add one and a delete over each number; its stripes
+and gridlines follow the lines as drawn. With **groups** ticked, the columns side by side
+in one schema group share a heading over their labels, as merged cells over a table's
+headers would in Excel; a column in no group has none. Transposed, the groups sit in a
+column before the labels. Order the fields so each group's columns are together. A
+Table's and a Collection's properties are in two
 panes: **Config**, the fields it shows and their order, and **Display**, its title, when it
 shows, its layout and its look. A Heading's properties are its **Text** and
 **Description**, when it shows, its **Size** and its **Align**ment.

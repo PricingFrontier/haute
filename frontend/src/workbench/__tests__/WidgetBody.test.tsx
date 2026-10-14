@@ -193,6 +193,102 @@ describe("WidgetBody", () => {
     expect(frame.style.background).toBe("")
   })
 
+  it("draws a Table transposed, its fields down its side and its rows across, typed, added and deleted as its rows are", () => {
+    const form = updateWidget(toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premiums.premium" }), "w_grid", { transposed: true, header: "caps" })
+    loadForm(form)
+    renderBody("w_grid")
+    const lines = () => screen.getAllByRole("row")
+    const cellOf = (name: string) => screen.getByRole("textbox", { name }).closest("td")
+
+    // The rows' numbers across the top, with an add at their end; a line per field under
+    // them, labelled at its start in the header's look, holding the field's cell in each row.
+    expect(lines()).toHaveLength(4)
+    expect(within(lines()[0]).getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["#", "1", "2", "3", ""])
+    expect(screen.getAllByRole("rowheader").map((header) => header.textContent)).toEqual(["Item", "Value", "Premium"])
+    expect(screen.getAllByRole("rowheader")[0]).toHaveClass("uppercase")
+    expect(within(lines()[1]).getAllByRole("textbox").map((box) => box.getAttribute("aria-label"))).toEqual(["Item row 1", "Item row 2", "Item row 3"])
+    // Shaded every other line and lined between them as drawn, an output field ruled off above its line.
+    expect(lines()[1]).toHaveClass("even:bg-[var(--chip-rest)]")
+    expect(lines()[1].style.borderBottom).toBe("1px solid var(--border-subtle)")
+    expect(screen.getByTestId("priced-premiums:premiums.premium-1").style.borderTop).toBe("1px solid var(--border)")
+    expect(cellOf("Value row 1")?.style.borderTop).toBe("")
+
+    // Typed, added and deleted as its rows are, the add and the deletes saying what they do as drawn.
+    const item = screen.getByRole("textbox", { name: "Item row 2" })
+    fireEvent.change(item, { target: { value: "Crane" } })
+    fireEvent.keyDown(item, { key: "Enter" })
+    expect(currentForm().sample.equipment).toEqual([{}, { "equipment.item": "Crane" }, {}])
+    expect(screen.getByRole("button", { name: "Add row" })).toHaveAttribute("title", "Add column")
+    fireEvent.click(screen.getByRole("button", { name: "Add row" }))
+    expect(currentForm().sample.equipment).toEqual([{}, { "equipment.item": "Crane" }, {}, {}])
+    expect(within(lines()[0]).getAllByRole("columnheader")).toHaveLength(6)
+    expect(screen.getByRole("button", { name: "Delete row 1" })).toHaveAttribute("title", "Delete column")
+    fireEvent.click(screen.getByRole("button", { name: "Delete row 1" }))
+    expect(currentForm().sample.equipment).toEqual([{ "equipment.item": "Crane" }, {}, {}])
+    cleanup()
+
+    // Fixed and unnumbered, nothing goes above the fields; a full grid lines the rows' columns, the first ruled off by the labels alone.
+    loadForm(updateWidget(form, "w_grid", { fixed_rows: true, row_numbers: false, gridlines: "all" }))
+    renderBody("w_grid")
+    expect(screen.queryAllByRole("columnheader")).toHaveLength(0)
+    expect(screen.queryByRole("button", { name: "Add row" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Delete row 1" })).not.toBeInTheDocument()
+    expect(cellOf("Item row 1")?.style.borderLeft).toBe("")
+    expect(cellOf("Item row 2")?.style.borderLeft).toBe("1px solid var(--border-subtle)")
+  })
+
+  it("heads a Table's fields side by side in a schema group with one cell naming it, over their labels or beside them transposed", () => {
+    let form = toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premiums.premium" })
+    form = updateSchemaColumn(form, "equipment", "equipment.item", { group: "Asset" })
+    form = updateSchemaColumn(form, "equipment", "equipment.value", { group: "Asset" })
+    form = updateSchemaColumn(form, "premiums", "premiums.premium", { group: "Price" })
+    const headerRows = () => screen.getAllByRole("row").filter((row) => row.closest("thead") !== null)
+    const spans = (row: HTMLElement) => [...row.children].map((cell) => [cell.textContent, (cell as HTMLTableCellElement).colSpan])
+
+    // Without groups shown, by default, the labels alone head the grid.
+    loadForm(form)
+    renderBody("w_grid")
+    expect(headerRows()).toHaveLength(1)
+    cleanup()
+
+    // Shown: a row over the labels, a cell spanning each run of fields in a group and ruled
+    // under its name, blank over the numbers and the deletes, an output's run ruled before it.
+    const grouped = updateWidget(form, "w_grid", { groups: true })
+    loadForm(grouped)
+    renderBody("w_grid")
+    expect(headerRows()).toHaveLength(2)
+    expect(spans(headerRows()[0])).toEqual([["", 1], ["Asset", 2], ["Price", 1], ["", 1]])
+    const asset = headerRows()[0].children[1] as HTMLElement
+    expect((asset.firstElementChild as HTMLElement).style.borderBottom).toBe("1px solid var(--border-bright)")
+    expect((headerRows()[0].children[2] as HTMLElement).style.borderLeft).toBe("1px solid var(--border)")
+    cleanup()
+
+    // A field in no group has a blank cell of its own; with no field in a group, no row.
+    loadForm(updateSchemaColumn(grouped, "equipment", "equipment.item", { group: "" }))
+    renderBody("w_grid")
+    expect(spans(headerRows()[0])).toEqual([["", 1], ["", 1], ["Asset", 1], ["Price", 1], ["", 1]])
+    cleanup()
+    loadForm(updateWidget(sheetForm(), "w_grid", { groups: true }))
+    renderBody("w_grid")
+    expect(headerRows()).toHaveLength(1)
+    cleanup()
+
+    // Transposed, a cell beside each run's labels spans their lines, the corner over both, the
+    // labels kept in view beside the groups, over their column's last pixel.
+    loadForm(updateWidget(grouped, "w_grid", { transposed: true }))
+    renderBody("w_grid")
+    const headers = screen.getAllByRole("rowheader") as HTMLTableCellElement[]
+    expect(headers.map((header) => [header.textContent, header.rowSpan])).toEqual([
+      ["Asset", 2],
+      ["Item", 1],
+      ["Value", 1],
+      ["Price", 1],
+      ["Premium", 1],
+    ])
+    expect((screen.getAllByRole("columnheader")[0] as HTMLTableCellElement).colSpan).toBe(2)
+    expect(headers[1].style.left).toBe("95px")
+  })
+
   it("puts a Collection's tick box in a box as its other fields are, in the input cells' fill", () => {
     const form = coverForm()
     loadForm(form)
@@ -260,7 +356,8 @@ describe("WidgetBody", () => {
     expect(screen.getByText("Equipment").style.borderBottom).toBe(border)
     const header = screen.getAllByRole("columnheader")[1]
     expect(header).toHaveStyle({ color: "#2563EB" })
-    expect(header.style.borderBottom).toBe(border)
+    // Ruled under by its shadow, which stays with it as the rows scroll under.
+    expect(header.style.boxShadow).toBe("inset 0 -1px 0 #D97706")
     const item = screen.getByRole("textbox", { name: "Item row 1" })
     expect(item).toHaveStyle({ color: "#2563EB" })
     expect(item.closest("tr")?.style.borderBottom).toBe(border)
@@ -304,7 +401,7 @@ describe("WidgetBody", () => {
     expect(unframed.style.border).toBe("")
     expect(unframed.style.background).toBe("")
     expect(screen.getByTestId("priced-premiums:premiums.premium-1").style.background).toBe("var(--workbench-output-cell-bg)")
-    expect(screen.getAllByRole("columnheader")[1].style.borderBottom).toBe("1px solid var(--border-bright)")
+    expect(screen.getAllByRole("columnheader")[1].style.boxShadow).toBe("inset 0 -1px 0 var(--border-bright)")
     expect(screen.getAllByRole("rowgroup")[0].style.background).toBe("var(--bg-elevated)")
   })
 

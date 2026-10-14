@@ -1,8 +1,9 @@
 /**
  * The properties panel (specs/workbench): what opens on the right, on Haute's side panel,
  * when a component on the sheet is selected. Its title, when it shows, its layout (the
- * rows a Table's grid starts with and whether they are fixed, a Collection's columns), its
- * look (a Table's density, gridlines, header, row numbers, stripes and frame, a
+ * rows a Table's grid starts with, whether they are fixed and whether the grid is
+ * transposed, a Collection's columns), its
+ * look (a Table's density, gridlines, header, row numbers, groups, stripes and frame, a
  * Collection's labels, density and frame), a Chart's chart
  * (`ChartSettings`), the order of the fields it shows, and the fields themselves, ticked
  * from the schema tables of its kind: many-row tables for a Table, one-row tables for a
@@ -490,11 +491,18 @@ function FieldsSettings({ form, widget }: { form: FormSpec; widget: FieldsWidget
             {widget.type === "tableInput" && (
               <div className="flex items-center gap-2">
                 <span className="w-14 shrink-0" aria-hidden="true" />
-                <ConfigCheckbox
-                  label="Fixed rows"
-                  checked={widget.fixed_rows}
-                  onChange={(fixed_rows) => change((spec) => updateWidget(spec, widget.id, { fixed_rows }))}
-                />
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                  <ConfigCheckbox
+                    label="Fixed rows"
+                    checked={widget.fixed_rows}
+                    onChange={(fixed_rows) => change((spec) => updateWidget(spec, widget.id, { fixed_rows }))}
+                  />
+                  <ConfigCheckbox
+                    label="Transposed"
+                    checked={widget.transposed}
+                    onChange={(transposed) => change((spec) => updateWidget(spec, widget.id, { transposed }))}
+                  />
+                </div>
               </div>
             )}
           </Section>
@@ -512,6 +520,7 @@ function FieldsSettings({ form, widget }: { form: FormSpec; widget: FieldsWidget
                   checked={widget.row_numbers}
                   onChange={(row_numbers) => change((spec) => updateWidget(spec, widget.id, { row_numbers }))}
                 />
+                <ConfigCheckbox label="Groups" checked={widget.groups} onChange={(groups) => change((spec) => updateWidget(spec, widget.id, { groups }))} />
                 <ConfigCheckbox
                   label="Striped rows"
                   checked={widget.striped}
