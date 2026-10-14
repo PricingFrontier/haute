@@ -142,7 +142,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // defaults and groups, and a Table transposed or under its groups, all in the lazy
 // workbench chunks with the initial bundle unchanged, bring it to 1,668.1 KiB; 1,670 KiB
 // restores about 1.9 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1670
+// The Files panel (Pipeline files and Local files: the panel and its endpoints with their
+// generated validators, in a lazy chunk; the toolbar buttons and the window's file-drop
+// guard are all the initial bundle gains) brings it to 1,674.1 KiB; 1,676 KiB restores about
+// 1.9 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1676
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

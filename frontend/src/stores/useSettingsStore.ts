@@ -135,6 +135,8 @@ interface SettingsState {
   fileListCache: Record<string, { items: FileListItem[]; fetchedAt: number }>
   setFileListCache: (key: string, items: FileListItem[]) => void
   getFileListCache: (key: string) => FileListItem[] | null
+  /** Forget every listing, as after a file is added through the Files panel. */
+  clearFileListCache: () => void
 }
 
 const useSettingsStore = create<SettingsState>()((set, get) => ({
@@ -361,6 +363,7 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
     if (Date.now() - entry.fetchedAt > 30_000) return null
     return entry.items
   },
+  clearFileListCache: () => set({ fileListCache: {} }),
 }))
 
 export default useSettingsStore

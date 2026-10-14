@@ -201,11 +201,11 @@ Out of scope:
     chooses. Meanwhile the pipeline editor stays mounted (live sync, the document and its
     undo history go on) but invisible and inert, its keyboard shortcuts, Ctrl/Cmd+Enter and
     React Flow's delete and pan keys off and its floating menus closed, so a key pressed in
-    the view never edits the hidden pipeline. The Git and Assistant panels open beside the
-    view, in the properties panel's place. The Workbench Input's and Workbench Output's
-    panels offer "Edit in Workbench", which shows the view.
-  - **The toolbar** keeps the brand and the project's controls (Assistant, Help, the branch,
-    Save and Commit) and shows the view's own, by mode:
+    the view never edits the hidden pipeline. The Git, Assistant and Files panels open
+    beside the view, in the properties panel's place. The Workbench Input's and Workbench
+    Output's panels offer "Edit in Workbench", which shows the view.
+  - **The toolbar** keeps the brand and the project's controls (Pipeline files and Local
+    files, Assistant, Help, the branch, Save and Commit) and shows the view's own, by mode:
 
     | Mode | The view's controls |
     |---|---|

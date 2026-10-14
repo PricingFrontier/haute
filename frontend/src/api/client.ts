@@ -326,7 +326,8 @@ function requestHeaders(headers: HeadersInit | undefined): Record<string, string
   return resolved
 }
 
-async function throwApiError(response: Response): Promise<never> {
+/** Throw the `ApiError` a failed response maps to, as every request does. Exported for split endpoint modules. */
+export async function throwApiError(response: Response): Promise<never> {
   let detail: string | undefined
   let body: unknown
   let rawDetail: unknown

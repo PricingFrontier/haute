@@ -15,6 +15,7 @@ function reset() {
     constantsOpen: false,
     gitOpen: false,
     assistantOpen: false,
+    filesPlace: null,
   })
 }
 
@@ -42,6 +43,23 @@ describe("useUIStore right-panel exclusivity", () => {
     for (const other of FLAGS.filter((candidate) => candidate !== flag)) {
       expect(state[other]).toBe(false)
     }
+  })
+
+  it.each(FLAGS)("the Files panel and %s clear each other", (flag) => {
+    useUIStore.getState().setFilesPlace("pipeline")
+    SETTERS[flag](true)
+    expect(useUIStore.getState().filesPlace).toBeNull()
+
+    useUIStore.getState().setFilesPlace("local")
+    const state = useUIStore.getState()
+    expect(state.filesPlace).toBe("local")
+    for (const other of FLAGS) expect(state[other]).toBe(false)
+  })
+
+  it("asking the assistant to fix a node closes the Files panel", () => {
+    useUIStore.getState().setFilesPlace("local")
+    useUIStore.getState().askAssistantToFix("node_1")
+    expect(useUIStore.getState().filesPlace).toBeNull()
   })
 
   it("closing the assistant panel leaves the others closed", () => {

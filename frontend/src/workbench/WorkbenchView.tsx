@@ -22,6 +22,7 @@ import WorkbenchPalette from "./WorkbenchPalette"
 
 const GitPanel = lazy(() => import("../panels/GitPanel"))
 const AssistantPanel = lazy(() => import("../panels/assistant/AssistantPanel"))
+const FilesPanel = lazy(() => import("../panels/FilesPanel"))
 
 interface WorkbenchViewProps {
   /** The Git panel's save, as the node properties panel gives it. */
@@ -48,8 +49,8 @@ const BANNER_STYLE = {
  * selected component's properties panel on the right), the schema editor, or Preview,
  * the sheets as an underwriter sees them with the sample keyed into them, on the form the
  * store reads when the view first shows. A save refused because the file changed on disk
- * is reported in a banner with the way out, a reload. The toolbar's Git and Assistant
- * panels open beside the view, in the properties panel's place. While Preview shows, the
+ * is reported in a banner with the way out, a reload. The toolbar's Git, Assistant and
+ * Files panels open beside the view, in the properties panel's place. While Preview shows, the
  * sample is priced on the pipeline whenever the schema or the sample changes once typing
  * pauses, and when Preview shows, as the pipeline may have changed meanwhile.
  */
@@ -68,6 +69,8 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
   const gitOpen = useUIStore((s) => s.gitOpen)
   const setGitOpen = useUIStore((s) => s.setGitOpen)
   const assistantOpen = useUIStore((s) => s.assistantOpen)
+  const filesPlace = useUIStore((s) => s.filesPlace)
+  const setFilesPlace = useUIStore((s) => s.setFilesPlace)
   const testQuotesOpen = useWorkbenchTestQuotesStore((s) => s.open)
 
   useEffect(() => {
@@ -160,6 +163,12 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
               <AssistantPanel isInsideSubmodel={isInsideSubmodel} readOnly={readOnly} />
             </Suspense>
           </ErrorBoundary>
+        </aside>
+      ) : filesPlace !== null ? (
+        <aside aria-label="Files">
+          <Suspense fallback={null}>
+            <FilesPanel key={filesPlace} place={filesPlace} onClose={() => setFilesPlace(null)} />
+          </Suspense>
         </aside>
       ) : status === "ready" && section === "preview" && testQuotesOpen ? (
         <aside aria-label="Test quotes">
