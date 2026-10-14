@@ -286,6 +286,14 @@ class TestCommitSave:
     def test_empty_path_list_is_noop(self, repo: Path) -> None:
         assert commit_save([], WORKING, cwd=repo) is None
 
+    def test_a_name_with_glob_characters_commits_only_itself(self, repo: Path) -> None:
+        # As a glob, "[ab].csv" would also name a.csv; as a literal pathspec it names itself.
+        (repo / "a.csv").write_text("a\n")
+        sha = _write_and_save(repo, WORKING, {"[ab].csv": "literal\n"})
+        assert sha is not None
+        assert _git(repo, "show", "--name-only", "--format=", sha).splitlines() == ["[ab].csv"]
+        assert _git(repo, "status", "--porcelain", "--", "a.csv") == "?? a.csv"
+
     def test_commit_parent_names_a_save_parent_and_none_for_a_root(self, repo: Path) -> None:
         sha = _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
         assert sha is not None
@@ -338,6 +346,75 @@ class TestMilestoneMerge:
 
         assert _git(repo, "show", f"{milestone}:uv.lock") == "locked-v2"
         assert _git(repo, "status", "--porcelain", "--untracked-files=no") == ""
+
+    def test_milestone_versions_new_files_in_the_pipeline_folder(self, repo: Path) -> None:
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        versioned = {
+            "rating/files/data/postcodes.csv": "postcode,region\n",
+            "rating/files/models/freq.cbm": "model\n",
+            "rating/utility/helpers.py": "x = 1\n",
+        }
+        left_out = {
+            "rating/__pycache__/main.cpython-314.pyc": "bytecode",
+            "rating/.haute_build/deploy_manifest.json": "{}",
+            "rating/stale.pyc": "bytecode",
+            "rating/files/data/scratch.tmp": "ignored\n",
+            "notes.txt": "outside the pipeline folder\n",
+        }
+        for rel, content in {**versioned, **left_out}.items():
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text(content)
+        (repo / ".gitignore").write_text("*.tmp\n")
+
+        milestone = commit_milestone(
+            "With the pipeline's files", repo, cwd=repo, pipeline_folder="rating"
+        ).sha
+
+        committed = set(_git(repo, "ls-tree", "-r", "--name-only", milestone).splitlines())
+        assert set(versioned) <= committed
+        assert not committed & set(left_out)
+        assert not committed & {".gitignore"}
+
+    def test_milestone_without_a_pipeline_folder_leaves_new_files_alone(self, repo: Path) -> None:
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        (repo / "rating").mkdir()
+        (repo / "rating" / "new.csv").write_text("a\n")
+
+        milestone = commit_milestone("No pipeline folder", repo, cwd=repo).sha
+
+        assert "rating/new.csv" not in _git(repo, "ls-tree", "-r", "--name-only", milestone)
+
+    def test_milestone_refuses_a_pipeline_file_too_large_to_version(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        monkeypatch.setattr(git_transactions, "VERSIONED_FILE_LIMIT_BYTES", 1024 * 1024)
+        data = repo / "rating" / "files" / "data"
+        data.mkdir(parents=True)
+        (data / "portfolio.parquet").write_bytes(b"x" * (1024 * 1024 + 1))
+        (data / "lookup.csv").write_text("a,b\n")
+        working_tip = _git(repo, "rev-parse", WORKING)
+        ledger_tip = _git(repo, "rev-parse", LEDGER)
+
+        with pytest.raises(
+            GitDomainError,
+            match=r"rating/files/data/portfolio\.parquet \(1 MiB\) is too large for version "
+            r"history, which takes files up to 1 MiB",
+        ):
+            commit_milestone("Too large", repo, cwd=repo, pipeline_folder="rating")
+
+        # Nothing was recorded: not the small file beside it, not the milestone.
+        assert _git(repo, "rev-parse", WORKING) == working_tip
+        assert _git(repo, "rev-parse", LEDGER) == ledger_tip
 
     def test_version_label_becomes_annotated_tag(self, repo: Path) -> None:
         _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
@@ -1403,14 +1480,20 @@ class TestMoveToCommit:
         cache = repo / ".haute_cache"
         cache.mkdir()
         (cache / "stale.parquet").write_text("junk")
-        out = repo / "output"
+        out = repo / "outputs"
         out.mkdir()
         (out / "result.parquet").write_text("junk")
+        # Optimiser results were published to output/ by default, and Apply
+        # Optimisation prices from them: a move must not delete them.
+        published = repo / "output" / "optimiser_opt_1.json"
+        published.parent.mkdir()
+        published.write_text("{}")
 
         move_to_commit(sha1, repo, cwd=repo)
 
         assert not cache.exists()
         assert not out.exists()
+        assert published.read_text() == "{}"
 
     def test_first_save_after_move_spawns_fresh_pair(self, repo: Path) -> None:
         """S13: after a move, set_working_branch(create=True) spawns a new

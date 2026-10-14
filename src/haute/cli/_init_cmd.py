@@ -473,6 +473,7 @@ def handle_init(config: InitConfig) -> None:
     ``SystemExit(1)`` when ``haute.toml`` already exists (the scaffold
     never overwrites an existing project).
     """
+    from haute._project_layout import PIPELINE_FILES_FOLDER, PIPELINE_FILES_SUBFOLDERS
     from haute._scaffold import (
         azure_devops_yml,
         env_example,
@@ -542,9 +543,10 @@ def handle_init(config: InitConfig) -> None:
     # -- rating/main.py - starter pipeline -------------------------------------
     (rating_dir / "main.py").write_text(starter_pipeline(name), encoding="utf-8")
 
-    # -- rating/ placeholder directories (used once the pipeline grows) --------
-    for sub in ("config", "data", "outputs"):
-        (rating_dir / sub).mkdir(exist_ok=True)
+    # -- rating/config/ and rating/files/ - node settings, versioned data and models --
+    (rating_dir / "config").mkdir(exist_ok=True)
+    for sub in PIPELINE_FILES_SUBFOLDERS:
+        (rating_dir / PIPELINE_FILES_FOLDER / sub).mkdir(parents=True, exist_ok=True)
 
     # -- haute.toml - project + deploy + safety + CI (+ workbench) config -------
     (project_dir / "haute.toml").write_text(

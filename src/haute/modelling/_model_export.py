@@ -1,8 +1,9 @@
 """Where the Export pane's "Save model to file" writes a trained model.
 
-The rules mirror a file Data Output (``resolve_data_output_path``) with a
-``models/`` folder in place of ``outputs/``: a bare filename lands under
-``models/``, a missing extension gets the trained model's, and every path is
+The rules mirror a file Data Output (``resolve_data_output_path``) with the
+default model folder in place of ``outputs/``: a bare filename lands in the
+pipeline folder's ``files/models/`` (``_project_layout.default_model_folder``),
+a missing extension gets the trained model's, and every path is
 project-root-relative and must stay inside the project.
 """
 
@@ -18,9 +19,8 @@ from haute._path_resolution import (
     _normalise_path_text,
     _reject_reserved_device_components,
 )
+from haute._project_layout import default_model_folder
 from haute.modelling._descriptors import DESCRIPTORS
-
-MODEL_EXPORT_FOLDER = "models"
 
 #: The native model file extension each algorithm trains to, from its descriptor.
 MODEL_FILE_SUFFIXES: Mapping[str, str] = MappingProxyType(
@@ -47,7 +47,7 @@ def resolve_model_export_destination(
     """Resolve a user's model filename or path against the project root."""
     text = _normalise_path_text(raw_path)
     if "/" not in text:
-        text = f"{MODEL_EXPORT_FOLDER}/{text}"
+        text = f"{default_model_folder(project_root)}/{text}"
     explicit_suffix = PurePosixPath(text).suffix
     if not explicit_suffix:
         text = f"{text}{model_suffix}"

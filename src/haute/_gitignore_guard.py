@@ -21,7 +21,14 @@ GITIGNORE_GUARD_ENTRIES: tuple[str, ...] = (
     "impact_report.md",
     ".haute_cache/",
     "mlruns/",
-    "data/",
+    # The root's local folders, anchored so the versioned pipeline folder's files/data/
+    # is never ignored with them.
+    "/data/",
+    "/outputs/",
+    "/.cache/",
+    # Deploy build folders and bytecode, which can sit inside the pipeline folder.
+    ".haute_build/",
+    "__pycache__/",
     # Without this, .venv/ contents would pass the seed's *.py allowlist
     # pathspec — the deny gate has to carry it.
     ".venv/",

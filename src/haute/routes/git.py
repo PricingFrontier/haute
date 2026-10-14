@@ -51,6 +51,7 @@ from haute._git import (
     working_milestones,
 )
 from haute._logging import get_logger
+from haute._project_layout import pipeline_folder
 from haute.graph_utils import PipelineGraph
 from haute.hosted import FORWARDED_USER_SCOPE_KEY
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, commit_pipeline_graph, pause_watcher
@@ -255,6 +256,7 @@ def git_commit(body: GitCommitRequest) -> GitCommitResponse:
             Path.cwd(),
             version_label=body.version_label,
             allow_fork=body.allow_fork,
+            pipeline_folder=pipeline_folder(Path.cwd()),
         )
         # Publish the milestone (and any ledger saves it folded in) when the
         # project is bound to durable storage. A no-op for local sessions.

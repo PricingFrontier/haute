@@ -9736,6 +9736,39 @@ class TestSaveResultUnit:
         assert "quote_grid" in job
         assert not mock_solve_result.mock_calls
 
+    def test_save_bare_filename_lands_in_the_pipeline_folders_files_models(
+        self, client, clean_job_store, tmp_path
+    ):
+        """A bare filename goes where Commit versions it with the pipeline."""
+        from haute._sandbox import set_project_root
+
+        seed_job(
+            clean_job_store,
+            "save_bare",
+            {
+                "status": "completed",
+                "result": _anchor_result(),
+                "solve_result": MagicMock(),
+                "solver": MagicMock(),
+                "quote_grid": MagicMock(),
+                "config": {"mode": "online", "objective": "income"},
+                "node_label": "opt",
+                "created_at": time.time(),
+                "completed_at": time.time(),
+            },
+        )
+        (tmp_path / "haute.toml").write_text('[project]\npipeline = "rating/main.py"\n')
+        set_project_root(tmp_path)
+
+        resp = client.post(
+            "/api/optimiser/save",
+            json={"job_id": "save_bare", "output_path": "optimiser_opt_1.json"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["apply_path"] == "rating/files/models/optimiser_opt_1.json"
+        assert (tmp_path / "rating" / "files" / "models" / "optimiser_opt_1.json").is_file()
+
     def test_save_ratebook_frontier_point_materialises_selected_factor_tables(
         self,
         client,

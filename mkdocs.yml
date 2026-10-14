@@ -107,6 +107,7 @@ nav:
   - Building Models:
     - building-models/index.md
     - Execution Strategy: building-models/execution-strategy.md
+    - Project Files: building-models/project-files.md
     - Workbench: building-models/workbench.md
     - Node Types:
       - building-models/nodes/index.md

@@ -40,6 +40,7 @@ from haute._mlflow_utils import (
     registry_uri_for_tracking,
 )
 from haute._pipeline_settings import project_pipeline_settings
+from haute._project_layout import default_model_folder
 from haute._ratebook_collar import (
     COMBINED_FACTOR_BOUNDS_KEY,
     CombinedFactorBoundsError,
@@ -889,9 +890,13 @@ def save_result(body: OptimiserSaveRequest) -> OptimiserSaveResponse:
     job, solve_result, _selected_result = _publish_target(body.job_id, job, body.point_index)
 
     # Relative and absolute paths both resolve inside the project root, the
-    # base the pipeline's own file reads use.
+    # base the pipeline's own file reads use. A bare filename lands in the
+    # pipeline folder's files/models/, which Commit versions with the pipeline.
     project_root = _get_project_root().resolve()
-    out = contained_path(project_root, body.output_path)
+    output_path = body.output_path
+    if "/" not in output_path and "\\" not in output_path:
+        output_path = f"{default_model_folder(project_root)}/{output_path}"
+    out = contained_path(project_root, output_path)
     apply_path = Path(os.path.relpath(out, project_root)).as_posix()
 
     payload = _build_artifact_payload(

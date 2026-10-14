@@ -86,7 +86,7 @@ Below the settings:
 | Field | What it does |
 |---|---|
 | **Result to publish** | **Solved result**, or on a frontier one of the **Frontier point N (objective …)** entries. It follows the point selected in the results panel, and changing it here selects that point there too. |
-| **File path** | Where **Save to file** writes the result, relative to the project folder. Leave it blank to use the suggested `output/optimiser_<node name>_<node id>.json` shown in the box. |
+| **File path** | Where **Save to file** writes the result, relative to the project folder. Leave it blank to use the suggested `optimiser_<node name>_<node id>.json` shown in the box. A filename without a folder saves in the pipeline folder's `files/models/`, where Commit versions it ([Project Files](../project-files.md)). |
 | **Version label** | The version recorded in the saved file, which an Apply Optimisation node can add to its output. Blank (**Automatic**) uses the node name and the time of the save. |
 
 - **Save to file** writes the result as a JSON file. If the file already exists, the pane asks before replacing it (**Replace existing file** or **Cancel**). After a save, the pane shows where it went, with a list of the pipeline's Apply Optimisation nodes (**Choose an Apply Optimisation node...**) and **Use in Apply node**, which points that node at the saved file.

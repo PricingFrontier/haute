@@ -218,8 +218,10 @@ compatibility facade and route own no duplicate state or worker implementation.
   alias, or scores a logged run directly.
 - `POST /api/modelling/save` writes a copy of an already-completed job's trained model and
   its feature contract to a file in the project (the Export pane's "Save model to file"
-  button), so a model can be kept without MLflow. Its destination rules match a file Data
-  Output with `models/` in place of `outputs/`, and it refuses to replace an existing file
+  button), so a model can be kept without MLflow. A bare filename lands in the pipeline
+  folder's `files/models/`, where Commit versions it
+  ([pipeline-config](../pipeline-config/high-level.md)); any other path is project-relative,
+  as for a file Data Output. It refuses to replace an existing file
   unless the request confirms overwrite. `POST /api/modelling/save/destination` resolves the
   same destination for display without writing. Neither retrains, reads node config, or
   touches the training output being copied.

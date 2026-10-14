@@ -109,8 +109,7 @@ def model_contract_filename(model_name: str) -> str:
 
     Contracts are written next to the model file as
     ``{model_name}.feature_contract.json`` so several models sharing one
-    ``output_dir`` (the UI trains everything into ``outputs/`` by default)
-    keep distinct contracts instead of overwriting one shared
+    ``output_dir`` keep distinct contracts instead of overwriting one shared
     ``feature_contract.json``.  Every contract consumer takes an explicit
     path (``feature_contract_path`` config, ``load_contract``), so this
     writer-side scheme is the single source of naming truth for training

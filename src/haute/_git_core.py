@@ -36,9 +36,10 @@ PROTECTED_BRANCHES = DEFAULT_PROTECTED_BRANCHES
 _BRANCH_PREFIX = "pricing"
 _ARCHIVE_PREFIX = "archive"
 
+# Not ``output``: optimiser results were published there by default, and Apply
+# Optimisation prices from them.
 _VOLATILE_ARTEFACTS = (
     "__pycache__",
-    "output",
     "outputs",
     ".haute_cache",
     ".cache",

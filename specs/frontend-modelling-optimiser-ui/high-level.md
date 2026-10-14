@@ -498,7 +498,8 @@ Pane ownership:
   the solved result and each frontier point (the same selection the result preview's frontier
   chart shows, so choosing a point on either surface changes both), an output path field
   persisted as `result_export_path` whose placeholder is the derived default
-  (`output/optimiser_<label>_<id>.json`), an optional version label, **Save to file** and **Log
+  (`optimiser_<label>_<id>.json`, a bare filename the server places in the pipeline folder's
+  `files/models/`), an optional version label, **Save to file** and **Log
   to MLflow**. Saving never silently replaces a file: an existing destination shows the server's
   message with a **Replace existing file** confirmation that retries exactly the refused request with overwrite; the confirmation is withdrawn while the path or target no longer match it. A successful
   save shows the written project-relative path and a **Use in Apply node** choice listing the
