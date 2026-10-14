@@ -224,11 +224,14 @@ def _list_folder(place_name: ProjectFilePlace, path: str) -> ProjectFolderRespon
             if name.casefold() not in present
         )
     entries.sort(key=lambda entry: (entry.kind != "folder", entry.name.casefold()))
+    # A pipeline folder .gitignore ignores takes no files: none could be versioned there.
+    folder_state = _state(states, folder.project_relative + "/")
+    ignored = place.name == "pipeline" and folder_state == "ignored"
     return ProjectFolderResponse(
         place=place.name,
         path=folder.relative,
         root=place.root,
-        writable=folder.writable,
+        writable=folder.writable and not ignored,
         entries=entries,
     )
 

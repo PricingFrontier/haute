@@ -135,6 +135,20 @@ def test_a_pipeline_file_not_yet_in_history_is_new_and_an_ignored_one_says_so(
     assert entries["scratch.tmp"]["status"] == "ignored"
 
 
+def test_a_pipeline_folder_gitignore_ignores_takes_no_files(
+    client: TestClient, project: Path
+) -> None:
+    (project / "rating" / "files" / "data").mkdir(parents=True)
+    (project / "rating" / "files" / "data" / "kept.csv").write_bytes(b"a\n")
+    (project / ".gitignore").write_text("data/\n")  # unanchored: ignores files/data/ too
+
+    listing = _list(client, "pipeline", "data")
+
+    assert listing["writable"] is False
+    assert _entries(listing)["kept.csv"]["status"] == "ignored"
+    assert _list(client, "pipeline", "models")["writable"] is True
+
+
 def test_a_pipeline_at_the_project_root_has_no_pipeline_place(
     client: TestClient, project: Path
 ) -> None:

@@ -179,6 +179,23 @@ describe("FilesPanel", () => {
     expect(screen.getByTestId("files-upload")).toBeDisabled()
   })
 
+  it("refuses a pipeline folder .gitignore ignores once, rather than file by file", async () => {
+    mockList.mockResolvedValue(listing("pipeline", "", [file("old.csv", "old.csv", { status: "ignored" })], false))
+    render(<FilesPanel place="pipeline" onClose={vi.fn()} />)
+    await screen.findByText("old.csv")
+    expect(screen.getByTestId("files-upload")).toBeDisabled()
+    expect(screen.getByText("Ignored")).toBeInTheDocument()
+
+    dropFiles(screen.getByTestId("files-drop-zone"), [new File(["x"], "a.csv"), new File(["y"], "b.csv")])
+
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.map((t) => t.text)).toEqual([
+        "rating/files is ignored by .gitignore, so files added there couldn't be versioned.",
+      ]),
+    )
+    expect(mockUpload).not.toHaveBeenCalled()
+  })
+
   it("asks before deleting and deletes the revision shown", async () => {
     mockList.mockResolvedValue(listing("pipeline", "data", [file("old.csv", "data/old.csv")]))
     mockDelete.mockResolvedValue({ path: "data/old.csv", git_sha: "def", identity_required: false, warnings: [] })

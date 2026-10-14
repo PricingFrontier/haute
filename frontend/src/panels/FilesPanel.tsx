@@ -120,6 +120,14 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
 
   const root = listing?.root ?? ""
   const shownFolder = (folder: string) => (folder ? joinPath(root, folder) : root) || "the project folder"
+  // The open folder's own listing says whether it takes files (a pipeline folder
+  // .gitignore ignores does not); any other folder goes by its place.
+  const takesFiles = (folder: string) =>
+    folder === path && listing !== null ? listing.writable : folderTakesFiles(place, folder)
+  const refusal = (folder: string) =>
+    place === "pipeline"
+      ? `${shownFolder(folder)} is ignored by .gitignore, so files added there couldn't be versioned.`
+      : `${shownFolder(folder)} only downloads: files can't be added to it.`
 
   async function uploadAll(folder: string, files: File[], revisions: Map<string, string>) {
     let replaced = false
@@ -148,8 +156,8 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
 
   async function addFiles(folder: string, files: File[]) {
     if (files.length === 0) return
-    if (!folderTakesFiles(place, folder)) {
-      addToast("error", `${shownFolder(folder)} only downloads: files can't be added to it.`)
+    if (!takesFiles(folder)) {
+      addToast("error", refusal(folder))
       return
     }
     let entries = folder === path && listing ? listing.entries : null
@@ -187,7 +195,7 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
     if (!carriesFiles(event)) return
     event.preventDefault()
     event.stopPropagation()
-    event.dataTransfer.dropEffect = folderTakesFiles(place, folder) ? "copy" : "none"
+    event.dataTransfer.dropEffect = takesFiles(folder) ? "copy" : "none"
     setDropTarget(highlight)
   }
 
@@ -256,7 +264,7 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
             type="button"
             data-testid="files-upload"
             onClick={() => inputRef.current?.click()}
-            disabled={!folderTakesFiles(place, openFolder) || listing === null}
+            disabled={listing === null || !takesFiles(openFolder)}
             className={ICON_BUTTON}
             style={MUTED}
             title="Upload"
