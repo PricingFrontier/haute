@@ -88,6 +88,7 @@ def test_the_pipeline_place_lists_its_known_folders_before_they_exist(
     assert [(e["name"], e["kind"]) for e in listing["entries"]] == [
         ("data", "folder"),
         ("models", "folder"),
+        ("params", "folder"),
     ]
 
 

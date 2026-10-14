@@ -84,7 +84,7 @@ without validating required positional arguments.
 project name from `pyproject.toml` (creating/patching it via `_ensure_haute_dependency`, which does
 a structural TOML edit rather than string templating so existing content survives), creates the
 `rating/` package tree (including `rating/utility/__init__.py` and
-`rating/utility/features.py`), an empty `rating/config/`, and the empty `rating/files/data/` and `rating/files/models/` folders where versioned data and model files go ([pipeline-config](../pipeline-config/high-level.md)), writes `haute.toml` via `haute._scaffold.haute_toml` (with the `[workbench]` table when
+`rating/utility/features.py`), an empty `rating/config/`, and the empty `rating/files/data/`, `rating/files/models/` and `rating/files/params/` folders where versioned data, model and parameter files go ([pipeline-config](../pipeline-config/high-level.md)), writes `haute.toml` via `haute._scaffold.haute_toml` (with the `[workbench]` table when
 `--workbench` is given, and then `forms/form.json` via `haute._scaffold.starter_form`),
 writes `.env.example`, writes starter tests, writes CI workflow files for the chosen provider
 (pruning a *different* provider's stale files first on `--force`), installs a pre-commit hook into

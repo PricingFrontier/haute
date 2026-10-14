@@ -94,6 +94,7 @@ my-project/
   rating/files/
   rating/files/data/
   rating/files/models/
+  rating/files/params/
   rating/main.py
   rating/utility/
   rating/utility/__init__.py
