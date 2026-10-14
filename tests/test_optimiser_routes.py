@@ -15445,18 +15445,19 @@ class TestPublishWithoutHeavyState:
 
         self._seed(clean_job_store, "exists")
         set_project_root(tmp_path)
-        target = tmp_path / "result.json"
+        target = tmp_path / "out" / "result.json"
+        target.parent.mkdir()
         previous = json_mod.dumps({"version": "previous"})
         target.write_text(previous, encoding="utf-8")
 
         refused = client.post(
             "/api/optimiser/save",
-            json={"job_id": "exists", "output_path": "result.json"},
+            json={"job_id": "exists", "output_path": "out/result.json"},
         )
         assert refused.status_code == 409
         assert refused.json()["detail"] == {
             "error_code": "optimiser_result_exists",
-            "message": "Optimiser result already exists: result.json",
+            "message": "Optimiser result already exists: out/result.json",
         }
         assert target.read_text(encoding="utf-8") == previous
 
@@ -15464,7 +15465,7 @@ class TestPublishWithoutHeavyState:
             "/api/optimiser/save",
             json={
                 "job_id": "exists",
-                "output_path": "result.json",
+                "output_path": "out/result.json",
                 "overwrite": True,
                 "stale": True,
             },
