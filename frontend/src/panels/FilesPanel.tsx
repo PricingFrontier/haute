@@ -28,8 +28,10 @@ interface UploadRow {
   abort: () => void
 }
 
+type FileStatus = ProjectFileEntry["status"]
+
 type Confirmation =
-  | { kind: "replace"; folder: string; files: File[]; revisions: Map<string, string>; versioned: Set<string> }
+  | { kind: "replace"; folder: string; files: File[]; revisions: Map<string, string>; statuses: Map<string, FileStatus> }
   | { kind: "delete"; entry: ProjectFileEntry }
 
 function joinPath(folder: string, name: string): string {
@@ -47,26 +49,26 @@ function dropFolder(place: ProjectFilePlace, path: string): string {
   return place === "local" && path === "" ? LOCAL_WRITABLE_FOLDER : path
 }
 
-/** Whether version history holds *entry* as it is: a pipeline file neither New nor Ignored. */
-function inHistory(place: ProjectFilePlace, entry: ProjectFileEntry): boolean {
-  return place === "pipeline" && entry.status === null
+/**
+ * What deleting or replacing one file means for what goes. Only a pipeline file with no
+ * status is in version history exactly as it is.
+ */
+function fateOf(place: ProjectFilePlace, status: FileStatus, what: string): string {
+  if (place === "local") return `${what} can't be recovered.`
+  if (status === null) return `${what} stays in version history.`
+  if (status === "changed") return `${what} has changes that aren't in version history yet, so they can't be recovered.`
+  if (status === "ignored") return `${what} isn't in version history, so it can't be recovered.`
+  return `${what} isn't in version history yet, so it can't be recovered.`
 }
 
-/** What deleting or replacing one file means for the version that goes. */
-function fateOf(place: ProjectFilePlace, kept: boolean, what: string): string {
-  if (kept) return `${what} stays in version history.`
-  if (place === "pipeline") return `${what} isn't in version history yet, so it can't be recovered.`
-  return `${what} can't be recovered.`
-}
-
-/** The same, for several replaced files, *lost* of them outside version history. */
+/** The same, for several replaced files, *lost* of them not in version history as they are. */
 function fateOfMany(place: ProjectFilePlace, count: number, lost: number): string {
-  if (lost === 0) return "The versions they replace stay in version history."
   if (place === "local") return "The files they replace can't be recovered."
-  if (lost === count) return "None of them is in version history yet, so they can't be recovered."
+  if (lost === 0) return "The versions they replace stay in version history."
+  if (lost === count) return "None of them is in version history as it is now, so what they hold can't be recovered."
   return lost === 1
-    ? "One of them isn't in version history yet, so it can't be recovered."
-    : `${lost} of them aren't in version history yet, so those can't be recovered.`
+    ? "One of them isn't in version history as it is now, so what it holds can't be recovered."
+    : `${lost} of them aren't in version history as they are now, so what they hold can't be recovered.`
 }
 
 function isAbort(error: unknown): boolean {
@@ -192,15 +194,15 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
       }
     }
     const revisions = new Map<string, string>()
-    // The files version history holds as they are, so a replace keeps the version it replaces.
-    const versioned = new Set<string>()
+    // How each file stands against version history: whether a replace keeps what it replaces.
+    const statuses = new Map<string, FileStatus>()
     for (const entry of entries) {
       if (entry.kind !== "file" || entry.revision === null) continue
       revisions.set(entry.name, entry.revision)
-      if (inHistory(place, entry)) versioned.add(entry.name)
+      statuses.set(entry.name, entry.status)
     }
     if (files.some((file) => revisions.has(file.name))) {
-      setConfirmation({ kind: "replace", folder, files, revisions, versioned })
+      setConfirmation({ kind: "replace", folder, files, revisions, statuses })
       return
     }
     await uploadAll(folder, files, new Map())
@@ -355,6 +357,7 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
                   <FileIcon size={13} aria-hidden="true" style={MUTED} />
                   <span className="min-w-0 flex-1 truncate" title={joinPath(root, entry.path)}>{entry.name}</span>
                   {entry.status === "new" && <Marker label="New" title="Not in version history yet: Commit adds it" />}
+                  {entry.status === "changed" && <Marker label="Changed" title="Changed since it went into version history: Commit records it" />}
                   {entry.status === "ignored" && <Marker label="Ignored" title="Ignored by .gitignore, so not versioned" />}
                   <span className="w-16 shrink-0 text-right text-[11px] tabular-nums" style={MUTED}>
                     {entry.size !== null ? formatBytes(entry.size) : ""}
@@ -445,7 +448,7 @@ function ConfirmDialog({
     return (
       <ModalShell ariaLabel={`Delete ${confirmation.entry.name}`} onClose={onCancel} testId="files-delete-dialog">
         <ModalFormHeader title={`Delete ${confirmation.entry.name}?`}>
-          {fateOf(place, inHistory(place, confirmation.entry), "It")}
+          {fateOf(place, confirmation.entry.status, "It")}
         </ModalFormHeader>
         <div className="flex justify-end gap-2 p-4">
           <button type="button" className={DIALOG_BUTTON} style={{ color: "var(--text-secondary)" }} onClick={onCancel}>Cancel</button>
@@ -462,11 +465,11 @@ function ConfirmDialog({
       </ModalShell>
     )
   }
-  const { folder, files, revisions, versioned } = confirmation
+  const { folder, files, revisions, statuses } = confirmation
   const clashing = files.filter((file) => revisions.has(file.name))
-  const lost = clashing.filter((file) => !versioned.has(file.name)).length
+  const lost = clashing.filter((file) => (statuses.get(file.name) ?? null) !== null).length
   const fate = clashing.length === 1
-    ? fateOf(place, lost === 0, "The version it replaces")
+    ? fateOf(place, statuses.get(clashing[0].name) ?? null, "The version it replaces")
     : fateOfMany(place, clashing.length, lost)
   const fresh = files.filter((file) => !revisions.has(file.name))
   const title = clashing.length === 1

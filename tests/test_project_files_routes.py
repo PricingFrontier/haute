@@ -149,6 +149,27 @@ def test_a_pipeline_folder_gitignore_ignores_takes_no_files(
     assert _list(client, "pipeline", "models")["writable"] is True
 
 
+def test_a_staged_file_is_new_and_an_edited_one_changed_until_committed(
+    client: TestClient, project: Path
+) -> None:
+    """Only a file committed as it is has no marker: the panel promises recovery for it alone."""
+    data = project / "rating" / "files" / "data"
+    data.mkdir(parents=True)
+    for name in ("committed.csv", "edited.csv"):
+        (data / name).write_bytes(b"v1\n")
+    git_run(project, "add", "rating/files/data")
+    git_run(project, "commit", "-m", "two files")
+    (data / "edited.csv").write_bytes(b"v2\n")
+    (data / "staged.csv").write_bytes(b"s\n")
+    git_run(project, "add", "rating/files/data/staged.csv")
+
+    entries = _entries(_list(client, "pipeline", "data"))
+
+    assert entries["committed.csv"]["status"] is None
+    assert entries["edited.csv"]["status"] == "changed"
+    assert entries["staged.csv"]["status"] == "new"
+
+
 def test_a_pipeline_at_the_project_root_has_no_pipeline_place(
     client: TestClient, project: Path
 ) -> None:
@@ -361,6 +382,28 @@ def test_a_write_through_a_junction_is_refused(
     assert response.status_code == 400
     assert _code(response) == "invalid_path"
     assert list(target.iterdir()) == []
+
+
+def test_a_staging_folder_reached_through_a_junction_is_refused(
+    client: TestClient, project: Path
+) -> None:
+    """A link at .haute/uploads could lead a partial upload back into rating/ for a Commit."""
+    inside = project / "rating" / "files" / "data"
+    inside.mkdir(parents=True)
+    (project / ".haute").mkdir(exist_ok=True)
+    link = project / ".haute" / "uploads"
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(inside), str(link))
+    else:
+        os.symlink(inside, link, target_is_directory=True)
+
+    response = _put(client, "local", "data/portfolio.parquet", b"rows")
+
+    assert response.status_code == 409
+    assert _code(response) == "staging_unavailable"
+    assert list(inside.iterdir()) == []
 
 
 def test_a_write_needs_the_session_token_and_a_trusted_origin(client: TestClient) -> None:

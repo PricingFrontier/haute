@@ -211,6 +211,17 @@ describe("FilesPanel", () => {
     expect(within(remove).getByText("It isn't in version history yet, so it can't be recovered.")).toBeInTheDocument()
   })
 
+  it("marks a file edited since it was committed and says its changes can't be recovered", async () => {
+    mockList.mockResolvedValue(listing("pipeline", "", [file("edited.csv", "edited.csv", { status: "changed" })]))
+    render(<FilesPanel place="pipeline" onClose={vi.fn()} />)
+    const row = (await screen.findByText("edited.csv")).closest("li")!
+    expect(within(row).getByText("Changed")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByLabelText("Delete edited.csv"))
+    const remove = await screen.findByTestId("files-delete-dialog")
+    expect(within(remove).getByText("It has changes that aren't in version history yet, so they can't be recovered.")).toBeInTheDocument()
+  })
+
   it("asks before deleting and deletes the revision shown", async () => {
     mockList.mockResolvedValue(listing("pipeline", "data", [file("old.csv", "data/old.csv")]))
     mockDelete.mockResolvedValue({ path: "data/old.csv", git_sha: "def", identity_required: false, warnings: [] })

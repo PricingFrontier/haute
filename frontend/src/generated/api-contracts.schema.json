@@ -12022,7 +12022,7 @@
       "type": "object"
     },
     "ProjectFileEntry": {
-      "description": "A file or folder in a Files panel listing; ``path`` is relative to its place.\n\n``modified`` is in seconds since the epoch, and absent for a known folder that does not\nexist yet. ``revision`` (size and nanosecond mtime) is what a replace or delete names.\n``status`` marks a pipeline-place file not yet in version history (``new``) or one\n``.gitignore`` ignores.",
+      "description": "A file or folder in a Files panel listing; ``path`` is relative to its place.\n\n``modified`` is in seconds since the epoch, and absent for a known folder that does not\nexist yet. ``revision`` (size and nanosecond mtime) is what a replace or delete names.\n``status`` marks a pipeline-place file version history does not hold as it is: ``new``\n(no committed version), ``changed`` (edited since it was committed) or ``ignored``.",
       "properties": {
         "kind": {
           "enum": [
@@ -12081,6 +12081,7 @@
             {
               "enum": [
                 "new",
+                "changed",
                 "ignored"
               ],
               "type": "string"
@@ -12146,6 +12147,7 @@
             {
               "enum": [
                 "new",
+                "changed",
                 "ignored"
               ],
               "type": "string"

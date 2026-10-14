@@ -46,12 +46,13 @@ To add files, drag them from your computer onto the panel: onto the list to add 
 folder that's open, or onto a folder's row to add them there. **Upload** at the top of the
 panel picks files instead. Dropped folders aren't added; drop the files inside them. If a
 file with the same name is already there, Haute asks before replacing it. A replaced or
-deleted pipeline file stays in version history unless it was New; a local one can't be
-recovered. The question says which.
+deleted pipeline file stays in version history unless it was New or Changed; a local one
+can't be recovered. The question says which.
 
 In Pipeline files a file marked **New** isn't in version history yet, such as one copied in
-with your file explorer; the next Commit adds it. One marked **Ignored** is left out by your
-`.gitignore`, so it is never versioned. A file larger than 100 MiB can't be added to
+with your file explorer; the next Commit adds it. One marked **Changed** has been edited
+since it went into version history; the next Commit records the change. One marked
+**Ignored** is left out by your `.gitignore`, so it is never versioned. A file larger than 100 MiB can't be added to
 Pipeline files: put it in `data/`.
 
 A hosted Haute app keeps only what version history keeps, so it takes no files in Local

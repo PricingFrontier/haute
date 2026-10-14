@@ -2852,8 +2852,8 @@ class ProjectFileEntry(BaseModel):
 
     ``modified`` is in seconds since the epoch, and absent for a known folder that does not
     exist yet. ``revision`` (size and nanosecond mtime) is what a replace or delete names.
-    ``status`` marks a pipeline-place file not yet in version history (``new``) or one
-    ``.gitignore`` ignores.
+    ``status`` marks a pipeline-place file version history does not hold as it is: ``new``
+    (no committed version), ``changed`` (edited since it was committed) or ``ignored``.
     """
 
     name: str
@@ -2862,7 +2862,7 @@ class ProjectFileEntry(BaseModel):
     size: int | None = None
     modified: float | None = None
     revision: str | None = None
-    status: Literal["new", "ignored"] | None = None
+    status: Literal["new", "changed", "ignored"] | None = None
 
 
 class ProjectFolderResponse(BaseModel):
@@ -2882,7 +2882,7 @@ class ProjectFileWriteResponse(BaseModel):
     size: int
     revision: str
     replaced: bool
-    status: Literal["new", "ignored"] | None = None
+    status: Literal["new", "changed", "ignored"] | None = None
     git_sha: str | None = None
     identity_required: bool = False
     warnings: list[str] = Field(default_factory=list)

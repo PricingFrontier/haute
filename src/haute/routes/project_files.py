@@ -326,10 +326,29 @@ def _plan_write(place: ProjectFilePlace, path: str, length_header: str | None) -
             raise _refusal(507, "disk_full", f"There isn't room on disk for {display}.") from None
         raise
     branch = read_working_branch(project_root) if target.place.name == "pipeline" else None
-    staging_folder = project_root.joinpath(*_STAGING_FOLDER)
-    staging_folder.mkdir(parents=True, exist_ok=True)
-    staging = staging_folder / f"{uuid.uuid4().hex}{_STAGING_SUFFIX}"
-    return _WritePlan(target, length, branch, staging)
+    return _WritePlan(target, length, branch, _staging_path(project_root))
+
+
+def _staging_path(project_root: Path) -> Path:
+    """A fresh staging file in .haute/uploads/, refusing a folder reached through a link,
+    which could lead the partial file back into the pipeline folder or out of the project."""
+    relative = f"{PurePosixPath(*_STAGING_FOLDER)}/{uuid.uuid4().hex}{_STAGING_SUFFIX}"
+    _check_staging(project_root, relative)
+    project_root.joinpath(*_STAGING_FOLDER).mkdir(parents=True, exist_ok=True)
+    # Again with the folders made: any of them might have been a link already.
+    _check_staging(project_root, relative)
+    return project_root / relative
+
+
+def _check_staging(project_root: Path, relative: str) -> None:
+    _path, problem = ordinary_path_problem(project_root, relative, private=True)
+    if problem is not None:
+        raise _refusal(
+            409,
+            "staging_unavailable",
+            "Uploads are staged in the project's .haute/uploads/ folder, which "
+            f"{_PROBLEMS[problem]}. Remove the link and try again.",
+        )
 
 
 def _publish_write(

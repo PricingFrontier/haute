@@ -2017,8 +2017,8 @@ export interface ProjectFolderResponse {
  *
  * ``modified`` is in seconds since the epoch, and absent for a known folder that does not
  * exist yet. ``revision`` (size and nanosecond mtime) is what a replace or delete names.
- * ``status`` marks a pipeline-place file not yet in version history (``new``) or one
- * ``.gitignore`` ignores.
+ * ``status`` marks a pipeline-place file version history does not hold as it is: ``new``
+ * (no committed version), ``changed`` (edited since it was committed) or ``ignored``.
  */
 export interface ProjectFileEntry {
   kind: 'file' | 'folder';
@@ -2027,7 +2027,7 @@ export interface ProjectFileEntry {
   path: string;
   revision: string | null;
   size: number | null;
-  status: 'new' | 'ignored' | null;
+  status: 'new' | 'changed' | 'ignored' | null;
 }
 /**
  * A written file, with the save-ledger capture of a pipeline-place write.
@@ -2039,7 +2039,7 @@ export interface ProjectFileWriteResponse {
   replaced: boolean;
   revision: string;
   size: number;
-  status: 'new' | 'ignored' | null;
+  status: 'new' | 'changed' | 'ignored' | null;
   warnings: string[];
 }
 /**

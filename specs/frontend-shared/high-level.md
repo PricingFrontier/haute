@@ -249,7 +249,8 @@ Pipeline files and Local files each open the Files panel on its place
 ([server-api](../server-api/high-level.md)): Pipeline files on the pipeline folder's
 versioned `files/`, Local files on the project root's `data/` and `outputs/`. The panel
 shows one folder at a time under a breadcrumb, a file's size and when it changed, and in
-Pipeline files a file not yet in version history (New) or one `.gitignore` ignores. Files
+Pipeline files a file not yet in version history (New), one edited since it was
+committed (Changed), or one `.gitignore` ignores (Ignored). Files
 dropped on it, or picked through Upload, go into the folder showing or the folder row they
 are dropped on (at Local files' root, into `data/`), one at a time with their progress; a
 name already there asks before replacing it, a dropped folder is refused, and a folder that

@@ -263,8 +263,8 @@ when a path/query/body fails model validation):
 | `PATCH /api/pipeline-settings` | `PipelineSettingsValues`: only the keys present change, and `null` restores automatic. Each key is validated as the file is (`chunk_rows` 1..10000000, `caching` a boolean, `cache_size_gb`/`preview_memory_gb` > 0, `kept_free_gb` >= 0, time limits > 0 and <= 10080, no bools for numbers, no unknown keys), so an invalid body answers 422 and writes nothing | The `PipelineSettingsResponse` after the update is written. The server applies the written `chunk_rows` at once, so server-thread executions and workers started afterwards, and the next task on each warm interactive worker, run with them; every other key is read when each execution starts. An invalid existing file answers 409 and is left as it is |
 | `POST /api/pipeline/output-destination` | `OutputDestinationRequest {graph, node_id}` | Safe destination display path, format, and suffix-mismatch flag; performs no graph execution or filesystem write |
 | `GET /api/files` | Query `dir="."`, `extensions=null`; omission derives readable extensions from the I/O registry | `BrowseFilesResponse {dir, items:[{name,path,type,size?}]}`; files have numeric byte size, directories serialize `size: null` |
-| `GET /api/project-files` | Query `place` (`pipeline` or `local`), `path=""` (a folder relative to the place) | `ProjectFolderResponse {place, path, root, writable, entries:[{name, path, kind: file\|folder, size, modified, revision, status: new\|ignored\|null}]}`: `root` is the place's folder relative to the project root (`rating/files`, or `""` for local); folders come first, then files, ignoring case. The pipeline place's root also lists `data` and `models`, and the local root exactly `data` and `outputs`, each even before it exists. In the pipeline place `status` is `new` for a file not yet in version history and `ignored` for one `.gitignore` ignores, and a folder `.gitignore` ignores is not `writable`. Dot-names, `__pycache__`, links and junctions are never listed. 400 `invalid_path`, 404 `folder_missing`, 409 `no_pipeline_folder` |
-| `PUT /api/project-files/content` | Query `place`, `path` (the file, relative to the place), optional `replace_revision`; raw `application/octet-stream` body with `Content-Length` | `ProjectFileWriteResponse {path, size, revision, replaced, status, git_sha, identity_required, warnings}`. Without `replace_revision` an existing file is 409 `file_exists`; with it, a file whose revision differs (or that is gone) is 412 `file_changed`. Also 411 without a length, 413 `too_large_for_history` over 100 MiB in the pipeline place, 403 `read_only` outside a writable folder, 403 `hosted_local_files` for the local place in a hosted app, 409 `ignored` naming the `.gitignore` rule, 409 `branch_changed`, 409 `file_in_use`, 400 `length_mismatch`, 400 `invalid_path`, 507 `disk_full` |
+| `GET /api/project-files` | Query `place` (`pipeline` or `local`), `path=""` (a folder relative to the place) | `ProjectFolderResponse {place, path, root, writable, entries:[{name, path, kind: file\|folder, size, modified, revision, status: new\|changed\|ignored\|null}]}`: `root` is the place's folder relative to the project root (`rating/files`, or `""` for local); folders come first, then files, ignoring case. The pipeline place's root also lists `data` and `models`, and the local root exactly `data` and `outputs`, each even before it exists. In the pipeline place `status` is `new` for a file with no committed version (untracked, or staged but never committed), `changed` for one edited since it was committed, and `ignored` for one `.gitignore` ignores; a file with no status is in version history as it is, and a folder `.gitignore` ignores is not `writable`. Dot-names, `__pycache__`, links and junctions are never listed. 400 `invalid_path`, 404 `folder_missing`, 409 `no_pipeline_folder` |
+| `PUT /api/project-files/content` | Query `place`, `path` (the file, relative to the place), optional `replace_revision`; raw `application/octet-stream` body with `Content-Length` | `ProjectFileWriteResponse {path, size, revision, replaced, status, git_sha, identity_required, warnings}`. Without `replace_revision` an existing file is 409 `file_exists`; with it, a file whose revision differs (or that is gone) is 412 `file_changed`. Also 411 without a length, 413 `too_large_for_history` over 100 MiB in the pipeline place, 403 `read_only` outside a writable folder, 403 `hosted_local_files` for the local place in a hosted app, 409 `ignored` naming the `.gitignore` rule, 409 `branch_changed`, 409 `file_in_use`, 409 `staging_unavailable` when `.haute/uploads/` is reached through a link, 400 `length_mismatch`, 400 `invalid_path`, 507 `disk_full` |
 | `GET /api/project-files/content` | Query `place`, `path` | The file as an attachment (`application/octet-stream`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`); 404 `file_missing`, 400 `invalid_path` |
 | `DELETE /api/project-files/content` | Query `place`, `path`, `revision` | `ProjectFileDeleteResponse {path, git_sha, identity_required, warnings}`; 412 `file_changed`, 404 `file_missing`, 403 `read_only`, 400 `invalid_path` |
 | `GET /api/model-file` | Required query `path` (project-relative) | `ModelFileInspectionResponse {model_path, flavor, label, task?, features, categorical_features, offset_column?, offset_link?, contract_path?}` from `inspect_model_file`; a `ConfigError` or `FeatureMismatchError` (missing file, unsupported suffix, undeclared offset, contract mismatch) is 400 with its message; a path outside the project is the shared runtime-path refusal (403) |
@@ -580,16 +580,20 @@ empty, absolute, drive, `..` or `:` part, no dot-name or `__pycache__` component
 by `_artifact_paths.ordinary_path_problem` on the project-relative path (no link or junction on
 any part, no hard-linked or non-regular target), each refusal worded for the analyst as 400
 `invalid_path`. A listing reads one folder with `os.scandir`; in the pipeline place it asks Git
-once for the folder's states (`_git.pipeline_file_states`: `git status --porcelain=v1 -z
---untracked-files=all --ignored=matching`), so a file is `new` when untracked and `ignored`
-when it or a parent folder is ignored. A `revision` is the file's size and nanosecond mtime.
+once for the folder's states (`_git.pipeline_file_states`: `git status --porcelain=v2 -z
+--untracked-files=all --ignored=matching`, whose entries never start with a space, so the
+stripped output loses nothing), so a file is `new` when untracked or staged but never
+committed, `changed` when edited since its commit, and `ignored` when it or a parent folder
+is ignored. A `revision` is the file's size and nanosecond mtime.
 A write first checks everything it can before reading the body: the path and place, the
 length (411; 413 above `VERSIONED_FILE_LIMIT_BYTES` in the pipeline place), the hosted
 refusal for the local place (`databricks_app_environment()`), the `.gitignore` rule that
 would ignore the target (`_git.ignore_rule`, 409 `ignored` naming the rule and the anchored
 spelling that fixes it), and `ensure_disk_headroom` (507) after creating the target's parent
 folder inside the place. It records the working branch, then streams the body chunk by chunk
-to a staging file in `.haute/uploads/`, each chunk written off the event loop. The staging
+to a staging file in `.haute/uploads/` (checked with `ordinary_path_problem(private=True)`
+before and after the folder is made, 409 `staging_unavailable` through a link), each chunk
+written off the event loop. The staging
 file never sits in the pipeline folder, so a Commit while a file streams cannot version a
 partial one; a body longer or
 shorter than its length is 400 `length_mismatch`, and a disconnect or any failure deletes the
@@ -1071,7 +1075,8 @@ entirely and leave every touched file in whatever state it happened to be in."
   `..`, a dot-name, a reserved name, `a:b`, a junction parent, the read-only `outputs/`, the
   local place in a hosted app, an ignored target and a pipeline file over the limit; a body
   shorter than its length leaving no staging file; an upload staged outside the pipeline
-  folder; a branch changed mid-write; the capture of
+  folder, and refused when `.haute/uploads/` is a junction; a staged file listed `new` and an
+  edited one `changed`; a branch changed mid-write; the capture of
   a pipeline-place write and delete, and none for the local place; a name with glob characters
   captured alone; the download's headers; a delete's revision check; the session token and
   Origin required for a write; and that the underwriter app has no such route.

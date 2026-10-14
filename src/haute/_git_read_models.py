@@ -30,21 +30,26 @@ from haute.schemas import GitManagedBranch, GitWorkingBranchesResponse, GitWorki
 
 __all__ = ["ignore_rule", "pipeline_file_states", "working_branch_status", "working_branches"]
 
-#: A project file's place outside version history, as the Pipeline files panel marks it.
-FileState = Literal["new", "ignored"]
+#: How a project file stands against version history, as the Pipeline files panel marks it:
+#: ``new`` has no committed version (untracked, or staged but never committed),
+#: ``changed`` differs from its committed version, ``ignored`` is never versioned.
+FileState = Literal["new", "changed", "ignored"]
 
 
 def pipeline_file_states(folder: str, cwd: Path | None = None) -> dict[str, FileState]:
-    """Untracked (``new``) and ignored files under *folder*, keyed by repo-relative path.
+    """Every file under *folder* that version history does not hold as it is on disk,
+    keyed by repo-relative path; a file missing from the answer is committed as it is.
 
     An ignored folder appears once, with a trailing ``/``: everything under it is ignored.
     Outside a git repository nothing is versioned, and the answer is empty.
     """
     if not _is_git_repo(cwd):
         return {}
+    # Porcelain v2: every entry starts with its kind, so the stripped output loses nothing
+    # (a v1 entry for a file changed only in the work tree starts with a space).
     listed = _run_git(
         "status",
-        "--porcelain=v1",
+        "--porcelain=v2",
         "-z",
         "--untracked-files=all",
         "--ignored=matching",
@@ -53,11 +58,24 @@ def pipeline_file_states(folder: str, cwd: Path | None = None) -> dict[str, File
         cwd=cwd,
     )
     states: dict[str, FileState] = {}
-    for entry in listed.split("\0"):
-        if entry.startswith("?? "):
-            states[entry[3:]] = "new"
-        elif entry.startswith("!! "):
-            states[entry[3:]] = "ignored"
+    tokens = iter(listed.split("\0"))
+    for entry in tokens:
+        kind = entry[:1]
+        if kind == "?":
+            states[entry[2:]] = "new"
+        elif kind == "!":
+            states[entry[2:]] = "ignored"
+        elif kind in ("1", "2", "u"):
+            # "1 XY sub mH mI mW hH hI path", "2 ... Xscore path" then the original path,
+            # "u XY sub m1 m2 m3 mW h1 h2 h3 path".
+            fields = entry.split(" ", {"1": 8, "2": 9, "u": 10}[kind])
+            if kind == "2":
+                next(tokens, None)
+            code, path = fields[1], fields[-1]
+            if "A" in code:
+                states[path] = "new"
+            elif "D" not in code:
+                states[path] = "changed"
     return states
 
 
