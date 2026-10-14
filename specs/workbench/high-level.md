@@ -114,8 +114,9 @@ Out of scope:
   Table showing groups draws over its labels), whether it
   is a `key` (a many-row table's keys say which row is which), its rules (`required`, `min`,
   `max`, `options`, and `options_source`, the `file` in the pipeline folder's
-  `files/params/` and the `column` the allowed values were read from, `null` while they
-  are typed), whether it is the table's `index`, the column numbering its rows
+  `files/params/` and the `column` the allowed values were read from, `null` for none,
+  or for values typed in, which only an older form holds), whether it is the table's
+  `index`, the column numbering its rows
   from 1, and how the sheets show it: its `help`, shown beside its label, its
   `placeholder`, what an empty input cell shows, its `default_value`, what a new quote
   starts with in it (text as typed, or `true` for a tick, `""` for none; only a one-row
@@ -284,13 +285,13 @@ Out of scope:
   not for True/false, one of the allowed values while it has some, a date for a Date, else
   typed), its placeholder for any type but
   True/false and Date and its rules: required, a range for an Integer or a Decimal, and the
-  allowed values for any type but True/false and Date: typed comma-separated, or read
-  from a CSV in the pipeline folder's `files/params/`, offered beside Typed while there is
-  one: its file chosen, then its column from the file's header, and the column's distinct
-  values, as written, trimmed, blanks left out and in the order the file first gives
-  them, copied in with where they came from as one edit; the refresh button beside them
-  reads them again, an edit only when they changed, and Typed keeps them as typed
-  values. What stops a file or a column giving them shows under them. Changing a
+  allowed values for any type but True/false and Date, never typed in but read from a
+  CSV in the pipeline folder's `files/params/`: its file chosen, then its column from the
+  file's header, and the column's distinct values, as written, trimmed, blanks left out
+  and in the order the file first gives them, copied in with where they came from as one
+  edit; the refresh button beside them reads them again, an edit only when they changed,
+  and the blank file takes them away. What stops a file or a column giving them shows
+  under them. Changing a
   column's type drops the rules and the format the new type cannot have, and its default
   when it becomes or stops being True/false, or becomes a Date while it is not a day.
   Every text field
@@ -307,8 +308,9 @@ Out of scope:
   Quote Input's labels are held to (an identifier, none of the document's reserved labels,
   unique whatever its case), a column's name is an identifier that is not a Python keyword,
   as the server holds it, unique in its table, a many-row table needs a key, an input
-  column's range must not be inverted and its allowed values must be of its type,
-  True/false and Date columns can have none, and a default must be a value its column
+  column's range must not be inverted and its allowed values must be of its type and
+  read from a params file, not typed in, as an older form may hold them, True/false and
+  Date columns can have none, and a default must be a value its column
   takes: a tick for True/false, else text of its type, within its range and one of its
   allowed values. Haute's `quote_details` table, first, keeps
   its structure: its name, role and rows and its columns' names and types are fixed, and

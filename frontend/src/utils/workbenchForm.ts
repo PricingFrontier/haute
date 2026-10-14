@@ -1068,8 +1068,8 @@ const isNumber = (text: string, whole: boolean): boolean => {
  * name, so it is held to the Quote Input's label rules (`apiInputLabelIssue`, with the
  * document's reserved labels); a column's name is an identifier, unique in its table; a
  * many-row table needs a key; an input column's rules must make sense (a range that is
- * not inverted, allowed values of its type), and a one-row input column's default must be
- * a value they take.
+ * not inverted, allowed values of its type, read from a params file rather than typed in),
+ * and a one-row input column's default must be a value they take.
  */
 export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<string>): SchemaProblem[] {
   const problems: SchemaProblem[] = []
@@ -1101,6 +1101,8 @@ export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<strin
       if (!takesOptions(column.type) && column.options.length > 0) {
         const kind = column.type === "bool" ? "a tick box" : "a date"
         problems.push({ tableId: table.id, message: `${columnName} allows values, which ${kind} cannot` })
+      } else if (column.options.length > 0 && column.options_source === null) {
+        problems.push({ tableId: table.id, message: `${columnName} has allowed values typed in, not read from a params file` })
       }
       if (column.type === "int" || column.type === "float") {
         if (column.min !== null && column.max !== null && column.min > column.max) {

@@ -608,11 +608,10 @@ function ColumnDetails({
 const isCsv = (name: string): boolean => name.toLowerCase().endsWith(".csv")
 
 /**
- * A column's allowed values: typed comma-separated, or the distinct values of a column of a
- * CSV in the pipeline's params folder, its file chosen and then its column, copied in and
- * read from the file again by Refresh. Typed keeps the values a file gave, to edit as typed.
- * With no CSV there and none chosen, they are typed alone. Why a file or a column cannot give
- * values shows under them.
+ * A column's allowed values: the distinct values of a column of a CSV in the pipeline's params
+ * folder, its file chosen and then its column, copied in and read from the file again by
+ * Refresh. The blank choice takes them away. Why a file or a column cannot give values shows
+ * under them.
  */
 function AllowedField({ column, set }: { column: SchemaColumn; set: (patch: Partial<SchemaColumn>) => void }) {
   const source = column.options_source
@@ -632,7 +631,7 @@ function AllowedField({ column, set }: { column: SchemaColumn; set: (patch: Part
       .then((folder) => {
         if (mounted.current) setFiles(folder.entries.filter((entry) => entry.kind === "file" && isCsv(entry.name)).map((entry) => entry.name))
       })
-      // A project with no pipeline folder has no params files: its values are typed.
+      // A project with no pipeline folder has no params files to choose.
       .catch(() => undefined)
     return () => {
       mounted.current = false
@@ -668,10 +667,11 @@ function AllowedField({ column, set }: { column: SchemaColumn; set: (patch: Part
     // A pick or a refresh still being read no longer answers.
     latest.current += 1
     setProblem(null)
-    if (chosen === "") {
+    if (chosen !== "") setPendingFile(chosen === source?.file ? null : chosen)
+    else {
       setPendingFile(null)
-      if (source !== null) set({ options_source: null })
-    } else setPendingFile(chosen === source?.file ? null : chosen)
+      if (source !== null || column.options.length > 0) set({ options: [], options_source: null })
+    }
   }
   const chooseColumn = (name: string) =>
     readValues(file, name, (values) => {
@@ -692,31 +692,22 @@ function AllowedField({ column, set }: { column: SchemaColumn; set: (patch: Part
   return (
     <div className="flex min-w-0 flex-col gap-1">
       <div className="flex min-w-0 items-center gap-1.5">
-        {fileChoices.length > 0 && (
-          <select
-            aria-label={`Where the allowed values of ${column.name} come from`}
-            value={file}
-            onChange={(e) => chooseFile(e.target.value)}
-            className={`${FIELD_CLASS} max-w-[50%]`}
-            style={INPUT_STYLE}
-          >
-            <option value="">Typed</option>
-            {fileChoices.map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
-          </select>
-        )}
-        {file === "" ? (
-          <CommittedTextField
-            aria-label={`Allowed values of ${column.name}`}
-            value={column.options.join(", ")}
-            onCommit={(text) => set({ options: text.split(",").map((value) => value.trim()).filter(Boolean) })}
-            className={`${FIELD_CLASS} min-w-0 flex-1`}
-            style={INPUT_STYLE}
-          />
-        ) : (
+        <select
+          aria-label={`Where the allowed values of ${column.name} come from`}
+          value={file}
+          onChange={(e) => chooseFile(e.target.value)}
+          disabled={fileChoices.length === 0}
+          className={`${FIELD_CLASS} ${file === "" ? "flex-1" : "max-w-[50%]"}`}
+          style={INPUT_STYLE}
+        >
+          <option value="" />
+          {fileChoices.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
+        {file !== "" && (
           <>
             <select
               aria-label={`Column the allowed values of ${column.name} come from`}

@@ -87,7 +87,10 @@ const form = (...tables: SchemaTable[]): FormSpec => ({
 })
 
 const POLICY = table("t_policy", "policy_details", {
-  columns: [column("c_state", "state", { options: ["CA", "NY"] }), column("c_exposure", "exposure", { type: "float" })],
+  columns: [
+    column("c_state", "state", { options: ["CA", "NY"], options_source: { file: "states.csv", column: "state" } }),
+    column("c_exposure", "exposure", { type: "float" }),
+  ],
 })
 const LAYERS = table("t_layers", "layers", {
   rows: "many",
@@ -125,6 +128,7 @@ describe("SchemaEditor", () => {
   beforeEach(() => {
     load(form(POLICY, LAYERS))
     vi.mocked(listProjectFiles).mockResolvedValue(paramsFolder())
+    vi.mocked(fetchParamFile).mockResolvedValue({ columns: ["state"], values: ["CA", "NY"] })
   })
 
   afterEach(() => {
@@ -253,20 +257,21 @@ describe("SchemaEditor", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "exposure is required" }))
     commit(screen.getByTestId("schema-column-c_exposure-min"), "0")
     commit(screen.getByTestId("schema-column-c_exposure-max"), "lots")
-    commit(screen.getByRole("textbox", { name: "Allowed values of exposure" }), "100, 250 ,")
 
     expect(current().schema.tables[0].columns[1]).toMatchObject({
       label: "Exposure ($)",
       required: true,
       min: 0,
       max: null,
-      options: ["100", "250"],
     })
     expect(screen.getByTestId("schema-column-c_exposure-max-error")).toHaveTextContent("Enter a number.")
-    expect(within(tableNamed("policy_details")).getByText("required · 0 to … · 2 values")).toBeInTheDocument()
+    expect(within(tableNamed("policy_details")).getByText("required · 0 to …")).toBeInTheDocument()
+    // Allowed values come from a params file alone: none are typed in.
+    expect(screen.queryByRole("textbox", { name: "Allowed values of exposure" })).toBeNull()
   })
 
   it("reads a column's allowed values from a CSV in the params folder, its file then its column, as one undo step", async () => {
+    load(form(table("t_policy", "policy_details", { columns: [column("c_state", "state")] })))
     vi.mocked(listProjectFiles).mockResolvedValue(paramsFolder("sic_codes.csv", "notes.txt", "old", "LEGACY.CSV"))
     vi.mocked(fetchParamFile).mockImplementation(async (_file, column) => ({
       columns: ["occupancy", "sic_name"],
@@ -276,7 +281,7 @@ describe("SchemaEditor", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Label and rules of state" }))
     const from = await screen.findByRole("combobox", { name: "Where the allowed values of state come from" })
-    expect(within(from).getAllByRole("option").map((option) => option.textContent)).toEqual(["Typed", "sic_codes.csv", "LEGACY.CSV"])
+    expect(within(from).getAllByRole("option").map((option) => option.textContent)).toEqual(["", "sic_codes.csv", "LEGACY.CSV"])
     fireEvent.change(from, { target: { value: "sic_codes.csv" } })
     // The form changes once a column is picked.
     const columnSelect = await screen.findByRole("combobox", { name: "Column the allowed values of state come from" })
@@ -295,18 +300,24 @@ describe("SchemaEditor", () => {
     expect(within(tableNamed("policy_details")).getByText("2 values from sic_codes.csv")).toBeInTheDocument()
   })
 
-  it("keeps the values a file gave as typed values once Typed is chosen", async () => {
-    load(form(table("t_policy", "policy_details", {
-      columns: [column("c_state", "state", { options: ["Food", "Cloth"], options_source: { file: "sic_codes.csv", column: "sic_name" } })],
-    })))
-    vi.mocked(fetchParamFile).mockResolvedValue({ columns: ["sic_name"], values: [] })
+  it("takes a column's allowed values away when the blank file is chosen, as one undo step", async () => {
     render(<SchemaEditor />)
 
     fireEvent.click(screen.getByRole("button", { name: "Label and rules of state" }))
     fireEvent.change(await screen.findByRole("combobox", { name: "Where the allowed values of state come from" }), { target: { value: "" } })
 
-    expect(current().schema.tables[0].columns[0]).toMatchObject({ options: ["Food", "Cloth"], options_source: null })
-    expect(screen.getByRole("textbox", { name: "Allowed values of state" })).toHaveValue("Food, Cloth")
+    expect(current().schema.tables[0].columns[0]).toMatchObject({ options: [], options_source: null })
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
+    expect(screen.queryByRole("combobox", { name: "Column the allowed values of state come from" })).toBeNull()
+  })
+
+  it("names allowed values typed in, as an older form holds them, among its table's problems", () => {
+    load(form(table("t_policy", "policy_details", { columns: [column("c_state", "state", { options: ["CA", "NY"] })] })))
+    render(<SchemaEditor />)
+
+    expect(
+      within(tableNamed("policy_details")).getByText('Column "state" in Table "policy_details" has allowed values typed in, not read from a params file'),
+    ).toBeInTheDocument()
   })
 
   it("reads a column's values from its file again, and says why the file cannot give them", async () => {

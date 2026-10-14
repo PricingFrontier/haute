@@ -288,15 +288,18 @@ describe("problems", () => {
   it("checks an input column's rules, which an output table ignores", () => {
     const spec = withTable(
       column("a", "value", { type: "float", min: 10, max: 5 }),
-      column("b", "year", { type: "int", options: ["2020", "2020.5"] }),
-      column("c", "deductible", { type: "float", options: ["500", "1e3", "lots"] }),
+      column("b", "year", { type: "int", options: ["2020", "2020.5"], options_source: { file: "years.csv", column: "year" } }),
+      column("c", "deductible", { type: "float", options: ["500", "1e3", "lots"], options_source: { file: "deductibles.csv", column: "deductible" } }),
       column("d", "row_number", { type: "int", index: true, min: 10, max: 5 }),
+      // Allowed values come from a params file: ones typed in, as an older form holds them, do not.
+      column("e", "state", { options: ["CA", "NY"] }),
     )
 
     expect(messages(spec)).toEqual([
       'Column "value" in Table "t" has a minimum above its maximum',
       `Column "year" in Table "t" allows "2020.5", which isn't a whole number`,
       `Column "deductible" in Table "t" allows "lots", which isn't a number`,
+      'Column "state" in Table "t" has allowed values typed in, not read from a params file',
     ])
     expect(messages(updateSchemaTable(spec, "t", { role: "output" }))).toEqual([])
   })
@@ -305,12 +308,12 @@ describe("problems", () => {
     const spec = withTable(
       column("a", "value", { type: "float", min: 10, default_value: "5" }),
       column("b", "years", { type: "int", default_value: "2.5" }),
-      column("c", "cover", { options: ["ACV", "RC"], default_value: "New" }),
+      column("c", "cover", { options: ["ACV", "RC"], options_source: { file: "covers.csv", column: "cover" }, default_value: "New" }),
       column("d", "smoker", { type: "bool", default_value: "yes" }),
       column("e", "name", { default_value: true }),
       // Kept: a number as the server reads one, an allowed value, a tick, a blank or an unticked box.
       column("f", "limit", { type: "float", min: 0, default_value: "£250,000" }),
-      column("g", "basis", { options: ["ACV", "RC"], default_value: "RC" }),
+      column("g", "basis", { options: ["ACV", "RC"], options_source: { file: "covers.csv", column: "cover" }, default_value: "RC" }),
       column("h", "vat", { type: "bool", default_value: true }),
       column("i", "note", { required: true, default_value: " " }),
       column("j", "flag", { type: "bool", default_value: false }),
