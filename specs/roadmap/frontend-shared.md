@@ -51,7 +51,8 @@ FB-47):
     settings;
   - three whole-number validators, one without the safe-integer check;
   - two collapsed-set toggles;
-  - four Alt+Up/Down handlers with three refocus mechanisms and one omission;
+  - four Alt+Up/Down key handlers, one for each list, though each keeps the focus through
+    the one `useRefocusAfterMove`;
   - the quiet "+ Add" action in six places, beside `AddButton`;
   - `Section` beside `ConfigSection`;
   - six Workbench files importing `INPUT_STYLE` from the pipeline editors' private
@@ -65,8 +66,8 @@ FB-47):
 
 **Plan:** In `frontend/src/components/form` and the kit:
 - One in-page question, the app's `ask` generalised, for every destructive action.
-- `LabelledRow`, `SelectRow`, `QuietAction`, `wholePixels`, `useCollapsedSet` and
-  `useRefocusAfterMove`.
+- `LabelledRow`, `SelectRow`, `QuietAction`, `wholePixels`, `useCollapsedSet`, and one
+  Alt+arrows key handler beside `useRefocusAfterMove`.
 - The field class and input style exported from the form kit.
 - Every labelled toolbar button through `ToolbarButton`, in a `ToolbarColumn`.
 - The shim deleted, and one keyframe kept.

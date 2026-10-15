@@ -44,7 +44,7 @@ function Labelled({ label, children }: { label: string; children: ReactNode }) {
 export default function ChartSettings({ form, widget }: { form: FormSpec; widget: ChartWidget }) {
   const change = useWorkbenchFormStore((s) => s.change)
   const set = (patch: Partial<ChartOptions>) => change((spec) => updateWidget(spec, widget.id, patch))
-  const grain = chartGrain(form, widget)
+  const grain = chartGrain(form.schema, widget)
   const labels = labelColumns(form, widget)
   const pie = widget.chart_type === "pie"
   const category = widget.category === null ? ROW_NUMBER : columnValue(widget.category.table, widget.category.column)

@@ -14,6 +14,7 @@ import { listProjectFiles } from "../api/projectFiles"
 import type { FormSpec, SchemaColumn, SchemaTable } from "../api/types"
 import { fetchParamFile } from "../api/workbench"
 import { CommittedTextField, ConfigCheckbox, IconSelect, ValidatedTextField } from "../components/form"
+import useRefocusAfterMove, { type RefocusAfterMove } from "../hooks/useRefocusAfterMove"
 import { INPUT_STYLE } from "../panels/editors/_shared"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
@@ -176,6 +177,7 @@ function TableBlock({ form, table, added, setAdded, details, setDetails, collaps
   const uses = shown + tested
   const [confirming, setConfirming] = useState(false)
   const remove = () => change((f) => removeSchemaTable(f, table.id))
+  const refocus = useRefocusAfterMove<HTMLInputElement>()
   const fresh = (id: string): Fresh => ({
     autoFocus: added === id,
     onFocus: added === id ? selectAll : undefined,
@@ -288,6 +290,7 @@ function TableBlock({ form, table, added, setAdded, details, setDetails, collaps
               table={table}
               column={column}
               index={index}
+              refocus={refocus}
               fresh={fresh(column.id)}
               open={details === column.id}
               onToggleDetails={() => setDetails(details === column.id ? null : column.id)}
@@ -321,6 +324,8 @@ interface ColumnRowProps {
   table: SchemaTable
   column: SchemaColumn
   index: number
+  /** The table's columns' name fields, one focused again after Alt+arrows moves it. */
+  refocus: RefocusAfterMove<HTMLInputElement>
   fresh: Fresh
   open: boolean
   onToggleDetails: () => void
@@ -329,7 +334,7 @@ interface ColumnRowProps {
   locked: boolean
 }
 
-function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, onInsertAfter, locked }: ColumnRowProps) {
+function ColumnRow({ form, table, column, index, refocus, fresh, open, onToggleDetails, onInsertAfter, locked }: ColumnRowProps) {
   const change = useWorkbenchFormStore((s) => s.change)
   const shown = fieldUses(form, table.id, column.id).length
   const tested = conditionUses(form, table.id, column.id).length
@@ -351,7 +356,10 @@ function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, o
     } else if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
       e.preventDefault()
       const to = index + (e.key === "ArrowUp" ? -1 : 1)
-      if (to >= 0 && to < table.columns.length) change((f) => moveSchemaColumn(f, table.id, column.id, to))
+      if (to < 0 || to >= table.columns.length) return
+      // Its name field takes the focus again in its new place.
+      refocus.moved(column.id)
+      change((f) => moveSchemaColumn(f, table.id, column.id, to))
     }
   }
 
@@ -381,6 +389,7 @@ function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, o
           />
         )}
         <CommittedTextField
+          ref={refocus.register(column.id)}
           aria-label="Column name"
           aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
           value={column.name}
@@ -643,21 +652,32 @@ function AllowedField({ tableId, column, set }: { tableId: string; column: Schem
   // A file chosen whose column is still to be picked: the form changes once it is.
   const [pendingFile, setPendingFile] = useState<string | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
+  // Why the params folder could not be listed (a project with no pipeline folder says so),
+  // and the listing asked for again by Retry.
+  const [unlisted, setUnlisted] = useState<string | null>(null)
+  const [listing, setListing] = useState(0)
   // A read answers while the details are open, and a read of values only while it is the latest.
   const mounted = useRef(false)
   const latest = useRef(0)
   useEffect(() => {
     mounted.current = true
-    void listProjectFiles("pipeline", "params")
-      .then((folder) => {
-        if (mounted.current) setFiles(folder.entries.filter((entry) => entry.kind === "file" && isCsv(entry.name)).map((entry) => entry.name))
-      })
-      // A project with no pipeline folder has no params files to choose.
-      .catch(() => undefined)
     return () => {
       mounted.current = false
     }
   }, [])
+  useEffect(() => {
+    let current = true
+    void listProjectFiles("pipeline", "params")
+      .then((folder) => {
+        if (current) setFiles(folder.entries.filter((entry) => entry.kind === "file" && isCsv(entry.name)).map((entry) => entry.name))
+      })
+      .catch((error: unknown) => {
+        if (current) setUnlisted(apiErrorMessage(error, "The params files could not be listed."))
+      })
+    return () => {
+      current = false
+    }
+  }, [listing])
   const file = pendingFile ?? source?.file ?? ""
   const header = headers[file]
   useEffect(() => {
@@ -776,6 +796,21 @@ function AllowedField({ tableId, column, set }: { tableId: string; column: Schem
       {problem !== null && (
         <p role="alert" className="text-[11px]" style={{ color: "var(--danger)" }}>
           {problem}
+        </p>
+      )}
+      {unlisted !== null && (
+        <p role="alert" className="flex items-center gap-2 text-[11px]" style={{ color: "var(--danger)" }} data-testid="params-unlisted">
+          <span className="flex-1">{unlisted}</span>
+          <button
+            type="button"
+            className="underline"
+            onClick={() => {
+              setUnlisted(null)
+              setListing((count) => count + 1)
+            }}
+          >
+            Retry
+          </button>
         </p>
       )}
     </div>

@@ -35,7 +35,6 @@ import {
   type LucideIcon,
 } from "lucide-react"
 import { useState, type KeyboardEvent, type ReactNode } from "react"
-import { flushSync } from "react-dom"
 import type { FieldRef, FormSpec, HeadingWidget, Page, SchemaTable, Section as SheetSection } from "../api/types"
 import { CommittedTextField, ConfigCheckbox, EditorLabel, ValidatedTextField } from "../components/form"
 import { ModalFormHeader } from "../components/ModalForm"
@@ -43,6 +42,7 @@ import ModalShell from "../components/ModalShell"
 import ToggleButtonGroup from "../components/ToggleButtonGroup"
 import { SidePanel } from "../haute-ui"
 import useListReorder, { type RowDrag } from "../hooks/useListReorder"
+import useRefocusAfterMove, { type RefocusAfterMove } from "../hooks/useRefocusAfterMove"
 import { INPUT_STYLE } from "../panels/editors/_shared"
 import PreviewPanelTabs, { type PreviewPanelTab } from "../panels/PreviewPanelTabs"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
@@ -162,7 +162,12 @@ export default function PropertiesPanel() {
 
   return (
     <SidePanel {...panel} title={label} icon={<Icon size={14} style={{ color }} />}>
-      {found.widget.type === "heading" ? <HeadingSettings form={form} widget={found.widget} /> : <FieldsSettings form={form} widget={found.widget} />}
+      {/* Keyed by the component, as a section's settings are by the section, so a value refused for one is never shown, or saved, for the next. */}
+      {found.widget.type === "heading" ? (
+        <HeadingSettings key={found.widget.id} form={form} widget={found.widget} />
+      ) : (
+        <FieldsSettings key={found.widget.id} form={form} widget={found.widget} />
+      )}
     </SidePanel>
   )
 }
@@ -477,7 +482,7 @@ function FieldsSettings({ form, widget }: { form: FormSpec; widget: FieldsWidget
   // The rows the fields already chosen fill: columns of tables that fill other rows cannot
   // share the grid. A key-less many-row table, for one, lines up with nothing else.
   const first = widget.fields.map((field) => fieldColumn(form, field)).find((shown) => shown?.table.rows === rows)
-  const grain = widget.type === "chart" ? chartGrain(form, widget) : first ? tableGrain(first.table) : null
+  const grain = widget.type === "chart" ? chartGrain(form.schema, widget) : first ? tableGrain(first.table) : null
   const toggleCollapsed = (id: string) =>
     setCollapsed((current) => {
       const next = new Set(current)
@@ -663,18 +668,21 @@ function FieldsSettings({ form, widget }: { form: FormSpec; widget: FieldsWidget
 function FieldOrder({ form, widget }: { form: FormSpec; widget: FieldsWidget }) {
   const change = useWorkbenchFormStore((s) => s.change)
   const dragFor = useListReorder((from, to) => change((spec) => moveInOrder(spec, widget.id, from, to)))
+  // A row moved by Alt+arrows takes the focus again in its new place.
+  const refocus = useRefocusAfterMove<HTMLDivElement>()
   const items = orderItems(widget)
   // A field is numbered among the fields, and a spacer keyed by its count among the spacers.
   const rows: ReactNode[] = []
   let fields = 0
   let spacers = 0
   items.forEach((item, place) => {
-    const placed = { widget, place, count: items.length, drag: dragFor(place) }
+    const rowKey = item.kind === "field" ? fieldKey(item.field) : `spacer-${spacers}`
+    const placed = { widget, place, count: items.length, drag: dragFor(place), rowKey, refocus }
     if (item.kind === "field") {
       fields += 1
-      rows.push(<OrderRow key={fieldKey(item.field)} {...placed} form={form} field={item.field} number={fields} />)
+      rows.push(<OrderRow key={rowKey} {...placed} form={form} field={item.field} number={fields} />)
     } else {
-      rows.push(<SpacerRow key={`spacer-${spacers}`} {...placed} />)
+      rows.push(<SpacerRow key={rowKey} {...placed} />)
       spacers += 1
     }
   })
@@ -697,30 +705,33 @@ function FieldOrder({ form, widget }: { form: FormSpec; widget: FieldsWidget }) 
   )
 }
 
-/** Where a row of the order sits: its component, its place among `count` rows, and its part in dragging them. */
+/**
+ * Where a row of the order sits: its component, its place among `count` rows, its part in
+ * dragging them, and its key in the list, which a keyboard move focuses again (`refocus`).
+ */
 interface OrderPlace {
   widget: FieldsWidget
   place: number
   count: number
   drag: RowDrag
+  rowKey: string
+  refocus: RefocusAfterMove<HTMLDivElement>
 }
 
 /** A row of the order, named `label`: picked up by its grip, or moved by Alt+Up and Alt+Down. */
-function OrderRowFrame({ widget, place, count, drag, label, children }: OrderPlace & { label: string; children: ReactNode }) {
+function OrderRowFrame({ widget, place, count, drag, rowKey, refocus, label, children }: OrderPlace & { label: string; children: ReactNode }) {
   const change = useWorkbenchFormStore((s) => s.change)
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return
     event.preventDefault()
     const to = place + (event.key === "ArrowUp" ? -1 : 1)
     if (to < 0 || to >= count) return
-    const list = event.currentTarget.parentElement
-    // Drawn at once, so the focus goes with the row: moving an element in the page drops it.
-    flushSync(() => change((spec) => moveInOrder(spec, widget.id, place, to)))
-    const moved = list?.children[to]
-    if (moved instanceof HTMLElement) moved.focus()
+    refocus.moved(rowKey)
+    change((spec) => moveInOrder(spec, widget.id, place, to))
   }
   return (
     <div
+      ref={refocus.register(rowKey)}
       tabIndex={0}
       role="listitem"
       aria-label={label}

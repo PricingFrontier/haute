@@ -46,9 +46,10 @@ const reducedMotion = (): boolean =>
   typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
 
 export default function ChartBody({ widget }: { widget: ChartWidget }) {
-  const form = useWorkbenchFormStore((s) => s.form)
+  // The schema alone, so a change elsewhere in the form, as a drag makes, draws nothing again.
+  const schema = useWorkbenchFormStore((s) => s.form?.schema ?? null)
   const values = useSheetValues()
-  const data = useMemo(() => (form === null ? null : sheetChartData(form, widget, values)), [form, widget, values])
+  const data = useMemo(() => (schema === null ? null : sheetChartData(schema, widget, values)), [schema, widget, values])
   const message = data === null ? null : chartMessage(widget, data)
   const drawn = data !== null && message === null
   const hostRef = useRef<HTMLDivElement>(null)

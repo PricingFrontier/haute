@@ -2924,7 +2924,7 @@ describe("NodePanel", () => {
       fireEvent.mouseDown(dragHandle, { clientX: 500 })
 
       // Move mouse to the left by 100px → width should increase (startX - clientX = delta)
-      fireEvent.mouseMove(window, { clientX: 400 })
+      fireEvent.mouseMove(window, { clientX: 400, buttons: 1 })
       fireEvent.mouseUp(window)
 
       // The store should now have the new width (400 + 100 = 500)
@@ -2939,7 +2939,7 @@ describe("NodePanel", () => {
 
       // Start drag at x=500, move right by 200 → delta = -200 → width = 400 - 200 = 200 → clamped to 320
       fireEvent.mouseDown(dragHandle, { clientX: 500 })
-      fireEvent.mouseMove(window, { clientX: 700 })
+      fireEvent.mouseMove(window, { clientX: 700, buttons: 1 })
       fireEvent.mouseUp(window)
 
       expect(useUIStore.getState().nodePanelWidth).toBe(320)
@@ -2953,7 +2953,7 @@ describe("NodePanel", () => {
 
       // Start drag at x=500, move left by 1000 → delta = 1000 → 900 + 1000 = 1900 → clamped to max
       fireEvent.mouseDown(dragHandle, { clientX: 500 })
-      fireEvent.mouseMove(window, { clientX: -500 })
+      fireEvent.mouseMove(window, { clientX: -500, buttons: 1 })
       fireEvent.mouseUp(window)
 
       // Max = floor((1920 - 180) * 0.75) = 1305

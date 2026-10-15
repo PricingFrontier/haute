@@ -1,6 +1,8 @@
+import { memo, useMemo } from "react"
+import type { FormSchema } from "../api/types"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { HANDLES, type Handle } from "../utils/sheetGeometry"
-import { widgetName, type ShownField, type Widget } from "../utils/workbenchForm"
+import { shownFields, widgetName, type Widget } from "../utils/workbenchForm"
 import { startTransform } from "./sheetInteractions"
 import { ShowWhenMark } from "./ShowWhenEditor"
 import WidgetBody from "./WidgetBody"
@@ -19,17 +21,18 @@ const HANDLE_CLASS: Record<Handle, string> = {
 /**
  * A component on the sheet (specs/workbench): its picture, inert while building, cells
  * and all, so a press anywhere on it lands on its frame, which selects it, by the pointer
- * or by the keyboard's focus, and drags it and, once selected, grows eight handles that
- * resize it. In Preview the frame does nothing: the sheet is an underwriter's, the picture
+ * (taking the focus) or by the keyboard's focus, and drags it and, once selected, grows
+ * eight handles that resize it. In Preview the frame does nothing: the sheet is an underwriter's, the picture
  * scrolls and only the cells respond. A problem with what it shows draws the frame dashed
  * in the warning colour, naming the problem on hover and to a screen reader. While
  * building, a component with conditions carries an eye naming them, top right, or top left
  * on a right-aligned Heading so it never covers the end of the text, and one a new quote
- * hides is drawn faded and its eye struck through.
+ * hides is drawn faded and its eye struck through. It is drawn again only when what it is
+ * given changes: the fields it shows are its own and `schema`'s.
  */
-export default function SheetWidget({
+export default memo(function SheetWidget({
   widget,
-  fields,
+  schema,
   selected,
   problem,
   editable,
@@ -38,7 +41,7 @@ export default function SheetWidget({
   layer,
 }: {
   widget: Widget
-  fields: ShownField[]
+  schema: FormSchema
   selected: boolean
   /** What stops it showing what it should, or null. */
   problem: string | null
@@ -62,6 +65,7 @@ export default function SheetWidget({
         ? "border-transparent group-hover:border-[var(--border-bright)]"
         : "border-transparent"
   const select = useWorkbenchViewStore((s) => s.select)
+  const fields = useMemo(() => shownFields(schema, widget), [schema, widget])
   const problemId = `${widget.id}-problem`
   return (
     <div
@@ -74,7 +78,15 @@ export default function SheetWidget({
       data-selected={selected ? "true" : undefined}
       className={`group focus-ring absolute ${editable ? "cursor-move" : ""}`}
       style={{ left: widget.x, top: widget.y, width: widget.w, height: widget.h, zIndex: layer }}
-      onPointerDown={editable ? (event) => startTransform(event, widget.id) : undefined}
+      onPointerDown={
+        editable
+          ? (event) => {
+              startTransform(event, widget.id)
+              // The press's default, which would focus the frame, is prevented to drag it.
+              if (event.button === 0) event.currentTarget.focus({ preventScroll: true })
+            }
+          : undefined
+      }
       onFocus={editable ? (event) => { if (event.target === event.currentTarget) select(widget.id) } : undefined}
     >
       <div
@@ -102,7 +114,7 @@ export default function SheetWidget({
       {editable && selected && HANDLES.map((handle) => <ResizeHandle key={handle} id={widget.id} handle={handle} />)}
     </div>
   )
-}
+})
 
 function ResizeHandle({ id, handle }: { id: string; handle: Handle }) {
   return (

@@ -318,13 +318,23 @@ export function stubLayout(rect = { left: 0, top: 0, width: 1000, height: 800 })
     toJSON: () => ({}),
   } as DOMRect)
   Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => rect.width })
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => rect.height })
 }
 
 /** A pointer drag from (fromX, fromY) on `target` to (toX, toY), released there. */
 export function drag(target: Element, from: [number, number], to: [number, number]): void {
   target.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: from[0], clientY: from[1] }))
-  window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: to[0], clientY: to[1] }))
+  window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, buttons: 1, clientX: to[0], clientY: to[1] }))
   window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: to[0], clientY: to[1] }))
+}
+
+/**
+ * How far down the sheet an element on it is drawn: its own top, and its section's when it
+ * is drawn in one, as a component, a section's bar and its handle are.
+ */
+export function topOnSheet(element: HTMLElement): number {
+  const section = element.parentElement?.closest<HTMLElement>("[data-section-id]")
+  return parseFloat(element.style.top) + (section ? parseFloat(section.style.top) : 0)
 }
 
 /** Release any press a test left unreleased, so its tracker never acts on the next test. */

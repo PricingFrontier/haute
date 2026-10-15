@@ -44,9 +44,12 @@ const clamp = (value: number, low: number, high: number): number => Math.min(Mat
 export type Handle = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw"
 export const HANDLES: readonly Handle[] = ["nw", "n", "ne", "e", "se", "s", "sw", "w"]
 
-/** Where a component lands when dragged by (dx, dy): snapped, and kept off the sheet's top and left edges. */
+/**
+ * Where a component dragged by (dx, dy) is on the sheet, before it lands: not snapped here,
+ * since it is snapped once where it lands, in its section's coordinates.
+ */
 export function moveRect(rect: Rect, dx: number, dy: number): Rect {
-  return { ...rect, x: Math.max(0, snap(rect.x + dx)), y: Math.max(0, snap(rect.y + dy)) }
+  return { ...rect, x: rect.x + dx, y: rect.y + dy }
 }
 
 /** A component resized by dragging one handle by (dx, dy); the opposite edges stay put. */
@@ -62,9 +65,9 @@ export function resizeRect(rect: Rect, handle: Handle, dx: number, dy: number, m
   return { x: left, y: top, w: right - left, h: bottom - top }
 }
 
-/** A component of `size` with its top-left corner near (px, py) on the sheet. */
+/** A new component of `size` with its top-left corner at (px, py) on the sheet, snapped once where it lands. */
 export function placeAt(px: number, py: number, size: Size): Rect {
-  return { x: Math.max(0, snap(px)), y: Math.max(0, snap(py)), ...size }
+  return { x: px, y: py, ...size }
 }
 
 /** How far right the sheet's components reach. */

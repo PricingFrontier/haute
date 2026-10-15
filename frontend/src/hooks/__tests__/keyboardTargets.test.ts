@@ -28,6 +28,12 @@ describe("keyboardTargets", () => {
     expect(isTextField(element("<input data-target />"))).toBe(true)
     expect(isTextField(element("<textarea data-target></textarea>"))).toBe(true)
     expect(isTextField(element("<button data-target />"))).toBe(false)
+    // An input typed into is a text field; a checkbox, a radio or a range takes no typing.
+    expect(isTextField(element('<input type="number" data-target />'))).toBe(true)
+    expect(isTextField(element('<input type="date" data-target />'))).toBe(true)
+    expect(isTextField(element('<input type="checkbox" data-target />'))).toBe(false)
+    expect(isTextField(element('<input type="radio" data-target />'))).toBe(false)
+    expect(isTextField(element('<input type="range" data-target />'))).toBe(false)
 
     expect(isTypingTarget(element('<div class="cm-editor"><div data-target contenteditable="true"></div></div>'))).toBe(true)
     expect(isTypingTarget(element("<input data-target />"))).toBe(true)

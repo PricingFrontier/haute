@@ -40,7 +40,7 @@ function OnSheet({ values, children }: { values: Values; children: ReactNode }) 
 
 const body = (id: string, values: Values = "sample") => (
   <OnSheet values={values}>
-    <WidgetBody widget={widget(id)} fields={shownFields(currentForm(), widget(id))} />
+    <WidgetBody widget={widget(id)} fields={shownFields(currentForm().schema, widget(id))} />
   </OnSheet>
 )
 
@@ -67,6 +67,8 @@ describe("WidgetBody", () => {
     renderBody("w_boxes")
 
     // A column with allowed values is a dropdown; a number is typed and committed on blur.
+    // The state is required, and says so to a screen reader.
+    expect(screen.getByRole("combobox", { name: "State" })).toHaveAttribute("aria-required", "true")
     fireEvent.change(screen.getByRole("combobox", { name: "State" }), { target: { value: "NY" } })
     expect(currentForm().sample.policy).toEqual([{ "policy.state": "NY" }])
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
@@ -75,6 +77,7 @@ describe("WidgetBody", () => {
     cleanup()
     renderBody("w_boxes")
     const year = screen.getByRole("textbox", { name: "Year" })
+    expect(year).not.toHaveAttribute("aria-required")
     fireEvent.change(year, { target: { value: "2021" } })
     expect(currentForm().sample).toEqual({})
     fireEvent.blur(year)
@@ -209,6 +212,8 @@ describe("WidgetBody", () => {
     renderBody("w_grid")
     expect(screen.getAllByRole("columnheader")).toHaveLength(4)
     expect(screen.getAllByRole("columnheader")[0]).toHaveTextContent("#")
+    // The number's and the fields' headers each head their column.
+    expect(screen.getAllByRole("columnheader").slice(0, 3).map((header) => header.getAttribute("scope"))).toEqual(["col", "col", "col"])
     expect(bodyRows()[0].children).toHaveLength(4)
     expect(bodyRows()[0].children[0]).toHaveTextContent("1")
     expect(bodyRows()[0]).toHaveClass("even:bg-[var(--chip-rest)]")

@@ -80,7 +80,7 @@ describe("PanelShell", () => {
     const handle = screen.getByTestId("panel-resize-handle")
 
     fireEvent.mouseDown(handle, { clientX: 400 })
-    fireEvent.mouseMove(window, { clientX: 300 }) // delta = 100 → 500 + 100 = 600
+    fireEvent.mouseMove(window, { clientX: 300, buttons: 1 }) // delta = 100 → 500 + 100 = 600
     fireEvent.mouseUp(window)
 
     expect(useUIStore.getState().nodePanelWidth).toBe(600)
@@ -92,7 +92,7 @@ describe("PanelShell", () => {
     const handle = screen.getByTestId("panel-resize-handle")
 
     fireEvent.mouseDown(handle, { clientX: 400 })
-    fireEvent.mouseMove(window, { clientX: 700 }) // delta = -300 → 400 - 300 = 100 → clamped to 320
+    fireEvent.mouseMove(window, { clientX: 700, buttons: 1 }) // delta = -300 → 400 - 300 = 100 → clamped to 320
     fireEvent.mouseUp(window)
 
     expect(useUIStore.getState().nodePanelWidth).toBe(320)
@@ -104,7 +104,7 @@ describe("PanelShell", () => {
     const handle = screen.getByTestId("panel-resize-handle")
 
     fireEvent.mouseDown(handle, { clientX: 400 })
-    fireEvent.mouseMove(window, { clientX: -1000 }) // delta = 1400 → 800 + 1400 = 2200 → clamped
+    fireEvent.mouseMove(window, { clientX: -1000, buttons: 1 }) // delta = 1400 → 800 + 1400 = 2200 → clamped
     fireEvent.mouseUp(window)
 
     // Max = floor((1920 - 180) * 0.75) = 1305

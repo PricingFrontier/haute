@@ -6,7 +6,7 @@
  * Table lines its rows up. Every value is shown in its column's format. Pure: the view
  * draws the option through Explore's chart runtime.
  */
-import type { ChartWidget, FormSchema, FormSpec, SchemaColumn, SchemaTable } from "../api/types"
+import type { ChartWidget, FormSchema, SchemaColumn, SchemaTable } from "../api/types"
 import type { ChartThemeTokens } from "../panels/explore/chartOptions"
 import { formatChartNumber } from "./chartHelpers"
 import { formatValue } from "./formatValue"
@@ -93,15 +93,15 @@ const tablesOf = (found: readonly Found[], keep: (table: SchemaTable) => boolean
 ]
 
 /** What a Chart's fields hold on the sheet (specs/workbench, Charts). */
-export function sheetChartData(spec: FormSpec, widget: ChartWidget, values: ChartValues): ChartData {
+export function sheetChartData(schema: FormSchema, widget: ChartWidget, values: ChartValues): ChartData {
   const { rows: held, price, basis, quoted } = values
-  const grain = chartGrain(spec, widget)
+  const grain = chartGrain(schema, widget)
   const lined = (found: Found | null): found is Found => found !== null && tableGrain(found.table) === grain
   // A field it cannot plot, or whose rows do not line up, plots nothing; the view names it.
-  const plotted = shownFields(spec, widget).flatMap(({ key, found }) =>
+  const plotted = shownFields(schema, widget).flatMap(({ key, found }) =>
     lined(found) && plottable(found.column) ? [{ key, ...found }] : [],
   )
-  const category = widget.category === null ? null : fieldColumn(spec, widget.category)
+  const category = widget.category === null ? null : fieldColumn({ schema }, widget.category)
   const label = lined(category) ? category : null
   // A column the quote leaves out: the sheets hide it, so it was never typed.
   const quotedColumns = new Set(quoted.tables.flatMap((table) => table.columns.map((column) => `${table.id}:${column.id}`)))

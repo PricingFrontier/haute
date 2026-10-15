@@ -223,9 +223,9 @@ window, and the zoom runs from 25% to 200%. A component with a problem — no fi
 Heading with no text, a column no longer in the schema, a table of the other kind, a
 Chart's field that is not a number or is an index, tables whose rows do not line up, a pie
 of many rows with more than one field — gets a dashed frame that names the problem. Tab,
-and a screen reader, go through the components as they sit on the sheet, section by
-section, then row by row from the top and left to right along each row, whatever order you
-added them in.
+and a screen reader, go through the sheet section by section, each section's bar and then
+its components as they sit, row by row from the top and left to right along each row,
+whatever order you added them in.
 
 To add a section, drag **Section** from the palette onto the sheet: a line shows where it
 will start, never through a component (it moves to the nearer edge of one) and never in
@@ -243,7 +243,8 @@ first when components are in it; a sheet keeps at least one section). A selected
 has a handle under the middle of its bottom: drag it to set the section's height, and
 double-click it to fit the section to what it holds. A section never shrinks by itself.
 
-Sheets have tabs along the top: **+** adds one, double-click (or F2) renames one, dragging
+Sheets have tabs along the top: **+** adds one, the Left and Right arrows (and Home and
+End) go from tab to tab, double-click (or F2) renames one, dragging
 a tab onto another moves its sheet there (or press Alt+Left and Alt+Right on a tab), the
 settings mark on the showing tab opens the sheet's own panel (its title, when it shows
 and its width). **Delete sheet** at the foot of that panel deletes the sheet once you

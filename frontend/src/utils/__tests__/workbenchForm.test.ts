@@ -632,7 +632,7 @@ describe("what the sheets show", () => {
     expect(() => updateWidget(spec, heading.id, { rows: 2 })).toThrow("Only a Table has rows")
     expect(() => toggleField(spec, heading.id, { table: "t", column: "c" })).toThrow("A Heading shows no fields")
     expect(() => moveInOrder(spec, heading.id, 0, 1)).toThrow("A Heading shows no fields")
-    expect(shownFields(spec, heading)).toEqual([])
+    expect(shownFields(spec.schema, heading)).toEqual([])
 
     const copied = duplicateWidget(spec, heading.id)
     expect(findWidget(copied.spec, copied.id)).toMatchObject({ index: 1, widget: { type: "heading", ...look, x: 32, y: 16 } })
@@ -1136,6 +1136,37 @@ describe("sections", () => {
     expect(() => placeWidget(spec, "w_boxes", "missing", nowhere)).toThrow("No sheet has a section missing")
   })
 
+  it("copies only what a move, a resize or a section's height changes, leaving the form it was made from as it was", () => {
+    const spec = { ...stacked(), pages: [...stacked().pages, { ...blank().pages[0], id: "p_other", sections: [section("s_other", "Other", 48)] }] }
+    const before = structuredClone(spec)
+    const [policy, equipment, notes] = spec.pages[0].sections
+    const grid = findWidget(spec, "w_grid")?.widget
+
+    // The boxes into Equipment: Policy and Equipment are copied, Notes, the Table, the other sheet and the rest kept.
+    const moved = placeWidget(spec, "w_boxes", "s_equipment", { x: 16, y: 40, w: 400, h: 120 })
+    expect(moved.pages[0].sections[0]).not.toBe(policy)
+    expect(moved.pages[0].sections[1]).not.toBe(equipment)
+    expect(moved.pages[0].sections[2]).toBe(notes)
+    expect(findWidget(moved, "w_grid")?.widget).toBe(grid)
+    expect(moved.pages[1]).toBe(spec.pages[1])
+    expect(moved.schema).toBe(spec.schema)
+    expect(moved.sample).toBe(spec.sample)
+    expect(moved.theme).toBe(spec.theme)
+    // The Table resized: the boxes and Policy kept.
+    const resized = updateWidget(spec, "w_grid", { h: 260 })
+    expect(resized.pages[0].sections[0]).toBe(policy)
+    expect(findWidget(resized, "w_boxes")?.widget).toBe(policy.widgets[0])
+    // Notes made taller: Policy and Equipment kept, their components with them.
+    const taller = setSectionHeight(spec, "s_notes", 96)
+    expect(taller.pages[0].sections.slice(0, 2)).toEqual([policy, equipment])
+    expect(taller.pages[0].sections[0]).toBe(policy)
+    expect(taller.pages[0].sections[1]).toBe(equipment)
+    // None of them changes the form they were made from.
+    expect(spec).toEqual(before)
+    // A component moves only within its own sheet.
+    expect(() => placeWidget(spec, "w_boxes", "s_other", nowhere)).toThrow("Component w_boxes moves only between the sections of its own sheet")
+  })
+
   it("places a component in its own section keeping its place in the order, kept inside it, growing it only for a component taller than it and never shrinking it", () => {
     const spec = addWidget(stacked(), "s_policy", { ...createWidget("heading", { x: 432, y: 16, w: 200, h: 48 }), id: "w_title" })
 
@@ -1564,11 +1595,11 @@ describe("charts", () => {
   it("takes a Chart's rows from its first field's table, else from the column labelling them", () => {
     const spec = charted(chart([]))
 
-    expect(chartGrain(spec, chart([ref("equipment", "equipment.value")]))).toBe("many:item")
-    expect(chartGrain(spec, chart([ref("policy", "policy.si")], { category: ref("equipment", "equipment.item") }))).toBe("one")
-    expect(chartGrain(spec, chart([], { category: ref("premiums", "premiums.item") }))).toBe("many:item")
-    expect(chartGrain(spec, chart([ref("gone", "gone.x"), ref("claims", "claims.paid")]))).toBe("many:claim")
-    expect(chartGrain(spec, chart([]))).toBeNull()
+    expect(chartGrain(spec.schema, chart([ref("equipment", "equipment.value")]))).toBe("many:item")
+    expect(chartGrain(spec.schema, chart([ref("policy", "policy.si")], { category: ref("equipment", "equipment.item") }))).toBe("one")
+    expect(chartGrain(spec.schema, chart([], { category: ref("premiums", "premiums.item") }))).toBe("many:item")
+    expect(chartGrain(spec.schema, chart([ref("gone", "gone.x"), ref("claims", "claims.paid")]))).toBe("many:claim")
+    expect(chartGrain(spec.schema, chart([]))).toBeNull()
   })
 
   it("plots number columns other than the index", () => {

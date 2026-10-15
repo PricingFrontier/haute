@@ -68,7 +68,10 @@ interface WorkbenchFormState {
    * the whole burst is then one undo step.
    */
   pushSnapshot: () => void
-  /** Replace the form without recording history, for each step of a gesture. */
+  /**
+   * Replace the form without recording history, for each step of a gesture or a burst;
+   * while a gesture is under way, whether the form is unsaved is worked out as it ends.
+   */
   setFormRaw: (form: FormSpec) => void
   /**
    * Start a gesture on `before`, the form as pressed, its steps through `setFormRaw`;
@@ -81,7 +84,7 @@ interface WorkbenchFormState {
   /**
    * Finish the gesture under way: the form as it found it recorded for undo, so the whole
    * gesture is one undo step, and nothing, redo kept, while the form is as it found it
-   * (held at a limit, or back where it began).
+   * (held at a limit, or back where it began); and whether the form is unsaved worked out.
    */
   endGesture: () => void
   undo: () => void
@@ -124,9 +127,13 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
     if (active === null) return
     gesture = null
     active.stop()
-    const { form, undoStack } = get()
-    if (form === null || serialise(form) === serialise(active.before)) return
-    set({ undoStack: appendHistoryEntry(undoStack, active.before), redoStack: [] })
+    const { form, undoStack, savedForm } = get()
+    if (form === null) return
+    // Worked out once here, not at each of the gesture's steps.
+    const now = serialise(form)
+    const dirty = now !== savedForm
+    if (now === serialise(active.before)) set({ dirty })
+    else set({ undoStack: appendHistoryEntry(undoStack, active.before), redoStack: [], dirty })
   }
   // A form read anew drops the history a gesture under way would join, and the gesture.
   const dropGesture = (): void => {
@@ -231,7 +238,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
       set({ undoStack: appendHistoryEntry(undoStack, form), redoStack: [] })
     },
     setFormRaw: (form) => {
-      set({ form, dirty: serialise(form) !== get().savedForm })
+      set(gesture === null ? { form, dirty: serialise(form) !== get().savedForm } : { form })
     },
     beginGesture: (before, stop) => {
       finishGesture()

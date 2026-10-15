@@ -17,7 +17,7 @@ import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { findSection, findWidget, renameSection, withSampleCell } from "../../utils/workbenchForm"
 import SheetCanvas from "../SheetCanvas"
 import useWorkbenchShortcuts from "../useWorkbenchShortcuts"
-import { currentForm, drag, loadForm, releasePointer, sectionedForm, stubLayout } from "./fixtures"
+import { currentForm, drag, loadForm, releasePointer, sectionedForm, stubLayout, topOnSheet } from "./fixtures"
 
 const bar = (id: string) => screen.getByTestId(`section-header-${id}`)
 const band = (id: string) => screen.getByTestId(`sheet-section-${id}`)
@@ -32,7 +32,7 @@ const view = () => useWorkbenchViewStore.getState()
 /** A pointer pressed on `target` at (x, y), or moved or released there over the window. */
 const pointer = (type: "pointerdown" | "pointermove" | "pointerup", x: number, y: number, target: EventTarget = window) =>
   act(() => {
-    target.dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y }))
+    target.dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0, buttons: type === "pointerup" ? 0 : 1, clientX: x, clientY: y }))
   })
 /** `sectionedForm` with its Notes section emptied, 72 tall. */
 const emptyNotes = () => {
@@ -62,19 +62,20 @@ describe("SectionHeaders", () => {
   it("draws a bar just above each section while building, numbered and named, and none in Preview", () => {
     render(<SheetCanvas />)
 
-    expect(bar("s_policy")).toHaveStyle({ top: "0px", height: "24px" })
+    expect(SECTIONS.map((id) => topOnSheet(bar(id)))).toEqual([0, 176, 432])
+    expect(SECTIONS.map((id) => bar(id).style.height)).toEqual(["24px", "24px", "24px"])
     expect(band("s_policy")).toHaveStyle({ top: "24px", height: "152px" })
-    expect(bar("s_flood")).toHaveStyle({ top: "176px", height: "24px" })
     expect(band("s_flood")).toHaveStyle({ top: "200px" })
-    expect(bar("s_notes")).toHaveStyle({ top: "432px", height: "24px" })
     expect(band("s_notes")).toHaveStyle({ top: "456px" })
+    // Each drawn first in its section, before its components.
+    expect(band("s_flood").firstElementChild).toBe(bar("s_flood"))
     expect(screen.getAllByRole("button", { name: /^Section \d/ }).map((button) => button.getAttribute("aria-label"))).toEqual([
       "Section 1, Policy",
       "Section 2, Flood",
       "Section 3, Notes",
     ])
     expect(bar("s_flood")).toHaveTextContent("Flood")
-    expect(bar("s_flood")).toHaveAttribute("aria-pressed", "false")
+    expect(bar("s_flood")).not.toHaveAttribute("data-selected")
 
     act(() => useWorkbenchViewStore.setState({ section: "preview" }))
     expect(screen.queryAllByTestId(/^section-header-/)).toHaveLength(0)
@@ -90,8 +91,8 @@ describe("SectionHeaders", () => {
     pointer("pointerup", 500, 180)
     fireEvent.click(bar("s_flood"))
     expect(view()).toMatchObject({ sectionId: "s_flood", selectedId: null })
-    expect(bar("s_flood")).toHaveAttribute("aria-pressed", "true")
-    expect(bar("s_policy")).toHaveAttribute("aria-pressed", "false")
+    expect(bar("s_flood")).toHaveAttribute("data-selected", "true")
+    expect(bar("s_policy")).not.toHaveAttribute("data-selected")
 
     // Enter and Space are left to the button, which clicks itself.
     expect(fireEvent.keyDown(bar("s_notes"), { key: "Enter" })).toBe(true)
@@ -100,8 +101,8 @@ describe("SectionHeaders", () => {
     expect(fireEvent.keyDown(bar("s_policy"), { key: " " })).toBe(true)
     fireEvent.click(bar("s_policy"))
     expect(view().sectionId).toBe("s_policy")
-    expect(bar("s_policy")).toHaveAttribute("aria-pressed", "true")
-    expect(bar("s_notes")).toHaveAttribute("aria-pressed", "false")
+    expect(bar("s_policy")).toHaveAttribute("data-selected", "true")
+    expect(bar("s_notes")).not.toHaveAttribute("data-selected")
     expect(undoSteps()).toBe(0)
   })
 
@@ -138,7 +139,7 @@ describe("SectionHeaders", () => {
     expect(undoSteps()).toBe(1)
     // Drawn and numbered in its new place: under Flood, 24 + 232 down.
     expect(bar("s_policy")).toHaveAttribute("aria-label", "Section 2, Policy")
-    expect(bar("s_policy")).toHaveStyle({ top: "256px" })
+    expect(topOnSheet(bar("s_policy"))).toBe(256)
     expect(band("s_policy")).toHaveStyle({ top: "280px" })
 
     undo()
@@ -245,7 +246,8 @@ describe("SectionHeaders", () => {
     fireEvent.click(bar("s_flood"))
     expect(screen.getAllByTestId(/^section-edge-/)).toEqual([edge("s_flood")])
     // Under the middle of its bottom, 200 + 232 down, less half the handle's 8.
-    expect(edge("s_flood")).toHaveStyle({ top: "428px", width: "40px", height: "8px" })
+    expect(topOnSheet(edge("s_flood"))).toBe(428)
+    expect(edge("s_flood")).toHaveStyle({ width: "40px", height: "8px" })
 
     // 43 down, 275, snaps to 272; the press is kept from the sheet, so the section stays selected.
     act(() => drag(edge("s_flood"), [500, 432], [500, 475]))
@@ -253,7 +255,7 @@ describe("SectionHeaders", () => {
     expect(undoSteps()).toBe(1)
     expect(view().sectionId).toBe("s_flood")
     expect(band("s_notes")).toHaveStyle({ top: "496px" })
-    expect(edge("s_flood")).toHaveStyle({ top: "468px" })
+    expect(topOnSheet(edge("s_flood"))).toBe(468)
     // The sheet lengthened as far.
     expect(screen.getByTestId("sheet")).toHaveStyle({ height: "568px" })
 

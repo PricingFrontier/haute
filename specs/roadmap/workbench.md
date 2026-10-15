@@ -14,13 +14,13 @@ the app saves quotes to on the server; how underwriters manage their quotes in t
 exports from the app; the test quotes analysts keep and re-price in Preview; and the actions
 that fill the sheets from databases and APIs.
 
-`WB-21` to `WB-25` fix what the [review of 15 October 2026](workbench-review-2026-10-15.md)
+`WB-22` to `WB-26` take on what the [review of 15 October 2026](workbench-review-2026-10-15.md)
 found in what pull requests #303 to #309 built. Each names the review's findings it closes
-(`CX-n`, `FB-n`, `TQ-n`, `SD-n`, `MS-n`), and the review holds their evidence. They are
-taken in order, `WB-21` first; `WB-22` merges the mechanisms written several times once
-the others have fixed their behaviour, `WB-23` prices Preview in one run of the
-pipeline, and `WB-24` and `WB-25` wait on decisions about the form's file and the app's
-sign-in and renewals.
+(`CX-n`, `FB-n`, `TQ-n`, `SD-n`, `MS-n`), and the review holds their evidence. `WB-22`
+comes first, merging the mechanisms written several times now that the others' behaviour
+is fixed; `WB-23` prices Preview in one run of the pipeline; and `WB-24`, `WB-25` and
+`WB-26` wait on decisions about the form's file, the app's sign-in and renewals, and
+building the sheets without a pointer.
 
 ## Priorities
 
@@ -33,11 +33,11 @@ sign-in and renewals.
 | WB-11 | Decision | P2 | An underwriter exports a saved quote from the app in the formats the project needs, naming the release that priced it. |
 | WB-12 | Planned | P3 | A test quote whose response runs past what Preview shows is saved, run and compared in full, as every other test quote is. |
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, sees which quotes are about to lapse, records how a final quote ended, and archives or reassigns many quotes at once. |
-| WB-21 | Planned | P2 | Building the sheets is exact and keyboard-complete: a drag lands where the pointer puts it, a gesture ends when the pointer does, the panels keep the selection, and the sheets read as laid out. |
 | WB-22 | Planned | P2 | Each concern has one mechanism: one way to drop a stale answer and take turns, one writer into the project, and the three largest view files split along their jobs. |
 | WB-23 | Planned | P3 | Preview prices every table of the Workbench Output from one run of the pipeline, as the app prices a quote in one scoring call. |
 | WB-24 | Decision | P3 | The editor learns of a change to the form's file on its own, and opens a merged form whose geometry is off so it can be repaired. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind, and the server records a renewal's `is_renewal` itself. |
+| WB-26 | Decision | P3 | A component is added to a sheet and resized from the keyboard, and a Table of output columns alone shows its rows, or says why it has none. |
 
 ## Planned improvements
 
@@ -377,95 +377,10 @@ lists, without outcomes or validity); `src/haute/deploy/_validators.py::response
 comparison by place, not by key); `frontend/src/app/QuotesPage.tsx::QuotesPage` (one quote
 changed at a time).
 
-### WB-21 — Building the sheets
-**Why:**
-- **The 8-pixel creep.** A move is snapped twice: on the sheet, then against its section's
-  top. Whenever a section above has a height off the 8-pixel grid (a typed Height, or Fit
-  after a pixel nudge), a sideways drag moves a component 8 pixels down (review FB-29).
-- **Gestures.**
-  - Gestures follow client coordinates alone, so a wheel scroll during a drag leaves the
-    component behind the pointer.
-  - A release outside the window leaves the gesture following the pointer, and
-    `startCreate` drops its stop callback (CX-17).
-  - A side panel unmounted mid-resize leaves the body's cursor and text selection set
-    (CX-18).
-- **Panels, focus and keys.**
-  - The component's properties panel is not keyed by the component, so a rejected value
-    shows on the next one (CX-20).
-  - A failure listing the params folder leaves an empty, disabled selector with no reason
-    (CX-21).
-  - A press on the viewport's scrollbar deselects the component and closes its panel
-    (FB-32).
-  - Moving a tab before any sheet was chosen clears the selection (FB-33).
-  - Alt+Down on a schema column loses the focus (FB-34).
-  - Undo, redo and fit are ignored while a checkbox has the focus (FB-35).
-- **Accessibility and wording.**
-  - While building, the section bars come after every component in reading order.
-  - Required cells carry no `aria-required`, and grid headers no `scope`.
-  - The tabs announce as tabs but have no arrow keys.
-  - A clicked component is selected but not focused (FB-36).
-  - Tooltips carry instructions, which the owner's rule puts in `docs/` (FB-37).
-- **Performance.** Each drag step clones and serialises the whole form and redraws every
-  component, and nothing on the sheet is memoised (FB-38).
-- **For a decision.**
-  - There is no keyboard way to add or resize a component (FB-40).
-  - A Table of output columns alone shows dashes with no reason (FB-41).
-- **Small things (FB-42):** pane state kept for deleted components, a floating-point zoom,
-  `aria-pressed` on the bars, and the Display box without `aria-modal`.
-
-**Plan:**
-- **One snap.** A move is snapped once, in its section's coordinates, for drags and drops
-  alike.
-- **Gestures.**
-  - Gestures work in sheet coordinates taken from the live sheet, so they follow the
-    scroll.
-  - A gesture ends on blur, on lost capture, and on a move with no button pressed.
-  - The side panel uses one stop routine for every way a resize ends.
-- **Panels, focus and keys.**
-  - The component's panel gets a `key`.
-  - The params listing's other failures are shown, with a retry.
-  - Presses outside the viewport's client box are ignored.
-  - A tab move pins only the page.
-  - One `useRefocusAfterMove` hook serves the four lists that move by Alt+arrows.
-  - Whether a target is a text field is decided by the input's type.
-- **Accessibility and wording.**
-  - The section bars are drawn first in their sections.
-  - Required cells get `aria-required`, and grid headers `scope="col"`.
-  - The tabs move by the arrow keys.
-  - The selected frame takes the focus.
-  - Tooltips name things rather than instruct.
-- **Performance.**
-  - `dirty` is computed when a gesture ends.
-  - The value hooks compute only the live set.
-  - `SheetWidget` is memoised with its fields.
-  - `edit` shares what a layout change leaves alone.
-- **Decisions.** FB-40 and FB-41 are decided with the owner.
-
-**Acceptance:**
-- With a section of height 300 above, a drag lands where the pointer puts it.
-- A drag ended outside the window stops.
-- The sheet reads section by section with Tab and with a screen reader.
-- A drag on a form with fifty components and a fifty-row table redraws only what moved.
-
-Each has a test.
-
-**Dependencies:** `FSH-R04` for the shared refocus hook and form controls.
-
-**Evidence:** `frontend/src/workbench/sheetInteractions.ts::startTransform` (a snap on the
-sheet, then in the section); `frontend/src/utils/sheetGeometry.ts::moveRect`;
-`frontend/src/haute-ui/SidePanel.tsx::SidePanel` (styles restored on mouse-up alone);
-`frontend/src/workbench/PropertiesPanel.tsx` (the component panel without a key);
-`frontend/src/workbench/SchemaEditor.tsx` (the params listing's catch);
-`frontend/src/workbench/SheetCanvas.tsx` (a press on the scrollbar deselects);
-`frontend/src/workbench/PageTabs.tsx`; `frontend/src/hooks/keyboardTargets.ts::isTextField`;
-`frontend/src/workbench/SectionHeaders.tsx`; `frontend/src/workbench/SheetWidget.tsx`;
-`frontend/src/utils/workbenchForm.ts::edit`;
-`frontend/src/stores/useWorkbenchFormStore.ts::setFormRaw`.
-
 ### WB-22 — One mechanism per concern
 **Why:** The [review](workbench-review-2026-10-15.md) found mechanisms written several
-times, each copy slightly different; the defects `WB-21` fixes sit where one copy
-was forgotten or scoped to the wrong thing:
+times, each copy slightly different; the review's defects sat where one copy was
+forgotten or scoped to the wrong thing:
 - **Stale answers and turn-taking**, hand-rolled about ten times:
   - the form store's turns;
   - the pricing store's run and pricer identity;
@@ -496,8 +411,7 @@ was forgotten or scoped to the wrong thing:
 - **Two primitives in `frontend/src/utils`:** `serial()`, a turn queue, and
   `latest(scope)`, a ticket that stays current while its scope does (the document
   generation, the quote and its version, the folder, the list query). They are tested once
-  and adopted by every store above, after `WB-21` has fixed each copy's
-  behaviour.
+  and adopted by every store above, keeping each copy's behaviour as it now is.
 - **One project writer.**
   - It takes a project-relative path, the revision the caller saw, the bytes or a staged
     file, and a ledger message.
@@ -521,8 +435,7 @@ was forgotten or scoped to the wrong thing:
 
 Behaviour is unchanged: the affected tests pass before and after.
 
-**Dependencies:** `WB-21` first, so its fixes land before the copies are
-merged; `FSH-R04`.
+**Dependencies:** `FSH-R04`.
 
 **Evidence:** `frontend/src/stores/useWorkbenchFormStore.ts::takeTurn`;
 `frontend/src/stores/useWorkbenchPricingStore.ts`;
@@ -607,3 +520,30 @@ a slice:
 **Evidence:** `src/haute/_workbench_app.py::create_app` (the principal read from the
 headers when the release names its host); `frontend/src/app/useOpenQuoteStore.ts::openNew`
 (`asRenewal`, the browser's tick).
+
+### WB-26 — Building the sheets without a pointer, and Tables of outputs alone
+**Why:** Two gaps the [review](workbench-review-2026-10-15.md) found, each a choice for the
+owner before a slice:
+- A component reaches the sheet only by dragging it out of the palette, and is resized
+  only by its handles: the arrow keys move a selected component but nothing adds or
+  resizes one (FB-40).
+- A Table whose fields are all output columns draws a dash in each cell with no reason,
+  where a Chart of the same columns plots the first output table's answer (FB-41).
+
+**Plan:** Decisions first, recorded here before a slice:
+- FB-40: whether Enter on a palette item adds it to the selected section, or the first,
+  at the first place free, selected; and which keys resize the selected component on
+  the grid, as the arrow keys move it.
+- FB-41: whether a Table of outputs alone takes its rows from the first output table's
+  answer, the others matched by key, as a Chart does, or names in its place why it has
+  no rows.
+
+**Acceptance:** Set by each decision.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/workbench/WorkbenchPalette.tsx` (items dragged, no key adds
+one); `frontend/src/workbench/useWorkbenchShortcuts.ts` (the arrow keys nudge, none
+resize); `frontend/src/workbench/WidgetBody.tsx` (a value not held drawn as a dash);
+`frontend/src/utils/sheetChart.ts::sheetChartData` (a Chart's rows from the first output
+table's answer).

@@ -34,7 +34,7 @@ import {
 import PropertiesPanel from "../PropertiesPanel"
 import SheetCanvas from "../SheetCanvas"
 import WorkbenchPalette from "../WorkbenchPalette"
-import { addTo, coverForm, currentForm, drag, headingWidget, loadForm, releasePointer, sectionedForm, sheet, sheetForm, stubLayout, widgetsOf } from "./fixtures"
+import { addTo, coverForm, currentForm, drag, headingWidget, loadForm, releasePointer, sectionedForm, sheet, sheetForm, stubLayout, topOnSheet, widgetsOf } from "./fixtures"
 
 const widget = (id: string) => findWidget(currentForm(), id)?.widget
 /** The section a component is in. */
@@ -51,7 +51,7 @@ const layer = (id: string) => Number(frame(id).style.zIndex)
 /** A pointer pressed on `target` at (x, y), or moved or released there over the window. */
 const pointer = (type: "pointerdown" | "pointermove" | "pointerup", x: number, y: number, target: EventTarget = window) =>
   act(() => {
-    target.dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y }))
+    target.dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0, buttons: type === "pointerup" ? 0 : 1, clientX: x, clientY: y }))
   })
 /** A turn passes, under fake timers. */
 const turn = () =>
@@ -108,9 +108,18 @@ describe("SheetCanvas", () => {
     expect(within(band("s_notes")).getByTestId("sheet-widget-w_note")).toHaveStyle({ top: "0px" })
     // While building each is a group named by its title, its bar just above it.
     expect(screen.getByRole("group", { name: "Flood" })).toBe(band("s_flood"))
-    expect(screen.getByTestId("section-header-s_flood")).toHaveStyle({ top: "176px" })
-    // Read section by section, whatever their places in them.
+    expect(topOnSheet(screen.getByTestId("section-header-s_flood"))).toBe(176)
+    // Read section by section, whatever their places in them, each section's bar before its components.
     expect(order()).toEqual(["w_boxes", "w_grid", "w_note"])
+    const read = screen.getAllByTestId(/^(section-header|sheet-widget)-/).map((element) => element.dataset.testid)
+    expect(read).toEqual([
+      "section-header-s_policy",
+      "sheet-widget-w_boxes",
+      "section-header-s_flood",
+      "sheet-widget-w_grid",
+      "section-header-s_notes",
+      "sheet-widget-w_note",
+    ])
   })
 
   it("while building draws a bar naming each section just above it, the selected one's handle under its bottom, and in Preview no bars, the sections stacked tight", () => {
@@ -120,16 +129,16 @@ describe("SheetCanvas", () => {
     const bar = (id: string) => screen.getByTestId(`section-header-${id}`)
 
     // Each bar 24 tall, its bottom its section's top.
-    expect(bar("s_policy")).toHaveStyle({ top: "0px", height: "24px" })
-    expect(bar("s_flood")).toHaveStyle({ top: "176px", height: "24px" })
-    expect(bar("s_notes")).toHaveStyle({ top: "432px", height: "24px" })
+    expect(["s_policy", "s_flood", "s_notes"].map((id) => topOnSheet(bar(id)))).toEqual([0, 176, 432])
+    expect(["s_policy", "s_flood", "s_notes"].map((id) => bar(id).style.height)).toEqual(["24px", "24px", "24px"])
     expect(screen.getByRole("button", { name: "Section 2, Flood" })).toBe(bar("s_flood"))
     // The handle setting a section's height only while it is selected, over the middle of its bottom.
     expect(screen.queryAllByTestId(/^section-edge-/)).toHaveLength(0)
     fireEvent.click(bar("s_flood"))
     expect(useWorkbenchViewStore.getState().sectionId).toBe("s_flood")
     expect(screen.getAllByTestId(/^section-edge-/)).toEqual([screen.getByTestId("section-edge-s_flood")])
-    expect(screen.getByTestId("section-edge-s_flood")).toHaveStyle({ top: "428px", height: "8px" })
+    expect(topOnSheet(screen.getByTestId("section-edge-s_flood"))).toBe(428)
+    expect(screen.getByTestId("section-edge-s_flood")).toHaveStyle({ height: "8px" })
 
     act(() => useWorkbenchViewStore.getState().showSection("preview"))
     expect(screen.queryAllByTestId(/^section-(header|edge)-/)).toHaveLength(0)
@@ -153,6 +162,12 @@ describe("SheetCanvas", () => {
     expect(useWorkbenchViewStore.getState().selectedId).toBe("w_grid")
     expect(frame("w_grid")).toHaveAttribute("data-selected", "true")
     expect(frame("w_grid").querySelectorAll("[data-handle]")).toHaveLength(8)
+    // Its frame takes the focus, though the press's default is prevented to drag it.
+    expect(document.activeElement).toBe(frame("w_grid"))
+
+    // A press on the viewport's scrollbar, past its client box, scrolls and keeps the selection.
+    fireEvent.pointerDown(screen.getByTestId("sheet-viewport"), { button: 0, clientX: 1005, clientY: 100 })
+    expect(useWorkbenchViewStore.getState().selectedId).toBe("w_grid")
 
     fireEvent.pointerDown(screen.getByTestId("sheet-viewport"), { button: 0 })
     expect(useWorkbenchViewStore.getState().selectedId).toBeNull()
@@ -247,6 +262,65 @@ describe("SheetCanvas", () => {
 
     pointer("pointerup", 100, 76)
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
+  })
+
+  it("lands a component dragged sideways where the pointer puts it, under a section whose height is off the grid", () => {
+    // The policy's section 300 tall puts Flood's top 348 down the sheet, off the 8px grid.
+    const form = sectionedForm()
+    form.pages[0].sections[0].height = 300
+    loadForm(form)
+    render(<SheetCanvas />)
+
+    pointer("pointerdown", 100, 400, frame("w_grid"))
+    pointer("pointermove", 140, 400)
+
+    // Snapped once, in Flood's own coordinates: 40 across, nothing down.
+    expect(widget("w_grid")).toMatchObject({ x: 56, y: 16 })
+    pointer("pointerup", 140, 400)
+    expect(widget("w_grid")).toMatchObject({ x: 56, y: 16 })
+  })
+
+  it("ends a drag released outside the window at the next move with no button down, and one when the window loses the focus", () => {
+    loadForm(sectionedForm())
+    render(<SheetCanvas />)
+    pointer("pointerdown", 100, 200, frame("w_grid"))
+    pointer("pointermove", 100, 240)
+    const moved = widget("w_grid")
+
+    // Released outside the window: its release was never seen.
+    act(() => {
+      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, buttons: 0, clientX: 600, clientY: 600 }))
+    })
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
+    pointer("pointermove", 600, 600)
+    expect(widget("w_grid")).toEqual(moved)
+
+    pointer("pointerdown", 100, 240, frame("w_grid"))
+    pointer("pointermove", 140, 240)
+    act(() => {
+      window.dispatchEvent(new Event("blur"))
+    })
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
+    const ended = widget("w_grid")
+    pointer("pointermove", 400, 240)
+    expect(widget("w_grid")).toEqual(ended)
+  })
+
+  it("keeps a dragged component under the pointer as the sheet scrolls under it", () => {
+    loadForm(sectionedForm())
+    render(<SheetCanvas />)
+    pointer("pointerdown", 100, 200, frame("w_grid"))
+    pointer("pointermove", 140, 200)
+    expect(widget("w_grid")).toMatchObject({ x: 56 })
+
+    // The sheet scrolls 40 left under the still pointer: the component goes 40 further across it.
+    stubLayout({ left: -40, top: 0, width: 1000, height: 800 })
+    act(() => {
+      window.dispatchEvent(new Event("scroll"))
+    })
+
+    expect(widget("w_grid")).toMatchObject({ x: 96 })
+    pointer("pointerup", 140, 200)
   })
 
   it("stops a component dragged down at its section's bottom, never growing it, and moves it into the next section once its top edge is over that section's bar", () => {
@@ -497,11 +571,11 @@ describe("SheetCanvas", () => {
 
     act(() => {
       item.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 10, clientY: 10 }))
-      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 2000, clientY: 500 }))
+      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, buttons: 1, clientX: 2000, clientY: 500 }))
     })
     expect(screen.queryByTestId("drop-ghost")).not.toBeInTheDocument()
     act(() => {
-      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 200, clientY: 412 }))
+      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, buttons: 1, clientX: 200, clientY: 412 }))
     })
     expect(screen.getByTestId("drop-ghost")).toHaveTextContent("Collection")
     // Over every component on the sheet, the selected one's place included.
@@ -530,7 +604,7 @@ describe("SheetCanvas", () => {
 
     act(() => {
       screen.getByTestId("palette-item-collection").dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 10, clientY: 10 }))
-      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 200, clientY: 180 }))
+      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, buttons: 1, clientX: 200, clientY: 180 }))
     })
     // The pointer is on Flood's bar, but the ghost's top edge, a little above it and snapped,
     // 168 down the sheet, is over the policy's section: kept inside it, its bottom at the
@@ -560,7 +634,7 @@ describe("SheetCanvas", () => {
 
     act(() => {
       screen.getByTestId("palette-item-collection").dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 10, clientY: 10 }))
-      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 200, clientY: 300 }))
+      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, buttons: 1, clientX: 200, clientY: 300 }))
     })
     // Its top edge, snapped, 288 down the sheet: over Flood, whose top is 200, 88 down it.
     expect(screen.getByTestId("drop-ghost")).toHaveStyle({ left: "184px", top: "288px" })
@@ -584,7 +658,7 @@ describe("SheetCanvas", () => {
 
     act(() => {
       screen.getByTestId("palette-item-chart").dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 10, clientY: 10 }))
-      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 300, clientY: 236 }))
+      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, buttons: 1, clientX: 300, clientY: 236 }))
     })
     expect(screen.getByTestId("drop-ghost")).toHaveTextContent("Chart")
     act(() => {
@@ -608,7 +682,7 @@ describe("SheetCanvas", () => {
 
     act(() => {
       screen.getByTestId("palette-item-heading").dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 10, clientY: 10 }))
-      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 300, clientY: 524 }))
+      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, buttons: 1, clientX: 300, clientY: 524 }))
     })
     expect(screen.getByTestId("drop-ghost")).toHaveTextContent("Heading")
     act(() => {
@@ -771,7 +845,7 @@ describe("SheetCanvas", () => {
     // Drawn under a bar of its own, selected, with its handle.
     expect(band(added.id)).toHaveStyle({ top: "192px", height: "416px" })
     expect(within(band(added.id)).getByTestId("sheet-widget-w_grid")).toHaveStyle({ top: "16px" })
-    expect(screen.getByRole("button", { name: "Section 2, Section 2" })).toHaveAttribute("aria-pressed", "true")
+    expect(screen.getByRole("button", { name: "Section 2, Section 2" })).toHaveAttribute("data-selected", "true")
     expect(screen.getByTestId(`section-edge-${added.id}`)).toBeInTheDocument()
     // In Preview, with no bars, the Table is where it was on the sheet: 144 and 16 down, 160.
     act(() => useWorkbenchViewStore.getState().showSection("preview"))
@@ -1089,7 +1163,7 @@ describe("SheetCanvas", () => {
     expect(item).toHaveAttribute("aria-disabled", "true")
     act(() => {
       item.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 10, clientY: 10 }))
-      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 300, clientY: 500 }))
+      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, buttons: 1, clientX: 300, clientY: 500 }))
     })
     expect(screen.queryByTestId("drop-ghost")).not.toBeInTheDocument()
     expect(useWorkbenchViewStore.getState().creating).toBeNull()

@@ -2,6 +2,7 @@ import {
   useState,
   type CSSProperties,
   type InputHTMLAttributes,
+  type Ref,
   type TextareaHTMLAttributes,
 } from "react"
 
@@ -65,6 +66,8 @@ type CommittedTextFieldProps = Omit<
   InputHTMLAttributes<HTMLInputElement>,
   "value" | "onChange"
 > & {
+  /** The input itself, passed through as React 19 passes a ref. */
+  ref?: Ref<HTMLInputElement>
   /** The committed value from state — the source of truth when idle. */
   value: string
   /** Called once per commit boundary (blur / Enter) with the final

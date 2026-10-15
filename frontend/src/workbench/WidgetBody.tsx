@@ -161,7 +161,12 @@ function Cell({
     ...(colours.font === null ? {} : { color: colours.font }),
     ...(problem === null ? {} : PROBLEM_STYLE),
   }
-  const marked = problem === null ? {} : { "aria-invalid": true as const, title: problem }
+  // A required column's cell says so to a screen reader, as its label's mark does on the
+  // sheet; one breaking its column's rules says why.
+  const marked = {
+    ...(column.required ? { "aria-required": true as const } : {}),
+    ...(problem === null ? {} : { "aria-invalid": true as const, title: problem }),
+  }
   if (column.type === "bool") {
     const tick = (
       <input
@@ -586,6 +591,7 @@ function FieldGrid({
               <thead>
                 <tr>
                   <th
+                    scope="col"
                     colSpan={runs === null ? undefined : 2}
                     className="sticky top-0 left-0 z-10 h-7 w-px px-2.5 text-left font-semibold"
                     style={{ background: headFill, boxShadow: `${ruleRight}, ${ruleUnder}`, color: "var(--text-disabled)" }}
@@ -595,6 +601,7 @@ function FieldGrid({
                   {Array.from({ length: count }, (_, row) => (
                     <th
                       key={row}
+                      scope="col"
                       className="group/col sticky top-0 z-[1] h-7 min-w-32 px-2 text-center text-[11px] font-normal tabular-nums"
                       style={{ background: headFill, boxShadow: ruleUnder, borderLeft: columnLine(row), color: "var(--text-disabled)" }}
                     >
@@ -703,13 +710,14 @@ function FieldGrid({
             )}
             <tr className={`text-left font-semibold ${headText}`}>
               {numbered && (
-                <th className="h-7 w-8 px-2 text-center font-semibold" style={{ boxShadow: ruleUnder, color: "var(--text-disabled)" }}>
+                <th scope="col" className="h-7 w-8 px-2 text-center font-semibold" style={{ boxShadow: ruleUnder, color: "var(--text-disabled)" }}>
                   #
                 </th>
               )}
               {fields.map(({ key, found }, position) => (
                 <th
                   key={key}
+                  scope="col"
                   title={fieldTitle(found)}
                   className={`h-7 min-w-32 truncate px-2.5 ${found !== null && isNumeric(found.column.type) ? "text-right" : ""}`}
                   style={{ boxShadow: ruleUnder, color: labelColor(found, colours.font), borderLeft: ruleBefore(found, position) }}

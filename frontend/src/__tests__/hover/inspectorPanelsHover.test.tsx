@@ -286,9 +286,9 @@ describe("PanelShell drag-handle hover", () => {
     )
     const handle = container.querySelector('[data-testid="panel-resize-handle"]') as HTMLElement
     fireEvent.mouseDown(handle, { clientX: 400 })
-    fireEvent.mouseMove(window, { clientX: 300 }) // delta = 100
+    fireEvent.mouseMove(window, { clientX: 300, buttons: 1 }) // delta = 100
     fireEvent.mouseLeave(handle)                  // pointer wanders off
-    fireEvent.mouseMove(window, { clientX: 280 }) // keeps dragging
+    fireEvent.mouseMove(window, { clientX: 280, buttons: 1 }) // keeps dragging
     fireEvent.mouseUp(window)
     // If the migration kept drag state alive through mouseLeave, the
     // final commit fires (500 + 120 = 620).  If it broke that invariant,

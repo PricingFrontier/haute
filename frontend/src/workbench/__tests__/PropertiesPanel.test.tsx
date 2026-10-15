@@ -76,6 +76,29 @@ describe("PropertiesPanel", () => {
     expect(useWorkbenchViewStore.getState().selectedId).toBeNull()
   })
 
+  it("shows the next component's own values, never a value refused for the one before", () => {
+    const form = sheetForm()
+    // The same Rows as the first, so only the key tells the two fields apart.
+    const copy = { ...structuredClone(fieldsWidget(form, "w_grid")), id: "w_grid_2" }
+    form.pages[0].sections[0].widgets.push(copy)
+    loadForm(form)
+    // Both open on Display, so the field stays drawn from one to the other.
+    useWorkbenchViewStore.getState().setWidgetPane("w_grid", "display")
+    useWorkbenchViewStore.getState().setWidgetPane("w_grid_2", "display")
+    select("w_grid")
+    render(<PropertiesPanel />)
+    const rows = () => screen.getByTestId("widget-rows") as HTMLInputElement
+
+    // Past the 50 a Table may start with: refused, the draft kept on screen.
+    fireEvent.change(rows(), { target: { value: "99" } })
+    fireEvent.blur(rows())
+    expect(rows().value).toBe("99")
+
+    act(() => select("w_grid_2"))
+    // Its own Rows, 3, never the 99 refused for the first.
+    expect(rows().value).toBe("3")
+  })
+
   it("puts a Table's and a Collection's settings in two panes, Config with the data it shows and Display with how, keeping each component's pane", () => {
     select("w_grid")
     const { rerender } = render(<PropertiesPanel />)

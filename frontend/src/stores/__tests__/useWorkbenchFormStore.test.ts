@@ -209,6 +209,8 @@ describe("useWorkbenchFormStore", () => {
 
     store().beginGesture(pressed, stop)
     store().setFormRaw({ ...pressed, name: "ab" })
+    // Whether it is unsaved is worked out as the gesture ends, not at each step.
+    expect(store().dirty).toBe(false)
     store().endGesture()
     expect(store()).toMatchObject({ form: named("ab"), dirty: true, redoStack: [] })
     expect(store().undoStack).toEqual([pressed])

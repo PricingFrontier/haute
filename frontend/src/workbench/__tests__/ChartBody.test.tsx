@@ -77,7 +77,7 @@ function OnSheet({ values, children }: { values: Values; children: ReactNode }) 
 function renderChart(values: Values = "sample") {
   return render(
     <OnSheet values={values}>
-      <WidgetBody widget={chart()} fields={shownFields(currentForm(), chart())} />
+      <WidgetBody widget={chart()} fields={shownFields(currentForm().schema, chart())} />
     </OnSheet>,
   )
 }

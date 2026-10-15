@@ -7,7 +7,7 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import { SHEET_PADDING, fitZoom } from "../../utils/sheetGeometry"
 import { sheetVisibility } from "../../utils/sheetVisibility"
-import { withSampleCell } from "../../utils/workbenchForm"
+import { removeWidget, withSampleCell } from "../../utils/workbenchForm"
 import { coverForm, loadForm, sectionedForm, sheetForm, widgetsOf } from "../../workbench/__tests__/fixtures"
 import useWorkbenchFormStore from "../useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../useWorkbenchPreviewStore"
@@ -59,6 +59,10 @@ describe("useWorkbenchViewStore", () => {
     expect(store().zoom).toBe(MAX_ZOOM)
     store().zoomBy(-5)
     expect(store().zoom).toBe(MIN_ZOOM)
+    // In whole percents, however many steps of a tenth.
+    store().setZoom(1)
+    for (let step = 0; step < 7; step += 1) store().zoomBy(-0.1)
+    expect(store().zoom).toBe(0.3)
 
     // Nothing to fit to: no viewport yet, or no form.
     store().setZoom(1)
@@ -198,6 +202,15 @@ describe("useWorkbenchViewStore", () => {
     useWorkbenchPreviewStore.setState({ quote: { policy: [{ "policy.cover": true }] } })
     store().fitZoom()
     expect(store().zoom).toBe(1)
+  })
+
+  it("forgets the pane remembered for a component the form no longer has", () => {
+    const view = useWorkbenchViewStore.getState
+    view().setWidgetPane("w_grid", "display")
+    view().setWidgetPane("w_boxes", "display")
+
+    useWorkbenchFormStore.getState().change((form) => removeWidget(form, "w_grid"))
+    expect(view().widgetPanes).toEqual({ w_boxes: "display" })
   })
 
   it("keeps the properties panel's width between openings", () => {

@@ -56,6 +56,8 @@ describe("PageTabs", () => {
     fireEvent.keyDown(field, { key: "Enter" })
     expect(currentForm().pages[0].title).toBe("Policy")
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
+    // The tab takes the focus back.
+    expect(document.activeElement).toBe(screen.getByRole("tab", { name: "Policy" }))
 
     fireEvent.doubleClick(screen.getByRole("tab", { name: "Policy" }))
     fireEvent.change(screen.getByRole("textbox", { name: "Sheet name" }), { target: { value: "   " } })
@@ -67,6 +69,31 @@ describe("PageTabs", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "Sheet name" }), { target: { value: "Cover" } })
     fireEvent.keyDown(screen.getByRole("textbox", { name: "Sheet name" }), { key: "Enter" })
     expect(currentForm().pages[0].title).toBe("Cover")
+  })
+
+  it("goes from tab to tab with Left, Right, Home and End, round the ends, showing each sheet, Tab stopping at the showing one alone", () => {
+    render(<PageTabs />)
+    const tab = (name: string) => screen.getByRole("tab", { name })
+    const stops = () => screen.getAllByRole("tab").map((element) => element.tabIndex)
+    expect(stops()).toEqual([0, -1])
+    act(() => tab("Sheet 1").focus())
+
+    fireEvent.keyDown(tab("Sheet 1"), { key: "ArrowRight" })
+    expect(document.activeElement).toBe(tab("Sheet 2"))
+    expect(useWorkbenchViewStore.getState().pageId).toBe("p2")
+    expect(stops()).toEqual([-1, 0])
+    // Round the end, and back.
+    fireEvent.keyDown(tab("Sheet 2"), { key: "ArrowRight" })
+    expect(document.activeElement).toBe(tab("Sheet 1"))
+    fireEvent.keyDown(tab("Sheet 1"), { key: "ArrowLeft" })
+    expect(document.activeElement).toBe(tab("Sheet 2"))
+    fireEvent.keyDown(tab("Sheet 2"), { key: "Home" })
+    expect(useWorkbenchViewStore.getState().pageId).toBe("p1")
+    fireEvent.keyDown(tab("Sheet 1"), { key: "End" })
+    expect(document.activeElement).toBe(tab("Sheet 2"))
+    // Nothing moved.
+    expect(currentForm().pages.map((page) => page.id)).toEqual(["p1", "p2"])
+    expect(useWorkbenchFormStore.getState().undoStack).toEqual([])
   })
 
   it("puts no delete on a tab: the sheet's own panel deletes it", () => {
@@ -88,6 +115,11 @@ describe("PageTabs", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 2" }))
     expect(useWorkbenchViewStore.getState()).toMatchObject({ pageId: "p2", section: "preview" })
+    // The arrow keys go from tab to tab there too.
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Sheet 2" }), { key: "ArrowLeft" })
+    expect(useWorkbenchViewStore.getState()).toMatchObject({ pageId: "p1", section: "preview" })
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Sheet 1" }), { key: "F2" })
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
 
     // Nor are the sheets moved there.
     expect(screen.getByTestId("sheet-tab-p1")).toHaveAttribute("draggable", "false")
@@ -107,6 +139,15 @@ describe("PageTabs", () => {
     // The sheet that showed, the first while none was chosen, still shows.
     expect(tabs()).toEqual([["Sheet 2", "false"], ["Sheet 1", "true"]])
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
+  })
+
+  it("keeps the selection when a tab moves before any sheet was chosen, the sheet showing pinned", () => {
+    useWorkbenchViewStore.setState({ pageId: null, selectedId: "w_boxes" })
+    render(<PageTabs />)
+
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Sheet 1" }), { key: "ArrowRight", altKey: true })
+
+    expect(useWorkbenchViewStore.getState()).toMatchObject({ pageId: "p1", selectedId: "w_boxes" })
   })
 
   it("moves the focused tab's sheet with Alt+Left and Alt+Right, keeping the focus and never past either end", () => {

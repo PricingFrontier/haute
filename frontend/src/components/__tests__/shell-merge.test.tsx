@@ -128,7 +128,7 @@ describe("Phase 2D-3 shell merge - panel surface preserved", () => {
     expect(handle).toBeTruthy()
 
     fireEvent.mouseDown(handle, { clientX: 400 })
-    fireEvent.mouseMove(window, { clientX: 300 }) // delta = 100 → 500 + 100 = 600
+    fireEvent.mouseMove(window, { clientX: 300, buttons: 1 }) // delta = 100 → 500 + 100 = 600
     fireEvent.mouseUp(window)
 
     expect(useUIStore.getState().nodePanelWidth).toBe(600)

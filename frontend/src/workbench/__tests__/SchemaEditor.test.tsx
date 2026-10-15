@@ -248,6 +248,24 @@ describe("SchemaEditor", () => {
 
     fireEvent.keyDown(added, { key: "ArrowDown", altKey: true })
     expect(columnNames("policy_details")).toEqual(["state", "exposure", "column"])
+    // The name field keeps the focus in its new place.
+    expect(within(tableNamed("policy_details")).getAllByRole("textbox", { name: "Column name" })[2]).toBe(document.activeElement)
+  })
+
+  it("says why the params files could not be listed, and lists them again on Retry", async () => {
+    vi.mocked(listProjectFiles)
+      .mockRejectedValueOnce(new Error("This project's pipeline sits at the project root, so it has no pipeline folder to keep versioned files in."))
+      .mockResolvedValueOnce(paramsFolder("states.csv"))
+    render(<SchemaEditor />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of state" }))
+
+    const said = await screen.findByTestId("params-unlisted")
+    expect(said).toHaveTextContent("This project's pipeline sits at the project root")
+    const asked = vi.mocked(listProjectFiles).mock.calls.length
+    fireEvent.click(within(said).getByRole("button", { name: "Retry" }))
+    await waitFor(() => expect(screen.queryByTestId("params-unlisted")).toBeNull())
+    expect(vi.mocked(listProjectFiles).mock.calls.length).toBeGreaterThan(asked)
   })
 
   it("shows a column's label and rules, each saved as it commits", () => {

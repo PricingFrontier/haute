@@ -50,11 +50,9 @@ describe("sheetGeometry", () => {
     expect([snap(3), snap(4), snap(13), snap(-5)]).toEqual([0, 8, 16, -8])
   })
 
-  it("snaps moves to the grid, keeping components off the top and left edges but not the right", () => {
-    expect(moveRect(rect, 13, -5)).toEqual({ x: 112, y: 88, w: 200, h: 64 })
-    expect(moveRect(rect, -500, -500)).toMatchObject({ x: 0, y: 0 })
-    // The sheet widens to hold whatever is dragged to its right.
-    expect(moveRect(rect, 5000, 0).x).toBe(5096)
+  it("moves a component by what was dragged, unsnapped: it is snapped once where it lands", () => {
+    expect(moveRect(rect, 13, -5)).toEqual({ x: 109, y: 91, w: 200, h: 64 })
+    expect(moveRect(rect, -500, -500)).toMatchObject({ x: -404, y: -404 })
   })
 
   it("resizes from any handle, keeping the opposite edges and a minimum size", () => {
@@ -68,7 +66,8 @@ describe("sheetGeometry", () => {
   })
 
   it("places a component near a point, and tells how far right the components reach", () => {
-    expect(placeAt(13, -20, { w: 240, h: 64 })).toEqual({ x: 16, y: 0, w: 240, h: 64 })
+    // Snapped once where it lands, as a move is.
+    expect(placeAt(13, -20, { w: 240, h: 64 })).toEqual({ x: 13, y: -20, w: 240, h: 64 })
     expect(contentRight([rect, { x: 0, y: 0, w: 400, h: 10 }])).toBe(400)
     expect(contentRight([])).toBe(0)
   })
