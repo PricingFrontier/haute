@@ -15,10 +15,7 @@ step that works today for each, and drop it when the package lands. `BUG-27` to
 describes: the CLI's help, the offset tooltip, a tuned t-boost run's summary and the
 t-boost starter parameters in the modelling UI specification. `BUG-31`, found on
 8 October 2026 while planning how a Quote Input takes an extension's tables, is a deployed pipeline that hands every port of a
-multi-table Quote Input the whole request. `BUG-35`, the Files panel acting on the folder
-it has left, was found on 15 October 2026 by the
-[review of the Workbench's pull requests](workbench-review-2026-10-15.md) in the parts
-those pull requests changed beside the Workbench.
+multi-table Quote Input the whole request.
 
 ## Priorities
 
@@ -37,7 +34,6 @@ those pull requests changed beside the Workbench.
 | BUG-29 | Planned | P2 | A tuned t-boost run's summary says its published model is the winning trial's fit, not a refit. |
 | BUG-30 | Planned | P3 | The modelling UI specification lists the t-boost starter parameters and readiness issues the editor has. |
 | BUG-31 | Planned | P1 | A deployed Quote Input gives each of its ports its own table from the request, as the editor does. |
-| BUG-35 | Planned | P2 | The Files panel acts only on the folder it shows. |
 
 ## Planned improvements
 
@@ -310,29 +306,4 @@ editor's result for the same request, through `/quote` for one quote and for sev
 **Evidence:** `src/haute/deploy/_scorer.py::_score_graph_lazy`;
 `src/haute/_graph_utils.py::select_edge_source_output`;
 `src/haute/_json_shred/_shred.py::shred_to_buffers`.
-
-### BUG-35 — The Files panel acts on the folder it shows
-**Why:** Moving to another folder updates the breadcrumb at once but keeps the previous
-folder's rows, with their actions, until the next listing arrives.
-- A delete then removes the row's own file while the breadcrumb names the new folder, and
-  the dialog names only the file.
-- An upload in that window checks for clashes against the old folder's listing, and sends
-  another file's revision.
-- In `data/` a delete is not versioned.
-
-Found by the [Workbench review](workbench-review-2026-10-15.md) (CX-15).
-
-**Plan:**
-- Rows and their actions show only while the listing answers the folder shown
-  (`listing.path`).
-- An upload's clash check uses a listing of its own folder.
-- The delete and replace dialogs name the folder.
-
-**Acceptance:** While a folder loads, no row of another folder can be deleted or replaced. A
-test drives a slow listing.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/FilesPanel.tsx::FilesPanel` (the listing kept across a
-path change).
 

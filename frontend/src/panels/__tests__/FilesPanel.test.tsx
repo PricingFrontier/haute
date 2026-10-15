@@ -228,18 +228,55 @@ describe("FilesPanel", () => {
 
   it("asks before deleting and deletes the revision shown", async () => {
     const { epoch } = useDataEpochStore.getState()
-    mockList.mockResolvedValue(listing("pipeline", "data", [file("old.csv", "data/old.csv")]))
+    mockList.mockImplementation((_place: string, path: string) =>
+      Promise.resolve(path === "" ? listing("pipeline", "", [folder("data")]) : listing("pipeline", "data", [file("old.csv", "data/old.csv")])),
+    )
     mockDelete.mockResolvedValue({ path: "data/old.csv", git_sha: "def", identity_required: false, warnings: [] })
     render(<FilesPanel place="pipeline" onClose={vi.fn()} />)
+    fireEvent.click(await screen.findByText("data"))
 
     fireEvent.click(await screen.findByLabelText("Delete old.csv"))
     const dialog = await screen.findByTestId("files-delete-dialog")
+    // The dialog names the folder as well as the file.
+    expect(within(dialog).getByText("Delete old.csv from rating/files/data?")).toBeInTheDocument()
     expect(within(dialog).getByText("It stays in version history.")).toBeInTheDocument()
     fireEvent.click(screen.getByTestId("files-delete-confirm"))
 
     await waitFor(() => expect(mockDelete).toHaveBeenCalledWith("pipeline", "data/old.csv", "3-old.csv"))
     await waitFor(() => expect(mockReport).toHaveBeenCalledWith(expect.objectContaining({ git_sha: "def" })))
     expect(useDataEpochStore.getState().epoch).toBe(epoch + 1)
+  })
+
+  it("shows no row of the folder left while the next one loads, so none can be deleted or replaced", async () => {
+    // data/'s listing is slow: every read of it waits until the test answers them all.
+    const data = listing("pipeline", "data", [file("a.csv", "data/a.csv")])
+    const waiting: Array<(value: ProjectFolderResponse) => void> = []
+    let answered = false
+    const answerData = () => {
+      answered = true
+      for (const resolve of waiting.splice(0)) resolve(data)
+    }
+    mockList.mockImplementation((_place: string, path: string) =>
+      path === ""
+        ? Promise.resolve(listing("pipeline", "", [folder("data"), file("root.csv", "root.csv")]))
+        : answered ? Promise.resolve(data) : new Promise((resolve) => { waiting.push(resolve) }),
+    )
+    render(<FilesPanel place="pipeline" onClose={vi.fn()} />)
+    expect(await screen.findByLabelText("Delete root.csv")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText("data"))
+
+    // The breadcrumb names data/ at once; the root's rows, and their Delete, are gone.
+    expect(screen.queryByText("root.csv")).toBeNull()
+    expect(screen.queryByLabelText("Delete root.csv")).toBeNull()
+    expect(screen.getByTestId("files-loading")).toBeInTheDocument()
+    expect(screen.getByTestId("files-upload")).toBeDisabled()
+    // A drop meanwhile checks for clashes against data/'s own listing, not the root's.
+    dropFiles(screen.getByTestId("files-drop-zone"), [new File(["x"], "root.csv")])
+    await waitFor(() => expect(mockList).toHaveBeenCalledTimes(3))
+    answerData()
+    expect(await screen.findByLabelText("Delete a.csv")).toBeInTheDocument()
+    await waitFor(() => expect(mockUpload).toHaveBeenCalledWith("pipeline", "data/root.csv", expect.anything(), expect.objectContaining({ replaceRevision: null })))
   })
 
   it("shows a failed upload's message from the server", async () => {

@@ -39,6 +39,12 @@ function joinPath(folder: string, name: string): string {
   return folder ? `${folder}/${name}` : name
 }
 
+/** The folder a place-relative *path* is in: "" for the place's root. */
+function folderOf(path: string): string {
+  const slash = path.lastIndexOf("/")
+  return slash < 0 ? "" : path.slice(0, slash)
+}
+
 /** Whether files can be added to *folder* (relative to the place) and deleted from it. */
 function folderTakesFiles(place: ProjectFilePlace, folder: string): boolean {
   if (place === "pipeline") return true
@@ -144,11 +150,14 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
   }, [place, path, request])
 
   const root = listing?.root ?? ""
+  // The listing of the folder shown: until it answers, another folder's rows, and what they
+  // offer, are not shown, so nothing acts on a folder that is no longer open.
+  const shown = listing !== null && listing.place === place && listing.path === path ? listing : null
   const shownFolder = (folder: string) => (folder ? joinPath(root, folder) : root) || "the project folder"
   // The open folder's own listing says whether it takes files (a pipeline folder
   // .gitignore ignores does not); any other folder goes by its place.
   const takesFiles = (folder: string) =>
-    folder === path && listing !== null ? listing.writable : folderTakesFiles(place, folder)
+    folder === path && shown !== null ? shown.writable : folderTakesFiles(place, folder)
   const refusal = (folder: string) =>
     place === "pipeline"
       ? `${shownFolder(folder)} is ignored by .gitignore, so files added there couldn't be versioned.`
@@ -189,7 +198,8 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
       addToast("error", refusal(folder))
       return
     }
-    let entries = folder === path && listing ? listing.entries : null
+    // A clash is checked against a listing of the folder written to, never another's.
+    let entries = folder === path && shown !== null ? shown.entries : null
     if (entries === null) {
       try {
         entries = (await listProjectFiles(place, folder)).entries
@@ -246,7 +256,7 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
 
   const crumbs = path ? path.split("/") : []
   const openFolder = dropFolder(place, path)
-  const writable = listing?.writable ?? false
+  const writable = shown?.writable ?? false
   const now = new Date()
 
   return (
@@ -298,7 +308,7 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
             type="button"
             data-testid="files-upload"
             onClick={() => inputRef.current?.click()}
-            disabled={listing === null || !takesFiles(openFolder)}
+            disabled={shown === null || !takesFiles(openFolder)}
             className={ICON_BUTTON}
             style={MUTED}
             title="Upload"
@@ -339,11 +349,13 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
             <span className="flex-1">{error}</span>
             <button type="button" onClick={refresh} className="underline">Try again</button>
           </div>
-        ) : listing !== null && listing.entries.length === 0 && uploads.length === 0 ? (
+        ) : shown === null ? (
+          <div className="px-3 py-2 text-[12px]" style={MUTED} data-testid="files-loading">Loading…</div>
+        ) : shown.entries.length === 0 && uploads.length === 0 ? (
           <div className="px-3 py-2 text-[12px]" style={MUTED}>Empty folder</div>
         ) : (
           <ul aria-label={TITLES[place]}>
-            {listing?.entries.map((entry) =>
+            {shown.entries.map((entry) =>
               entry.kind === "folder" ? (
                 <li
                   key={entry.path}
@@ -453,7 +465,7 @@ function ConfirmDialog({
   if (confirmation.kind === "delete") {
     return (
       <ModalShell ariaLabel={`Delete ${confirmation.entry.name}`} onClose={onCancel} testId="files-delete-dialog">
-        <ModalFormHeader title={`Delete ${confirmation.entry.name}?`}>
+        <ModalFormHeader title={`Delete ${confirmation.entry.name} from ${shownFolder(folderOf(confirmation.entry.path))}?`}>
           {fateOf(place, confirmation.entry.status, "It")}
         </ModalFormHeader>
         <div className="flex justify-end gap-2 p-4">
