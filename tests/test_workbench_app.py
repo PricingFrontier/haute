@@ -279,6 +279,28 @@ def test_a_quote_is_priced_through_the_releases_pipeline(release: Any) -> None:
     }
 
 
+def test_a_quote_whose_answer_is_all_empty_is_priced_to_nothing(
+    release: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polars as pl
+
+    client = _client(release())
+    # A pipeline that answers this quote with a null premium and no rows of a table.
+    answer = pl.DataFrame(
+        {"pricing_output": [{"premium": None}], "items": [[]]},
+        schema={
+            "pricing_output": pl.Struct({"premium": pl.Float64}),
+            "items": pl.List(pl.Struct({"item": pl.String})),
+        },
+    )
+    monkeypatch.setattr(workbench_app, "score_graph", lambda **_: answer)
+
+    priced = _price(client)
+
+    assert priced.status_code == 200, priced.text
+    assert priced.json()["tables"] == {}
+
+
 def test_a_page_drawn_for_another_release_is_refused(release: Any) -> None:
     client = _client(release())
     other_sheets = _price(client, revision="0" * 64)

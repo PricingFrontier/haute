@@ -36,13 +36,9 @@ class WorkbenchTestQuoteError(WorkbenchError):
 
 
 def project_test_quotes_path(project_root: Path) -> Path:
-    """The project's test-quote file: ``test_quotes.sqlite`` in its test-quote directory.
-
-    The path is an ordinary one inside the project, as the Files panels take one: no link or
-    junction on the way, and the file no hard link, which SQLite would write through to the
-    file it shares.
-    """
-    directory = DEFAULT_TEST_QUOTES_DIR
+    """The project's test-quote file: ``test_quotes.sqlite`` in its test-quote directory,
+    as :func:`test_quotes_path` takes it from ``haute.toml``'s ``[test_quotes]`` table."""
+    table: object = {}
     toml_path = project_root / "haute.toml"
     if toml_path.is_file():
         try:
@@ -50,9 +46,22 @@ def project_test_quotes_path(project_root: Path) -> Path:
                 table = tomllib.load(handle).get("test_quotes", {})
         except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
             raise WorkbenchTestQuoteError(f"haute.toml could not be read: {exc}") from exc
-        configured = table.get("dir") if isinstance(table, dict) else None
-        if isinstance(configured, str) and configured:
-            directory = configured
+    return test_quotes_path(project_root, table)
+
+
+def test_quotes_path(project_root: Path, table: object) -> Path:
+    """``test_quotes.sqlite`` in the test-quote directory a parsed ``[test_quotes]`` *table*
+    names, ``tests/quotes`` when it names none: the one reading of the folder, which the
+    editor and deploy share.
+
+    The path is an ordinary one inside the project, as the Files panels take one: no link or
+    junction on the way, and the file no hard link, which SQLite would write through to the
+    file it shares.
+    """
+    configured = table.get("dir") if isinstance(table, dict) else None
+    directory = (
+        configured if isinstance(configured, str) and configured else DEFAULT_TEST_QUOTES_DIR
+    )
     relative = Path(directory) / TEST_QUOTES_FILE
     path, problem = ordinary_path_problem(project_root, str(relative))
     if problem is None:
@@ -62,6 +71,14 @@ def project_test_quotes_path(project_root: Path) -> Path:
         f"{named} {_PATH_PROBLEMS[problem]}: [test_quotes] dir must be a folder of the "
         f"project's own, and {TEST_QUOTES_FILE} a file inside it."
     )
+
+
+def test_quote_files(directory: Path) -> list[Path]:
+    """The test-quote files in *directory*: its JSON files, then the workbench's test-quote
+    file when there is one."""
+    files = sorted(directory.glob("*.json"))
+    saved = directory / TEST_QUOTES_FILE
+    return [*files, saved] if saved.is_file() else files
 
 
 def project_gitattributes_path(project_root: Path) -> Path:

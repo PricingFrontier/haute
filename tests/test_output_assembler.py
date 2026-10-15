@@ -543,6 +543,20 @@ def test_output_rendering_checkpoints_python_materialisation() -> None:
     assert "output_render_prune" in fault_points
 
 
+def test_a_row_that_prunes_to_nothing_is_kept_as_an_empty_document() -> None:
+    # One document per row, so a response stays aligned with the quotes asked for.
+    frame = pl.DataFrame(
+        {"premium": [1.0, None, 3.0], "items": [[{"v": 1}], [], None]},
+        schema={"premium": pl.Float64, "items": pl.List(pl.Struct({"v": pl.Int64}))},
+    )
+
+    assert render_output_document(frame) == [
+        {"premium": 1.0, "items": [{"v": 1}]},
+        {},
+        {"premium": 3.0},
+    ]
+
+
 def test_validate_rejects_divergent_array_branches_in_descending_order() -> None:
     mapping = [
         _entry("p", "right_id", "$[:].right[:].id"),

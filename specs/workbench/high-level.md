@@ -730,7 +730,11 @@ Out of scope:
     each answer with the response the quote was accepted with: a number matches within one
     part in a billion and anything else exactly, walked into the response's tables, every
     difference listed by its place (`table.column`, `table[row].column`), the accepted
-    value beside the new, a value on one side only as added or removed. Each quote shows
+    value beside the new, a value on one side only as added or removed. Both responses
+    are compared as a deployed pipeline answers, a null value and an empty table left out
+    of each, so null and absent are alike. A quote with nothing typed in the cells the sheets
+    show once it is carried onto the form is not priced and fails, as a save refuses one.
+    Each quote shows
     unchanged, changed or failed with its reason, and a change to the pipeline, the source
     or the form after the run started marks the run's results stale.
   - **Accepted.** Accepting a changed quote saves its new response as a new revision,
@@ -768,11 +772,17 @@ Out of scope:
   removed, and one the write never synced is left, harmless, never committed. A file
   SQLite cannot open to settle refuses the commit, naming it.
 
-  In CI, deploy's check prices every test quote in the file, one request each, and
-  compares its answer with the response it was accepted with as a run compares it, so a
-  change the panel shows is a change the check fails on; a test quote saved unpriced is
-  priced with nothing to compare, and the smoke test does the same against the deployed
-  endpoint ([deploy](../deploy/high-level.md)). `haute test-quotes report` says what a
+  In CI, deploy's check reads the test quotes where the editor keeps them, `[test_quotes]
+  dir` or `tests/quotes` when `haute.toml` names none, and builds each quote's request as
+  a run does: its newest revision's values carried onto the form as the project holds it,
+  each input column's allowed values read again from its params file as the app's release
+  reads them. A value with no place on the form, a request that differs from the one the
+  revision keeps (named by its place under `request.`), or nothing typed at all fails the
+  quote. It then prices that request, one request each, and compares its answer with the
+  response it was accepted with as a run compares it, so a change the panel shows is a
+  change the check fails on; a test quote saved unpriced is priced with nothing to
+  compare. `haute app build` checks against the form it ships, and the smoke test does
+  the same against the deployed endpoint ([deploy](../deploy/high-level.md)). `haute test-quotes report` says what a
   branch does to the test quotes against its base: those added, removed and accepted
   anew, each with the outputs that moved; a workbench project's generated pull-request
   checks post it on the pull request on GitHub and keep it with the run on GitLab and

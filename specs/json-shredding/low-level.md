@@ -30,7 +30,7 @@ the server (see [IO layer](../io-layer/low-level.md#automatic-preparation)).
 | `src/haute/_json_shred/_cache.py` | The runtime apiInput loader: store-leased tables for canvas execution, an in-process bounded shred for generated standalone code. |
 | `src/haute/_json_safe.py` | Recursively converts Python/pipeline values into JSON-safe representations for API responses and preview rows. |
 | `src/haute/_jsonpath.py` | The shared canonical array-outer JSON path parser and writer used by both INPUT and OUTPUT path addressing. |
-| `src/haute/_output_assembler.py` | V2 OUTPUT mapping validation (including one source frame per array level) and document assembly: array-prefix nesting by relation keys, pruning, and collected-frame rendering. |
+| `src/haute/_output_assembler.py` | V2 OUTPUT mapping validation (including one source frame per array level) and document assembly: array-prefix nesting by relation keys, pruning (`pruned_document`, one document's), and collected-frame rendering, one document per row. |
 | `src/haute/_edge_join.py` | `edgeJoin` node config validation, Polars join-kwargs construction/execution, and the shared join column-demand-narrowing function used by both static projection and runtime narrowing. |
 
 Submodel graph expansion and boundary rewiring are owned by
@@ -196,7 +196,11 @@ validator guarantees it), so the null guards mark the key in each frame that car
 it. A present null component raises `OutputNestingKeyError`. `_prune` removes null-valued object fields and empty collection
 values from objects, and removes empty-object elements from arrays; null or
 empty-list elements already present inside arrays are retained.
-`render_output_document` applies that same pruning to the collected Polars shape.
+`render_output_document` applies that same pruning inside each row of the collected Polars
+shape and keeps every row, a row that prunes to nothing as `{}`, so a response holds one
+document per row of the frame (one per quote of a Workbench request) and stays aligned
+with what was asked. `pruned_document` is that pruning of one document, which every
+comparison of a whole response applies to both sides (`response_changes`).
 
 `output_document_schema(source_schemas, mapping)` derives the document's schema
 from the mapping paths and the source frames' schemas alone, mirroring
@@ -880,7 +884,7 @@ V2 schema codec and OUTPUT shape:
   focused mutation boundaries, the rejection of two frames at one array level
   (the root or a nested level, before any frame is collected), sibling-array
   non-explosion, pruning,
-  rendering, exact assembled shapes, one-parse-per-distinct-path validation,
+  rendering (a row that prunes to nothing kept as `{}`), exact assembled shapes, one-parse-per-distinct-path validation,
   incomplete editor rows, multi-frame relation keys absent from a
   non-participating frame, and limited assembly (the first documents read only
   their own children's rows, a synthesised root is complete, duplicate root rows collapse, and a limited level

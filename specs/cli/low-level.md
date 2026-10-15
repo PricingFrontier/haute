@@ -15,7 +15,7 @@
 | `src/haute/cli/_deploy.py` | `haute deploy` — `DeployCliConfig`, `handle_deploy`, CI-gate check, resolve → validate-and-score-once → render quote results → deploy pipeline. |
 | `src/haute/cli/_app.py` | `haute app` — the `app` group and its `build`, `serve` and `migrate` commands: `AppBuildConfig` and `handle_app_build` (the working directory's release through `build_release` into the directory given, `RELEASE_DIR` by default, and with `--image` its image through `build_image`), `AppServeConfig` (with `reader`, `--reader`) and `handle_app_serve` (the release built into `RELEASE_DIR`, the quote store at `QUOTES_FILE` made and migrated through `_local_store`, then `create_app` with the git identity from `get_identity` as its local principal, refused without one, and that store, a reader with `--reader`, served by `uvicorn` on `SERVE_HOST` alone), `handle_app_migrate` (`migrate_store` on the `--url` given, else `quote_store_url`, refused naming `STORE_URL_ENV` without either); a release or a store refused as a Click error, and a note when `[workbench.app] host` is unset. |
 | `src/haute/cli/_test_quotes.py` | `haute test-quotes` — the `test_quotes` group and its `report` command: `ReportConfig`, `handle_report` (the file at `project_test_quotes_path`, the base's through `git show`, read through `_read_quotes` from a migrated copy), `report_markdown` (the counts, then the accepted anew, a newer revision or one under the same number with another response, with `response_changes` between the base's and the branch's accepted responses, the added and the removed, by name); `dump` (`dump_text`) and `merge` (`merge_files`: each side read through a migrated copy as `QuoteHistory` by id, a quote taken from the side that changed it against the base, a conflict where both did, the result written over a copy of OURS and moved into place only when nothing conflicts). |
-| `src/haute/cli/_smoke.py` | `haute smoke` — `SmokeConfig`, `handle_smoke`, sends each test quote to a live endpoint (Databricks or HTTP) as a request of its own through `_smoke_files`, which reports each file from `price_test_quotes_live`. |
+| `src/haute/cli/_smoke.py` | `haute smoke` — `SmokeConfig`, `handle_smoke`, sends each test quote to a live endpoint (Databricks or HTTP) as a request of its own through `_smoke_files`, which reports each file from `price_test_quotes_live`, the workbench's test quotes rebuilt against the project's form as deploy rebuilds them. |
 | `src/haute/cli/_status.py` | `haute status` — `StatusConfig`, `handle_status`, MLflow Model Registry lookup. |
 | `src/haute/cli/_impact.py` | `haute impact` — `ImpactConfig`, `handle_impact`, staging-vs-production comparison report; `_impact_databricks`/`_impact_http` transport backends. |
 | `src/haute/cli/_gpu_setup.py` | `haute gpu-setup` — `GpuSetupConfig`, `handle_gpu_setup`, swaps `xgboost-cpu` for XGBoost's CUDA build (or back) in the running interpreter and verifies it in a fresh process. |
@@ -309,7 +309,8 @@ Key files and what they cover:
   path, the unsupported-target error, each test quote sent as a request of its own on both
   transports, an expected output checked within tolerance into a Workbench Output's tables
   (and refused for two rows or a non-object answer), a failed request reported by its row
-  while the rest are priced, and an unreadable file.
+  while the rest are priced, an unreadable file, and the workbench's test quotes rebuilt
+  against the project's form before they are sent.
 - `test_cli_ux.py` — cross-cutting UX contracts: shared `ENDPOINT_SUFFIX_HELP` string reused across
   commands, `init --force`, `train` progress-bar flushing, `status --version-only` exit codes,
   Windows pre-commit chmod skip.

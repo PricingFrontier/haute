@@ -260,6 +260,18 @@ def test_every_change_to_a_response_is_listed_by_its_place() -> None:
     ]
 
 
+def test_responses_are_compared_as_a_deployed_pipeline_renders_them() -> None:
+    # Preview keeps a null and an empty table; a deployed pipeline leaves both out.
+    accepted = {"pricing": {"premium": 100.0, "note": None}, "items": [], "extras": {}}
+    rendered = {"pricing": {"premium": 100.0}}
+
+    assert response_changes(rendered, accepted, 1e-9) == []
+    assert response_changes(accepted, rendered, 1e-9) == []
+    assert [tuple(change) for change in response_changes({"pricing": {}}, accepted, 1e-9)] == [
+        ("pricing", "removed", {"premium": 100.0}, None)
+    ]
+
+
 # ── The routes ────────────────────────────────────────────────────────────
 
 

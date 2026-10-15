@@ -14,12 +14,12 @@ the app saves quotes to on the server; how underwriters manage their quotes in t
 exports from the app; the test quotes analysts keep and re-price in Preview; and the actions
 that fill the sheets from databases and APIs.
 
-`WB-16` to `WB-22` fix what the [review of 15 October 2026](workbench-review-2026-10-15.md)
+`WB-17` to `WB-22` fix what the [review of 15 October 2026](workbench-review-2026-10-15.md)
 found in what pull requests #303 to #309 built. Each names the review's findings it closes
 (`CX-n`, `FB-n`, `TQ-n`, `SD-n`, `MS-n`), and the review holds their evidence. They are
-taken in order, `WB-16` first: the first three close risks to persisted work, computed results
-and the regression gate, and `WB-22` merges the mechanisms written several times once the
-others have fixed their behaviour.
+taken by priority, `WB-18` first: it closes the risk that a price shown is not the one the
+pipeline gives, then the P2 packages in order, and `WB-22` merges the mechanisms written
+several times once the others have fixed their behaviour.
 
 ## Priorities
 
@@ -32,7 +32,6 @@ others have fixed their behaviour.
 | WB-11 | Decision | P2 | An underwriter exports a saved quote from the app in the formats the project needs, naming the release that priced it. |
 | WB-12 | Planned | P3 | A test quote whose response runs past what Preview shows is saved, run and compared in full, as every other test quote is. |
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, sees which quotes are about to lapse, records how a final quote ended, and archives or reassigns many quotes at once. |
-| WB-16 | Planned | P1 | CI, deploy and `haute app build` check each test quote as the app would send it, on one encoding of the response, so a change the panel shows is a change the check fails on. |
 | WB-17 | Planned | P2 | Test quotes behave in the panel and in git as quotes do in the app: the newest answer wins, one read per quote, drivers registered once and quietly, and the report compares a branch with its merge base. |
 | WB-18 | Planned | P1 | What the sheets show is what is priced: a price is stale whenever its pipeline, data or source changes, a pipeline that does not read the sheets is refused, every value priced is visible on its cell, and one rule says whether a quote is typed. |
 | WB-19 | Planned | P2 | The form and its Save say what is wrong and keep what was typed: readable refusals, unique ids, no silent no-op, recovery after a lost answer, and the node copies kept outside the undo history. |
@@ -377,78 +376,6 @@ refused by name and the rest changed.
 lists, without outcomes or validity); `src/haute/deploy/_validators.py::response_changes` (a
 comparison by place, not by key); `frontend/src/app/QuotesPage.tsx::QuotesPage` (one quote
 changed at a time).
-
-### WB-16 — The regression gate checks what the app sends
-**Why:**
-- CI's check, and `haute app build`'s, price each test quote's stored request and compare
-  the answer with the accepted response. The panel's Run instead carries the quote's values
-  onto the form as it is now, rebuilds the request, and compares both the request and the
-  response.
-  - A change of Show when, of a params file's values or of preset rows therefore alters
-    what the app sends while the check passes.
-  - This contradicts the specification's "a change the panel shows is a change the check
-    fails on" (review CX-2).
-- Deploy reads `[test_quotes] dir` with no default, while the editor keeps test quotes in
-  `tests/quotes` when the table is absent. A project whose `haute.toml` lacks the table has
-  its saved test quotes checked by nothing (CX-23).
-- A Workbench response has three encodings:
-  - Preview keeps a Workbench Output's rows as dataframe rows, nulls and empty tables
-    included, and the accepted response and the dry run compare that shape. MLflow answers
-    the same.
-  - The container's `/quote` renders it through `render_output_document`, which drops null
-    fields, empty lists and empty objects.
-  - `haute smoke` against a container target therefore fails every accepted quote that
-    holds a null or an empty table (FB-50).
-- That rendering also drops a quote whose values are all null or whose tables are all
-  empty. The app's price route then answers 500, and the container answers no rows for a
-  one-row request (FB-51).
-- A run has no "nothing typed" gate where a save has one. A quote whose columns were all
-  removed is priced as the null quote, which no deployed request is, and accepting it
-  stores a request the check then fails (FB-14).
-- The digest test never makes two different revisions with one number, so a digest of the
-  quote and number alone would pass it (TQ-1).
-
-**Plan:**
-- `_saved_test_quote_cases` builds each case's request from its revision's values carried
-  onto the current form (`carry_values`, then `quote_request`). It fails a case whose values
-  have no place on that form, or whose rebuilt request differs from the stored one, naming
-  the place, and it prices the rebuilt request.
-- `haute app build` checks against the form it ships, its allowed values read again.
-- One reader of the test-quote folder, `project_test_quotes_path`'s, is used by deploy, the
-  smoke test and the editor.
-- One rendering of a Workbench response keeps one document per quote: it prunes inside
-  that document and keeps `{}`. The container and the app both use it.
-- Every comparison of a whole response (`_response_errors`, the smoke test, the panel) is
-  made on one normalised shape.
-- `run` in the test-quote store refuses a quote with nothing on the sheets, as `save`
-  does.
-- The digest test forks a store after revision 1 and saves a different revision 2 on each
-  side.
-
-**Acceptance:**
-- A Show-when change that hides a priced column fails `haute deploy --dry-run` for each
-  test quote it changes, naming the request's change.
-- A test quote saved without `[test_quotes]` is checked.
-- A container deployment answers a quote with a null output and an empty table, and
-  `haute smoke` passes it.
-- The app prices a quote whose answer is all empty without a 500.
-- A run of a quote with nothing on the sheets marks it failed.
-
-Each has a test that fails today.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/deploy/_validators.py::_saved_test_quote_cases` (the stored request
-priced); `src/haute/deploy/_validators.py::_response_errors` (the unpruned comparison);
-`src/haute/deploy/_validators.py::price_test_quotes_live` (the smoke test's comparison);
-`src/haute/deploy/_config.py::DeployConfig` (no default folder);
-`src/haute/_test_quotes.py::project_test_quotes_path` (the editor's default);
-`src/haute/_output_assembler.py::render_output_document` and
-`src/haute/_output_assembler.py::_prune` (nulls, empties and empty rows dropped);
-`src/haute/_workbench_app.py::create_app` (one document unpacked per pricing);
-`frontend/src/stores/useWorkbenchTestQuotesStore.ts::quoteRefusal` (the save's gate, not
-the run's);
-`tests/test_quote_store.py::test_a_revision_saved_apart_under_the_same_number_is_refused_by_its_digest`.
 
 ### WB-17 — Test quotes in the panel and in git
 **Why:**
@@ -860,7 +787,7 @@ sheet, then in the section); `frontend/src/utils/sheetGeometry.ts::moveRect`;
 
 ### WB-22 — One mechanism per concern
 **Why:** The [review](workbench-review-2026-10-15.md) found mechanisms written several
-times, each copy slightly different; the defects in `WB-16` to `WB-21` sit where one copy
+times, each copy slightly different; the defects in `WB-17` to `WB-21` sit where one copy
 was forgotten or scoped to the wrong thing:
 - **Stale answers and turn-taking**, hand-rolled about ten times:
   - the form store's turns;
@@ -892,7 +819,7 @@ was forgotten or scoped to the wrong thing:
 - **Two primitives in `frontend/src/utils`:** `serial()`, a turn queue, and
   `latest(scope)`, a ticket that stays current while its scope does (the document
   generation, the quote and its version, the folder, the list query). They are tested once
-  and adopted by every store above, after `WB-16` to `WB-21` have fixed each copy's
+  and adopted by every store above, after `WB-17` to `WB-21` have fixed each copy's
   behaviour.
 - **One project writer.**
   - It takes a project-relative path, the revision the caller saw, the bytes or a staged
@@ -918,7 +845,7 @@ was forgotten or scoped to the wrong thing:
 
 Behaviour is unchanged: the affected tests pass before and after.
 
-**Dependencies:** `WB-16` to `WB-21` first, so their fixes land before the copies are
+**Dependencies:** `WB-17` to `WB-21` first, so their fixes land before the copies are
 merged; `FSH-R04`; `BUG-34` for the capture retry.
 
 **Evidence:** `frontend/src/stores/useWorkbenchFormStore.ts::takeTurn`;

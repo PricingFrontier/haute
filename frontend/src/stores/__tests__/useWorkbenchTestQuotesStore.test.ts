@@ -197,6 +197,19 @@ describe("useWorkbenchTestQuotesStore", () => {
     expect(store().runs.b).toMatchObject({ status: "failed", error: "quote_not_found: gone" })
   })
 
+  it("fails a test quote with nothing typed left on the sheets without pricing it", async () => {
+    await store().load()
+    store().toggle("a")
+    // Its one column was removed since: carried onto the form, nothing of it is left.
+    vi.mocked(openTestQuote).mockResolvedValue({ ...opened("a", "1", ["policy_details.limit"]), values: {} })
+
+    await store().run()
+
+    expect(pricer).not.toHaveBeenCalled()
+    expect(compareTestQuote).not.toHaveBeenCalled()
+    expect(store().runs.a).toMatchObject({ status: "failed", error: "Nothing typed in it has a place on the sheets now", tables: null })
+  })
+
   it("is stale once the pipeline, the source or the form changes after the run started", async () => {
     await store().load()
     vi.mocked(openTestQuote).mockImplementation(async (id) => opened(id, "1"))

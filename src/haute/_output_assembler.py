@@ -206,6 +206,14 @@ def _prune(value: Any, *, on_value: Callable[[], None] | None = None) -> Any:  #
     return value
 
 
+def pruned_document(document: Any) -> Any:
+    """*document*, one response, as a deployed pipeline renders it: :func:`_prune`'s null
+    fields and empty collections left out, the document itself kept, ``{}`` when nothing is
+    left. Every comparison of whole responses renders both sides so, so a null and an absent
+    value compare alike, as do an empty table and none."""
+    return _prune(document)
+
+
 @dataclass(slots=True)
 class _OutputAssemblyProgress:
     """Bound the distance between cancellation and RSS checks in Python assembly."""
@@ -856,7 +864,10 @@ def render_output_document(df: pl.DataFrame) -> list[Any]:
     ragged document by **null-filling** it to a uniform struct schema; this
     strips that padding back out with the same null-field and empty-collection
     pruning, so the rendered JSON equals the assembled document. For a flat
-    OUTPUT (no nesting, no nulls) this is a no-op.
+    OUTPUT (no nesting, no nulls) this is a no-op. Each row is pruned on its own and
+    kept, a row left with nothing rendering as ``{}``, so the document holds one object
+    per row of the frame: a batch's answers stay aligned with its requests, and a
+    Workbench request's one quote always has its one document.
     """
     progress = _OutputAssemblyProgress(current_execution_context())
     rows = _rows_from_dataframe(
@@ -866,13 +877,11 @@ def render_output_document(df: pl.DataFrame) -> list[Any]:
         label="output_render_rows",
     )
     progress.checkpoint("output_render_prune")
-    document: list[Any] = _prune(
-        rows,
-        on_value=(
-            (lambda: progress.advance("output_render_prune"))
-            if progress.execution_context is not None
-            else None
-        ),
+    on_value = (
+        (lambda: progress.advance("output_render_prune"))
+        if progress.execution_context is not None
+        else None
     )
+    document: list[Any] = [_prune(row, on_value=on_value) for row in rows]
     progress.checkpoint("output_render_prune")
     return document

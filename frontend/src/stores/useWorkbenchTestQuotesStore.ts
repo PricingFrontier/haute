@@ -290,6 +290,12 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
       try {
         const opened = await openTestQuote(id, form)
         done({ number: opened.number, digest: opened.revision_digest, values: opened.values, dropped: opened.dropped })
+        // Nothing typed left on the sheets is no quote, as a save refuses one: the null
+        // quote is not priced, nor accepted, since no deployed request is one.
+        if (quoteRefusal(form, opened.values) !== null) {
+          done({ status: "failed", error: "Nothing typed in it has a place on the sheets now" })
+          continue
+        }
         const { tables } = await priceForm({ ...form, sample: opened.values }, pricer)
         // Compared with the revision the run opened, by its digest: one saved apart since
         // (another branch's under the same number) is refused, not compared.

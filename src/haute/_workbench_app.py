@@ -293,7 +293,7 @@ def build_release(
     try:
         try:
             try:
-                results = validate_deploy(resolved)
+                results = validate_deploy(resolved, form=form)
             except DeployError as exc:
                 context = exc.context if isinstance(exc.context, dict) else {}
                 details = [
