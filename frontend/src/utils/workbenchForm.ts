@@ -1190,9 +1190,10 @@ export function columnNameProblem(name: string): string | null {
   return null
 }
 
+/** Whether `text` is a number, a whole one when `whole`, as a cell and the server read one. */
 const isNumber = (text: string, whole: boolean): boolean => {
-  const n = Number(text)
-  return text.trim() !== "" && Number.isFinite(n) && (!whole || Number.isInteger(n))
+  const n = parseTypedNumber(text)
+  return n !== null && (!whole || Number.isInteger(n))
 }
 
 /**

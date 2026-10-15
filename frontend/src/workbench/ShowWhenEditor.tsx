@@ -253,7 +253,8 @@ function ConditionValue({
     )
   }
   if (column?.type === "date") {
-    return <input type="date" aria-label={aria} value={value} onChange={(event) => one(event.target.value)} className={`${FIELD_CLASS} flex-1`} style={INPUT_STYLE} />
+    // Committed on blur or Enter: a year typed digit by digit is one change.
+    return <CommittedTextField type="date" aria-label={aria} value={value} onCommit={one} className={`${FIELD_CLASS} flex-1`} style={INPUT_STYLE} />
   }
   return (
     <CommittedTextField

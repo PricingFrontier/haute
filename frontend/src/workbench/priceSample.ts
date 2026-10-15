@@ -3,8 +3,10 @@
  * Output's tables as its preview shows them. The document's top-level workbench nodes run
  * with the tables and sample the form gives, in this request alone, as a fetch gives them
  * copies; a Workbench Input inside a submodel keeps its copy, and the document itself is
- * left alone. Asked for the complete response, as a test quote keeps it, a table Preview
- * cut short at its row or cell limit is refused, naming the table and its rows.
+ * left alone. A pipeline without a top-level Workbench Input, which alone is given the
+ * sheets' values, is refused, saying what to replace or move. Asked for the complete
+ * response, as a test quote keeps it, a table Preview cut short at its row or cell limit is
+ * refused, naming the table and its rows.
  */
 import { previewNode } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
@@ -31,6 +33,15 @@ export async function priceSample(
   if (output === undefined) {
     throw new Error(
       "The pipeline has no Workbench Output: add one from the palette and connect a frame to each of its tables.",
+    )
+  }
+  // Only a top-level Workbench Input is given the sheets' values: without one every value
+  // typed would price alike, so nothing is priced.
+  if (!nodes.some((node) => node.data.nodeType === NODE_TYPES.WORKBENCH_INPUT)) {
+    throw new Error(
+      nodes.some((node) => node.data.nodeType === NODE_TYPES.API_INPUT)
+        ? "The pipeline reads its quotes from a Quote Input, which the sheets never fill: replace it with a Workbench Input."
+        : "The pipeline has no Workbench Input at its top level, so the sheets reach nothing: add one, or move the one inside a submodel out of it.",
     )
   }
   const priced = { ...graph, nodes }

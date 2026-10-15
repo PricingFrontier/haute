@@ -11,9 +11,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { FieldRef, FormSpec } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
-import useWorkbenchPricingStore from "../../stores/useWorkbenchPricingStore"
+import useWorkbenchPricingStore, { previewBasis } from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { pricingBasis, shownFields, updateSchemaColumn, withSampleCell, type ChartOptions } from "../../utils/workbenchForm"
+import { shownFields, updateSchemaColumn, withSampleCell, type ChartOptions } from "../../utils/workbenchForm"
 import { SheetValuesContext, useNewQuoteValues, useQuoteValues, useSampleValues } from "../useSheetValues"
 import WidgetBody from "../WidgetBody"
 import { addTo, chartWidget, currentForm, loadForm, sheetForm, widgetsOf } from "./fixtures"
@@ -238,7 +238,7 @@ describe("ChartBody", () => {
   it("is dimmed while it plots a price for other values, until the next pricing", async () => {
     const form = chartForm([PREMIUM], { title: "Premiums" })
     loadForm(form)
-    useWorkbenchPricingStore.setState({ price: { basis: pricingBasis(form), sample: {}, tables: { premiums: [{ item: "Crane", premium: 10 }] } } })
+    useWorkbenchPricingStore.setState({ price: { basis: previewBasis(form), sample: {}, tables: { premiums: [{ item: "Crane", premium: 10 }] } } })
     renderChart()
     await waitFor(() => expect(plotted()).toEqual([[10]]))
     const figure = screen.getByRole("figure")
@@ -251,7 +251,7 @@ describe("ChartBody", () => {
     expect(figure).toHaveStyle({ opacity: "0.5" })
 
     // The runtime loaded once, each new option is set as the price arrives, not after another import.
-    act(() => useWorkbenchPricingStore.setState({ price: { basis: pricingBasis(currentForm()), sample: {}, tables: { premiums: [{ item: "Crane", premium: 12 }] } } }))
+    act(() => useWorkbenchPricingStore.setState({ price: { basis: previewBasis(currentForm()), sample: {}, tables: { premiums: [{ item: "Crane", premium: 12 }] } } }))
     expect(figure).not.toHaveAttribute("data-stale")
     expect(plotted()).toEqual([[12]])
   })

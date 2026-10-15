@@ -14,12 +14,12 @@ the app saves quotes to on the server; how underwriters manage their quotes in t
 exports from the app; the test quotes analysts keep and re-price in Preview; and the actions
 that fill the sheets from databases and APIs.
 
-`WB-17` to `WB-22` fix what the [review of 15 October 2026](workbench-review-2026-10-15.md)
+`WB-17` and `WB-19` to `WB-23` fix what the [review of 15 October 2026](workbench-review-2026-10-15.md)
 found in what pull requests #303 to #309 built. Each names the review's findings it closes
 (`CX-n`, `FB-n`, `TQ-n`, `SD-n`, `MS-n`), and the review holds their evidence. They are
-taken by priority, `WB-18` first: it closes the risk that a price shown is not the one the
-pipeline gives, then the P2 packages in order, and `WB-22` merges the mechanisms written
-several times once the others have fixed their behaviour.
+taken in order, `WB-17` first; `WB-22` merges the mechanisms written several times once
+the others have fixed their behaviour, and `WB-23` prices Preview in one run of the
+pipeline.
 
 ## Priorities
 
@@ -33,11 +33,11 @@ several times once the others have fixed their behaviour.
 | WB-12 | Planned | P3 | A test quote whose response runs past what Preview shows is saved, run and compared in full, as every other test quote is. |
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, sees which quotes are about to lapse, records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-17 | Planned | P2 | Test quotes behave in the panel and in git as quotes do in the app: the newest answer wins, one read per quote, drivers registered once and quietly, and the report compares a branch with its merge base. |
-| WB-18 | Planned | P1 | What the sheets show is what is priced: a price is stale whenever its pipeline, data or source changes, a pipeline that does not read the sheets is refused, every value priced is visible on its cell, and one rule says whether a quote is typed. |
 | WB-19 | Planned | P2 | The form and its Save say what is wrong and keep what was typed: readable refusals, unique ids, no silent no-op, recovery after a lost answer, and the node copies kept outside the undo history. |
 | WB-20 | Planned | P2 | The underwriter app's quote life is exact: a derived quote opens clean and new, drafts and history follow what is on the sheet, failures say why, and the release id changes with what prices alone. |
 | WB-21 | Planned | P2 | Building the sheets is exact and keyboard-complete: a drag lands where the pointer puts it, a gesture ends when the pointer does, the panels keep the selection, and the sheets read as laid out. |
 | WB-22 | Planned | P2 | Each concern has one mechanism: one way to drop a stale answer and take turns, one writer into the project, and the three largest view files split along their jobs. |
+| WB-23 | Planned | P3 | Preview prices every table of the Workbench Output from one run of the pipeline, as the app prices a quote in one scoring call. |
 
 ## Planned improvements
 
@@ -431,103 +431,6 @@ Each has a test.
 `src/haute/cli/_test_quotes.py::merge_files`; `src/haute/cli/_test_quotes.py::report` (the
 base read at its tip); `src/haute/_scaffold.py::gitlab_ci_yml`.
 
-### WB-18 — What the sheets show is what is priced
-**Why:**
-- **The pricing basis leaves the pipeline out.** Preview prices again when the form's
-  pricing basis changes or Preview shows again, and judges a price stale by the same basis;
-  the pipeline, the data source and the data files are not part of it.
-  - The Assistant, a branch switched to one with the same form, a data file replaced
-    through Files, and an edit on disk all change what the sample prices to while Preview
-    stays shown. The old price stays undimmed, and a pricing under way when they change is
-    kept as current (review CX-1).
-  - Test-quote runs judge staleness by the pipeline and the source as well, but not by data
-    files.
-- **A pipeline that does not read the sheets is priced anyway.** Preview patches the
-  top-level workbench nodes and checks only that a Workbench Output exists. A Quote Input
-  left beside a Workbench Output, which the singleton rules allow, or a Workbench Input
-  inside a submodel, never receives the typed values: every value typed gives the same
-  premium, undimmed (FB-13).
-- **Values are priced but not shown.**
-  - A held value that a params file no longer allows draws as a blank select while it is
-    priced; renewing or carrying a quote reaches this (CX-4).
-  - A tick or text left in a column since retyped draws as empty and unmarked, while the
-    server refuses the pricing naming that cell (FB-16).
-- **"Is anything typed" is decided five ways:**
-  - Preview's rule, with hidden columns out;
-  - the app's pricing, with hidden and app-set columns out;
-  - the app's Save and save body, with app-set columns out but hidden values counted;
-  - the test-quote save's rule;
-  - the server's, which counts the defaults the specification says are not typing.
-
-  A value left only in a hidden column enables Save, which the server refuses with 422
-  (CX-7, SD-1). Preview and the app also price through two loops with different
-  late-answer rules (FB-12).
-- **Smaller defects in reading what was typed:**
-  - Date cells and date conditions commit on every keystroke; after a pause, a year typed
-    digit by digit is priced as year 2 (FB-31).
-  - A press on a select may hold the drawn sections until the next click, because
-    Chromium's select menu takes the press's release (FB-30, to confirm in Chrome first).
-  - Integer text is typed through `float`, so a value past 2^53 changes silently (CX-25).
-  - The schema editor reads numeric allowed values with `Number()` rather than the
-    typed-number rule (CX-8).
-  - The params reader chooses Windows-1252 from a Polars error message, so a header that is
-    not UTF-8 is offered mangled and saved so (FB-15).
-  - The typed-number and filled rules have no shared fixture, where visibility and preset
-    rows have one (FB-18).
-  - Tracing a Workbench Output fed straight from a Workbench Input fails, because the
-    redirect drops the source port (CX-28).
-  - Editor pricing is one preview job per output table (CX-13).
-
-**Plan:**
-- One editor pricing context made of the document generation, the graph's fingerprint and
-  submodels, the data source, and an epoch moved by every write of a data file. It is part
-  of Preview's basis, its scheduling and its answer check, and of the test quotes' run
-  basis.
-- `priceSample` refuses a pipeline without a top-level Workbench Input, naming what to
-  replace or move.
-- A select holding a value outside its options shows that value as a marked extra option,
-  and `cellProblem` marks a value not of its column's type.
-- One `quoteEligible(form, values, locked)` rule (visibility, preset rows, app-set columns,
-  defaults) is used by Preview, the app's pricing, its Save and save body, and the test
-  quotes. The server's check leaves defaults out the same way.
-- Both stores share one pricing loop, each keeping only what it prices and through what.
-- Date cells and conditions go through `CommittedTextField type="date"`.
-- There is no hold for a press on a select, once FB-30 is confirmed in Chrome.
-- Integral text is parsed with `int`, and numeric options are checked with
-  `parseTypedNumber`.
-- The params reader chooses its encoding from the bytes, and refuses a header holding
-  U+FFFD.
-- A `typedText` fixture is read by both test suites.
-- The trace redirect carries the source port.
-- A preview operation for several ports, if CX-13's measurement warrants it.
-
-**Acceptance:**
-- After the Assistant edits the pipeline, a branch switch, or a data file replaced,
-  Preview's outputs dim and are priced again.
-- A pipeline with a top-level Quote Input and a Workbench Output says why it cannot be
-  priced.
-- A disallowed or mistyped held value is visible on its cell.
-- Save is off exactly when the server would refuse with "Type the quote first".
-- One date typed is one edit and one pricing.
-
-Each has a test that fails today, and the fixture pins the typed-number rule on both sides.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/stores/useWorkbenchPricingStore.ts::priceNow` (a late answer
-dropped only when the pricer changes);
-`frontend/src/stores/useWorkbenchTestQuotesStore.ts::currentBasis` (the test quotes' wider
-basis); `frontend/src/workbench/priceSample.ts::priceSample` (the Output checked, the Input
-not); `src/haute/_graph_shape.py::SINGLETON_NODE_GROUPS` (either request input allowed);
-`frontend/src/utils/sheetValues.ts::cellProblem`;
-`frontend/src/utils/sheetValues.ts::quoteTyped`;
-`frontend/src/stores/useWorkbenchPreviewStore.ts::priceOnce` (the app's typed rule and
-loop); `src/haute/_workbench_app_quotes.py::_prepared` (the server's typed rule);
-`src/haute/_workbench_tables.py::_typed`;
-`frontend/src/workbench/steadyPreview.ts::useHeldWhilePressed`;
-`frontend/src/utils/workbenchForm.ts::schemaProblems`;
-`src/haute/_workbench_params.py::_read` (the encoding chosen from an error message).
-
 ### WB-19 — The form and its Save
 **Why:**
 - **Unreadable refusals.** A request body the form routes refuse is answered with
@@ -855,3 +758,31 @@ merged; `FSH-R04`; `BUG-34` for the capture retry.
 `src/haute/routes/project_files.py::_publish_write`;
 `src/haute/_quote_store/_book.py::QuoteBook`; `frontend/src/app/openRelease.ts`;
 `src/haute/cli/_test_quotes.py::_histories`; `frontend/src/workbench/WidgetBody.tsx`.
+
+### WB-23 — One preview for a Workbench Output's tables
+**Why:** Preview prices the sample by previewing the Workbench Output once per output table
+(review CX-13), and each preview runs the pipeline again: the preview route keys a preview
+by its port, and the executor, which computes every table of the Workbench Output in one
+run, answers one port's preview. Measured on 15 October 2026 on the Workbench Output of
+`tests/test_workbench_output.py` (two tables), each table's preview cost a full run, about
+30 ms warm and 120 ms cold, the second no cheaper than the first. A pipeline that takes
+seconds is priced in that time for every table, on every pause in typing, where the app
+prices a quote in one scoring call.
+
+**Plan:**
+- The preview route takes several ports of a multi-frame target and answers each one's
+  preview from one run; the executor builds each port's preview from the frame bundle it
+  already computes.
+- `priceSample` asks for every table of the Workbench Output in one request.
+
+**Acceptance:**
+- Preview prices a form with three output tables in one run of the pipeline, its answers
+  equal to those of a preview per table.
+
+Each has a test.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/workbench/priceSample.ts::priceSample` (a preview per table);
+`src/haute/routes/pipeline.py::_preview_supersession_key` (a preview keyed by its port);
+`src/haute/executor.py::execute_graph` (one port's preview from the bundle).

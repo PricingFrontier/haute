@@ -86,6 +86,22 @@ describe("priceSample", () => {
     expect(preview).not.toHaveBeenCalled()
   })
 
+  it("refuses a pipeline whose sheets reach no top-level Workbench Input, saying what to replace or move", async () => {
+    // A Quote Input beside the Workbench Output, which the singleton rules allow.
+    const quoted = graph()
+    quoted.nodes = quoted.nodes.map((n) => (n.id === "quote" ? node("quote", "apiInput", { tables: [] }) : n))
+    await expect(priceSample(quoted, workbench([pricing]), "live")).rejects.toThrow(
+      "The pipeline reads its quotes from a Quote Input, which the sheets never fill: replace it with a Workbench Input.",
+    )
+    // The Workbench Input inside a submodel alone.
+    const nested = graph()
+    nested.nodes = nested.nodes.filter((n) => n.id !== "quote")
+    await expect(priceSample(nested, workbench([pricing]), "live")).rejects.toThrow(
+      "The pipeline has no Workbench Input at its top level, so the sheets reach nothing: add one, or move the one inside a submodel out of it.",
+    )
+    expect(preview).not.toHaveBeenCalled()
+  })
+
   it("rejects with a table's preview error", async () => {
     preview.mockResolvedValue({
       node_id: "response",

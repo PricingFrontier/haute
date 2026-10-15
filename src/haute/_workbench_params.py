@@ -12,6 +12,7 @@ its commit's params files hold.
 
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -65,30 +66,43 @@ def _params_path(project_root: Path, file: str) -> tuple[Path, str]:
 def _read(
     path: Path, name: str, *, columns: list[str] | None = None, n_rows: int | None = None
 ) -> pl.DataFrame:
-    """The CSV at *path* read as text, UTF-8 or else Windows-1252, as Excel writes a
-    "CSV (Comma delimited)" file on Windows; or why it cannot be."""
+    """The CSV at *path* read as text, UTF-8 when its bytes are, else Windows-1252, as Excel
+    writes a "CSV (Comma delimited)" file on Windows: the encoding chosen from the bytes,
+    never from what a CSV reader makes of them, since one replaces a byte it cannot read. A
+    column name holding a character no encoding could give (U+FFFD, left by an earlier save
+    that lost it) is refused; so is a file neither encoding reads."""
     try:
-        try:
-            return pl.read_csv(path, infer_schema=False, columns=columns, n_rows=n_rows)
-        except pl.exceptions.ComputeError as exc:
-            if "utf-8" not in str(exc).casefold():
-                raise
-        return pl.read_csv(
-            path, infer_schema=False, columns=columns, n_rows=n_rows, encoding="cp1252"
-        )
-    except UnicodeDecodeError:
+        raw = path.read_bytes()
+    except OSError as exc:
         raise ParamFileError(
-            f"{name} isn't UTF-8 or Windows-1252 text: save it as CSV UTF-8.", path=name
+            f"{name} could not be read: {exc.strerror or exc}", path=name
         ) from None
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            text = raw.decode("cp1252")
+        except UnicodeDecodeError:
+            raise ParamFileError(
+                f"{name} isn't UTF-8 or Windows-1252 text: save it as CSV UTF-8.", path=name
+            ) from None
+    try:
+        frame = pl.read_csv(
+            io.BytesIO(text.encode("utf-8")), infer_schema=False, columns=columns, n_rows=n_rows
+        )
     except pl.exceptions.NoDataError:
         raise ParamFileError(f"{name} is empty.", path=name) from None
     except pl.exceptions.PolarsError as exc:
         reason = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
         raise ParamFileError(f"{name} could not be read as a CSV: {reason}", path=name) from None
-    except OSError as exc:
+    lost = next((column for column in frame.columns if "\ufffd" in column), None)
+    if lost is not None:
         raise ParamFileError(
-            f"{name} could not be read: {exc.strerror or exc}", path=name
-        ) from None
+            f"{name} has a column named {lost!r}, a character of which was lost when the file "
+            "was saved: correct the name and save it as CSV UTF-8.",
+            path=name,
+        )
+    return frame
 
 
 def read_param_file(project_root: Path, file: str, column: str | None = None) -> ParamFile:

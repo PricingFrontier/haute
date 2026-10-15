@@ -26,6 +26,8 @@ const ALLOWED: Record<string, RegExp[]> = {
   "utils/nodeTypeRegistry.ts": [/^\s*\[NODE_TYPES\.API_INPUT\]: PipelineNode,$/],
   "panels/NodeConfigEditor.tsx": [/^\s*case NODE_TYPES\.API_INPUT:$/],
   "panels/NodePalette.tsx": [/if \(workbench && type === NODE_TYPES\.API_INPUT\) return NODE_TYPES\.WORKBENCH_INPUT$/],
+  // A Quote Input the sheets never fill, named in Preview's refusal to price.
+  "workbench/priceSample.ts": [/^\s*nodes\.some\(\(node\) => node\.data\.nodeType === NODE_TYPES\.API_INPUT\)$/],
   "api/types.ts": [SOURCE_KIND],
   "utils/inputSnapshotSource.ts": [SOURCE_KIND],
   "hooks/ensureInputSnapshots.ts": [SOURCE_KIND],

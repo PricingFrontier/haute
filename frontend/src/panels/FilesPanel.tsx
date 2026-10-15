@@ -7,6 +7,7 @@ import { deleteProjectFile, listProjectFiles, projectFileDownloadUrl, uploadProj
 import { apiErrorMessage } from "../api/errors"
 import type { ProjectFileEntry, ProjectFilePlace, ProjectFolderResponse } from "../api/types"
 import { reportSaveCapture } from "../stores/saveCapture"
+import useDataEpochStore from "../stores/useDataEpochStore"
 import useNodeDataStore from "../stores/useNodeDataStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
@@ -155,6 +156,7 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
 
   async function uploadAll(folder: string, files: File[], revisions: Map<string, string>) {
     let replaced = false
+    let wrote = false
     for (const file of files) {
       const id = nextUpload.current++
       const job = uploadProjectFile(place, joinPath(folder, file.name), file, {
@@ -166,6 +168,7 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
         const written = await job.promise
         if (place === "pipeline") reportSaveCapture(written)
         replaced ||= written.replaced
+        wrote = true
       } catch (caught) {
         if (!isAbort(caught)) addToast("error", `${file.name}: ${apiErrorMessage(caught, "The file was not added.")}`)
       } finally {
@@ -175,6 +178,8 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
     useSettingsStore.getState().clearFileListCache()
     // A displayed preview may have read the file just replaced.
     if (replaced) useNodeDataStore.getState().bumpEpoch()
+    // What was priced on the data before is stale: a file the pipeline reads may be new.
+    if (wrote) useDataEpochStore.getState().moved()
     refresh()
   }
 
@@ -232,6 +237,7 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
       const removed = await deleteProjectFile(place, entry.path, entry.revision ?? "")
       if (place === "pipeline") reportSaveCapture(removed)
       useSettingsStore.getState().clearFileListCache()
+      useDataEpochStore.getState().moved()
     } catch (caught) {
       addToast("error", `${entry.name}: ${apiErrorMessage(caught, "The file was not deleted.")}`)
     }

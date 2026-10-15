@@ -31,16 +31,12 @@ import {
 } from "../api/workbench"
 import { apiErrorMessage } from "../api/errors"
 import type { FormSpec, WorkbenchTestQuoteSummary, WorkbenchTestQuoteWriteResponse } from "../api/types"
-import { canonicalJson } from "../utils/canonicalJson"
-import { quoteFilled, withPresetRows } from "../utils/sheetValues"
-import { quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
+import { quoteEligible } from "../utils/sheetVisibility"
 import { withSample } from "../utils/workbenchForm"
 import { reportSaveCapture } from "./saveCapture"
 import useDocumentStatusStore from "./useDocumentStatusStore"
-import useGraphStore from "./useGraphStore"
-import useSettingsStore from "./useSettingsStore"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
-import useWorkbenchPricingStore, { priceForm, type Pricer } from "./useWorkbenchPricingStore"
+import useWorkbenchPricingStore, { contextKey, priceForm, pricingContext, type Pricer, type PricingContext } from "./useWorkbenchPricingStore"
 
 export type RunStatus = "running" | "unchanged" | "changed" | "failed"
 
@@ -59,10 +55,8 @@ export interface QuoteRun {
   error: string | null
 }
 
-/** What a run priced on: the pipeline, the data source and the form, as strings to compare. */
-export interface RunBasis {
-  pipeline: string
-  source: string
+/** What a run priced on: the editor's pricing context and the form, the form as a string to compare. */
+export interface RunBasis extends PricingContext {
   form: string
 }
 
@@ -103,22 +97,10 @@ interface WorkbenchTestQuotesState {
   flush: () => Promise<void>
 }
 
-/** The submodels' definitions as text, kept while the graph store keeps the same ones. */
-let submodelsSeen: { submodels: Record<string, unknown>; text: string } | null = null
-
-function submodelsText(submodels: Record<string, unknown>): string {
-  if (submodelsSeen?.submodels !== submodels) submodelsSeen = { submodels, text: canonicalJson(submodels) }
-  return submodelsSeen.text
-}
-
 /** What a run of the form as it is now would price on. */
 export function currentBasis(form: FormSpec): RunBasis {
-  const graph = useGraphStore.getState()
   return {
-    // The root's structure leaves the submodels' definitions out: an edit inside one prices
-    // differently, so it counts too.
-    pipeline: `${graph.structuralFingerprint}|${submodelsText(graph.submodels)}`,
-    source: useSettingsStore.getState().activeSource,
+    ...pricingContext(),
     // What decides the request: the tables and the conditions that hide their cells.
     form: JSON.stringify([form.schema, form.pages]),
   }
@@ -128,7 +110,7 @@ export function currentBasis(form: FormSpec): RunBasis {
 export function runIsStale(basis: RunBasis | null, form: FormSpec | null): boolean {
   if (basis === null || form === null) return false
   const now = currentBasis(form)
-  return now.pipeline !== basis.pipeline || now.source !== basis.source || now.form !== basis.form
+  return contextKey(now) !== contextKey(basis) || now.form !== basis.form
 }
 
 /** A pricer fixed on the pipeline and the source as they are now, or why there is none. */
@@ -144,7 +126,7 @@ function fixedPricer(): Pricer {
  * as Preview prices them.
  */
 function quoteRefusal(form: FormSpec, quote: SheetQuote): string | null {
-  return quoteFilled(quotedSchema(form.schema, sheetVisibility(form, quote).hidden), withPresetRows(form.schema, quote)) ? null : "Type the quote first"
+  return quoteEligible(form, quote) ? null : "Type the quote first"
 }
 
 /** The run asked for last: an answer for an earlier one is nobody's. */

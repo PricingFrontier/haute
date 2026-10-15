@@ -16,7 +16,6 @@ import {
   presetColumn,
   presetRows,
   pricedRows,
-  quoteFilled,
   quoteProblems,
   quoteTyped,
   rowFilled,
@@ -26,6 +25,7 @@ import {
 import { columnKey, quotedSchema } from "../sheetVisibility"
 import { BLANK_THEME, pricingBasis, type SampleRow } from "../workbenchForm"
 import presetCases from "./fixtures/presetRows.json"
+import typedCases from "./fixtures/typedText.json"
 
 const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
   id,
@@ -106,7 +106,6 @@ describe("a new quote", () => {
 
   it("counts nothing typed while the quote holds its defaults alone, and anything typed over them", () => {
     const start = newQuoteValues(schema)
-    expect(quoteFilled(schema, start)).toBe(true)
     expect(quoteTyped(schema, start)).toBe(false)
     // A default cleared or unticked is not typing either; a value typed over one, or
     // anywhere else, is.
@@ -166,11 +165,9 @@ describe("a row for each value", () => {
     const schema = { tables: [policy, coverage] }
     const given = withPresetRows(schema, {})
     expect(given.coverage.every((row) => rowFilled(coverage, row))).toBe(true)
-    expect(quoteFilled(schema, given)).toBe(false)
     expect(quoteTyped(schema, given)).toBe(false)
     expect(quoteProblems(schema, given)).toEqual({ [cellKey("policy", 0, "state")]: "Required" })
     const typed: Record<string, SampleRow[]> = { coverage: [{ peril: "AOP" }, { peril: "EQ", limit: "5" }] }
-    expect(quoteFilled(schema, typed)).toBe(true)
     expect(quoteTyped(schema, typed)).toBe(true)
   })
 
@@ -178,7 +175,6 @@ describe("a row for each value", () => {
     const schema = { tables: [policy, coverage] }
     const gone: Record<string, SampleRow[]> = { coverage: [{ peril: "WD", limit: "5000" }] }
 
-    expect(quoteFilled(schema, gone)).toBe(false)
     expect(quoteTyped(schema, gone)).toBe(false)
   })
 })
@@ -199,15 +195,18 @@ describe("formattedNumber", () => {
   })
 })
 
-describe("cellProblem", () => {
-  it("reads numbers as the server does, a currency sign, separators and spaces allowed", () => {
-    expect(parseTypedNumber("$1,250,000.50")).toBe(1250000.5)
-    expect(parseTypedNumber(" -3e2 ")).toBe(-300)
-    expect(parseTypedNumber(".5")).toBe(0.5)
-    expect([parseTypedNumber("lots"), parseTypedNumber("$"), parseTypedNumber("1_000"), parseTypedNumber("0x10"), parseTypedNumber("1.2.3")]).toEqual([null, null, null, null, null])
-    // The server keeps a number too large to be finite as the text typed.
-    expect(parseTypedNumber("1e999")).toBeNull()
+describe("typed text, as the server reads it", () => {
+  it.each(typedCases.numbers)("reads $name as the server does", ({ text, number }) => {
+    expect(parseTypedNumber(text)).toBe(number)
+    expect(parseTypedNumber(` ${text} `)).toBe(number)
   })
+
+  it.each(typedCases.filled)("counts $name as typed as the server does", ({ value, filled: typed }) => {
+    expect(filled(value ?? undefined)).toBe(typed)
+  })
+})
+
+describe("cellProblem", () => {
 
   it("requires a value, a number of the column's type within its range, and one of the allowed values", () => {
     const value = equipment.columns[2]
@@ -237,6 +236,15 @@ describe("cellProblem", () => {
   it("never faults a tick box or the index", () => {
     expect(cellProblem(column("c", "c", { type: "bool", required: true }), undefined)).toBeNull()
     expect(cellProblem(equipment.columns[0], "x")).toBeNull()
+  })
+
+  it("marks a value of another type left in a column since retyped, which the server refuses", () => {
+    expect(cellProblem(column("c", "c"), true)).toBe("A tick, not a value")
+    expect(cellProblem(column("c", "c", { type: "float", required: true }), true)).toBe("A tick, not a value")
+    expect(cellProblem(column("c", "c", { type: "bool" }), "yes")).toBe("Not a tick")
+    // An unticked box and blank text are nothing the server sends.
+    expect(cellProblem(column("c", "c"), false)).toBeNull()
+    expect(cellProblem(column("c", "c", { type: "bool" }), " ")).toBeNull()
   })
 })
 
@@ -312,8 +320,8 @@ describe("reading through a quoted schema", () => {
   const quoted = quotedSchema({ tables: [policy, equipment, premiums] }, new Set([columnKey("policy", "state"), columnKey("equipment", "value")]))
 
   it("does not count a value typed only in a hidden column", () => {
-    expect(quoteFilled(quoted, { equipment: [{ value: "100" }] })).toBe(false)
-    expect(quoteFilled(quoted, { equipment: [{ value: "100", item: "Crane" }] })).toBe(true)
+    expect(quoteTyped(quoted, { equipment: [{ value: "100" }] })).toBe(false)
+    expect(quoteTyped(quoted, { equipment: [{ value: "100", item: "Crane" }] })).toBe(true)
   })
 
   it("never checks a hidden cell, a required one included", () => {

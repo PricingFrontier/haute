@@ -187,8 +187,10 @@ Out of scope:
 - **Params files.** `GET /api/workbench/params` with a `file` answers the header of that
   CSV in the pipeline folder's `files/params/` and, given a `column`, the column's
   distinct values: each as written, every value text, read as UTF-8 or else
-  Windows-1252 (as Excel saves a CSV on Windows), trimmed, blanks left out, in the order
-  the file first gives them. It writes nothing.
+  Windows-1252 (as Excel saves a CSV on Windows), chosen from the file's bytes, trimmed,
+  blanks left out, in the order the file first gives them; a column name holding a
+  character an earlier save lost (U+FFFD) is refused, naming it, rather than offered as it
+  reads. It writes nothing.
 - **The form, served and saved.** `GET /api/workbench/form` answers the form as its file
   holds it now and the file's `revision`, the content hash of its bytes: `null` while the
   file does not exist, when the form is the blank one. `PUT /api/workbench/form` takes the
@@ -610,23 +612,36 @@ Out of scope:
   empty rows making up the rest, in the same undo step; nothing typed is dropped. Each
   cell is the control its column calls for: a tick box
   for True/false, a dropdown of the allowed values, a date picker, else a text field, a
-  number's right-aligned. A text field commits on blur or Enter, a dropdown, a tick box and
-  a date on change, each commit one undo step. Values are held as typed, text or a tick, by
+  number's right-aligned. A text field and a date commit on blur or Enter, so a year typed
+  digit by digit is one edit, a dropdown and a tick box on change, each commit one undo
+  step. A dropdown holding a value its options no longer give shows that value, marked,
+  since it is priced as held. Values are held as typed, text or a tick, by
   table id and column id; the server types them by their columns when the tables are made.
   Pressing a cell types there. The sample is part of the form: saved with it, undone like
   any edit, in Preview as while building, and dropped with a column or table removed from
   the schema.
 - **Priced live.** While Preview shows, the sample is priced on the pipeline open in the
   editor whenever the schema, the sample or which of the sample's values are left out
-  (Shown when, below) changes, 300ms after the last value entered (a text or number cell's
-  when Enter or Tab is pressed or the cell is left, a tick, a choice or a date as it is
-  made), and when Preview shows, as
-  the pipeline may have changed meanwhile; laying the sheet out differently prices
-  nothing, and nothing is priced while building. There is no Price and no Clear. The
+  (Shown when, below) changes, 300ms after the last value entered (a text, number or date
+  cell's when Enter or Tab is pressed or the cell is left, a tick or a choice as it is
+  made), whenever what it is priced on changes while Preview shows (the pipeline, the
+  Assistant's edits included, a submodel's definition, the active source, the document
+  read again or another branch's, and a data file written through Files or a Data Input's
+  source imported anew), and when Preview shows, as
+  the pipeline may have changed meanwhile; a price made on anything since changed is
+  dimmed until the next answer, and an answer to a pricing that started before such a
+  change is shown dimmed too. Laying the sheet out differently prices
+  nothing, and nothing is priced while building. A pipeline without a Workbench Input at
+  its top level, which alone is given the sheets' values, is not priced: Preview says to
+  replace the Quote Input the sheets never fill, or to add a Workbench Input or move the
+  one inside a submodel out of it. There is no Price and no Clear. The
   sample is priced whatever its cells hold, a value that breaks its column's rules
-  included; with nothing typed in the cells the sheets show it is not priced, as a
-  deployed request never holds a blank quote, and its outputs show dashes with nothing
-  said. A pricing asks `POST /api/workbench/tables` for the tables
+  included; with nothing typed in the cells the sheets show, the defaults a new quote
+  starts with aside, it is not priced, as a deployed request never holds a blank quote,
+  and its outputs show dashes with nothing said. Whether anything is typed is one rule,
+  which Preview, the app's pricing and its Save, the test quotes and the server all apply:
+  a value in a column the sheets show, other than a column the app sets, the index, the
+  column giving a table its rows and a column's default. A pricing asks `POST /api/workbench/tables` for the tables
   and sample Haute takes from the form as it stands, then previews the Workbench Output a
   table at a time through the preview route on the document as the editor holds it, the
   whole pipeline even while a submodel is open, with the active source: the document's
@@ -700,8 +715,10 @@ Out of scope:
   empty, text that is not a number in a number column or not a whole number in a
   whole-number column, text that is not a day in a Date column, a number outside the
   column's range, a value that is not one of the
-  allowed values; a one-row table's one row is always checked, a many-row table's filled
-  rows only, a cell the sheets hide never, and a tick box and the index never fault. The
+  allowed values, a tick left in a column that is no longer True/false, and text left in
+  one that now is, which the server would send as held and the pipeline refuse; a one-row
+  table's one row is always checked, a many-row table's filled rows only, a cell the
+  sheets hide never, and the index never faults. The
   marks never stop the pricing. Ctrl/Cmd+S still saves the project in Preview, Ctrl/Cmd+1
   fits the sheet, and Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z (or Ctrl/Cmd+Y) undo and redo
   outside a text field, as Undo and Redo do; the sheet's editing keys do nothing.
@@ -1000,7 +1017,8 @@ Out of scope:
     button is pressed on the sheet, what shows and where, the sheet showing included, stays
     as it was when it was pressed, and changes once the press ends (released, cancelled, or
     taken by a context menu or another window), so a value committed by the press (a text
-    cell left for a tick box) never moves the press's target from under it. When what shows
+    cell left for a tick box) never moves the press's target from under it. A press on a
+    dropdown holds nothing: its menu opens where it is and takes the release. When what shows
     changes above the section holding the focus, or else above the first section reaching
     into view, the sheet scrolls by as much as that section moved, so the underwriter's
     place stays where it was; nothing scrolls when that section itself closes.
@@ -1028,8 +1046,9 @@ Out of scope:
   under its name, an object for a one-row table and a list of its filled rows for a many-row
   one, rows with nothing typed left out and numbered as they stand for the index. Each value
   is as its column's type holds it: a number typed with a currency sign or separators is a
-  number, an unticked box in a filled row is false, and a value that is not of its column's
-  type stays as typed, for the Workbench Input to report.
+  number, whole digits in an Integer column read exactly however large, an unticked box in
+  a filled row is false, and a value that is not of its column's type stays as typed, for
+  the Workbench Input to report.
 - **The Workbench Input.** A pipeline takes the tables through the Workbench Input:
   `workbenchInput` in the pipeline document, declared in the pipeline file with
   `@pipeline.workbench_input(config=...)` (a submodel's file uses `@submodel.workbench_input`)

@@ -12,11 +12,11 @@ import { createContext, useContext, useMemo } from "react"
 import type { FormSchema } from "../api/types"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
-import useWorkbenchPricingStore, { type SamplePrice } from "../stores/useWorkbenchPricingStore"
+import useWorkbenchPricingStore, { previewBasis, usePricingContext, type SamplePrice } from "../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
-import { newQuoteValues, quoteFilled, quoteProblems, quoteTyped, valuesBasis, withPresetRows, type RowsByTable } from "../utils/sheetValues"
-import { quotedSchema, sheetVisibility, type SheetVisibility } from "../utils/sheetVisibility"
-import { pricingBasis, withSampleCell, withSampleRows, type SampleRow, type SampleValue } from "../utils/workbenchForm"
+import { newQuoteValues, quoteProblems, valuesBasis, withPresetRows, type RowsByTable } from "../utils/sheetValues"
+import { quoteEligible, quotedSchema, sheetVisibility, type SheetVisibility } from "../utils/sheetVisibility"
+import { withSampleCell, withSampleRows, type SampleRow, type SampleValue } from "../utils/workbenchForm"
 
 export interface SheetValues {
   rows: RowsByTable
@@ -91,6 +91,8 @@ export function useSampleValues(): SheetValues {
   const form = useWorkbenchFormStore((s) => s.form)
   const change = useWorkbenchFormStore((s) => s.change)
   const price = useWorkbenchPricingStore((s) => s.price)
+  // A price made in another context (the pipeline, its data or source moved) shows stale.
+  const context = usePricingContext()
   return useMemo<SheetValues>(() => {
     const visibility = form === null ? NO_VISIBILITY : sheetVisibility(form, form.sample)
     const quoted = form === null ? NO_SCHEMA : quotedSchema(form.schema, visibility.hidden)
@@ -100,14 +102,14 @@ export function useSampleValues(): SheetValues {
       setCell: (tableId, row, columnId, value) => change((spec) => withSampleCell(spec, tableId, row, columnId, value)),
       setRows: (rowsByTable) => change((spec) => withSampleRows(spec, rowsByTable)),
       price,
-      basis: form === null ? "" : pricingBasis(form),
-      problems: quoteFilled(quoted, rows) ? quoteProblems(quoted, rows) : NO_PROBLEMS,
+      basis: form === null ? "" : previewBasis(form, context),
+      problems: form !== null && quoteEligible(form, form.sample) ? quoteProblems(quoted, rows) : NO_PROBLEMS,
       visibility,
       quoted,
       readOnly: false,
       locked: NOTHING_LOCKED,
     }
-  }, [form, change, price])
+  }, [form, change, price, context])
 }
 
 /**
@@ -127,8 +129,8 @@ export function useQuoteValues(): SheetValues {
     const visibility = form === null ? NO_VISIBILITY : sheetVisibility(form, quote)
     const quoted = form === null ? NO_SCHEMA : quotedSchema(form.schema, visibility.hidden)
     const rows = form === null ? quote : withPresetRows(form.schema, quote)
-    // The details the app sets are not typing, nor are the defaults a new quote starts with.
-    const typed = !readOnly && quoteTyped(quotedSchema(quoted, locked), rows)
+    // As the server counts typing: what the sheets show, the details the app sets and the defaults aside.
+    const typed = !readOnly && form !== null && quoteEligible(form, quote, locked)
     return {
       rows,
       setCell,

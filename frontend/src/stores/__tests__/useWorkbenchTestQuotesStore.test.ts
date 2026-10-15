@@ -34,6 +34,7 @@ import {
 } from "../../api/workbench"
 import type { PricedSample } from "../../utils/workbenchTables"
 import { hiddenPerilsForm, sheet } from "../../workbench/__tests__/fixtures"
+import useDataEpochStore from "../useDataEpochStore"
 import useDocumentStatusStore from "../useDocumentStatusStore"
 import useGraphStore from "../useGraphStore"
 import useSettingsStore from "../useSettingsStore"
@@ -210,7 +211,7 @@ describe("useWorkbenchTestQuotesStore", () => {
     expect(store().runs.a).toMatchObject({ status: "failed", error: "Nothing typed in it has a place on the sheets now", tables: null })
   })
 
-  it("is stale once the pipeline, the source or the form changes after the run started", async () => {
+  it("is stale once the pipeline, the source, the data or the form changes after the run started", async () => {
     await store().load()
     vi.mocked(openTestQuote).mockImplementation(async (id) => opened(id, "1"))
     vi.mocked(compareTestQuote).mockResolvedValue({ number: 3, digest: "compared-3", changes: [] })
@@ -232,6 +233,9 @@ describe("useWorkbenchTestQuotesStore", () => {
     expect(runIsStale(runBasis, form)).toBe(true)
     useGraphStore.setState({ submodels })
     expect(runIsStale(runBasis, form)).toBe(false)
+    // A data file written through Files since prices differently too.
+    useDataEpochStore.getState().moved()
+    expect(runIsStale(runBasis, form)).toBe(true)
   })
 
   it("accepts a change after the revision the run read, and says so when the quote moved on", async () => {

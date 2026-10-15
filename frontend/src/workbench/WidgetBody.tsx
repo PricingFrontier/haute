@@ -165,13 +165,14 @@ function Cell({
   if (column.type === "bool") {
     const tick = (
       <input
+        {...marked}
         type="checkbox"
         aria-label={label}
         checked={value === true}
         onChange={(event) => onChange(event.target.checked)}
         disabled={disabled}
         className="size-4"
-        style={{ accentColor: "var(--accent)" }}
+        style={{ accentColor: "var(--accent)", ...(boxed || problem === null ? {} : PROBLEM_STYLE) }}
       />
     )
     // In a Collection, in a box as the other fields are; in a grid, in its cell.
@@ -187,6 +188,8 @@ function Cell({
     return (
       <select {...marked} aria-label={label} value={text} onChange={(event) => onChange(event.target.value)} disabled={disabled} className={className} style={style}>
         <option value="">{column.placeholder}</option>
+        {/* A value held that the options no longer give is priced as held, so it shows, marked. */}
+        {text !== "" && !column.options.includes(text) && <option value={text}>{text}</option>}
         {column.options.map((option) => (
           <option key={option} value={option}>
             {formattedNumber(column, option) ?? option}
@@ -196,7 +199,8 @@ function Cell({
     )
   }
   if (column.type === "date") {
-    return <input {...marked} type="date" aria-label={label} value={text} onChange={(event) => onChange(event.target.value)} disabled={disabled} className={className} style={style} />
+    // Committed on blur or Enter, as text is: a year typed digit by digit is one edit.
+    return <CommittedTextField {...marked} type="date" aria-label={label} value={text} onCommit={onChange} disabled={disabled} className={className} style={style} />
   }
   return (
     <CommittedTextField

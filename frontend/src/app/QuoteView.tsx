@@ -30,8 +30,7 @@ import useToastStore from "../stores/useToastStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
 import { canonicalJson } from "../utils/canonicalJson"
-import { quoteTyped } from "../utils/sheetValues"
-import { quotedSchema } from "../utils/sheetVisibility"
+import { quoteEligible } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS_ID } from "../utils/workbenchForm"
 import PageTabs from "../workbench/PageTabs"
 import SheetCanvas from "../workbench/SheetCanvas"
@@ -244,8 +243,8 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   const reason = readOnlyReason({ quote, past, olderSheets })
   const editor = release?.can_edit ?? true
   const ready = status === "ready" && form !== null
-  // The details the app sets are not typing, nor are the defaults a new quote starts with.
-  const typed = form !== null && quoteTyped(quotedSchema(form.schema, appSet), values)
+  // As the server counts typing: what the sheets show, the details the app sets and the defaults aside.
+  const typed = form !== null && quoteEligible(form, values, appSet)
   const priced = form !== null && price !== null && price.basis === basisOf(form, values)
   // Its last pricing failed: a save keeps it unpriced.
   const unpriceable = !priced && error !== null

@@ -4,7 +4,7 @@ import { ErrorBoundary } from "../components/ErrorBoundary"
 import useSettingsStore from "../stores/useSettingsStore"
 import useUIStore from "../stores/useUIStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
-import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
+import useWorkbenchPricingStore, { usePricingContext } from "../stores/useWorkbenchPricingStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import useWorkbenchTestQuotesStore from "../stores/useWorkbenchTestQuotesStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
@@ -60,6 +60,8 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
   const stale = useWorkbenchFormStore((s) => s.stale)
   const reload = useWorkbenchFormStore((s) => s.reload)
   const basis = useWorkbenchFormStore((s) => (s.form === null ? null : pricingBasis(s.form)))
+  // The pipeline, its data, its source or the document moved: Preview prices again.
+  const context = usePricingContext()
   const section = useWorkbenchViewStore((s) => s.section)
   const setPricer = useWorkbenchPricingStore((s) => s.setPricer)
   const setSnapshot = useWorkbenchPricingStore((s) => s.setSnapshot)
@@ -98,7 +100,7 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
     if (section !== "preview" || basis === null) return
     schedule()
     return cancel
-  }, [basis, section, schedule, cancel])
+  }, [basis, context, section, schedule, cancel])
 
   return (
     <div className="absolute inset-0 flex" data-testid="workbench-view" style={{ background: "var(--bg-base)" }}>

@@ -310,6 +310,16 @@ describe("problems", () => {
     expect(messages(updateSchemaTable(spec, "t", { role: "output" }))).toEqual([])
   })
 
+  it("reads a number column's allowed values as its cells and the server read them", () => {
+    const spec = withTable(
+      column("a", "limit", { type: "float", options: ["1,000", "$2,500.50", "0x10"], options_source: { file: "limits.csv", column: "limit" } }),
+      column("b", "years", { type: "int", options: ["3", "5.0", "1e3"], options_source: { file: "years.csv", column: "years" } }),
+    )
+
+    // `1,000` is priced as 1000, so it is a number; `0x10` fails as a cell, so it is not.
+    expect(messages(spec)).toEqual([`Column "limit" in Table "t" allows "0x10", which isn't a number`])
+  })
+
   it("checks a one-row input column's default against its rules, as a cell typed into it is", () => {
     const spec = withTable(
       column("a", "value", { type: "float", min: 10, default_value: "5" }),

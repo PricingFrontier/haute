@@ -10,9 +10,8 @@ import { Check, ChevronDown, ChevronRight, FlaskConical, FolderOpen, Play, Save,
 import { useEffect, useState, type FormEvent } from "react"
 import type { TestQuoteChange } from "../api/workbench"
 import { SidePanel } from "../haute-ui"
-import useGraphStore from "../stores/useGraphStore"
-import useSettingsStore from "../stores/useSettingsStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
+import { usePricingContext } from "../stores/useWorkbenchPricingStore"
 import useWorkbenchTestQuotesStore, { runIsStale, type QuoteRun } from "../stores/useWorkbenchTestQuotesStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 
@@ -81,9 +80,7 @@ export default function TestQuotesPanel() {
   const setPanelWidth = useWorkbenchViewStore((s) => s.setPanelWidth)
   const form = useWorkbenchFormStore((s) => s.form)
   // Read so the panel redraws when what a run priced on changes.
-  useGraphStore((s) => s.structuralFingerprint)
-  useGraphStore((s) => s.submodels)
-  useSettingsStore((s) => s.activeSource)
+  usePricingContext()
   const [name, setName] = useState("")
   const [expanded, setExpanded] = useState<string | null>(null)
 

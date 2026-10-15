@@ -25,8 +25,8 @@ import type { FormSpec, WorkbenchAppQuote, WorkbenchAppQuoteHistoryResponse, Wor
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import { canonicalJson } from "../utils/canonicalJson"
-import { newQuoteValues, quoteTyped } from "../utils/sheetValues"
-import { quotedSchema } from "../utils/sheetVisibility"
+import { newQuoteValues } from "../utils/sheetValues"
+import { quoteEligible } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, type SampleRow } from "../utils/workbenchForm"
 import { basisOf, clearDraft, draftKey, onSheets, operationKey, readDraft, savedPrice, valuesKey, writeDraft, type Draft, type PendingWrite, type QuoteWrite, type Values } from "./quoteValues"
 import useAppStore from "./useAppStore"
@@ -310,8 +310,8 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     if (form === null || release === null) return null
     const preview = useWorkbenchPreviewStore.getState()
     const values = preview.quote
-    // The details the app sets are not typing, nor are the defaults a new quote starts with.
-    if (!quoteTyped(quotedSchema(form.schema, preview.locked), values)) return null
+    // As the server counts typing: what the sheets show, the details the app sets and the defaults aside.
+    if (!quoteEligible(form, values, preview.locked)) return null
     const price = preview.price
     const shown = price !== null && price.basis === basisOf(form, values) ? (price.tables as QuoteWrite["body"]["shown"]) : null
     const basis = `${valuesKey(values)}|${to}|${shown === null ? "draft" : "priced"}`

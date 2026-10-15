@@ -321,6 +321,26 @@ def test_a_workbench_outputs_cell_is_traced_from_the_node_filling_its_table(proj
     assert (traced.target_node_id, traced.output_value) == ("priced", 100.0)
 
 
+def test_a_workbench_outputs_cell_fed_straight_from_the_input_is_traced_from_its_frame(
+    project: Path,
+) -> None:
+    # The table is one frame of the Workbench Input, which emits one frame per table.
+    graph = _priced([_table("items", ("item_id", "str"), ("value", "float"), many=True)])
+    graph.nodes = [node for node in graph.nodes if node.id in ("request", "response")]
+    graph.edges = [_edge("request", "response", frame="items", table="items")]
+
+    traced = execute_trace(
+        graph,
+        row_index=1,
+        target_node_id="response",
+        column="value",
+        row_values={"item_id": "B", "value": 30.0},
+        port_label="items",
+    )
+
+    assert (traced.target_node_id, traced.column, traced.output_value) == ("request", "value", 30.0)
+
+
 def test_a_workbench_outputs_cell_is_traced_through_the_column_filling_it(project: Path) -> None:
     graph = _mapped(
         {"pricing": {"premium": "limit", "limit": "premium", "referral": None}},

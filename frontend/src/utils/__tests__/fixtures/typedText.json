@@ -1,0 +1,32 @@
+{
+  "about": "How typed text is read: each number case's text and the number a number column reads it as (null when it is not one, and the text is kept as typed), and whether that number is whole, which an int column keeps as an integer; each filled case's value and whether it counts as typed. frontend/src/utils/__tests__/sheetValues.test.ts holds parseTypedNumber and filled to every case and tests/test_workbench_tables.py holds _typed and _filled to them: one rule in two languages.",
+  "numbers": [
+    { "name": "digits", "text": "1000", "number": 1000, "whole": true },
+    { "name": "a currency sign and separators", "text": "$1,250,000.50", "number": 1250000.5, "whole": false },
+    { "name": "pounds with spaces", "text": "£ 1 000", "number": 1000, "whole": true },
+    { "name": "euros", "text": "€5", "number": 5, "whole": true },
+    { "name": "a sign", "text": "-5", "number": -5, "whole": true },
+    { "name": "a plus sign", "text": "+5", "number": 5, "whole": true },
+    { "name": "a leading point", "text": ".5", "number": 0.5, "whole": false },
+    { "name": "a trailing point", "text": "5.", "number": 5, "whole": true },
+    { "name": "a whole decimal", "text": "5.0", "number": 5, "whole": true },
+    { "name": "an exponent", "text": "-3e2", "number": -300, "whole": true },
+    { "name": "a small exponent", "text": "1.5e-2", "number": 0.015, "whole": false },
+    { "name": "words", "text": "lots", "number": null, "whole": false },
+    { "name": "a sign alone", "text": "$", "number": null, "whole": false },
+    { "name": "an underscore", "text": "1_000", "number": null, "whole": false },
+    { "name": "hexadecimal", "text": "0x10", "number": null, "whole": false },
+    { "name": "two points", "text": "1.2.3", "number": null, "whole": false },
+    { "name": "past a double", "text": "1e999", "number": null, "whole": false },
+    { "name": "not a number", "text": "NaN", "number": null, "whole": false },
+    { "name": "infinity", "text": "Infinity", "number": null, "whole": false }
+  ],
+  "filled": [
+    { "name": "text", "value": "NY", "filled": true },
+    { "name": "blank", "value": "", "filled": false },
+    { "name": "spaces", "value": "   ", "filled": false },
+    { "name": "a tick", "value": true, "filled": true },
+    { "name": "no tick", "value": false, "filled": false },
+    { "name": "nothing", "value": null, "filled": false }
+  ]
+}

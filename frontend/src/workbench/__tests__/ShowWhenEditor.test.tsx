@@ -49,6 +49,22 @@ describe("ShowWhenEditor", () => {
     expect(within(condition(1)).getByText("Needs a value for its test of state")).toBeInTheDocument()
   })
 
+  it("takes a date condition's day once it is committed, not as each digit of its year is typed", () => {
+    render(<Editor />)
+    fireEvent.click(screen.getByRole("button", { name: "Add condition" }))
+    fireEvent.change(screen.getByRole("combobox", { name: "Condition 1 column" }), { target: { value: "policy:policy.start" } })
+    const steps = undoSteps()
+    const day = screen.getByLabelText("Condition 1 value")
+
+    // A year typed digit by digit reads as 0002, 0020, 0202 and then 2026.
+    for (const value of ["0002-01-01", "0020-01-01", "0202-01-01", "2026-01-01"]) fireEvent.change(day, { target: { value } })
+    expect(undoSteps()).toBe(steps)
+    fireEvent.blur(day)
+
+    expect(showWhen().conditions[0].values).toEqual(["2026-01-01"])
+    expect(undoSteps()).toBe(steps + 1)
+  })
+
   it("chooses a value from the allowed values, and a box for each of them for one of many", () => {
     render(<Editor />)
     fireEvent.click(screen.getByRole("button", { name: "Add condition" }))
@@ -95,7 +111,9 @@ describe("ShowWhenEditor", () => {
 
     fireEvent.change(column, { target: { value: "policy:policy.start" } })
     expect(screen.getAllByRole("option", { name: "is after" })).toHaveLength(1)
-    fireEvent.change(screen.getByLabelText("Condition 1 value"), { target: { value: "2026-04-01" } })
+    const day = screen.getByLabelText("Condition 1 value")
+    fireEvent.change(day, { target: { value: "2026-04-01" } })
+    fireEvent.blur(day)
     expect(showWhen().conditions[0]).toMatchObject({ column: "policy.start", op: "above", values: ["2026-04-01"] })
 
     fireEvent.change(column, { target: { value: "policy:policy.name" } })

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import type { ProjectFileEntry, ProjectFolderResponse } from "../../api/types"
+import useDataEpochStore from "../../stores/useDataEpochStore"
 import useNodeDataStore from "../../stores/useNodeDataStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useToastStore from "../../stores/useToastStore"
@@ -86,6 +87,7 @@ describe("FilesPanel", () => {
   })
 
   it("adds a dropped file to the open folder and reports its save", async () => {
+    const { epoch } = useDataEpochStore.getState()
     mockList.mockResolvedValue(listing("pipeline", "", [folder("data")]))
     const clearCache = vi.spyOn(useSettingsStore.getState(), "clearFileListCache")
     render(<FilesPanel place="pipeline" onClose={vi.fn()} />)
@@ -97,6 +99,8 @@ describe("FilesPanel", () => {
     await waitFor(() => expect(mockReport).toHaveBeenCalledWith(written("new.csv")))
     expect(mockUpload).toHaveBeenCalledWith("pipeline", "new.csv", csv, expect.objectContaining({ replaceRevision: null }))
     expect(clearCache).toHaveBeenCalled()
+    // What was priced on the data before is stale.
+    await waitFor(() => expect(useDataEpochStore.getState().epoch).toBe(epoch + 1))
   })
 
   it("drops on a folder row into that folder", async () => {
@@ -223,6 +227,7 @@ describe("FilesPanel", () => {
   })
 
   it("asks before deleting and deletes the revision shown", async () => {
+    const { epoch } = useDataEpochStore.getState()
     mockList.mockResolvedValue(listing("pipeline", "data", [file("old.csv", "data/old.csv")]))
     mockDelete.mockResolvedValue({ path: "data/old.csv", git_sha: "def", identity_required: false, warnings: [] })
     render(<FilesPanel place="pipeline" onClose={vi.fn()} />)
@@ -234,6 +239,7 @@ describe("FilesPanel", () => {
 
     await waitFor(() => expect(mockDelete).toHaveBeenCalledWith("pipeline", "data/old.csv", "3-old.csv"))
     await waitFor(() => expect(mockReport).toHaveBeenCalledWith(expect.objectContaining({ git_sha: "def" })))
+    expect(useDataEpochStore.getState().epoch).toBe(epoch + 1)
   })
 
   it("shows a failed upload's message from the server", async () => {

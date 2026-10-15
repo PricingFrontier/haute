@@ -6,6 +6,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import { fetchWorkbenchFormTables } from "../../api/workbench"
+import useDataEpochStore from "../../stores/useDataEpochStore"
+import useGraphStore from "../../stores/useGraphStore"
 import useUIStore from "../../stores/useUIStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
@@ -220,6 +222,11 @@ describe("WorkbenchView", () => {
       useWorkbenchFormStore.setState({ form: { ...form, sample: { t: [{ c: "3" }] } } })
     })
     expect(pricing.schedule).toHaveBeenCalledTimes(2)
+    // What the sample prices on moved while Preview shows: the pipeline, then its data.
+    act(() => useGraphStore.setState({ structuralFingerprint: "edited by the Assistant" }))
+    expect(pricing.schedule).toHaveBeenCalledTimes(3)
+    act(() => useDataEpochStore.getState().moved())
+    expect(pricing.schedule).toHaveBeenCalledTimes(4)
 
     unmount()
     expect(pricing.setPricer).toHaveBeenLastCalledWith(null)

@@ -13,11 +13,15 @@ vi.mock("../../api/workbench", async (importOriginal) => ({
 
 import type { FormSpec, SchemaColumn, SchemaTable, WorkbenchTablesResponse } from "../../api/types"
 import { fetchWorkbenchFormTables } from "../../api/workbench"
-import { BLANK_THEME, COLLECTION_OPTIONS, pricingBasis, withSampleCell } from "../../utils/workbenchForm"
+import { BLANK_THEME, COLLECTION_OPTIONS, withSampleCell } from "../../utils/workbenchForm"
 import type { PricedSample } from "../../utils/workbenchTables"
 import { hiddenPerilsForm } from "../../workbench/__tests__/fixtures"
+import useDataEpochStore from "../useDataEpochStore"
+import useDocumentStatusStore from "../useDocumentStatusStore"
+import useGraphStore from "../useGraphStore"
+import useSettingsStore from "../useSettingsStore"
 import useWorkbenchFormStore from "../useWorkbenchFormStore"
-import useWorkbenchPricingStore, { PRICING_DELAY_MS } from "../useWorkbenchPricingStore"
+import useWorkbenchPricingStore, { PRICING_DELAY_MS, previewBasis } from "../useWorkbenchPricingStore"
 
 const column = (id: string, name: string, type: SchemaColumn["type"]): SchemaColumn => ({
   id,
@@ -74,7 +78,7 @@ const premium = () => {
   const { form: current } = useWorkbenchFormStore.getState()
   return {
     value: price?.tables.pricing_output?.[0]?.model_premium,
-    stale: price !== null && current !== null && price.basis !== pricingBasis(current),
+    stale: price !== null && current !== null && price.basis !== previewBasis(current),
   }
 }
 
@@ -119,6 +123,34 @@ describe("useWorkbenchPricingStore", () => {
     expect(pricer).toHaveBeenCalledWith(workbenchOf(useWorkbenchFormStore.getState().form!))
     expect(premium()).toEqual({ value: 2000, stale: false })
     expect(useWorkbenchPricingStore.getState().error).toBeNull()
+  })
+
+  it("shows a price stale once the pipeline, its submodels, its source, its data or the document moves", async () => {
+    useWorkbenchPricingStore.getState().setPricer(vi.fn(() => Promise.resolve(priced(2000))))
+    type("250000")
+    await useWorkbenchPricingStore.getState().priceNow()
+    expect(premium()).toEqual({ value: 2000, stale: false })
+
+    const graph = useGraphStore.getState()
+    const { activeSource } = useSettingsStore.getState()
+    const { executionGeneration } = useDocumentStatusStore.getState()
+    const moves: [string, () => void, () => void][] = [
+      // The Assistant, or any edit, changing the pipeline.
+      ["pipeline", () => useGraphStore.setState({ structuralFingerprint: "edited" }), () => useGraphStore.setState({ structuralFingerprint: graph.structuralFingerprint })],
+      ["submodel", () => useGraphStore.setState({ submodels: { rating: { graph: { nodes: [], edges: [] } } } }), () => useGraphStore.setState({ submodels: graph.submodels })],
+      ["source", () => useSettingsStore.setState({ activeSource: "batch" }), () => useSettingsStore.setState({ activeSource })],
+      // A branch switched, or the document read again.
+      ["document", () => useDocumentStatusStore.setState({ executionGeneration: executionGeneration + 1 }), () => useDocumentStatusStore.setState({ executionGeneration })],
+    ]
+    for (const [, move, back] of moves) {
+      move()
+      expect(premium().stale).toBe(true)
+      back()
+      expect(premium().stale).toBe(false)
+    }
+    // A data file written through Files: no way back, so last.
+    useDataEpochStore.getState().moved()
+    expect(premium().stale).toBe(true)
   })
 
   it("prices once typing pauses", async () => {

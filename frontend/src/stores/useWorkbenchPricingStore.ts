@@ -1,20 +1,81 @@
 /**
  * Zustand store for the sample priced live in Preview (specs/workbench): the form's sample
  * priced on the pipeline open in the editor, through the pricer the view host gives it,
- * whenever the schema or the sample changes once typing pauses, whatever its cells hold,
- * a sample with nothing typed in the cells the sheets show priced not at all; what the
- * last pricing gave, with the basis it was priced for, and why it last failed.
+ * whenever the schema, the sample or the pricing context changes once typing pauses,
+ * whatever its cells hold, a sample with nothing typed in the cells the sheets show priced
+ * not at all; what the last pricing gave, with the basis it was priced for (its values and
+ * the context), and why it last failed.
  * `priceForm`, the pricing itself, is the test quotes' too.
  */
 import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
 import type { FormSpec, WorkbenchTablesResponse } from "../api/types"
 import { fetchWorkbenchFormTables } from "../api/workbench"
-import { quoteFilled, withPresetRows } from "../utils/sheetValues"
-import { quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
+import { canonicalJson } from "../utils/canonicalJson"
+import { quoteEligible } from "../utils/sheetVisibility"
 import { pricingBasis, type SampleRow } from "../utils/workbenchForm"
 import type { PricedSample } from "../utils/workbenchTables"
+import useDataEpochStore from "./useDataEpochStore"
+import useDocumentStatusStore from "./useDocumentStatusStore"
+import useGraphStore from "./useGraphStore"
+import useSettingsStore from "./useSettingsStore"
+import { pricingLoop } from "./pricingLoop"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
+
+/**
+ * What the editor prices a form's values on besides the values: the document as it was
+ * adopted (`executionGeneration`, moved by a branch switched or the document read again),
+ * the pipeline's structure with its submodels' definitions (which the root's structure
+ * leaves out; an edit, the Assistant's too, moves it), the data source, and the data's epoch
+ * (`useDataEpochStore`). Preview's price is stamped with it and goes stale when it moves;
+ * a test quotes' run is judged by it too.
+ */
+export interface PricingContext {
+  document: number
+  pipeline: string
+  source: string
+  data: number
+}
+
+/** The submodels' definitions as text, kept while the graph store keeps the same ones. */
+let submodelsSeen: { submodels: Record<string, unknown>; text: string } | null = null
+
+function submodelsText(submodels: Record<string, unknown>): string {
+  if (submodelsSeen?.submodels !== submodels) submodelsSeen = { submodels, text: canonicalJson(submodels) }
+  return submodelsSeen.text
+}
+
+/** The editor's pricing context as it is now. */
+export function pricingContext(): PricingContext {
+  const graph = useGraphStore.getState()
+  return {
+    document: useDocumentStatusStore.getState().executionGeneration,
+    pipeline: `${graph.structuralFingerprint}|${submodelsText(graph.submodels)}`,
+    source: useSettingsStore.getState().activeSource,
+    data: useDataEpochStore.getState().epoch,
+  }
+}
+
+/** A context as one string to compare. */
+export const contextKey = (context: PricingContext): string =>
+  JSON.stringify([context.document, context.pipeline, context.source, context.data])
+
+/**
+ * What a Preview price of `form` is stamped with, and compared with: its values and the
+ * context (`contextKey`), the context now unless one is given.
+ */
+export const previewBasis = (form: FormSpec, context: string = contextKey(pricingContext())): string =>
+  `${pricingBasis(form)}|${context}`
+
+/** The editor's pricing context as a string, re-read as any part of it moves. */
+export function usePricingContext(): string {
+  useDocumentStatusStore((s) => s.executionGeneration)
+  useGraphStore((s) => s.structuralFingerprint)
+  useGraphStore((s) => s.submodels)
+  useSettingsStore((s) => s.activeSource)
+  useDataEpochStore((s) => s.epoch)
+  return contextKey(pricingContext())
+}
 
 /** Prices a sample, given the tables, sample and response tables Haute takes from the form. */
 export type Pricer = (workbench: WorkbenchTablesResponse) => Promise<PricedSample>
@@ -90,76 +151,53 @@ interface WorkbenchPricingState {
   priceNow: () => Promise<void>
 }
 
-/** The pricing waiting for typing to pause, the one running, and whether to run another after it. */
-let timer: ReturnType<typeof setTimeout> | null = null
-let run: Promise<void> | null = null
-let again = false
+const useWorkbenchPricingStore = create<WorkbenchPricingState>()((set, get) => {
+  /** The sample as the form has it now, through the view host's pricer; an answer once it left is nobody's. */
+  const priceOnce = async () => {
+    const { pricer } = get()
+    const { form, status } = useWorkbenchFormStore.getState()
+    if (pricer === null || form === null || status !== "ready") return
+    if (!quoteEligible(form, form.sample)) {
+      set({ price: null, error: null })
+      return
+    }
+    // Stamped with the context it is priced in: an answer for one moved on since is shown
+    // stale, and the move asks for another.
+    const basis = previewBasis(form)
+    set({ pricing: true })
+    try {
+      const priced = await priceForm(form, pricer)
+      // The view left meanwhile: a late answer is nobody's.
+      if (get().pricer !== pricer) return
+      set({ price: { basis, ...priced }, error: null })
+    } catch (error: unknown) {
+      if (get().pricer !== pricer) return
+      set({ price: null, error: apiErrorMessage(error) })
+    } finally {
+      set({ pricing: false })
+    }
+  }
+  const loop = pricingLoop(priceOnce, PRICING_DELAY_MS)
 
-const useWorkbenchPricingStore = create<WorkbenchPricingState>()((set, get) => ({
-  pricer: null,
-  snapshot: null,
-  setSnapshot: (snapshot) => set({ snapshot }),
-  quotePricer: null,
-  setQuotePricer: (quotePricer) => set({ quotePricer }),
-  price: null,
-  error: null,
-  pricing: false,
-  setPricer: (pricer) => {
-    if (pricer === null) get().cancel()
-    set({ pricer })
-  },
-  schedule: () => {
-    if (get().pricer === null) return
-    if (timer !== null) clearTimeout(timer)
-    timer = setTimeout(() => {
-      timer = null
-      void get().priceNow()
-    }, PRICING_DELAY_MS)
-  },
-  cancel: () => {
-    if (timer !== null) clearTimeout(timer)
-    timer = null
-    again = false
-  },
-  priceNow: () => {
-    if (run !== null) {
-      again = true
-      return run
-    }
-    const priceOnce = async () => {
-      const { pricer } = get()
-      const { form, status } = useWorkbenchFormStore.getState()
-      if (pricer === null || form === null || status !== "ready") return
-      if (!quoteFilled(quotedSchema(form.schema, sheetVisibility(form, form.sample).hidden), withPresetRows(form.schema, form.sample))) {
-        set({ price: null, error: null })
-        return
-      }
-      const basis = pricingBasis(form)
-      set({ pricing: true })
-      try {
-        const priced = await priceForm(form, pricer)
-        // The view left meanwhile: a late answer is nobody's.
-        if (get().pricer !== pricer) return
-        set({ price: { basis, ...priced }, error: null })
-      } catch (error: unknown) {
-        if (get().pricer !== pricer) return
-        set({ price: null, error: apiErrorMessage(error) })
-      } finally {
-        set({ pricing: false })
-      }
-    }
-    run = (async () => {
-      try {
-        do {
-          again = false
-          await priceOnce()
-        } while (again)
-      } finally {
-        run = null
-      }
-    })()
-    return run
-  },
-}))
+  return {
+    pricer: null,
+    snapshot: null,
+    setSnapshot: (snapshot) => set({ snapshot }),
+    quotePricer: null,
+    setQuotePricer: (quotePricer) => set({ quotePricer }),
+    price: null,
+    error: null,
+    pricing: false,
+    setPricer: (pricer) => {
+      if (pricer === null) loop.cancel()
+      set({ pricer })
+    },
+    schedule: () => {
+      if (get().pricer !== null) loop.schedule()
+    },
+    cancel: loop.cancel,
+    priceNow: loop.priceNow,
+  }
+})
 
 export default useWorkbenchPricingStore

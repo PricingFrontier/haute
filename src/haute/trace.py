@@ -461,8 +461,9 @@ def execute_trace(
             admitted_context.release_admission(preserve_primary_error=True)
 
     missing_column_error = None
+    target_port = None
     if graph.node_map[target_node_id].data.nodeType == NodeType.WORKBENCH_OUTPUT:
-        (target_node_id, column, row_values, seed_plan, missing_column_error) = (
+        (target_node_id, target_port, column, row_values, seed_plan, missing_column_error) = (
             _workbench_output_trace_target(
                 graph,
                 target_node_id,
@@ -478,6 +479,7 @@ def execute_trace(
         graph,
         row_index=row_index,
         target_node_id=target_node_id,
+        target_port=target_port,
         column=column,
         row_limit=row_limit,
         source=source,
@@ -556,8 +558,10 @@ def _workbench_output_trace_target(
     column: str | None,
     row_values: dict[str, Any] | None,
     seed_plan: Sequence[ListedSeed] | None,
-) -> tuple[str, str | None, dict[str, Any] | None, list[ListedSeed] | None, str | None]:
-    """A Workbench Output's cell, traced from the node connected to its table.
+) -> tuple[str, str | None, str | None, dict[str, Any] | None, list[ListedSeed] | None, str | None]:
+    """A Workbench Output's cell, traced from the node connected to its table, and the
+    port of that node it is connected from, which names the frame of a node that emits
+    several (a Workbench Input, one per table).
 
     The table holds that node's rows, so the row is the same one; the column and the
     clicked values are renamed to the frame columns that fill them, the mapping's pick or
@@ -617,7 +621,7 @@ def _workbench_output_trace_target(
         }
     lineage = {edge.source, *upstream_node_ids(edge.source, graph.parents_of)}
     listed = None if seed_plan is None else [s for s in seed_plan if s.node_id in lineage]
-    return edge.source, column, row_values, listed, unfilled
+    return edge.source, edge.sourceHandle, column, row_values, listed, unfilled
 
 
 #: Why the ancestors of a seed are not traced, completing "Not traced above the
@@ -990,10 +994,12 @@ def _execute_trace_core(
     snapshot_plan: SeedPlan | None,
     t_start: float,
     missing_column_error: str | None = None,
+    target_port: str | None = None,
 ) -> TraceResult:
     """One trace, under the plan its preview listed when that plan seeds anything.
 
     *missing_column_error* is raised when the target's frame lacks the traced column.
+    *target_port* names the frame of a target that emits several, the one traced.
     """
     nodes = graph.nodes
     requested_columns = _requested_preview_columns_from_row(row_values, column)
@@ -1141,6 +1147,10 @@ def _execute_trace_core(
     # dict[label, DataFrame] in eager_outputs; a trace must target a node
     # downstream of a specific frame, never the bundle itself.
     target_output = eager_outputs.get(target_node_id)
+    if isinstance(target_output, dict) and isinstance(target_output.get(target_port), pl.DataFrame):
+        # The frame the traced cell came from, as a Workbench Output's table takes it.
+        target_output = target_output[target_port]
+        eager_outputs = {**eager_outputs, target_node_id: target_output}
     if isinstance(target_output, dict):
         raise ValueError(
             f"Target node {target_node_id!r} emits multiple frames; "

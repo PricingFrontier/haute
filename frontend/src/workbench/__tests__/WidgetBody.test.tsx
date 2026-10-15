@@ -12,10 +12,10 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import type { ReactNode } from "react"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
-import useWorkbenchPricingStore from "../../stores/useWorkbenchPricingStore"
+import useWorkbenchPricingStore, { previewBasis } from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { valuesBasis } from "../../utils/sheetValues"
-import { addSchemaColumn, addSchemaTable, BLANK_THEME, pricingBasis, shownFields, toggleField, updateSchemaColumn, updateWidget, type WidgetPatch } from "../../utils/workbenchForm"
+import { addSchemaColumn, addSchemaTable, BLANK_THEME, shownFields, toggleField, updateSchemaColumn, updateWidget, type WidgetPatch } from "../../utils/workbenchForm"
 import SheetCanvas from "../SheetCanvas"
 import { SheetValuesContext, useNewQuoteValues, useQuoteValues, useSampleValues } from "../useSheetValues"
 import WidgetBody from "../WidgetBody"
@@ -438,7 +438,7 @@ describe("WidgetBody", () => {
     form.theme = { ...BLANK_THEME, background_color: "#059669", border_color: "#D97706", font_color: "#2563EB", input_cell_color: "#DC2626", output_cell_color: "#9333EA" }
     loadForm(form)
     useWorkbenchPricingStore.setState({
-      price: { basis: pricingBasis(form), sample: { equipment: [{ item: "Crane" }] }, tables: { premiums: [{ item: "Crane", premium: 10 }] } },
+      price: { basis: previewBasis(form), sample: { equipment: [{ item: "Crane" }] }, tables: { premiums: [{ item: "Crane", premium: 10 }] } },
     })
     // The borders' #D97706 as the page holds it in a style.
     const border = "1px solid rgb(217, 119, 6)"
@@ -546,7 +546,7 @@ describe("WidgetBody", () => {
     const box = () => screen.getByTestId("priced-premiums:premiums.premium")
     expect(box()).toHaveTextContent("—")
 
-    useWorkbenchPricingStore.setState({ price: { basis: pricingBasis(form), sample: {}, tables: { premiums: [{ premium: 1234.5 }] } } })
+    useWorkbenchPricingStore.setState({ price: { basis: previewBasis(form), sample: {}, tables: { premiums: [{ premium: 1234.5 }] } } })
     rerender(body("w_boxes"))
     expect(box()).toHaveTextContent("1,234.5")
     expect(box()).not.toHaveAttribute("data-stale")
@@ -556,14 +556,14 @@ describe("WidgetBody", () => {
     expect(box()).toHaveAttribute("data-stale", "true")
     expect(box()).toHaveStyle({ opacity: "0.5" })
 
-    useWorkbenchPricingStore.setState({ price: { basis: pricingBasis(currentForm()), sample: {}, tables: { premiums: [{ premium: null }] } } })
+    useWorkbenchPricingStore.setState({ price: { basis: previewBasis(currentForm()), sample: {}, tables: { premiums: [{ premium: null }] } } })
     rerender(body("w_boxes"))
     expect(box()).toHaveTextContent("—")
     expect(box()).not.toHaveAttribute("data-stale")
 
     // In its column's format, once it has one.
     loadForm(updateSchemaColumn(currentForm(), "premiums", "premiums.premium", { number_format: "currency_gbp" }))
-    useWorkbenchPricingStore.setState({ price: { basis: pricingBasis(currentForm()), sample: {}, tables: { premiums: [{ premium: 1234.5 }] } } })
+    useWorkbenchPricingStore.setState({ price: { basis: previewBasis(currentForm()), sample: {}, tables: { premiums: [{ premium: 1234.5 }] } } })
     rerender(body("w_boxes"))
     expect(box()).toHaveTextContent("£1,234.50")
   })
@@ -576,7 +576,7 @@ describe("WidgetBody", () => {
     form.sample = { equipment: [{ "equipment.item": "Crane", "equipment.value": "1234567.4" }, {}, {}] }
     loadForm(form)
     useWorkbenchPricingStore.setState({
-      price: { basis: pricingBasis(form), sample: { equipment: [{ item: "Crane" }] }, tables: { premiums: [{ item: "Crane", premium: 1234.5 }] } },
+      price: { basis: previewBasis(form), sample: { equipment: [{ item: "Crane" }] }, tables: { premiums: [{ item: "Crane", premium: 1234.5 }] } },
     })
     renderBody("w_grid")
 
@@ -620,7 +620,7 @@ describe("WidgetBody", () => {
     loadForm(form)
     useWorkbenchPricingStore.setState({
       price: {
-        basis: pricingBasis(form),
+        basis: previewBasis(form),
         sample: { equipment: [{ item: "Crane" }, { item: "Paver" }] },
         tables: { premiums: [{ item: "Paver", premium: 20 }, { item: "Crane", premium: 10 }] },
       },
@@ -643,6 +643,34 @@ describe("WidgetBody", () => {
     expect(cell(1)).toHaveAttribute("data-stale", "true")
     expect(cell(2)).toHaveAttribute("data-stale", "true")
     expect(cell(3)).toHaveTextContent("—")
+  })
+
+  it("takes a date once it is committed, one edit, not as each digit of its year is typed", () => {
+    const form = toggleField(sheetForm(), "w_boxes", { table: "policy", column: "policy.year" })
+    loadForm(updateSchemaColumn(form, "policy", "policy.year", { type: "date" }))
+    useWorkbenchViewStore.setState({ section: "preview" })
+    renderBody("w_boxes")
+    const year = screen.getByLabelText("Year")
+
+    for (const value of ["0002-01-01", "0020-01-01", "0202-01-01", "2026-01-01"]) fireEvent.change(year, { target: { value } })
+    expect(currentForm().sample.policy?.[0]?.["policy.year"]).toBeUndefined()
+    fireEvent.blur(year)
+
+    expect(currentForm().sample.policy[0]["policy.year"]).toBe("2026-01-01")
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
+  })
+
+  it("shows a held value its select no longer allows, and a tick in a column since retyped, each marked", () => {
+    loadForm(toggleField({ ...sheetForm(), sample: { policy: [{ "policy.state": "TX", "policy.year": true }] } }, "w_boxes", { table: "policy", column: "policy.year" }))
+    useWorkbenchViewStore.setState({ section: "preview" })
+    renderBody("w_boxes")
+
+    // Priced as held, so shown as held, not as a blank select.
+    const state = screen.getByRole("combobox", { name: "State" }) as HTMLSelectElement
+    expect(state.value).toBe("TX")
+    expect(within(state).getByRole("option", { name: "TX" })).toBeInTheDocument()
+    expect(state).toHaveAttribute("title", "Not one of the allowed values")
+    expect(screen.getByRole("textbox", { name: "Year" })).toHaveAttribute("title", "A tick, not a value")
   })
 
   it("marks the cells that break their column's rules once anything is typed, as the sample is typed in Preview", () => {
@@ -692,7 +720,7 @@ describe("WidgetBody", () => {
 
     // An output box shows the quote's price, not the sample's.
     loadForm(toggleField(sheetForm(), "w_boxes", { table: "premiums", column: "premiums.premium" }))
-    useWorkbenchPricingStore.setState({ price: { basis: pricingBasis(currentForm()), sample: {}, tables: { premiums: [{ premium: 1 }] } } })
+    useWorkbenchPricingStore.setState({ price: { basis: previewBasis(currentForm()), sample: {}, tables: { premiums: [{ premium: 1 }] } } })
     useWorkbenchPreviewStore.setState({
       quote: { policy: [{ "policy.state": "CA" }] },
       price: { basis: valuesBasis(currentForm().schema, new Set(), { policy: [{ "policy.state": "CA" }] }), sample: {}, tables: { premiums: [{ premium: 777 }] } },
