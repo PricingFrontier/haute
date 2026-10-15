@@ -63,6 +63,7 @@ def list_databricks_warehouses() -> WarehouseListResponse:
             http_path=f"/sql/1.0/warehouses/{wh.id}",
             state=wh.state.value if wh.state else "UNKNOWN",
             size=wh.cluster_size or "",
+            serverless=bool(wh.enable_serverless_compute),
         )
         for wh in w.warehouses.list()
         if wh.id and wh.name
