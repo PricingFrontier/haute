@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import PurePosixPath
 
+from haute._test_quotes import DEFAULT_TEST_QUOTES_DIR
 from haute._workbench_config import DEFAULT_FORM_PATH
 from haute._workbench_form import blank_form, render_form
 
@@ -183,7 +184,13 @@ _CONTAINER_BASED_TARGETS = ("container", *BUILD_AND_PUSH_ONLY_TARGETS)
 
 # What a release is built from: a push to main that changes none of these deploys
 # nothing. The dependency files change what the deployed image or model installs.
-_RELEASE_INPUT_DIRS = ("rating", "data", "models", "tests/quotes")
+#: The pipeline file a scaffolded project's ``haute.toml`` names.
+PIPELINE_FILE = "rating/main.py"
+#: The folders a scaffolded project's release is read from: the pipeline folder, which
+#: holds its code, config and versioned files (``files/data``, ``files/models``), and the
+#: test quotes. The root's ``data/`` is ignored and its ``models/`` is for a pipeline at
+#: the root, which a scaffold never makes, so neither changes a release.
+_RELEASE_INPUT_DIRS = (PurePosixPath(PIPELINE_FILE).parent.as_posix(), DEFAULT_TEST_QUOTES_DIR)
 _RELEASE_INPUT_FILES = ("haute.toml", "pyproject.toml", "uv.lock")
 
 
@@ -355,7 +362,7 @@ def haute_toml(name: str, target: str, ci: str, workbench: bool = False) -> str:
         f"""\
 [project]
 name = "{name}"
-pipeline = "rating/main.py"
+pipeline = "{PIPELINE_FILE}"
 
 [deploy]
 target = "{target}"

@@ -524,8 +524,8 @@ class TestAzureDevopsYml:
         from haute._scaffold import azure_devops_yml
 
         result = azure_devops_yml("databricks")
-        assert "- data/" in result
-        assert "- models/" in result
+        assert "- rating/" in result
+        assert "- tests/quotes/" in result
 
 
 # ---------------------------------------------------------------------------
@@ -632,6 +632,14 @@ def _deploy_trigger_paths(provider: str, *, workbench: bool) -> list[str]:
 @pytest.mark.parametrize("provider", ["github", "azure-devops"])
 class TestDeployTriggers:
     """A push to main that changes a release input starts the deploy; GitLab filters no paths."""
+
+    def test_only_folders_a_scaffolded_project_has_start_a_deploy(self, provider: str) -> None:
+        # The pipeline folder (its code, config and versioned files) and the test quotes;
+        # the root's ignored data/ and a root pipeline's models/ never change a release.
+        paths = _deploy_trigger_paths(provider, workbench=False)
+        folders = [path for path in paths if "." not in path]
+        suffix = "/**" if provider == "github" else "/"
+        assert folders == [f"rating{suffix}", f"tests/quotes{suffix}"]
 
     def test_a_dependency_change_starts_a_deploy(self, provider: str) -> None:
         paths = _deploy_trigger_paths(provider, workbench=False)

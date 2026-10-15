@@ -15,11 +15,10 @@ step that works today for each, and drop it when the package lands. `BUG-27` to
 describes: the CLI's help, the offset tooltip, a tuned t-boost run's summary and the
 t-boost starter parameters in the modelling UI specification. `BUG-31`, found on
 8 October 2026 while planning how a Quote Input takes an extension's tables, is a deployed pipeline that hands every port of a
-multi-table Quote Input the whole request. `BUG-35` and `BUG-36` were found on 15 October
-2026 by the [review of the Workbench's pull requests](workbench-review-2026-10-15.md) in
-the parts those pull requests changed beside the Workbench:
-- the Files panel acting on the folder it has left;
-- generated CI triggers that name folders a project no longer has.
+multi-table Quote Input the whole request. `BUG-35`, the Files panel acting on the folder
+it has left, was found on 15 October 2026 by the
+[review of the Workbench's pull requests](workbench-review-2026-10-15.md) in the parts
+those pull requests changed beside the Workbench.
 
 ## Priorities
 
@@ -39,7 +38,6 @@ the parts those pull requests changed beside the Workbench:
 | BUG-30 | Planned | P3 | The modelling UI specification lists the t-boost starter parameters and readiness issues the editor has. |
 | BUG-31 | Planned | P1 | A deployed Quote Input gives each of its ports its own table from the request, as the editor does. |
 | BUG-35 | Planned | P2 | The Files panel acts only on the folder it shows. |
-| BUG-36 | Planned | P3 | The generated CI triggers name the folders a scaffolded project has. |
 
 ## Planned improvements
 
@@ -338,24 +336,3 @@ test drives a slow listing.
 **Evidence:** `frontend/src/panels/FilesPanel.tsx::FilesPanel` (the listing kept across a
 path change).
 
-### BUG-36 — The generated CI triggers name the project's folders
-**Why:** The deploy workflows `haute init` generates run on pushes to `rating/`, `data/`,
-`models/` and `tests/quotes/`.
-- `data/` at the root is ignored, so a push never changes it.
-- Models now live under the pipeline folder's `files/models/`, so a root `models/` exists
-  only for a pipeline at the root, and that pipeline's folder is not `rating` either.
-
-Two of the four folder triggers are dead for every project `haute init` makes, and the
-pipeline-config specification documents them as live. Found by the
-[Workbench review](workbench-review-2026-10-15.md) (FB-48).
-
-**Plan:** Derive the triggers from the project layout (the pipeline folder, `tests/quotes`,
-and the form's folder for a workbench project), and update the specification's sentence.
-
-**Acceptance:** The generated GitHub and Azure DevOps triggers list only folders a
-scaffolded project has, and the scaffold tests pin them.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_scaffold.py::_release_input_dirs`;
-`src/haute/_project_layout.py`; `src/haute/_gitignore_guard.py`.

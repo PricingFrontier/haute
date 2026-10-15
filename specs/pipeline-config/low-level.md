@@ -359,7 +359,9 @@ workbench's by `haute._workbench_config`, so deployment parsing and each reader 
 list out of `TARGETS` through provider-specific formatters (`_github_secrets_env`,
 `_gitlab_secrets_env`, `_azure_devops_secrets_env`) so a target's credential list is defined
 once and rendered three ways. The release inputs that start a deploy are listed once
-too (`_RELEASE_INPUT_DIRS`, `_RELEASE_INPUT_FILES`, and `DEFAULT_FORM_PATH`'s directory
+too (`_RELEASE_INPUT_DIRS`, the pipeline folder of `PIPELINE_FILE`, the file the
+scaffolded `haute.toml` names, and the test quotes' folder, `_RELEASE_INPUT_FILES`, and
+`DEFAULT_FORM_PATH`'s directory
 through `_release_input_dirs` when `workbench` is set) and rendered by
 `_github_trigger_paths` and `_azure_devops_trigger_paths`; `github_deploy_yml` and
 `azure_devops_yml` take `workbench`, which `handle_init` passes from `--workbench`, as do
@@ -777,7 +779,8 @@ API and real JSON round-trips rather than mocks:
 - **`test_scaffold.py`** — every CI provider × deploy target combination, complete
   YAML/TOML structural validation (including release conditions and exact secret
   placement, the test-quote report's GitHub comment only on a same-repository pull
-  request and GitLab's whole-history clone), blank starter pipeline/test content, root-`main.py` removal, and absence of
+  request and GitLab's whole-history clone, the deploy triggers naming only the pipeline
+  folder and the test quotes' folder among folders), blank starter pipeline/test content, root-`main.py` removal, and absence of
   generated prompts and node sidecars.
 - **`test_docs_accuracy.py`** — executable deployment-documentation parity for the
   real scaffold tree and starter node count, registered CLI commands, public Python
