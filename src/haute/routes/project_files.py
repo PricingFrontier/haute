@@ -34,6 +34,7 @@ from haute._project_layout import (
     PIPELINE_FILES_SUBFOLDERS,
     VERSIONED_FILE_LIMIT_BYTES,
     pipeline_files_folder,
+    versioned_name,
 )
 from haute._sandbox import _get_project_root
 from haute.hosted import databricks_app_environment
@@ -137,10 +138,8 @@ def _target(project_root: Path, place_name: ProjectFilePlace, path: str) -> _Tar
     if (
         text.startswith("/")
         or PureWindowsPath(path).drive
-        or any(
-            part in ("", ".", "..") or part.startswith(".") or part.casefold() == "__pycache__"
-            for part in parts
-        )
+        or any(part in ("", ".", "..") for part in parts)
+        or (parts and not versioned_name(text))
     ):
         raise _refusal(400, "invalid_path", f"{path!r} isn't a path the Files panels can use.")
     relative = "/".join(parts)
@@ -164,7 +163,9 @@ def _revision(info: os.stat_result) -> str:
 
 
 def _hidden(entry: os.DirEntry[str]) -> bool:
-    if entry.name.startswith(".") or entry.name.casefold() == "__pycache__":
+    """An entry the panels leave out: a name the project does not version (``versioned_name``),
+    or a link or junction."""
+    if not versioned_name(entry.name):
         return True
     if entry.is_symlink():
         return True

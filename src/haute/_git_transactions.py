@@ -37,7 +37,7 @@ from haute._git_core import (
 )
 from haute._git_setup import resolve_ledger, set_working_branch
 from haute._logging import get_logger
-from haute._project_layout import VERSIONED_FILE_LIMIT_BYTES
+from haute._project_layout import VERSIONED_FILE_LIMIT_BYTES, versioned_name
 from haute.schemas import GitCommitResponse, GitCreateWorkingBranchResponse, GitMilestoneFork
 
 logger = get_logger(component="git")
@@ -130,15 +130,14 @@ def _literal(path: str) -> str:
 
 
 # Never versioned from the pipeline folder, whatever the project's .gitignore says.
-_MACHINERY_FOLDERS = frozenset({"__pycache__", ".haute_build"})
-
-
 def _pipeline_folder_new_files(pipeline_folder: str | None, cwd: Path | None = None) -> list[str]:
     """New files under *pipeline_folder*, which is versioned as a whole: untracked ones
     ``.gitignore`` does not ignore, and ones staged but never committed (``git add`` by
     hand, or a save whose commit failed after its add).
 
-    Bytecode and deploy build folders stay out even where ``.gitignore`` lacks them.
+    Only names the Files panels show are swept (``versioned_name``): dot-names, the
+    deploy's build folder among them, ``__pycache__`` and bytecode stay out even where
+    ``.gitignore`` lacks them.
     """
     if pipeline_folder is None:
         return []
@@ -165,9 +164,7 @@ def _pipeline_folder_new_files(pipeline_folder: str | None, cwd: Path | None = N
     return [
         path
         for path in dict.fromkeys(untracked.split("\0") + staged.split("\0"))
-        if path
-        and not path.endswith(".pyc")
-        and not _MACHINERY_FOLDERS.intersection(PurePosixPath(path).parts[:-1])
+        if path and versioned_name(path)
     ]
 
 

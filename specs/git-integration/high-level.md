@@ -73,7 +73,9 @@ the user is always looking at their latest saved state. "Commit" (a milestone) f
 sweeps into one final ledger save every modified file already tracked by Git and every new
 file in the pipeline folder, which is versioned as a whole
 ([pipeline-config](../pipeline-config/high-level.md)). A new file elsewhere is never included
-implicitly, and neither is one that `.gitignore` ignores. A file in the pipeline folder
+implicitly, and neither is one that `.gitignore` ignores nor one the Files panels hide (a
+dot-name such as `.env.local`, `__pycache__/`, bytecode), so Commit never records a file the
+analyst could not see in Haute. A file in the pipeline folder
 larger than 100 MiB refuses the Commit, naming the file, before anything is recorded. Commit
 then folds every pending ledger commit into
 a single, always-real merge commit on the working branch, with the user's own message and an

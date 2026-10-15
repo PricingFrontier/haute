@@ -177,9 +177,11 @@ unless `allow_fork`, calls `divergence_state(working)` (local-refs-only, no fetc
 `GitMilestoneForkError` if the leg is `"behind"` or `"diverged"` → before the merge,
 `_residual_tracked_changes` enumerates every modified path already tracked by Git, and
 `_pipeline_folder_new_files(pipeline_folder)` adds every new file under the pipeline folder
-(`git ls-files --others --exclude-standard -z` on its literal pathspec). That sweep leaves out
-`__pycache__/` and `.haute_build/` folders and `*.pyc` files even where `.gitignore` lacks
-them, and a file `.gitignore` ignores stays out. The route passes `pipeline_folder` from
+(`git ls-files --others --exclude-standard -z` on its literal pathspec). That sweep takes
+only the names `_project_layout.versioned_name` accepts, the rule the Files panels show and
+take: a path with a dot-name part (`.env.local`, `.DS_Store`, an editor's lock file,
+`.ipynb_checkpoints/`, `.haute_build/`) or a `__pycache__` part, or a `*.pyc` file, stays
+out even where `.gitignore` lacks it, and a file `.gitignore` ignores stays out. The route passes `pipeline_folder` from
 `_project_layout.pipeline_folder`; `None` (no pipeline folder below the root) adds nothing.
 Any swept path inside the pipeline folder that is a file larger than
 `VERSIONED_FILE_LIMIT_BYTES` raises `GitDomainError` naming it, its size and the root's
@@ -561,8 +563,9 @@ process failures, and precise ref-movement races deterministic.
   resolve/spawn, `commit_save` (including idempotent-no-op saves, a SQLite file's hot
   journal played back before the commit and one SQLite cannot settle refusing it, and a
   filename with glob characters committing only itself), the milestone sweep of the pipeline
-  folder (a new file there recorded, a new file outside it, an ignored file, `__pycache__/`
-  and `.haute_build/` left out, and a file over the limit refusing the Commit by name),
+  folder (a new file there recorded, a new file outside it, an ignored file, `__pycache__/`,
+  `.haute_build/`, bytecode and the names the Files panels hide left out, and a file over the
+  limit refusing the Commit by name),
   milestone merge and its
   invariant checks, git identity get/set, working-branch status across all seven readiness states,
   `set_working_branch` including the unborn-repo seed path and its gitignore-guard

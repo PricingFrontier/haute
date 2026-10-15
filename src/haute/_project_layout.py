@@ -20,6 +20,20 @@ LOCAL_FOLDERS = ("data", "outputs")
 VERSIONED_FILE_LIMIT_BYTES = 100 * 1024 * 1024
 
 
+def versioned_name(relative: str) -> bool:
+    """Whether *relative*, a ``/``-separated path, names a file the project versions through
+    Haute: no part a dot-name (``.env.local``, ``.DS_Store``, an editor's lock file, the
+    deploy's ``.haute_build``) or ``__pycache__``, and not bytecode. The Files panels show
+    and take only such names, and a milestone sweeps in only such new files, so Commit
+    never records a file the analyst could not see in Haute."""
+    parts = PurePosixPath(relative).parts
+    return (
+        bool(parts)
+        and not relative.endswith(".pyc")
+        and not any(part.startswith(".") or part.casefold() == "__pycache__" for part in parts)
+    )
+
+
 def pipeline_folder(project_root: Path) -> str | None:
     """The configured pipeline folder, relative to *project_root* in POSIX form.
 

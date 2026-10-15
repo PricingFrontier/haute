@@ -215,7 +215,7 @@ def test_pipeline_files_refuse_outside_a_repository(client: TestClient, project:
 
 def _writable(remove: Any, path: str, _: Any) -> None:
     """Git's read-only object files, made writable so the repository can be removed."""
-    os.chmod(path, stat.S_IWRITE)
+    Path(path).chmod(stat.S_IWRITE)
     remove(path)
 
 
@@ -530,3 +530,42 @@ def test_outputs_cannot_be_deleted(client: TestClient, project: Path) -> None:
 
     assert response.status_code == 403
     assert (project / "outputs" / "scored.parquet").exists()
+
+
+# ── which names are versioned ─────────────────────────────────────────────
+
+#: Names in the pipeline folder's files/ that the project versions through Haute, and names
+#: it never does. The Files panels and a milestone's sweep both read this one rule.
+NAMES = [
+    ("data/rates.csv", True),
+    ("models/freq.cbm", True),
+    (".env.local", False),
+    ("data/.DS_Store", False),
+    (".ipynb_checkpoints/model-checkpoint.ipynb", False),
+    ("data/.~lock.rates.csv#", False),
+    ("__pycache__/main.cpython-311.pyc", False),
+    ("helpers.pyc", False),
+]
+
+
+@pytest.mark.parametrize(("name", "versioned"), NAMES, ids=[name for name, _ in NAMES])
+def test_the_panels_and_the_sweep_take_the_same_names(
+    project: Path, name: str, versioned: bool
+) -> None:
+    from fastapi import HTTPException
+
+    from haute._git_transactions import _pipeline_folder_new_files
+    from haute.routes.project_files import _target
+
+    path = project / "rating" / "files" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("x", encoding="utf-8")
+
+    swept = f"rating/files/{name}" in _pipeline_folder_new_files("rating", cwd=project)
+    try:
+        _target(project, "pipeline", name)
+        taken = True
+    except HTTPException:
+        taken = False
+
+    assert (swept, taken) == (versioned, versioned)

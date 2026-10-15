@@ -15,10 +15,9 @@ step that works today for each, and drop it when the package lands. `BUG-27` to
 describes: the CLI's help, the offset tooltip, a tuned t-boost run's summary and the
 t-boost starter parameters in the modelling UI specification. `BUG-31`, found on
 8 October 2026 while planning how a Quote Input takes an extension's tables, is a deployed pipeline that hands every port of a
-multi-table Quote Input the whole request. `BUG-33` to `BUG-36` were found on 15 October
+multi-table Quote Input the whole request. `BUG-34` to `BUG-36` were found on 15 October
 2026 by the [review of the Workbench's pull requests](workbench-review-2026-10-15.md) in
 the parts those pull requests changed beside the Workbench:
-- Commit sweeping in files the Files panels hide;
 - a capture retry that skips uploaded files;
 - the Files panel acting on the folder it has left;
 - generated CI triggers that name folders a project no longer has.
@@ -40,7 +39,6 @@ the parts those pull requests changed beside the Workbench:
 | BUG-29 | Planned | P2 | A tuned t-boost run's summary says its published model is the winning trial's fit, not a refit. |
 | BUG-30 | Planned | P3 | The modelling UI specification lists the t-boost starter parameters and readiness issues the editor has. |
 | BUG-31 | Planned | P1 | A deployed Quote Input gives each of its ports its own table from the request, as the editor does. |
-| BUG-33 | Planned | P1 | Commit versions only names the Files panels show: a dot-file under the pipeline folder is never swept into a milestone. |
 | BUG-34 | Planned | P1 | A capture skipped for want of a git identity is retried for everything it skipped, uploaded files included. |
 | BUG-35 | Planned | P2 | The Files panel acts only on the folder it shows. |
 | BUG-36 | Planned | P3 | The generated CI triggers name the folders a scaffolded project has. |
@@ -316,29 +314,6 @@ editor's result for the same request, through `/quote` for one quote and for sev
 **Evidence:** `src/haute/deploy/_scorer.py::_score_graph_lazy`;
 `src/haute/_graph_utils.py::select_edge_source_output`;
 `src/haute/_json_shred/_shred.py::shred_to_buffers`.
-
-### BUG-33 — Commit versions only what the Files panels show
-**Why:** The pipeline folder is versioned as a whole: a milestone sweeps in every new file
-under it that `.gitignore` does not ignore, leaving out only `__pycache__`, `.haute_build`
-and `*.pyc`. The Files panels refuse and hide every dot-name. So Commit records, and
-publishes, files the analyst never saw in Haute: `rating/.env.local` (the gitignore guard
-covers `.env` alone), `.ipynb_checkpoints/`, `.DS_Store`, an editor's lock file. Found by a
-probe in the [Workbench review](workbench-review-2026-10-15.md) (FB-44).
-
-**Plan:** One rule for which names the project versions through Haute (no dot-name part,
-no `__pycache__`). The Files panels' path check and listing, and the sweep, all use it. The
-git-integration specification says dot-names stay out of the sweep.
-
-**Acceptance:**
-- A milestone with those four files under the pipeline folder records none of them.
-- The panels and the sweep agree on one shared test table of names.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_git_transactions.py::_pipeline_folder_new_files` (the sweep's
-filter); `src/haute/routes/project_files.py::_target` and
-`src/haute/routes/project_files.py::_hidden` (the panels' rule);
-`src/haute/_gitignore_guard.py`.
 
 ### BUG-34 — A skipped capture is retried for what it skipped
 **Why:**

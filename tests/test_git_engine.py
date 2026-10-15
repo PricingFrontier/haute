@@ -361,6 +361,11 @@ class TestMilestoneMerge:
             "rating/__pycache__/main.cpython-314.pyc": "bytecode",
             "rating/.haute_build/deploy_manifest.json": "{}",
             "rating/stale.pyc": "bytecode",
+            # Names the Files panels hide: never recorded, nor published, by a milestone.
+            "rating/.env.local": "SECRET=1\n",
+            "rating/.ipynb_checkpoints/model-checkpoint.ipynb": "{}",
+            "rating/files/data/.DS_Store": "finder",
+            "rating/files/data/.~lock.rates.csv#": "lock",
             "rating/files/data/scratch.tmp": "ignored\n",
             "notes.txt": "outside the pipeline folder\n",
         }

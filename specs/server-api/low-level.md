@@ -578,7 +578,8 @@ result/cancel race has one linearized winner and cannot pass through a check/ren
 sits at the root, 409 `git_unavailable` without a git binary, `git_binary_available`, and 409
 `no_repository` when the project is not inside a repository, `_is_git_repo`) or
 `LOCAL_FOLDERS` (local). Every path is checked twice: lexically (no
-empty, absolute, drive, `..` or `:` part, no dot-name or `__pycache__` component) and then
+empty, absolute, drive, `..` or `:` part, and a name `_project_layout.versioned_name` accepts:
+no dot-name or `__pycache__` part, not a `*.pyc` file) and then
 by `_artifact_paths.ordinary_path_problem` on the project-relative path (no link or junction on
 any part, no hard-linked or non-regular target), each refusal worded for the analyst as 400
 `invalid_path`. A listing reads one folder with `os.scandir`; in the pipeline place it asks Git
@@ -1075,7 +1076,7 @@ entirely and leave every touched file in whatever state it happened to be in."
 
 - `tests/test_project_files_routes.py` covers `/api/project-files`: the pipeline place
   refused without git and outside a repository, the local place working, each place's listing (the
-  known folders before they exist, dot-names and `__pycache__` hidden, a new and an ignored
+  known folders before they exist, dot-names, `__pycache__` and bytecode hidden, a new and an ignored
   file's status, a project with its pipeline at the root); a write that creates, one that
   replaces its confirmed revision, and the refusals of an existing file, a changed revision,
   `..`, a dot-name, a reserved name, `a:b`, a junction parent, the read-only `outputs/`, the
@@ -1085,7 +1086,8 @@ entirely and leave every touched file in whatever state it happened to be in."
   edited one `changed`; a branch changed mid-write; the capture of
   a pipeline-place write and delete, and none for the local place; a name with glob characters
   captured alone; the download's headers; a delete's revision check; the session token and
-  Origin required for a write; and that the underwriter app has no such route.
+  Origin required for a write; that the underwriter app has no such route; and that the
+  panels' rule and the milestone sweep take the same names.
 - `tests/test_cache_nodes_routes.py` covers `POST /api/cache/nodes`: every node of the graph
   reported including one with nothing cached, a re-cache replacing rather than adding to a
   node's dataset, two nodes resolving to one input snapshot reporting its bytes once with the
