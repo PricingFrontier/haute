@@ -11,6 +11,7 @@ import { addWidget, BLANK_THEME, createWidget, withSampleCell, withSampleRows } 
 import { resetIdentityPromptForTests } from "../identityPrompt"
 import type { SaveCapture } from "../saveCapture"
 import useDocumentStatusStore from "../useDocumentStatusStore"
+import useQuestionStore from "../useQuestionStore"
 import useGitStore from "../useGitStore"
 import { MAX_HISTORY } from "../useGraphStore"
 import useToastStore from "../useToastStore"
@@ -405,6 +406,38 @@ describe("useWorkbenchFormStore", () => {
     store().change((form) => ({ ...form, name: "boat" }))
     await expect(store().flush()).resolves.toBe(false)
     expect(store()).toMatchObject({ stale: true, dirty: true })
+  })
+
+  it("saves a form a gesture under way has changed, and keeps it from a changed file, though its steps leave dirty as it was", async () => {
+    const api = server({ form: blank, revision: "rev-0" })
+    const store = useWorkbenchFormStore.getState
+    await store().load()
+    const stop = vi.fn()
+    store().beginGesture(store().form!, stop)
+    store().setFormRaw(named("dragged"))
+    expect(store().dirty).toBe(false)
+
+    // A changed file found meanwhile leaves the dragged form, stale.
+    api.writeFile(named("theirs"), "rev-5")
+    await store().sync()
+    expect(store()).toMatchObject({ form: named("dragged"), stale: true })
+
+    // Ctrl+S with the pointer held saves the form as dragged.
+    api.writeFile(blank, "rev-0")
+    useWorkbenchFormStore.setState({ stale: false })
+    expect(await store().flush()).toBe(true)
+    expect(api.puts.map((put) => put.form.name)).toEqual(["dragged"])
+  })
+
+  it("answers the page's question no as the form is read anew", async () => {
+    server({ form: blank, revision: "rev-0" })
+    const store = useWorkbenchFormStore.getState
+    await store().load()
+    const asked = useQuestionStore.getState().ask({ title: "Delete the section?", confirm: "Delete" })
+
+    await store().reload()
+
+    expect(await asked).toBeNull()
   })
 
   it("reads the file again when the pipeline's document is adopted anew: adopting a changed file while clean, stale while dirty", async () => {

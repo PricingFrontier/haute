@@ -289,15 +289,15 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     // Only a quote open, and as it may change, has values of its own to keep.
     if (key === null || get().status !== "ready" || readOnlyReason(get()) !== null) return true
     const values = useWorkbenchPreviewStore.getState().quote
-    // A draft offered back and not yet answered keeps the write it held.
-    const pending = get().pending ?? get().recovered?.pending ?? null
     // Values as they opened keep nothing, unless a write of them is held: a quote made from
     // another and saved as it opened, its answer lost, is written once.
-    if (valuesKey(values) === get().baseline && pending === null) {
-      // A draft offered back and not yet answered stays offered.
+    if (valuesKey(values) === get().baseline && get().pending === null) {
+      // A draft offered back and not yet answered stays offered, whole.
       if (get().recovered === null) clearDraft(key)
       return true
     }
+    // Typed over a draft offered back and not yet answered: the write it held is kept.
+    const pending = get().pending ?? get().recovered?.pending ?? null
     const sheets = useWorkbenchFormStore.getState().form
     return writeDraft(key, {
       values,

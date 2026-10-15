@@ -277,6 +277,24 @@ describe("useOpenQuoteStore", () => {
     expect(store().quote?.latest).toBe(2)
   })
 
+  it("keeps a draft offered back whole while the quote is left without restoring or discarding it", async () => {
+    vi.mocked(createAppQuote).mockRejectedValueOnce(new TypeError("Failed to fetch"))
+    await store().openNew(null)
+    preview().setCell("policy", 0, "policy.state", "CA")
+    await store().save()
+    preview().setCell("policy", 0, "policy.state", "TX")
+    store().close()
+
+    await store().openNew(null)
+    expect(store().recovered?.values).toEqual({ policy: [{ "policy.state": "TX" }] })
+    // Left again, offered and unanswered.
+    store().close()
+    await store().openNew(null)
+
+    expect(store().recovered?.values).toEqual({ policy: [{ "policy.state": "TX" }] })
+    expect(store().recovered?.pending?.write.body.values).toEqual({ policy: [{ "policy.state": "CA" }] })
+  })
+
   it("writes a quote made from another once though it is saved as it opened and its answer is lost", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     vi.mocked(carryAppQuote).mockResolvedValue({ values: VALUES, dropped: [] })

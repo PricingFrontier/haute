@@ -16,6 +16,7 @@ import { fetchWorkbenchForm, saveWorkbenchForm } from "../api/workbench"
 import { canonicalJson } from "../utils/canonicalJson"
 import { reportSaveCapture } from "./saveCapture"
 import useDocumentStatusStore from "./useDocumentStatusStore"
+import useQuestionStore from "./useQuestionStore"
 import { appendHistoryEntry } from "./useGraphStore"
 import useToastStore from "./useToastStore"
 import useWorkbenchStore from "./useWorkbenchStore"
@@ -117,6 +118,15 @@ let gesture: { before: FormSpec; stop: () => void } | null = null
 const takeTurn = serial()
 
 const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
+  /**
+   * Whether the form holds unsaved edits now: worked out afresh while a gesture is under
+   * way, whose steps leave `dirty` as it was until it ends.
+   */
+  const unsaved = (): boolean => {
+    const { form, savedForm, dirty } = get()
+    return gesture === null || form === null ? dirty : serialise(form) !== savedForm
+  }
+
   const finishGesture = (): void => {
     const active = gesture
     if (active === null) return
@@ -198,7 +208,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
         try {
           const { form, revision } = await fetchWorkbenchForm()
           if (revision === get().revision) return
-          if (get().dirty) {
+          if (unsaved()) {
             // The banner says the file changed on disk, and its Reload reads it.
             set({ stale: true })
             return
@@ -325,10 +335,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
           set({ saving: false })
         }
       }),
-    flush: () => {
-      const { status, dirty } = get()
-      return status === "ready" && dirty ? get().save() : Promise.resolve(true)
-    },
+    flush: () => (get().status === "ready" && unsaved() ? get().save() : Promise.resolve(true)),
   }
 })
 
@@ -336,6 +343,9 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
 // too: they read the mirror on the eager workbench store, since this store is a lazy chunk.
 useWorkbenchFormStore.subscribe((state, previous) => {
   if (state.dirty !== previous.dirty) useWorkbenchStore.setState({ formDirty: state.dirty })
+  // A question asked of the form before it was read anew is nobody's: what it would delete
+  // may be gone, or another thing under the same id.
+  if (state.reads !== previous.reads) useQuestionStore.getState().answer(null)
 })
 
 // The form follows the pipeline's document: each adoption of one (`executionGeneration`),
