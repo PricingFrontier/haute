@@ -46,13 +46,6 @@ interface WorkbenchFormState {
    */
   stale: boolean
   saving: boolean
-  /**
-   * The last save was written but not captured on the ledger, for want of a git identity
-   * or because the capture failed: the next flush saves the form again, unchanged, so a
-   * capture can be made (a new file is otherwise never tracked, and a milestone's sweep
-   * takes tracked files alone).
-   */
-  uncaptured: boolean
   /** Read the form, unless it has been. */
   load: () => Promise<void>
   /** Read the form again, dropping edits and history. */
@@ -94,11 +87,8 @@ interface WorkbenchFormState {
    * changed on disk since it was read is never overwritten.
    */
   save: () => Promise<boolean>
-  /**
-   * The git flows' save, before a milestone, a move or an identity retry: `save` when the
-   * form holds unsaved edits or a save the ledger did not capture, else true without a
-   * request.
-   */
+  /** The project save's form step: `save` when the form holds unsaved edits, else true
+   *  without a request. */
   flush: () => Promise<boolean>
 }
 
@@ -175,7 +165,6 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
     redoStack: [],
     stale: false,
     saving: false,
-    uncaptured: false,
     load: async () => {
       if (get().status === "idle") await read()
     },
@@ -273,8 +262,6 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
             savedForm,
             dirty: serialise(get().form ?? saved.form) !== savedForm,
             stale: false,
-            // Every warning on a form save is the capture's: there is nothing else to warn of.
-            uncaptured: saved.identity_required || (saved.git_sha === null && saved.warnings.length > 0),
           })
           addToast("success", `Saved → ${path}`)
           reportSaveCapture(saved)
@@ -297,8 +284,8 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
         }
       }),
     flush: () => {
-      const { status, dirty, uncaptured } = get()
-      return status === "ready" && (dirty || uncaptured) ? get().save() : Promise.resolve(true)
+      const { status, dirty } = get()
+      return status === "ready" && dirty ? get().save() : Promise.resolve(true)
     },
   }
 })

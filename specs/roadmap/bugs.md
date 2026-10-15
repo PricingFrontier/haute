@@ -15,10 +15,9 @@ step that works today for each, and drop it when the package lands. `BUG-27` to
 describes: the CLI's help, the offset tooltip, a tuned t-boost run's summary and the
 t-boost starter parameters in the modelling UI specification. `BUG-31`, found on
 8 October 2026 while planning how a Quote Input takes an extension's tables, is a deployed pipeline that hands every port of a
-multi-table Quote Input the whole request. `BUG-34` to `BUG-36` were found on 15 October
+multi-table Quote Input the whole request. `BUG-35` and `BUG-36` were found on 15 October
 2026 by the [review of the Workbench's pull requests](workbench-review-2026-10-15.md) in
 the parts those pull requests changed beside the Workbench:
-- a capture retry that skips uploaded files;
 - the Files panel acting on the folder it has left;
 - generated CI triggers that name folders a project no longer has.
 
@@ -39,7 +38,6 @@ the parts those pull requests changed beside the Workbench:
 | BUG-29 | Planned | P2 | A tuned t-boost run's summary says its published model is the winning trial's fit, not a refit. |
 | BUG-30 | Planned | P3 | The modelling UI specification lists the t-boost starter parameters and readiness issues the editor has. |
 | BUG-31 | Planned | P1 | A deployed Quote Input gives each of its ports its own table from the request, as the editor does. |
-| BUG-34 | Planned | P1 | A capture skipped for want of a git identity is retried for everything it skipped, uploaded files included. |
 | BUG-35 | Planned | P2 | The Files panel acts only on the folder it shows. |
 | BUG-36 | Planned | P3 | The generated CI triggers name the folders a scaffolded project has. |
 
@@ -314,42 +312,6 @@ editor's result for the same request, through `/quote` for one quote and for sev
 **Evidence:** `src/haute/deploy/_scorer.py::_score_graph_lazy`;
 `src/haute/_graph_utils.py::select_edge_source_output`;
 `src/haute/_json_shred/_shred.py::shred_to_buffers`.
-
-### BUG-34 — A skipped capture is retried for what it skipped
-**Why:**
-- A write whose ledger capture is skipped for want of a git identity raises the identity
-  prompt, and the prompt's retry saves the project: the pipeline and the form.
-  - A file added or replaced through Pipeline files is never captured by that retry. On a
-    hosted app restored without an identity, the file stays new until a milestone, and a
-    restart before one loses it.
-  - Only test quotes have a capture retry of their own.
-- An upload cancelled after its last byte reached the server is published and captured,
-  but the panel drops the answer, and with it the warnings and the identity prompt.
-- A server stopped mid-upload leaves its staging file in `.haute/uploads/` for good.
-
-Found by the [Workbench review](workbench-review-2026-10-15.md) (FB-45, FB-46, FB-49).
-
-**Plan:**
-- One capture route takes the project-relative paths each writer reports uncaptured: the
-  form, test quotes and files alike. The identity prompt calls it for all of them.
-- `reportSaveCapture` keeps what is uncaptured until a capture takes it.
-- Once an upload's body is sent, its abort does nothing, so the panel reports the answer.
-- Staging files older than the server's start are removed when staging begins.
-
-**Acceptance:**
-- Setting the identity after an uncaptured upload captures the file.
-- A cancel after the last byte reports the capture.
-- A stale staging file is gone after the next upload.
-
-Each has a test.
-
-**Dependencies:** None. `WB-22` folds the retry into the one project writer.
-
-**Evidence:** `frontend/src/stores/saveCapture.ts::reportSaveCapture` (nothing kept of what
-went uncaptured); `src/haute/routes/workbench.py::capture_test_quotes` (the one retry there
-is); `src/haute/routes/project_files.py::write_project_file`;
-`frontend/src/api/projectFiles.ts::uploadProjectFile`;
-`src/haute/routes/project_files.py::_staging_path`.
 
 ### BUG-35 — The Files panel acts on the folder it shows
 **Why:** Moving to another folder updates the breadcrumb at once but keeps the previous

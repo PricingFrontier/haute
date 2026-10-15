@@ -377,8 +377,10 @@ export interface SavePipelineResponse {
   git_sha?: string | null
   source_revision: string
   /** True when version capture was skipped only because git has no commit
-   *  identity. The app prompts for a name/email and retries the save. */
+   *  identity. The app prompts for a name/email, then captures what was skipped. */
   identity_required?: boolean
+  /** The files, relative to the project, the save's capture skipped or failed on. */
+  uncaptured?: string[]
 }
 
 /** One shared-snapshot generation a preview's collected rows were computed from. */
@@ -1597,6 +1599,7 @@ export type {
   GitWorkingBranchesResponse,
   GitWorkingBranchResponse,
   GitUpstreamStatusResponse as GitUpstreamStatus,
+  SaveCapture,
 } from "../generated/api-contracts.generated"
 
 export type WorkingBranchState = GeneratedGitWorkingBranchResponse["state"]

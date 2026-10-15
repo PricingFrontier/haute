@@ -1,8 +1,8 @@
 /**
  * The workbench's form store (specs/workbench): the form read with its revision, edits
  * with undo and redo on the graph store's history rule, saves against the revision the
- * form was read at with their capture reported, the git flows' flush, and the file read
- * again when the pipeline's document is adopted anew.
+ * form was read at with their capture reported, the project save's flush, and the file
+ * read again when the pipeline's document is adopted anew.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { FormSpec } from "../../api/types"
@@ -41,7 +41,7 @@ const json = (body: unknown, status = 200) =>
 
 /** A save's answer: the form at its new revision, captured as `capture` says (nowhere by default). */
 const saved = (form: FormSpec, revision: string | null, capture: SaveCapture = {}) =>
-  json({ form, revision, warnings: [], git_sha: null, identity_required: false, ...capture })
+  json({ form, revision, warnings: [], git_sha: null, identity_required: false, uncaptured: [], ...capture })
 
 /**
  * Answers GET with the file as it is, and PUT with the saved form at the next revision,
@@ -92,10 +92,9 @@ function reset(): void {
     redoStack: [],
     stale: false,
     saving: false,
-    uncaptured: false,
   })
   useWorkbenchStore.setState({ enabled: true, formPath: "forms/form.json", formDirty: false, refreshTables: vi.fn(() => 1) })
-  useGitStore.setState({ status: makeGitWorkingBranch({ state: "ready", last_save_sha: null }), modal: null, historyNonce: 0 })
+  useGitStore.setState({ status: makeGitWorkingBranch({ state: "ready", last_save_sha: null }), modal: null, historyNonce: 0, uncaptured: [] })
   useToastStore.setState({ toasts: [], _toastCounter: 0 })
   resetIdentityPromptForTests()
 }
@@ -336,36 +335,18 @@ describe("useWorkbenchFormStore", () => {
       ["success", "Saved → forms/form.json"],
       ["warning", "Changes saved; version capture failed: no such branch"],
     ])
-    expect(store().uncaptured).toBe(false)
+    expect(useGitStore.getState().uncaptured).toEqual([])
 
-    // Skipped for want of a git identity: the prompt opens, and the flush that follows
-    // setting one saves the form again, unchanged, so the ledger captures it.
-    api.captureWith({ identity_required: true })
+    // Skipped for want of a git identity: the prompt opens, and the file is kept for a
+    // capture to take; the form itself is saved, so a flush saves nothing again.
+    api.captureWith({ identity_required: true, uncaptured: ["forms/form.json"] })
     store().change((form) => ({ ...form, name: "boat" }))
     await store().save()
     expect(useGitStore.getState().modal).toBe("identity")
-    expect(store()).toMatchObject({ uncaptured: true, dirty: false })
-
-    api.captureWith({ git_sha: "ledger-2" })
+    expect(useGitStore.getState().uncaptured).toEqual(["forms/form.json"])
+    expect(store().dirty).toBe(false)
     await expect(store().flush()).resolves.toBe(true)
-    expect(api.puts).toHaveLength(3)
-    expect(api.puts[2]).toEqual({ form: named("boat"), base_revision: "rev-2" })
-    expect(store().uncaptured).toBe(false)
-    expect(useGitStore.getState().status?.last_save_sha).toBe("ledger-2")
-
-    // A capture that failed leaves the file uncaptured too, until the next flush saves it
-    // again; a save without a working branch has nothing to capture and nothing to retry.
-    api.captureWith({ git_sha: null, warnings: ["Changes saved; version capture failed: no such branch"] })
-    store().change((form) => ({ ...form, name: "van" }))
-    await store().save()
-    expect(store().uncaptured).toBe(true)
-    api.captureWith({ git_sha: "ledger-3" })
-    await expect(store().flush()).resolves.toBe(true)
-    expect(store().uncaptured).toBe(false)
-    api.captureWith({})
-    store().change((form) => ({ ...form, name: "bus" }))
-    await store().save()
-    expect(store().uncaptured).toBe(false)
+    expect(api.puts).toHaveLength(2)
   })
 
   it("mirrors whether the form holds unsaved edits onto the workbench store, for the editor's guards", async () => {
@@ -383,7 +364,7 @@ describe("useWorkbenchFormStore", () => {
     expect(useWorkbenchStore.getState().formDirty).toBe(false)
   })
 
-  it("flushes only what there is to save: unsaved edits, or a save the ledger did not capture", async () => {
+  it("flushes only what there is to save: unsaved edits", async () => {
     const api = server({ form: blank, revision: "rev-0" })
     const store = useWorkbenchFormStore.getState
 

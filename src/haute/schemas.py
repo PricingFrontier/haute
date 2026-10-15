@@ -152,6 +152,27 @@ class SessionStatusResponse(BaseModel):
     ok: bool = True
 
 
+class SaveCapture(BaseModel):
+    """A write's capture on the clone's save ledger, answered the same way by every route
+    that writes project files: the pipeline's save, the form's save, a test-quote write, a
+    project file written or deleted, and ``POST /api/git/capture``.
+
+    ``warnings`` are non-fatal, since the write has landed: a capture that failed among
+    them, and anything else left to see to (a transform with no code); an empty list means
+    no issues. ``git_sha`` is the ledger commit the write produced when the clone has a
+    working branch, else null. ``identity_required`` is true only when the capture was
+    skipped because git has no commit identity (a restored hosted container), for the
+    editor to ask for one. ``uncaptured`` names the files, relative to the project in POSIX
+    form, that a skipped or failed capture left off the ledger: the editor keeps them and
+    ``POST /api/git/capture`` takes them later.
+    """
+
+    warnings: list[str] = Field(default_factory=list)
+    git_sha: str | None = None
+    identity_required: bool = False
+    uncaptured: list[str] = Field(default_factory=list)
+
+
 class WorkbenchStatusResponse(BaseModel):
     """Whether the project's workbench is enabled (``[workbench]`` in ``haute.toml``)."""
 
@@ -196,18 +217,8 @@ class WorkbenchFormSaveRequest(BaseModel):
     base_revision: str | None = None
 
 
-class WorkbenchFormSaveResponse(WorkbenchFormResponse):
-    """The form as written, with its new revision and the save's version capture.
-
-    The capture fields mean what they mean on the pipeline save's response: ``git_sha`` is
-    the ledger commit the save produced when the clone has a working branch, else null;
-    ``warnings`` are non-fatal, a capture that failed among them; ``identity_required`` is
-    true only when the capture was skipped because git has no commit identity.
-    """
-
-    warnings: list[str] = Field(default_factory=list)
-    git_sha: str | None = None
-    identity_required: bool = False
+class WorkbenchFormSaveResponse(WorkbenchFormResponse, SaveCapture):
+    """The form as written, with its new revision and the save's version capture."""
 
 
 class WorkbenchFormTablesRequest(BaseModel):
@@ -286,17 +297,13 @@ class WorkbenchTestQuoteAcceptRequest(BaseModel):
     tables: WorkbenchPricedTables
 
 
-class WorkbenchTestQuoteWriteResponse(BaseModel):
+class WorkbenchTestQuoteWriteResponse(SaveCapture):
     """A test-quote write and its capture on the save ledger.
 
-    ``quote`` is the test quote as written, null after a delete; the capture fields mean what
-    they mean on the form save's response.
+    ``quote`` is the test quote as written, null after a delete.
     """
 
     quote: WorkbenchTestQuoteSummary | None = None
-    warnings: list[str] = Field(default_factory=list)
-    git_sha: str | None = None
-    identity_required: bool = False
 
 
 class WorkbenchTestQuoteOpenRequest(BaseModel):
@@ -1571,24 +1578,13 @@ class SavePipelineRequest(BaseModel):
     )
 
 
-class SavePipelineResponse(BaseModel):
+class SavePipelineResponse(SaveCapture):
+    """The saved pipeline, with the save's version capture."""
+
     status: str = "saved"
     file: str
     pipeline_name: str
     source_revision: RevisionToken
-    # Non-fatal warnings surfaced to the UI (e.g. sanitized-name
-    # collisions that dropped a node position).  An empty list means
-    # "no issues" and callers can rely on truthiness for UX branches.
-    warnings: list[str] = Field(default_factory=list)
-    # SHA of the ledger commit this save produced, when the clone has a
-    # working branch configured; None otherwise. Consumed by the toolbar
-    # branch/SHA indicator — the save toast stays git-silent.
-    git_sha: str | None = None
-    # True when version capture was skipped purely because git has no commit
-    # identity (common on a restored hosted container). The UI prompts for a
-    # name/email and retries the save; every other capture failure stays a
-    # plain warning with this flag False.
-    identity_required: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -2883,7 +2879,7 @@ class ProjectFolderResponse(BaseModel):
     entries: list[ProjectFileEntry]
 
 
-class ProjectFileWriteResponse(BaseModel):
+class ProjectFileWriteResponse(SaveCapture):
     """A written file, with the save-ledger capture of a pipeline-place write."""
 
     path: str
@@ -2891,18 +2887,12 @@ class ProjectFileWriteResponse(BaseModel):
     revision: str
     replaced: bool
     status: Literal["new", "changed", "ignored"] | None = None
-    git_sha: str | None = None
-    identity_required: bool = False
-    warnings: list[str] = Field(default_factory=list)
 
 
-class ProjectFileDeleteResponse(BaseModel):
+class ProjectFileDeleteResponse(SaveCapture):
     """A deleted file, with the save-ledger capture of a pipeline-place delete."""
 
     path: str
-    git_sha: str | None = None
-    identity_required: bool = False
-    warnings: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -5308,6 +5298,13 @@ class GitSetIdentityResponse(BaseModel):
     user_name: str
     user_email: str
     scope: Literal["local", "global"]
+
+
+class GitCaptureRequest(BaseModel):
+    """Files earlier writes reported ``uncaptured``, relative to the project in POSIX form,
+    to capture on the save ledger as they are on disk now."""
+
+    paths: list[str] = Field(min_length=1)
 
 
 # ---------------------------------------------------------------------------

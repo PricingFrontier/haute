@@ -1,14 +1,21 @@
 /**
  * A save's version capture, reported (specs/git-integration): the ledger commit to the
- * branch indicator, the history told to refresh, each warning in a toast of its own, and
- * the identity prompt opened once per session when the capture waits on an identity.
+ * branch indicator, the history told to refresh, each warning in a toast of its own, the
+ * files left uncaptured kept until a capture takes them, and the identity prompt opened
+ * once per session when the capture waits on an identity.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { ApiError, captureFiles } from "../../api/client"
 import { makeGitWorkingBranch } from "../../test-utils/factories"
 import { dismissIdentityPrompt, resetIdentityPromptForTests } from "../identityPrompt"
-import { reportSaveCapture } from "../saveCapture"
+import { captureUncaptured, reportSaveCapture } from "../saveCapture"
 import useGitStore from "../useGitStore"
 import useToastStore from "../useToastStore"
+
+vi.mock("../../api/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../api/client")>()),
+  captureFiles: vi.fn(),
+}))
 
 const toasts = () => useToastStore.getState().toasts.map((toast) => [toast.type, toast.text])
 
@@ -18,7 +25,9 @@ describe("reportSaveCapture", () => {
       status: makeGitWorkingBranch({ state: "ready", last_save_sha: "old" }),
       modal: null,
       historyNonce: 0,
+      uncaptured: [],
     })
+    vi.mocked(captureFiles).mockReset()
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
     resetIdentityPromptForTests()
   })
@@ -71,5 +80,57 @@ describe("reportSaveCapture", () => {
     reportSaveCapture({ git_sha: null, identity_required: true, warnings: ["needs a git identity"] })
     expect(useGitStore.getState().modal).toBeNull()
     expect(toasts()).toEqual([["warning", "needs a git identity"]])
+  })
+
+  it("keeps every file a capture skipped, each once, until a capture takes them", async () => {
+    reportSaveCapture({ identity_required: true, uncaptured: ["forms/form.json"] })
+    reportSaveCapture({ identity_required: true, uncaptured: ["rating/files/data/a.csv", "forms/form.json"] })
+    expect(useGitStore.getState().uncaptured).toEqual(["forms/form.json", "rating/files/data/a.csv"])
+
+    // The identity is set now: one capture takes both, and nothing is kept.
+    vi.mocked(captureFiles).mockResolvedValue({ git_sha: "ledger-2", warnings: [], identity_required: false, uncaptured: [] })
+    await captureUncaptured()
+
+    expect(captureFiles).toHaveBeenCalledWith(["forms/form.json", "rating/files/data/a.csv"])
+    expect(useGitStore.getState().uncaptured).toEqual([])
+    expect(useGitStore.getState().status?.last_save_sha).toBe("ledger-2")
+
+    // Nothing kept, nothing sent.
+    await captureUncaptured()
+    expect(captureFiles).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps what a capture still skips, and everything when the request fails", async () => {
+    reportSaveCapture({ uncaptured: ["forms/form.json", "tests/quotes/test_quotes.sqlite"] })
+    vi.mocked(captureFiles).mockResolvedValueOnce({
+      git_sha: null,
+      warnings: ["Changes saved; version capture failed: busy"],
+      identity_required: false,
+      uncaptured: ["forms/form.json", "tests/quotes/test_quotes.sqlite"],
+    })
+    await captureUncaptured()
+    expect(useGitStore.getState().uncaptured).toEqual(["forms/form.json", "tests/quotes/test_quotes.sqlite"])
+
+    vi.mocked(captureFiles).mockRejectedValueOnce(new ApiError("HTTP 500", 500, "the server stopped", null, null))
+    await captureUncaptured()
+
+    expect(useGitStore.getState().uncaptured).toEqual(["forms/form.json", "tests/quotes/test_quotes.sqlite"])
+    expect(toasts()).toEqual([
+      ["warning", "Changes saved; version capture failed: busy"],
+      ["error", "Version capture failed: the server stopped"],
+    ])
+  })
+
+  it("keeps a file a write reports while the capture is under way", async () => {
+    reportSaveCapture({ uncaptured: ["forms/form.json"] })
+    let answer: (value: Awaited<ReturnType<typeof captureFiles>>) => void = () => undefined
+    vi.mocked(captureFiles).mockReturnValueOnce(new Promise((resolve) => { answer = resolve }))
+
+    const capturing = captureUncaptured()
+    reportSaveCapture({ uncaptured: ["rating/files/data/b.csv"] })
+    answer({ git_sha: "ledger-3", warnings: [], identity_required: false, uncaptured: [] })
+    await capturing
+
+    expect(useGitStore.getState().uncaptured).toEqual(["rating/files/data/b.csv"])
   })
 })

@@ -279,13 +279,13 @@ class TestMutationEndToEnd:
         provider round receives its result. The degradation itself is the
         service's own tested behaviour; here it is simulated at its seam."""
 
-        from haute.routes._save_pipeline import SavePipelineService
+        from haute.routes._save_pipeline import LedgerCapture, SavePipelineService
 
         def degraded_capture(self, touched, removed, warnings, message):
             warnings.append("Changes saved; version capture failed: simulated")
-            # (sha, identity_required): capture degraded for a reason that is
-            # not a missing identity, so the prompt must not fire.
-            return None, False
+            # Capture degraded for a reason that is not a missing identity, so the
+            # prompt must not fire.
+            return LedgerCapture(None, False, ["main.py"])
 
         monkeypatch.setattr(SavePipelineService, "_capture_save_in_ledger", degraded_capture)
 

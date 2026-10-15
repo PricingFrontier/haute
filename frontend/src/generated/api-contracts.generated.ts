@@ -1170,6 +1170,26 @@ export interface GitMilestoneFork {
   status: 'would_fork';
   working: GitRemoteLeg;
 }
+/**
+ * A write's capture on the clone's save ledger, answered the same way by every route
+ * that writes project files: the pipeline's save, the form's save, a test-quote write, a
+ * project file written or deleted, and ``POST /api/git/capture``.
+ *
+ * ``warnings`` are non-fatal, since the write has landed: a capture that failed among
+ * them, and anything else left to see to (a transform with no code); an empty list means
+ * no issues. ``git_sha`` is the ledger commit the write produced when the clone has a
+ * working branch, else null. ``identity_required`` is true only when the capture was
+ * skipped because git has no commit identity (a restored hosted container), for the
+ * editor to ask for one. ``uncaptured`` names the files, relative to the project in POSIX
+ * form, that a skipped or failed capture left off the ledger: the editor keeps them and
+ * ``POST /api/git/capture`` takes them later.
+ */
+export interface SaveCapture {
+  git_sha: string | null;
+  identity_required: boolean;
+  uncaptured: string[];
+  warnings: string[];
+}
 export interface IoCapabilitiesResponse {
   groups: IoCapabilityGroup[];
   schema_version: 1;
@@ -2040,6 +2060,7 @@ export interface ProjectFileWriteResponse {
   revision: string;
   size: number;
   status: 'new' | 'changed' | 'ignored' | null;
+  uncaptured: string[];
   warnings: string[];
 }
 /**
@@ -2049,6 +2070,7 @@ export interface ProjectFileDeleteResponse {
   git_sha: string | null;
   identity_required: boolean;
   path: string;
+  uncaptured: string[];
   warnings: string[];
 }
 export interface TrainResponse {
@@ -2685,17 +2707,13 @@ export interface Theme {
 }
 /**
  * The form as written, with its new revision and the save's version capture.
- *
- * The capture fields mean what they mean on the pipeline save's response: ``git_sha`` is
- * the ledger commit the save produced when the clone has a working branch, else null;
- * ``warnings`` are non-fatal, a capture that failed among them; ``identity_required`` is
- * true only when the capture was skipped because git has no commit identity.
  */
 export interface WorkbenchFormSaveResponse {
   form: FormSpec;
   git_sha: string | null;
   identity_required: boolean;
   revision: string | null;
+  uncaptured: string[];
   warnings: string[];
 }
 /**
@@ -2734,13 +2752,13 @@ export interface WorkbenchTestQuotesBranchResponse {
 /**
  * A test-quote write and its capture on the save ledger.
  *
- * ``quote`` is the test quote as written, null after a delete; the capture fields mean what
- * they mean on the form save's response.
+ * ``quote`` is the test quote as written, null after a delete.
  */
 export interface WorkbenchTestQuoteWriteResponse {
   git_sha: string | null;
   identity_required: boolean;
   quote: WorkbenchTestQuoteSummary | null;
+  uncaptured: string[];
   warnings: string[];
 }
 /**

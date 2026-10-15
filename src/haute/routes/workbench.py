@@ -128,13 +128,9 @@ def _save_form(
     # resolves inside the project (the config checked it), which is where the ledger is.
     warnings: list[str] = []
     form_path = config.form_path.resolve().relative_to(config.project_root.resolve()).as_posix()
-    git_sha, identity_required = capture_save_in_ledger(config.project_root, [form_path], warnings)
+    captured = capture_save_in_ledger(config.project_root, [form_path], warnings)
     return WorkbenchFormSaveResponse(
-        form=form,
-        revision=revision,
-        warnings=warnings,
-        git_sha=git_sha,
-        identity_required=identity_required,
+        form=form, revision=revision, warnings=warnings, **captured._asdict()
     )
 
 
@@ -305,27 +301,17 @@ def _write_test_quotes(
 
 
 def _capture_test_quotes(config: WorkbenchConfig, relative: str) -> WorkbenchTestQuoteWriteResponse:
-    """The test-quote file at *relative* captured on the save ledger as it is, with the
-    drivers in ``.gitattributes``, under the repository's lock the caller holds. Whatever
-    cannot be done is a warning: the write, if any, has landed."""
-    from haute._test_quotes import (
-        WorkbenchTestQuoteError,
-        ensure_test_quote_git,
-        project_gitattributes_path,
-    )
+    """The test-quote file at *relative* captured on the save ledger as written, with the
+    ``.gitattributes`` its write registered the drivers in, under the repository's lock the
+    caller holds. A capture that cannot happen is a warning: the write has landed."""
+    from haute._test_quotes import project_gitattributes_path
 
-    warnings: list[str] = []
     captured = [relative]
-    try:
-        ensure_test_quote_git(config.project_root, relative)
-        if project_gitattributes_path(config.project_root).is_file():
-            captured.append(".gitattributes")
-    except (OSError, WorkbenchTestQuoteError) as exc:
-        warnings.append(f"The test quotes' git drivers could not be registered: {exc}")
-    git_sha, identity_required = capture_save_in_ledger(config.project_root, captured, warnings)
-    return WorkbenchTestQuoteWriteResponse(
-        warnings=warnings, git_sha=git_sha, identity_required=identity_required
-    )
+    if project_gitattributes_path(config.project_root).is_file():
+        captured.append(".gitattributes")
+    warnings: list[str] = []
+    capture = capture_save_in_ledger(config.project_root, captured, warnings)
+    return WorkbenchTestQuoteWriteResponse(warnings=warnings, **capture._asdict())
 
 
 def _store_error(exc: Exception) -> HTTPException:
@@ -392,23 +378,6 @@ async def save_test_quote(body: WorkbenchTestQuoteSaveRequest) -> WorkbenchTestQ
     except QuoteStoreError as exc:
         raise _store_error(exc) from None
     return written.model_copy(update={"quote": quote})
-
-
-@router.post("/test-quotes/capture", response_model=WorkbenchTestQuoteWriteResponse)
-async def capture_test_quotes() -> WorkbenchTestQuoteWriteResponse:
-    """The test-quote file captured on the save ledger as it is, nothing written to it: the
-    retry of a write whose capture was skipped or failed. Nothing to capture without a file."""
-    config = await _enabled_config()
-
-    def capture() -> WorkbenchTestQuoteWriteResponse:
-        with repository_mutation(config.project_root):
-            path, relative = _test_quotes_file(config)
-            if not path.is_file():
-                return WorkbenchTestQuoteWriteResponse()
-            return _capture_test_quotes(config, relative)
-
-    async with save_lock:
-        return await run_in_threadpool(capture)
 
 
 @router.post("/test-quotes/{quote_id}/open", response_model=WorkbenchTestQuoteOpenResponse)

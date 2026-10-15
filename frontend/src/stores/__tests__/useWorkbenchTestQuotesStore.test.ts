@@ -16,14 +16,12 @@ vi.mock("../../api/workbench", async (importOriginal) => ({
   compareTestQuote: vi.fn(),
   acceptTestQuote: vi.fn(),
   deleteTestQuote: vi.fn(),
-  captureTestQuotes: vi.fn(),
 }))
 
 import { ApiError } from "../../api/client"
 import type { FormSpec, SchemaColumn, SchemaTable, WorkbenchTablesResponse, WorkbenchTestQuoteSummary } from "../../api/types"
 import {
   acceptTestQuote,
-  captureTestQuotes,
   compareTestQuote,
   deleteTestQuote,
   fetchTestQuotes,
@@ -36,6 +34,7 @@ import type { PricedSample } from "../../utils/workbenchTables"
 import { hiddenPerilsForm, sheet } from "../../workbench/__tests__/fixtures"
 import useDataEpochStore from "../useDataEpochStore"
 import useDocumentStatusStore from "../useDocumentStatusStore"
+import useGitStore from "../useGitStore"
 import useGraphStore from "../useGraphStore"
 import useSettingsStore from "../useSettingsStore"
 import useWorkbenchFormStore from "../useWorkbenchFormStore"
@@ -79,7 +78,7 @@ const priced = (premium: number): PricedSample => ({ tables: { pricing_output: [
 const summary = (id: string, name: string): WorkbenchTestQuoteSummary => ({
   id, name, number: 1, saved_by: "ana@example.com", saved_at: "2026-10-12T09:00:00", priced: true,
 })
-const written = { git_sha: null, warnings: [], identity_required: false, quote: null }
+const written = { git_sha: null, warnings: [], identity_required: false, uncaptured: [], quote: null }
 const opened = (id: string, exposure: string, dropped: string[] = []) => ({
   id, name: id, number: 3, revision_digest: "read-3", values: { t1: [{ c1: exposure }] }, dropped, response: { pricing_output: { premium: 1 } },
 })
@@ -111,7 +110,7 @@ describe("useWorkbenchTestQuotesStore", () => {
     })
     useWorkbenchTestQuotesStore.setState({
       open: false, quotes: [], loading: false, error: null, notice: null, saving: false,
-      selected: [], runs: {}, runForm: null, runBasis: null, running: false, accepting: false, uncaptured: false,
+      selected: [], runs: {}, runForm: null, runBasis: null, running: false, accepting: false,
     })
   })
 
@@ -324,44 +323,34 @@ describe("useWorkbenchTestQuotesStore", () => {
     expect(store().runs).toEqual({})
   })
 
-  it("reports each write's capture, and captures again on the next project save what the ledger did not take", async () => {
+  it("reports each write's capture, keeping the files the ledger did not take", async () => {
+    useGitStore.setState({ modal: null, uncaptured: [] })
     typeSample({ t1: [{ c1: "250000" }] })
     vi.mocked(saveTestQuote).mockResolvedValueOnce({
       ...written,
       identity_required: true,
       warnings: ["Changes saved, but version capture needs a git identity."],
+      uncaptured: ["tests/quotes/test_quotes.sqlite", ".gitattributes"],
     })
-    vi.mocked(captureTestQuotes).mockResolvedValue({ ...written, git_sha: "abc123" })
 
     expect(await store().save("Northern")).toBe(true)
-    expect(store().uncaptured).toBe(true)
 
-    await store().flush()
-    expect(captureTestQuotes).toHaveBeenCalledTimes(1)
-    expect(saveTestQuote).toHaveBeenCalledTimes(1)
-    expect(store().uncaptured).toBe(false)
-
-    // Nothing waits on the ledger now: a save captures nothing again.
-    await store().flush()
-    expect(captureTestQuotes).toHaveBeenCalledTimes(1)
+    expect(useGitStore.getState().uncaptured).toEqual(["tests/quotes/test_quotes.sqlite", ".gitattributes"])
+    expect(useGitStore.getState().modal).toBe("identity")
+    useGitStore.setState({ modal: null, uncaptured: [] })
   })
 
-  it("saves nothing into a branch adopted while the quote was priced, and a project save waits for a save under way", async () => {
+  it("saves nothing into a branch adopted while the quote was priced", async () => {
     typeSample({ t1: [{ c1: "250000" }] })
     let finish: () => void = () => {}
     pricer.mockImplementationOnce(() => new Promise((resolve) => { finish = () => resolve(priced(500)) }))
 
     const saving = store().save("Northern")
-    let flushed = false
-    const flushing = store().flush().then(() => { flushed = true })
     await vi.waitFor(() => expect(pricer).toHaveBeenCalled())
-    expect(flushed).toBe(false)
 
     useDocumentStatusStore.setState({ executionGeneration: useDocumentStatusStore.getState().executionGeneration + 1 })
     finish()
     expect(await saving).toBe(false)
-    await flushing
-    expect(flushed).toBe(true)
     expect(saveTestQuote).not.toHaveBeenCalled()
     expect(store().error).toMatch(/branch changed while the quote was priced/)
   })
@@ -378,7 +367,7 @@ describe("useWorkbenchTestQuotesStore", () => {
     expect(saveTestQuote).toHaveBeenCalledWith("Northern", { ...form, sample: { t1: [{ c1: "250000" }] } }, { t1: [{ c1: "250000" }] }, priced(500).tables, "work")
   })
 
-  it("says why a save, an open, a run, an accept, a delete or a capture did not happen", async () => {
+  it("says why a save, an open, a run, an accept or a delete did not happen", async () => {
     typeSample({ t1: [{ c1: "250000" }] })
     vi.mocked(saveTestQuote).mockRejectedValueOnce(new ApiError("HTTP 409", 409, "quote_store_invalid: locked", null, null))
     expect(await store().save("Northern")).toBe(false)
@@ -396,14 +385,6 @@ describe("useWorkbenchTestQuotesStore", () => {
     vi.mocked(deleteTestQuote).mockRejectedValueOnce(new ApiError("HTTP 409", 409, "quote_not_found: gone", null, null))
     await store().remove("a")
     expect(store().error).toBe("Not deleted: quote_not_found: gone")
-
-    vi.mocked(saveTestQuote).mockResolvedValueOnce({ ...written, identity_required: true })
-    useWorkbenchPricingStore.setState({ snapshot: () => pricer })
-    expect(await store().save("Southern")).toBe(true)
-    vi.mocked(captureTestQuotes).mockRejectedValueOnce(new ApiError("HTTP 500", 500, "disk full", null, null))
-    await store().flush()
-    expect(store().error).toBe("The test quotes were not captured: disk full")
-    expect(store().uncaptured).toBe(true)
   })
 
   it("accepts nothing for a quote the run has no result for, and words a failure that is not a stale one", async () => {

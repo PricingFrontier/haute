@@ -130,6 +130,7 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 | `POST /api/git/working-branch` | `GitSetWorkingBranchRequest {branch,create=false}` | `GitSetWorkingBranchResponse {working_branch,state,last_save_sha?}` |
 | `POST /api/git/move` | `GitMoveRequest {sha}` | `GitMoveResponse {sha,short_sha,prior_branch,is_detached=true}` |
 | `POST /api/git/identity` | `GitSetIdentityRequest {user_name,user_email,set_global=false}` | `GitSetIdentityResponse {user_name,user_email,scope}` |
+| `POST /api/git/capture` | `GitCaptureRequest {paths}`: at least one file, relative to the project in POSIX form, as writes reported it `uncaptured` | `SaveCapture {warnings,git_sha,identity_required,uncaptured}`: the paths committed on the ledger as they are on disk, through the save capture, under the repository lock; a path `_artifact_paths.ordinary_path_problem` refuses (absolute, a drive, `..`, `.git`, `.haute`, a link on the way) is 400, nothing captured |
 | `POST /api/git/commit` | `GitCommitRequest {message,version_label=null,allow_fork=false}` | `GitCommitResponse {sha,short_sha,working_branch,version_label?}`; would-fork is 409 |
 | `GET /api/git/milestones` | Query `limit=20` (1..500), `branch=null` | `GitMilestonesResponse {working_branch?,entries:[GitMilestoneEntry...]}` |
 | `GET /api/git/graph` | Query `limit=50` (1..500) | `GitGraphResponse {working_branch?,order:[],branches:[GitGraphBranch...]}` |
@@ -163,6 +164,15 @@ unborn-repo seed. A canvas save passes no
 message, so the default names the changed files; an assistant apply passes its change
 headline and an assistant undo `Undo: ` and that headline, through
 `SavePipelineService.save_graph_transactionally(commit_message=...)`.
+
+Every route that writes project files captures them through the save module's
+`capture_save_in_ledger(root, rel_paths, warnings, message)`, which returns a
+`LedgerCapture` (`git_sha`, `identity_required`, `uncaptured`) and answers it in the shared
+`schemas.SaveCapture` fields: no working branch, no capture and nothing owed; a missing
+identity skips the commit with a warning and `identity_required`; a `GitDomainError` or
+`GitError` is a warning. A skipped or failed capture names its paths in `uncaptured`, since
+the pathspec-scoped commit of a later save never takes them; `POST /api/git/capture` takes
+them later.
 
 Every public mutation entry point acquires the reentrant repository lock before its first
 precondition read and holds it through Git changes, clone-state writes, and any compensation.

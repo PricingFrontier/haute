@@ -217,6 +217,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/GitDeleteBranchResponse"},
         },
     },
+    "/api/git/capture": {
+        "POST": {
+            "request_ref": "#/components/schemas/GitCaptureRequest",
+            "success_schema": {"$ref": "#/components/schemas/SaveCapture"},
+        },
+    },
     "/api/git/commit": {
         "POST": {
             "request_ref": "#/components/schemas/GitCommitRequest",
@@ -905,12 +911,6 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         "GET": {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuotesBranchResponse"},
-        },
-    },
-    "/api/workbench/test-quotes/capture": {
-        "POST": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuoteWriteResponse"},
         },
     },
     "/api/workbench/test-quotes/{quote_id}": {

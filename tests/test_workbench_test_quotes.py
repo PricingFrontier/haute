@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
 from haute import _git
 from haute._quote_store import migrate_store, open_store, store_url
@@ -23,10 +24,12 @@ from haute._test_quotes import (
 )
 from haute._workbench_form import FormSpec
 from haute.deploy._validators import response_changes
+from haute.routes.git import router as git_router
 from tests.test_workbench_routes import (
     LEDGER,
     POLICY,
     PRICING,
+    app,
     client,
     column,
     enable,
@@ -545,38 +548,42 @@ def test_every_test_quote_route_is_404_while_the_workbench_is_off(project: Path)
             {"after": 1, "revision_digest": "t", **write},
         ),
         ("DELETE", "/api/workbench/test-quotes/q", None),
-        ("POST", "/api/workbench/test-quotes/capture", None),
         ("GET", "/api/workbench/test-quotes/branch", None),
     ):
         answered = client().request(method, url, json=body)
         assert answered.status_code == 404, (url, answered.text)
 
 
-def test_a_write_the_ledger_did_not_capture_is_captured_again_without_writing(
+def test_a_write_the_ledger_did_not_capture_is_captured_later_without_writing(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     enable(project)
     init_repo(project)
-    # Nothing to capture before there is a file, and capturing makes none.
-    nothing = client().post("/api/workbench/test-quotes/capture")
-    assert nothing.status_code == 200, nothing.text
-    assert not (project / PATH).exists()
 
-    # No commit identity: the save lands, and the response says the capture waits on one.
+    # No commit identity: the save lands, and the response says the capture waits on one,
+    # naming the file and the .gitattributes that holds its drivers.
     identity = _git.get_identity
     monkeypatch.setattr(_git, "get_identity", lambda cwd=None: (None, None))
     saved = save()
     assert saved.status_code == 200, saved.text
     assert saved.json()["identity_required"] is True
+    assert saved.json()["uncaptured"] == [PATH, ".gitattributes"]
     assert PATH not in git(project, "ls-tree", "-r", "--name-only", LEDGER).splitlines()
     monkeypatch.setattr(_git, "get_identity", identity)
 
-    captured = client().post("/api/workbench/test-quotes/capture")
+    # The editor's one capture route takes it, as it takes every write's.
+    editor = app()
+    editor.include_router(git_router)
+    captured = TestClient(editor).post(
+        "/api/git/capture", json={"paths": saved.json()["uncaptured"]}
+    )
 
     assert captured.status_code == 200, captured.text
     assert captured.json()["git_sha"] is not None
-    assert captured.json()["quote"] is None
-    assert PATH in git(project, "ls-tree", "-r", "--name-only", LEDGER).splitlines()
+    assert captured.json()["uncaptured"] == []
+    ledger = git(project, "ls-tree", "-r", "--name-only", LEDGER).splitlines()
+    assert PATH in ledger
+    assert ".gitattributes" in ledger
     # The retry wrote nothing: still the one test quote, at its first revision.
     [listed] = client().get("/api/workbench/test-quotes").json()["quotes"]
     assert listed["number"] == 1

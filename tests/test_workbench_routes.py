@@ -113,7 +113,9 @@ def init_repo(project: Path) -> None:
 
 
 def capture(response: dict[str, Any]) -> dict[str, Any]:
-    return {key: response[key] for key in ("git_sha", "warnings", "identity_required")}
+    return {
+        key: response[key] for key in ("git_sha", "warnings", "identity_required", "uncaptured")
+    }
 
 
 def test_a_project_without_the_table_has_no_workbench(project: Path) -> None:
@@ -348,7 +350,13 @@ def test_a_save_without_a_working_branch_is_written_and_captured_nowhere(project
     saved = client().put("/api/workbench/form", json={"form": form(POLICY), "base_revision": None})
 
     assert saved.status_code == 200, saved.text
-    assert capture(saved.json()) == {"git_sha": None, "warnings": [], "identity_required": False}
+    # Nothing is owed: without a working branch nothing will ever capture it.
+    assert capture(saved.json()) == {
+        "git_sha": None,
+        "warnings": [],
+        "identity_required": False,
+        "uncaptured": [],
+    }
     assert (project / "forms" / "form.json").is_file()
     assert git(project, "status", "--porcelain", "--", "forms/form.json").startswith("??")
 
@@ -370,6 +378,7 @@ def test_a_save_the_ledger_cannot_capture_is_written_and_says_why(
     assert failed.json()["identity_required"] is False
     assert len(failed.json()["warnings"]) == 1
     assert failed.json()["warnings"][0].startswith("Changes saved; version capture failed: ")
+    assert failed.json()["uncaptured"] == ["forms/form.json"]
     assert (project / "forms" / "form.json").is_file()
 
     # No commit identity (a restored hosted container): the save lands, and the response
@@ -389,6 +398,7 @@ def test_a_save_the_ledger_cannot_capture_is_written_and_says_why(
             "Set your name and email to keep version history."
         ],
         "identity_required": True,
+        "uncaptured": ["forms/form.json"],
     }
     assert git(project, "rev-parse", LEDGER) == tip
     assert client().get("/api/workbench/form").json()["revision"] == uncaptured.json()["revision"]

@@ -1320,6 +1320,7 @@ export function parseSavePipelineResponse(value: unknown): SavePipelineResponse 
     warnings: optionalStringArray("parseSavePipelineResponse", obj, "warnings"),
     git_sha: optionalNullableString("parseSavePipelineResponse", obj, "git_sha"),
     identity_required: optionalBoolean("parseSavePipelineResponse", obj, "identity_required"),
+    uncaptured: optionalStringArray("parseSavePipelineResponse", obj, "uncaptured"),
   }
 }
 

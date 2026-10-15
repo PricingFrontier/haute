@@ -224,15 +224,6 @@ export async function acceptTestQuote(
   return writeResponse(data)
 }
 
-/** The test-quote file captured on the save ledger as it is: a skipped capture's retry. */
-export async function captureTestQuotes(): Promise<WorkbenchTestQuoteWriteResponse> {
-  const data = await request<unknown>("/api/workbench/test-quotes/capture", {
-    method: "POST",
-    retry: { maxRetries: 0 },
-  })
-  return writeResponse(data)
-}
-
 export async function deleteTestQuote(id: string): Promise<WorkbenchTestQuoteWriteResponse> {
   const data = await request<unknown>(`/api/workbench/test-quotes/${encodeURIComponent(id)}`, {
     method: "DELETE",

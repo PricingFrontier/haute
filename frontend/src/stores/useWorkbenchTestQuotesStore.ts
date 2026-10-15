@@ -12,13 +12,12 @@
  * (its digest), never while a run is under way or once the run is stale, and never over a
  * run started since. A run is forgotten when the pipeline's document is adopted anew (a
  * branch switched): its results were read on another branch's test quotes. Each write's
- * capture on the save ledger is reported as a save's is, and one the ledger did not take
- * is taken again, nothing written, when the project is next saved.
+ * capture on the save ledger is reported as a save's is, which keeps what the ledger did
+ * not take for a later capture.
  */
 import { create } from "zustand"
 import {
   acceptTestQuote,
-  captureTestQuotes,
   compareTestQuote,
   deleteTestQuote,
   fetchTestQuotes,
@@ -30,7 +29,7 @@ import {
   type TestQuoteChange,
 } from "../api/workbench"
 import { apiErrorMessage } from "../api/errors"
-import type { FormSpec, WorkbenchTestQuoteSummary, WorkbenchTestQuoteWriteResponse } from "../api/types"
+import type { FormSpec, WorkbenchTestQuoteSummary } from "../api/types"
 import { quoteEligible } from "../utils/sheetVisibility"
 import { withSample } from "../utils/workbenchForm"
 import { reportSaveCapture } from "./saveCapture"
@@ -78,8 +77,6 @@ interface WorkbenchTestQuotesState {
   running: boolean
   /** An accept is under way: neither a run nor another accept starts meanwhile. */
   accepting: boolean
-  /** A write landed but the ledger did not capture it: the next project save captures it. */
-  uncaptured: boolean
   setOpen: (open: boolean) => void
   load: () => Promise<void>
   /** Save the quote on the sheets as a new test quote; whether it was saved. */
@@ -93,8 +90,6 @@ interface WorkbenchTestQuotesState {
   remove: (id: string) => Promise<void>
   /** Forget the last run, as when the pipeline's document is adopted anew. */
   forget: () => void
-  /** Capture the test-quote file on the ledger again when a write's capture was not taken. */
-  flush: () => Promise<void>
 }
 
 /** What a run of the form as it is now would price on. */
@@ -132,24 +127,6 @@ function quoteRefusal(form: FormSpec, quote: SheetQuote): string | null {
 /** The run asked for last: an answer for an earlier one is nobody's. */
 let generation = 0
 
-/** The writes under way (a save, an accept, a delete), which a project save waits for. */
-const writing = new Set<Promise<unknown>>()
-
-/** *work* tracked while it is under way, so `flush` settles it first. */
-function tracked<T>(work: () => Promise<T>): Promise<T> {
-  const running = work()
-  const settled = running.then(() => undefined, () => undefined)
-  writing.add(settled)
-  void settled.then(() => writing.delete(settled))
-  return running
-}
-
-/** Report a write's capture as a save's is; whether the ledger has yet to take it. */
-function uncapturedAfter(written: WorkbenchTestQuoteWriteResponse): boolean {
-  reportSaveCapture(written)
-  return written.identity_required || (written.git_sha === null && written.warnings.length > 0)
-}
-
 const runOf = (patch: Partial<QuoteRun>): QuoteRun => ({
   status: "running",
   number: null,
@@ -175,7 +152,6 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
   runBasis: null,
   running: false,
   accepting: false,
-  uncaptured: false,
   // The panel lists the quotes when it opens.
   setOpen: (open) => set({ open }),
   load: async () => {
@@ -190,7 +166,7 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
       set({ loading: false })
     }
   },
-  save: (name) => tracked(async () => {
+  save: async (name) => {
     const { form } = useWorkbenchFormStore.getState()
     if (form === null || get().saving) return false
     const quote = form.sample
@@ -212,8 +188,7 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
         set({ error: "Not saved: the branch changed while the quote was priced. Save it again on this one." })
         return false
       }
-      const written = await saveTestQuote(name, form, quote, tables as PricedTables, branch)
-      set({ uncaptured: uncapturedAfter(written) })
+      reportSaveCapture(await saveTestQuote(name, form, quote, tables as PricedTables, branch))
       await get().load()
       return true
     } catch (error: unknown) {
@@ -222,7 +197,7 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
     } finally {
       set({ saving: false })
     }
-  }),
+  },
   openQuote: async (id) => {
     const { form } = useWorkbenchFormStore.getState()
     if (form === null) return
@@ -307,8 +282,7 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
     const mine = generation
     set({ accepting: true })
     try {
-      const written = await tracked(() => acceptTestQuote(id, number, digest, runForm, values, tables))
-      set({ uncaptured: uncapturedAfter(written) })
+      reportSaveCapture(await acceptTestQuote(id, number, digest, runForm, values, tables))
       // A run started since, or forgotten since, holds its own result for the quote.
       if (generation === mine) {
         set((s) => ({
@@ -331,8 +305,7 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
   },
   remove: async (id) => {
     try {
-      const written = await tracked(() => deleteTestQuote(id))
-      set({ uncaptured: uncapturedAfter(written) })
+      reportSaveCapture(await deleteTestQuote(id))
       set((s) => {
         const runs = { ...s.runs }
         delete runs[id]
@@ -347,16 +320,6 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
     generation += 1
     set({ runs: {}, runForm: null, runBasis: null, running: false })
     if (get().open) void get().load()
-  },
-  flush: async () => {
-    // A write under way lands, or fails, first: its capture is the one to take.
-    await Promise.all(writing)
-    if (!get().uncaptured) return
-    try {
-      set({ uncaptured: uncapturedAfter(await captureTestQuotes()) })
-    } catch (error: unknown) {
-      set({ error: `The test quotes were not captured: ${apiErrorMessage(error)}` })
-    }
   },
 }))
 

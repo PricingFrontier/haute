@@ -461,6 +461,109 @@ def test_a_write_needs_the_session_token_and_a_trusted_origin(client: TestClient
     assert foreign.status_code == 403
 
 
+# ── a capture taken later ─────────────────────────────────────────────────
+
+
+def test_files_left_uncaptured_are_captured_once_an_identity_is_set(
+    client: TestClient, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute import _git
+
+    kept = _put(client, "pipeline", "data/old.csv", b"old\n")
+    assert kept.status_code == 200, kept.text
+    tip = git_run(project, "rev-parse", f"{WORKING}-save")
+
+    # No commit identity (a restored hosted container): an upload and a delete land, and
+    # each names the file its skipped capture left off the ledger.
+    identity = _git.get_identity
+    monkeypatch.setattr(_git, "get_identity", lambda cwd=None: (None, None))
+    added = _put(client, "pipeline", "data/rates.csv", b"rate\n1\n")
+    removed = client.delete(
+        "/api/project-files/content",
+        params={"place": "pipeline", "path": "data/old.csv", "revision": kept.json()["revision"]},
+    )
+    assert added.status_code == 200, added.text
+    assert removed.status_code == 200, removed.text
+    assert added.json()["identity_required"] is True
+    assert added.json()["uncaptured"] == ["rating/files/data/rates.csv"]
+    assert removed.json()["uncaptured"] == ["rating/files/data/old.csv"]
+    assert git_run(project, "rev-parse", f"{WORKING}-save") == tip
+    monkeypatch.setattr(_git, "get_identity", identity)
+
+    captured = client.post(
+        "/api/git/capture",
+        json={"paths": added.json()["uncaptured"] + removed.json()["uncaptured"]},
+    )
+
+    assert captured.status_code == 200, captured.text
+    assert captured.json()["git_sha"] and captured.json()["uncaptured"] == []
+    assert sorted(_ledger_files(project)) == [
+        "rating/files/data/old.csv",
+        "rating/files/data/rates.csv",
+    ]
+    assert (
+        "rating/files/data/old.csv"
+        not in git_run(project, "ls-tree", "-r", "--name-only", f"{WORKING}-save").splitlines()
+    )
+
+
+def test_a_capture_still_skipped_names_the_files_again(
+    client: TestClient, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute import _git
+
+    monkeypatch.setattr(_git, "get_identity", lambda cwd=None: (None, None))
+    added = _put(client, "pipeline", "data/rates.csv", b"rate\n")
+
+    again = client.post("/api/git/capture", json={"paths": added.json()["uncaptured"]})
+
+    assert again.status_code == 200, again.text
+    assert again.json()["identity_required"] is True
+    assert again.json()["uncaptured"] == ["rating/files/data/rates.csv"]
+
+
+@pytest.mark.parametrize(
+    "path", ["../elsewhere.csv", "/etc/passwd", "C:/x.csv", ".git/config", ".haute/uploads/a"]
+)
+def test_a_capture_takes_only_files_in_the_project(client: TestClient, path: str) -> None:
+    response = client.post("/api/git/capture", json={"paths": ["rating/main.py", path]})
+
+    assert response.status_code == 400
+    assert _refused(response) == f"{path} is not a file in the project."
+
+
+def test_a_capture_names_at_least_one_file_and_needs_the_session(client: TestClient) -> None:
+    assert client.post("/api/git/capture", json={"paths": []}).status_code == 422
+    no_cookie = client.post(
+        "/api/git/capture", json={"paths": ["rating/main.py"]}, headers={"cookie": ""}
+    )
+    assert no_cookie.status_code == 403
+
+
+def test_a_staging_file_a_stopped_server_left_is_removed_at_the_next_upload(
+    client: TestClient, project: Path
+) -> None:
+    from haute.routes import project_files
+
+    staging = project / ".haute" / "uploads"
+    staging.mkdir(parents=True)
+    stale = staging / "stale.upload"
+    stale.write_bytes(b"half a file")
+    before = project_files._SERVER_STARTED - 60
+    os.utime(stale, (before, before))
+    # One this server is still writing, and a file that is no staging file, stay.
+    streaming = staging / "streaming.upload"
+    streaming.write_bytes(b"still coming")
+    other = staging / "notes.txt"
+    other.write_bytes(b"not an upload")
+    os.utime(other, (before, before))
+
+    response = _put(client, "pipeline", "data/rates.csv", b"rate\n")
+
+    assert response.status_code == 200, response.text
+    assert sorted(os.listdir(staging)) == ["notes.txt", "streaming.upload"]
+
+
 # ── downloading and deleting ───────────────────────────────────────────────
 
 

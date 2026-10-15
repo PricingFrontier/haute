@@ -21,6 +21,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from haute import _project_storage
+from haute._artifact_paths import ordinary_path_problem
 from haute._git import (
     GitDomainError,
     GitError,
@@ -50,11 +51,13 @@ from haute._git import (
     working_branches,
     working_milestones,
 )
+from haute._git_lock import repository_mutation
 from haute._logging import get_logger
 from haute._project_layout import pipeline_folder
 from haute.graph_utils import PipelineGraph
 from haute.hosted import FORWARDED_USER_SCOPE_KEY
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, commit_pipeline_graph, pause_watcher
+from haute.routes._save_pipeline import capture_save_in_ledger
 from haute.schemas import (
     GitArchiveRequest,
     GitArchiveResponse,
@@ -62,6 +65,7 @@ from haute.schemas import (
     GitBindStorageResponse,
     GitBranchAwayRequest,
     GitBranchAwayResponse,
+    GitCaptureRequest,
     GitCommitContext,
     GitCommitRequest,
     GitCommitResponse,
@@ -98,6 +102,7 @@ from haute.schemas import (
     GitUpstreamStatusResponse,
     GitWorkingBranchesResponse,
     GitWorkingBranchResponse,
+    SaveCapture,
 )
 
 logger = get_logger(component="server.git")
@@ -231,6 +236,27 @@ def git_move(body: GitMoveRequest) -> GitMoveResponse:
 def git_set_identity(body: GitSetIdentityRequest) -> GitSetIdentityResponse:
     """Set git user.name / user.email — repo-local by default, global on request."""
     return set_identity(body.user_name, body.user_email, set_global=body.set_global)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/capture — capture what earlier writes left off the ledger
+# ---------------------------------------------------------------------------
+
+
+@router.post("/capture", response_model=SaveCapture)
+def git_capture(body: GitCaptureRequest) -> SaveCapture:
+    """Capture on the save ledger, as they are on disk now, the files earlier writes
+    reported ``uncaptured``: the editor's retry once a git identity is set, and at the next
+    Save. A path that is not an ordinary one inside the project is refused, 400. Under the
+    repository's lock, as every write's own capture is: the capture writes no file."""
+    root = Path.cwd().resolve()
+    for path in body.paths:
+        if ordinary_path_problem(root, path)[1] is not None:
+            raise HTTPException(status_code=400, detail=f"{path} is not a file in the project.")
+    warnings: list[str] = []
+    with repository_mutation(root):
+        captured = capture_save_in_ledger(root, list(dict.fromkeys(body.paths)), warnings)
+    return SaveCapture(warnings=warnings, **captured._asdict())
 
 
 # ---------------------------------------------------------------------------

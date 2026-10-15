@@ -202,8 +202,9 @@ Out of scope:
   wrote and through the same capture: no working branch, no capture; a missing git
   identity leaves the file uncaptured and is reported for the editor to ask for; a capture
   that fails is a warning, and leaves the file uncaptured too. The response says what the
-  capture gave (`git_sha`, `warnings`
-  and `identity_required`, as the pipeline save's response has them), and from its first
+  capture gave (`git_sha`, `warnings`, `identity_required` and the files left
+  `uncaptured`, as every write's response has them), the editor keeps an uncaptured file
+  until the one capture route takes it, and from its first
   captured save on the file is tracked, so a milestone's sweep takes an edit made to it by
   hand. A file whose revision is no longer `base_revision`, edited by hand or by a branch
   switch, is left as it is and the save is refused with 409 and a `stale_document_revision`
@@ -1347,9 +1348,9 @@ Out of scope:
   disk until the next pipeline save, and a pipeline saved alone would carry copies of a
   form the view does not show; one save, the form before the pipeline with the nodes'
   copies following in between, records a pipeline that runs on the form it records. The
-  form is saved only when there is something to save, unsaved edits or an uncaptured save,
-  so a save from the pipeline editor costs the form no request and no toast while it is
-  as saved.
+  form is saved only when there is something to save, unsaved edits, so a save from the
+  pipeline editor costs the form no request and no toast while it is as saved; a form
+  file left uncaptured is captured as it is, never written again.
 - **The blank form is a form.** A project whose workbench was enabled by hand has no file
   yet, and the view is where its first form is made, so an absent file reads as the blank
   form with no revision rather than as an error, and the first save creates it.

@@ -91,6 +91,7 @@ from haute.schemas import (
     ProjectFileWriteResponse,
     ProjectFolderResponse,
     RatingLevelsResponse,
+    SaveCapture,
     SaveModelResponse,
     SchemaListResponse,
     SessionStatusResponse,
@@ -220,6 +221,8 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         # 409 advisory bodies the push and milestone controls read.
         GitPushRejection,
         GitMilestoneFork,
+        # The capture fields every project write answers, alone: POST /api/git/capture.
+        SaveCapture,
     ),
     "training": (
         TrainResponse,

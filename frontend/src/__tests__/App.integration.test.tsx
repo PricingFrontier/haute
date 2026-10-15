@@ -130,6 +130,7 @@ vi.mock("../api/client", async () => {
     previewRecoveryNode: vi.fn(() => Promise.resolve({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })),
     applyRemoveUnavailableNode: vi.fn(() => Promise.resolve({})),
     savePipeline: vi.fn(() => Promise.resolve({ file: "pipeline.py", pipeline_name: "main" })),
+    captureFiles: vi.fn(() => Promise.resolve({ git_sha: "ledger-9", warnings: [], identity_required: false, uncaptured: [] })),
     traceCell: vi.fn(() => Promise.resolve({ status: "ok" })),
     executeSink: vi.fn(() => Promise.resolve({ status: "ok" })),
     // Submodel
@@ -577,7 +578,7 @@ beforeEach(() => {
   vi.mocked(api.commitMilestone).mockReset().mockResolvedValue({ sha: "deadbeef0000", short_sha: "deadbee", working_branch: "dev", version_label: null })
   vi.mocked(api.getMilestones).mockReset().mockResolvedValue({ working_branch: "dev", entries: [] })
   vi.mocked(api.moveToVersion).mockReset().mockResolvedValue({ sha: "abc1234def", short_sha: "abc1234", prior_branch: "dev-save", is_detached: true })
-  useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, moveTarget: null })
+  useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, moveTarget: null, uncaptured: [] })
 })
 
 afterEach(() => {
@@ -1377,6 +1378,23 @@ describe("App integration - save pipeline", () => {
     expect(payload.graph.nodes).toHaveLength(1)
     expect(payload.graph.nodes[0].id).toBe("polars_0")
     expect(payload.graph.edges).toEqual([])
+  })
+
+  it("Save captures the files earlier writes left uncaptured, then saves the pipeline", async () => {
+    vi.mocked(api.captureFiles).mockClear()
+    render(<App />)
+    await waitForAppReady()
+    // An upload whose capture waited on a git identity, set since in the Git panel.
+    useGitStore.setState({ uncaptured: ["rating/files/data/rates.csv"] })
+
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
+
+    await waitFor(() => expect(vi.mocked(api.savePipeline)).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(api.captureFiles)).toHaveBeenCalledWith(["rating/files/data/rates.csv"])
+    expect(vi.mocked(api.captureFiles).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(api.savePipeline).mock.invocationCallOrder[0],
+    )
+    expect(useGitStore.getState().uncaptured).toEqual([])
   })
 
   it("shows a success toast when savePipeline resolves", async () => {
@@ -2937,7 +2955,7 @@ describe("App integration - a Model Training node's results panel", () => {
 describe("App integration - the workbench view (specs/workbench)", () => {
   afterEach(() => {
     useWorkbenchStore.setState({ enabled: false, formPath: null, activeView: "pipeline", tables: null, formDirty: false })
-    useWorkbenchFormStore.setState({ form: null, revision: null, status: "idle", undoStack: [], redoStack: [], dirty: false, stale: false, uncaptured: false })
+    useWorkbenchFormStore.setState({ form: null, revision: null, status: "idle", undoStack: [], redoStack: [], dirty: false, stale: false })
     vi.mocked(workbenchApi.saveWorkbenchForm).mockClear()
     vi.mocked(workbenchApi.fetchWorkbenchTables).mockReset().mockImplementation(() => Promise.resolve({ tables: [], sample: {}, response_tables: [] }))
   })
@@ -3225,7 +3243,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     let answerFormSave: () => void = () => {}
     vi.mocked(workbenchApi.saveWorkbenchForm).mockImplementationOnce(
       (form) => new Promise((resolve) => {
-        answerFormSave = () => resolve({ form, revision: "form-rev-1", warnings: [], git_sha: null, identity_required: false })
+        answerFormSave = () => resolve({ form, revision: "form-rev-1", warnings: [], git_sha: null, identity_required: false, uncaptured: [] })
       }),
     )
 

@@ -4,7 +4,7 @@
  *
  * Covers the whole loop: the save response opens the modal, dismissal
  * suppresses it for the rest of the session, and a submitted identity posts to
- * the identity endpoint and re-triggers the save that was left uncaptured.
+ * the identity endpoint and captures the files the save left uncaptured.
  */
 import { cleanup, fireEvent, render, screen, waitFor, renderHook, act } from "@testing-library/react"
 import type { Edge, Node } from "@xyflow/react"
@@ -18,6 +18,7 @@ vi.mock("../../api/client", async () => {
   previewNode: vi.fn(),
   savePipeline: vi.fn(),
   setGitIdentity: vi.fn(() => Promise.resolve({ scope: "local" })),
+  captureFiles: vi.fn(() => Promise.resolve({ git_sha: "ledger-1", warnings: [], identity_required: false, uncaptured: [] })),
   getWorkingBranch: vi.fn(() => Promise.resolve(null)),
   ApiError: class ApiError extends Error {
     status = 0
@@ -30,7 +31,7 @@ vi.mock("../../utils/buildGraph", () => ({
   resolveGraphFromRefs: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
 }))
 
-import { savePipeline, setGitIdentity } from "../../api/client"
+import { captureFiles, savePipeline, setGitIdentity } from "../../api/client"
 import usePipelineAPI from "../../hooks/usePipelineAPI"
 import { resetIdentityPromptForTests } from "../../stores/identityPrompt"
 import useGitStore from "../../stores/useGitStore"
@@ -39,6 +40,7 @@ import IdentityPromptModal from "../IdentityPromptModal"
 
 const mockSave = vi.mocked(savePipeline)
 const mockSetIdentity = vi.mocked(setGitIdentity)
+const mockCapture = vi.mocked(captureFiles)
 
 function makeParams() {
   return {
@@ -73,6 +75,7 @@ async function saveOnce(identityRequired: boolean) {
     git_sha: null,
     source_revision: "revision-test",
     identity_required: identityRequired,
+    uncaptured: identityRequired ? ["test.py"] : [],
   })
   const { result } = renderHook(() => usePipelineAPI(makeParams()))
   await waitFor(() => expect(result.current.loading).toBe(false))
@@ -84,9 +87,10 @@ async function saveOnce(identityRequired: boolean) {
 describe("git identity save prompt", () => {
   beforeEach(() => {
     resetIdentityPromptForTests()
-    useGitStore.setState({ modal: null, pendingAction: null })
+    useGitStore.setState({ modal: null, pendingAction: null, uncaptured: [] })
     mockSave.mockReset()
     mockSetIdentity.mockClear()
+    mockCapture.mockClear()
   })
 
   afterEach(() => {
@@ -106,7 +110,7 @@ describe("git identity save prompt", () => {
 
   it("does not reopen for the rest of the session once dismissed", async () => {
     await saveOnce(true)
-    render(<IdentityPromptModal onSaved={vi.fn()} onClose={() => useGitStore.setState({ modal: null })} />)
+    render(<IdentityPromptModal onClose={() => useGitStore.setState({ modal: null })} />)
     fireEvent.click(screen.getByText("Not now"))
     expect(useGitStore.getState().modal).toBeNull()
 
@@ -117,10 +121,11 @@ describe("git identity save prompt", () => {
     expect(useToastStore.getState().toasts.some((t) => t.text === IDENTITY_WARNING)).toBe(true)
   })
 
-  it("submits the identity and retries the save", async () => {
-    const onSaved = vi.fn()
+  it("submits the identity and captures what the save left uncaptured", async () => {
+    await saveOnce(true)
+    expect(useGitStore.getState().uncaptured).toEqual(["test.py"])
     const onClose = vi.fn()
-    render(<IdentityPromptModal onSaved={onSaved} onClose={onClose} />)
+    render(<IdentityPromptModal onClose={onClose} />)
 
     fireEvent.change(screen.getByTestId("identity-prompt-name"), {
       target: { value: "Restored User" },
@@ -132,7 +137,10 @@ describe("git identity save prompt", () => {
 
     await waitFor(() => expect(mockSetIdentity).toHaveBeenCalledTimes(1))
     expect(mockSetIdentity).toHaveBeenCalledWith("Restored User", "restored@example.com", false)
-    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(mockCapture).toHaveBeenCalledWith(["test.py"]))
+    await waitFor(() => expect(useGitStore.getState().uncaptured).toEqual([]))
+    // The save itself is not repeated: its files are captured as they are.
+    expect(mockSave).toHaveBeenCalledTimes(1)
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 })

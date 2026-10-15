@@ -13,6 +13,7 @@ from __future__ import annotations
 import errno
 import os
 import stat
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -39,7 +40,7 @@ from haute._project_layout import (
 from haute._sandbox import _get_project_root
 from haute.hosted import databricks_app_environment
 from haute.routes._helpers import save_lock
-from haute.routes._save_pipeline import capture_save_in_ledger
+from haute.routes._save_pipeline import LedgerCapture, capture_save_in_ledger
 from haute.schemas import (
     ProjectFileDeleteResponse,
     ProjectFileEntry,
@@ -57,6 +58,9 @@ _STAGING_SUFFIX = ".upload"
 # Uploads stage in the per-clone, ignored .haute/, never beside their target: a Commit while
 # one streams must not find a partial file in the pipeline folder to version.
 _STAGING_FOLDER = (".haute", "uploads")
+# When this server started: a staging file last written before then was left by a server
+# stopped mid-upload, and no upload of this one will finish it.
+_SERVER_STARTED = time.time()
 _WRITE_BUFFER_BYTES = 1024 * 1024
 _REPARSE_POINT = 0x400
 
@@ -353,10 +357,30 @@ def _staging_path(project_root: Path) -> Path:
     which could lead the partial file back into the pipeline folder or out of the project."""
     relative = f"{PurePosixPath(*_STAGING_FOLDER)}/{uuid.uuid4().hex}{_STAGING_SUFFIX}"
     _check_staging(project_root, relative)
-    project_root.joinpath(*_STAGING_FOLDER).mkdir(parents=True, exist_ok=True)
+    folder = project_root.joinpath(*_STAGING_FOLDER)
+    folder.mkdir(parents=True, exist_ok=True)
     # Again with the folders made: any of them might have been a link already.
     _check_staging(project_root, relative)
+    _remove_stale_staging(folder)
     return project_root / relative
+
+
+def _remove_stale_staging(folder: Path) -> None:
+    """Remove the staging files in *folder* last written before this server started: a
+    server stopped mid-upload leaves its file, and nothing else would ever remove it. One
+    that cannot be removed now is logged and tried again at the next upload."""
+    with os.scandir(folder) as entries:
+        for entry in entries:
+            if not entry.name.endswith(_STAGING_SUFFIX):
+                continue
+            try:
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISREG(info.st_mode) and info.st_mtime < _SERVER_STARTED:
+                    os.unlink(entry.path)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                logger.warning("stale_upload_not_removed", file=entry.name, error=str(exc))
 
 
 def _check_staging(project_root: Path, relative: str) -> None:
@@ -408,25 +432,23 @@ def _publish_write(
             ) from None
         written = target.path.stat()
         warnings: list[str] = []
-        git_sha: str | None = None
-        identity_required = False
+        captured = LedgerCapture(None, False, [])
         status: FileState | None = None
         if target.place.name == "pipeline":
             verb = "Replaced" if replace_revision is not None else "Added"
-            git_sha, identity_required = capture_save_in_ledger(
+            captured = capture_save_in_ledger(
                 project_root, [display], warnings, message=f"{verb} {display}"
             )
             status = _state(_git.pipeline_file_states(display, cwd=project_root), display)
-    logger.info("project_file_written", path=display, size=written.st_size, sha=git_sha)
+    logger.info("project_file_written", path=display, size=written.st_size, sha=captured.git_sha)
     return ProjectFileWriteResponse(
         path=target.relative,
         size=written.st_size,
         revision=_revision(written),
         replaced=replace_revision is not None,
         status=status,
-        git_sha=git_sha,
-        identity_required=identity_required,
         warnings=warnings,
+        **captured._asdict(),
     )
 
 
@@ -518,19 +540,13 @@ def _delete(place: ProjectFilePlace, path: str, revision: str) -> ProjectFileDel
                 f"{display} is open in Haute or another program. Try again once it's closed.",
             ) from None
         warnings: list[str] = []
-        git_sha: str | None = None
-        identity_required = False
+        captured = LedgerCapture(None, False, [])
         if target.place.name == "pipeline":
-            git_sha, identity_required = capture_save_in_ledger(
+            captured = capture_save_in_ledger(
                 project_root, [display], warnings, message=f"Deleted {display}"
             )
-    logger.info("project_file_deleted", path=display, sha=git_sha)
-    return ProjectFileDeleteResponse(
-        path=target.relative,
-        git_sha=git_sha,
-        identity_required=identity_required,
-        warnings=warnings,
-    )
+    logger.info("project_file_deleted", path=display, sha=captured.git_sha)
+    return ProjectFileDeleteResponse(path=target.relative, warnings=warnings, **captured._asdict())
 
 
 @router.delete("/content", response_model=ProjectFileDeleteResponse)

@@ -11,6 +11,7 @@ const WRITTEN = {
   git_sha: "abc",
   identity_required: false,
   warnings: [],
+  uncaptured: [],
 }
 
 class FakeXHR {
@@ -22,7 +23,10 @@ class FakeXHR {
   status = 0
   statusText = ""
   responseText = ""
-  upload: { onprogress: ((event: { lengthComputable: boolean; loaded: number; total: number }) => void) | null } = { onprogress: null }
+  upload: {
+    onprogress: ((event: { lengthComputable: boolean; loaded: number; total: number }) => void) | null
+    onload: (() => void) | null
+  } = { onprogress: null, onload: null }
   onload: (() => void) | null = null
   onerror: (() => void) | null = null
   onabort: (() => void) | null = null
@@ -108,6 +112,18 @@ describe("project files client", () => {
 
     await expect(upload.promise).rejects.toMatchObject({ name: "AbortError" })
     expect(FakeXHR.sent).toHaveLength(1)
+  })
+
+  it("reports the answer to a body sent whole, a cancel after the last byte doing nothing", async () => {
+    const answer = { ...WRITTEN, git_sha: null, identity_required: true, uncaptured: ["rating/files/data/x.csv"] }
+    const upload = uploadProjectFile("pipeline", "data/x.csv", new Blob(["x"]))
+    const xhr = await sentRequest()
+    xhr.upload.onload?.()
+
+    upload.abort()
+    xhr.respond(200, answer)
+
+    await expect(upload.promise).resolves.toEqual(answer)
   })
 
   it("lists a folder and deletes a file at its revision, never retrying the delete", async () => {

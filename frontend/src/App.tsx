@@ -69,6 +69,7 @@ import useSettingsStore from "./stores/useSettingsStore"
 import useUIStore from "./stores/useUIStore"
 import useGraphStore from "./stores/useGraphStore"
 import useGitStore from "./stores/useGitStore"
+import { captureUncaptured } from "./stores/saveCapture"
 import useToastStore from "./stores/useToastStore"
 import useWorkbenchStore from "./stores/useWorkbenchStore"
 import ViewSwitcher from "./workbench/ViewSwitcher"
@@ -382,7 +383,6 @@ type FlowEditorOverlaysProps = {
   onCreateInstance: ComponentProps<typeof ContextMenu>["onCreateInstance"]
   onDissolveSubmodel: ComponentProps<typeof ContextMenu>["onDissolveSubmodel"]
   onGitModalConfirmed: () => void
-  onSave: () => Promise<boolean>
   onMoveConfirmed: (saveFirst: boolean) => Promise<void>
   onCreateSubmodel: (name: string, nodeIds: string[]) => Promise<SubmodelCreateResult>
   onRenameNode: (nodeId: string, label: string) => Promise<OnUpdateConfigResult>
@@ -404,7 +404,6 @@ function FlowEditorOverlays({
   onCreateInstance,
   onDissolveSubmodel,
   onGitModalConfirmed,
-  onSave,
   onMoveConfirmed,
   onCreateSubmodel,
   onRenameNode,
@@ -469,7 +468,7 @@ function FlowEditorOverlays({
       )}
       {gitModal === "identity" && (
         <Suspense fallback={null}>
-          <IdentityPromptModal onSaved={() => void onSave()} onClose={closeGitModal} />
+          <IdentityPromptModal onClose={closeGitModal} />
         </Suspense>
       )}
       {moveTarget && (
@@ -1308,15 +1307,14 @@ function FlowEditor() {
       return false
     }
     if (refused()) return false
+    // What earlier writes left off the ledger is captured first; a capture that fails
+    // says so, and the project is saved all the same.
+    await captureUncaptured()
     if (useWorkbenchStore.getState().enabled) {
       const { default: formStore } = await import("./stores/useWorkbenchFormStore")
       // A form save refused (stale, or failed) saves no pipeline: what is saved runs on
       // the form that was saved, never on copies of a form the view does not show.
       if (!(await formStore.getState().flush())) return false
-      // A test-quote write the ledger did not capture is captured now; a capture that
-      // fails says so and saves the pipeline all the same.
-      const { default: testQuotesStore } = await import("./stores/useWorkbenchTestQuotesStore")
-      await testQuotesStore.getState().flush()
       if (refused()) return false
       const brought = await bringUpToDate()
       if (refused()) return false
@@ -2152,7 +2150,6 @@ function FlowEditor() {
         onCreateInstance={handleCreateInstance}
         onDissolveSubmodel={handleDissolveSubmodel}
         onGitModalConfirmed={handleGitModalConfirmed}
-        onSave={saveProject}
         onMoveConfirmed={handleMoveConfirmed}
         onCreateSubmodel={handleCreateSubmodel}
         onRenameNode={onRenameNode}

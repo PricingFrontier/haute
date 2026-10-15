@@ -705,9 +705,9 @@ was forgotten or scoped to the wrong thing:
   - App's `projectSaveTurns`;
   - `AllowedField`'s ticket.
 - **Three writers into the project** (the form save, the test-quote writes, project files),
-  with three revision ideas, two locking shapes, two path rules and one capture retry.
-- **The form's save mechanics restate the pipeline's** stale detection, the uncaptured
-  rule, two turn queues, and the panel's floors beside the operations' (FB-25).
+  with three revision ideas, two locking shapes and two path rules.
+- **The form's save mechanics restate the pipeline's** stale detection, two turn queues,
+  and the panel's floors beside the operations' (FB-25).
 - **Smaller copies:**
   - the app-set details applied twice on the server;
   - the form installed into its store by two `setState` calls with different fields;
@@ -730,11 +730,10 @@ was forgotten or scoped to the wrong thing:
   - It holds both locks, applies `ordinary_path_problem`, checks the branch and the
     revision, writes with one rename, captures, and answers
     `{revision, git_sha, identity_required, warnings}`.
-  - The form, the test-quote file and project files are its callers, with one capture
-    retry over paths (with `BUG-34`).
+  - The form, the test-quote file and project files are its callers, each answering the
+    shared capture fields that the one capture route retries.
 - **Shared helpers.**
-  - The save helpers are shared with the pipeline's save: `isStaleRevision` and the
-    uncaptured rule.
+  - The save helpers are shared with the pipeline's save: `isStaleRevision`.
   - One `installForm`.
   - The details helpers live in one place on each side.
   - One helper opens a migrated copy of a test-quote file.
@@ -749,7 +748,7 @@ was forgotten or scoped to the wrong thing:
 Behaviour is unchanged: the affected tests pass before and after.
 
 **Dependencies:** `WB-17` to `WB-21` first, so their fixes land before the copies are
-merged; `FSH-R04`; `BUG-34` for the capture retry.
+merged; `FSH-R04`.
 
 **Evidence:** `frontend/src/stores/useWorkbenchFormStore.ts::takeTurn`;
 `frontend/src/stores/useWorkbenchPricingStore.ts`;

@@ -2,6 +2,7 @@ import { useState } from "react"
 
 import { setGitIdentity } from "../api/client"
 import { dismissIdentityPrompt } from "../stores/identityPrompt"
+import { captureUncaptured } from "../stores/saveCapture"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import { apiErrorMessage } from "../api/errors"
@@ -9,9 +10,6 @@ import { GitIdentityFields, ModalFormActions, ModalFormHeader } from "./ModalFor
 import ModalShell from "./ModalShell"
 
 interface IdentityPromptModalProps {
-  /** Called after an identity is recorded, to retry the save that was left
-   *  uncaptured. */
-  onSaved: () => void
   onClose: () => void
 }
 
@@ -19,13 +17,14 @@ interface IdentityPromptModalProps {
  * Save-time git identity prompt. A restored hosted container has no commit
  * identity, so saves land on disk but are never version-captured; the save
  * response says so with `identity_required`, and this dialog is how the user
- * fixes it without hunting through the Git panel.
+ * fixes it without hunting through the Git panel. Once an identity is recorded,
+ * every file a write left uncaptured is captured (`captureUncaptured`).
  *
  * Dismissing it records a session-level "don't ask again" (see
  * `stores/identityPrompt`) — the save warning still appears each time, but the
  * dialog does not reappear on every autosave.
  */
-export default function IdentityPromptModal({ onSaved, onClose }: IdentityPromptModalProps) {
+export default function IdentityPromptModal({ onClose }: IdentityPromptModalProps) {
   const status = useGitStore((s) => s.status)
   const loadStatus = useGitStore((s) => s.loadStatus)
   const addToast = useToastStore((s) => s.addToast)
@@ -49,7 +48,7 @@ export default function IdentityPromptModal({ onSaved, onClose }: IdentityPrompt
       await setGitIdentity(userName.trim(), userEmail.trim(), setGlobal)
       await loadStatus()
       onClose()
-      onSaved()
+      void captureUncaptured()
     } catch (err: unknown) {
       addToast("error", `Could not set your git identity: ${apiErrorMessage(err, "unknown error")}`)
     } finally {

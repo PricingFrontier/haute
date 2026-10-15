@@ -44,7 +44,11 @@ export function projectFileDownloadUrl(place: ProjectFilePlace, path: string): s
 
 export interface ProjectFileUpload {
   promise: Promise<ProjectFileWriteResponse>
-  /** Stop sending. A file the server already published stays; reload the folder to see. */
+  /**
+   * Stop sending. Once the last byte is sent it does nothing: the server publishes and
+   * captures a whole body, so its answer, warnings and capture included, is still
+   * reported.
+   */
   abort: () => void
 }
 
@@ -63,6 +67,7 @@ export function uploadProjectFile(
   const extra: Record<string, string> = options.replaceRevision ? { replace_revision: options.replaceRevision } : {}
   const xhr = new XMLHttpRequest()
   let aborted = false
+  let sent = false
   const promise = (async () => {
     await bootstrapHauteSession()
     const response = await new Promise<Response>((resolve, reject) => {
@@ -70,6 +75,9 @@ export function uploadProjectFile(
       xhr.setRequestHeader("Content-Type", "application/octet-stream")
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable) options.onProgress?.(event.loaded, event.total)
+      }
+      xhr.upload.onload = () => {
+        sent = true
       }
       xhr.onload = () => resolve(new Response(xhr.responseText, {
         status: xhr.status,
@@ -91,6 +99,7 @@ export function uploadProjectFile(
   return {
     promise,
     abort: () => {
+      if (sent) return
       aborted = true
       xhr.abort()
     },

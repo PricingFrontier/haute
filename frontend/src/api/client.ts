@@ -79,6 +79,7 @@ import type {
   MlflowLogResponse,
   ModelSaveDestinationRequest,
   ModelSaveDestinationResponse,
+  SaveCapture,
   SaveModelRequest,
   SaveModelResponse,
   MlflowModel,
@@ -2097,6 +2098,12 @@ export function setGitIdentity(
     { user_name: userName, user_email: userEmail, set_global: setGlobal },
     options,
   ).then(async (data) => expectGeneratedContract("GitSetIdentityResponse", (await gitValidators()).validateGitSetIdentityResponse, data))
+}
+
+/** Capture on the save ledger the files earlier writes reported uncaptured, as they are on
+ *  disk now. Capturing again what is already captured commits nothing, so a retry is safe. */
+export function captureFiles(paths: string[], options?: { signal?: AbortSignal }): Promise<SaveCapture> {
+  return post<unknown>("/api/git/capture", { paths }, options).then(async (data) => expectGeneratedContract("SaveCapture", (await gitValidators()).validateSaveCapture, data))
 }
 
 export function commitMilestone(
