@@ -253,7 +253,8 @@ toolbar's Pipeline files and Local files panels show, in two places
 ([pipeline-config](../pipeline-config/high-level.md)). The pipeline place is the pipeline
 folder's `files/`: it is versioned, so a file written or deleted there is recorded at once as
 a save on the ledger, and a file larger than 100 MiB, or one `.gitignore` would ignore, is
-refused. The local place is the root's `data/`, which takes and deletes files, and `outputs/`,
+refused. Without git, or in a project that is not a repository, the place refuses every
+listing and write, saying which, rather than promise a history it cannot keep. The local place is the root's `data/`, which takes and deletes files, and `outputs/`,
 which only downloads. Neither local folder is versioned, and a hosted app refuses files there
 because its disk does not survive a restart
 ([hosted-project-storage](../hosted-project-storage/high-level.md)). Every operation refuses

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import shutil
+import stat
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -183,6 +186,37 @@ def test_a_pipeline_at_the_project_root_has_no_pipeline_place(
 
     assert response.status_code == 409
     assert "has no pipeline folder" in _refused(response)
+
+
+def test_pipeline_files_refuse_without_git_naming_what_is_missing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("haute.routes.project_files.git_binary_available", lambda: False)
+
+    listing = client.get("/api/project-files", params={"place": "pipeline"})
+    written = _put(client, "pipeline", "data/rates.csv", b"a,b\n")
+
+    for refused in (listing, written):
+        assert refused.status_code == 409
+        assert "Git is not available in this environment" in _refused(refused)
+    # Local files need no git.
+    assert client.get("/api/project-files", params={"place": "local"}).status_code == 200
+
+
+def test_pipeline_files_refuse_outside_a_repository(client: TestClient, project: Path) -> None:
+    shutil.rmtree(project / ".git", onerror=_writable)
+
+    listing = client.get("/api/project-files", params={"place": "pipeline"})
+
+    assert listing.status_code == 409
+    assert "has no git repository: run git init" in _refused(listing)
+    assert client.get("/api/project-files", params={"place": "local"}).status_code == 200
+
+
+def _writable(remove: Any, path: str, _: Any) -> None:
+    """Git's read-only object files, made writable so the repository can be removed."""
+    os.chmod(path, stat.S_IWRITE)
+    remove(path)
 
 
 def test_a_folder_that_is_not_there_is_404(client: TestClient) -> None:

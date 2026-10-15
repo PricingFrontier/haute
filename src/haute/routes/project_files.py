@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse
 from haute import _git
 from haute._artifact_paths import PathProblem, ordinary_path_problem
 from haute._file_ops import ensure_disk_headroom, publish_staged_file
+from haute._git_core import _is_git_repo, git_binary_available
 from haute._git_lock import repository_mutation
 from haute._git_read_models import FileState
 from haute._git_state import read_working_branch
@@ -109,6 +110,20 @@ def _place(project_root: Path, name: ProjectFilePlace) -> _Place:
                 "no_pipeline_folder",
                 "This project's pipeline sits at the project root, so it has no pipeline "
                 "folder to keep versioned files in.",
+            )
+        # The place versions its files: without git or a repository, what it would promise
+        # of their history is untrue, so it refuses rather than list or write.
+        if not git_binary_available():
+            raise _refusal(
+                409,
+                "git_unavailable",
+                "Git is not available in this environment, so Pipeline files can't be versioned.",
+            )
+        if not _is_git_repo(project_root):
+            raise _refusal(
+                409,
+                "no_repository",
+                "This project has no git repository: run git init in it to version Pipeline files.",
             )
         return _Place("pipeline", folder, PIPELINE_FILES_SUBFOLDERS)
     return _Place("local", "", LOCAL_FOLDERS)

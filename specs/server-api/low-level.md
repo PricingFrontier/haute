@@ -575,7 +575,9 @@ result/cancel race has one linearized winner and cannot pass through a check/ren
 
 **Project files** (`routes/project_files.py`). A place's folder comes from
 `_project_layout.pipeline_files_folder` (pipeline, 409 `no_pipeline_folder` when the pipeline
-sits at the root) or `LOCAL_FOLDERS` (local). Every path is checked twice: lexically (no
+sits at the root, 409 `git_unavailable` without a git binary, `git_binary_available`, and 409
+`no_repository` when the project is not inside a repository, `_is_git_repo`) or
+`LOCAL_FOLDERS` (local). Every path is checked twice: lexically (no
 empty, absolute, drive, `..` or `:` part, no dot-name or `__pycache__` component) and then
 by `_artifact_paths.ordinary_path_problem` on the project-relative path (no link or junction on
 any part, no hard-linked or non-regular target), each refusal worded for the analyst as 400
@@ -1071,7 +1073,8 @@ entirely and leave every touched file in whatever state it happened to be in."
 
 ## Testing
 
-- `tests/test_project_files_routes.py` covers `/api/project-files`: each place's listing (the
+- `tests/test_project_files_routes.py` covers `/api/project-files`: the pipeline place
+  refused without git and outside a repository, the local place working, each place's listing (the
   known folders before they exist, dot-names and `__pycache__` hidden, a new and an ignored
   file's status, a project with its pipeline at the root); a write that creates, one that
   replaces its confirmed revision, and the refusals of an existing file, a changed revision,
