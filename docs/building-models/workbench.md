@@ -366,9 +366,12 @@ the project.
 When the project deploys, the dry run prices every test quote again and fails on any
 output that moved and was not accepted, so a rate change arrives with its test quotes
 accepted. On a pull request, a project set up with `haute init --workbench` reports what
-the change does to the test quotes: GitHub posts the report on the pull request, and
-GitLab and Azure DevOps keep it with the run. `haute test-quotes report` writes the same
-report on your machine.
+the change does to the test quotes: GitHub adds the report to the run's summary and
+posts it on a pull request from the repository itself, and GitLab and Azure DevOps keep it
+with the run. `haute test-quotes report` writes the same report on your machine. If a
+merge finds the same test quote changed on both sides, git names it: keep one side's file
+with `git checkout --ours` or `--theirs`, then run those quotes in Preview and accept the
+results you want to keep.
 
 ## The underwriter app
 Underwriters use the sheets in an app of their own, apart from Haute: the sheets drawn as

@@ -126,6 +126,13 @@ function quoteRefusal(form: FormSpec, quote: SheetQuote): string | null {
 
 /** The run asked for last: an answer for an earlier one is nobody's. */
 let generation = 0
+/**
+ * The list read and the quote opened last, each its own ticket so neither drops a run's
+ * answer: a late answer to an earlier read or open is nobody's, nor is one asked before the
+ * pipeline's document was adopted anew (`forget`).
+ */
+let listing = 0
+let opening = 0
 
 const runOf = (patch: Partial<QuoteRun>): QuoteRun => ({
   status: "running",
@@ -155,15 +162,17 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
   // The panel lists the quotes when it opens.
   setOpen: (open) => set({ open }),
   load: async () => {
+    const mine = ++listing
     set({ loading: true })
     try {
       const { quotes } = await fetchTestQuotes()
+      if (listing !== mine) return
       const ids = new Set(quotes.map((quote) => quote.id))
       set((s) => ({ quotes, error: null, selected: s.selected.filter((id) => ids.has(id)) }))
     } catch (error: unknown) {
-      set({ error: apiErrorMessage(error) })
+      if (listing === mine) set({ error: apiErrorMessage(error) })
     } finally {
-      set({ loading: false })
+      if (listing === mine) set({ loading: false })
     }
   },
   save: async (name) => {
@@ -201,8 +210,12 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
   openQuote: async (id) => {
     const { form } = useWorkbenchFormStore.getState()
     if (form === null) return
+    const mine = ++opening
     try {
       const opened = await openTestQuote(id, form)
+      // Its values were carried onto the form as it was asked for: on any other they are
+      // not the quote's, and a later open, or an adoption, has the sheets now.
+      if (opening !== mine || useWorkbenchFormStore.getState().form !== form) return
       // In the sample's place, one undo step.
       useWorkbenchFormStore.getState().change((spec) => withSample(spec, opened.values))
       set({
@@ -212,7 +225,7 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
           : `Opened '${opened.name}'. No place on the sheets for: ${opened.dropped.join(", ")}.`,
       })
     } catch (error: unknown) {
-      set({ error: apiErrorMessage(error) })
+      if (opening === mine) set({ error: apiErrorMessage(error) })
     }
   },
   toggle: (id) =>
@@ -318,6 +331,8 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
   },
   forget: () => {
     generation += 1
+    listing += 1
+    opening += 1
     set({ runs: {}, runForm: null, runBasis: null, running: false })
     if (get().open) void get().load()
   },

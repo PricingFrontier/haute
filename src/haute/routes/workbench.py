@@ -235,7 +235,8 @@ def _read_test_quotes(config: WorkbenchConfig, read: Callable[[QuoteStore], _T])
         if not path.is_file():
             return None
         # The clone's drivers; .gitattributes, if it changes, rides the next write's capture.
-        # A file that cannot be written leaves the read as it is: the next write says so.
+        # A file that cannot be written, or a registration that failed, leaves the read as it
+        # is: the next write tries again and says so.
         with suppress(OSError):
             ensure_test_quote_git(config.project_root, relative)
         try:
@@ -286,7 +287,7 @@ def _write_test_quotes(
         if not create and not path.is_file():
             raise QuoteNotFoundError(f"{relative} holds no test quotes yet.")
         try:
-            ensure_test_quote_git(config.project_root, relative)
+            registration = ensure_test_quote_git(config.project_root, relative)
         except OSError as exc:
             raise WorkbenchTestQuoteError(
                 f".gitattributes could not be written, so nothing was saved: {exc}"
@@ -296,20 +297,22 @@ def _write_test_quotes(
         name, email = get_identity(config.project_root)
         with open_store(store_url(path)) as store:
             result = write(store, email or name or "")
-        captured = _capture_test_quotes(config, relative)
+        captured = _capture_test_quotes(config, relative, registration)
     return result, captured
 
 
-def _capture_test_quotes(config: WorkbenchConfig, relative: str) -> WorkbenchTestQuoteWriteResponse:
+def _capture_test_quotes(
+    config: WorkbenchConfig, relative: str, warnings: list[str]
+) -> WorkbenchTestQuoteWriteResponse:
     """The test-quote file at *relative* captured on the save ledger as written, with the
     ``.gitattributes`` its write registered the drivers in, under the repository's lock the
-    caller holds. A capture that cannot happen is a warning: the write has landed."""
+    caller holds, after the write's *warnings*. A capture that cannot happen is a warning
+    too: the write has landed."""
     from haute._test_quotes import project_gitattributes_path
 
     captured = [relative]
     if project_gitattributes_path(config.project_root).is_file():
         captured.append(".gitattributes")
-    warnings: list[str] = []
     capture = capture_save_in_ledger(config.project_root, captured, warnings)
     return WorkbenchTestQuoteWriteResponse(warnings=warnings, **capture._asdict())
 
@@ -323,8 +326,7 @@ def _store_error(exc: Exception) -> HTTPException:
 
 
 def _written(store: QuoteStore, revision: QuoteRevision) -> WorkbenchTestQuoteSummary:
-    [summary] = [quote for quote in store.quotes() if quote.id == revision.quote_id]
-    return _summary(summary)
+    return _summary(store.summary(revision.quote_id))
 
 
 @router.get("/test-quotes", response_model=WorkbenchTestQuotesResponse)
@@ -391,7 +393,7 @@ async def open_test_quote(
 
     def read(store: QuoteStore) -> WorkbenchTestQuoteOpenResponse:
         revision = store.revision(quote_id)
-        [summary] = [quote for quote in store.quotes() if quote.id == quote_id]
+        summary = store.summary(quote_id)
         carried = carry_values(revision.inputs, store.form(revision.form_revision), body.form)
         return WorkbenchTestQuoteOpenResponse(
             id=quote_id,

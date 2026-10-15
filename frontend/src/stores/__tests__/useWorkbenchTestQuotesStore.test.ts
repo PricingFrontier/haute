@@ -166,6 +166,58 @@ describe("useWorkbenchTestQuotesStore", () => {
     expect(useWorkbenchFormStore.getState().form?.sample).toEqual({ t9: [{ x: "old" }] })
   })
 
+  it("leaves the later of two opens on the sheets, whichever is answered first", async () => {
+    typeSample({ t1: [{ c1: "1" }] })
+    const answers: Record<string, (value: ReturnType<typeof opened>) => void> = {}
+    vi.mocked(openTestQuote).mockImplementation((id) => new Promise((resolve) => { answers[id] = resolve }))
+
+    const first = store().openQuote("a")
+    const second = store().openQuote("b")
+    answers.b(opened("b", "222"))
+    await second
+    answers.a(opened("a", "111"))
+    await first
+
+    expect(useWorkbenchFormStore.getState().form?.sample).toEqual({ t1: [{ c1: "222" }] })
+    // The earlier open, answered last, changed nothing: one undo step, the later open's.
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
+  })
+
+  it("applies no open answered after the document was adopted anew or the form changed", async () => {
+    typeSample({ t1: [{ c1: "1" }] })
+    let answer: (value: ReturnType<typeof opened>) => void = () => undefined
+    vi.mocked(openTestQuote).mockImplementation(() => new Promise((resolve) => { answer = resolve }))
+
+    // A branch switched while the quote was read: its values are the other branch's.
+    const across = store().openQuote("a")
+    store().forget()
+    answer(opened("a", "111"))
+    await across
+    expect(useWorkbenchFormStore.getState().form?.sample).toEqual({ t1: [{ c1: "1" }] })
+
+    // The form edited meanwhile: the values were carried onto the form as it was.
+    const edited = store().openQuote("a")
+    typeSample({ t1: [{ c1: "2" }] })
+    answer(opened("a", "111"))
+    await edited
+    expect(useWorkbenchFormStore.getState().form?.sample).toEqual({ t1: [{ c1: "2" }] })
+  })
+
+  it("keeps the list read last, whichever is answered first", async () => {
+    const lists: Array<(value: { quotes: WorkbenchTestQuoteSummary[] }) => void> = []
+    vi.mocked(fetchTestQuotes).mockImplementation(() => new Promise((resolve) => { lists.push(resolve) }))
+
+    const first = store().load()
+    const second = store().load()
+    lists[1]({ quotes: [summary("b", "Southern")] })
+    await second
+    lists[0]({ quotes: [summary("a", "Northern")] })
+    await first
+
+    expect(store().quotes.map((quote) => quote.id)).toEqual(["b"])
+    expect(store().loading).toBe(false)
+  })
+
   it("runs every test quote one at a time on one fixed pipeline and says what changed", async () => {
     await store().load()
     vi.mocked(openTestQuote).mockImplementation(async (id) => opened(id, id === "a" ? "1" : "2"))

@@ -297,12 +297,74 @@ def test_a_save_creates_the_file_at_the_newest_schema_and_captures_it(project: P
     assert (project / ".gitattributes").read_text(encoding="utf-8") == (
         f"{PATH} diff=haute-test-quotes merge=haute-test-quotes\n"
     )
-    assert "haute.cli._test_quotes merge %O %A %B" in git(
+    assert "-m haute._test_quote_driver merge %O %A %B" in git(
         project, "config", "--local", "merge.haute-test-quotes.driver"
     )
     assert sorted(path.name for path in (project / "tests/quotes").iterdir()) == [
         "test_quotes.sqlite"
     ]
+
+
+def test_the_drivers_are_registered_once_a_process(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute import _git_core
+
+    enable(project)
+    init_repo(project)
+    assert save().status_code == 200
+    configs: list[tuple[str, ...]] = []
+    run_git_ok = _git_core._run_git_ok
+
+    def counted(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
+        if args[0] == "config":
+            configs.append(args)
+        return run_git_ok(*args, cwd=cwd)
+
+    monkeypatch.setattr(_git_core, "_run_git_ok", counted)
+    [quote] = client().get("/api/workbench/test-quotes").json()["quotes"]
+
+    # A run of 30 quotes: each open and each list asks git nothing more.
+    opened = f"/api/workbench/test-quotes/{quote['id']}/open"
+    for _ in range(30):
+        assert client().post(opened, json={"form": FORM}).status_code == 200
+        assert client().get("/api/workbench/test-quotes").status_code == 200
+    assert save("Southern fleet").status_code == 200
+
+    assert configs == []
+
+
+def test_a_registration_that_failed_is_said_and_tried_again(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute import _git_core
+
+    enable(project)
+    init_repo(project)
+    run_git_ok = _git_core._run_git_ok
+    refused: list[tuple[str, ...]] = []
+
+    def refusing(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
+        if args[:2] == ("config", "--local") and args[2] != "--get":
+            refused.append(args)
+            return False, ""
+        return run_git_ok(*args, cwd=cwd)
+
+    monkeypatch.setattr(_git_core, "_run_git_ok", refusing)
+    saved = save()
+
+    assert saved.status_code == 200, saved.text
+    assert (
+        "The test quotes' git drivers could not be registered in this clone's git config, so a "
+        "diff shows the file as binary and a merge conflicts on it."
+    ) in saved.json()["warnings"]
+    tried = len(refused)
+    assert tried == 3
+
+    # Not taken as done: the next write tries again, and says so again.
+    again = save("Southern fleet")
+    assert len(refused) == 2 * tried
+    assert any("could not be registered" in warning for warning in again.json()["warnings"])
 
 
 def test_the_list_is_the_most_recently_saved_first(project: Path) -> None:

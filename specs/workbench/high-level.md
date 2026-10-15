@@ -768,21 +768,26 @@ Out of scope:
   schema by the next write and refused by a read until then, naming the save that brings
   it up to date; a project with no file lists no test quotes, and a read creates none.
   `haute init --workbench` writes the file empty, at the newest schema, so a milestone's
-  sweep tracks it from the start, and the `.gitignore` guards keep SQLite's journal files
-  out of the repository.
+  sweep tracks it from the start, with its git drivers when the project is already a
+  repository, and the `.gitignore` guards keep SQLite's journal files out of the
+  repository.
 
-  In git the file is a binary, so each clone is given two drivers whenever Haute reads or
+  In git the file is a binary, so each clone is given two drivers when Haute reads or
   writes its test quotes: `.gitattributes` names the file with
   `diff=haute-test-quotes merge=haute-test-quotes`, written and captured with the file, and
   the clone's own git configuration runs `haute test-quotes dump` to show the file as text
   in a diff (each quote by name: its revision, who saved it and when, its request and its
   response) and `haute test-quotes merge` to merge it, through the Python running Haute
-  (`python -m haute.cli._test_quotes`, without the CLI's start-up, whose log line would
-  join a diff's text).
+  (`python -m haute._test_quote_driver`, a module of their own, so Python warns of no
+  module run twice, and without the CLI's start-up, whose log line would join a diff's
+  text). The configuration is checked once a process for each project and interpreter; a
+  registration that fails is said on the save and tried again at the next.
   The merge takes the two sides quote by quote, by id, against their common base: a quote
   one side added, changed or deleted while the other left it as the base had it takes that
   side's; a quote changed on both sides, or changed on one and deleted on the other, is a
-  conflict, named, the file left as it was on the branch being merged into. A provider's
+  conflict, named, the file left as it was on the branch being merged into, and the message
+  says how to resolve it: one side's file with `git checkout --ours` or `--theirs`, then
+  those quotes run in Preview and the results kept accepted. A provider's
   merge button runs no driver, so a pull request in conflict over the file is brought up
   to date where git runs it, on an analyst's machine (`git merge` of the target branch).
   Before Haute commits the file, it settles a rollback journal a write that never finished

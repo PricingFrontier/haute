@@ -14,10 +14,10 @@ the app saves quotes to on the server; how underwriters manage their quotes in t
 exports from the app; the test quotes analysts keep and re-price in Preview; and the actions
 that fill the sheets from databases and APIs.
 
-`WB-17` and `WB-19` to `WB-23` fix what the [review of 15 October 2026](workbench-review-2026-10-15.md)
+`WB-19` to `WB-23` fix what the [review of 15 October 2026](workbench-review-2026-10-15.md)
 found in what pull requests #303 to #309 built. Each names the review's findings it closes
 (`CX-n`, `FB-n`, `TQ-n`, `SD-n`, `MS-n`), and the review holds their evidence. They are
-taken in order, `WB-17` first; `WB-22` merges the mechanisms written several times once
+taken in order, `WB-19` first; `WB-22` merges the mechanisms written several times once
 the others have fixed their behaviour, and `WB-23` prices Preview in one run of the
 pipeline.
 
@@ -32,7 +32,6 @@ pipeline.
 | WB-11 | Decision | P2 | An underwriter exports a saved quote from the app in the formats the project needs, naming the release that priced it. |
 | WB-12 | Planned | P3 | A test quote whose response runs past what Preview shows is saved, run and compared in full, as every other test quote is. |
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, sees which quotes are about to lapse, records how a final quote ended, and archives or reassigns many quotes at once. |
-| WB-17 | Planned | P2 | Test quotes behave in the panel and in git as quotes do in the app: the newest answer wins, one read per quote, drivers registered once and quietly, and the report compares a branch with its merge base. |
 | WB-19 | Planned | P2 | The form and its Save say what is wrong and keep what was typed: readable refusals, unique ids, no silent no-op, recovery after a lost answer, and the node copies kept outside the undo history. |
 | WB-20 | Planned | P2 | The underwriter app's quote life is exact: a derived quote opens clean and new, drafts and history follow what is on the sheet, failures say why, and the release id changes with what prices alone. |
 | WB-21 | Planned | P2 | Building the sheets is exact and keyboard-complete: a drag lands where the pointer puts it, a gesture ends when the pointer does, the panels keep the selection, and the sheets read as laid out. |
@@ -377,60 +376,6 @@ lists, without outcomes or validity); `src/haute/deploy/_validators.py::response
 comparison by place, not by key); `frontend/src/app/QuotesPage.tsx::QuotesPage` (one quote
 changed at a time).
 
-### WB-17 — Test quotes in the panel and in git
-**Why:**
-- The test-quote panel's list and opens are applied in whatever order they arrive, with no
-  check of the document they were asked for. A late open replaces the sample opened after
-  it, and an open made before a branch switch writes values carried onto the old form into
-  the new one (review CX-6).
-- Opening a quote, and answering any write, reads every quote's summary to find one, so a
-  run of N quotes reads N² summaries (CX-9).
-- Every read registers the git drivers again through three `git config` calls, about 7
-  seconds of a 30-quote run, and a registration that fails is not reported (FB-54).
-- The drivers run as `python -m haute.cli._test_quotes`, which imports the module twice and
-  prints a RuntimeWarning on every diff and merge (FB-55).
-- The GitLab report job compares the merge request's head with the target's tip, not their
-  merge base, so test quotes accepted on the target since the branch point read as this
-  branch's (MS-1).
-- Three smaller gaps (FB-57):
-  - A conflict in the file, a clone without the drivers, and a stale interpreter path all
-    keep ours safely, but none of them says how to resolve.
-  - `haute init --workbench` writes the file without its `.gitattributes` line, which the
-    first read then writes.
-  - The GitHub report job's comment fails on a fork's pull request.
-
-**Plan:**
-- The store's `generation` ticket also covers `load` and `openQuote`, and an open is
-  applied only while the form it was asked for is still the one shown.
-- `QuoteStore.summary(quote_id)`, the one summary query with a `where`, serves the open
-  and every write.
-- The drivers are checked once per process for each project and interpreter. A failed
-  registration is reported as a warning on the write's capture.
-- The drivers run from an entry module the CLI package does not import.
-- The report compares with `git merge-base HEAD <base>`, and the GitLab job fetches the
-  full history.
-- The driver's conflict message names the resolution: take a side with
-  `git checkout --ours` or `--theirs`, then run and accept the quote in Preview.
-- `haute init --workbench` registers the drivers when it is inside a repository.
-- The GitHub job comments only on a pull request from the same repository.
-
-**Acceptance:**
-- Two opens answered in reverse order leave the later one on the sheets.
-- A run of 30 quotes makes one registration check.
-- `git diff` of the file prints no warning.
-- A GitLab report on a branch behind its target lists only the branch's own changes.
-
-Each has a test.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/stores/useWorkbenchTestQuotesStore.ts::openQuote` (no ticket);
-`src/haute/routes/workbench.py::_written` and
-`src/haute/routes/workbench.py::open_test_quote` (every summary read for one);
-`src/haute/_test_quotes.py::ensure_test_quote_git` (three `git config` calls per read);
-`src/haute/cli/_test_quotes.py::merge_files`; `src/haute/cli/_test_quotes.py::report` (the
-base read at its tip); `src/haute/_scaffold.py::gitlab_ci_yml`.
-
 ### WB-19 — The form and its Save
 **Why:**
 - **Unreadable refusals.** A request body the form routes refuse is answered with
@@ -690,7 +635,7 @@ sheet, then in the section); `frontend/src/utils/sheetGeometry.ts::moveRect`;
 
 ### WB-22 — One mechanism per concern
 **Why:** The [review](workbench-review-2026-10-15.md) found mechanisms written several
-times, each copy slightly different; the defects in `WB-17` to `WB-21` sit where one copy
+times, each copy slightly different; the defects `WB-19` to `WB-21` fix sit where one copy
 was forgotten or scoped to the wrong thing:
 - **Stale answers and turn-taking**, hand-rolled about ten times:
   - the form store's turns;
@@ -722,7 +667,7 @@ was forgotten or scoped to the wrong thing:
 - **Two primitives in `frontend/src/utils`:** `serial()`, a turn queue, and
   `latest(scope)`, a ticket that stays current while its scope does (the document
   generation, the quote and its version, the folder, the list query). They are tested once
-  and adopted by every store above, after `WB-17` to `WB-21` have fixed each copy's
+  and adopted by every store above, after `WB-19` to `WB-21` have fixed each copy's
   behaviour.
 - **One project writer.**
   - It takes a project-relative path, the revision the caller saw, the bytes or a staged
@@ -747,7 +692,7 @@ was forgotten or scoped to the wrong thing:
 
 Behaviour is unchanged: the affected tests pass before and after.
 
-**Dependencies:** `WB-17` to `WB-21` first, so their fixes land before the copies are
+**Dependencies:** `WB-19` to `WB-21` first, so their fixes land before the copies are
 merged; `FSH-R04`.
 
 **Evidence:** `frontend/src/stores/useWorkbenchFormStore.ts::takeTurn`;

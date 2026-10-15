@@ -80,10 +80,12 @@ Out of scope, owned elsewhere:
   An endpoint suffix is a Databricks naming override; HTTP targets reject it and direct operators
   to configure the complete staging endpoint URL instead.
 - `haute test-quotes report [--base REF] [--output FILE]` compares the workbench's test-quote
-  file with the one at `REF` (`origin/main` by default) and writes, as Markdown, the test
-  quotes added, removed and accepted anew, each with the outputs that moved; a file absent
-  on either side reads as no test quotes, one an older Haute wrote is read through a
-  migrated copy, and the report never fails the run.
+  file with the one where the branch left `REF` (`origin/main` by default), their merge
+  base, so test quotes `REF` accepted since are not counted as the branch's, and writes, as
+  Markdown, the test quotes added, removed and accepted anew, each with the outputs that
+  moved; a file absent on either side reads as no test quotes, one an older Haute wrote is
+  read through a migrated copy, a `REF` with no history in common is said, and the report
+  never fails the run.
 - `haute test-quotes dump FILE` writes the test-quote file at `FILE` as text, each quote by
   name with its newest revision, who saved it and when, its request and its response, the
   JSON with sorted keys, for git's diff driver.

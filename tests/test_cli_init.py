@@ -855,6 +855,31 @@ class TestInitWorkbench:
         path = tmp_path / "tests" / "quotes" / "test_quotes.sqlite"
         with open_store(store_url(path)) as store:
             assert store.quotes() == []
+        # Outside a repository there are no git drivers to register.
+        assert not (tmp_path / ".gitattributes").exists()
+
+    def test_registers_the_test_quotes_git_drivers_inside_a_repository(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import subprocess
+
+        subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, check=True, capture_output=True)
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(cli, ["init", "--workbench"], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+
+        attributes = (tmp_path / ".gitattributes").read_text(encoding="utf-8")
+        assert attributes == (
+            "tests/quotes/test_quotes.sqlite diff=haute-test-quotes merge=haute-test-quotes\n"
+        )
+        driver = subprocess.run(
+            ["git", "config", "--local", "merge.haute-test-quotes.driver"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert "-m haute._test_quote_driver merge %O %A %B" in driver
 
     def test_a_plain_init_writes_neither(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -214,13 +214,15 @@ _GITHUB_TEST_QUOTES_JOB = """
         run: >-
           uv run haute test-quotes report --base "origin/${{ github.base_ref }}"
           --output test-quotes-report.md
+      - name: Add the report to the run's summary
+        run: cat test-quotes-report.md >> "$GITHUB_STEP_SUMMARY"
+      # A fork's pull request runs with a token that cannot comment.
       - name: Post the report on the pull request
+        if: github.event.pull_request.head.repo.full_name == github.repository
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
-        run: |
-          cat test-quotes-report.md >> "$GITHUB_STEP_SUMMARY"
-          gh pr comment "$PR" --body-file test-quotes-report.md --edit-last --create-if-none
+        run: gh pr comment "$PR" --body-file test-quotes-report.md --edit-last --create-if-none
 """
 
 #: The same on a GitLab merge request, kept with the job as an artifact.
@@ -229,6 +231,9 @@ _GITLAB_TEST_QUOTES_JOB = """
 test-quotes-report:
   stage: validate
   timeout: 10 minutes
+  # The whole history, so the report finds where the branch left its target.
+  variables:
+    GIT_DEPTH: "0"
   script:
     - git fetch origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
     - >-

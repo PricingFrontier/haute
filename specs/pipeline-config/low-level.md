@@ -776,7 +776,8 @@ API and real JSON round-trips rather than mocks:
   matching, and round-trip drift (`TestRoundTripDrift`).
 - **`test_scaffold.py`** — every CI provider × deploy target combination, complete
   YAML/TOML structural validation (including release conditions and exact secret
-  placement), blank starter pipeline/test content, root-`main.py` removal, and absence of
+  placement, the test-quote report's GitHub comment only on a same-repository pull
+  request and GitLab's whole-history clone), blank starter pipeline/test content, root-`main.py` removal, and absence of
   generated prompts and node sidecars.
 - **`test_docs_accuracy.py`** — executable deployment-documentation parity for the
   real scaffold tree and starter node count, registered CLI commands, public Python
