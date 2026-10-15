@@ -1043,6 +1043,16 @@ describe("useWebSocketSync", () => {
       expect(useDocumentStatusStore.getState().systemFailure).toBeNull()
     })
 
+    it("counts each connection as a possible change of the form's file, which went unannounced while disconnected", () => {
+      const params = makeHookParams("rating/main.py")
+      useWorkbenchStore.setState({ formChanges: 0 })
+      renderHook(() => useWebSocketSync(params))
+
+      act(() => latestWS().onopen?.(new Event("open")))
+
+      expect(useWorkbenchStore.getState().formChanges).toBe(1)
+    })
+
     it("counts each change of the workbench's form file on disk, and nothing else", async () => {
       const params = makeHookParams("rating/main.py")
       useWorkbenchStore.setState({ formChanges: 0 })

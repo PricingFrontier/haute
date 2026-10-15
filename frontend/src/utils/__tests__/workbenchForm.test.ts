@@ -35,6 +35,7 @@ import {
   keptInside,
   labelColumns,
   linedUpOutputs,
+  answeredOutputs,
   moveInOrder,
   movePage,
   moveSchemaColumn,
@@ -1701,6 +1702,24 @@ describe("output tables lined up with a grid's rows", () => {
     expect([...lined.keys()]).toEqual(["t_premiums"])
     expect(lined.get("t_premiums")).toEqual([{ item: "A", premium: 10 }, undefined, { item: "B", premium: 20 }, undefined])
     expect(linedUpOutputs([claims, equipment], [premiums], held, 4, null, schema)).toEqual(new Map())
+  })
+
+  it("lines output tables alone up with the first one's answer, the others by its keys, nothing before a price", () => {
+    // Premiums keyed by item; a second output keyed alike, answered in another order and short a row.
+    const charges = table("t_charges", "charges", { role: "output", rows: "many", columns: [column("c_c_item", "item", { key: true })] })
+    const answered = answeredOutputs([premiums, charges], {
+      sample: {},
+      tables: { premiums: [{ item: "B", premium: 20 }, { item: "A", premium: 10 }], charges: [{ item: "A", charge: 1 }] },
+    })
+
+    expect([...answered.keys()]).toEqual(["t_premiums", "t_charges"])
+    expect(answered.get("t_premiums")).toEqual([{ item: "B", premium: 20 }, { item: "A", premium: 10 }])
+    expect(answered.get("t_charges")).toEqual([undefined, { item: "A", charge: 1 }])
+    // The first without keys: the others have nothing to match it by.
+    const unkeyed = { ...premiums, columns: premiums.columns.map((c) => ({ ...c, key: false })) }
+    expect(answeredOutputs([unkeyed, charges], price([])).get("t_charges")).toEqual([undefined, undefined])
+    expect(answeredOutputs([premiums], null)).toEqual(new Map())
+    expect(answeredOutputs([], price([]))).toEqual(new Map())
   })
 
   it("reads the grid's rows as the quote does: a value in a column it leaves out fills no row", () => {

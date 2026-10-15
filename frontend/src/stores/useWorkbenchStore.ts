@@ -34,9 +34,11 @@ interface WorkbenchState {
    */
   formDirty: boolean
   /**
-   * How many times the server has said the form's file changed on disk (an edit by hand,
-   * a pull or a merge outside Haute, a save from another window): counted here, on the
-   * eager store, for the form store (a lazy chunk), which reads the file again at each.
+   * How many times the form's file may have changed on disk: each change the server
+   * announces (an edit by hand, a pull or a merge outside Haute, a save from another
+   * window), and each connection to it, since a change while disconnected went
+   * unannounced. Counted here, on the eager store, for the form store (a lazy chunk),
+   * which reads the file again at each.
    */
   formChanges: number
   /** The workbench's tables from the newest fetch that succeeded; null until one has. */

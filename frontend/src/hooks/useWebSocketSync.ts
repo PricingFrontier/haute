@@ -318,6 +318,8 @@ export default function useWebSocketSync({
         opened = true
         retriesRef.current = 0
         setStatus("connected")
+        // The form's file may have changed while no frame could say so: read it again.
+        useWorkbenchStore.setState((state) => ({ formChanges: state.formChanges + 1 }))
         const sourceFile = currentDocumentSource()?.trim()
         if (sourceFile) {
           try {

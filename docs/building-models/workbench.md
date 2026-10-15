@@ -340,7 +340,10 @@ a choice or a date counts as you make it), and each time you open Preview, Haute
 editor, as it stands, saved or not, exactly as a deployed pipeline would price it. Every
 output column shows its value, a Collection's its table's one row and a Table's the row in
 the answer keyed like each grid row, dimmed while a newer answer is on its way, and every
-Chart plots the sample with what pricing it gave. There is no **Price** to press and no
+Chart plots the sample with what pricing it gave. A Table of output columns alone, such as
+a premium by peril, shows a row for each row of the answer, as a Chart of them does; until
+it is priced (or while its table has nothing connected) it shows its starting rows of
+dashes. There is no **Price** to press and no
 **Clear**: a sample with nothing typed is not priced, and its outputs show dashes. The
 sample is priced whatever its cells hold. Once anything is typed, a cell that breaks its
 column's rules (a required cell left empty, a number that is not one, a whole number that

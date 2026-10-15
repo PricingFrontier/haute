@@ -1069,6 +1069,36 @@ export function linedUpOutputs(
   return lined
 }
 
+/** A row's value under `name`, there and not null: a value a key can match by. */
+const keyedBy = (row: Record<string, unknown> | undefined, name: string): boolean => row?.[name] !== undefined && row[name] !== null
+
+/**
+ * Output tables shown without an input table, lined up with the first one's answer: its
+ * rows as pricing gave them, and each other table's row keyed like each of them by the
+ * first's key columns (none without keys), as a Chart and a Table of output columns alone
+ * show them. Nothing while there is no price.
+ */
+export function answeredOutputs(
+  outputs: readonly SchemaTable[],
+  price: Priced | null,
+): Map<string, (Record<string, unknown> | undefined)[]> {
+  const lined = new Map<string, (Record<string, unknown> | undefined)[]>()
+  const [first] = outputs
+  if (first === undefined || price === null) return lined
+  const answer = price.tables[first.name] ?? []
+  const keys = first.columns.filter((column) => column.key).map((column) => column.name)
+  for (const table of outputs) {
+    if (lined.has(table.id)) continue
+    const own = price.tables[table.name] ?? []
+    const matched = (row: Record<string, unknown>) =>
+      keys.length === 0
+        ? undefined
+        : own.find((candidate) => keys.every((name) => keyedBy(row, name) && keyedBy(candidate, name) && String(candidate[name]) === String(row[name])))
+    lined.set(table.id, table.id === first.id ? [...answer] : answer.map(matched))
+  }
+  return lined
+}
+
 /** What stops a component showing what it should, by the component it is about. */
 export interface WidgetProblem {
   widgetId: string

@@ -15,7 +15,7 @@ import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { previewBasis } from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { valuesBasis } from "../../utils/sheetValues"
-import { addSchemaColumn, addSchemaTable, BLANK_THEME, shownFields, toggleField, updateSchemaColumn, updateWidget, type WidgetPatch } from "../../utils/workbenchForm"
+import { addSchemaColumn, addSchemaTable, BLANK_THEME, createWidget, shownFields, toggleField, updateSchemaColumn, updateWidget, type WidgetPatch } from "../../utils/workbenchForm"
 import SheetCanvas from "../SheetCanvas"
 import { SheetValuesContext, useNewQuoteValues, useQuoteValues, useSampleValues } from "../useSheetValues"
 import WidgetBody from "../WidgetBody"
@@ -648,6 +648,45 @@ describe("WidgetBody", () => {
     expect(cell(1)).toHaveAttribute("data-stale", "true")
     expect(cell(2)).toHaveAttribute("data-stale", "true")
     expect(cell(3)).toHaveTextContent("—")
+  })
+
+  it("shows a Table of output columns alone as its starting rows of dashes until priced, then a row for each of the answer's rows, taking no typing", () => {
+    const form = sheetForm()
+    const results = {
+      ...createWidget("tableInput", { x: 16, y: 380, w: 480, h: 160 }),
+      id: "w_results",
+      title: "Premiums",
+      fields: [
+        { table: "premiums", column: "premiums.item" },
+        { table: "premiums", column: "premiums.premium" },
+      ],
+    }
+    addTo(form, results)
+    loadForm(form)
+    const { rerender } = renderBody("w_results")
+    const cell = (name: string, row: number) => screen.queryByTestId(`priced-premiums:premiums.${name}-${row}`)
+
+    // Nothing priced: its three starting rows, each cell a dash, so it reads as not yet connected.
+    expect(cell("premium", 3)).toHaveTextContent("—")
+    expect(cell("premium", 4)).toBeNull()
+    expect(screen.queryByRole("button", { name: "Add row" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Delete row 1" })).toBeNull()
+
+    // Priced: a row for each of the answer's, as a Chart of the same columns plots them.
+    act(() =>
+      useWorkbenchPricingStore.setState({
+        price: {
+          basis: previewBasis(form),
+          sample: {},
+          tables: { premiums: [{ item: "Crane", premium: 10 }, { item: "Paver", premium: 20 }, { item: "Dozer", premium: 30 }, { item: "Lift", premium: 40 }] },
+        },
+      }),
+    )
+    rerender(body("w_results"))
+    expect([1, 2, 3, 4].map((row) => cell("item", row)?.textContent)).toEqual(["Crane", "Paver", "Dozer", "Lift"])
+    expect(cell("premium", 4)).toHaveTextContent("40")
+    expect(cell("premium", 5)).toBeNull()
+    expect(screen.queryByRole("textbox")).toBeNull()
   })
 
   it("takes a date once it is committed, one edit, not as each digit of its year is typed", () => {

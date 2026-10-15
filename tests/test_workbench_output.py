@@ -340,6 +340,11 @@ def test_the_editor_previews_every_table_in_one_run(
     assert list(previewed.port_previews) == labels
     assert previewed.port_previews["item_prices"].preview == _RESPONSE[0]["item_prices"]
     assert previewed.port_previews["summary"].preview == [{"state": "NY", "premium": 100.0}]
+    # Each table's own columns, as its frame holds them.
+    assert [(c.name, c.dtype) for c in previewed.port_previews["summary"].columns] == [
+        ("state", "String"),
+        ("premium", "Float64"),
+    ]
     for label in labels:
         alone = execute_graph(
             saved,

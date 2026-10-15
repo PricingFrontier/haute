@@ -14,11 +14,10 @@ the app saves quotes to on the server; how underwriters manage their quotes in t
 exports from the app; the test quotes analysts keep and re-price in Preview; and the actions
 that fill the sheets from databases and APIs.
 
-`WB-25` and `WB-26` take on what is left of the [review of 15 October
-2026](workbench-review-2026-10-15.md) of what pull requests #303 to #309 built. Each names
-the review's findings it closes (`CX-n`, `FB-n`, `TQ-n`, `SD-n`, `MS-n`), and the review
-holds their evidence. `WB-25` waits on the app's sign-in, and `WB-26` on a decision about
-Tables of output columns alone.
+`WB-25` takes on what is left of the [review of 15 October
+2026](workbench-review-2026-10-15.md) of what pull requests #303 to #309 built: the app's
+sign-in, which waits on the Azure work. It names the review's findings it closes
+(`FB-n`), and the review holds their evidence.
 
 ## Priorities
 
@@ -32,7 +31,6 @@ Tables of output columns alone.
 | WB-12 | Planned | P3 | A test quote whose response runs past what Preview shows is saved, run and compared in full, as every other test quote is. |
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, sees which quotes are about to lapse, records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
-| WB-26 | Decision | P3 | A Table of output columns alone shows the answer's rows, or says why it has none. |
 
 ## Planned improvements
 
@@ -393,25 +391,3 @@ misconfiguration either way.
 headers when the release names its host); `frontend/src/app/useOpenQuoteStore.ts::openNew`
 (`asRenewal`, the browser's tick).
 
-### WB-26 — Tables of outputs alone
-**Why:** A Table's rows come from the input tables whose columns it shows, so a Table whose
-fields are all output columns, such as a premium by peril, has none to count: it draws its
-starting rows of dashes, after pricing too, where a Chart of the same columns plots the
-first output table's answer (FB-41, from the [review](workbench-review-2026-10-15.md)).
-
-**Plan:** A decision first, recorded here before the slice: whether a Table of outputs
-alone takes its rows from the first output table's answer, the others matched by key,
-read only and empty before the first price, as a Chart does, which the owner leans to; or
-names in its place why it has no rows.
-
-**Acceptance:** Set by the decision. For the first: in Preview and in the app, a Table of
-an output table's columns alone shows a row for each of the answer's rows once priced,
-none before, and takes no typing, as a Chart of the same columns plots them.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/workbench/sheet/FieldGrid.tsx` (a grid's rows counted from its
-input tables, its starting rows while they hold none);
-`frontend/src/workbench/sheet/fieldCells.ts` (an output cell without a value drawn as a
-dash); `frontend/src/utils/sheetChart.ts::sheetChartData` (a Chart's rows from the first
-output table's answer).

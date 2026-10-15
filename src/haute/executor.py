@@ -1510,8 +1510,10 @@ def _execute_graph_core(
             node_id: str,
             df: pl.DataFrame | None,  # pragma: no mutate
         ) -> tuple[list[ColumnInfo], list[ColumnInfo]]:
+            # A bundle of frames records no flat schema of its own: one of its frames,
+            # previewed, is read from the frame.
             full_output = output_cols.get(node_id)
-            if full_output is not None:
+            if full_output:
                 columns = [ColumnInfo(name=n, dtype=d) for n, d in full_output]
             elif df is not None:
                 columns = [ColumnInfo(name=c, dtype=str(df[c].dtype)) for c in df.columns]

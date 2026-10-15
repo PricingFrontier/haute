@@ -673,7 +673,11 @@ Out of scope:
   what the server typed for the grid row's (the index numbered as the grid numbers the
   row), found through the first many-row input table the grid shows that is keyed alike;
   a grid row with nothing typed, or none keyed like it, shows a dash, and a price for other
-  values is dimmed on every row.
+  values is dimmed on every row. A Table of output columns alone has no typed rows to line
+  up with: it shows a row for each of the first output table's answer, another output
+  table's row matched by key, as a Chart of them plots them, none added or deleted; before
+  an answer it shows its starting rows of dashes, so it reads as not yet priced or
+  connected.
 - **Charts.** A Chart plots its fields' values as the sheets hold them, a new quote's
   defaults alone while building, and in Preview the sample or the underwriter app's
   quote, with what pricing them gave. An input column's value

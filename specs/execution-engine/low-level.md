@@ -397,7 +397,8 @@ Supplying `port_label` selects exactly that frame for the flat preview; unknown
 labels fail clearly and never fall back to an arbitrary first frame. Supplying
 `port_labels` instead previews each of those frames from the same run into the
 target's `port_previews` (a `PortPreview` each, its rows through `_frame_preview`, as
-the flat preview's are, and its columns through the same column reading), so each is
+the flat preview's are, and its columns through the same column reading, read from the
+frame since a bundle records no flat schema of its own), so each is
 what a `port_label` preview of that frame alone answers; a label the target does not
 emit fails the target ("<node> has no table '<label>' to preview."). The frames asked
 for are not in the cache key: the bundle holds every frame whichever are previewed.

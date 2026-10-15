@@ -3,7 +3,7 @@ import { Plus, Trash2 } from "lucide-react"
 import { type CSSProperties } from "react"
 import { cellKey, formattedNumber, presetColumn } from "../../utils/sheetValues"
 import { columnKey } from "../../utils/sheetVisibility"
-import { gridInputTables, linedUpOutputs, padRows, withCell, type SampleValue, type ShownField, type TableOptions } from "../../utils/workbenchForm"
+import { answeredOutputs, gridInputTables, linedUpOutputs, padRows, withCell, type SampleValue, type ShownField, type TableOptions } from "../../utils/workbenchForm"
 import { isNumeric } from "../columnTypes"
 import { useSheetValues } from "../useSheetValues"
 import { Cell, FieldLabel } from "./Cell"
@@ -34,7 +34,10 @@ function groupRuns(fields: ShownField[]): { group: string; start: number; size: 
  * shows every one, so rows can be deleted below `rows`, deleting the last starting it
  * again. An output column shows what pricing gave the row keyed like each grid row,
  * through the first input table the grid shows that is keyed alike, dimmed while the price
- * is for other values. Its options say whether the rows are numbered, how tall they are,
+ * is for other values. Showing output columns alone, it shows `rows` rows of dashes until
+ * there is a price, then a row for each of the first output table's answer, the others'
+ * matched by its keys (`answeredOutputs`), as a Chart of them plots them, none added or
+ * deleted. Its options say whether the rows are numbered, how tall they are,
  * which lines it draws, whether every other row is shaded, whether its header's labels are
  * in capitals and whether rows can be added and deleted; fixed, it never shows fewer than
  * `rows`, and fixed or not, it shows every row the values hold. Showing a table a column
@@ -73,7 +76,12 @@ export function FieldGrid({
   )
   const given = givenRows.size > 0
   const holding = Math.max(0, ...inputTables.map((id) => held[id]?.length ?? 0))
-  const count = given ? holding : holding === 0 ? rows : options.fixed_rows ? Math.max(rows, holding) : holding
+  // Each many-row output table it shows; showing no input table, their answer gives its rows once priced.
+  const outputs = fields.flatMap(({ found }) => (found !== null && found.table.role === "output" && found.table.rows === "many" ? [found.table] : []))
+  const answered = inputs.length === 0 ? answeredOutputs(outputs, price) : null
+  const answer = outputs.length === 0 ? undefined : answered?.get(outputs[0].id)
+  const count =
+    answer !== undefined ? answer.length : given ? holding : holding === 0 ? rows : options.fixed_rows ? Math.max(rows, holding) : holding
   // A table a column gives its rows has no cells past them, beside a table whose rows differ.
   const past = (found: NonNullable<Found>, row: number): boolean => row >= (givenRows.get(found.table.id) ?? Infinity)
   // Each input table's rows as the grid shows them.
@@ -87,14 +95,13 @@ export function FieldGrid({
   const deleteRow = (row: number) => setRows(Object.fromEntries(inputTables.map((id) => [id, shownRows(id).filter((_, i) => i !== row)])))
   const stale = price !== null && price.basis !== basis
   // Each many-row output table's rows lined up with the grid's.
-  const outputs = fields.flatMap(({ found }) => (found !== null && found.table.role === "output" && found.table.rows === "many" ? [found.table] : []))
-  const matched = linedUpOutputs(inputs, outputs, held, count, price, quoted)
+  const matched = answered ?? linedUpOutputs(inputs, outputs, held, count, price, quoted)
   const pricedAt = (found: NonNullable<Found>, row: number): unknown =>
     found.table.rows === "one" ? price?.tables[found.table.name]?.[0]?.[found.column.name] : matched.get(found.table.id)?.[row]?.[found.column.name]
 
   const { row_numbers: numbered, gridlines, striped, transposed } = options
-  // Rows are not added or deleted in a grid of fixed rows, or of rows a column gives, or while the values are read only.
-  const fixed = options.fixed_rows || given || readOnly
+  // Rows are not added or deleted in a grid of fixed rows, of rows a column gives or of no input table, or while the values are read only.
+  const fixed = options.fixed_rows || given || readOnly || inputTables.length === 0
   const height = ROW_HEIGHT[options.density]
   // The line before a field's column: an output's, and every column's in a full grid; none
   // without gridlines, or at the grid's left edge.
