@@ -14,6 +14,13 @@ the app saves quotes to on the server; how underwriters manage their quotes in t
 exports from the app; the test quotes analysts keep and re-price in Preview; and the actions
 that fill the sheets from databases and APIs.
 
+`WB-14` to `WB-22` fix what the [review of 15 October 2026](workbench-review-2026-10-15.md)
+found in what pull requests #303 to #309 built. Each names the review's findings it closes
+(`CX-n`, `FB-n`, `TQ-n`, `SD-n`, `MS-n`), and the review holds their evidence. They are
+taken in order, `WB-14` first: the first five close risks to persisted work, computed results
+and the regression gate, and `WB-22` merges the mechanisms written several times once the
+others have fixed their behaviour.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -25,6 +32,15 @@ that fill the sheets from databases and APIs.
 | WB-11 | Decision | P2 | An underwriter exports a saved quote from the app in the formats the project needs, naming the release that priced it. |
 | WB-12 | Planned | P3 | A test quote whose response runs past what Preview shows is saved, run and compared in full, as every other test quote is. |
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, sees which quotes are about to lapse, records how a final quote ended, and archives or reassigns many quotes at once. |
+| WB-14 | Planned | P1 | Every action lands on the target it was asked for: a release build deletes only a release it made, a confirmed change acts on the quote it was asked about, the sheet's keys act from the sheet alone, and test-quote writes refuse links as the Files panels do. |
+| WB-15 | Planned | P1 | A quote is written once whatever is lost on the way: a save's operation key outlives a lost answer, an edit and a reload; a change and a save never race; the store refuses what it cannot keep rather than answering 500. |
+| WB-16 | Planned | P1 | CI, deploy and `haute app build` check each test quote as the app would send it, on one encoding of the response, so a change the panel shows is a change the check fails on. |
+| WB-17 | Planned | P2 | Test quotes behave in the panel and in git as quotes do in the app: the newest answer wins, one read per quote, drivers registered once and quietly, and the report compares a branch with its merge base. |
+| WB-18 | Planned | P1 | What the sheets show is what is priced: a price is stale whenever its pipeline, data or source changes, a pipeline that does not read the sheets is refused, every value priced is visible on its cell, and one rule says whether a quote is typed. |
+| WB-19 | Planned | P2 | The form and its Save say what is wrong and keep what was typed: readable refusals, unique ids, no silent no-op, recovery after a lost answer, and the node copies kept outside the undo history. |
+| WB-20 | Planned | P2 | The underwriter app's quote life is exact: a derived quote opens clean and new, drafts and history follow what is on the sheet, failures say why, and the release id changes with what prices alone. |
+| WB-21 | Planned | P2 | Building the sheets is exact and keyboard-complete: a drag lands where the pointer puts it, a gesture ends when the pointer does, the panels keep the selection, and the sheets read as laid out. |
+| WB-22 | Planned | P2 | Each concern has one mechanism: one way to drop a stale answer and take turns, one writer into the project, and the three largest view files split along their jobs. |
 
 ## Planned improvements
 
@@ -363,3 +379,668 @@ refused by name and the rest changed.
 lists, without outcomes or validity); `src/haute/deploy/_validators.py::response_changes` (a
 comparison by place, not by key); `frontend/src/app/QuotesPage.tsx::QuotesPage` (one quote
 changed at a time).
+
+### WB-14 — Every action lands on its target
+**Why:** The [review](workbench-review-2026-10-15.md) found four actions that can act on
+something other than what the analyst or underwriter chose:
+- `haute app build` replaces an earlier release by deleting its output folder whenever a
+  file named `release.json` is in it. `haute app build .` in a project holding a stray
+  `release.json` deletes the project, `.git` included (CX-22).
+- Mark final, Reopen and Assign ask in the app's one dialog, which outlives a page change,
+  and then change whichever quote is open when the answer comes. Back during "Mark Q-000001
+  final?" can finalise another quote whose newest revision has the same number (CX-14).
+- The sheet's selection keys act from inside the properties panel: Delete on a focused
+  Order row or pane tab removes the whole component, the arrows nudge it, and Ctrl/Cmd+D
+  duplicates it (FB-28).
+- The test-quote file and `.gitattributes` are written in place through a hard link,
+  which the Files panels refuse (CX-27).
+
+**Plan:**
+- `build_release` takes a folder as an earlier release only when its `release.json` reads
+  as a `Release` with `deploy_manifest.json` and `app.py` beside it. It refuses a folder
+  that is the project or holds it, its `haute.toml` or the working directory, and it builds
+  into a fresh sibling folder that replaces the old one only once the build has succeeded.
+- `change` in the open-quote store takes the id and version of the quote it was asked
+  about, and refuses when another quote is open. A question asked about a quote is answered
+  no when the page leaves that quote.
+- The workbench's selection keys (Escape to deselect, Delete, Backspace, the arrows,
+  Ctrl/Cmd+D and Ctrl/Cmd+C) act only when the keystroke lands on the sheet's viewport or
+  the page itself. Save, undo, redo, fit and paste stay document-wide.
+- `project_test_quotes_path` and `project_gitattributes_path` refuse what
+  `ordinary_path_problem` refuses, hard links included.
+
+**Acceptance:**
+- `haute app build` refuses the project folder, and a folder holding an unrelated
+  `release.json`, naming why, and leaves both untouched.
+- An earlier release is replaced only after its successor has built.
+- Confirming a question after Back changes nothing and says the quote changed.
+- Delete from a focused Order row or pane tab removes nothing from the sheet.
+- A test-quote save through a hard-linked file is refused before anything is written.
+
+Each has a test that fails today.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_workbench_app.py::build_release` (the folder deleted by its
+marker file); `src/haute/cli/_app.py::handle_app_build` (any OUTPUT resolved);
+`frontend/src/app/useOpenQuoteStore.ts::change` (the open quote read when the answer
+comes); `frontend/src/app/useAppStore.ts::ask` (one question at a time, outliving a page);
+`frontend/src/hooks/keyboardTargets.ts::isFormControl` (the only exemption the sheet's keys
+make); `src/haute/_test_quotes.py::project_test_quotes_path` (`contained_path`, which a hard
+link passes); `src/haute/_artifact_paths.py::ordinary_path_problem` (the Files panels'
+rule).
+
+### WB-15 — A quote is written once
+**Why:** The quote store replays a save repeated with its operation key, but the app's
+browser keeps the key only in narrow cases (review CX-3):
+- It drops the key on any answer that carries an HTTP status, though a 502 or 504 from the
+  ingress, and a 500 raised after the book's commit, both follow a write that landed.
+- It mints a new key when the values or the price shown change.
+- The browser's draft does not keep it, so a reload loses it.
+
+After a create whose answer was lost, the next Save creates a second quote under a new
+reference. Around it:
+- A change made while a save is in flight names the version that save is replacing, so one
+  of the two is refused as a conflict with the user's own action (FB-3).
+- `set_note` checks the archive with a plain read and inserts its event without locking
+  the quote's row, so a note lands on a quote archived meanwhile. This was reproduced on
+  SQLite (CX-11).
+- The quote's name is copied into `haute_quotes.name`, a `String(200)`, unchecked. A
+  server engine refuses a longer one with a data error that the routes answer as 500 (FB-6).
+- The migrations' environment sets `render_as_batch`, which shapes only autogenerated
+  scripts, while its comment and the low-level specification say every migration runs in
+  batch mode on SQLite (FB-7).
+- The reader-role test refuses a reader's create and changes but not a save or a note, each
+  guarded by its own call (TQ-2).
+- The app's API client is mocked out of every app test, and its request bodies are built
+  untyped, so a renamed field passes tsc and the suite (TQ-3).
+
+**Plan:**
+- The browser keeps a save's operation key unless the answer is a refusal, a status below
+  500.
+- A new quote's create key is minted once for the new-quote page and kept in its draft.
+- A retry after an uncertain create repeats the create first, then saves the edits since
+  as the next revision of the quote that create made.
+- The open-quote store has one busy state for saves and changes, and the controls that
+  change a quote are off while a save runs.
+- `set_note` locks the quote's row before its check: `SELECT … FOR UPDATE` on a server
+  engine, and a no-op update first on SQLite.
+- The book refuses a name past `NAME_LENGTH` with a `QuoteStoreError` that names the limit.
+- The environment's comment and the specification say what `render_as_batch` does, and
+  that a migration altering a table on SQLite uses `op.batch_alter_table`.
+- The reader test covers every write route.
+- The app's request bodies are typed against the generated request models, and a
+  transport-level test of `frontend/src/api/app.ts` checks them.
+
+**Acceptance:**
+- A create answered 502 and saved again, after an edit or after a reload with its draft
+  restored, leaves one quote whose newest revision holds the edit.
+- A change pressed during a save waits for it or is refused before it is sent.
+- A note racing an archive is refused.
+- A 240-character name is refused with a message.
+- A reader's save and note are refused with nothing written.
+
+Each has a test that fails today.
+
+**Dependencies:** None. `WB-10` replaces `_keep_form`'s count-then-insert on a server engine
+(review CX-5).
+
+**Evidence:** `frontend/src/app/useOpenQuoteStore.ts::saveBody` (the key kept only for the
+same values and price); `frontend/src/app/useOpenQuoteStore.ts::keepDraft` (no key in the
+draft); `src/haute/_quote_store/_book.py::QuoteBook` (`replayed`, `set_note`);
+`src/haute/_quote_store/_tables.py::NAME_LENGTH`;
+`src/haute/_quote_store/migrations/env.py`;
+`tests/test_workbench_app_quotes.py::test_with_an_edit_role_only_those_holding_it_change_quotes`;
+`frontend/src/api/app.ts::saveAppQuote` (an untyped body).
+
+### WB-16 — The regression gate checks what the app sends
+**Why:**
+- CI's check, and `haute app build`'s, price each test quote's stored request and compare
+  the answer with the accepted response. The panel's Run instead carries the quote's values
+  onto the form as it is now, rebuilds the request, and compares both the request and the
+  response.
+  - A change of Show when, of a params file's values or of preset rows therefore alters
+    what the app sends while the check passes.
+  - This contradicts the specification's "a change the panel shows is a change the check
+    fails on" (review CX-2).
+- Deploy reads `[test_quotes] dir` with no default, while the editor keeps test quotes in
+  `tests/quotes` when the table is absent. A project whose `haute.toml` lacks the table has
+  its saved test quotes checked by nothing (CX-23).
+- A Workbench response has three encodings:
+  - Preview keeps a Workbench Output's rows as dataframe rows, nulls and empty tables
+    included, and the accepted response and the dry run compare that shape. MLflow answers
+    the same.
+  - The container's `/quote` renders it through `render_output_document`, which drops null
+    fields, empty lists and empty objects.
+  - `haute smoke` against a container target therefore fails every accepted quote that
+    holds a null or an empty table (FB-50).
+- That rendering also drops a quote whose values are all null or whose tables are all
+  empty. The app's price route then answers 500, and the container answers no rows for a
+  one-row request (FB-51).
+- A run has no "nothing typed" gate where a save has one. A quote whose columns were all
+  removed is priced as the null quote, which no deployed request is, and accepting it
+  stores a request the check then fails (FB-14).
+- The digest test never makes two different revisions with one number, so a digest of the
+  quote and number alone would pass it (TQ-1).
+
+**Plan:**
+- `_saved_test_quote_cases` builds each case's request from its revision's values carried
+  onto the current form (`carry_values`, then `quote_request`). It fails a case whose values
+  have no place on that form, or whose rebuilt request differs from the stored one, naming
+  the place, and it prices the rebuilt request.
+- `haute app build` checks against the form it ships, its allowed values read again.
+- One reader of the test-quote folder, `project_test_quotes_path`'s, is used by deploy, the
+  smoke test and the editor.
+- One rendering of a Workbench response keeps one document per quote: it prunes inside
+  that document and keeps `{}`. The container and the app both use it.
+- Every comparison of a whole response (`_response_errors`, the smoke test, the panel) is
+  made on one normalised shape.
+- `run` in the test-quote store refuses a quote with nothing on the sheets, as `save`
+  does.
+- The digest test forks a store after revision 1 and saves a different revision 2 on each
+  side.
+
+**Acceptance:**
+- A Show-when change that hides a priced column fails `haute deploy --dry-run` for each
+  test quote it changes, naming the request's change.
+- A test quote saved without `[test_quotes]` is checked.
+- A container deployment answers a quote with a null output and an empty table, and
+  `haute smoke` passes it.
+- The app prices a quote whose answer is all empty without a 500.
+- A run of a quote with nothing on the sheets marks it failed.
+
+Each has a test that fails today.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/deploy/_validators.py::_saved_test_quote_cases` (the stored request
+priced); `src/haute/deploy/_validators.py::_response_errors` (the unpruned comparison);
+`src/haute/deploy/_validators.py::price_test_quotes_live` (the smoke test's comparison);
+`src/haute/deploy/_config.py::DeployConfig` (no default folder);
+`src/haute/_test_quotes.py::project_test_quotes_path` (the editor's default);
+`src/haute/_output_assembler.py::render_output_document` and
+`src/haute/_output_assembler.py::_prune` (nulls, empties and empty rows dropped);
+`src/haute/_workbench_app.py::create_app` (one document unpacked per pricing);
+`frontend/src/stores/useWorkbenchTestQuotesStore.ts::quoteRefusal` (the save's gate, not
+the run's);
+`tests/test_quote_store.py::test_a_revision_saved_apart_under_the_same_number_is_refused_by_its_digest`.
+
+### WB-17 — Test quotes in the panel and in git
+**Why:**
+- The test-quote panel's list and opens are applied in whatever order they arrive, with no
+  check of the document they were asked for. A late open replaces the sample opened after
+  it, and an open made before a branch switch writes values carried onto the old form into
+  the new one (review CX-6).
+- Opening a quote, and answering any write, reads every quote's summary to find one, so a
+  run of N quotes reads N² summaries (CX-9).
+- Every read registers the git drivers again through three `git config` calls, about 7
+  seconds of a 30-quote run, and a registration that fails is not reported (FB-54).
+- The drivers run as `python -m haute.cli._test_quotes`, which imports the module twice and
+  prints a RuntimeWarning on every diff and merge (FB-55).
+- The GitLab report job compares the merge request's head with the target's tip, not their
+  merge base, so test quotes accepted on the target since the branch point read as this
+  branch's (MS-1).
+- Three smaller gaps (FB-57):
+  - A conflict in the file, a clone without the drivers, and a stale interpreter path all
+    keep ours safely, but none of them says how to resolve.
+  - `haute init --workbench` writes the file without its `.gitattributes` line, which the
+    first read then writes.
+  - The GitHub report job's comment fails on a fork's pull request.
+
+**Plan:**
+- The store's `generation` ticket also covers `load` and `openQuote`, and an open is
+  applied only while the form it was asked for is still the one shown.
+- `QuoteStore.summary(quote_id)`, the one summary query with a `where`, serves the open
+  and every write.
+- The drivers are checked once per process for each project and interpreter. A failed
+  registration is reported as a warning on the write's capture.
+- The drivers run from an entry module the CLI package does not import.
+- The report compares with `git merge-base HEAD <base>`, and the GitLab job fetches the
+  full history.
+- The driver's conflict message names the resolution: take a side with
+  `git checkout --ours` or `--theirs`, then run and accept the quote in Preview.
+- `haute init --workbench` registers the drivers when it is inside a repository.
+- The GitHub job comments only on a pull request from the same repository.
+
+**Acceptance:**
+- Two opens answered in reverse order leave the later one on the sheets.
+- A run of 30 quotes makes one registration check.
+- `git diff` of the file prints no warning.
+- A GitLab report on a branch behind its target lists only the branch's own changes.
+
+Each has a test.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/stores/useWorkbenchTestQuotesStore.ts::openQuote` (no ticket);
+`src/haute/routes/workbench.py::_written` and
+`src/haute/routes/workbench.py::open_test_quote` (every summary read for one);
+`src/haute/_test_quotes.py::ensure_test_quote_git` (three `git config` calls per read);
+`src/haute/cli/_test_quotes.py::merge_files`; `src/haute/cli/_test_quotes.py::report` (the
+base read at its tip); `src/haute/_scaffold.py::gitlab_ci_yml`.
+
+### WB-18 — What the sheets show is what is priced
+**Why:**
+- **The pricing basis leaves the pipeline out.** Preview prices again when the form's
+  pricing basis changes or Preview shows again, and judges a price stale by the same basis;
+  the pipeline, the data source and the data files are not part of it.
+  - The Assistant, a branch switched to one with the same form, a data file replaced
+    through Files, and an edit on disk all change what the sample prices to while Preview
+    stays shown. The old price stays undimmed, and a pricing under way when they change is
+    kept as current (review CX-1).
+  - Test-quote runs judge staleness by the pipeline and the source as well, but not by data
+    files.
+- **A pipeline that does not read the sheets is priced anyway.** Preview patches the
+  top-level workbench nodes and checks only that a Workbench Output exists. A Quote Input
+  left beside a Workbench Output, which the singleton rules allow, or a Workbench Input
+  inside a submodel, never receives the typed values: every value typed gives the same
+  premium, undimmed (FB-13).
+- **Values are priced but not shown.**
+  - A held value that a params file no longer allows draws as a blank select while it is
+    priced; renewing or carrying a quote reaches this (CX-4).
+  - A tick or text left in a column since retyped draws as empty and unmarked, while the
+    server refuses the pricing naming that cell (FB-16).
+- **"Is anything typed" is decided five ways:**
+  - Preview's rule, with hidden columns out;
+  - the app's pricing, with hidden and app-set columns out;
+  - the app's Save and save body, with app-set columns out but hidden values counted;
+  - the test-quote save's rule;
+  - the server's, which counts the defaults the specification says are not typing.
+
+  A value left only in a hidden column enables Save, which the server refuses with 422
+  (CX-7, SD-1). Preview and the app also price through two loops with different
+  late-answer rules (FB-12).
+- **Smaller defects in reading what was typed:**
+  - Date cells and date conditions commit on every keystroke; after a pause, a year typed
+    digit by digit is priced as year 2 (FB-31).
+  - A press on a select may hold the drawn sections until the next click, because
+    Chromium's select menu takes the press's release (FB-30, to confirm in Chrome first).
+  - Integer text is typed through `float`, so a value past 2^53 changes silently (CX-25).
+  - The schema editor reads numeric allowed values with `Number()` rather than the
+    typed-number rule (CX-8).
+  - The params reader chooses Windows-1252 from a Polars error message, so a header that is
+    not UTF-8 is offered mangled and saved so (FB-15).
+  - The typed-number and filled rules have no shared fixture, where visibility and preset
+    rows have one (FB-18).
+  - Tracing a Workbench Output fed straight from a Workbench Input fails, because the
+    redirect drops the source port (CX-28).
+  - Editor pricing is one preview job per output table (CX-13).
+
+**Plan:**
+- One editor pricing context made of the document generation, the graph's fingerprint and
+  submodels, the data source, and an epoch moved by every write of a data file. It is part
+  of Preview's basis, its scheduling and its answer check, and of the test quotes' run
+  basis.
+- `priceSample` refuses a pipeline without a top-level Workbench Input, naming what to
+  replace or move.
+- A select holding a value outside its options shows that value as a marked extra option,
+  and `cellProblem` marks a value not of its column's type.
+- One `quoteEligible(form, values, locked)` rule (visibility, preset rows, app-set columns,
+  defaults) is used by Preview, the app's pricing, its Save and save body, and the test
+  quotes. The server's check leaves defaults out the same way.
+- Both stores share one pricing loop, each keeping only what it prices and through what.
+- Date cells and conditions go through `CommittedTextField type="date"`.
+- There is no hold for a press on a select, once FB-30 is confirmed in Chrome.
+- Integral text is parsed with `int`, and numeric options are checked with
+  `parseTypedNumber`.
+- The params reader chooses its encoding from the bytes, and refuses a header holding
+  U+FFFD.
+- A `typedText` fixture is read by both test suites.
+- The trace redirect carries the source port.
+- A preview operation for several ports, if CX-13's measurement warrants it.
+
+**Acceptance:**
+- After the Assistant edits the pipeline, a branch switch, or a data file replaced,
+  Preview's outputs dim and are priced again.
+- A pipeline with a top-level Quote Input and a Workbench Output says why it cannot be
+  priced.
+- A disallowed or mistyped held value is visible on its cell.
+- Save is off exactly when the server would refuse with "Type the quote first".
+- One date typed is one edit and one pricing.
+
+Each has a test that fails today, and the fixture pins the typed-number rule on both sides.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/stores/useWorkbenchPricingStore.ts::priceNow` (a late answer
+dropped only when the pricer changes);
+`frontend/src/stores/useWorkbenchTestQuotesStore.ts::currentBasis` (the test quotes' wider
+basis); `frontend/src/workbench/priceSample.ts::priceSample` (the Output checked, the Input
+not); `src/haute/_graph_shape.py::SINGLETON_NODE_GROUPS` (either request input allowed);
+`frontend/src/utils/sheetValues.ts::cellProblem`;
+`frontend/src/utils/sheetValues.ts::quoteTyped`;
+`frontend/src/stores/useWorkbenchPreviewStore.ts::priceOnce` (the app's typed rule and
+loop); `src/haute/_workbench_app_quotes.py::_prepared` (the server's typed rule);
+`src/haute/_workbench_tables.py::_typed`;
+`frontend/src/workbench/steadyPreview.ts::useHeldWhilePressed`;
+`frontend/src/utils/workbenchForm.ts::schemaProblems`;
+`src/haute/_workbench_params.py::_read` (the encoding chosen from an error message).
+
+### WB-19 — The form and its Save
+**Why:**
+- **Unreadable refusals.** A request body the form routes refuse is answered with
+  FastAPI's default 422, which repeats the whole form in pydantic's `input`, and the
+  browser shows that list as its JSON text. A table the analyst names `quote_details`,
+  which the editor flags only as a duplicate label while the server refuses it, turns Save
+  into a 5 KB toast and fails Preview's pricing the same way (review FB-19).
+- **Repeated ids.** Nothing refuses a repeated id in a form, and the editor's removals act
+  on every match. A hand-edited or merged file holding a copied block draws two components
+  with one id, and Delete removes both (FB-22).
+- **Saves that fail quietly or lose typing.**
+  - A Save queued behind a read can end with nothing saved and nothing said (FB-21).
+  - A save that landed but lost its answer leaves the next save refused as stale, and
+    Reload loses what was typed since, though the file holds exactly what was sent (FB-20).
+- **A refit mistaken for a read.** The view refits the zoom when the history looks like a
+  form read anew, and a save after an undo to the bottom of the stack looks the same
+  (FB-23).
+- **Locking.** The form save checks and writes outside the repository lock a branch switch
+  holds, while the test-quote writes hold it throughout (CX-24).
+- **The node copies and the undo history.**
+  - A copy update from a fetch is an undo step, so an Undo leaves the copy behind until the
+    next save (FB-17).
+  - An Undo inside a save's wait for pending commits can save a stale Workbench Output
+    copy, which deploy then refuses (CX-10).
+- **Mirrors and generated types.**
+  - The mirrored constants and limits are pinned on one side or neither: the blank sheet's
+    width and section height, Rows 1-50, Columns 1-12, and decimal places (FB-24).
+  - `WorkbenchTestQuoteChange`'s values are generated as objects, and the client shadows
+    the type with a cast (CX-12).
+- **Specification and decisions.**
+  - Two low-level invariants describe the retired Build and Preview model (SD-2).
+  - The form learns of a change on disk only when the pipeline file changes too (FB-26).
+  - A merged file whose geometry is off cannot be opened in the editor that would repair
+    it (FB-27).
+
+**Plan:**
+- **Readable refusals.**
+  - A `RequestValidationError` handler keeps FastAPI's list but leaves out `input` and
+    `ctx`.
+  - `apiErrorMessage` reads a list detail's first place and message.
+  - `schemaProblems` names a table called `quote_details` in the server's own words.
+- **Unique ids.** A `FormSpec` validator refuses repeated page, section, component, table
+  and column ids, naming the id, and `newId` is checked against the ids in use.
+- **Saves.**
+  - `save` says why when its turn finds the form being read.
+  - On a stale refusal, the store reads the file and takes its revision when the file holds
+    exactly what was sent.
+- **Refit on a read alone.** The form store counts its reads, and the view refits on a read
+  alone.
+- **Locking.** `repository_mutation` is held across the form save's check, write and
+  capture.
+- **The node copies.** Copies applied from a fetch are committed without a history entry.
+  They are checked again after pending commits settle and before the pipeline is saved.
+- **Mirrors and generated types.**
+  - The mirrored constants and limits are pinned by the existing cross-language test, with
+    decimal places through `PIVOT_DECIMAL_PLACES_MAX`.
+  - The contract generator maps an untyped schema to `unknown`.
+- **Specification and decisions.**
+  - The low-level invariants are rewritten for Build's new quote, editor Preview's sample
+    and the app's quote.
+  - FB-26 and FB-27 are decided with the owner before a slice.
+
+**Acceptance:**
+- Naming a table `quote_details` shows the server's sentence in the schema editor and in
+  the toast.
+- A form with a repeated id is refused at read and at save, naming the id.
+- A save after a lost answer is adopted when the file matches what was sent.
+- An undo never leaves a node copy behind.
+- The limits test fails when one side's limit changes.
+
+Each has a test that fails today.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/routes/_error_handlers.py` (no validation-error handler);
+`frontend/src/api/errors.ts::apiErrorMessage` (a list detail shown as text);
+`src/haute/_workbench_form.py::FormSpec` and
+`src/haute/_workbench_form.py::_check_quote_details`;
+`frontend/src/utils/workbenchForm.ts::newId`;
+`frontend/src/utils/workbenchForm.ts::removeWidget` (every match removed);
+`frontend/src/stores/useWorkbenchFormStore.ts::flush`;
+`frontend/src/stores/useWorkbenchViewStore.ts` (the refit inferred from the history);
+`src/haute/routes/workbench.py::_save_form`;
+`frontend/src/hooks/useWorkbenchTables.ts::useWorkbenchTables`;
+`frontend/src/App.tsx::saveProjectNow`; `src/haute/schemas.py::WorkbenchTestQuoteChange`;
+`frontend/src/api/workbench.ts::compareTestQuote` (the cast).
+
+### WB-20 — The underwriter app's quote life
+**Why:**
+- **Derived quotes.**
+  - A Duplicate, Renew or Create alternative opens "Unsaved": its baseline is the empty
+    quote, not the carried values, so the leave guard asks, a draft is kept, and the next
+    derivation offers the carried values back as unsaved changes (review FB-1).
+  - It also carries its source's reference, stage, assignee and archived flag until its
+    first save, showing them and pricing with them (FB-2).
+- **Drafts.**
+  - A value typed back to the saved one leaves the old draft, which is offered again after
+    a reload (CX-19).
+  - Archive then Restore offers back the values already on the sheet (FB-4).
+  - A restored draft drops cells the sheets no longer have without saying so, and its
+    `formRevision` has no reader (FB-5).
+- **Ordering.**
+  - Two history loads for one quote land in completion order, and an older one removes the
+    newest revision (CX-31).
+  - Undo on an archive reloads the list it was made from, replacing the list now shown
+    (CX-16).
+- **Words.**
+  - Mark final's dialog says revision N is pinned, where the server pins N+1 (FB-8).
+  - A pricing refused because the page is for another release shows as a pricing failure,
+    and the Reload notice comes only after a save (FB-11).
+  - A node failing on the typed quote answers "Internal Server Error", where the container
+    answers the reason (FB-52).
+  - `haute app build`, `serve` and `migrate` print tracebacks for faults their handlers do
+    not catch (FB-53).
+  - A malformed release raises a raw `TypeError`, `ValidationError` or `KeyError` (CX-29).
+- **The release.**
+  - Its id moves with a node's canvas position, so every open page must reload, and it
+    does not move with the pinned runtime (FB-56).
+  - Pricing releases its admission before the response is rendered, then converts the
+    response on the event loop (CX-26).
+- **Tests and decisions.**
+  - The test "a release without a quote store prices without its packages" never prices
+    (TQ-4).
+  - The app trusts the Easy Auth headers because the release names its host (FB-9).
+  - The browser alone ticks `is_renewal` (FB-10).
+
+**Plan:**
+- **Derived quotes.**
+  - A derived quote opens with its baseline at the values opened and without the app-set
+    details (`withAppDetails(values, {})`).
+  - The carry route strips the app-set details unless it carries the same quote onto newer
+    sheets.
+- **Drafts.** A draft is reconciled when the sheet returns to clean, offered only when it
+  differs from the sheet, and its restore names what had no place.
+- **Ordering.** History loads and list reloads go through a ticket scoped to the quote and
+  the list shown.
+- **Words.**
+  - The dialog says what the server does, or the final revision is read from
+    `from_revision`.
+  - The price route's 409 shows the Reload notice.
+  - A pipeline failure is answered with its message.
+  - The CLI handlers catch `HauteError` and SQLAlchemy's errors as `click.ClickException`.
+  - `read_release` checks its files where it reads them.
+- **The release.**
+  - The release id hashes the graph without positions, as `graph_fingerprint` does, plus
+    the pinned dependencies.
+  - Admission is kept through rendering, and the conversion runs in the worker.
+- **Tests and decisions.**
+  - The storeless test sends a priced request.
+  - FB-9 and FB-10 are recorded as decisions with the owner before a slice.
+
+**Acceptance:**
+- A duplicate opens clean, holds no reference until it is saved, and leaves no draft.
+- A draft typed back to its saved values is gone after a reload.
+- History after a save shows that save.
+- Undo on an archive refreshes the list shown.
+- A node failing on a quote shows its reason in the app.
+- Moving a node and building again gives the same release id.
+
+Each has a test that fails today.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/app/useOpenQuoteStore.ts::openNew` (the baseline left at the
+empty quote); `frontend/src/app/useOpenQuoteStore.ts::offerDraft`;
+`frontend/src/app/useOpenQuoteStore.ts::loadHistory`; `frontend/src/app/QuotesPage.tsx`
+(the archive's Undo); `frontend/src/app/quoteValues.ts::onSheets` (cells dropped unsaid);
+`src/haute/_workbench_app_quotes.py::quote_router` (the carry route);
+`src/haute/_workbench_app.py::_release_id`; `src/haute/_workbench_app.py::read_release`;
+`src/haute/cli/_app.py::handle_app_migrate`;
+`tests/test_workbench_app.py::test_a_release_without_a_quote_store_prices_without_its_packages`.
+
+### WB-21 — Building the sheets
+**Why:**
+- **The 8-pixel creep.** A move is snapped twice: on the sheet, then against its section's
+  top. Whenever a section above has a height off the 8-pixel grid (a typed Height, or Fit
+  after a pixel nudge), a sideways drag moves a component 8 pixels down (review FB-29).
+- **Gestures.**
+  - Gestures follow client coordinates alone, so a wheel scroll during a drag leaves the
+    component behind the pointer.
+  - A release outside the window leaves the gesture following the pointer, and
+    `startCreate` drops its stop callback (CX-17).
+  - A side panel unmounted mid-resize leaves the body's cursor and text selection set
+    (CX-18).
+- **Panels, focus and keys.**
+  - The component's properties panel is not keyed by the component, so a rejected value
+    shows on the next one (CX-20).
+  - A failure listing the params folder leaves an empty, disabled selector with no reason
+    (CX-21).
+  - A press on the viewport's scrollbar deselects the component and closes its panel
+    (FB-32).
+  - Moving a tab before any sheet was chosen clears the selection (FB-33).
+  - Alt+Down on a schema column loses the focus (FB-34).
+  - Undo, redo and fit are ignored while a checkbox has the focus (FB-35).
+- **Accessibility and wording.**
+  - While building, the section bars come after every component in reading order.
+  - Required cells carry no `aria-required`, and grid headers no `scope`.
+  - The tabs announce as tabs but have no arrow keys.
+  - A clicked component is selected but not focused (FB-36).
+  - Tooltips carry instructions, which the owner's rule puts in `docs/` (FB-37).
+- **Performance.** Each drag step clones and serialises the whole form and redraws every
+  component, and nothing on the sheet is memoised (FB-38).
+- **For a decision.**
+  - There is no keyboard way to add or resize a component (FB-40).
+  - A Table of output columns alone shows dashes with no reason (FB-41).
+- **Small things (FB-42):** pane state kept for deleted components, a floating-point zoom,
+  `aria-pressed` on the bars, and the Display box without `aria-modal`.
+
+**Plan:**
+- **One snap.** A move is snapped once, in its section's coordinates, for drags and drops
+  alike.
+- **Gestures.**
+  - Gestures work in sheet coordinates taken from the live sheet, so they follow the
+    scroll.
+  - A gesture ends on blur, on lost capture, and on a move with no button pressed.
+  - The side panel uses one stop routine for every way a resize ends.
+- **Panels, focus and keys.**
+  - The component's panel gets a `key`.
+  - The params listing's other failures are shown, with a retry.
+  - Presses outside the viewport's client box are ignored.
+  - A tab move pins only the page.
+  - One `useRefocusAfterMove` hook serves the four lists that move by Alt+arrows.
+  - Whether a target is a text field is decided by the input's type.
+- **Accessibility and wording.**
+  - The section bars are drawn first in their sections.
+  - Required cells get `aria-required`, and grid headers `scope="col"`.
+  - The tabs move by the arrow keys.
+  - The selected frame takes the focus.
+  - Tooltips name things rather than instruct.
+- **Performance.**
+  - `dirty` is computed when a gesture ends.
+  - The value hooks compute only the live set.
+  - `SheetWidget` is memoised with its fields.
+  - `edit` shares what a layout change leaves alone.
+- **Decisions.** FB-40 and FB-41 are decided with the owner.
+
+**Acceptance:**
+- With a section of height 300 above, a drag lands where the pointer puts it.
+- A drag ended outside the window stops.
+- The sheet reads section by section with Tab and with a screen reader.
+- A drag on a form with fifty components and a fifty-row table redraws only what moved.
+
+Each has a test.
+
+**Dependencies:** `FSH-R04` for the shared refocus hook and form controls; `WB-14` for the
+sheet's keys.
+
+**Evidence:** `frontend/src/workbench/sheetInteractions.ts::startTransform` (a snap on the
+sheet, then in the section); `frontend/src/utils/sheetGeometry.ts::moveRect`;
+`frontend/src/haute-ui/SidePanel.tsx::SidePanel` (styles restored on mouse-up alone);
+`frontend/src/workbench/PropertiesPanel.tsx` (the component panel without a key);
+`frontend/src/workbench/SchemaEditor.tsx` (the params listing's catch);
+`frontend/src/workbench/SheetCanvas.tsx` (a press on the scrollbar deselects);
+`frontend/src/workbench/PageTabs.tsx`; `frontend/src/hooks/keyboardTargets.ts::isTextField`;
+`frontend/src/workbench/SectionHeaders.tsx`; `frontend/src/workbench/SheetWidget.tsx`;
+`frontend/src/utils/workbenchForm.ts::edit`;
+`frontend/src/stores/useWorkbenchFormStore.ts::setFormRaw`.
+
+### WB-22 — One mechanism per concern
+**Why:** The [review](workbench-review-2026-10-15.md) found mechanisms written several
+times, each copy slightly different; the defects in `WB-15` to `WB-21` sit where one copy
+was forgotten or scoped to the wrong thing:
+- **Stale answers and turn-taking**, hand-rolled about ten times:
+  - the form store's turns;
+  - the pricing store's run and pricer identity;
+  - the preview store's `asked`;
+  - the test quotes' `generation`;
+  - the open quote's `opening`;
+  - the list store's `asked`;
+  - `refreshTables`' fetch numbers;
+  - `useWorkbenchTables`' generations;
+  - the Files panel's request string;
+  - App's `projectSaveTurns`;
+  - `AllowedField`'s ticket.
+- **Three writers into the project** (the form save, the test-quote writes, project files),
+  with three revision ideas, two locking shapes, two path rules and one capture retry.
+- **The form's save mechanics restate the pipeline's** stale detection, the uncaptured
+  rule, two turn queues, and the panel's floors beside the operations' (FB-25).
+- **Smaller copies:**
+  - the app-set details applied twice on the server;
+  - the form installed into its store by two `setState` calls with different fields;
+  - `version` repeating `latest`;
+  - `_read_quotes` and `_histories` each copying and migrating a file.
+- **The three largest view files each do several jobs:** `WidgetBody.tsx` (five
+  components and a colour resolver), `PropertiesPanel.tsx` (six panels and a dialog) and
+  `SchemaEditor.tsx` (the table block, the column row, the details, the allowed-values
+  reader and the default field).
+
+**Plan:**
+- **Two primitives in `frontend/src/utils`:** `serial()`, a turn queue, and
+  `latest(scope)`, a ticket that stays current while its scope does (the document
+  generation, the quote and its version, the folder, the list query). They are tested once
+  and adopted by every store above, after `WB-15` to `WB-21` have fixed each copy's
+  behaviour.
+- **One project writer.**
+  - It takes a project-relative path, the revision the caller saw, the bytes or a staged
+    file, and a ledger message.
+  - It holds both locks, applies `ordinary_path_problem`, checks the branch and the
+    revision, writes with one rename, captures, and answers
+    `{revision, git_sha, identity_required, warnings}`.
+  - The form, the test-quote file and project files are its callers, with one capture
+    retry over paths (with `BUG-34`).
+- **Shared helpers.**
+  - The save helpers are shared with the pipeline's save: `isStaleRevision` and the
+    uncaptured rule.
+  - One `installForm`.
+  - The details helpers live in one place on each side.
+  - One helper opens a migrated copy of a test-quote file.
+- **Split view files.** `workbench/sheet/`, `workbench/panel/` and `workbench/schema/`, as
+  the review's target shape lays them out, with behaviour unchanged.
+
+**Acceptance:**
+- No store keeps a ticket or a queue of its own.
+- The three writers share one module and one test of its refusals.
+- The three view files are split with their tests passing unchanged.
+
+Behaviour is unchanged: the affected tests pass before and after.
+
+**Dependencies:** `WB-15` to `WB-21` first, so their fixes land before the copies are
+merged; `FSH-R04`; `BUG-34` for the capture retry.
+
+**Evidence:** `frontend/src/stores/useWorkbenchFormStore.ts::takeTurn`;
+`frontend/src/stores/useWorkbenchPricingStore.ts`;
+`frontend/src/stores/useWorkbenchPreviewStore.ts`; `frontend/src/app/useQuoteListStore.ts`;
+`frontend/src/panels/FilesPanel.tsx`; `src/haute/routes/workbench.py::_write_test_quotes`;
+`src/haute/routes/project_files.py::_publish_write`;
+`src/haute/_quote_store/_book.py::QuoteBook`; `frontend/src/app/openRelease.ts`;
+`src/haute/cli/_test_quotes.py::_histories`; `frontend/src/workbench/WidgetBody.tsx`.

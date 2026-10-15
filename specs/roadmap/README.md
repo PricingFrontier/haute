@@ -19,11 +19,11 @@ or maintenance issue; `P3` opportunistic work.
 |---|---|---|
 | [Assistant](assistant.md) | Blocking data findings, structured step authoring, typed banding and rating, item-level edits and per-model qualification (all deferred) | — |
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup, one worker primitive | `ROAD-WORKER-05` |
-| [Bugs](bugs.md) | Defects found outside component work: a deployed pipeline that skips its submodels, statements a save drops from a submodel file, generated CI/CD files that fail before a first release, help text that no longer matches behaviour, and a deployed Quote Input that hands every port the whole request | `BUG-18` |
+| [Bugs](bugs.md) | Defects found outside component work: a deployed pipeline that skips its submodels, statements a save drops from a submodel file, generated CI/CD files that fail before a first release, help text that no longer matches behaviour, a deployed Quote Input that hands every port the whole request, and, from the Workbench review, Pipeline files without git, Commit sweeping hidden files, uploads the identity retry never captures, the Files panel acting on the folder it left, and CI triggers naming dead folders | `BUG-18` |
 | [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache identity | `CACHE-S17` |
 | [Engineering quality](engineering-quality.md) | Model-training test cost, order- and load-sensitive tests, compatibility shard balance, dead code, test organisation | `ENGQ-CI03` |
 | [Explore and EDA](explore-eda.md) | Advanced pivot and PivotChart parity | — |
-| [Frontend shared](frontend-shared.md) | Results store | `FSH-R03` |
+| [Frontend shared](frontend-shared.md) | Results store; one kit for the confirmations, panel controls and toolbar buttons built several ways | `FSH-R03` |
 | [Model scoring](model-scoring.md) | Models trained outside Haute | `MSC-06` |
 | [Modelling](modelling.md) | Adaptive low-memory fitting: exact chunked GLM, a low-memory boosted-tree mode (both awaiting a decision) | `MOD-M01` |
 | [Name collisions](name-collisions.md) | Input-binding editors showing their name violations inline | `NAME-09` |
@@ -34,7 +34,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Server API](server-api.md) | Domain errors, generated browser contract | `API-R02` |
 | [Submodels](submodels.md) | Submodels registered by import, one reuse mechanism | `SUB-R02` |
 | [t-boost](t-boost.md) | What rating-table models make possible: cell-level holdout A/E, unfolding into rating steps, model comparison with premium attribution, measured analyst adjustments (all awaiting a decision) | `TBOOST-02` |
-| [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; the quote store on the server (its engine awaiting IT); managing quotes in the app past the Quotes page: comparing revisions, validity, outcomes, many quotes at once; exports from the app (awaiting a decision on formats); test quotes past what Preview shows kept in full; actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources) | `WB-08` |
+| [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; the quote store on the server (its engine awaiting IT); managing quotes in the app past the Quotes page: comparing revisions, validity, outcomes, many quotes at once; exports from the app (awaiting a decision on formats); test quotes past what Preview shows kept in full; actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources); and the fixes from the review of 15 October 2026: actions that land on their target, quotes written once, a regression gate that checks what the app sends, test quotes in the panel and in git, what the sheets show priced as shown, the form's Save, the app's quote life, building the sheets, and one mechanism per concern | `WB-14` |
 
 ## Delivery plan — 24 September 2026
 
@@ -51,6 +51,17 @@ solutions, and duplication, made at `main` `9319b11d`. It records its method,
 limits and evidence, and maps every finding to the package that tracks it.
 It is a dated supporting report and owns no work; the packages in the
 component roadmaps above carry the plans.
+
+## Workbench review — 15 October 2026
+
+The [Workbench review](workbench-review-2026-10-15.md) is a review of what pull
+requests #303 to #309 built, made at `main` `db7d03a5` by five Codex passes and
+six Fable 5.1 reviews, every finding verified at its source lines. It looked for
+defects, duplicated mechanisms and drift between the specifications and the code.
+It records its method, limits and evidence, and maps every finding to the package
+that tracks it: `WB-14` to `WB-22`, `BUG-32` to `BUG-36` and `FSH-R04`. It is a
+dated supporting report and owns no work; the packages in the component
+roadmaps above carry the plans.
 
 ## t-boost improvements — 4 October 2026
 

@@ -15,7 +15,14 @@ step that works today for each, and drop it when the package lands. `BUG-27` to
 describes: the CLI's help, the offset tooltip, a tuned t-boost run's summary and the
 t-boost starter parameters in the modelling UI specification. `BUG-31`, found on
 8 October 2026 while planning how a Quote Input takes an extension's tables, is a deployed pipeline that hands every port of a
-multi-table Quote Input the whole request.
+multi-table Quote Input the whole request. `BUG-32` to `BUG-36` were found on 15 October
+2026 by the [review of the Workbench's pull requests](workbench-review-2026-10-15.md) in
+the parts those pull requests changed beside the Workbench:
+- Pipeline files without git or a repository;
+- Commit sweeping in files the Files panels hide;
+- a capture retry that skips uploaded files;
+- the Files panel acting on the folder it has left;
+- generated CI triggers that name folders a project no longer has.
 
 ## Priorities
 
@@ -34,6 +41,11 @@ multi-table Quote Input the whole request.
 | BUG-29 | Planned | P2 | A tuned t-boost run's summary says its published model is the winning trial's fit, not a refit. |
 | BUG-30 | Planned | P3 | The modelling UI specification lists the t-boost starter parameters and readiness issues the editor has. |
 | BUG-31 | Planned | P1 | A deployed Quote Input gives each of its ports its own table from the request, as the editor does. |
+| BUG-32 | Planned | P1 | Pipeline files says it needs git and a repository rather than answering 500, or promising a history that does not exist. |
+| BUG-33 | Planned | P1 | Commit versions only names the Files panels show: a dot-file under the pipeline folder is never swept into a milestone. |
+| BUG-34 | Planned | P1 | A capture skipped for want of a git identity is retried for everything it skipped, uploaded files included. |
+| BUG-35 | Planned | P2 | The Files panel acts only on the folder it shows. |
+| BUG-36 | Planned | P3 | The generated CI triggers name the folders a scaffolded project has. |
 
 ## Planned improvements
 
@@ -306,3 +318,145 @@ editor's result for the same request, through `/quote` for one quote and for sev
 **Evidence:** `src/haute/deploy/_scorer.py::_score_graph_lazy`;
 `src/haute/_graph_utils.py::select_edge_source_output`;
 `src/haute/_json_shred/_shred.py::shred_to_buffers`.
+
+### BUG-32 — Pipeline files need git and a repository, and say so
+**Why:** The Pipeline files place reads git for every listing and every write, but has no
+readiness check of its own.
+- Without a git binary, `pipeline_file_states` and `ignore_rule` raise `FileNotFoundError`,
+  and the listing and every write answer 500.
+- Without a repository (`haute init` does not run `git init`), `pipeline_file_states`
+  answers nothing, so every file lists as committed. The delete and replace dialogs then
+  promise "It stays in version history" for a file history never held, and the delete is
+  permanent.
+
+Found on 15 October 2026 by the [Workbench review](workbench-review-2026-10-15.md) (FB-43),
+with probes against temporary projects.
+
+**Plan:** `_place("pipeline")` refuses with 409, as it refuses a project without a pipeline
+folder, in two cases:
+- when git is unavailable: "Git is not available in this environment, so Pipeline files
+  can't be versioned";
+- when the project is not a repository: "This project has no git repository: run git init
+  in it to version Pipeline files".
+
+The panel shows the refusal where it shows a listing's error.
+
+**Acceptance:**
+- Without git on PATH, opening Pipeline files shows the refusal, and no route answers 500.
+- In a project without a repository, Pipeline files refuses, and Local files works as
+  before.
+
+Each has a route test.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_git_read_models.py::pipeline_file_states` (empty outside a
+repository); `src/haute/_git_read_models.py::ignore_rule`;
+`src/haute/routes/project_files.py::_place`; `frontend/src/panels/FilesPanel.tsx::fateOf`
+(the history the dialogs promise).
+
+### BUG-33 — Commit versions only what the Files panels show
+**Why:** The pipeline folder is versioned as a whole: a milestone sweeps in every new file
+under it that `.gitignore` does not ignore, leaving out only `__pycache__`, `.haute_build`
+and `*.pyc`. The Files panels refuse and hide every dot-name. So Commit records, and
+publishes, files the analyst never saw in Haute: `rating/.env.local` (the gitignore guard
+covers `.env` alone), `.ipynb_checkpoints/`, `.DS_Store`, an editor's lock file. Found by a
+probe in the [Workbench review](workbench-review-2026-10-15.md) (FB-44).
+
+**Plan:** One rule for which names the project versions through Haute (no dot-name part,
+no `__pycache__`). The Files panels' path check and listing, and the sweep, all use it. The
+git-integration specification says dot-names stay out of the sweep.
+
+**Acceptance:**
+- A milestone with those four files under the pipeline folder records none of them.
+- The panels and the sweep agree on one shared test table of names.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_git_transactions.py::_pipeline_folder_new_files` (the sweep's
+filter); `src/haute/routes/project_files.py::_target` and
+`src/haute/routes/project_files.py::_hidden` (the panels' rule);
+`src/haute/_gitignore_guard.py`.
+
+### BUG-34 — A skipped capture is retried for what it skipped
+**Why:**
+- A write whose ledger capture is skipped for want of a git identity raises the identity
+  prompt, and the prompt's retry saves the project: the pipeline and the form.
+  - A file added or replaced through Pipeline files is never captured by that retry. On a
+    hosted app restored without an identity, the file stays new until a milestone, and a
+    restart before one loses it.
+  - Only test quotes have a capture retry of their own.
+- An upload cancelled after its last byte reached the server is published and captured,
+  but the panel drops the answer, and with it the warnings and the identity prompt.
+- A server stopped mid-upload leaves its staging file in `.haute/uploads/` for good.
+
+Found by the [Workbench review](workbench-review-2026-10-15.md) (FB-45, FB-46, FB-49).
+
+**Plan:**
+- One capture route takes the project-relative paths each writer reports uncaptured: the
+  form, test quotes and files alike. The identity prompt calls it for all of them.
+- `reportSaveCapture` keeps what is uncaptured until a capture takes it.
+- Once an upload's body is sent, its abort does nothing, so the panel reports the answer.
+- Staging files older than the server's start are removed when staging begins.
+
+**Acceptance:**
+- Setting the identity after an uncaptured upload captures the file.
+- A cancel after the last byte reports the capture.
+- A stale staging file is gone after the next upload.
+
+Each has a test.
+
+**Dependencies:** None. `WB-22` folds the retry into the one project writer.
+
+**Evidence:** `frontend/src/stores/saveCapture.ts::reportSaveCapture` (nothing kept of what
+went uncaptured); `src/haute/routes/workbench.py::capture_test_quotes` (the one retry there
+is); `src/haute/routes/project_files.py::write_project_file`;
+`frontend/src/api/projectFiles.ts::uploadProjectFile`;
+`src/haute/routes/project_files.py::_staging_path`.
+
+### BUG-35 — The Files panel acts on the folder it shows
+**Why:** Moving to another folder updates the breadcrumb at once but keeps the previous
+folder's rows, with their actions, until the next listing arrives.
+- A delete then removes the row's own file while the breadcrumb names the new folder, and
+  the dialog names only the file.
+- An upload in that window checks for clashes against the old folder's listing, and sends
+  another file's revision.
+- In `data/` a delete is not versioned.
+
+Found by the [Workbench review](workbench-review-2026-10-15.md) (CX-15).
+
+**Plan:**
+- Rows and their actions show only while the listing answers the folder shown
+  (`listing.path`).
+- An upload's clash check uses a listing of its own folder.
+- The delete and replace dialogs name the folder.
+
+**Acceptance:** While a folder loads, no row of another folder can be deleted or replaced. A
+test drives a slow listing.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/panels/FilesPanel.tsx::FilesPanel` (the listing kept across a
+path change).
+
+### BUG-36 — The generated CI triggers name the project's folders
+**Why:** The deploy workflows `haute init` generates run on pushes to `rating/`, `data/`,
+`models/` and `tests/quotes/`.
+- `data/` at the root is ignored, so a push never changes it.
+- Models now live under the pipeline folder's `files/models/`, so a root `models/` exists
+  only for a pipeline at the root, and that pipeline's folder is not `rating` either.
+
+Two of the four folder triggers are dead for every project `haute init` makes, and the
+pipeline-config specification documents them as live. Found by the
+[Workbench review](workbench-review-2026-10-15.md) (FB-48).
+
+**Plan:** Derive the triggers from the project layout (the pipeline folder, `tests/quotes`,
+and the form's folder for a workbench project), and update the specification's sentence.
+
+**Acceptance:** The generated GitHub and Azure DevOps triggers list only folders a
+scaffolded project has, and the scaffold tests pin them.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_scaffold.py::_release_input_dirs`;
+`src/haute/_project_layout.py`; `src/haute/_gitignore_guard.py`.

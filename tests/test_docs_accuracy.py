@@ -171,6 +171,7 @@ _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
     "codebase-review-2026-09-23.md",
     "delivery-plan.md",
     "t-boost-improvements.md",
+    "workbench-review-2026-10-15.md",
 )
 _COMPONENT_PACKAGE_HEADING = re.compile(
     r"^###\s+([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\b",
