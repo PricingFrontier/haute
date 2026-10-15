@@ -102,7 +102,10 @@ sample you type in Preview, and a quote made from another quote, keep their own 
 quote holding nothing but its defaults is not priced, marked or saved until something is
 typed, and a value typed equal to its default counts as the default.
 
-- Enter in a column's name adds the next column; Alt+Up and Alt+Down move one.
+- Enter in a column's name adds the next column.
+- Drag a column by the grip at its left, or press Alt+Up and Alt+Down in its name, to move
+  it within its table. Drag a table by the grip beside its name, or press Alt+Up and
+  Alt+Down in its name, to move the table. A grip shows while the pointer is over its row.
 - **Add index** on a many-row table adds a column first in the table, `row_number` until
   renamed, that numbers the rows from 1. It is an Integer and can be the table's key.
 - The editor says what would stop the schema being the pipeline's tables: a table's name is
@@ -121,8 +124,8 @@ typed, and a value typed equal to its default counts as the default.
 
 ### Quote details
 
-Every workbench has Haute's own table, `quote_details`, first in the Schema section: one
-row of a quote's details, which the underwriter app keeps with each saved quote and lists
+Every workbench has Haute's own table, `quote_details`, first in the Schema section, where
+it stays: one row of a quote's details, which the underwriter app keeps with each saved quote and lists
 on its Quotes page. Its columns are fixed: **reference**, **quote_name**, **insured**,
 **broker**, **inception_date**, **expiry_date**, **valid_until**, **currency**, **stage**,
 **assignee**, **archived** and **is_renewal**. Put them on the sheets as any other columns, and give them

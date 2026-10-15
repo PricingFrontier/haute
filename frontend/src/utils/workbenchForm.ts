@@ -177,6 +177,22 @@ export const updateSchemaTable = (spec: FormSpec, id: string, patch: Partial<Sch
   })
 
 /**
+ * Move the table at `from` in the schema to `to`; Haute's quote_details table, first, stays
+ * first: it is not moved, and nothing is moved above it. A move to where it is changes nothing.
+ */
+export function moveSchemaTable(spec: FormSpec, from: number, to: number): FormSpec {
+  const { tables } = spec.schema
+  if (tables[from] === undefined || tables[to] === undefined) {
+    throw new Error(`Cannot move the table at ${from} to ${to}: the schema has ${tables.length} tables`)
+  }
+  if (from === to || isQuoteDetails(tables[from]) || (to === 0 && isQuoteDetails(tables[0]))) return spec
+  return edit(spec, (draft) => {
+    const [table] = draft.schema.tables.splice(from, 1)
+    draft.schema.tables.splice(to, 0, table)
+  })
+}
+
+/**
  * Take the schema columns `drop` matches out of a widget that shows them, a Collection's
  * spacers keeping their places among the fields left, numbering again the rows of a Chart
  * that one of them labelled.

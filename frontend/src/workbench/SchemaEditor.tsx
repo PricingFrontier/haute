@@ -1,18 +1,20 @@
 /**
  * The workbench's schema editor (specs/workbench): the form's tables of named, typed
  * columns, which are the pipeline's tables. Every text field commits on blur or Enter, so
- * an edit is one undo step; Enter in a column's name adds the next column, and Alt+Up and
- * Alt+Down move a column, as the step editor's cards move. Removing what a sheet shows
- * asks first. Haute's quote_details table, first, keeps its structure: its columns' labels,
- * groups and help, and the rules and defaults of those the underwriter types, are the
- * project's.
+ * an edit is one undo step; Enter in a column's name adds the next column. A table or a
+ * column is dragged by its grip, or moved by Alt+Up and Alt+Down in its name, as the step
+ * editor's cards move. Removing what a sheet shows asks first. Haute's quote_details table,
+ * first, keeps its structure and its place: its columns' labels, groups and help, and the
+ * rules and defaults of those the underwriter types, are the project's.
  */
 import { useMemo, useState } from "react"
 import { QuietAction } from "../components/form"
 import useCollapsedSet from "../hooks/useCollapsedSet"
+import useListReorder from "../hooks/useListReorder"
+import useRefocusAfterMove from "../hooks/useRefocusAfterMove"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
-import { addSchemaTable, createSchemaTable, schemaProblems } from "../utils/workbenchForm"
+import { addSchemaTable, createSchemaTable, isQuoteDetails, moveSchemaTable, schemaProblems } from "../utils/workbenchForm"
 import { TableBlock } from "./schema/TableBlock"
 
 /** The Schema section: the form's tables of named, typed columns. */
@@ -27,6 +29,9 @@ export default function SchemaEditor() {
   const [details, setDetails] = useState<string | null>(null)
   // The tables shown collapsed.
   const { collapsed, toggle: toggleCollapsed } = useCollapsedSet()
+  const dragTable = useListReorder((from, to) => change((f) => moveSchemaTable(f, from, to)))
+  // A table moved by Alt+arrows: its name field takes the focus again in its new place.
+  const refocus = useRefocusAfterMove<HTMLInputElement>()
   if (form === null) throw new Error("The schema editor needs the form loaded")
   const problems = schemaProblems(form, reserved)
   const { tables } = form.schema
@@ -45,11 +50,14 @@ export default function SchemaEditor() {
             No tables yet. A table holds related columns, such as <code className="font-mono">policy_details</code>.
           </p>
         )}
-        {tables.map((table) => (
+        {tables.map((table, index) => (
           <TableBlock
             key={table.id}
             form={form}
             table={table}
+            index={index}
+            refocus={refocus}
+            drag={isQuoteDetails(table) ? undefined : dragTable(index)}
             added={added}
             setAdded={setAdded}
             details={details}

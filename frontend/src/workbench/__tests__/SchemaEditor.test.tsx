@@ -119,6 +119,19 @@ const current = () => {
 const tableNamed = (name: string) => screen.getByRole("region", { name: `Table ${name}` })
 const columnNames = (name: string) =>
   within(tableNamed(name)).queryAllByRole("textbox", { name: "Column name" }).map((input) => (input as HTMLInputElement).value)
+const tableNames = () => screen.getAllByRole("textbox", { name: "Table name" }).map((input) => (input as HTMLInputElement).value)
+const tableNameField = (name: string) => within(tableNamed(name)).getByRole("textbox", { name: "Table name" })
+/** The grip a table, its header's, or a column is dragged by, or null while it cannot move. */
+const tableGrip = (name: string) => within(tableNamed(name)).queryAllByTitle("Drag to move")[0] ?? null
+const columnGrip = (id: string) => within(screen.getByTestId(`schema-column-${id}`)).queryByTitle("Drag to move")
+
+/** Drag `grip` onto `target` and let go. */
+function dragOnto(grip: HTMLElement, target: HTMLElement): void {
+  fireEvent.dragStart(grip)
+  fireEvent.dragOver(target)
+  fireEvent.drop(target)
+  fireEvent.dragEnd(grip)
+}
 
 /** Type into a committed field and commit with blur. */
 function commit(input: HTMLElement, value: string): void {
@@ -251,6 +264,56 @@ describe("SchemaEditor", () => {
     expect(columnNames("policy_details")).toEqual(["state", "exposure", "column"])
     // The name field keeps the focus in its new place.
     expect(within(tableNamed("policy_details")).getAllByRole("textbox", { name: "Column name" })[2]).toBe(document.activeElement)
+  })
+
+  it("moves a table with Alt+Up and Alt+Down in its name, keeping the focus, quote_details staying first", () => {
+    load(form(detailsTable(), POLICY, LAYERS))
+    render(<SchemaEditor />)
+
+    fireEvent.keyDown(tableNameField("layers"), { key: "ArrowUp", altKey: true })
+    expect(tableNames()).toEqual(["quote_details", "layers", "policy_details"])
+    // The name field keeps the focus in its new place.
+    expect(tableNameField("layers")).toBe(document.activeElement)
+
+    // Nothing goes above quote_details, which does not move: neither is an edit.
+    fireEvent.keyDown(tableNameField("layers"), { key: "ArrowUp", altKey: true })
+    fireEvent.keyDown(tableNameField("quote_details"), { key: "ArrowDown", altKey: true })
+    expect(tableNames()).toEqual(["quote_details", "layers", "policy_details"])
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
+  })
+
+  it("drags a table or a column by its grip, never quote_details, a table's index or a column into another table", () => {
+    const indexed = table("t_layers", "layers", {
+      rows: "many",
+      columns: [
+        column("c_row", "row_number", { type: "int", index: true, key: true }),
+        column("c_layer", "layer", { type: "int" }),
+        column("c_limit", "limit", { type: "float" }),
+      ],
+    })
+    load(form(detailsTable(), POLICY, indexed))
+    render(<SchemaEditor />)
+
+    dragOnto(tableGrip("layers")!, tableNamed("policy_details"))
+    expect(tableNames()).toEqual(["quote_details", "layers", "policy_details"])
+    // quote_details has no grip, and nothing dropped on it moves.
+    expect(tableGrip("quote_details")).toBeNull()
+    dragOnto(tableGrip("policy_details")!, tableNamed("quote_details"))
+    expect(tableNames()).toEqual(["quote_details", "layers", "policy_details"])
+
+    dragOnto(columnGrip("c_limit")!, screen.getByTestId("schema-column-c_layer"))
+    expect(columnNames("layers")).toEqual(["row_number", "limit", "layer"])
+    // The index has no grip, and nothing dropped on it moves above it.
+    expect(columnGrip("c_row")).toBeNull()
+    dragOnto(columnGrip("c_layer")!, screen.getByTestId("schema-column-c_row"))
+    expect(columnNames("layers")).toEqual(["row_number", "limit", "layer"])
+    // A column dropped on another table's column stays in its own table.
+    dragOnto(columnGrip("c_exposure")!, screen.getByTestId("schema-column-c_layer"))
+    expect(columnNames("policy_details")).toEqual(["state", "exposure"])
+    expect(columnNames("layers")).toEqual(["row_number", "limit", "layer"])
+    // quote_details' columns have no grips.
+    expect(columnGrip("qd_reference")).toBeNull()
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
   })
 
   it("says why the params files could not be listed, and lists them again on Retry", async () => {

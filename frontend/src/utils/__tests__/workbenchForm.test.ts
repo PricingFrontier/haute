@@ -39,6 +39,7 @@ import {
   moveInOrder,
   movePage,
   moveSchemaColumn,
+  moveSchemaTable,
   moveSection,
   moveWidget,
   orderItems,
@@ -378,6 +379,23 @@ describe("columns", () => {
     expect(moveSchemaColumn(spec, "t", "b", 0)).toBe(spec)
     spec = moveSchemaColumn(spec, "t", "b", 1)
     expect(names()).toEqual(["row_number", "b", "x", "c", "a"])
+  })
+
+  it("moves a table, Haute's quote_details table staying first", () => {
+    let spec = addSchemaTable(addSchemaTable(addSchemaTable(blank(), table("a", "a")), table("b", "b")), table("c", "c"))
+    const names = () => spec.schema.tables.map((t) => t.name)
+
+    spec = moveSchemaTable(spec, 0, 2)
+    expect(names()).toEqual(["b", "c", "a"])
+    expect(moveSchemaTable(spec, 1, 1)).toBe(spec)
+    expect(() => moveSchemaTable(spec, 0, 3)).toThrow("the schema has 3 tables")
+
+    // quote_details stays first: it is not moved, and nothing is moved above it.
+    spec = { ...spec, schema: { tables: [table("quote_details", "quote_details"), ...spec.schema.tables] } }
+    expect(moveSchemaTable(spec, 0, 2)).toBe(spec)
+    expect(moveSchemaTable(spec, 3, 0)).toBe(spec)
+    spec = moveSchemaTable(spec, 3, 1)
+    expect(names()).toEqual(["quote_details", "a", "b", "c"])
   })
 
   it("gives a table an index column, an Integer named row_number, that can be its key", () => {

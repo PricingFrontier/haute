@@ -311,10 +311,11 @@ Out of scope:
   when it becomes or stops being True/false, or becomes a Date while it is not a day.
   Every text field
   commits on blur or Enter, so an edit is one undo step; Enter in a column's name adds the
-  next column, Alt+Up and Alt+Down move one, and a new table's or column's name takes the
-  focus. A many-row table can have an index: a column first in the table, `row_number`
+  next column, a column is dragged by its grip within its table, or moved by Alt+Up and
+  Alt+Down in its name, a table likewise by the grip beside its name or Alt+Up and
+  Alt+Down in it, and a new table's or column's name takes the focus. A many-row table can have an index: a column first in the table, `row_number`
   until renamed, an Integer whose type cannot change, numbering the rows from 1, which
-  Alt+Up and Alt+Down neither move nor pass; switching a table to one row clears its keys
+  neither a drag nor Alt+Up and Alt+Down moves or passes; switching a table to one row clears its keys
   and drops its index, with what shows it, and switching it to many rows clears its
   columns' defaults. Removing a column or a table a sheet shows, or a
   sheet's, a section's or a component's condition tests, asks first, and takes it off the
@@ -328,8 +329,8 @@ Out of scope:
   Date columns can have none, and a default must be a value its column
   takes: a tick for True/false, else text of its type, within its range and one of its
   allowed values. Haute's `quote_details` table, first, keeps
-  its structure: its name, role and rows and its columns' names and types are fixed, and
-  it is neither deleted nor given a column; its columns take labels, groups and help, and
+  its structure and its place: its name, role and rows and its columns' names, types and
+  order are fixed, it is neither deleted nor given a column, and no table moves above it; its columns take labels, groups and help, and
   those the underwriter types their defaults, placeholders and rules, while `reference`,
   `stage`, `assignee` and `archived`, which the app sets, take a label, a group and help
   alone.
