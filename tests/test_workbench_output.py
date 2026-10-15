@@ -297,6 +297,110 @@ def test_the_editor_previews_a_table_at_a_time(project: Path) -> None:
     assert previewed.preview == _RESPONSE[0]["item_prices"]
 
 
+def _three_tables() -> PipelineGraph:
+    """`_priced` with a third table, a summary of the policy's state and premium."""
+    tables = [*_RESPONSE_TABLES, _table("summary", ("state", "str"), ("premium", "float"))]
+    graph = _priced(tables)
+    summary = "df = policy.select('state', premium=pl.col('limit') / 10)"
+    graph.nodes.append(_node("summarised", NodeType.POLARS, {"code": summary}))
+    graph.edges.append(_edge("request", "summarised", frame="policy"))
+    graph.edges.append(_edge("summarised", "response", table="summary"))
+    return graph
+
+
+def test_the_editor_previews_every_table_in_one_run(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Preview prices the sample in one run of the pipeline, however many tables the
+    Workbench Output fills: each table's answer is what a preview of it alone gives."""
+    import haute.executor as executor
+
+    saved = parse_pipeline_file(_write(_three_tables(), project, "main"))
+    runs: list[str | None] = []
+    eager_execute = executor._eager_execute
+
+    def counted(graph: PipelineGraph, target: str | None, *args: Any, **kwargs: Any) -> Any:
+        runs.append(target)
+        return eager_execute(graph, target, *args, **kwargs)
+
+    monkeypatch.setattr(executor, "_eager_execute", counted)
+    labels = ["pricing", "item_prices", "summary"]
+
+    results = execute_graph(
+        saved,
+        target_node_id="response",
+        port_labels=labels,
+        shared_snapshots=True,
+        staging_token=new_staging_token(),
+    )
+
+    previewed = results["response"]
+    assert previewed.status == "ok", previewed.error
+    assert runs == ["response"]
+    assert list(previewed.port_previews) == labels
+    assert previewed.port_previews["item_prices"].preview == _RESPONSE[0]["item_prices"]
+    assert previewed.port_previews["summary"].preview == [{"state": "NY", "premium": 100.0}]
+    for label in labels:
+        alone = execute_graph(
+            saved,
+            target_node_id="response",
+            port_label=label,
+            shared_snapshots=True,
+            staging_token=new_staging_token(),
+        )["response"]
+        each = previewed.port_previews[label]
+        assert (each.preview, each.row_count, each.preview_truncated) == (
+            alone.preview,
+            alone.row_count,
+            alone.preview_truncated,
+        )
+        assert [column.name for column in each.columns] == [column.name for column in alone.columns]
+
+
+def test_a_preview_of_a_table_the_workbench_output_does_not_fill_says_so(project: Path) -> None:
+    saved = parse_pipeline_file(_write(_priced(), project, "main"))
+
+    previewed = execute_graph(
+        saved,
+        target_node_id="response",
+        port_labels=["pricing", "missing"],
+        shared_snapshots=True,
+        staging_token=new_staging_token(),
+    )["response"]
+
+    assert previewed.status == "error"
+    assert previewed.error == "response has no table 'missing' to preview."
+
+
+def test_the_preview_route_answers_every_table_asked_for_from_one_request(
+    project: Path,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from haute.server import app
+
+    saved = parse_pipeline_file(_write(_three_tables(), project, "main"))
+    client = TestClient(app)
+    body = {"graph": saved.model_dump(), "node_id": "response", "row_limit": 100}
+
+    answer = client.post(
+        "/api/pipeline/preview", json={**body, "port_labels": ["pricing", "summary"]}
+    )
+
+    assert answer.status_code == 200, answer.text
+    previews = answer.json()["port_previews"]
+    assert list(previews) == ["pricing", "summary"]
+    assert previews["summary"]["preview"] == [{"state": "NY", "premium": 100.0}]
+    assert previews["summary"]["row_count"] == 1
+    assert previews["summary"]["preview_truncated"] is False
+    # One frame, or several: never both.
+    both = client.post(
+        "/api/pipeline/preview",
+        json={**body, "port_label": "pricing", "port_labels": ["pricing"]},
+    )
+    assert both.status_code == 422
+
+
 def test_a_workbench_outputs_cell_is_traced_from_the_node_filling_its_table(project: Path) -> None:
     # The table holds that node's rows: the same row, as the clicked values confirm.
     traced = execute_trace(

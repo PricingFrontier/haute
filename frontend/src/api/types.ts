@@ -324,6 +324,17 @@ export interface ExecutionMetrics {
   data_output_write_native_reason?: string | null
 }
 
+/**
+ * One frame's preview of a multi-frame target asked for several (`port_labels`): what a
+ * preview of that frame alone answers.
+ */
+export interface PortPreview {
+  row_count: number
+  columns: ColumnInfo[]
+  preview: Record<string, unknown>[]
+  preview_truncated: boolean
+}
+
 export interface NodeResult {
   status: BackendNodeStatus
   row_count?: number
@@ -339,6 +350,8 @@ export interface NodeResult {
   preview_row_count?: number
   preview_row_limit?: number | null
   preview_truncated?: boolean
+  /** Each frame asked for (`port_labels`) of a multi-frame target, by label, from one run. */
+  port_previews?: Record<string, PortPreview>
   error?: string | null
   error_line?: number | null
   timing_ms?: number

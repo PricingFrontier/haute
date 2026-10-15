@@ -784,6 +784,9 @@ export interface PreviewNodeArgs {
    * multi-table apiInput). Sent as `port_label`; part of the backend preview
    * cache key, so each frame is a distinct cache entry. */
   portLabel?: string
+  /** Several frames of a multi-frame producer, each previewed from one run into the
+   * answer's `port_previews`. Sent as `port_labels`; not with `portLabel`. */
+  portLabels?: string[]
   /** Chosen by the caller so it can poll this request's step progress. */
   requestId?: string
   signal?: AbortSignal
@@ -798,6 +801,7 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
     source,
     requestedPreviewColumns,
     portLabel,
+    portLabels,
     requestId,
     signal,
     timeout = null,
@@ -811,6 +815,7 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
       source: source ?? "live",
       ...(requestedPreviewColumns ? { requested_preview_columns: requestedPreviewColumns } : {}),
       ...(portLabel !== undefined ? { port_label: portLabel } : {}),
+      ...(portLabels !== undefined ? { port_labels: portLabels } : {}),
       ...(requestId !== undefined ? { request_id: requestId } : {}),
     },
     { signal, timeout },

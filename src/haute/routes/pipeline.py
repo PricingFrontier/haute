@@ -648,6 +648,7 @@ def _preview_supersession_key(
     row_limit: int,
     requested_preview_columns: list[str] | None,
     port_label: str | None,
+    port_labels: list[str] | None = None,
     *,
     memo: GraphFingerprintMemo | None = None,
 ) -> tuple[str, ...]:
@@ -661,9 +662,11 @@ def _preview_supersession_key(
         "requested_preview_columns",
         *requested_columns,
         # A different frame selection is a distinct request, not a newer
-        # version of the same one.
+        # version of the same one: several frames, in their order, too.
         "port_label",
         repr(port_label),
+        "port_labels",
+        repr(None if port_labels is None else tuple(port_labels)),
     )
 
 
@@ -1288,6 +1291,10 @@ def _preview_response_from_results(
         preview_row_count=node_result.preview_row_count,
         preview_row_limit=node_result.preview_row_limit,
         preview_truncated=node_result.preview_truncated,
+        port_previews={
+            label: port.model_copy(update={"preview": rows_to_json_safe(port.preview)})
+            for label, port in node_result.port_previews.items()
+        },
         error=node_result.error,
         error_line=node_result.error_line,
         timing_ms=node_result.timing_ms,
@@ -1359,6 +1366,7 @@ def _execute_preview_worker(
                 requested_preview_columns=body.requested_preview_columns,
                 include_schema_metadata=True,
                 port_label=body.port_label,
+                port_labels=body.port_labels,
                 execution_context=context,
                 shared_snapshots=True,
                 staging_token=staging_token,
@@ -1669,6 +1677,7 @@ async def _preview_canonical_graph(
                     requested_preview_columns=body.requested_preview_columns,
                     include_schema_metadata=True,
                     port_label=body.port_label,
+                    port_labels=body.port_labels,
                     execution_context=preview_context,
                     shared_snapshots=True,
                 )
@@ -1690,6 +1699,7 @@ async def _preview_canonical_graph(
                     body.row_limit,
                     body.requested_preview_columns,
                     body.port_label,
+                    body.port_labels,
                     memo=fingerprint_memo,
                 ),
                 _run_preview,

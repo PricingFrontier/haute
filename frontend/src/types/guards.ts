@@ -82,6 +82,7 @@ import type {
   NodeDataRunResponse,
   NodeDataStatusResponse,
   OptimiserStatusResponse,
+  PortPreview,
   PreviewInputsResponse,
   PreviewNodeResponse,
   PreviewProgressResponse,
@@ -1383,6 +1384,27 @@ export function parseDissolveSubmodelResponse(value: unknown): DissolveSubmodelR
   }
 }
 
+/** Parse `port_previews`: each frame's preview, by its label. */
+function optionalPortPreviews(parser: string, obj: Record<string, unknown>, key: string): Record<string, PortPreview> {
+  const value = obj[key]
+  if (value === undefined) return {}
+  const record = expectPlainObject(parser, value, `field \`${key}\``)
+  return Object.fromEntries(
+    Object.entries(record).map(([label, port]) => {
+      const item = expectPlainObject(parser, port, `field \`${key}.${label}\``)
+      return [
+        label,
+        {
+          row_count: optionalNumber(parser, item, "row_count"),
+          columns: optionalArray(parser, item, "columns", parseColumnInfo),
+          preview: optionalPlainObjectArray(parser, item, "preview"),
+          preview_truncated: optionalBoolean(parser, item, "preview_truncated"),
+        },
+      ]
+    }),
+  )
+}
+
 export function parsePreviewNodeResponse(value: unknown): PreviewNodeResponse {
   const obj = expectPlainObject("parsePreviewNodeResponse", value)
   return {
@@ -1408,6 +1430,7 @@ export function parsePreviewNodeResponse(value: unknown): PreviewNodeResponse {
     preview_row_count: optionalNumber("parsePreviewNodeResponse", obj, "preview_row_count"),
     preview_row_limit: optionalNullableNumber("parsePreviewNodeResponse", obj, "preview_row_limit"),
     preview_truncated: optionalBoolean("parsePreviewNodeResponse", obj, "preview_truncated"),
+    port_previews: optionalPortPreviews("parsePreviewNodeResponse", obj, "port_previews"),
     error: optionalNullableString("parsePreviewNodeResponse", obj, "error"),
     error_line: optionalNullableNumber("parsePreviewNodeResponse", obj, "error_line"),
     timing_ms: optionalNumber("parsePreviewNodeResponse", obj, "timing_ms"),

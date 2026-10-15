@@ -1602,6 +1602,17 @@ class SchemaWarning(BaseModel):
     status: str
 
 
+class PortPreview(BaseModel):
+    """One frame's preview of a multi-frame target asked for several (``port_labels``):
+    what a preview of that frame alone (``port_label``) answers in its ``row_count``,
+    ``columns``, ``preview`` and ``preview_truncated``."""
+
+    row_count: int = 0
+    columns: list[ColumnInfo] = Field(default_factory=list)
+    preview: list[dict[str, Any]] = Field(default_factory=list)
+    preview_truncated: bool = False
+
+
 class NodeResult(BaseModel):
     status: NodeExecutionStatus
     row_count: int = 0
@@ -1620,6 +1631,9 @@ class NodeResult(BaseModel):
     preview_row_count: int = 0
     preview_row_limit: int | None = None
     preview_truncated: bool = False
+    # Each frame asked for (``port_labels``) of a multi-frame target, by label, all from
+    # one run; empty otherwise.
+    port_previews: dict[str, PortPreview] = Field(default_factory=dict)
     error: str | None = None
     error_line: int | None = None
     timing_ms: float = 0
@@ -1717,9 +1731,20 @@ class PreviewNodeRequest(BaseModel):
     # Frame label selected for a multi-frame target. Single-frame targets
     # ignore it. It is part of the preview cache identity.
     port_label: str | None = None
+    # Several frames of a multi-frame target, each previewed from one run into
+    # ``port_previews`` (the workbench's Preview, a Workbench Output's tables). Not with
+    # ``port_label``. Part of the supersession identity, not the cache's: every frame of
+    # the target is computed and kept whichever are previewed.
+    port_labels: list[str] | None = Field(default=None, min_length=1)
     # Chosen by the client so it can poll this request's step progress. Not part
     # of any cache or supersession identity.
     request_id: str | None = Field(default=None, pattern=PREVIEW_REQUEST_ID_PATTERN)
+
+    @model_validator(mode="after")
+    def _one_frame_or_several(self) -> PreviewNodeRequest:
+        if self.port_label is not None and self.port_labels is not None:
+            raise ValueError("Give port_label for one frame or port_labels for several, not both.")
+        return self
 
 
 class PreviewProgressResponse(BaseModel):

@@ -14,11 +14,11 @@ the app saves quotes to on the server; how underwriters manage their quotes in t
 exports from the app; the test quotes analysts keep and re-price in Preview; and the actions
 that fill the sheets from databases and APIs.
 
-`WB-23` to `WB-26` take on what is left of the [review of 15 October
+`WB-25` and `WB-26` take on what is left of the [review of 15 October
 2026](workbench-review-2026-10-15.md) of what pull requests #303 to #309 built. Each names
 the review's findings it closes (`CX-n`, `FB-n`, `TQ-n`, `SD-n`, `MS-n`), and the review
-holds their evidence. `WB-23` prices Preview in one run of the pipeline; `WB-25` waits on
-the app's sign-in, and `WB-26` on a decision about Tables of output columns alone.
+holds their evidence. `WB-25` waits on the app's sign-in, and `WB-26` on a decision about
+Tables of output columns alone.
 
 ## Priorities
 
@@ -31,7 +31,6 @@ the app's sign-in, and `WB-26` on a decision about Tables of output columns alon
 | WB-11 | Decision | P2 | An underwriter exports a saved quote from the app in the formats the project needs, naming the release that priced it. |
 | WB-12 | Planned | P3 | A test quote whose response runs past what Preview shows is saved, run and compared in full, as every other test quote is. |
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, sees which quotes are about to lapse, records how a final quote ended, and archives or reassigns many quotes at once. |
-| WB-23 | Planned | P3 | Preview prices every table of the Workbench Output from one run of the pipeline, as the app prices a quote in one scoring call. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-26 | Decision | P3 | A Table of output columns alone shows the answer's rows, or says why it has none. |
 
@@ -372,34 +371,6 @@ refused by name and the rest changed.
 lists, without outcomes or validity); `src/haute/deploy/_validators.py::response_changes` (a
 comparison by place, not by key); `frontend/src/app/QuotesPage.tsx::QuotesPage` (one quote
 changed at a time).
-
-### WB-23 — One preview for a Workbench Output's tables
-**Why:** Preview prices the sample by previewing the Workbench Output once per output table
-(review CX-13), and each preview runs the pipeline again: the preview route keys a preview
-by its port, and the executor, which computes every table of the Workbench Output in one
-run, answers one port's preview. Measured on 15 October 2026 on the Workbench Output of
-`tests/test_workbench_output.py` (two tables), each table's preview cost a full run, about
-30 ms warm and 120 ms cold, the second no cheaper than the first. A pipeline that takes
-seconds is priced in that time for every table, on every pause in typing, where the app
-prices a quote in one scoring call.
-
-**Plan:**
-- The preview route takes several ports of a multi-frame target and answers each one's
-  preview from one run; the executor builds each port's preview from the frame bundle it
-  already computes.
-- `priceSample` asks for every table of the Workbench Output in one request.
-
-**Acceptance:**
-- Preview prices a form with three output tables in one run of the pipeline, its answers
-  equal to those of a preview per table.
-
-Each has a test.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/workbench/priceSample.ts::priceSample` (a preview per table);
-`src/haute/routes/pipeline.py::_preview_supersession_key` (a preview keyed by its port);
-`src/haute/executor.py::execute_graph` (one port's preview from the bundle).
 
 ### WB-25 — The app's sign-in
 **Why:** The app trusts the Easy Auth headers because `release.json` names the host, so a

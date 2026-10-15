@@ -2211,6 +2211,29 @@ class TestSelfWriteTracking:
 # ---------------------------------------------------------------------------
 
 
+def test_a_preview_of_several_frames_is_its_own_request_for_supersession() -> None:
+    """A preview of several frames supersedes only an earlier one of the same frames."""
+    from haute.routes.pipeline import _preview_supersession_key
+    from haute._types import PipelineGraph
+
+    graph = PipelineGraph(nodes=[], edges=[])
+
+    def key(port_label: str | None, port_labels: list[str] | None) -> tuple[str, ...]:
+        return _preview_supersession_key(
+            graph, "live", "response", 100, None, port_label, port_labels
+        )
+
+    keys = {
+        key(None, None),
+        key("pricing", None),
+        key(None, ["pricing"]),
+        key(None, ["pricing", "summary"]),
+        key(None, ["summary", "pricing"]),
+    }
+    assert len(keys) == 5
+    assert key(None, ["pricing", "summary"]) == key(None, ["pricing", "summary"])
+
+
 class TestFileWatcher:
     def test_py_change_triggers_broadcast(
         self,

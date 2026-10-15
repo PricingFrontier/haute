@@ -1,6 +1,7 @@
 /**
  * A sample priced on the pipeline open in the editor (specs/workbench): the Workbench
- * Output's tables as its preview shows them. The document's top-level workbench nodes run
+ * Output's tables as its preview shows them, every table from one run of the pipeline, in
+ * one preview asking for them all. The document's top-level workbench nodes run
  * with the tables and sample the form gives, in this request alone, as a fetch gives them
  * copies; a Workbench Input inside a submodel keeps its copy, and the document itself is
  * left alone. A pipeline without a top-level Workbench Input, which alone is given the
@@ -46,23 +47,24 @@ export async function priceSample(
   }
   const priced = { ...graph, nodes }
   const labels = workbenchTablePorts(output.data.config as Record<string, unknown> | undefined)
-  const tables = await Promise.all(
-    labels.map(async (label) => {
-      const result = await previewNode({ graph: priced, nodeId: output.id, rowLimit: ROW_LIMIT, source, portLabel: label })
-        // The server's reason, such as a sample that does not fit, rather than its status.
-        .catch((error: unknown) => {
-          throw new Error(apiErrorMessage(error))
-        })
-      if (result.status !== "ok") {
-        throw new Error(result.error || `The Workbench Output's '${label}' table could not be previewed.`)
-      }
-      if (complete && result.preview_truncated) {
-        throw new Error(
-          `The '${label}' table has ${result.row_count ?? "more"} rows, more than Preview returns: a test quote keeps the whole response.`,
-        )
-      }
-      return [label, result.preview ?? []] as const
-    }),
-  )
+  if (labels.length === 0) return { tables: {} }
+  const result = await previewNode({ graph: priced, nodeId: output.id, rowLimit: ROW_LIMIT, source, portLabels: labels })
+    // The server's reason, such as a sample that does not fit, rather than its status.
+    .catch((error: unknown) => {
+      throw new Error(apiErrorMessage(error))
+    })
+  if (result.status !== "ok") {
+    throw new Error(result.error || "The Workbench Output's tables could not be previewed.")
+  }
+  const tables = labels.map((label) => {
+    const table = result.port_previews?.[label]
+    if (table === undefined) throw new Error(`The Workbench Output's '${label}' table was not previewed.`)
+    if (complete && table.preview_truncated) {
+      throw new Error(
+        `The '${label}' table has ${table.row_count} rows, more than Preview returns: a test quote keeps the whole response.`,
+      )
+    }
+    return [label, table.preview] as const
+  })
   return { tables: Object.fromEntries(tables) }
 }
