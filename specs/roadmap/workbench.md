@@ -18,8 +18,8 @@ that fill the sheets from databases and APIs.
 2026](workbench-review-2026-10-15.md) of what pull requests #303 to #309 built. Each names
 the review's findings it closes (`CX-n`, `FB-n`, `TQ-n`, `SD-n`, `MS-n`), and the review
 holds their evidence. `WB-23` prices Preview in one run of the pipeline; and `WB-24`,
-`WB-25` and `WB-26` wait on decisions about the form's file, the app's sign-in and
-renewals, and building the sheets without a pointer.
+`WB-25` and `WB-26` wait on decisions about the form's file, the app's sign-in, and
+building the sheets without a pointer.
 
 ## Priorities
 
@@ -34,7 +34,7 @@ renewals, and building the sheets without a pointer.
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, sees which quotes are about to lapse, records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-23 | Planned | P3 | Preview prices every table of the Workbench Output from one run of the pipeline, as the app prices a quote in one scoring call. |
 | WB-24 | Decision | P3 | The editor learns of a change to the form's file on its own, and opens a merged form whose geometry is off so it can be repaired. |
-| WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind, and the server records a renewal's `is_renewal` itself. |
+| WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-26 | Decision | P3 | A component is added to a sheet and resized from the keyboard, and a Table of output columns alone shows its rows, or says why it has none. |
 
 ## Planned improvements
@@ -428,22 +428,20 @@ owner before a slice:
 only); `src/haute/_workbench_form.py::Section` and `src/haute/_workbench_form.py::Page`
 (geometry refused at read).
 
-### WB-25 — The app's sign-in and its renewals
-**Why:** Two choices the [review](workbench-review-2026-10-15.md) found for the owner before
-a slice:
-- The app trusts the Easy Auth headers because `release.json` names the host, so a
-  container reached without Easy Auth in front signs in whoever names themselves, with
-  edit rights when no edit role is set (FB-9).
-- The browser alone ticks `is_renewal` on a renewal; the server records the relation but
-  not the column (FB-10).
+### WB-25 — The app's sign-in
+**Why:** The app trusts the Easy Auth headers because `release.json` names the host, so a
+container reached without Easy Auth in front signs in whoever names themselves, with edit
+rights when no edit role is set (FB-9, from the
+[review](workbench-review-2026-10-15.md)). The owner takes it up with the Azure work in the
+next pull request. The review's FB-10 is decided as the app works now: the underwriter
+ticks `is_renewal` while quoting (Renew opens the quote with it ticked), and the server
+records the relation, not the column.
 
-**Plan:** Decisions first, recorded here before a slice:
-- FB-9: a startup check that the host's sign-in is in front, or an explicit trust setting
-  the operator sets, refusing the misconfiguration either way.
-- FB-10: whether the server ticks `is_renewal` on a quote created as a renewal, the
-  browser's tick then shown rather than sent.
+**Plan:** The decision first, recorded here before a slice: a startup check that the
+host's sign-in is in front, or an explicit trust setting the operator sets, refusing the
+misconfiguration either way.
 
-**Acceptance:** Set by each decision.
+**Acceptance:** Set by the decision.
 
 **Dependencies:** None.
 
