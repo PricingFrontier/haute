@@ -2213,8 +2213,8 @@ class TestSelfWriteTracking:
 
 def test_a_preview_of_several_frames_is_its_own_request_for_supersession() -> None:
     """A preview of several frames supersedes only an earlier one of the same frames."""
-    from haute.routes.pipeline import _preview_supersession_key
     from haute._types import PipelineGraph
+    from haute.routes.pipeline import _preview_supersession_key
 
     graph = PipelineGraph(nodes=[], edges=[])
 

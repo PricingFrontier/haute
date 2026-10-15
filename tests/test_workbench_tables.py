@@ -200,7 +200,13 @@ def test_tables_the_pipeline_cannot_take_are_refused_naming_the_problem(
 def test_a_forms_table_the_pipeline_cannot_take_is_refused_by_the_nodes_name() -> None:
     spec = form(
         {"id": "t1", "name": "class", "role": "input", "columns": [column("x")]},
-        {"id": "t2", "name": "priced", "role": "output", "columns": [column("x"), column("x")]},
+        # Two columns of one name, each with an id of its own, as the form's checks ask.
+        {
+            "id": "t2",
+            "name": "priced",
+            "role": "output",
+            "columns": [column("x"), {**column("x"), "id": "c_x_again"}],
+        },
     )
 
     with pytest.raises(WorkbenchTablesError, match="The Workbench Input's table 'class'"):
