@@ -1579,11 +1579,11 @@ def _execute_graph_core(
             port_previews: dict[str, PortPreview] = {}
             if nid == target_node_id and port_labels is not None:
                 bundle = df if is_frame_bundle else {}
-                missing = next((label for label in port_labels if label not in bundle), None)
-                if missing is not None:
+                unknown = next((label for label in port_labels if label not in bundle), None)
+                if unknown is not None:
                     results[nid] = NodeResult(
                         status="error",
-                        error=f"{node_map[nid].data.label} has no table '{missing}' to preview.",
+                        error=f"{node_map[nid].data.label} has no table '{unknown}' to preview.",
                         timing_ms=timings.get(nid, 0),
                         memory_bytes=memory_bytes.get(nid, 0),
                     )
