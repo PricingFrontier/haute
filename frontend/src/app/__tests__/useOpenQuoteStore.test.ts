@@ -277,6 +277,33 @@ describe("useOpenQuoteStore", () => {
     expect(store().quote?.latest).toBe(2)
   })
 
+  it("repeats a lost create an unanswered offer holds before saving what was typed instead of restoring it", async () => {
+    const first = { policy: [{ "policy.state": "CA" }] }
+    const typed = { policy: [{ "policy.state": "TX" }] }
+    vi.mocked(createAppQuote)
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValue(answer({ id: "q7", reference: "Q-000007" }, { values: first, tables: null }))
+    vi.mocked(saveAppQuote).mockResolvedValue(answer({ id: "q7", reference: "Q-000007", latest: 2 }, { number: 2, values: typed, tables: null }))
+    await store().openNew(null)
+    preview().setCell("policy", 0, "policy.state", "CA")
+    await store().save()
+    store().close()
+
+    // Reopened: the offer is left unanswered, and other values typed and saved.
+    await store().openNew(null)
+    expect(store().recovered?.pending).not.toBeNull()
+    preview().setCell("policy", 0, "policy.state", "TX")
+    await store().save()
+
+    const creates = vi.mocked(createAppQuote).mock.calls.map(([body]) => body)
+    expect(creates).toHaveLength(2)
+    expect(creates[1].operation).toBe(creates[0].operation)
+    expect(vi.mocked(saveAppQuote).mock.calls[0][0]).toBe("q7")
+    expect(vi.mocked(saveAppQuote).mock.calls[0][1].values).toEqual(typed)
+    expect(store().quote?.latest).toBe(2)
+    expect(store().recovered).toBeNull()
+  })
+
   it("keeps a draft offered back whole while the quote is left without restoring or discarding it", async () => {
     vi.mocked(createAppQuote).mockRejectedValueOnce(new TypeError("Failed to fetch"))
     await store().openNew(null)

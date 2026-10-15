@@ -248,7 +248,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
    */
   const writeFailed = (error: unknown): void => {
     failed(error)
-    if (refused(error)) set({ pending: null })
+    if (refused(error)) letGo()
     keepDraft()
   }
 
@@ -284,6 +284,19 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     set({ recovered: draft !== null && (valuesKey(draft.values) !== shown || draft.pending !== null) ? draft : null })
   }
 
+  /**
+   * The write held after a lost answer: the open quote's own, else the one a draft offered
+   * back and not yet answered holds, which a Save repeats first whether or not the draft's
+   * values were restored, so it is written once.
+   */
+  const heldWrite = (): PendingWrite | null => get().pending ?? get().recovered?.pending ?? null
+
+  /** The held write let go: never landed, it never will. The offer keeps its values. */
+  const letGo = (): void => {
+    const { recovered } = get()
+    set({ pending: null, recovered: recovered === null ? null : { ...recovered, pending: null } })
+  }
+
   const keepDraft = (): boolean => {
     const key = openDraftKey(get())
     // Only a quote open, and as it may change, has values of its own to keep.
@@ -297,7 +310,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       return true
     }
     // Typed over a draft offered back and not yet answered: the write it held is kept.
-    const pending = get().pending ?? get().recovered?.pending ?? null
+    const pending = heldWrite()
     const sheets = useWorkbenchFormStore.getState().form
     return writeDraft(key, {
       values,
@@ -326,7 +339,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     const price = preview.price
     const shown = price !== null && price.basis === basisOf(form, values) ? (price.tables as QuoteWrite["body"]["shown"]) : null
     const basis = `${valuesKey(values)}|${to}|${shown === null ? "draft" : "priced"}`
-    const pending = get().pending
+    const pending = heldWrite()
     const operation = pending !== null && pending.basis === basis ? pending.write.body.operation : operationKey()
     return { basis, write: write({ operation, form_revision: revision, release: release.id, values, shown }) }
   }
@@ -347,6 +360,8 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     const earlier = openDraftKey(get())
     const { form } = useAppStore.getState()
     if (form !== null) takeAppDetails(form, answer.revision.values as Values)
+    // An offer whose write this was keeps its values to restore, its write done.
+    const { recovered } = get()
     set({
       quote: answer.quote,
       revision: answer.revision,
@@ -356,6 +371,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       source: null,
       baseline: valuesKey(answer.revision.values as Values),
       pending: null,
+      recovered: recovered === null ? null : { ...recovered, pending: null },
       conflict: null,
       history: null,
     })
@@ -378,7 +394,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       await useWorkbenchPreviewStore.getState().settle()
       if (!loads.is(session)) return null
       let next = first()
-      const held = get().pending
+      const held = heldWrite()
       if (next !== null && held !== null && held.basis !== next.basis) {
         try {
           const repeated = await sendWrite(held.write)
@@ -389,7 +405,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
         } catch (error: unknown) {
           if (!loads.is(session) || !refused(error)) throw error
           // Refused, so it never landed and never will: let go, and the values saved as asked.
-          set({ pending: null })
+          letGo()
           next = first()
         }
       }
