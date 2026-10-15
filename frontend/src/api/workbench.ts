@@ -4,8 +4,9 @@
  * them now (GET /api/workbench/tables) or as an unsaved form would (POST
  * /api/workbench/tables), and the form itself with the file's revision
  * (GET /api/workbench/form), saved against that revision and captured on the save ledger
- * (PUT /api/workbench/form); and the test quotes an analyst keeps in Preview
- * (/api/workbench/test-quotes), each write captured on the ledger as the form's are.
+ * (PUT /api/workbench/form); a params file's header and a column's values, what allowed
+ * values are read from (GET /api/workbench/params); and the test quotes an analyst keeps in
+ * Preview (/api/workbench/test-quotes), each write captured on the ledger as the form's are.
  */
 
 import { expectGeneratedContract } from "../types/generatedContractValidation"
@@ -14,6 +15,7 @@ import type {
   FormSpec,
   WorkbenchFormResponse,
   WorkbenchFormSaveResponse,
+  WorkbenchParamFileResponse,
   WorkbenchStatusResponse,
   WorkbenchTablesResponse,
   WorkbenchTestQuoteCompareResponse,
@@ -84,6 +86,21 @@ export async function saveWorkbenchForm(form: FormSpec, baseRevision: string | n
   return expectGeneratedContract(
     "WorkbenchFormSaveResponse",
     (await workbenchValidators()).validateWorkbenchFormSaveResponse,
+    data,
+  )
+}
+
+/**
+ * A params file's header, with the distinct values of `column` when one is named: what a
+ * column's allowed values are read from. A file or column that cannot give them answers 409
+ * with why.
+ */
+export async function fetchParamFile(file: string, column?: string): Promise<WorkbenchParamFileResponse> {
+  const query = new URLSearchParams({ file, ...(column === undefined ? {} : { column }) })
+  const data = await request<unknown>(`/api/workbench/params?${query}`)
+  return expectGeneratedContract(
+    "WorkbenchParamFileResponse",
+    (await workbenchValidators()).validateWorkbenchParamFileResponse,
     data,
   )
 }

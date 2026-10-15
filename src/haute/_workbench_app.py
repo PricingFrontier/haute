@@ -240,13 +240,15 @@ def build_release(
 
     *release_dir* is replaced when it holds an earlier release and refused when it holds
     anything else. Raises :class:`WorkbenchAppError` for a project without a workbench, sheets
-    never saved, a directory that is not a release, or a pipeline that does not validate.
+    never saved, allowed values a params file can no longer give, a directory that is not a
+    release, or a pipeline that does not validate.
     """
     import shutil
 
     from haute._project import resolve_pipeline_file
     from haute._workbench_config import read_workbench_config
     from haute._workbench_form import read_form_document
+    from haute._workbench_params import ParamFileError, with_param_options
     from haute.deploy._config import (
         DeployConfig,
         _validate_base_image_pinning,
@@ -266,6 +268,12 @@ def build_release(
     document = read_form_document(config)
     if document.revision is None:
         raise WorkbenchAppError(f"{config.form} has never been saved: save the sheets first.")
+    # The allowed values a params file gives are what it holds at this commit, not the copy
+    # the form kept when they were picked.
+    try:
+        form = with_param_options(document.spec, project_dir)
+    except ParamFileError as exc:
+        raise WorkbenchAppError(f"{config.form}: {exc.message}") from exc
     if release_dir.exists() and any(release_dir.iterdir()):
         if not (release_dir / RELEASE_FILE).is_file():
             raise WorkbenchAppError(
@@ -312,7 +320,7 @@ def build_release(
             write_bundle(resolved, release_dir)
     finally:
         resolved.close()
-    return write_release(release_dir, document.spec, config.app_host, config.app_edit_role)
+    return write_release(release_dir, form, config.app_host, config.app_edit_role)
 
 
 def build_image(release_dir: Path, tag: str) -> None:

@@ -732,7 +732,7 @@
     },
     "CollectionWidget": {
       "additionalProperties": false,
-      "description": "A Collection: boxes showing columns of one-row schema tables, ``columns`` across.",
+      "description": "A Collection: boxes showing columns of one-row schema tables, ``columns`` across, with\na gap across it wherever one of its ``spacers`` sits among them.",
       "properties": {
         "columns": {
           "default": 3,
@@ -783,6 +783,14 @@
         "show_when": {
           "$ref": "#/$defs/ShowWhen"
         },
+        "spacers": {
+          "items": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "title": "Spacers",
+          "type": "array"
+        },
         "title": {
           "default": "",
           "title": "Title",
@@ -822,7 +830,8 @@
         "columns",
         "labels",
         "density",
-        "frame"
+        "frame",
+        "spacers"
       ],
       "title": "CollectionWidget",
       "type": "object"
@@ -11589,6 +11598,26 @@
       "title": "OptimiserStatusResponse",
       "type": "object"
     },
+    "OptionsSource": {
+      "additionalProperties": false,
+      "description": "A column of a CSV in the pipeline's ``files/params/`` folder: the file by its name in\nthat folder, and the column by its name in the file's header.",
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "column"
+      ],
+      "title": "OptionsSource",
+      "type": "object"
+    },
     "Page": {
       "additionalProperties": false,
       "description": "A sheet: ``width`` pixels wide, when it shows, and its sections, stacked one under\nthe next.",
@@ -12454,6 +12483,17 @@
           "title": "Options",
           "type": "array"
         },
+        "options_source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptionsSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "placeholder": {
           "default": "",
           "title": "Placeholder",
@@ -12462,6 +12502,11 @@
         "required": {
           "default": false,
           "title": "Required",
+          "type": "boolean"
+        },
+        "row_per_value": {
+          "default": false,
+          "title": "Row Per Value",
           "type": "boolean"
         },
         "type": {
@@ -12493,6 +12538,8 @@
         "min",
         "max",
         "options",
+        "options_source",
+        "row_per_value",
         "index",
         "help",
         "placeholder",
@@ -15842,6 +15889,31 @@
       "title": "WorkbenchFormSaveResponse",
       "type": "object"
     },
+    "WorkbenchParamFileResponse": {
+      "description": "A params file's header, and the distinct values of the column asked for: the allowed\nvalues a schema column copies in, ``[]`` while no column was asked for.",
+      "properties": {
+        "columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "values": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Values",
+          "type": "array"
+        }
+      },
+      "required": [
+        "columns",
+        "values"
+      ],
+      "title": "WorkbenchParamFileResponse",
+      "type": "object"
+    },
     "WorkbenchStatusResponse": {
       "description": "Whether the project's workbench is enabled (``[workbench]`` in ``haute.toml``).",
       "properties": {
@@ -16463,6 +16535,9 @@
     "WorkbenchFormSaveResponse": {
       "$ref": "#/$defs/WorkbenchFormSaveResponse"
     },
+    "WorkbenchParamFileResponse": {
+      "$ref": "#/$defs/WorkbenchParamFileResponse"
+    },
     "WorkbenchStatusResponse": {
       "$ref": "#/$defs/WorkbenchStatusResponse"
     },
@@ -16554,6 +16629,7 @@
     "WorkbenchTablesResponse",
     "WorkbenchFormResponse",
     "WorkbenchFormSaveResponse",
+    "WorkbenchParamFileResponse",
     "WorkbenchTestQuotesResponse",
     "WorkbenchTestQuotesBranchResponse",
     "WorkbenchTestQuoteWriteResponse",
@@ -16701,6 +16777,7 @@
       "WorkbenchTablesResponse",
       "WorkbenchFormResponse",
       "WorkbenchFormSaveResponse",
+      "WorkbenchParamFileResponse",
       "WorkbenchTestQuotesResponse",
       "WorkbenchTestQuotesBranchResponse",
       "WorkbenchTestQuoteWriteResponse",

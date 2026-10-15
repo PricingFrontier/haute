@@ -33,7 +33,7 @@ import {
   saveTestQuote,
 } from "../../api/workbench"
 import type { PricedSample } from "../../utils/workbenchTables"
-import { sheet } from "../../workbench/__tests__/fixtures"
+import { hiddenPerilsForm, sheet } from "../../workbench/__tests__/fixtures"
 import useDocumentStatusStore from "../useDocumentStatusStore"
 import useGraphStore from "../useGraphStore"
 import useSettingsStore from "../useSettingsStore"
@@ -52,6 +52,8 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   min: null,
   max: null,
   options: [],
+  options_source: null,
+  row_per_value: false,
   index: false,
   help: "",
   placeholder: "",
@@ -139,6 +141,14 @@ describe("useWorkbenchTestQuotesStore", () => {
     typeSample({ t1: [{ c1: "-5" }] })
     expect(await store().save("Negative")).toBe(true)
     expect(saveTestQuote).toHaveBeenCalledWith("Negative", { ...form, sample: { t1: [{ c1: "-5" }] } }, { t1: [{ c1: "-5" }] }, priced(500).tables, "work")
+  })
+
+  it("refuses to save a quote whose only value is in a row its table's rows leave out, the column giving them hidden", async () => {
+    useWorkbenchFormStore.setState({ form: { ...hiddenPerilsForm(), sample: { coverage: [{ "coverage.peril": "NW", "coverage.limit": "5000" }] } } })
+
+    expect(await store().save("Gone")).toBe(false)
+    expect(store().error).toBe("Type the quote first")
+    expect(saveTestQuote).not.toHaveBeenCalled()
   })
 
   it("opens a test quote in the sample's place, one undo step, naming what has no place on the sheets", async () => {

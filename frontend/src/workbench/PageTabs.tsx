@@ -1,11 +1,11 @@
-import { AlertTriangle, Plus, SlidersHorizontal, X } from "lucide-react"
+import { AlertTriangle, Plus, SlidersHorizontal } from "lucide-react"
 import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { CommittedTextField } from "../components/form"
 import useListReorder from "../hooks/useListReorder"
 import { INPUT_STYLE } from "../panels/editors/_shared"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { activePage, shownPage } from "../stores/useWorkbenchViewStore"
-import { addPage, createPage, movePage, pageProblems, pageWidgets, removePage, renamePage, showWhenText } from "../utils/workbenchForm"
+import { addPage, createPage, movePage, pageProblems, renamePage, showWhenText } from "../utils/workbenchForm"
 import { ShowWhenMark } from "./ShowWhenEditor"
 import { useSheetVisibility } from "./useSheetValues"
 
@@ -24,8 +24,8 @@ function moveSheet(from: number, to: number): void {
  * The sheets' tabs along the top (specs/workbench): one per sheet, the showing one
  * marked; double-click a tab to rename it; drag a tab onto another to move its sheet
  * there, or press Alt+Left or Alt+Right on it; a plus adds a sheet; the showing sheet's
- * settings mark opens its own panel and its cross deletes it, asking first when
- * components are on it, while another sheet remains. A sheet with conditions carries an
+ * settings mark opens its own panel, which deletes it, a tab having no delete of its own.
+ * A sheet with conditions carries an
  * eye, struck through and its tab faded while a new quote hides it, and a sheet whose
  * conditions have a problem a warning mark naming it. Read only, in Preview, the tabs only
  * switch sheets, and only between the sheets the values show.
@@ -63,19 +63,6 @@ export default function PageTabs({ readOnly = false }: { readOnly?: boolean }) {
     const sheet = createPage(form)
     change((spec) => addPage(spec, sheet))
     showPage(sheet.id)
-  }
-  const deleteSheet = () => {
-    const count = pageWidgets(page).length
-    if (
-      count > 0
-      && !window.confirm(
-        `Delete "${page.title}" and the ${count} ${count === 1 ? "component" : "components"} on it? The schema and the sample stay.`,
-      )
-    ) return
-    const remaining = form.pages.find((sheet) => sheet.id !== page.id)
-    if (remaining === undefined) return
-    change((spec) => removePage(spec, page.id))
-    showPage(remaining.id)
   }
   // F2 renames the tab's sheet; Alt+Left and Alt+Right move it a place, never past an end.
   const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, sheetId: string, index: number) => {
@@ -168,22 +155,11 @@ export default function PageTabs({ readOnly = false }: { readOnly?: boolean }) {
                 type="button"
                 onClick={selectSheet}
                 aria-label={`Settings of sheet ${sheet.title}`}
-                title="Sheet settings: its title, when it shows and its width"
+                title="Sheet settings: its title, when it shows, its width, and deleting it"
                 className="focus-ring hover-bg -ml-1 rounded p-0.5"
                 style={{ color: "var(--text-muted)" }}
               >
                 <SlidersHorizontal size={11} aria-hidden="true" />
-              </button>
-            )}
-            {!readOnly && active && form.pages.length > 1 && (
-              <button
-                type="button"
-                onClick={deleteSheet}
-                aria-label={`Delete sheet ${sheet.title}`}
-                title="Delete this sheet"
-                className="icon-danger-btn focus-ring rounded p-0.5"
-              >
-                <X size={11} aria-hidden="true" />
               </button>
             )}
           </div>

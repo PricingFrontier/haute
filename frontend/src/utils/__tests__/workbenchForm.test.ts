@@ -4,12 +4,13 @@
  * and what would stop the schema being the pipeline's tables.
  */
 import { describe, expect, it } from "vitest"
-import type { ChartWidget, Condition, FieldRef, FormSchema, FormSpec, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
+import type { ChartWidget, CollectionWidget, Condition, FieldRef, FormSchema, FormSpec, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
 import {
   addPage,
   addSchemaColumn,
   addSchemaTable,
   addSection,
+  addSpacer,
   addWidget,
   BLANK_THEME,
   changeSchemaColumnType,
@@ -34,12 +35,14 @@ import {
   keptInside,
   labelColumns,
   linedUpOutputs,
-  moveField,
+  moveInOrder,
   movePage,
   moveSchemaColumn,
   moveSection,
   moveWidget,
+  orderItems,
   pageProblems,
+  pasteWidget,
   placeWidget,
   plottable,
   pricingBasis,
@@ -48,6 +51,7 @@ import {
   removeSchemaColumn,
   removeSchemaTable,
   removeSection,
+  removeSpacer,
   removeWidget,
   renamePage,
   renameSection,
@@ -57,6 +61,7 @@ import {
   sectionProblems,
   setPageShowWhen,
   setPageWidth,
+  setRowPerValue,
   setSchemaTableRows,
   setSectionHeight,
   setSectionShowWhen,
@@ -115,6 +120,8 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   min: null,
   max: null,
   options: [],
+  options_source: null,
+  row_per_value: false,
   index: false,
   help: "",
   placeholder: "",
@@ -224,16 +231,27 @@ describe("problems", () => {
 
   it("changes a column's type, dropping the rules the new type cannot have", () => {
     let spec = withTable(
-      column("a", "value", { type: "float", min: 1, max: 5, options: ["1", "2"], number_format: "percent", decimal_places: 1, use_grouping: false }),
+      column("a", "value", {
+        type: "float",
+        min: 1,
+        max: 5,
+        options: ["1", "2"],
+        options_source: { file: "bands.csv", column: "band" },
+        number_format: "percent",
+        decimal_places: 1,
+        use_grouping: false,
+      }),
     )
 
-    // Between Decimal and Integer, a number keeps its range, its allowed values and its format.
+    // Between Decimal and Integer, a number keeps its range, its allowed values, the file
+    // they came from, and its format.
     spec = changeSchemaColumnType(spec, "t", "a", "int")
     expect(spec.schema.tables[0].columns[0]).toMatchObject({
       type: "int",
       min: 1,
       max: 5,
       options: ["1", "2"],
+      options_source: { file: "bands.csv", column: "band" },
       number_format: "percent",
       decimal_places: 1,
       use_grouping: false,
@@ -249,7 +267,7 @@ describe("problems", () => {
       use_grouping: true,
     })
     spec = changeSchemaColumnType(spec, "t", "a", "date")
-    expect(spec.schema.tables[0].columns[0]).toMatchObject({ type: "date", options: [] })
+    expect(spec.schema.tables[0].columns[0]).toMatchObject({ type: "date", options: [], options_source: null })
     spec = changeSchemaColumnType(spec, "t", "a", "int")
     expect(spec.schema.tables[0].columns[0]).toMatchObject({ type: "int", min: null, max: null, options: [] })
 
@@ -276,15 +294,18 @@ describe("problems", () => {
   it("checks an input column's rules, which an output table ignores", () => {
     const spec = withTable(
       column("a", "value", { type: "float", min: 10, max: 5 }),
-      column("b", "year", { type: "int", options: ["2020", "2020.5"] }),
-      column("c", "deductible", { type: "float", options: ["500", "1e3", "lots"] }),
+      column("b", "year", { type: "int", options: ["2020", "2020.5"], options_source: { file: "years.csv", column: "year" } }),
+      column("c", "deductible", { type: "float", options: ["500", "1e3", "lots"], options_source: { file: "deductibles.csv", column: "deductible" } }),
       column("d", "row_number", { type: "int", index: true, min: 10, max: 5 }),
+      // Allowed values come from a params file: ones typed in, as an older form holds them, do not.
+      column("e", "state", { options: ["CA", "NY"] }),
     )
 
     expect(messages(spec)).toEqual([
       'Column "value" in Table "t" has a minimum above its maximum',
       `Column "year" in Table "t" allows "2020.5", which isn't a whole number`,
       `Column "deductible" in Table "t" allows "lots", which isn't a number`,
+      'Column "state" in Table "t" has allowed values typed in, not read from a params file',
     ])
     expect(messages(updateSchemaTable(spec, "t", { role: "output" }))).toEqual([])
   })
@@ -293,12 +314,12 @@ describe("problems", () => {
     const spec = withTable(
       column("a", "value", { type: "float", min: 10, default_value: "5" }),
       column("b", "years", { type: "int", default_value: "2.5" }),
-      column("c", "cover", { options: ["ACV", "RC"], default_value: "New" }),
+      column("c", "cover", { options: ["ACV", "RC"], options_source: { file: "covers.csv", column: "cover" }, default_value: "New" }),
       column("d", "smoker", { type: "bool", default_value: "yes" }),
       column("e", "name", { default_value: true }),
       // Kept: a number as the server reads one, an allowed value, a tick, a blank or an unticked box.
       column("f", "limit", { type: "float", min: 0, default_value: "£250,000" }),
-      column("g", "basis", { options: ["ACV", "RC"], default_value: "RC" }),
+      column("g", "basis", { options: ["ACV", "RC"], options_source: { file: "covers.csv", column: "cover" }, default_value: "RC" }),
       column("h", "vat", { type: "bool", default_value: true }),
       column("i", "note", { required: true, default_value: " " }),
       column("j", "flag", { type: "bool", default_value: false }),
@@ -350,6 +371,26 @@ describe("columns", () => {
     spec = updateSchemaColumn(spec, "t", index.id, { key: true })
     expect(messages(spec)).toEqual([])
     expect(createIndexColumn(spec, "t").name).toBe("row_number_2")
+  })
+
+  it("gives a table a row for each of one column's allowed values, until the table has one row or the column's type takes none", () => {
+    const values = { options: ["AOP", "EQ"], options_source: { file: "perils.csv", column: "peril" } }
+    let spec = setSchemaTableRows(withTable(column("a", "peril", { key: true, ...values }), column("b", "zone", values)), "t", "many")
+    const given = () => spec.schema.tables[0].columns.map((c) => c.row_per_value)
+
+    spec = setRowPerValue(spec, "t", "a", true)
+    expect(given()).toEqual([true, false])
+    // Ticking another unticks the first, as one column gives a table its rows.
+    spec = setRowPerValue(spec, "t", "b", true)
+    expect(given()).toEqual([false, true])
+    spec = setRowPerValue(spec, "t", "b", false)
+    expect(given()).toEqual([false, false])
+
+    spec = setRowPerValue(spec, "t", "a", true)
+    expect(given()).toEqual([true, false])
+    expect(setSchemaTableRows(spec, "t", "one").schema.tables[0].columns.map((c) => c.row_per_value)).toEqual([false, false])
+    expect(changeSchemaColumnType(spec, "t", "a", "date").schema.tables[0].columns[0]).toMatchObject({ options: [], row_per_value: false })
+    expect(changeSchemaColumnType(spec, "t", "a", "int").schema.tables[0].columns[0].row_per_value).toBe(true)
   })
 
   it("refuses to edit a table or column that is not in the schema", () => {
@@ -438,6 +479,9 @@ describe("what the sheets show", () => {
 
     removeSchemaTable(before, "policy")
     updateSchemaColumn(before, "policy", "policy.state", { name: "region" })
+    removeSpacer(addSpacer(before, "w_boxes"), "w_boxes", 1)
+    toggleField(addSpacer(before, "w_boxes"), "w_boxes", { table: "policy", column: "policy.state" })
+    moveInOrder(before, "w_grid", 0, 1)
 
     expect(JSON.stringify(before)).toBe(snapshot)
   })
@@ -483,12 +527,14 @@ describe("what the sheets show", () => {
     // fixed, its header as written and framed; a Collection labelled above its boxes, comfortable
     // and framed.
     expect(grid).toMatchObject({ type: "tableInput", title: "", fields: [], rows: 3, row_numbers: true, density: "compact", gridlines: "rows", striped: true, fixed_rows: false, header: "plain", frame: true })
-    expect(boxes).toMatchObject({ type: "collection", title: "", fields: [], columns: 3, labels: "above", density: "comfortable", frame: true })
+    expect(boxes).toMatchObject({ type: "collection", title: "", fields: [], columns: 3, labels: "above", density: "comfortable", frame: true, spacers: [] })
+    // Spacers of its own, not the options' one list.
+    expect(boxes.spacers).not.toBe(COLLECTION_OPTIONS.spacers)
     expect(grid).not.toHaveProperty("columns")
     expect(boxes).not.toHaveProperty("gridlines")
     // In the file's order, so a component the view made compares equal to it saved.
     expect(Object.keys(grid)).toEqual(["id", "x", "y", "w", "h", "type", "title", "fields", "show_when", "rows", "row_numbers", "density", "gridlines", "striped", "fixed_rows", "header", "frame", "transposed", "groups"])
-    expect(Object.keys(boxes)).toEqual(["id", "x", "y", "w", "h", "type", "title", "fields", "show_when", "columns", "labels", "density", "frame"])
+    expect(Object.keys(boxes)).toEqual(["id", "x", "y", "w", "h", "type", "title", "fields", "show_when", "columns", "labels", "density", "frame", "spacers"])
 
     spec = addWidget(addWidget(spec, "s", grid), "s", boxes)
     spec = updateWidget(spec, grid.id, { title: "Equipment", rows: 5, x: 16, gridlines: "all", fixed_rows: true })
@@ -567,7 +613,7 @@ describe("what the sheets show", () => {
     expect(() => updateWidget(spec, heading.id, { fields: [] })).toThrow("A Heading has no fields")
     expect(() => updateWidget(spec, heading.id, { rows: 2 })).toThrow("Only a Table has rows")
     expect(() => toggleField(spec, heading.id, { table: "t", column: "c" })).toThrow("A Heading shows no fields")
-    expect(() => moveField(spec, heading.id, 0, 1)).toThrow("A Heading shows no fields")
+    expect(() => moveInOrder(spec, heading.id, 0, 1)).toThrow("A Heading shows no fields")
     expect(shownFields(spec, heading)).toEqual([])
 
     const copied = duplicateWidget(spec, heading.id)
@@ -599,8 +645,82 @@ describe("what the sheets show", () => {
     spec = toggleField(spec, "w_boxes", { table: "policy", column: "policy.state" })
     expect(fields(spec, "w_boxes")).toEqual(["policy.state"])
 
-    spec = moveField(spec, "w_grid", 1, 0)
+    spec = moveInOrder(spec, "w_grid", 1, 0)
     expect(fields(spec, "w_grid")).toEqual(["equipment.value", "equipment.item"])
+    // A Table's order is its fields alone.
+    expect(orderItems(widgetsOf(spec)[1] as Exclude<Widget, { type: "heading" }>)).toEqual([
+      { kind: "field", field: { table: "equipment", column: "equipment.value" } },
+      { kind: "field", field: { table: "equipment", column: "equipment.item" } },
+    ])
+  })
+
+  it("puts spacers among a Collection's fields, moves and removes them, and keeps their places as fields come and go", () => {
+    // The policy's boxes showing its state, year and region.
+    let spec = addSchemaColumn(addSchemaColumn(sheet(), "policy", column("policy.year", "year", { type: "int" })), "policy", column("policy.region", "region"))
+    spec = toggleField(toggleField(spec, "w_boxes", { table: "policy", column: "policy.year" }), "w_boxes", { table: "policy", column: "policy.region" })
+    const boxes = (form: FormSpec) => widgetsOf(form)[0] as CollectionWidget
+    const order = (form: FormSpec) => orderItems(boxes(form)).map((item) => (item.kind === "field" ? item.field.column : "spacer"))
+
+    // Added after the last field, then moved between the first two; a second there makes the gap wider.
+    spec = addSpacer(spec, "w_boxes")
+    expect(order(spec)).toEqual(["policy.state", "policy.year", "policy.region", "spacer"])
+    expect(boxes(spec).spacers).toEqual([3])
+    spec = moveInOrder(spec, "w_boxes", 3, 1)
+    expect(order(spec)).toEqual(["policy.state", "spacer", "policy.year", "policy.region"])
+    expect(boxes(spec).spacers).toEqual([1])
+    spec = moveInOrder(addSpacer(spec, "w_boxes"), "w_boxes", 4, 2)
+    expect(order(spec)).toEqual(["policy.state", "spacer", "spacer", "policy.year", "policy.region"])
+    expect(boxes(spec).spacers).toEqual([1, 1])
+
+    // A field moved past the spacers leaves them where they are in the order.
+    expect(order(moveInOrder(spec, "w_boxes", 0, 4))).toEqual(["spacer", "spacer", "policy.year", "policy.region", "policy.state"])
+    expect(boxes(moveInOrder(spec, "w_boxes", 0, 4)).spacers).toEqual([0, 0])
+
+    // A field it stops showing, unticked or gone from the schema, takes its place in the count
+    // with it; a field ticked goes after any spacer at the end.
+    const unticked = toggleField(spec, "w_boxes", { table: "policy", column: "policy.year" })
+    expect(order(unticked)).toEqual(["policy.state", "spacer", "spacer", "policy.region"])
+    expect(boxes(removeSchemaColumn(spec, "policy", "policy.state")).spacers).toEqual([0, 0])
+    const ticked = toggleField(addSpacer(unticked, "w_boxes"), "w_boxes", { table: "policy", column: "policy.year" })
+    expect(order(ticked)).toEqual(["policy.state", "spacer", "spacer", "policy.region", "spacer", "policy.year"])
+    // Left showing no fields, it keeps no spacers.
+    expect(boxes(removeSchemaTable(spec, "policy"))).toMatchObject({ fields: [], spacers: [] })
+
+    // Removed at its place in the order; a place holding a field holds no spacer.
+    spec = removeSpacer(spec, "w_boxes", 2)
+    expect(order(spec)).toEqual(["policy.state", "spacer", "policy.year", "policy.region"])
+    expect(() => removeSpacer(spec, "w_boxes", 0)).toThrow("No spacer is at 0")
+    expect(() => moveInOrder(spec, "w_boxes", 9, 0)).toThrow("Nothing is at 9 in its order")
+
+    // Only a Collection has spacers.
+    expect(() => addSpacer(spec, "w_grid")).toThrow("Only a Collection has spacers")
+    expect(() => removeSpacer(spec, "w_grid", 0)).toThrow("Only a Collection has spacers")
+    expect(() => updateWidget(spec, "w_grid", { spacers: [0] })).toThrow("Only a Collection has spacers")
+  })
+
+  it("leaves out of a copy pasted what it shows or tests of a column the schema has lost since, as removing the column does", () => {
+    // The policy's boxes showing its state, year and region, a spacer before the region,
+    // shown while the year and the state are as said.
+    let spec = addSchemaColumn(addSchemaColumn(sheet(), "policy", column("policy.year", "year", { type: "int" })), "policy", column("policy.region", "region"))
+    spec = toggleField(toggleField(spec, "w_boxes", { table: "policy", column: "policy.year" }), "w_boxes", { table: "policy", column: "policy.region" })
+    spec = moveInOrder(addSpacer(spec, "w_boxes"), "w_boxes", 3, 2)
+    const onYear: Condition = { table: "policy", column: "policy.year", op: "equals", values: ["2024"] }
+    const onState: Condition = { table: "policy", column: "policy.state", op: "equals", values: ["NY"] }
+    spec = updateWidget(spec, "w_boxes", { show_when: { match: "all", conditions: [onYear, onState] } })
+    const copied = findWidget(spec, "w_boxes")!.widget
+
+    // The year removed after the copy: pasted, the copy is as the original is now.
+    const lost = removeSchemaColumn(spec, "policy", "policy.year")
+    const pasted = pasteWidget(lost, copied, "s")
+    expect(findWidget(pasted.spec, pasted.id)?.widget).toEqual({ ...findWidget(lost, "w_boxes")!.widget, id: pasted.id, x: 16, y: 16 })
+    expect(findWidget(pasted.spec, pasted.id)?.widget).toMatchObject({
+      fields: [{ table: "policy", column: "policy.state" }, { table: "policy", column: "policy.region" }],
+      spacers: [1],
+      show_when: { match: "all", conditions: [onState] },
+    })
+    // The whole table removed: no fields, so no spacers, and no conditions.
+    const emptied = pasteWidget(removeSchemaTable(spec, "policy"), copied, "s")
+    expect(findWidget(emptied.spec, emptied.id)?.widget).toMatchObject({ fields: [], spacers: [], show_when: { match: "all", conditions: [] } })
   })
 
   it("sets one of the sheets' colours, leaving the others the editor's own, and the editor's own again", () => {
@@ -693,6 +813,20 @@ describe("what the sheets show", () => {
     expect(widgetProblems(updateSchemaColumn(spec, "premiums", "premiums.item", { key: false })).map((p) => p.message)).toEqual([
       'Table "Equipment" shows tables whose rows do not line up',
     ])
+  })
+
+  it("says a Table's tables do not line up when a column gives one its rows and another has rows of its own, or other values", () => {
+    const values = (options: string[]) => ({ options, options_source: { file: "plant.csv", column: "item" }, row_per_value: true })
+    let spec = updateSchemaColumn(sheet(), "equipment", "equipment.item", values(["Crane", "Lift"]))
+    // An input table keyed alike, shown beside it, its rows its own.
+    spec = addSchemaTable(spec, table("hire", "hire", { rows: "many", columns: [column("hire.item", "item", { key: true }), column("hire.days", "days", { type: "int" })] }))
+    spec = toggleField(spec, "w_grid", { table: "hire", column: "hire.days" })
+    const apart = ['Table "Equipment" shows tables whose rows do not line up']
+
+    expect(widgetProblems(spec).map((p) => p.message)).toEqual(apart)
+    // Given the same rows by its own column, in the same order, it lines up; given others, it does not.
+    expect(widgetProblems(updateSchemaColumn(spec, "hire", "hire.item", values(["Crane", "Lift"])))).toEqual([])
+    expect(widgetProblems(updateSchemaColumn(spec, "hire", "hire.item", values(["Lift", "Crane"]))).map((p) => p.message)).toEqual(apart)
   })
 })
 
@@ -1048,6 +1182,39 @@ describe("sections", () => {
     expect(heights(roomy.spec)).toEqual([400, 232, 48])
   })
 
+  it("pastes a copy where its component sat, past one already there, into any section, kept inside it, the original untouched", () => {
+    const spec = stacked()
+    const boxes = findWidget(spec, "w_boxes")!.widget
+    const at = (pasted: { spec: FormSpec; id: string }) => findWidget(pasted.spec, pasted.id)
+
+    // Into its own section, over its original: 16 right, and as far down as Policy's 136 lets it, last there.
+    const once = pasteWidget(spec, boxes, "s_policy")
+    expect(at(once)).toMatchObject({ section: { id: "s_policy" }, index: 1, widget: { ...boxes, id: once.id, x: 32, y: 16 } })
+    expect(once.id).not.toBe("w_boxes")
+    expect(findWidget(once.spec, "w_boxes")?.widget).toEqual(boxes)
+    expect(heights(once.spec)).toEqual([136, 232, 48])
+    // Again, past that copy too.
+    const twice = pasteWidget(once.spec, boxes, "s_policy")
+    expect(at(twice)?.widget).toMatchObject({ x: 48, y: 16 })
+    // With room below, the whole 16 down.
+    expect(at(pasteWidget(setSectionHeight(spec, "s_policy", 400), boxes, "s_policy"))?.widget).toMatchObject({ x: 32, y: 32 })
+
+    // Into another section where it sat, kept inside it: Notes, 48 tall, grows to hold the 120 it is.
+    const notes = pasteWidget(spec, boxes, "s_notes")
+    expect(at(notes)).toMatchObject({ section: { id: "s_notes" }, widget: { x: 16, y: 0 } })
+    expect(heights(notes.spec)).toEqual([136, 232, 120])
+    // Onto another sheet's section, nothing there: where it sat.
+    const sheets = addPage(spec, createPage(spec))
+    const elsewhere = pasteWidget(sheets, boxes, sheets.pages[1].sections[0].id)
+    expect(at(elsewhere)).toMatchObject({ page: { id: sheets.pages[1].id }, widget: { x: 16, y: 16 } })
+
+    // Held at its section's bottom right corner, it sits over the one there.
+    const full = { ...boxes, id: "w_full", x: 0, y: 0, w: 1280, h: 48 }
+    const corner = addWidget(spec, "s_notes", full)
+    expect(at(pasteWidget(corner, full, "s_notes"))?.widget).toMatchObject({ x: 0, y: 0 })
+    expect(() => pasteWidget(spec, boxes, "missing")).toThrow("No sheet has a section missing")
+  })
+
   it("keeps a component inside its sheet's width as it is added, placed, moved or copied, the sheet widening only for one wider than it or resized past its right edge", () => {
     // 1280 wide.
     const spec = stacked()
@@ -1108,6 +1275,7 @@ describe("sections", () => {
     placeWidget(before, "w_boxes", "s_notes", { x: 0, y: 400, w: 400, h: 120 })
     moveWidget(before, "w_boxes", { x: 0, y: 400 })
     duplicateWidget(before, "w_grid")
+    pasteWidget(before, findWidget(before, "w_grid")!.widget, "s_equipment")
     removeWidget(before, "w_grid")
     setPageWidth(before, "p", 2000)
 

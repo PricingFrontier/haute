@@ -15,6 +15,7 @@ import type { FormSpec, SchemaColumn, SchemaTable, WorkbenchTablesResponse } fro
 import { fetchWorkbenchFormTables } from "../../api/workbench"
 import { BLANK_THEME, COLLECTION_OPTIONS, pricingBasis, withSampleCell } from "../../utils/workbenchForm"
 import type { PricedSample } from "../../utils/workbenchTables"
+import { hiddenPerilsForm } from "../../workbench/__tests__/fixtures"
 import useWorkbenchFormStore from "../useWorkbenchFormStore"
 import useWorkbenchPricingStore, { PRICING_DELAY_MS } from "../useWorkbenchPricingStore"
 
@@ -36,6 +37,8 @@ const column = (id: string, name: string, type: SchemaColumn["type"]): SchemaCol
   min: null,
   max: null,
   options: [],
+  options_source: null,
+  row_per_value: false,
 })
 const policy: SchemaTable = { id: "t1", name: "policy_details", role: "input", rows: "one", columns: [column("c1", "exposure", "float")] }
 const pricing: SchemaTable = { id: "t2", name: "pricing_output", role: "output", rows: "one", columns: [column("c2", "model_premium", "float")] }
@@ -216,6 +219,20 @@ describe("useWorkbenchPricingStore", () => {
     useWorkbenchFormStore.setState({ form: { ...form, pages: [{ ...sheet, show_when: hiding, sections: [{ ...sheet.sections[0], widgets: [exposure] }] }] } })
     await useWorkbenchPricingStore.getState().priceNow()
     expect(pricer).not.toHaveBeenCalled()
+  })
+
+  it("prices nothing while the only value typed is in a row its table's rows leave out, the column giving them hidden", async () => {
+    const pricer = vi.fn((_workbench: WorkbenchTablesResponse) => Promise.resolve(priced(1)))
+    useWorkbenchPricingStore.getState().setPricer(pricer)
+    const perils = hiddenPerilsForm()
+    // A limit held for NW, which the perils no longer hold.
+    useWorkbenchFormStore.setState({ form: { ...perils, sample: { coverage: [{ "coverage.peril": "NW", "coverage.limit": "5000" }] } } })
+    await useWorkbenchPricingStore.getState().priceNow()
+    expect(pricer).not.toHaveBeenCalled()
+
+    useWorkbenchFormStore.setState({ form: { ...perils, sample: { coverage: [{ "coverage.peril": "EQ", "coverage.limit": "5000" }] } } })
+    await useWorkbenchPricingStore.getState().priceNow()
+    expect(pricer).toHaveBeenCalledTimes(1)
   })
 
   it("prices nothing without a pricer or before the form is read", async () => {

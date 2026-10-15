@@ -15,11 +15,11 @@ import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { valuesBasis } from "../../utils/sheetValues"
-import { BLANK_THEME, pricingBasis, shownFields, toggleField, updateSchemaColumn, updateWidget, type WidgetPatch } from "../../utils/workbenchForm"
+import { addSchemaColumn, addSchemaTable, BLANK_THEME, pricingBasis, shownFields, toggleField, updateSchemaColumn, updateWidget, type WidgetPatch } from "../../utils/workbenchForm"
 import SheetCanvas from "../SheetCanvas"
 import { SheetValuesContext, useNewQuoteValues, useQuoteValues, useSampleValues } from "../useSheetValues"
 import WidgetBody from "../WidgetBody"
-import { addTo, column, coverForm, currentForm, headingWidget, loadForm, releasePointer, sheetForm, stubLayout, widgetsOf } from "./fixtures"
+import { addTo, column, coverForm, currentForm, headingWidget, hiddenPerilsForm, loadForm, releasePointer, sheetForm, stubLayout, table, widgetsOf } from "./fixtures"
 
 const widget = (id: string) => {
   const found = widgetsOf(currentForm()).find((candidate) => candidate.id === id)
@@ -130,6 +130,74 @@ describe("WidgetBody", () => {
     renderBody("w_grid")
     expect(screen.getAllByRole("row")).toHaveLength(4)
     expect(screen.getByRole("textbox", { name: "Item row 1" })).toHaveValue("Crane")
+  })
+
+  it("shows the rows a column gives its table whatever the grid starts with, each value as text, and writes them all as a value is typed", () => {
+    const given = updateSchemaColumn(sheetForm(), "equipment", "equipment.item", {
+      options: ["Crane", "Digger", "Lift", "Hoist"],
+      options_source: { file: "plant.csv", column: "item" },
+      row_per_value: true,
+    })
+    // A value held for the lift, as a quote opened or a refresh may leave it.
+    given.sample = { equipment: [{ "equipment.item": "Lift", "equipment.value": "3" }] }
+    loadForm(updateWidget(given, "w_grid", { rows: 2 }))
+    renderBody("w_grid")
+    const bodyRows = () => screen.getAllByRole("row").slice(1)
+
+    expect(bodyRows().map((row) => row.children[1].textContent)).toEqual(["Crane", "Digger", "Lift", "Hoist"])
+    expect(screen.getByRole("textbox", { name: "Value row 3" })).toHaveValue("3")
+    // Its values take no typing, and no row is added or deleted.
+    expect(screen.queryByRole("textbox", { name: "Item row 1" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Add row" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Delete row 1" })).not.toBeInTheDocument()
+
+    const value = screen.getByRole("textbox", { name: "Value row 1" })
+    fireEvent.change(value, { target: { value: "5000" } })
+    fireEvent.blur(value)
+    expect(currentForm().sample.equipment).toEqual([
+      { "equipment.item": "Crane", "equipment.value": "5000" },
+      { "equipment.item": "Digger" },
+      { "equipment.item": "Lift", "equipment.value": "3" },
+      { "equipment.item": "Hoist" },
+    ])
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
+    cleanup()
+
+    // The underwriter app's quote the same, a new one starting with the rows alone.
+    renderBody("w_grid", "quote")
+    expect(bodyRows().map((row) => row.children[1].textContent)).toEqual(["Crane", "Digger", "Lift", "Hoist"])
+    const quoted = screen.getByRole("textbox", { name: "Value row 2" })
+    fireEvent.change(quoted, { target: { value: "70" } })
+    fireEvent.blur(quoted)
+    expect(useWorkbenchPreviewStore.getState().quote.equipment).toEqual([
+      { "equipment.item": "Crane" },
+      { "equipment.item": "Digger", "equipment.value": "70" },
+      { "equipment.item": "Lift" },
+      { "equipment.item": "Hoist" },
+    ])
+  })
+
+  it("shows every row of a table whose rows differ beside the rows a column gives, a table's cells past its own rows taking no typing", () => {
+    let given = updateSchemaColumn(sheetForm(), "equipment", "equipment.item", {
+      options: ["Crane", "Lift"],
+      options_source: { file: "plant.csv", column: "item" },
+      row_per_value: true,
+    })
+    given = addSchemaTable(given, table("hire", "hire", { rows: "many", columns: [column("hire.item", "item", { key: true }), column("hire.days", "days", { type: "int" })] }))
+    given = toggleField(given, "w_grid", { table: "hire", column: "hire.days" })
+    // The equipment's index, numbering its own rows alone.
+    given = addSchemaColumn(given, "equipment", { ...column("equipment.row", "row_number", { type: "int" }), index: true }, 0)
+    given = toggleField(given, "w_grid", { table: "equipment", column: "equipment.row" })
+    given.sample = { hire: [{ "hire.days": "1" }, { "hire.days": "2" }, { "hire.days": "3" }] }
+    loadForm(given)
+    renderBody("w_grid")
+
+    const bodyRows = screen.getAllByRole("row").slice(1)
+    expect(bodyRows.map((row) => row.children[1].textContent)).toEqual(["Crane", "Lift", ""])
+    expect(bodyRows.map((row) => row.children[4].textContent)).toEqual(["1", "2", ""])
+    expect(screen.getByRole("textbox", { name: "Value row 2" })).toBeInTheDocument()
+    expect(screen.queryByRole("textbox", { name: "Value row 3" })).not.toBeInTheDocument()
+    expect(screen.getByRole("textbox", { name: "Days row 3" })).toHaveValue("3")
   })
 
   it("draws a Table as its options say, and with its rows fixed shows every row typed but no Add row or delete", () => {
@@ -332,6 +400,34 @@ describe("WidgetBody", () => {
     expect(screen.getByTestId("priced-premiums:premiums.premium")).toHaveClass("h-7")
     expect(field().parentElement).toHaveClass("gap-y-2")
     expect(framed.style.border).toBe("")
+  })
+
+  it("leaves a gap across a Collection's whole width where each of its spacers sits, the fields after it starting a new row", () => {
+    // State, cover and year, two across, a spacer after State and two after the last field.
+    const fields = [
+      { table: "policy", column: "policy.state" },
+      { table: "policy", column: "policy.cover" },
+      { table: "policy", column: "policy.year" },
+    ]
+    loadForm(updateWidget(coverForm(), "w_boxes", { fields, spacers: [1, 3, 3] }))
+    renderBody("w_boxes")
+    const grid = screen.getByRole("combobox", { name: "State" }).closest("[title]")!.parentElement!
+    const drawn = () => [...grid.children].map((child) => (child.getAttribute("data-testid") === "collection-spacer" ? "gap" : child.getAttribute("title")))
+
+    expect(drawn()).toEqual(["policy.state", "gap", "policy.cover", "policy.year", "gap", "gap"])
+    for (const gap of screen.getAllByTestId("collection-spacer")) {
+      // Across every column, as tall as the gaps between the boxes, and nothing to a screen reader.
+      expect(gap.style.gridColumn).toBe("1 / -1")
+      expect(gap).toHaveClass("h-3")
+      expect(gap).toHaveAttribute("aria-hidden", "true")
+      expect(gap).toBeEmptyDOMElement()
+    }
+    cleanup()
+
+    // Compact, closer.
+    loadForm(updateWidget(currentForm(), "w_boxes", { density: "compact" }))
+    renderBody("w_boxes")
+    expect(screen.getAllByTestId("collection-spacer")[0]).toHaveClass("h-2")
   })
 
   it("draws the components in the sheets' colours: the font, the borders, the backgrounds and the input and output cells' fills", () => {
@@ -568,6 +664,17 @@ describe("WidgetBody", () => {
     fireEvent.change(state, { target: { value: "CA" } })
     rerender(body("w_boxes"))
     expect(screen.getByRole("combobox", { name: "State" })).not.toHaveAttribute("aria-invalid")
+  })
+
+  it("marks nothing in the underwriter app's quote while its only value is in a row its table's rows leave out, the column giving them hidden", () => {
+    loadForm(hiddenPerilsForm())
+    useWorkbenchPreviewStore.setState({ quote: { coverage: [{ "coverage.peril": "NW", "coverage.limit": "5000" }] } })
+    const { rerender } = renderBody("w_boxes", "quote")
+    expect(screen.getByRole("combobox", { name: "State" })).not.toHaveAttribute("aria-invalid")
+
+    act(() => useWorkbenchPreviewStore.setState({ quote: { coverage: [{ "coverage.peril": "EQ", "coverage.limit": "5000" }] } }))
+    rerender(body("w_boxes", "quote"))
+    expect(screen.getByRole("combobox", { name: "State" })).toHaveAttribute("aria-invalid", "true")
   })
 
   it("types the underwriter app's quote apart from the sample, without history, its cells marked once anything is typed, and shows its price", () => {

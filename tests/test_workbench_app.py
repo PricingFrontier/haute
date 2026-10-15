@@ -24,7 +24,13 @@ from haute._workbench_app import (
     read_release,
     write_release,
 )
-from haute._workbench_form import QUOTE_DETAILS_COLUMNS, FormSpec, form_revision, render_form
+from haute._workbench_form import (
+    QUOTE_DETAILS_COLUMNS,
+    FormSpec,
+    OptionsSource,
+    form_revision,
+    render_form,
+)
 from haute.deploy._utils import shipped_graph
 from haute.execution import ExecutionProfile
 from tests.test_workbench_routes import POLICY, PRICING, form
@@ -566,6 +572,45 @@ def test_the_app_prices_on_the_utility_code_the_release_carries(project: Path) -
     assert completed.returncode == 0, completed.stderr[-4000:]
     priced = json.loads(completed.stdout.strip().splitlines()[-1])
     assert priced["tables"]["pricing"] == [{"premium": 100.0, "limit": 1000.0, "referral": "none"}]
+
+
+def test_a_release_allows_what_its_params_files_hold_when_it_is_built(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The test project's pipeline sits at its root; its files are kept as a pipeline in
+    # rating/ keeps them.
+    monkeypatch.setattr(
+        "haute._workbench_params.pipeline_files_folder", lambda _root: "rating/files"
+    )
+    params = project / "rating" / "files" / "params"
+    params.mkdir(parents=True)
+    (params / "states.csv").write_text("state\nNY\nCA\nNY\nTX\n", encoding="utf-8")
+    # The form keeps the values as they were picked: NY alone.
+    state = {
+        "id": "c_state",
+        "name": "state",
+        "type": "str",
+        "options": ["NY"],
+        "options_source": {"file": "states.csv", "column": "state"},
+    }
+    policy = {**PROJECT_TABLES[0], "columns": [state, PROJECT_TABLES[0]["columns"][1]]}
+    write_sheets(project, [policy, *PROJECT_TABLES[1:]])
+
+    build_release(project, project / "build" / "app")
+
+    shipped = read_release(project / "build" / "app")[1].data_schema.tables[1].columns[0]
+    assert shipped.options == ["NY", "CA", "TX"]
+    assert shipped.options_source == OptionsSource(file="states.csv", column="state")
+
+    # A file that can no longer give them refuses the release, leaving the last one as it is.
+    (params / "states.csv").unlink()
+    with pytest.raises(WorkbenchAppError) as caught:
+        build_release(project, project / "build" / "app")
+    assert str(caught.value) == (
+        "forms/form.json: The allowed values of policy.state could not be read again: "
+        "rating/files/params/states.csv doesn't exist."
+    )
+    assert read_release(project / "build" / "app")[1].data_schema.tables[1].columns[0] == shipped
 
 
 def test_a_release_is_refused_for_what_the_project_cannot_ship(project: Path) -> None:

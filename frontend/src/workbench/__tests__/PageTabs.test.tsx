@@ -1,9 +1,9 @@
 /**
  * The sheets' tabs (specs/workbench): one per sheet, the showing one marked; a sheet
- * added, renamed by double-click, and deleted with a confirmation when components are in
- * any of its sections; a sheet's eye, a new quote's while building, its settings and its
- * problems; and, read only in Preview, only switching between the sheets the sample shows,
- * or the underwriter app's quote.
+ * added and renamed by double-click, and no delete on a tab, the sheet's panel deleting it;
+ * a sheet's eye, a new quote's while building, its settings and its problems; and, read
+ * only in Preview, only switching between the sheets the sample shows, or the underwriter
+ * app's quote.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
@@ -12,7 +12,7 @@ import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { updateSchemaColumn, withSampleCell } from "../../utils/workbenchForm"
 import PageTabs from "../PageTabs"
-import { coverForm, currentForm, loadForm, sectionedForm } from "./fixtures"
+import { coverForm, currentForm, loadForm } from "./fixtures"
 
 const tabs = () => screen.getAllByRole("tab").map((tab) => [tab.textContent, tab.getAttribute("aria-selected")])
 
@@ -69,30 +69,12 @@ describe("PageTabs", () => {
     expect(currentForm().pages[0].title).toBe("Cover")
   })
 
-  it("deletes the showing sheet, asking first when components are on it, and never the last one", () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false)
+  it("puts no delete on a tab: the sheet's own panel deletes it", () => {
     render(<PageTabs />)
 
-    fireEvent.click(screen.getByRole("button", { name: "Delete sheet Sheet 1" }))
-    expect(confirm).toHaveBeenCalledWith('Delete "Sheet 1" and the 2 components on it? The schema and the sample stay.')
-    expect(currentForm().pages).toHaveLength(2)
-
-    confirm.mockReturnValue(true)
-    fireEvent.click(screen.getByRole("button", { name: "Delete sheet Sheet 1" }))
-    expect(currentForm().pages.map((page) => page.id)).toEqual(["p2"])
-    expect(currentForm().schema.tables).toHaveLength(3)
-    expect(useWorkbenchViewStore.getState().pageId).toBe("p2")
-    expect(screen.queryByRole("button", { name: /Delete sheet/ })).not.toBeInTheDocument()
-  })
-
-  it("counts the components in every section of a sheet in the confirmation of its deletion", () => {
-    loadForm(sectionedForm())
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true)
-    render(<PageTabs />)
-
-    fireEvent.click(screen.getByRole("button", { name: "Delete sheet Sheet 1" }))
-    expect(confirm).toHaveBeenCalledWith('Delete "Sheet 1" and the 3 components on it? The schema and the sample stay.')
-    expect(currentForm().pages.map((page) => page.id)).toEqual(["p2"])
+    // The showing tab's one button beside it is its settings mark.
+    expect(within(screen.getByTestId("sheet-tab-p1")).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual(["Settings of sheet Sheet 1"])
+    expect(screen.queryByRole("button", { name: /Delete/ })).not.toBeInTheDocument()
   })
 
   it("read only, in Preview, only switches sheets, staying in Preview", () => {

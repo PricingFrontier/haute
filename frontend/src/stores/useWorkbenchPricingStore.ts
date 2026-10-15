@@ -10,7 +10,7 @@ import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
 import type { FormSpec, WorkbenchTablesResponse } from "../api/types"
 import { fetchWorkbenchFormTables } from "../api/workbench"
-import { quoteFilled } from "../utils/sheetValues"
+import { quoteFilled, withPresetRows } from "../utils/sheetValues"
 import { quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
 import { pricingBasis, type SampleRow } from "../utils/workbenchForm"
 import type { PricedSample } from "../utils/workbenchTables"
@@ -130,7 +130,7 @@ const useWorkbenchPricingStore = create<WorkbenchPricingState>()((set, get) => (
       const { pricer } = get()
       const { form, status } = useWorkbenchFormStore.getState()
       if (pricer === null || form === null || status !== "ready") return
-      if (!quoteFilled(quotedSchema(form.schema, sheetVisibility(form, form.sample).hidden), form.sample)) {
+      if (!quoteFilled(quotedSchema(form.schema, sheetVisibility(form, form.sample).hidden), withPresetRows(form.schema, form.sample))) {
         set({ price: null, error: null })
         return
       }

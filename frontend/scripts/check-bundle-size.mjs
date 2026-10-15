@@ -146,7 +146,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // generated validators, in a lazy chunk; the toolbar buttons and the window's file-drop
 // guard are all the initial bundle gains) brings it to 1,674.1 KiB; 1,676 KiB restores about
 // 1.9 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1676
+// A column's allowed values read from a params file, and a many-row table given a row for
+// each of them (the schema editor's Allowed and Rows and the rows read alike on the sheets,
+// in the lazy workbench chunks) bring it to 1,676.3 KiB; 1,678 KiB restores about 1.7 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1678
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

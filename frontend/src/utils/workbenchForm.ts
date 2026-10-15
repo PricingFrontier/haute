@@ -9,7 +9,7 @@ import type { ChartWidget, Condition, FieldRef, FormSchema, FormSpec, HeadingWid
 import { ASCII_IDENTIFIER_RE, apiInputLabelIssue, apiInputLabelIssueMessage } from "./apiInputPorts"
 import { PYTHON_KEYWORDS } from "./globalConstants"
 import { BLANK_SECTION_HEIGHT, BLANK_SHEET_WIDTH, NEW_SECTION_HEIGHT, fittedSectionHeight, leastSectionHeight, leastSheetWidth, type Rect } from "./sheetGeometry"
-import { cellProblem, filled, isDay, parseTypedNumber, pricedRows, valuesBasis, type PricedRows, type RowsByTable } from "./sheetValues"
+import { cellProblem, filled, isDay, parseTypedNumber, presetColumn, pricedRows, valuesBasis, type PricedRows, type RowsByTable } from "./sheetValues"
 import { columnKey, conditionFault, fieldKeys, neverShown, sheetVisibility, testLabel } from "./sheetVisibility"
 
 /** A section's widget: a Table, a Collection, a Chart or a Heading. */
@@ -30,8 +30,10 @@ export type TableOptions = Pick<
   Extract<Widget, { type: "tableInput" }>,
   "row_numbers" | "density" | "gridlines" | "striped" | "fixed_rows" | "header" | "frame" | "transposed" | "groups"
 >
-/** How a Collection's boxes look. */
-export type CollectionOptions = Pick<Extract<Widget, { type: "collection" }>, "labels" | "density" | "frame">
+/** How a Collection's boxes look, and the gaps among them. */
+export type CollectionOptions = Pick<Extract<Widget, { type: "collection" }>, "labels" | "density" | "frame" | "spacers">
+/** A place in a component's order: one of its fields, or one of a Collection's spacers. */
+export type OrderItem = { kind: "field"; field: FieldRef } | { kind: "spacer" }
 /** What names a Chart's rows, and how it draws. */
 export type ChartOptions = Pick<ChartWidget, "category" | "chart_type" | "orientation" | "stacked" | "legend" | "data_labels">
 /** How a Heading's text shows. */
@@ -99,6 +101,8 @@ export const createSchemaColumn = (spec: FormSpec, tableId: string): SchemaColum
   min: null,
   max: null,
   options: [],
+  options_source: null,
+  row_per_value: false,
   index: false,
   help: "",
   placeholder: "",
@@ -127,14 +131,19 @@ export const updateSchemaTable = (spec: FormSpec, id: string, patch: Partial<Sch
   })
 
 /**
- * Take the schema columns `drop` matches out of every widget that shows them, numbering
- * again the rows of a Chart that one of them labelled.
+ * Take the schema columns `drop` matches out of a widget that shows them, a Collection's
+ * spacers keeping their places among the fields left, numbering again the rows of a Chart
+ * that one of them labelled.
  */
+const dropShown = (widget: Widget, drop: (field: FieldRef) => boolean): void => {
+  if (!showsFields(widget)) return
+  setOrder(widget, orderItems(widget).filter((item) => item.kind === "spacer" || !drop(item.field)))
+  if (widget.type === "chart" && widget.category !== null && drop(widget.category)) widget.category = null
+}
+
+/** Take the schema columns `drop` matches out of every widget that shows them (`dropShown`). */
 const dropFields = (draft: FormSpec, drop: (field: FieldRef) => boolean): void => {
-  for (const widget of allWidgets(draft).filter(showsFields)) {
-    widget.fields = widget.fields.filter((field) => !drop(field))
-    if (widget.type === "chart" && widget.category !== null && drop(widget.category)) widget.category = null
-  }
+  for (const widget of allWidgets(draft)) dropShown(widget, drop)
 }
 
 /** Take the conditions `drop` matches out of every sheet, section and widget that tests them. */
@@ -157,10 +166,10 @@ export const removeSchemaTable = (spec: FormSpec, id: string): FormSpec =>
   })
 
 /**
- * A table with one row per quote has no keys, which say which of many rows is which, and
- * no index, which numbers them: switching to one row drops both, the index column with
- * what shows it and its sample values, as removing a column does. A many-row table's
- * columns take no default: switching to many rows clears them.
+ * A table with one row per quote has no keys, which say which of many rows is which, no
+ * index, which numbers them, and no row for each value: switching to one row drops them,
+ * the index column with what shows it and its sample values, as removing a column does. A
+ * many-row table's columns take no default: switching to many rows clears them.
  */
 export const setSchemaTableRows = (spec: FormSpec, id: string, rows: SchemaTable["rows"]): FormSpec => {
   const index = rows === "one" ? schemaTableOf(spec, id).columns.find((column) => column.index) : undefined
@@ -169,11 +178,25 @@ export const setSchemaTableRows = (spec: FormSpec, id: string, rows: SchemaTable
     const table = schemaTableOf(draft, id)
     table.rows = rows
     for (const column of table.columns) {
-      if (rows === "one") column.key = false
-      else column.default_value = ""
+      if (rows === "one") {
+        column.key = false
+        column.row_per_value = false
+      } else column.default_value = ""
     }
   })
 }
+
+/**
+ * Give a table a row for each of a column's allowed values, unticking any other column of
+ * the table that gave its rows, as only one does; or stop it.
+ */
+export const setRowPerValue = (spec: FormSpec, tableId: string, columnId: string, on: boolean): FormSpec =>
+  edit(spec, (draft) => {
+    for (const column of schemaTableOf(draft, tableId).columns) {
+      if (column.id === columnId) column.row_per_value = on
+      else if (on) column.row_per_value = false
+    }
+  })
 
 /** Add a column at `index`, or at the end. */
 export const addSchemaColumn = (spec: FormSpec, tableId: string, column: SchemaColumn, index?: number): FormSpec =>
@@ -210,7 +233,8 @@ export const takesOptions = (type: SchemaColumn["type"]): boolean => type !== "b
 /**
  * Change a column's type, dropping the rules the new type cannot have: the range and the
  * number format of a column no longer a number, and the allowed values of one now a tick
- * box or a date, which would otherwise still rule its cells; and the default of one that
+ * box or a date, with the params file they came from and a row for each, which would
+ * otherwise still rule its cells; and the default of one that
  * becomes or stops being a tick box, a tick or text no longer its kind of value, or that
  * becomes a date while its default is not a day, which a date's box cannot show.
  */
@@ -233,7 +257,11 @@ export const changeSchemaColumnType = (
       column.decimal_places = null
       column.use_grouping = true
     }
-    if (!takesOptions(type)) column.options = []
+    if (!takesOptions(type)) {
+      column.options = []
+      column.options_source = null
+      column.row_per_value = false
+    }
   })
 
 /**
@@ -511,8 +539,8 @@ export const TABLE_OPTIONS: Readonly<TableOptions> = {
   groups: false,
 }
 
-/** A new Collection's options: its labels above its boxes, comfortable and framed. */
-export const COLLECTION_OPTIONS: Readonly<CollectionOptions> = { labels: "above", density: "comfortable", frame: true }
+/** A new Collection's options: its labels above its boxes, comfortable, framed and with no spacers among them. */
+export const COLLECTION_OPTIONS: Readonly<CollectionOptions> = { labels: "above", density: "comfortable", frame: true, spacers: [] }
 
 /** A new Chart's options: its rows numbered, columns, upright, unstacked, its legend at the bottom and no data labels. */
 export const CHART_OPTIONS: Readonly<ChartOptions> = {
@@ -536,7 +564,8 @@ export function createWidget(type: WidgetType, rect: Rect): Widget {
   const showing = { title: "", fields: [] as FieldRef[], show_when: alwaysShown() }
   switch (type) {
     case "collection":
-      return { ...placed, type, ...showing, columns: 3, ...COLLECTION_OPTIONS }
+      // Spacers of its own, not the options' one list.
+      return { ...placed, type, ...showing, columns: 3, ...COLLECTION_OPTIONS, spacers: [] }
     case "chart":
       return { ...placed, type, ...showing, ...CHART_OPTIONS }
     case "tableInput":
@@ -677,6 +706,9 @@ export const removeWidget = (spec: FormSpec, id: string): FormSpec =>
     for (const section of allSections(draft)) section.widgets = section.widgets.filter((widget) => widget.id !== id)
   })
 
+/** How far below and to the right of a component its copy sits. */
+export const COPY_OFFSET = 16
+
 /** A copy of a component just below and to the right of it, in the same section, kept inside it and its sheet's width (`keptInside`). */
 export function duplicateWidget(spec: FormSpec, id: string): { spec: FormSpec; id: string } {
   const copyId = newId("w")
@@ -684,10 +716,42 @@ export function duplicateWidget(spec: FormSpec, id: string): { spec: FormSpec; i
     const found = findWidget(draft, id)
     if (found === null) throw new Error(`No sheet has a component ${id}`)
     const { x, y, w, h } = found.widget
-    const copy = { ...structuredClone(found.widget), id: copyId, x: keptInside(x + 16, w, found.page.width), y: keptInside(y + 16, h, found.section.height) }
+    const copy = {
+      ...structuredClone(found.widget),
+      id: copyId,
+      x: keptInside(x + COPY_OFFSET, w, found.page.width),
+      y: keptInside(y + COPY_OFFSET, h, found.section.height),
+    }
     found.section.widgets.splice(found.index + 1, 0, copy)
   })
   return { spec: next, id: copyId }
+}
+
+/**
+ * Paste a copy of `widget`, a component copied before, into a section: where it sat, moved
+ * `COPY_OFFSET` down and to the right while a component in the section sits at exactly that
+ * place, kept inside the section and its sheet's width (`addWidget`), with a new id. What it
+ * shows or tests of a column the schema has lost since is left out, as removing the column
+ * took it out of every component then.
+ */
+export function pasteWidget(spec: FormSpec, widget: Widget, sectionId: string): { spec: FormSpec; id: string } {
+  const found = findSection(spec, sectionId)
+  if (found === null) throw new Error(`No sheet has a section ${sectionId}`)
+  const { section, page } = found
+  const place = (x: number, y: number) => ({ x: keptInside(x, widget.w, page.width), y: keptInside(y, widget.h, section.height) })
+  let at = place(widget.x, widget.y)
+  while (section.widgets.some((other) => other.x === at.x && other.y === at.y)) {
+    const next = place(at.x + COPY_OFFSET, at.y + COPY_OFFSET)
+    // Held at the section's bottom right corner, it sits over the last one there.
+    if (next.x === at.x && next.y === at.y) break
+    at = next
+  }
+  const id = newId("w")
+  const copy: Widget = { ...structuredClone(widget), id, ...at }
+  const gone = (field: FieldRef) => fieldColumn(spec, field) === null
+  dropShown(copy, gone)
+  copy.show_when.conditions = copy.show_when.conditions.filter((condition) => !gone(condition))
+  return { spec: addWidget(spec, sectionId, copy), id }
 }
 
 /** Whose columns a Table or a Collection shows: a Table, many-row tables'; a Collection, one-row tables'. A Chart plots either. */
@@ -738,21 +802,85 @@ export function labelColumns(spec: FormSpec, widget: ChartWidget): { table: Sche
     .filter(({ columns }) => columns.length > 0)
 }
 
-/** Move a component's field from one place in its order to another. */
-export const moveField = (spec: FormSpec, widgetId: string, from: number, to: number): FormSpec =>
+/** A component's order: its fields, with a Collection's spacers among them where they sit. */
+export function orderItems(widget: FieldsWidget): OrderItem[] {
+  const spacers = widget.type === "collection" ? widget.spacers : []
+  const items: OrderItem[] = []
+  let next = 0
+  const spacersUpTo = (before: number) => {
+    while (next < spacers.length && spacers[next] <= before) {
+      items.push({ kind: "spacer" })
+      next += 1
+    }
+  }
+  widget.fields.forEach((field, index) => {
+    spacersUpTo(index)
+    items.push({ kind: "field", field })
+  })
+  spacersUpTo(Infinity)
+  return items
+}
+
+/** Write a component's order back to it, in a draft: its fields, and a Collection's spacers, none while it shows no fields. */
+function setOrder(widget: FieldsWidget, items: readonly OrderItem[]): void {
+  const fields: FieldRef[] = []
+  const spacers: number[] = []
+  for (const item of items) {
+    if (item.kind === "field") fields.push(item.field)
+    else spacers.push(fields.length)
+  }
+  widget.fields = fields
+  if (widget.type === "collection") widget.spacers = fields.length === 0 ? [] : spacers
+}
+
+/** The Collection with `id`: only a Collection has spacers. */
+function collectionOf(spec: FormSpec, id: string): Extract<Widget, { type: "collection" }> {
+  const widget = widgetOf(spec, id)
+  if (widget.type !== "collection") throw new Error("Only a Collection has spacers")
+  return widget
+}
+
+/** Move a field, or a Collection's spacer, from one place in its order (`orderItems`) to another. */
+export const moveInOrder = (spec: FormSpec, widgetId: string, from: number, to: number): FormSpec =>
   edit(spec, (draft) => {
-    const { fields } = fieldsWidgetOf(draft, widgetId)
-    const [field] = fields.splice(from, 1)
-    fields.splice(to, 0, field)
+    const widget = fieldsWidgetOf(draft, widgetId)
+    const items = orderItems(widget)
+    const [item] = items.splice(from, 1)
+    if (item === undefined) throw new Error(`Nothing is at ${from} in its order`)
+    items.splice(to, 0, item)
+    setOrder(widget, items)
   })
 
-/** Show the field in the component if it does not, or stop showing it if it does. */
+/**
+ * Show the field in the component if it does not, at the end of its order, after any spacer
+ * there; or stop showing it if it does, the spacers after it keeping their places among the
+ * fields.
+ */
 export const toggleField = (spec: FormSpec, widgetId: string, field: FieldRef): FormSpec =>
   edit(spec, (draft) => {
     const widget = fieldsWidgetOf(draft, widgetId)
-    const at = widget.fields.findIndex((shown) => shown.table === field.table && shown.column === field.column)
-    if (at >= 0) widget.fields.splice(at, 1)
-    else widget.fields.push(field)
+    const items = orderItems(widget)
+    const at = items.findIndex((item) => item.kind === "field" && item.field.table === field.table && item.field.column === field.column)
+    if (at >= 0) items.splice(at, 1)
+    else items.push({ kind: "field", field })
+    setOrder(widget, items)
+  })
+
+/** Add a spacer to a Collection, after its last field. */
+export const addSpacer = (spec: FormSpec, widgetId: string): FormSpec =>
+  edit(spec, (draft) => {
+    const widget = collectionOf(draft, widgetId)
+    widget.spacers.push(widget.fields.length)
+  })
+
+/** Remove the spacer at a place in a Collection's order (`orderItems`). */
+export const removeSpacer = (spec: FormSpec, widgetId: string, at: number): FormSpec =>
+  edit(spec, (draft) => {
+    const widget = collectionOf(draft, widgetId)
+    const items = orderItems(widget)
+    if (items[at]?.kind !== "spacer") throw new Error(`No spacer is at ${at}`)
+    items.splice(at, 1)
+    setOrder(widget, items)
   })
 
 // ─── The sample ──────────────────────────────────────────────────────────
@@ -908,7 +1036,16 @@ export function widgetProblems(spec: FormSpec): WidgetProblem[] {
           problem(rows === "many" ? "shows a one-row table; a Collection shows those" : "shows a many-row table; a Table shows those")
         }
         const grains = new Set(found.flatMap((shown) => (shown !== null && shown.table.rows === rows ? [tableGrain(shown.table)] : [])))
-        if (grains.size > 1) problem("shows tables whose rows do not line up")
+        // A Table's many-row input tables sit side by side row by row, so a column giving one
+        // its rows must give each of them the same, in the same order.
+        const given = new Set(
+          found.flatMap((shown) =>
+            widget.type === "tableInput" && shown !== null && shown.table.role === "input" && shown.table.rows === "many" && !shown.column.index
+              ? [JSON.stringify(presetColumn(shown.table)?.options ?? null)]
+              : [],
+          ),
+        )
+        if (grains.size > 1 || given.size > 1) problem("shows tables whose rows do not line up")
       }
     }
     for (const message of conditionProblems(spec, widget, never)) problem(message)
@@ -1062,9 +1199,10 @@ const isNumber = (text: string, whole: boolean): boolean => {
  * What would stop the schema being the pipeline's tables. A table's name is a port's
  * name, so it is held to the Quote Input's label rules (`apiInputLabelIssue`, with the
  * document's reserved labels); a column's name is an identifier, unique in its table; a
- * many-row table needs a key; an input column's rules must make sense (a range that is
- * not inverted, allowed values of its type), and a one-row input column's default must be
- * a value they take.
+ * many-row table needs a key, and one column at most gives it a row for each value; an
+ * input column's rules must make sense (a range that is not inverted, allowed values of its
+ * type, read from a params file rather than typed in), and a one-row input column's
+ * default must be a value they take.
  */
 export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<string>): SchemaProblem[] {
   const problems: SchemaProblem[] = []
@@ -1082,6 +1220,12 @@ export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<strin
     if (table.rows === "many" && !table.columns.some((column) => column.key)) {
       problems.push({ tableId: table.id, message: `${name} has many rows, so it needs a key column` })
     }
+    const given = presetColumn(table)
+    for (const column of table.columns) {
+      if (given !== null && column !== given && column.row_per_value && !column.index && column.options.length > 0) {
+        problems.push({ tableId: table.id, message: `${name} has a row for each value of ${given.name}, so ${column.name} gives it none` })
+      }
+    }
     const columnNames = new Set<string>()
     for (const column of table.columns) {
       const columnName = `Column "${column.name}" in ${name}`
@@ -1096,6 +1240,8 @@ export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<strin
       if (!takesOptions(column.type) && column.options.length > 0) {
         const kind = column.type === "bool" ? "a tick box" : "a date"
         problems.push({ tableId: table.id, message: `${columnName} allows values, which ${kind} cannot` })
+      } else if (column.options.length > 0 && column.options_source === null) {
+        problems.push({ tableId: table.id, message: `${columnName} has allowed values typed in, not read from a params file` })
       }
       if (column.type === "int" || column.type === "float") {
         if (column.min !== null && column.max !== null && column.min > column.max) {
@@ -1148,6 +1294,7 @@ export const QUOTE_DETAILS_COLUMNS: ReadonlyArray<readonly [id: string, name: st
   ["qd_stage", "stage", "str"],
   ["qd_assignee", "assignee", "str"],
   ["qd_archived", "archived", "bool"],
+  ["qd_is_renewal", "is_renewal", "bool"],
 ]
 
 /** The columns the underwriter app sets over whatever is typed, which take no rules (`QUOTE_DETAILS_MANAGED`). */

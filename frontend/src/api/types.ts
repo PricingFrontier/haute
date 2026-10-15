@@ -514,7 +514,8 @@ export type {
 
 // ---------------------------------------------------------------------------
 // The workbench (GET /api/workbench, GET /api/workbench/tables, GET and PUT
-// /api/workbench/form, whose form is the file's canonical shape)
+// /api/workbench/form, whose form is the file's canonical shape, and GET
+// /api/workbench/params, a params file's header and a column's values)
 // ---------------------------------------------------------------------------
 
 export type {
@@ -525,6 +526,7 @@ export type {
   FormSchema,
   FormSpec,
   HeadingWidget,
+  OptionsSource,
   Page,
   SchemaColumn,
   SchemaTable,
@@ -548,6 +550,7 @@ export type {
   WorkbenchColumn,
   WorkbenchFormResponse,
   WorkbenchFormSaveResponse,
+  WorkbenchParamFileResponse,
   WorkbenchStatusResponse,
   WorkbenchTable,
   WorkbenchTablesResponse,

@@ -201,6 +201,8 @@ def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path
         "min": None,
         "max": None,
         "options": [],
+        "options_source": None,
+        "row_per_value": False,
         "index": False,
         "help": "",
         "placeholder": "",
@@ -411,11 +413,37 @@ def test_the_form_routes_answer_404_while_the_workbench_is_not_enabled(project: 
     served = client().get("/api/workbench/form")
     saved = client().put("/api/workbench/form", json={"form": form(), "base_revision": None})
     tables = client().post("/api/workbench/tables", json={"form": form()})
+    params = client().get("/api/workbench/params", params={"file": "states.csv"})
 
     assert (served.status_code, served.json()["detail"]) == (404, message)
     assert (saved.status_code, saved.json()["detail"]) == (404, message)
     assert (tables.status_code, tables.json()["detail"]) == (404, message)
+    assert (params.status_code, params.json()["detail"]) == (404, message)
     assert not (project / "forms").exists()
+
+
+def test_a_params_file_s_header_and_a_column_s_values_are_served(project: Path) -> None:
+    (project / "haute.toml").write_text(
+        '[project]\nname = "x"\npipeline = "rating/main.py"\n\n[workbench]\nenabled = true\n',
+        encoding="utf-8",
+    )
+    params = project / "rating" / "files" / "params"
+    params.mkdir(parents=True)
+    (params / "states.csv").write_text(
+        "state,name\nNY,New York\nCA,California\nNY,New York\n", encoding="utf-8"
+    )
+
+    header = client().get("/api/workbench/params", params={"file": "states.csv"})
+    values = client().get("/api/workbench/params", params={"file": "states.csv", "column": "state"})
+    missing = client().get("/api/workbench/params", params={"file": "states.csv", "column": "code"})
+
+    assert header.json() == {"columns": ["state", "name"], "values": []}
+    assert values.json() == {"columns": ["state", "name"], "values": ["NY", "CA"]}
+    # What stops a file or a column giving values answers 409 with why.
+    assert (missing.status_code, missing.json()["detail"]) == (
+        409,
+        "rating/files/params/states.csv has no column code.",
+    )
 
 
 def test_a_form_that_is_not_utf8_answers_409_naming_the_file(project: Path) -> None:

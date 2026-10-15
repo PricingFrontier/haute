@@ -7,9 +7,12 @@
  * groups and help, and the rules and defaults of those the underwriter types, are the
  * project's.
  */
-import { ChevronDown, ChevronRight, KeyRound, Lock, Plus, SlidersHorizontal, Trash2, X, type LucideIcon } from "lucide-react"
-import { useId, useMemo, useState, type ButtonHTMLAttributes, type FocusEvent, type KeyboardEvent, type ReactNode } from "react"
+import { ChevronDown, ChevronRight, KeyRound, Lock, Plus, RefreshCw, SlidersHorizontal, Trash2, X, type LucideIcon } from "lucide-react"
+import { useEffect, useId, useMemo, useRef, useState, type ButtonHTMLAttributes, type FocusEvent, type KeyboardEvent, type ReactNode } from "react"
+import { apiErrorMessage } from "../api/errors"
+import { listProjectFiles } from "../api/projectFiles"
 import type { FormSpec, SchemaColumn, SchemaTable } from "../api/types"
+import { fetchParamFile } from "../api/workbench"
 import { CommittedTextField, ConfigCheckbox, IconSelect, ValidatedTextField } from "../components/form"
 import { INPUT_STYLE } from "../panels/editors/_shared"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
@@ -29,10 +32,12 @@ import {
   removeSchemaColumn,
   removeSchemaTable,
   schemaProblems,
+  setRowPerValue,
   setSchemaTableRows,
   updateSchemaColumn,
   updateSchemaTable,
 } from "../utils/workbenchForm"
+import { presetColumn } from "../utils/sheetValues"
 import { PIVOT_DECIMAL_PLACES_MAX, PIVOT_NUMBER_FORMATS } from "../panels/explore/pivotConfig"
 import { NUMBER_FORMAT_LABELS } from "../panels/explore/pivotNumberFormat"
 import { COLUMN_TYPES, COLUMN_TYPE_OPTIONS, isNumeric } from "./columnTypes"
@@ -65,16 +70,18 @@ function currentForm(): FormSpec {
   return form
 }
 
-/** An input column's rules in a few words, shown beside its name. */
-function rulesSummary(column: SchemaColumn): string {
+/** An input column's rules in a few words, shown beside its name, and whether it gives its table's rows. */
+function rulesSummary(table: SchemaTable, column: SchemaColumn): string {
   const parts: string[] = []
   if (column.required) parts.push("required")
   if (isNumeric(column.type) && (column.min !== null || column.max !== null)) {
     parts.push(`${column.min ?? "…"} to ${column.max ?? "…"}`)
   }
   if (column.type !== "bool" && column.type !== "date" && column.options.length > 0) {
-    parts.push(`${column.options.length} ${column.options.length === 1 ? "value" : "values"}`)
+    const values = `${column.options.length} ${column.options.length === 1 ? "value" : "values"}`
+    parts.push(column.options_source === null ? values : `${values} from ${column.options_source.file}`)
   }
+  if (presetColumn(table)?.id === column.id) parts.push("a row each")
   return parts.join(" · ")
 }
 
@@ -332,7 +339,7 @@ function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, o
   const { label, icon: Icon, color } = COLUMN_TYPES[column.type]
   // A column the underwriter app sets takes no rules.
   const managed = locked && QUOTE_DETAILS_MANAGED.has(column.id)
-  const summary = table.role === "input" ? rulesSummary(column) : ""
+  const summary = table.role === "input" ? rulesSummary(table, column) : ""
   const set = (patch: Partial<SchemaColumn>) => change((f) => updateSchemaColumn(f, table.id, column.id, patch))
 
   // Enter adds the next column; Alt+Up and Alt+Down move this one.
@@ -440,7 +447,8 @@ function ColumnRow({ form, table, column, index, fresh, open, onToggleDetails, o
 
 /**
  * A column's label, group and help; in an input table, what a new quote starts with in it
- * (in a one-row table), what an empty cell shows and the rules its value must meet; for a
+ * (in a one-row table), what an empty cell shows, the rules its value must meet and, in a
+ * many-row table while it has allowed values, whether the table has a row for each; for a
  * number, how the sheets show it. The boxes hold no hint text: the docs say what each is.
  */
 function ColumnDetails({
@@ -454,6 +462,7 @@ function ColumnDetails({
   managed: boolean
   set: (patch: Partial<SchemaColumn>) => void
 }) {
+  const change = useWorkbenchFormStore((s) => s.change)
   // The index takes no rules, nor does a column the app sets: nothing is typed into them.
   const input = table.role === "input" && !column.index && !managed
   // The groups the table's columns are in, offered as one is typed.
@@ -591,16 +600,183 @@ function ColumnDetails({
           {column.type !== "bool" && column.type !== "date" && (
             <>
               <span style={{ color: "var(--text-muted)" }}>Allowed</span>
-              <CommittedTextField
-                aria-label={`Allowed values of ${column.name}`}
-                value={column.options.join(", ")}
-                onCommit={(text) => set({ options: text.split(",").map((value) => value.trim()).filter(Boolean) })}
-                className={`${FIELD_CLASS} w-full`}
-                style={INPUT_STYLE}
+              <AllowedField tableId={table.id} column={column} set={set} />
+            </>
+          )}
+          {table.rows === "many" && column.type !== "bool" && column.type !== "date" && column.options.length > 0 && (
+            <>
+              <span style={{ color: "var(--text-muted)" }}>Rows</span>
+              <ConfigCheckbox
+                label="A row for each"
+                checked={column.row_per_value}
+                onChange={(on) => change((f) => setRowPerValue(f, table.id, column.id, on))}
               />
             </>
           )}
         </>
+      )}
+    </div>
+  )
+}
+
+/** Whether a file in the params folder is a CSV, whatever the case of its extension. */
+const isCsv = (name: string): boolean => name.toLowerCase().endsWith(".csv")
+
+/** The Allowed choice standing for values typed in, as an older form holds them: never a CSV's name. */
+const TYPED_IN = ":typed"
+
+/**
+ * A column's allowed values: the distinct values of a column of a CSV in the pipeline's params
+ * folder, its file chosen and then its column, copied in and read from the file again by
+ * Refresh. The blank choice takes them away, with a row for each, values typed in as an
+ * older form holds them included, which show as a choice of their own. A read answers only
+ * while the column's source in the form is the one it began from, so one an undo overtakes
+ * changes nothing. Why a file or a column cannot give values shows under them.
+ */
+function AllowedField({ tableId, column, set }: { tableId: string; column: SchemaColumn; set: (patch: Partial<SchemaColumn>) => void }) {
+  const source = column.options_source
+  const typedIn = source === null && column.options.length > 0
+  // The CSV files in the params folder, read as the details open.
+  const [files, setFiles] = useState<readonly string[]>([])
+  // Each file's header as read, its columns to pick from.
+  const [headers, setHeaders] = useState<Readonly<Record<string, readonly string[]>>>({})
+  // A file chosen whose column is still to be picked: the form changes once it is.
+  const [pendingFile, setPendingFile] = useState<string | null>(null)
+  const [problem, setProblem] = useState<string | null>(null)
+  // A read answers while the details are open, and a read of values only while it is the latest.
+  const mounted = useRef(false)
+  const latest = useRef(0)
+  useEffect(() => {
+    mounted.current = true
+    void listProjectFiles("pipeline", "params")
+      .then((folder) => {
+        if (mounted.current) setFiles(folder.entries.filter((entry) => entry.kind === "file" && isCsv(entry.name)).map((entry) => entry.name))
+      })
+      // A project with no pipeline folder has no params files to choose.
+      .catch(() => undefined)
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+  const file = pendingFile ?? source?.file ?? ""
+  const header = headers[file]
+  useEffect(() => {
+    if (file === "" || header !== undefined) return
+    void fetchParamFile(file)
+      .then(({ columns }) => {
+        if (mounted.current) setHeaders((read) => ({ ...read, [file]: columns }))
+      })
+      .catch((error: unknown) => {
+        if (mounted.current) setProblem(apiErrorMessage(error))
+      })
+  }, [file, header])
+
+  // The column as the form holds it now, which an undo, a redo or a sync may have changed
+  // while a read was under way.
+  const columnNow = () =>
+    useWorkbenchFormStore
+      .getState()
+      .form?.schema.tables.find((other) => other.id === tableId)
+      ?.columns.find((other) => other.id === column.id)
+  const sourceNow = () => JSON.stringify(columnNow()?.options_source ?? null)
+  const readValues = (from: string, name: string, then: (values: string[]) => void) => {
+    const ticket = ++latest.current
+    const began = sourceNow()
+    // A read answers only while it is the latest and the column's source is the one it began from.
+    const current = () => mounted.current && ticket === latest.current && sourceNow() === began
+    setProblem(null)
+    void fetchParamFile(from, name)
+      .then(({ columns, values }) => {
+        if (!current()) return
+        setHeaders((read) => ({ ...read, [from]: columns }))
+        then(values)
+      })
+      .catch((error: unknown) => {
+        if (current()) setProblem(apiErrorMessage(error))
+      })
+  }
+  const chooseFile = (chosen: string) => {
+    // A pick or a refresh still being read no longer answers.
+    latest.current += 1
+    setProblem(null)
+    if (chosen === TYPED_IN) setPendingFile(null)
+    else if (chosen !== "") setPendingFile(chosen === source?.file ? null : chosen)
+    else {
+      setPendingFile(null)
+      if (source !== null || column.options.length > 0) set({ options: [], options_source: null, row_per_value: false })
+    }
+  }
+  const chooseColumn = (name: string) =>
+    readValues(file, name, (values) => {
+      setPendingFile(null)
+      set({ options_source: { file, column: name }, options: values })
+    })
+  const refresh = () => {
+    if (source === null) return
+    readValues(source.file, source.column, (values) => {
+      if (JSON.stringify(values) !== JSON.stringify(columnNow()?.options ?? column.options)) set({ options: values })
+    })
+  }
+
+  const fileChoices = file === "" || files.includes(file) ? files : [...files, file]
+  // The column the values came from stays offered when the file no longer has it.
+  const columnChoices =
+    pendingFile === null && source !== null && !(header ?? []).includes(source.column) ? [...(header ?? []), source.column] : (header ?? [])
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <select
+          aria-label={`Where the allowed values of ${column.name} come from`}
+          value={typedIn && pendingFile === null ? TYPED_IN : file}
+          onChange={(e) => chooseFile(e.target.value)}
+          disabled={fileChoices.length === 0 && !typedIn}
+          className={`${FIELD_CLASS} ${file === "" ? "flex-1" : "max-w-[50%]"}`}
+          style={INPUT_STYLE}
+        >
+          <option value="" />
+          {typedIn && (
+            <option value={TYPED_IN}>
+              {column.options.length} {column.options.length === 1 ? "value" : "values"} typed in
+            </option>
+          )}
+          {fileChoices.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
+        {file !== "" && (
+          <>
+            <select
+              aria-label={`Column the allowed values of ${column.name} come from`}
+              value={pendingFile === null ? (source?.column ?? "") : ""}
+              onChange={(e) => chooseColumn(e.target.value)}
+              className={`${FIELD_CLASS} min-w-0 flex-1`}
+              style={INPUT_STYLE}
+            >
+              {pendingFile !== null && <option value="" />}
+              {columnChoices.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+            {pendingFile === null && (
+              <IconButton
+                icon={RefreshCw}
+                onClick={refresh}
+                aria-label={`Read the allowed values of ${column.name} again`}
+                title={`Read the values from ${file} again`}
+                style={{ color: "var(--text-muted)" }}
+              />
+            )}
+          </>
+        )}
+      </div>
+      {problem !== null && (
+        <p role="alert" className="text-[11px]" style={{ color: "var(--danger)" }}>
+          {problem}
+        </p>
       )}
     </div>
   )

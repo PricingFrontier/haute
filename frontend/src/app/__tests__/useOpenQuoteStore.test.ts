@@ -356,10 +356,28 @@ describe("useOpenQuoteStore", () => {
 
     expect(store().source).toEqual({ quoteId: "q1", revision: 1, relation: "renewal", reference: "Q-000001" })
     expect(store().dropped).toEqual(["policy.gone"])
-    expect(preview().quote).toEqual(VALUES)
+    // A renewal opens with is_renewal ticked.
+    expect(preview().quote).toEqual({ ...VALUES, quote_details: [{ qd_is_renewal: true }] })
     await store().save()
     expect(vi.mocked(createAppQuote).mock.calls[0][1]).toEqual({ quote_id: "q1", revision: 1, relation: "renewal" })
     expect(store().source).toBeNull()
+  })
+
+  it("opens a renewal with is_renewal ticked over its source's details, and a duplicate or an alternative with them as they were", async () => {
+    const details = { qd_insured: "Acme", qd_is_renewal: false }
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    vi.mocked(carryAppQuote).mockResolvedValue({ values: { ...VALUES, quote_details: [details] }, dropped: [] })
+
+    await store().openNew({ quoteId: "q1", revision: 1, relation: "renewal" })
+    expect(preview().quote).toEqual({ ...VALUES, quote_details: [{ qd_insured: "Acme", qd_is_renewal: true }] })
+    // Ticked as a value typed, so the underwriter can untick it.
+    preview().setCell("quote_details", 0, "qd_is_renewal", false)
+    expect(preview().quote.quote_details).toEqual([details])
+
+    for (const relation of ["duplicate", "alternative"] as const) {
+      await store().openNew({ quoteId: "q1", revision: 1, relation })
+      expect(preview().quote).toEqual({ ...VALUES, quote_details: [details] })
+    }
   })
 
   it("says why a quote to make one from could not be read", async () => {

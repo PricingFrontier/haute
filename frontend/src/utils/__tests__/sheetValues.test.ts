@@ -1,7 +1,8 @@
 /**
  * The values typed into a sheet (specs/workbench): filled rows as the server counts them,
- * numbers as it types them, what breaks a column's rules, the basis pricing depends on,
- * and a priced output table's rows lined up with a grid's rows by key.
+ * the rows a column gives a table as the server reads them, numbers as it types them, what
+ * breaks a column's rules, the basis pricing depends on, and a priced output table's rows
+ * lined up with a grid's rows by key.
  */
 import { describe, expect, it } from "vitest"
 import type { SchemaColumn, SchemaTable } from "../../api/types"
@@ -12,15 +13,19 @@ import {
   formattedNumber,
   newQuoteValues,
   parseTypedNumber,
+  presetColumn,
+  presetRows,
   pricedRows,
   quoteFilled,
   quoteProblems,
   quoteTyped,
   rowFilled,
   valuesBasis,
+  withPresetRows,
 } from "../sheetValues"
 import { columnKey, quotedSchema } from "../sheetVisibility"
 import { BLANK_THEME, pricingBasis, type SampleRow } from "../workbenchForm"
+import presetCases from "./fixtures/presetRows.json"
 
 const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
   id,
@@ -32,6 +37,8 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   min: null,
   max: null,
   options: [],
+  options_source: null,
+  row_per_value: false,
   index: false,
   help: "",
   placeholder: "",
@@ -108,6 +115,71 @@ describe("a new quote", () => {
     expect(quoteTyped(schema, { policy: [{ ...start.policy[0], years: "3" }] })).toBe(true)
     // A many-row table's column takes no default, so its value is typing.
     expect(quoteTyped(schema, { ...start, equipment: [{ item: "Crane" }] })).toBe(true)
+  })
+})
+
+describe("a row for each value", () => {
+  // The cases the server's preset_rows holds itself to as well.
+  type Case = {
+    name: string
+    table: { role: SchemaTable["role"]; rows: SchemaTable["rows"]; columns: (Partial<SchemaColumn> & { id: string; name: string })[] }
+    rows: SampleRow[]
+    read: SampleRow[]
+  }
+  const cases = presetCases.cases as unknown as Case[]
+  const tableOf = ({ table }: Case): SchemaTable => ({
+    id: "t_cover",
+    name: "coverage",
+    role: table.role,
+    rows: table.rows,
+    columns: table.columns.map(({ id, name, ...rest }) => column(id, name, rest)),
+  })
+
+  it.each(cases.map((one) => [one.name, one] as const))("%s", (_, one) => {
+    expect(presetRows(tableOf(one), one.rows)).toEqual(one.read)
+  })
+
+  const coverage: SchemaTable = {
+    id: "coverage",
+    name: "coverage",
+    role: "input",
+    rows: "many",
+    columns: [column("peril", "peril", { options: ["AOP", "EQ"], row_per_value: true, key: true }), column("limit", "limit", { type: "float" })],
+  }
+
+  it("names the column giving a table its rows, the first that may", () => {
+    expect(presetColumn(coverage)?.id).toBe("peril")
+    expect(presetColumn(equipment)).toBeNull()
+  })
+
+  it("reads each table a column gives rows through them, and leaves the values as they are when none has one", () => {
+    const values = { policy: [{ state: "CA" }], coverage: [{ peril: "EQ", limit: "5" }] }
+    expect(withPresetRows({ tables: [policy, coverage] }, values)).toEqual({
+      policy: [{ state: "CA" }],
+      coverage: [{ peril: "AOP" }, { peril: "EQ", limit: "5" }],
+    })
+    expect(withPresetRows({ tables: [policy, coverage] }, {}).coverage).toEqual([{ peril: "AOP" }, { peril: "EQ" }])
+    expect(withPresetRows({ tables: [policy, equipment] }, values)).toBe(values)
+  })
+
+  it("counts every row a column gives as filled, as the server sends each, but its value is not typing", () => {
+    const schema = { tables: [policy, coverage] }
+    const given = withPresetRows(schema, {})
+    expect(given.coverage.every((row) => rowFilled(coverage, row))).toBe(true)
+    expect(quoteFilled(schema, given)).toBe(false)
+    expect(quoteTyped(schema, given)).toBe(false)
+    expect(quoteProblems(schema, given)).toEqual({ [cellKey("policy", 0, "state")]: "Required" })
+    const typed: Record<string, SampleRow[]> = { coverage: [{ peril: "AOP" }, { peril: "EQ", limit: "5" }] }
+    expect(quoteFilled(schema, typed)).toBe(true)
+    expect(quoteTyped(schema, typed)).toBe(true)
+  })
+
+  it("counts nothing typed in a row left out, its value no longer one the column gives, as the server leaves it out", () => {
+    const schema = { tables: [policy, coverage] }
+    const gone: Record<string, SampleRow[]> = { coverage: [{ peril: "WD", limit: "5000" }] }
+
+    expect(quoteFilled(schema, gone)).toBe(false)
+    expect(quoteTyped(schema, gone)).toBe(false)
   })
 })
 

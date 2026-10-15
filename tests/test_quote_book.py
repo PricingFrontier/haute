@@ -182,6 +182,17 @@ def test_a_new_quote_keeps_its_details_in_the_typed_table_alone(book: QuoteBook,
     assert _kinds(book, quote.id) == ["created"]
 
 
+def test_is_renewal_is_kept_ticked_or_not_and_left_out_when_not_given(book: QuoteBook) -> None:
+    renewal = _create(book, inputs=_values(is_renewal=True))
+    unticked = _create(book, inputs=_values(is_renewal=False))
+
+    assert renewal.details["is_renewal"] is True
+    assert unticked.details["is_renewal"] is False
+    assert details_of(book.revision(renewal.id).inputs)["is_renewal"] is True
+    # A quote saved without it, as a release before it saves one, holds none.
+    assert "is_renewal" not in _create(book).details
+
+
 def test_the_title_is_the_name_else_the_insured_else_the_reference(book: QuoteBook) -> None:
     insured = _create(book, inputs=with_details(VALUES, {"insured": "Harbour"}))
     blank = _create(book, inputs=with_details(VALUES, {}))

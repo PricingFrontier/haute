@@ -41,6 +41,8 @@ In scope:
   `POST /api/workbench/tables`, the same of a form the view holds, saved or not.
 - `GET /api/workbench/form`, the form with its file's revision, and
   `PUT /api/workbench/form`, which writes the form unless the file changed since it was read.
+- `GET /api/workbench/params`, a params file's header and a column's distinct values,
+  which a column's allowed values are read from.
 - The Workbench view: how it is shown beside the pipeline editor and what the pipeline
   editor does meanwhile, its toolbar and keyboard shortcuts, its schema editor, its sheets
   (the canvas and its sections, the Table, the Collection, the Chart and the Heading, their
@@ -111,7 +113,11 @@ Out of scope:
   `group` (a name it shares with the columns grouped with it, `""` for none, which a
   Table showing groups draws over its labels), whether it
   is a `key` (a many-row table's keys say which row is which), its rules (`required`, `min`,
-  `max`, `options`), whether it is the table's `index`, the column numbering its rows
+  `max`, `options`, and `options_source`, the `file` in the pipeline folder's
+  `files/params/` and the `column` the allowed values were read from, `null` for none,
+  or for values typed in, which only an older form holds), whether it gives its table a
+  row for each of its allowed values (`row_per_value`, below), whether it is the table's
+  `index`, the column numbering its rows
   from 1, and how the sheets show it: its `help`, shown beside its label, its
   `placeholder`, what an empty input cell shows, its `default_value`, what a new quote
   starts with in it (text as typed, or `true` for a tick, `""` for none; only a one-row
@@ -121,9 +127,11 @@ Out of scope:
   automatic) and `use_grouping`. Every schema holds Haute's own table of a quote's
   details, `quote_details`, first: one row, an input, its columns `reference`,
   `quote_name`, `insured`, `broker`, `inception_date`, `expiry_date`, `valid_until`,
-  `currency`, `stage`, `assignee` and `archived`, in that order, the three dates Dates,
-  `archived` a True/false and the rest Text, each with the id `qd_` and its name. A form
-  read or saved without it takes it on; one whose `quote_details` is not Haute's (the
+  `currency`, `stage`, `assignee`, `archived` and `is_renewal`, in that order, the three
+  dates Dates, `archived` and `is_renewal` True/false and the rest Text, each with the id
+  `qd_` and its name. A form read or saved without it takes it on, and one holding its
+  columns as an earlier Haute made them (the first eleven, before `is_renewal`, or more of
+  them in order) takes the newer ones on after them; one whose `quote_details` is not Haute's (the
   name on another table, or its role, rows, columns, keys or index changed) is refused,
   as is a rule or a default on `reference`, `stage`, `assignee` or `archived`, which the
   underwriter app sets. Its labels, groups, help and placeholders are the project's, as are
@@ -137,7 +145,8 @@ Out of scope:
   are fixed and whether it is transposed: `row_numbers`, `density` (`compact` or
   `comfortable`), `gridlines` (`rows`, `all` or `none`), `striped`, `fixed_rows`,
   `transposed` and `groups`), a Collection (`collection`, boxes
-  showing columns of one-row tables, `columns` across), a Chart (`chart`, plotting number
+  showing columns of one-row tables, `columns` across, and its `spacers`, the gaps among
+  them, each the number of fields before it, in order and none past the last), a Chart (`chart`, plotting number
   columns, with what labels the rows of its many-row tables, `category`, a schema column
   named as a field is or null to number them, and how it draws: `chart_type` (`column`,
   `line`, `area` or `pie`), `orientation` (`vertical` or `horizontal`), `stacked`, `legend`
@@ -175,6 +184,11 @@ Out of scope:
   `POST /api/workbench/tables` answers the same for a form sent in the request, saved or
   not, checked the same way and 404 while the workbench is not enabled alike; it writes
   nothing.
+- **Params files.** `GET /api/workbench/params` with a `file` answers the header of that
+  CSV in the pipeline folder's `files/params/` and, given a `column`, the column's
+  distinct values: each as written, every value text, read as UTF-8 or else
+  Windows-1252 (as Excel saves a CSV on Windows), trimmed, blanks left out, in the order
+  the file first gives them. It writes nothing.
 - **The form, served and saved.** `GET /api/workbench/form` answers the form as its file
   holds it now and the file's `revision`, the content hash of its bytes: `null` while the
   file does not exist, when the form is the blank one. `PUT /api/workbench/form` takes the
@@ -275,7 +289,15 @@ Out of scope:
   not for True/false, one of the allowed values while it has some, a date for a Date, else
   typed), its placeholder for any type but
   True/false and Date and its rules: required, a range for an Integer or a Decimal, and the
-  allowed values, typed comma-separated, for any type but True/false and Date. Changing a
+  allowed values for any type but True/false and Date, never typed in but read from a
+  CSV in the pipeline folder's `files/params/`: its file chosen, then its column from the
+  file's header, and the column's distinct values, as written, trimmed, blanks left out
+  and in the order the file first gives them, copied in with where they came from as one
+  edit; the refresh button beside them reads them again, an edit only when they changed,
+  and the blank file takes them away, values typed in as an older form holds them
+  included, which the choice shows as typed in. A read answers only while the column's
+  source is still the one it began from, so one an undo overtakes changes nothing. What
+  stops a file or a column giving them shows under them. Changing a
   column's type drops the rules and the format the new type cannot have, and its default
   when it becomes or stops being True/false, or becomes a Date while it is not a day.
   Every text field
@@ -292,8 +314,9 @@ Out of scope:
   Quote Input's labels are held to (an identifier, none of the document's reserved labels,
   unique whatever its case), a column's name is an identifier that is not a Python keyword,
   as the server holds it, unique in its table, a many-row table needs a key, an input
-  column's range must not be inverted and its allowed values must be of its type,
-  True/false and Date columns can have none, and a default must be a value its column
+  column's range must not be inverted and its allowed values must be of its type and
+  read from a params file, not typed in, as an older form may hold them, True/false and
+  Date columns can have none, and a default must be a value its column
   takes: a tick for True/false, else text of its type, within its range and one of its
   allowed values. Haute's `quote_details` table, first, keeps
   its structure: its name, role and rows and its columns' names and types are fixed, and
@@ -308,8 +331,8 @@ Out of scope:
   marked, a plus adds a sheet named in turn, double-click renames one, a tab dragged onto
   another moves its sheet there, as Alt+Left and Alt+Right move the focused tab's sheet a
   place, the tab keeping the focus, each move one undo step and the sheet showing still
-  the one that shows, and the showing sheet's cross
-  deletes it, asking first when components are on it, while another sheet remains; the
+  the one that shows, and the showing sheet's own panel
+  deletes it (the properties panel, below), while another sheet remains; the
   schema and the sample are untouched. A sheet is a stack of its sections, each a strip
   across its whole width as tall as its height, one under the next in their order, the
   sheet ending where the last one ends, so a taller section is a longer sheet; a new
@@ -357,7 +380,9 @@ Out of scope:
   none, the numbers and the deletes, or, transposed, a column of them before the
   labels, which stay in view beside it; a Collection as boxes, its columns across, their labels above
   them or, while `labels` is `beside`, beside them, a tick box in a box as the other fields
-  are, the boxes compact (28px) or comfortable (36px) as its `density` says; each of the two in a frame, a border round the panel's
+  are, the boxes compact (28px) or comfortable (36px) as its `density` says, and each
+  spacer a gap across its whole width where it sits among the fields, the fields after it
+  starting a new row below the gap; each of the two in a frame, a border round the panel's
   colour, unless `frame` is off, when it sits on the sheet as its title and fields alone,
   all in the sheets' colours (below);
   a Chart as its type draws the values it plots (Charts, below); a Heading as its
@@ -433,7 +458,9 @@ Out of scope:
   label; its legend, Bottom, Top, Left, Right or None; and whether it is stacked, horizontal
   and shows its values as data labels, a pie being neither stacked nor horizontal), and
   the order of the fields it shows, moved
-  by dragging or Alt+Up and Alt+Down, each with a cross that stops showing it; and its
+  by dragging or Alt+Up and Alt+Down, each with a cross that stops showing it, and in a
+  Collection's its spacers among them, each a row moved as a field is, with a cross that
+  removes it, and Add spacer under them adding one after the last field; and its
   fields, ticked from
   the schema tables of its
   kind, many-row tables for a Table, one-row tables for a Collection and any table for a
@@ -441,7 +468,11 @@ Out of scope:
   collapsible with its role and how many of its columns show, each column with its type's
   icon, its name and its label, a Chart's columns other than numbers and an index disabled,
   since a Chart plots numbers. Fields are held by table and column id, in the order
-  ticked, so a rename keeps them. A grid holds one kind of row, so once a Table shows a
+  ticked, so a rename keeps them. A Collection's spacers keep their places among its
+  fields: a field it stops showing, unticked, crossed out or gone from the schema, takes
+  its place in the count with it, a field ticked goes after any spacer at the end, and
+  one left showing no fields keeps no spacers.
+  A grid holds one kind of row, so once a Table shows a
   field, tables whose rows do not line up with it (keyed by other columns, or keyless) are
   greyed out with their unticked columns disabled; an input table and an output table
   keyed alike line up. A Chart's fields and the column labelling its rows line up the
@@ -456,9 +487,14 @@ Out of scope:
   it, each committed on blur or Enter, its Show when, and its look: its size, Large, Medium
   or Small, and its alignment, Left, Centre or Right, one of three toggles the arrow keys
   also move between. While building, the showing sheet's tab has a settings
-  mark beside its cross that opens the sheet's own panel in the same place, with its
+  mark, and no delete of its own, that opens the sheet's own panel in the same place, with its
   title, its Show when and its layout, its width in whole pixels (no less than 240 or
-  than its components reach, a value below that refused at the field), and a section's
+  than its components reach, a value below that refused at the field), and at its foot
+  Delete sheet, disabled while it is the only sheet, which asks first in a dialog of the
+  editor's own, never the browser's: it names the sheet and how many components go with
+  it, the schema and the sample staying; Cancel, Escape or a press outside it keeps the
+  sheet, and Delete deletes it as one undo step, the first sheet left showing and its
+  panel closed. A section's
   bar opens the section's panel there: its
   title, committed on blur or Enter (a blank one kept out), its Show when, and its layout,
   its height in whole pixels (no less than 48 or than its components reach, a value below
@@ -482,9 +518,16 @@ Out of scope:
   these are true". Each change is one undo step.
 - **The sheet's keyboard.** While the sheets show and a component is selected: Escape
   deselects it, Delete or Backspace removes it, Ctrl/Cmd+D duplicates it (16px below and
-  to the right, selected), and the arrow keys nudge it by a grid step, or a pixel with
+  to the right, selected), Ctrl/Cmd+C copies it, a note saying so, and the arrow keys nudge it by a grid step, or a pixel with
   Shift, a burst of nudges within 800ms being one undo step, kept inside its section, a
-  nudge that cannot move it recording nothing. With a section's bar focused: Enter or Space
+  nudge that cannot move it recording nothing. While the sheets show, selected or not,
+  Ctrl/Cmd+V pastes a copy of the component copied, as it was when copied but for the
+  columns the schema has lost since, which it no longer shows or tests, onto the sheet
+  showing: into the section selected, else the selected component's, else the section it
+  was copied from while it is on that sheet, else the sheet's first; where it sat, moved
+  16px down and to the right while a component there sits at exactly that place, kept
+  inside the section and the sheet's width, a new component, selected and one undo step.
+  The copy is held while the editor is open, neither saved nor undone. With a section's bar focused: Enter or Space
   opens its panel, Alt+Up and Alt+Down move the section, and Delete or Backspace deletes it,
   asking first when components are in it, while another section remains on the sheet; with
   the section's panel open, Escape closes it. None of that from a text
@@ -524,12 +567,36 @@ Out of scope:
   app sets aside, is neither marked nor priced nor saved, as a blank one is not, and a value
   typed equal to its column's default counts as the default. A many-row table's columns
   take no default.
+- **A row for each value.** A column of a many-row input table that has allowed values can
+  give the table a row for each of them, in their order (`row_per_value`), such as a
+  coverage table with a row for each peril: the table then has those rows, each holding
+  its value in that column, a new quote's included, and since its allowed values come from
+  a params file, the rows follow a refresh and `haute app build`. The rows are read so
+  wherever a table's values are read, on the sheets and in what the server prices, whatever
+  the sample, a quote or a test quote holds: each value's row is the first holding it there,
+  the rows holding nothing there fill the rows left in order, and any other row is left
+  out. Each row is filled by its value, so once anything else in the quote is typed every
+  one goes to the pipeline (while the sheets hide that column, its value is left out, as any
+  hidden value is), a Chart plots each and a Table's output columns line up with each; but
+  a row's value is not typing: a quote holding nothing else typed, a row left out included,
+  is neither marked nor priced nor saved, and the server takes it as the empty quote, as it
+  takes a blank one. A grid showing the table shows its rows, whatever its rows and fixed
+  rows, with no Add row and no delete, the column's cells showing each row's value as text,
+  which takes no typing, and a value typed into the grid writes all its rows. A grid
+  showing it beside another many-row table whose rows are not the same (another column's
+  values, or rows of its own) shows every row of each, a table's cells past its own rows
+  taking no typing, and says its tables' rows do not line up. The first such column in
+  a table gives its rows: ticking another unticks it, and a form holding two names the
+  second among the schema's problems. A column of a one-row or an output table, the index
+  and one without allowed values give none; taking a column's allowed values away,
+  retyping it to True/false or a Date, or switching its table to one row unticks it, and
+  unticked, its rows stay as values typed.
 - **The sample.** Typing into a component's input columns in Preview types the form's
   sample: the quote an analyst keys in as an underwriter would, saved with the form and
   what the pipeline's previews run on (the Workbench Input, below). A Collection's boxes
   hold its one-row tables' one row; a Table's grid holds its
   many-row tables' rows, row by row, with Add row and a delete on each row, unless its rows
-  are fixed, adding and deleting a row in every input table the grid shows at once, so
+  are fixed or a column gives them (above), adding and deleting a row in every input table the grid shows at once, so
   their cells stay side by side; a one-row table's column in a grid shows that table's one
   value on every row. A grid starts with its rows: while its input tables hold no rows it
   shows that many empty ones, which the first value typed into it keeps; once they hold
@@ -708,7 +775,8 @@ Out of scope:
 - **The underwriter app.** The sheets reach underwriters through an app Haute builds from
   the project, apart from the builder. `haute app build` writes a release: the pipeline's
   bundle as a deploy builds it (the sample left out), the form without its sample
-  (`form.json`), what the release is (`release.json`: an id taken from the form and the
+  (`form.json`), each input column's allowed values from a params file read again from
+  the file as the project holds it, what the release is (`release.json`: an id taken from the form and the
   bundle, the form's revision, the pipeline's name, the Haute version that built it and
   when) and an entry point, `app.py`, serving it through the app Haute maintains.
   With `[deploy.container] base_image` set, pinned as a container deploy pins it, the
@@ -826,7 +894,8 @@ Out of scope:
   which gives it its reference and its own address; one made from another quote's
   revision (Duplicate, Renew, Create alternative) opens with that revision's values
   carried onto the current sheets and priced afresh, naming what it was made from and any
-  value that no longer fits. The sheets take no typing and are not priced, and Save is
+  value that no longer fits; a renewal opens with `is_renewal` ticked, which the
+  underwriter can untick, as one not made by Renew can be ticked by hand. The sheets take no typing and are not priced, and Save is
   off, while the quote is final, archived, shown at an earlier revision (at
   `/quotes/{id}/revisions/{n}`, with Open the newest) or saved on earlier sheets (opened
   on those sheets, with Move to current sheets, which carries its values onto the
@@ -1138,7 +1207,9 @@ Out of scope:
   app sets: a reference, `Q-` and six digits, taken from a counter in the transaction
   that creates the quote, so two quotes made at once take two and one whose creation
   fails keeps none; its stage, `draft` or `priced` as the revision was saved, or
-  `final`; who it is assigned to, at first who made it; and whether it is archived. The
+  `final`; who it is assigned to, at first who made it; and whether it is archived.
+  `is_renewal`, added after the others by the store's third migration, is null in the
+  rows written before it, which reads as unticked. The
   newest revision's row is the quote as the app lists, searches and orders it.
   Assigning, archiving, restoring, marking final and reopening each write a revision of
   the newest, its values, request, prices and release kept and its details changed: the
@@ -1172,11 +1243,16 @@ Out of scope:
   the store's migrations, numbered and shipped with Haute, so a Haute upgrade carries
   them; the store refuses to open a database behind the newest, naming what to run, and
   nothing migrates as it opens. A migration keeps the previous release's reads and
-  writes working: a column it adds is nullable or has a default, and it drops nothing;
-  and the database records the oldest schema whose Haute can still use it, so a Haute
-  behind the database's schema opens it when its own newest is at least that, as a
-  release rolled back after a migration does, and refuses it, naming the upgrade, when
-  it is not. A SQLite store keeps foreign keys on and its rollback journal, never
+  writes working where it can: a column it adds is nullable or has a default, and it
+  drops nothing; and the database records the oldest schema whose Haute can still use
+  it, so a Haute behind the database's schema opens it when its own newest is at least
+  that, as a release rolled back after a migration does, and refuses it, naming the
+  upgrade, when it is not. A migration after which the previous release could not read
+  what this one saves names itself as that oldest schema, so the previous release
+  refuses the database outright rather than failing on the quotes it cannot read: the
+  third does, as the sheets a quote is saved with now hold `is_renewal` in
+  `quote_details`, which a Haute at the second refuses. Rolling back past such a
+  migration means restoring the database as it was before it. A SQLite store keeps foreign keys on and its rollback journal, never
   write-ahead logging, so the file stands alone between writes.
 
 ## Design rationale
@@ -1538,6 +1614,13 @@ Out of scope:
   waiting on identity resolution is dropped with the commit controller's usual message. A
   read of the form that fails is shown in the view in place of the schema editor, with a
   way to try again.
+- `GET /api/workbench/params` answers 404 while the workbench is not enabled, and 409
+  with why a file or a column cannot give values: the project has no pipeline folder,
+  the name is not a CSV directly in `files/params/`, the file does not exist, is empty,
+  is neither UTF-8 nor Windows-1252 or cannot be read as a CSV, or the column is not in its header, holds no
+  values or holds more than 5,000. `haute app build` refuses a form with an input column
+  whose file can no longer give its values, naming the form and the column, before the
+  release directory is touched.
 - `PUT /api/workbench/form` answers 404 while the workbench is not enabled; 409
   "stale_document_revision: <form> changed on disk after the workbench read it. Reload the
   workbench before saving." when the file's revision is not the `base_revision` quoted (a

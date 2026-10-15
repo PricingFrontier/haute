@@ -24,6 +24,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -43,6 +45,8 @@
                 "min": null,
                 "max": null,
                 "options": ["Motor", "Fleet", "Property"],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -62,6 +66,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -81,6 +87,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -100,6 +108,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -119,6 +129,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -146,6 +158,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -165,6 +179,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -192,6 +208,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -219,6 +237,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": true,
                 "help": "",
                 "placeholder": "",
@@ -238,6 +258,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -257,6 +279,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -284,6 +308,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -327,7 +353,8 @@
                   "columns": 3,
                   "labels": "above",
                   "density": "comfortable",
-                  "frame": true
+                  "frame": true,
+                  "spacers": []
                 },
                 {
                   "id": "w_premium",
@@ -342,7 +369,8 @@
                   "columns": 3,
                   "labels": "above",
                   "density": "comfortable",
-                  "frame": true
+                  "frame": true,
+                  "spacers": []
                 },
                 {
                   "id": "w_chart",
@@ -406,7 +434,8 @@
                   "columns": 3,
                   "labels": "above",
                   "density": "comfortable",
-                  "frame": true
+                  "frame": true,
+                  "spacers": []
                 }
               ]
             }
@@ -440,7 +469,8 @@
                   "columns": 3,
                   "labels": "above",
                   "density": "comfortable",
-                  "frame": true
+                  "frame": true,
+                  "spacers": []
                 }
               ]
             }
@@ -502,7 +532,8 @@
                   "columns": 3,
                   "labels": "above",
                   "density": "comfortable",
-                  "frame": true
+                  "frame": true,
+                  "spacers": []
                 }
               ]
             }
@@ -534,6 +565,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -553,6 +586,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -572,6 +607,8 @@
                 "min": null,
                 "max": null,
                 "options": ["A", "B", "C"],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -591,6 +628,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -610,6 +649,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -629,6 +670,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -656,6 +699,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -675,6 +720,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -702,6 +749,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -729,6 +778,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -774,7 +825,8 @@
                   "columns": 3,
                   "labels": "above",
                   "density": "comfortable",
-                  "frame": true
+                  "frame": true,
+                  "spacers": []
                 },
                 {
                   "id": "w_many",
@@ -810,7 +862,8 @@
                   "columns": 3,
                   "labels": "above",
                   "density": "comfortable",
-                  "frame": true
+                  "frame": true,
+                  "spacers": []
                 }
               ]
             }
@@ -841,7 +894,8 @@
                   "columns": 3,
                   "labels": "above",
                   "density": "comfortable",
-                  "frame": true
+                  "frame": true,
+                  "spacers": []
                 }
               ]
             }
@@ -873,6 +927,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -892,6 +948,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -911,6 +969,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -930,6 +990,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -949,6 +1011,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -968,6 +1032,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -987,6 +1053,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -1014,6 +1082,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -1033,6 +1103,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -1060,6 +1132,8 @@
                 "min": null,
                 "max": null,
                 "options": [],
+                "options_source": null,
+                "row_per_value": false,
                 "index": false,
                 "help": "",
                 "placeholder": "",
@@ -1103,7 +1177,8 @@
                   "columns": 3,
                   "labels": "above",
                   "density": "comfortable",
-                  "frame": true
+                  "frame": true,
+                  "spacers": []
                 },
                 {
                   "id": "w_premium",
@@ -1118,7 +1193,8 @@
                   "columns": 3,
                   "labels": "above",
                   "density": "comfortable",
-                  "frame": true
+                  "frame": true,
+                  "spacers": []
                 }
               ]
             },
@@ -1162,7 +1238,8 @@
                   "columns": 3,
                   "labels": "above",
                   "density": "comfortable",
-                  "frame": true
+                  "frame": true,
+                  "spacers": []
                 },
                 {
                   "id": "w_flood_extra",
@@ -1187,7 +1264,8 @@
                   "columns": 3,
                   "labels": "above",
                   "density": "comfortable",
-                  "frame": true
+                  "frame": true,
+                  "spacers": []
                 }
               ]
             },
@@ -1218,7 +1296,8 @@
                   "columns": 3,
                   "labels": "above",
                   "density": "comfortable",
-                  "frame": true
+                  "frame": true,
+                  "spacers": []
                 }
               ]
             },
@@ -1246,7 +1325,8 @@
                   "columns": 3,
                   "labels": "above",
                   "density": "comfortable",
-                  "frame": true
+                  "frame": true,
+                  "spacers": []
                 }
               ]
             }
@@ -1282,7 +1362,8 @@
                   "columns": 3,
                   "labels": "above",
                   "density": "comfortable",
-                  "frame": true
+                  "frame": true,
+                  "spacers": []
                 }
               ]
             }

@@ -9,7 +9,7 @@
  */
 import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
-import { quoteTyped, valuesBasis } from "../utils/sheetValues"
+import { quoteTyped, valuesBasis, withPresetRows } from "../utils/sheetValues"
 import { columnKey, quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
 import { withCell, type SampleRow, type SampleValue } from "../utils/workbenchForm"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
@@ -86,7 +86,7 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => {
     const { quote, locked, readOnly, price } = get()
     if (readOnly || form === null || status !== "ready" || quotePricer === null) return
     const { hidden } = sheetVisibility(form, quote)
-    if (!quoteTyped(quotedSchema(quotedSchema(form.schema, hidden), locked), quote)) {
+    if (!quoteTyped(quotedSchema(quotedSchema(form.schema, hidden), locked), withPresetRows(form.schema, quote))) {
       set({ price: null, error: null })
       return
     }

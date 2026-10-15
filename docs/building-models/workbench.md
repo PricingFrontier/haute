@@ -65,6 +65,33 @@ values. A number shows in its format wherever the sheets show it, a percentage a
 value times 100, so you type 0.125 for 12.5%; while you type into a cell it shows as
 typed, and what is typed is what is saved and priced.
 
+A column's **allowed values** come from a CSV in the pipeline's params folder
+(`rating/files/params/`, **params** in the Pipeline files panel); they are never typed in.
+Choose the file beside **Allowed**, then its column: the column's distinct values become
+the allowed values, each as written (a code like `01234` keeps its zero), trimmed, blanks
+left out, in the order the file first gives them. A CSV saved from Excel reads as it is.
+The values are copied in when you choose them; after the file changes, the refresh button
+beside them reads them again, and `haute app build` always reads them from the file as it
+is, so the underwriter app allows what the file holds. A file or column that cannot give
+values (gone, unreadable, with no values or more than 5,000) says why under them, and stops
+`haute app build`. Choosing the blank file takes them away. Values typed in by hand, which
+an older form may hold, show beside **Allowed** as typed in and are named among the
+schema's problems until they are read from a params file or taken away.
+
+In a many-row input table, **Rows** under a column's allowed values gives the table **a row
+for each** of them, in their order. A `coverage` table whose `peril` column takes its values
+from `perils.csv` (AOP, EQ, NW, WD, SCS, FLD) then has exactly six rows, one for each peril,
+and the underwriter types the other columns on each. The Tables that show it have those rows
+and no Add row or delete; the peril cells show the peril and take no typing. A Table showing
+it beside another table whose rows differ shows every row of both and says their rows do
+not line up. Every row goes
+to the pipeline once the quote is priced, a peril with nothing else typed included, but the
+perils alone are not typing: a quote holding nothing else is not priced, marked or saved.
+The rows follow the params file: refresh the values, or build the app, and a new peril gets
+a row, while what was typed for a peril stays with it. Only one column in a table gives its
+rows, so ticking another unticks the first. Make the column the table's key if an output
+table keyed by peril should line up with the rows.
+
 A column's **default** is the value a new quote starts with in it, as if the underwriter
 had typed it: ticked or not for a True/false, one of its allowed values when it has some,
 a date for a Date, or typed. Only a one-row input table's columns take one. Build shows a
@@ -80,12 +107,14 @@ typed, and a value typed equal to its default counts as the default.
   held to the rules a Quote Input's labels follow (an identifier, no reserved name, unique
   whatever its case), a column's name is an identifier that is not a Python keyword, unique
   in its table, a many-row table needs a key, an input column's range must not be inverted
-  and its allowed values must be of its type, a True/false or Date column can have none,
-  and a default must be a value the column takes (of its type, in its range, one of its
-  allowed values). Changing a column's type drops the rules and the format the new type
-  cannot have, and the default when it becomes or stops being True/false, or becomes a Date
-  while it is not a date; switching a
-  table to many rows clears its defaults.
+  and its allowed values must be of its type and read from a params file, a True/false or
+  Date column can have none, a default must be a value the column takes (of its type,
+  in its range, one of its allowed values), and only one column in a table gives it a row
+  for each value. Changing a column's type drops the rules and
+  the format the new type cannot have, a row for each value going with the allowed values,
+  and the default when it becomes or stops being
+  True/false, or becomes a Date while it is not a date; switching a table to many rows
+  clears its defaults, and to one row its keys and its row for each value.
 - Removing a column or a table a sheet shows asks first, and takes it off the sheet.
 
 ### Quote details
@@ -94,9 +123,13 @@ Every workbench has Haute's own table, `quote_details`, first in the Schema sect
 row of a quote's details, which the underwriter app keeps with each saved quote and lists
 on its Quotes page. Its columns are fixed: **reference**, **quote_name**, **insured**,
 **broker**, **inception_date**, **expiry_date**, **valid_until**, **currency**, **stage**,
-**assignee** and **archived**. Put them on the sheets as any other columns, and give them
+**assignee**, **archived** and **is_renewal**. Put them on the sheets as any other columns, and give them
 labels, groups, help, placeholders, defaults and rules; the pipeline receives the table as
 it receives any other input, so a rule can read a quote's inception date or its stage.
+**is_renewal** is a tick box: a quote made with the app's **Renew** opens with it ticked,
+and an underwriter ticks it for a renewal started any other way. A project saved before
+**is_renewal** existed takes it on when it is opened; save once so the Workbench Input
+copies it.
 
 The app sets **reference**, **stage**, **assignee** and **archived** itself: their cells take
 no typing in the app and take no rules and no default. Assigning, archiving, restoring, marking final and
@@ -164,7 +197,11 @@ with **+** at the end of the numbers to add one and a delete over each number; i
 and gridlines follow the lines as drawn. With **groups** ticked, the columns side by side
 in one schema group share a heading over their labels, as merged cells over a table's
 headers would in Excel; a column in no group has none. Transposed, the groups sit in a
-column before the labels. Order the fields so each group's columns are together. A
+column before the labels. Order the fields so each group's columns are together. To
+group a Collection's fields, press **Add spacer** under its order and drag the spacer
+between two fields (or move it with Alt+Up and Alt+Down): the Collection leaves a gap
+there, and the fields after it start a new row. Two spacers together make a wider gap,
+and a spacer's cross removes it. A
 Table's and a Collection's properties are in two
 panes: **Config**, the fields it shows and their order, and **Display**, its title, when it
 shows, its layout and its look. A Heading's properties are its **Text** and
@@ -175,8 +212,13 @@ to the grid. A component stays inside its section: it stops at the section's edg
 moves into another section only once its top is over it. Resizing a component past its
 section's bottom pushes the section's border down. It stays inside the sheet's width
 too, stopping at its edges; resizing it past the right edge widens the sheet. With a component selected (click it, or Tab to it), the
-arrow keys nudge it (Shift for a pixel), Ctrl+D duplicates it, Delete or Backspace removes
-it and Escape deselects it; Ctrl+Z and Ctrl+Y undo and redo. Ctrl+1 fits the sheet to the
+arrow keys nudge it (Shift for a pixel), Ctrl+D duplicates it, Ctrl+C copies it, Delete
+or Backspace removes it and Escape deselects it; Ctrl+Z and Ctrl+Y undo and redo. Ctrl+V
+pastes what you copied onto the sheet showing, another sheet too: into the section you
+have selected (or the selected component's, else the section it came from, else the
+sheet's first), where the original sat, moved down and right past one already there, and
+selected so you can drag it into place; a column deleted from the schema since you copied
+it is left out of the copy. Ctrl+1 fits the sheet to the
 window, and the zoom runs from 25% to 200%. A component with a problem — no fields, a
 Heading with no text, a column no longer in the schema, a table of the other kind, a
 Chart's field that is not a number or is an index, tables whose rows do not line up, a pie
@@ -204,9 +246,9 @@ double-click it to fit the section to what it holds. A section never shrinks by 
 Sheets have tabs along the top: **+** adds one, double-click (or F2) renames one, dragging
 a tab onto another moves its sheet there (or press Alt+Left and Alt+Right on a tab), the
 settings mark on the showing tab opens the sheet's own panel (its title, when it shows
-and its width),
-and the cross beside it deletes it (asking first when components are on it; the schema and
-the sample stay).
+and its width). **Delete sheet** at the foot of that panel deletes the sheet once you
+confirm it in the box that opens, which says how many components go with it; the schema
+and the sample stay, and Ctrl+Z brings the sheet back. The last sheet cannot be deleted.
 
 ## Showing sheets, sections and components conditionally
 
@@ -277,7 +319,9 @@ the row in every input table the grid shows, so the cells stay side by side). A 
 starts with its rows, empty; the first value you type keeps them, and from then on the
 rows are yours to add and delete, fewer than it started with too, though a Table of fixed
 rows never shows fewer. Change a Table's rows while building and Preview shows it: empty
-rows after the last one you typed into go, or more are added. Each cell is the control its
+rows after the last one you typed into go, or more are added. A Table showing a table that
+has a row for each value (see [Schema](#schema)) shows those rows whatever its own rows
+say. Each cell is the control its
 column calls for: a tick box, a dropdown of the allowed values, a date picker, or a text
 field. An empty cell is blank, or shows its column's placeholder. The sample is part of
 what **Save** writes, and **Undo** and **Redo** take back what you type, in Preview as
@@ -367,7 +411,9 @@ builder on screen. With a quote store it is where they manage their quotes too.
   app its SQLAlchemy URL in `HAUTE_QUOTE_STORE_URL`; without it the app prices and keeps
   nothing, and says so. The app does not start on a database it has not been migrated to:
   run `haute app migrate` (with `HAUTE_QUOTE_STORE_URL` set, or `--url`) before a release
-  that needs it starts.
+  that needs it starts. Back the database up first: after some migrations, such as the one
+  that adds **is_renewal**, an earlier release no longer starts on the database, so rolling
+  back means restoring that backup.
 
 A page opened before a new release is refused when it prices or saves, and reloading it
 picks up the release; its unsaved values stay in the browser.
@@ -400,7 +446,7 @@ name (its `quote_name`, saved with the next **Save**), its stage, and:
   running release; a final quote cannot be saved over until someone **reopens** it, giving a
   reason. The final stays in its history.
 - **More**: **Duplicate**, **Renew** and **Create alternative** each start a new quote from
-  the revision showing, linked to it; **Archive** takes it out of the lists (it opens read
+  the revision showing, linked to it, a renewal with **is_renewal** ticked; **Archive** takes it out of the lists (it opens read
   only until restored); **Copy link**.
 - **History**: the handover note, every revision (each opens as it was saved), what was done
   to the quote, by whom and when, and the quotes it came from or that were made from it.

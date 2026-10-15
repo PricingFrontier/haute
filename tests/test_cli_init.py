@@ -101,8 +101,8 @@ class TestInitCreatesProjectStructure:
         monkeypatch.chdir(tmp_path)
         runner.invoke(cli, ["init"], catch_exceptions=False)
         assert (tmp_path / "rating" / "config").is_dir()
-        # The versioned home for the data and model files the pipeline reads.
-        for sub in ("data", "models"):
+        # The versioned home for the data, model and parameter files the pipeline reads.
+        for sub in ("data", "models", "params"):
             assert (tmp_path / "rating" / "files" / sub).is_dir()
         # Nothing used the old rating/data and rating/outputs placeholders.
         assert not (tmp_path / "rating" / "data").exists()

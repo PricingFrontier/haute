@@ -9,7 +9,7 @@ import type { CollectionWidget, FormSchema, FormSpec, SchemaColumn, SchemaTable,
 import { valuesBasis } from "../../utils/sheetValues"
 import { columnKey } from "../../utils/sheetVisibility"
 import { BLANK_THEME, COLLECTION_OPTIONS, type SampleRow } from "../../utils/workbenchForm"
-import { section, sheet } from "../../workbench/__tests__/fixtures"
+import { hiddenPerilsForm, section, sheet } from "../../workbench/__tests__/fixtures"
 import useWorkbenchFormStore from "../useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { PRICING_DELAY_MS, type PricedValues, type QuotePricer } from "../useWorkbenchPricingStore"
@@ -24,6 +24,8 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   min: null,
   max: null,
   options: [],
+  options_source: null,
+  row_per_value: false,
   index: false,
   help: "",
   placeholder: "",
@@ -172,6 +174,20 @@ describe("useWorkbenchPreviewStore", () => {
     store().setCell("t1", 0, "c1", "5")
     await store().settle()
     expect(quotePricer).toHaveBeenCalledWith({ ...form, schema: defaulted }, { t1: [{ c3: true, c4: "Acme", c1: "5" }] })
+  })
+
+  it("prices nothing while the only value typed is in a row its table's rows leave out, the column giving them hidden", async () => {
+    const quotePricer = vi.fn<QuotePricer>(() => Promise.resolve(answered(1)))
+    useWorkbenchPricingStore.setState({ quotePricer })
+    useWorkbenchFormStore.setState({ form: hiddenPerilsForm() })
+    // A limit held for NW, which the perils no longer hold.
+    useWorkbenchPreviewStore.setState({ quote: { coverage: [{ "coverage.peril": "NW", "coverage.limit": "5000" }] } })
+    await store().priceNow()
+    expect(quotePricer).not.toHaveBeenCalled()
+
+    useWorkbenchPreviewStore.setState({ quote: { coverage: [{ "coverage.peril": "EQ", "coverage.limit": "5000" }] } })
+    await store().priceNow()
+    expect(quotePricer).toHaveBeenCalledTimes(1)
   })
 
   it("keeps a locked column as the app set it: no typing, and not what makes a quote typed", async () => {

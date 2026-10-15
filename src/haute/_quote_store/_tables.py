@@ -126,6 +126,8 @@ QUOTE_DETAILS = Table(
     Column("stage", String(STAGE_LENGTH), nullable=False),
     Column("assignee", String(PRINCIPAL_LENGTH), nullable=False),
     Column("archived", Boolean, nullable=False),
+    # Null in the rows written before the third migration, and in those a release before it writes.
+    Column("is_renewal", Boolean, nullable=True),
     ForeignKeyConstraint(
         ["quote_id", "revision"],
         ["haute_quote_revisions.quote_id", "haute_quote_revisions.number"],

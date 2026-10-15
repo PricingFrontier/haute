@@ -8,14 +8,14 @@
  * those values gave its row, dimmed until the next answer. Pressing a cell types there.
  */
 import { Info, Plus, Trash2 } from "lucide-react"
-import { useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react"
+import { Fragment, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react"
 import type { HeadingWidget, Theme } from "../api/types"
 import { CommittedTextField } from "../components/form"
 import { INPUT_STYLE } from "../panels/editors/_shared"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { formatValue } from "../utils/formatValue"
-import { cellKey, formattedNumber } from "../utils/sheetValues"
+import { cellKey, formattedNumber, presetColumn } from "../utils/sheetValues"
 import { columnKey } from "../utils/sheetVisibility"
 import {
   BLANK_THEME,
@@ -78,6 +78,8 @@ const GRID_CELL_CLASS =
 const ROW_HEIGHT: Record<TableOptions["density"], string> = { compact: "h-7", comfortable: "h-9" }
 /** The space between a Collection's boxes, and round them, at each density. */
 const BOX_GAPS: Record<CollectionOptions["density"], string> = { compact: "gap-x-3 gap-y-2 p-2", comfortable: "gap-x-4 gap-y-3 p-3" }
+/** How tall a Collection's spacer is at each density: a gap between its boxes, so with the gaps round it, three. */
+const SPACER_HEIGHT: Record<CollectionOptions["density"], string> = { compact: "h-2", comfortable: "h-3" }
 /** A cell whose value breaks its column's rules: outlined as a field in error is, naming the problem. */
 const PROBLEM_STYLE: CSSProperties = { boxShadow: "inset 0 0 0 1px var(--danger-border-strong)" }
 
@@ -300,9 +302,10 @@ export default function WidgetBody({ widget, fields }: { widget: Widget; fields:
 
 /**
  * One-row columns as boxes, `columns` across and as many rows as it takes, each labelled
- * above its box or beside it, the boxes compact or comfortable, as its options say. An
- * output column shows what pricing gave its table's one row, dimmed while the price is for
- * other values, and a dash before the first answer or after pricing fails.
+ * above its box or beside it, the boxes compact or comfortable, as its options say, and a
+ * gap across its whole width where each of its spacers sits, the fields after it starting a
+ * new row. An output column shows what pricing gave its table's one row, dimmed while the
+ * price is for other values, and a dash before the first answer or after pricing fails.
  */
 function FieldBoxes({
   fields,
@@ -319,53 +322,64 @@ function FieldBoxes({
   const stale = price !== null && price.basis !== basis
   const height = ROW_HEIGHT[options.density]
   const beside = options.labels === "beside"
+  // The spacers before the field at `at`, or after the last field for the end.
+  const spacersAt = (at: number) =>
+    options.spacers.flatMap((place, n) =>
+      place === at || (at === fields.length && place > at)
+        ? [<div key={`spacer-${n}`} aria-hidden="true" data-testid="collection-spacer" className={SPACER_HEIGHT[options.density]} style={{ gridColumn: "1 / -1" }} />]
+        : [],
+    )
   return (
     <div
       className={`grid min-h-0 flex-1 content-start overflow-auto ${BOX_GAPS[options.density]}`}
       style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
     >
-      {fields.map(({ key, found }) => {
+      {fields.map(({ key, found }, index) => {
         const priced = found !== null && found.table.role === "output" ? price?.tables[found.table.name]?.[0]?.[found.column.name] : undefined
         return (
-          <div key={key} className={`flex min-w-0 ${beside ? "items-center gap-2" : "flex-col gap-1"}`} title={fieldTitle(found)}>
-            <span className={`truncate text-xs ${beside ? "w-2/5 shrink-0" : ""}`} style={{ color: labelColor(found, colours.font) }}>
-              <FieldLabel found={found} />
-            </span>
-            {fillable(found) ? (
-              <div
-                className={`pointer-events-auto ${beside ? "min-w-0 flex-1" : ""}`}
-                onPointerDown={typeHere}
-              >
-                <Cell
-                  found={found}
-                  value={rows[found.table.id]?.[0]?.[found.column.id]}
-                  onChange={(value) => setCell(found.table.id, 0, found.column.id, value)}
-                  label={fieldLabel(found)}
-                  height={height}
-                  boxed
-                  colours={colours}
-                  problem={problems[cellKey(found.table.id, 0, found.column.id)] ?? null}
-                  disabled={readOnly || locked.has(columnKey(found.table.id, found.column.id))}
-                />
-              </div>
-            ) : (
-              <div
-                data-testid={`priced-${key}`}
-                data-stale={stale && priced !== undefined ? "true" : undefined}
-                className={`flex ${height} items-center justify-end rounded-md px-2.5 text-xs tabular-nums transition-opacity ${beside ? "min-w-0 flex-1" : ""}`}
-                style={{
-                  border: `1px solid ${colours.frame}`,
-                  background: colours.output ?? "var(--bg-elevated)",
-                  color: priced === undefined || priced === null ? "var(--text-secondary)" : (colours.font ?? "var(--text-primary)"),
-                  opacity: stale ? 0.5 : 1,
-                }}
-              >
-                <span className="truncate">{found?.column.index ? "1" : shown(priced, found)}</span>
-              </div>
-            )}
-          </div>
+          <Fragment key={key}>
+            {spacersAt(index)}
+            <div className={`flex min-w-0 ${beside ? "items-center gap-2" : "flex-col gap-1"}`} title={fieldTitle(found)}>
+              <span className={`truncate text-xs ${beside ? "w-2/5 shrink-0" : ""}`} style={{ color: labelColor(found, colours.font) }}>
+                <FieldLabel found={found} />
+              </span>
+              {fillable(found) ? (
+                <div
+                  className={`pointer-events-auto ${beside ? "min-w-0 flex-1" : ""}`}
+                  onPointerDown={typeHere}
+                >
+                  <Cell
+                    found={found}
+                    value={rows[found.table.id]?.[0]?.[found.column.id]}
+                    onChange={(value) => setCell(found.table.id, 0, found.column.id, value)}
+                    label={fieldLabel(found)}
+                    height={height}
+                    boxed
+                    colours={colours}
+                    problem={problems[cellKey(found.table.id, 0, found.column.id)] ?? null}
+                    disabled={readOnly || locked.has(columnKey(found.table.id, found.column.id))}
+                  />
+                </div>
+              ) : (
+                <div
+                  data-testid={`priced-${key}`}
+                  data-stale={stale && priced !== undefined ? "true" : undefined}
+                  className={`flex ${height} items-center justify-end rounded-md px-2.5 text-xs tabular-nums transition-opacity ${beside ? "min-w-0 flex-1" : ""}`}
+                  style={{
+                    border: `1px solid ${colours.frame}`,
+                    background: colours.output ?? "var(--bg-elevated)",
+                    color: priced === undefined || priced === null ? "var(--text-secondary)" : (colours.font ?? "var(--text-primary)"),
+                    opacity: stale ? 0.5 : 1,
+                  }}
+                >
+                  <span className="truncate">{found?.column.index ? "1" : shown(priced, found)}</span>
+                </div>
+              )}
+            </div>
+          </Fragment>
         )
       })}
+      {spacersAt(fields.length)}
     </div>
   )
 }
@@ -397,12 +411,16 @@ function groupRuns(fields: ShownField[]): { group: string; start: number; size: 
  * is for other values. Its options say whether the rows are numbered, how tall they are,
  * which lines it draws, whether every other row is shaded, whether its header's labels are
  * in capitals and whether rows can be added and deleted; fixed, it never shows fewer than
- * `rows`, and fixed or not, it shows every row the values hold. Transposed, its fields run
- * down its side, each labelled at the start of its line, and its rows across, numbered
- * above with a delete over each and an add at the end; the shading and the lines are the
- * grid's as drawn, an output field ruled off above its line. Showing groups, while a field
- * it shows is in one, each run of fields side by side in a schema group is headed by one
- * cell naming it, over their labels, or beside them when transposed (`groupRuns`).
+ * `rows`, and fixed or not, it shows every row the values hold. Showing a table a column
+ * gives a row for each value, it shows those rows, fixed, that column's cells holding each
+ * row's value as text, and a value typed writes them whole; beside a table whose rows
+ * differ, it shows every row of each, a table's cells past its own rows taking no typing.
+ * Transposed, its fields run down its side, each labelled at the start of its line, and its
+ * rows across, numbered above with a delete over each and an add at the end; the shading
+ * and the lines are the grid's as drawn, an output field ruled off above its line. Showing
+ * groups, while a field it shows is in one, each run of fields side by side in a schema
+ * group is headed by one cell naming it, over their labels, or beside them when
+ * transposed (`groupRuns`).
  */
 function FieldGrid({
   fields,
@@ -419,12 +437,24 @@ function FieldGrid({
   const oneRow = (found: Fillable) => found.table.rows === "one"
   const inputs = gridInputTables(fields)
   const inputTables = inputs.map((table) => table.id)
+  // The rows a column gives each table that has them, a row for each value: a grid showing one
+  // shows every row its tables hold, none added or deleted.
+  const givenRows = new Map(
+    inputs.flatMap((table) => {
+      const column = presetColumn(table)
+      return column === null ? [] : [[table.id, column.options.length] as const]
+    }),
+  )
+  const given = givenRows.size > 0
   const holding = Math.max(0, ...inputTables.map((id) => held[id]?.length ?? 0))
-  const count = holding === 0 ? rows : options.fixed_rows ? Math.max(rows, holding) : holding
+  const count = given ? holding : holding === 0 ? rows : options.fixed_rows ? Math.max(rows, holding) : holding
+  // A table a column gives its rows has no cells past them, beside a table whose rows differ.
+  const past = (found: NonNullable<Found>, row: number): boolean => row >= (givenRows.get(found.table.id) ?? Infinity)
   // Each input table's rows as the grid shows them.
   const shownRows = (id: string) => padRows(held[id] ?? [], count)
+  // Its rows as shown are written whole until its tables hold rows, and always while a column gives them.
   const setValue = (tableId: string, row: number, columnId: string, value: SampleValue) => {
-    if (holding > 0 || !inputTables.includes(tableId)) setCell(tableId, row, columnId, value)
+    if (!inputTables.includes(tableId) || (holding > 0 && !given)) setCell(tableId, row, columnId, value)
     else setRows(Object.fromEntries(inputTables.map((id) => [id, id === tableId ? withCell(shownRows(id), row, columnId, value) : shownRows(id)])))
   }
   const addRow = () => setRows(Object.fromEntries(inputTables.map((id) => [id, padRows(held[id] ?? [], count + 1)])))
@@ -437,8 +467,8 @@ function FieldGrid({
     found.table.rows === "one" ? price?.tables[found.table.name]?.[0]?.[found.column.name] : matched.get(found.table.id)?.[row]?.[found.column.name]
 
   const { row_numbers: numbered, gridlines, striped, transposed } = options
-  // Rows are not added or deleted in a grid of fixed rows, or while the values are read only.
-  const fixed = options.fixed_rows || readOnly
+  // Rows are not added or deleted in a grid of fixed rows, or of rows a column gives, or while the values are read only.
+  const fixed = options.fixed_rows || given || readOnly
   const height = ROW_HEIGHT[options.density]
   // The line before a field's column: an output's, and every column's in a full grid; none
   // without gridlines, or at the grid's left edge.
@@ -467,7 +497,20 @@ function FieldGrid({
 
   /** A field's cell in one of the grid's rows, ruled as `rules` say: one in its line when transposed. */
   const valueCell = ({ key, found }: ShownField, row: number, rules: CSSProperties) => {
-    if (fillable(found)) {
+    if (found !== null && presetColumn(found.table)?.id === found.column.id) {
+      // The column giving its table's rows shows each row's value, and takes no typing.
+      const value = held[found.table.id]?.[row]?.[found.column.id]
+      return (
+        <td
+          key={transposed ? row : key}
+          className={`${height} px-2.5 ${isNumeric(found.column.type) ? "text-right tabular-nums" : ""}`}
+          style={{ ...rules, color: colours.font ?? "var(--text-primary)" }}
+        >
+          {typeof value === "string" ? (formattedNumber(found.column, value) ?? value) : null}
+        </td>
+      )
+    }
+    if (fillable(found) && !past(found, row)) {
       const at = oneRow(found) ? 0 : row
       return (
         <td
@@ -505,7 +548,7 @@ function FieldGrid({
           opacity: output && stale ? 0.5 : 1,
         }}
       >
-        {found?.column.index ? row + 1 : output ? shown(priced, found) : null}
+        {found?.column.index ? (past(found, row) ? null : row + 1) : output ? shown(priced, found) : null}
       </td>
     )
   }

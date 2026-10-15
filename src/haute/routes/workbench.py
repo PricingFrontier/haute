@@ -1,5 +1,6 @@
 """The workbench routes (specs/workbench): its status, its tables as the saved form defines
-them now or as an unsaved form the view holds would, and the form itself, read and saved.
+them now or as an unsaved form the view holds would, the form itself, read and saved, and
+the params files a column's allowed values are read from.
 
 Every route reads ``haute.toml``, and those that serve the saved form read it too, from the
 working directory on every request, off the event loop, so an edit to either reaches the
@@ -37,6 +38,7 @@ from haute._workbench_form import (
     with_quote_details,
     write_form,
 )
+from haute._workbench_params import read_param_file
 from haute._workbench_tables import WorkbenchTablesError, workbench_tables
 from haute.routes._contract_errors import contract_error_http_exception
 from haute.routes._helpers import save_lock
@@ -46,6 +48,7 @@ from haute.schemas import (
     WorkbenchFormSaveRequest,
     WorkbenchFormSaveResponse,
     WorkbenchFormTablesRequest,
+    WorkbenchParamFileResponse,
     WorkbenchStatusResponse,
     WorkbenchTablesResponse,
     WorkbenchTestQuoteAcceptRequest,
@@ -192,6 +195,16 @@ async def put_workbench_form(body: WorkbenchFormSaveRequest) -> WorkbenchFormSav
         raise HTTPException(
             status_code=409, detail=f"{config.form} could not be written: {exc}"
         ) from None
+
+
+@router.get("/params", response_model=WorkbenchParamFileResponse)
+async def get_param_file(file: str, column: str | None = None) -> WorkbenchParamFileResponse:
+    """A params file's header, with the distinct values of *column* when one is named: what
+    a column's allowed values are read from. A file or column that cannot give them answers
+    409 with why (``ParamFileError``)."""
+    config = await _enabled_config()
+    read = await run_in_threadpool(read_param_file, config.project_root, file, column)
+    return WorkbenchParamFileResponse(columns=read.columns, values=read.values)
 
 
 # ── Test quotes ───────────────────────────────────────────────────────────

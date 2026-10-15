@@ -21,7 +21,7 @@
 | `src/haute/_graph_shape.py` | Topology-only invariants independent of any single node's config (`validate_graph_shape_contracts`, `validate_pipeline_graph_shape_contracts`), including submodel child graphs. |
 | `src/haute/_scaffold.py` | `haute init` template strings: `haute.toml`, `.env.example`, CI YAML for 3 providers × 7 deploy targets, starter pipeline/tests/utilities, pre-commit hook. |
 | `src/haute/_project.py` | Project-root discovery (`get_project_root`, `is_haute_project`) and pipeline-file resolution (`resolve_pipeline_file`, 4-tier fallback). |
-| `src/haute/_project_layout.py` | The project's folder layout: `PIPELINE_FILES_FOLDER` and `PIPELINE_FILES_SUBFOLDERS` (the pipeline folder's `files/` with `data/` and `models/`), `LOCAL_FOLDERS` (the root's unversioned `data/` and `outputs/`), `VERSIONED_FILE_LIMIT_BYTES`, `pipeline_folder` (the configured pipeline folder when it lies below the project root), `pipeline_files_folder` and `default_model_folder`. |
+| `src/haute/_project_layout.py` | The project's folder layout: `PIPELINE_FILES_FOLDER` and `PIPELINE_FILES_SUBFOLDERS` (the pipeline folder's `files/` with `data/`, `models/` and `params/`), `LOCAL_FOLDERS` (the root's unversioned `data/` and `outputs/`), `VERSIONED_FILE_LIMIT_BYTES`, `pipeline_folder` (the configured pipeline folder when it lies below the project root), `pipeline_files_folder` and `default_model_folder`. |
 | `haute.toml` (repo root) | Concrete instance of the schema emitted by `src/haute/_scaffold.py::haute_toml`; `[project].pipeline` is read back by `src/haute/_project.py::_toml_configured_pipeline`, the one reader behind pipeline binding, `src/haute/_builders.py::_configured_pipeline_dir` and `src/haute/routes/_helpers.py::pipeline_dir`. |
 
 ## Key types and data structures
@@ -338,8 +338,8 @@ target means adding one registry entry, not touching every template function.
 nodes. `starter_test(name)` parses that file and asserts only the configured pipeline name.
 `handle_init` creates a populated `rating/utility/` package (with generated `rating/utility/__init__.py` and
 `rating/utility/features.py`) alongside an empty `rating/config/` and the empty
-`rating/files/data/` and `rating/files/models/` folders (`PIPELINE_FILES_SUBFOLDERS`),
-but no node sidecars or `prompts/` directory, and removes
+`rating/files/data/`, `rating/files/models/` and `rating/files/params/` folders
+(`PIPELINE_FILES_SUBFOLDERS`), but no node sidecars or `prompts/` directory, and removes
 any root `main.py` before writing `rating/main.py`.
 `haute_toml()` assembles `[project]`/`[deploy]`/`[test_quotes]`/`[safety]`/`[safety.approval]`
 (`min_approvers` hardcoded to 2 in the template — solo users lower it by hand)/`[ci]`/

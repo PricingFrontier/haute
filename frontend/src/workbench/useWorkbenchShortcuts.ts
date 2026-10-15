@@ -1,9 +1,10 @@
 import { useEffect, useRef } from "react"
 import { hasModifier, inModalDialog, isFormControl, isTypingTarget, saveCommittingField } from "../hooks/keyboardTargets"
+import useToastStore from "../stores/useToastStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
-import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
+import useWorkbenchViewStore, { activePage } from "../stores/useWorkbenchViewStore"
 import { GRID } from "../utils/sheetGeometry"
-import { duplicateWidget, findWidget, moveWidget, removeWidget } from "../utils/workbenchForm"
+import { duplicateWidget, findWidget, moveWidget, pasteWidget, removeWidget, widgetName } from "../utils/workbenchForm"
 
 /** Arrow presses this close together nudge as one undo step, as a drag is one. */
 const NUDGE_BURST_MS = 800
@@ -15,9 +16,10 @@ const NUDGE_BURST_MS = 800
  * and redo an edit outside a text field. While the sheets show, building or in Preview,
  * Ctrl+1 fits the sheet to its viewport; while building, Escape closes the sheet's own
  * panel or the section's and, with a component selected, Escape deselects it, Delete or
- * Backspace removes it, Ctrl+D duplicates it and the arrow keys nudge it by a grid step
- * (Shift: a pixel), kept inside its section,
- * a burst of nudges being one undo step; none of that from a control, whose own keys pick
+ * Backspace removes it, Ctrl+D duplicates it, Ctrl+C copies it and the arrow keys nudge it
+ * by a grid step (Shift: a pixel), kept inside its section,
+ * a burst of nudges being one undo step; selected or not, Ctrl+V pastes the component
+ * copied onto the sheet showing; none of that from a control, whose own keys pick
  * an option. A section header's own keys are its own. Keys in a modal dialog are the
  * dialog's, as they are for the pipeline editor's shortcuts.
  */
@@ -61,8 +63,27 @@ export default function useWorkbenchShortcuts(onSave: () => void): void {
         view.select(null)
         return
       }
-      const selected = view.selectedId === null ? null : findWidget(forms.form, view.selectedId)?.widget ?? null
-      if (selected === null) return
+      const found = view.selectedId === null ? null : findWidget(forms.form, view.selectedId)
+      const plain = mod && !e.shiftKey && !e.altKey
+      if (plain && key === "v" && view.copied !== null) {
+        // Into the section selected, else the selected component's, else the one it was
+        // copied from while that is on the sheet showing, else the sheet's first.
+        e.preventDefault()
+        const { widget, sectionId } = view.copied
+        const page = activePage(forms.form, view.pageId)
+        const onPage = (id: string | null | undefined): id is string => page.sections.some((section) => section.id === id)
+        const target = [view.sectionId, found?.section.id, sectionId].find(onPage) ?? page.sections[0].id
+        let pastedId = ""
+        forms.change((spec) => {
+          const pasted = pasteWidget(spec, widget, target)
+          pastedId = pasted.id
+          return pasted.spec
+        })
+        view.select(pastedId)
+        return
+      }
+      if (found === null) return
+      const selected = found.widget
       if (e.key === "Escape") {
         view.select(null)
       } else if (e.key === "Delete" || e.key === "Backspace") {
@@ -76,6 +97,11 @@ export default function useWorkbenchShortcuts(onSave: () => void): void {
           return copied.spec
         })
         view.select(copyId)
+      } else if (plain && key === "c") {
+        view.setCopied({ widget: structuredClone(selected), sectionId: found.section.id })
+        useToastStore.getState().addToast("info", `${widgetName(selected)} copied`)
+        // The browser's own copy of any text selected still happens, as the pipeline editor's does.
+        return
       } else if (e.key.startsWith("Arrow")) {
         const step = e.shiftKey ? 1 : GRID
         const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0

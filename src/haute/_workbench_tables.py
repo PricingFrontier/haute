@@ -259,30 +259,93 @@ def sample_quote(spec: FormSpec) -> dict[str, Any]:
 
     An input table with values is an object under its name when it has one row per quote, and
     a list of objects when it has many; rows with nothing typed are left out, and so is a table
-    with none. A value in a column the sheets hide is left out, as if it had never been typed.
-    Values take their column's type: a number typed with a currency sign or separators becomes
-    a number, and an unticked box in a filled row is false. A value that isn't of its column's
-    type stays as typed, for the Workbench Input to report.
+    with none. A table a column gives a row for each value has those rows (:func:`preset_rows`),
+    each filled by its value; but those values are not typing, so a quote holding nothing else
+    is empty, as a blank one is. A value in a column the sheets hide is left out, as if it had
+    never been typed. Values take their column's type: a number typed with a currency sign or
+    separators becomes a number, and an unticked box in a filled row is false. A value that
+    isn't of its column's type stays as typed, for the Workbench Input to report.
     """
     # Imported here: the visibility rules read cells as this module types them.
     from haute._workbench_visibility import visibility
 
     hidden = visibility(spec, spec.sample).hidden
     sample: dict[str, Any] = {}
+    typed = False
     for table in spec.data_schema.tables:
         if table.role != "input":
             continue
-        rows = spec.sample.get(table.id, [])
+        rows = preset_rows(table, spec.sample.get(table.id, []))
+        if table.rows == "one":
+            rows = rows[:1]
         columns = [column for column in table.columns if (table.id, column.id) not in hidden]
+        given = preset_column(table)
+        typed = typed or any(
+            _filled(row.get(column.id))
+            for row in rows
+            for column in columns
+            if not column.index and column is not given
+        )
         # Numbered as the rows stand, from 1, so deleting a row renumbers those after it.
         records = [
             record
-            for number, row in enumerate(rows if table.rows == "many" else rows[:1], 1)
+            for number, row in enumerate(rows, 1)
             if (record := _record(columns, row, number))
         ]
         if records:
             sample[table.name] = records if table.rows == "many" else records[0]
-    return sample
+    return sample if typed else {}
+
+
+def preset_column(table: SchemaTable) -> SchemaColumn | None:
+    """The column giving *table* a row for each of its allowed values: in a many-row input
+    table, the first marked ``row_per_value`` that is not the index and has values; None
+    for none."""
+    if table.role != "input" or table.rows != "many":
+        return None
+    return next(
+        (
+            column
+            for column in table.columns
+            if column.row_per_value and not column.index and column.options
+        ),
+        None,
+    )
+
+
+def preset_rows(
+    table: SchemaTable, rows: Sequence[dict[str, str | bool]]
+) -> list[dict[str, str | bool]]:
+    """*rows* as *table* holds them: with a column giving it a row for each value, those
+    rows in the values' order, each value's row the first holding it there, the rows holding
+    nothing there filling the rows left in order, each holding its value, and any other row
+    left out; else *rows* as they are.
+
+    The view reads a table's rows by the same rule (``presetRows`` in
+    ``frontend/src/utils/sheetValues.ts``), so a grid's rows are the rows priced; the cases
+    in ``frontend/src/utils/__tests__/fixtures/presetRows.json`` hold both to it.
+    """
+    column = preset_column(table)
+    if column is None:
+        return list(rows)
+    places: dict[str, int] = {}
+    for place, value in enumerate(column.options):
+        places.setdefault(value, place)
+    placed: list[dict[str, str | bool] | None] = [None] * len(column.options)
+    loose: list[dict[str, str | bool]] = []
+    for row in rows:
+        raw = row.get(column.id)
+        if not _filled(raw):
+            loose.append(row)
+            continue
+        at = places.get(raw.strip()) if isinstance(raw, str) else None
+        if at is not None and placed[at] is None:
+            placed[at] = row
+    free = iter(loose)
+    return [
+        {**(row if row is not None else next(free, {})), column.id: value}
+        for row, value in zip(placed, column.options, strict=True)
+    ]
 
 
 def _record(

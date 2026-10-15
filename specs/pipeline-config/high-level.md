@@ -203,8 +203,9 @@ removes a root `main.py`, creates no `prompts/` directory, and creates no node s
 in a new project), is versioned as a whole: Commit takes every file in it into version
 history ([git-integration](../git-integration/high-level.md)). Its `files/` folder holds the
 files the pipeline reads that are not code: `files/data/` for the tables and data the
-pipeline ships with, and `files/models/` for model files with their feature contracts and
-optimiser results. `haute init` creates both. Outside the pipeline folder, the project
+pipeline ships with, `files/models/` for model files with their feature contracts and
+optimiser results, and `files/params/` for parameter files. `haute init` creates all three.
+Outside the pipeline folder, the project
 root's `data/` holds local data and `outputs/` holds what runs write. Neither is versioned,
 and moving to another version deletes `outputs/`. A bare filename given to the Export pane's
 "Save model to file" or to an optimiser result's Publish lands in `files/models/`. A project

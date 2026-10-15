@@ -2,7 +2,7 @@
 
 The pipeline folder (the folder holding ``[project].pipeline``) is versioned as a
 whole. Its ``files/`` folder holds what the pipeline reads that is not code:
-``files/data/`` and ``files/models/``. The project root's ``data/`` and
+``files/data/``, ``files/models/`` and ``files/params/``. The project root's ``data/`` and
 ``outputs/`` stay on the analyst's machine.
 """
 
@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 from haute._project import _toml_configured_pipeline
 
 PIPELINE_FILES_FOLDER = "files"
-PIPELINE_FILES_SUBFOLDERS = ("data", "models")
+PIPELINE_FILES_SUBFOLDERS = ("data", "models", "params")
 LOCAL_FOLDERS = ("data", "outputs")
 
 #: The largest file Haute versions from the pipeline folder: GitHub refuses larger files.

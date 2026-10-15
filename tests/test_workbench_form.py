@@ -15,11 +15,13 @@ from haute._explore_pivots import PIVOT_NUMBER_FORMATS
 from haute._workbench_config import WorkbenchConfig
 from haute._workbench_form import (
     QUOTE_DETAILS_COLUMNS,
+    QUOTE_DETAILS_FIRST,
     QUOTE_DETAILS_MANAGED,
     ColumnFormat,
     FormDocument,
     FormSpec,
     HeadingWidget,
+    SchemaColumn,
     WorkbenchFormError,
     blank_form,
     form_file_revision,
@@ -44,6 +46,8 @@ def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
         "min": None,
         "max": None,
         "options": [],
+        "options_source": None,
+        "row_per_value": False,
         "index": False,
         "help": "",
         "placeholder": "",
@@ -147,10 +151,12 @@ FORM: dict[str, Any] = {
                             ],
                             "show_when": ALWAYS,
                             "columns": 2,
-                            # Its labels beside its boxes, compact and without a frame.
+                            # Its labels beside its boxes, compact and without a frame, a
+                            # gap between its two fields.
                             "labels": "beside",
                             "density": "compact",
                             "frame": False,
+                            "spacers": [1],
                         },
                         {
                             "id": "w_layers",
@@ -385,7 +391,7 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         "transposed",
         "groups",
     )
-    collection_options = ("labels", "density", "frame")
+    collection_options = ("labels", "density", "frame", "spacers")
     chart_options = ("category", "chart_type", "orientation", "stacked", "legend", "data_labels")
     sparse = json.loads(json.dumps(FORM))
     del sparse["sample"]
@@ -431,12 +437,13 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         "transposed": False,
         "groups": False,
     }
-    # A Collection labelled above its boxes, comfortable and framed.
+    # A Collection labelled above its boxes, comfortable and framed, with no spacers.
     boxes = widgets(written)[0]
     assert {field: boxes[field] for field in collection_options} == {
         "labels": "above",
         "density": "comfortable",
         "frame": True,
+        "spacers": [],
     }
     # The sheets in the editor's own colours.
     assert written["theme"] == {
@@ -489,6 +496,12 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         (lambda f: widgets(f)[0].update(labels="under"), "labels"),
         (lambda f: widgets(f)[0].update(density="roomy"), "density"),
         (lambda f: widgets(f)[1].update(header="bold"), "header"),
+        # A Collection's spacers are each the number of its fields before it, in order and
+        # none past its last field; only a Collection has them.
+        (lambda f: widgets(f)[0].update(spacers=[2, 1]), "w_policy's spacers are out of order"),
+        (lambda f: widgets(f)[0].update(spacers=[3]), "a spacer after 3 fields, but shows 2"),
+        (lambda f: widgets(f)[0].update(spacers=[-1]), "spacers.0"),
+        (lambda f: widgets(f)[1].update(spacers=[]), "spacers"),
         # Only a Table and a Collection have a frame and a density.
         (lambda f: widgets(f)[2].update(frame=False), "frame"),
         # The colours are the sheets', on the form: a component has none of its own.
@@ -607,6 +620,18 @@ def test_a_sheet_as_wide_as_its_components_reach_holds_them(tmp_path: Path) -> N
     assert read_form_document(config(tmp_path)).spec.pages[0].width == 1240
 
 
+def test_a_collection_s_spacers_at_one_place_or_at_either_end_read(tmp_path: Path) -> None:
+    # Two together are a wider gap; one before the first field or after the last, a gap there.
+    spaced = json.loads(json.dumps(FORM))
+    widgets(spaced)[0]["spacers"] = [0, 1, 1, 2]
+    (tmp_path / "forms").mkdir()
+    (tmp_path / "forms" / "form.json").write_text(json.dumps(spaced), encoding="utf-8")
+
+    spec = read_form_document(config(tmp_path)).spec
+
+    assert widgets(json.loads(render_form(spec)))[0]["spacers"] == [0, 1, 1, 2]
+
+
 def test_a_sheet_holding_its_own_components_is_refused_with_what_replaced_them(
     tmp_path: Path,
 ) -> None:
@@ -676,7 +701,12 @@ def test_a_form_holding_hautes_quote_details_reads_and_writes_as_it_is(tmp_path:
     held = _with_details_table(
         lambda table: table["columns"][1].update(label="Quote", help="As the broker calls it")
     )
-    held["schema"]["tables"][0]["columns"][7].update(options=["GBP", "USD"], default_value="GBP")
+    # Its currency's allowed values read from a params file, as any column it types can.
+    held["schema"]["tables"][0]["columns"][7].update(
+        options=["GBP", "USD"],
+        options_source={"file": "currencies.csv", "column": "code"},
+        default_value="GBP",
+    )
     held["schema"]["tables"][0]["columns"][0]["group"] = "Quote"
     held["schema"]["tables"][0]["columns"][10]["default_value"] = False
     (tmp_path / "forms").mkdir()
@@ -691,20 +721,78 @@ def test_a_form_holding_hautes_quote_details_reads_and_writes_as_it_is(tmp_path:
     assert with_quote_details(spec) is spec
 
 
+def test_a_form_saved_before_is_renewal_takes_it_on_after_the_columns_it_has(
+    tmp_path: Path,
+) -> None:
+    # As a project saved before is_renewal holds it: the first eleven, one with a label.
+    held = _with_details_table(lambda table: table["columns"].pop())
+    held["schema"]["tables"][0]["columns"][2]["label"] = "Insured name"
+    assert [c["name"] for c in held["schema"]["tables"][0]["columns"]] == [
+        name for _, name, _ in QUOTE_DETAILS_FIRST
+    ]
+    as_saved = json.dumps(held)
+    (tmp_path / "forms").mkdir()
+    (tmp_path / "forms" / "form.json").write_text(as_saved, encoding="utf-8")
+
+    spec = read_form_document(config(tmp_path)).spec
+
+    details = spec.data_schema.tables[0]
+    assert [(c.id, c.name, c.type) for c in details.columns] == list(QUOTE_DETAILS_COLUMNS)
+    assert details.columns[-1] == SchemaColumn(id="qd_is_renewal", name="is_renewal", type="bool")
+    assert details.columns[2].label == "Insured name"
+    # Written with it, and the data it was read from left as it was.
+    written = json.loads(render_form(spec))["schema"]["tables"][0]["columns"]
+    assert written[-1]["name"] == "is_renewal"
+    assert json.dumps(held) == as_saved
+    assert FormSpec.model_validate(held).data_schema.tables[0].columns[-1].name == "is_renewal"
+
+
+def test_a_form_saved_by_any_earlier_haute_takes_on_the_columns_added_since(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Today's twelve, and the eleven before is_renewal, as a later Haute with one more reads them.
+    twelve = _with_details_table()
+    eleven = _with_details_table(lambda table: table["columns"].pop())
+    swapped = _with_details_table(
+        lambda table: table["columns"].insert(10, table["columns"].pop(11))
+    )
+    later = (*QUOTE_DETAILS_COLUMNS, ("qd_renewal_of", "renewal_of", "str"))
+    monkeypatch.setattr("haute._workbench_form.QUOTE_DETAILS_COLUMNS", later)
+
+    for held in (twelve, eleven):
+        details = FormSpec.model_validate(held).data_schema.tables[0]
+        assert [(c.id, c.name, c.type) for c in details.columns] == list(later)
+    # Out of order, they are no Haute's: left as they are, and refused.
+    with pytest.raises(ValidationError, match="is Haute's: a one-row input table"):
+        FormSpec.model_validate(swapped)
+
+
 @pytest.mark.parametrize(
     ("change", "message"),
     [
         (lambda t: t.update(rows="many"), "is Haute's: a one-row input table"),
         (lambda t: t.update(role="output"), "is Haute's: a one-row input table"),
-        (lambda t: t["columns"].pop(), "is Haute's: a one-row input table"),
+        # A column of the first eleven taken out is not the table as it was, so is refused.
+        (lambda t: t["columns"].pop(2), "is Haute's: a one-row input table"),
+        (lambda t: t["columns"][11].update(type="str"), "is Haute's: a one-row input table"),
         (lambda t: t["columns"][1].update(name="title"), "is Haute's: a one-row input table"),
         (lambda t: t["columns"][4].update(type="str"), "is Haute's: a one-row input table"),
+        (
+            lambda t: t["columns"][1].update(row_per_value=True),
+            "is Haute's: a one-row input table",
+        ),
         (
             lambda t: t["columns"][0].update(required=True),
             "reference is set by the underwriter app",
         ),
         (
             lambda t: t["columns"][8].update(options=["draft"]),
+            "stage is set by the underwriter app",
+        ),
+        (
+            lambda t: t["columns"][8].update(
+                options_source={"file": "stages.csv", "column": "stage"}
+            ),
             "stage is set by the underwriter app",
         ),
         (
@@ -721,10 +809,13 @@ def test_a_form_holding_hautes_quote_details_reads_and_writes_as_it_is(tmp_path:
         "many-rows",
         "output",
         "column-gone",
+        "is-renewal-retyped",
         "renamed",
         "retyped",
+        "row-per-value",
         "rule",
         "options",
+        "options-source",
         "default",
         "ticked-default",
         "own-id",
