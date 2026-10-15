@@ -639,6 +639,43 @@ def test_a_release_is_refused_for_what_the_project_cannot_ship(project: Path) ->
     assert "has no workbench" in refused()
 
 
+def test_a_build_replaces_only_a_release_it_made(project: Path) -> None:
+    """The project, a folder holding it, and a folder whose release.json is not a release
+    are refused, each left as it was: a stray release.json is no licence to delete."""
+    (project / "release.json").write_text("{}", encoding="utf-8")
+    for output in (project, project.parent):
+        with pytest.raises(WorkbenchAppError, match="is the project or holds it"):
+            build_release(project, output)
+        assert (project / "haute.toml").is_file()
+        assert (project / "release.json").read_text(encoding="utf-8") == "{}"
+
+    notes = project / "build" / "notes"
+    notes.mkdir(parents=True)
+    (notes / "release.json").write_text('{"not": "a release"}', encoding="utf-8")
+    (notes / "mine.txt").write_text("mine", encoding="utf-8")
+    with pytest.raises(WorkbenchAppError, match="not a release"):
+        build_release(project, notes)
+    assert (notes / "mine.txt").read_text(encoding="utf-8") == "mine"
+
+
+def test_an_earlier_release_is_replaced_only_once_its_successor_has_built(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release_dir = project / "build" / "app"
+    earlier = build_release(project, release_dir)
+
+    def unwritten(*_: Any, **__: Any) -> Any:
+        raise WorkbenchAppError("the release could not be written")
+
+    monkeypatch.setattr("haute._workbench_app.write_release", unwritten)
+    with pytest.raises(WorkbenchAppError, match="could not be written"):
+        build_release(project, release_dir)
+
+    assert read_release(release_dir)[0].id == earlier.id
+    # Nothing of the build that failed is left beside it.
+    assert [path.name for path in release_dir.parent.iterdir()] == ["app"]
+
+
 def test_haute_app_build_writes_the_release(project: Path) -> None:
     from click.testing import CliRunner
 

@@ -21,6 +21,7 @@ import contextvars
 import copy
 import json
 import os
+import uuid
 from collections.abc import AsyncIterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -238,10 +239,12 @@ def build_release(
     too, with the release's entry point in the scoring app's place; *haute_requirement* is the
     ``haute`` the image installs, as the container target takes it.
 
-    *release_dir* is replaced when it holds an earlier release and refused when it holds
-    anything else. Raises :class:`WorkbenchAppError` for a project without a workbench, sheets
-    never saved, allowed values a params file can no longer give, a directory that is not a
-    release, or a pipeline that does not validate.
+    *release_dir* is replaced when it holds an earlier release (``_is_release``) and refused
+    when it holds anything else, or is or holds the project or the working directory. The
+    release is built in a folder beside it and takes its place only once it has built, so a
+    build that fails leaves the earlier release as it was. Raises :class:`WorkbenchAppError`
+    for a project without a workbench, sheets never saved, allowed values a params file can no
+    longer give, a directory that is not a release, or a pipeline that does not validate.
     """
     import shutil
 
@@ -274,12 +277,7 @@ def build_release(
         form = with_param_options(document.spec, project_dir)
     except ParamFileError as exc:
         raise WorkbenchAppError(f"{config.form}: {exc.message}") from exc
-    if release_dir.exists() and any(release_dir.iterdir()):
-        if not (release_dir / RELEASE_FILE).is_file():
-            raise WorkbenchAppError(
-                f"{release_dir} holds files that are not a release: name an empty directory."
-            )
-        shutil.rmtree(release_dir)
+    _check_output(project_dir, release_dir)
 
     deploy_config = DeployConfig.from_toml(project_dir / "haute.toml")
     deploy_config.pipeline_file = resolve_pipeline_file(project_dir)
@@ -290,37 +288,105 @@ def build_release(
         except DeployError as exc:
             raise WorkbenchAppError(f"[deploy.container] base_image: {exc.message}") from exc
     resolved = resolve_config(deploy_config)
+    # Built beside the release it replaces, which is left as it is until this one has built.
+    building = release_dir.with_name(f".{release_dir.name}.building-{uuid.uuid4().hex[:8]}")
     try:
         try:
-            results = validate_deploy(resolved)
-        except DeployError as exc:
-            context = exc.context if isinstance(exc.context, dict) else {}
-            details = [
-                *(context.get("structural_errors") or []),
-                *(context.get("test_quote_errors") or []),
-            ] or [str(exc)]
+            try:
+                results = validate_deploy(resolved)
+            except DeployError as exc:
+                context = exc.context if isinstance(exc.context, dict) else {}
+                details = [
+                    *(context.get("structural_errors") or []),
+                    *(context.get("test_quote_errors") or []),
+                ] or [str(exc)]
+                raise WorkbenchAppError(
+                    "The pipeline did not validate:\n"
+                    + "\n".join(f"  - {line}" for line in details)
+                ) from exc
+            failed = [result for result in results if result["status"] != "ok"]
+            if failed:
+                raise WorkbenchAppError(
+                    "Test quotes failed:\n"
+                    + "\n".join(f"  - {result['file']}: {result['error']}" for result in failed)
+                )
+            if base_image:
+                prepare_build_directory(
+                    resolved,
+                    building,
+                    haute_requirement=haute_requirement,
+                    extra_files=(FORM_FILE, RELEASE_FILE),
+                    extra_dependencies=STORE_DEPENDENCIES,
+                )
+            else:
+                write_bundle(resolved, building)
+        finally:
+            resolved.close()
+        release = write_release(building, form, config.app_host, config.app_edit_role)
+        _swap_in(building, release_dir)
+    except BaseException:
+        shutil.rmtree(building, ignore_errors=True)
+        raise
+    return release
+
+
+def _is_release(directory: Path) -> bool:
+    """Whether *directory* holds a release :func:`write_release` wrote: a ``release.json`` that
+    reads as a :class:`Release`, with the bundle's manifest and the entry point beside it."""
+    try:
+        Release(**json.loads((directory / RELEASE_FILE).read_text(encoding="utf-8")))
+    except (OSError, ValueError, TypeError):
+        return False
+    return (directory / MANIFEST_FILE).is_file() and (directory / "app.py").is_file()
+
+
+def _check_output(project_dir: Path, release_dir: Path) -> None:
+    """Refuse a *release_dir* a build must not replace: the project or the working directory,
+    or a folder holding either, a project's own files or anything but an earlier release."""
+    where = release_dir.resolve()
+    for protected, what in (
+        (project_dir, "the project"),
+        (Path.cwd().resolve(), "the working directory"),
+    ):
+        if protected == where or protected.is_relative_to(where):
             raise WorkbenchAppError(
-                "The pipeline did not validate:\n" + "\n".join(f"  - {line}" for line in details)
+                f"{release_dir} is {what} or holds it: name a folder of the release's own, "
+                "such as .haute/app/release."
+            )
+    if where.exists() and not where.is_dir():
+        raise WorkbenchAppError(f"{release_dir} is a file: name a folder for the release.")
+    if where.is_dir() and any(where.iterdir()):
+        if (where / "haute.toml").exists() or (where / ".git").exists() or not _is_release(where):
+            raise WorkbenchAppError(
+                f"{release_dir} holds files that are not a release: name an empty directory."
+            )
+
+
+def _swap_in(built: Path, release_dir: Path) -> None:
+    """Put the release in *built* at *release_dir*: an earlier release there is moved aside
+    first, put back if the new one cannot take its place, and removed once it has."""
+    import shutil
+
+    earlier: Path | None = None
+    if release_dir.is_dir() and any(release_dir.iterdir()):
+        earlier = release_dir.with_name(f".{release_dir.name}.earlier-{uuid.uuid4().hex[:8]}")
+        release_dir.rename(earlier)
+    elif release_dir.is_dir():
+        release_dir.rmdir()
+    try:
+        built.rename(release_dir)
+    except OSError:
+        if earlier is not None:
+            earlier.rename(release_dir)
+        raise
+    if earlier is not None:
+        try:
+            shutil.rmtree(earlier)
+        except OSError as exc:
+            raise WorkbenchAppError(
+                f"The release was built into {release_dir}, but the earlier one, moved to "
+                f"{earlier}, could not be removed: {exc}"
             ) from exc
-        failed = [result for result in results if result["status"] != "ok"]
-        if failed:
-            raise WorkbenchAppError(
-                "Test quotes failed:\n"
-                + "\n".join(f"  - {result['file']}: {result['error']}" for result in failed)
-            )
-        if base_image:
-            prepare_build_directory(
-                resolved,
-                release_dir,
-                haute_requirement=haute_requirement,
-                extra_files=(FORM_FILE, RELEASE_FILE),
-                extra_dependencies=STORE_DEPENDENCIES,
-            )
-        else:
-            write_bundle(resolved, release_dir)
-    finally:
-        resolved.close()
-    return write_release(release_dir, form, config.app_host, config.app_edit_role)
 
 
 def build_image(release_dir: Path, tag: str) -> None:

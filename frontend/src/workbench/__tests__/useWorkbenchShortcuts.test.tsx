@@ -5,7 +5,8 @@
  * copies and the arrows nudge as one undo step per burst, kept inside its section, top and
  * bottom, never growing it; Ctrl+V pastes the copy, selected or not; none of the sheet's
  * keys from a field or a select, nor on the schema section, nor in Preview, where Ctrl+1
- * applies, and undo and redo for the sample typed there.
+ * applies, and undo and redo for the sample typed there; the selection's keys only from
+ * the sheet or with nothing focused.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react"
@@ -314,6 +315,47 @@ describe("useWorkbenchShortcuts on the sheets", () => {
     key({ key: "Delete" })
     key({ key: "d", ctrlKey: true })
     expect(widgets()).toHaveLength(2)
+  })
+
+  it("acts on the selection from the sheet or with nothing focused, never from a panel, the toolbar or a tab", () => {
+    const viewport = document.createElement("div")
+    const onTheSheet = document.createElement("div")
+    viewport.appendChild(onTheSheet)
+    // A focusable row of the properties panel's Order, and a toolbar button.
+    const panelRow = document.createElement("div")
+    panelRow.tabIndex = 0
+    const button = document.createElement("button")
+    document.body.append(viewport, panelRow, button)
+    useWorkbenchViewStore.setState({ viewport })
+    try {
+      for (const target of [panelRow, button]) {
+        key({ key: "Delete" }, target)
+        key({ key: "Backspace" }, target)
+        key({ key: "ArrowRight" }, target)
+        key({ key: "d", ctrlKey: true }, target)
+        key({ key: "c", ctrlKey: true }, target)
+      }
+      expect(widgets()).toHaveLength(2)
+      expect(widgets()[0]).toMatchObject({ x: 16, y: 16 })
+      expect(useWorkbenchViewStore.getState().copied).toBeNull()
+      expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(0)
+
+      // Escape closes the panel from inside it.
+      key({ key: "Escape" }, panelRow)
+      expect(useWorkbenchViewStore.getState().selectedId).toBeNull()
+
+      useWorkbenchViewStore.setState({ selectedId: "w_boxes" })
+      key({ key: "Delete" }, onTheSheet)
+      expect(widgets().map((widget) => widget.id)).toEqual(["w_grid"])
+
+      useWorkbenchViewStore.setState({ selectedId: "w_grid" })
+      key({ key: "Delete" }, document.body)
+      expect(widgets()).toHaveLength(0)
+    } finally {
+      viewport.remove()
+      panelRow.remove()
+      button.remove()
+    }
   })
 
   it("in Preview, fits the sheet on Ctrl+1 and undoes and redoes, the sample typed there, but never edits the sheet", () => {

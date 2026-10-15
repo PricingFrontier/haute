@@ -56,7 +56,7 @@ function NoteEditor({ quote }: { quote: WorkbenchAppQuote }) {
       />
       <div className="flex items-center gap-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
         {quote.note_by !== null && quote.note_at !== null && <span title={fullTime(quote.note_at)}>By {quote.note_by}, {relativeTime(quote.note_at)}</span>}
-        <button type="button" className={`${BUTTON} ml-auto`} disabled={locked || changing || note.trim() === quote.note} onClick={() => void change("note", { note: note.trim() })}>
+        <button type="button" className={`${BUTTON} ml-auto`} disabled={locked || changing || note.trim() === quote.note} onClick={() => void change("note", { note: note.trim() }, quote)}>
           Save note
         </button>
       </div>

@@ -34,7 +34,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Server API](server-api.md) | Domain errors, generated browser contract | `API-R02` |
 | [Submodels](submodels.md) | Submodels registered by import, one reuse mechanism | `SUB-R02` |
 | [t-boost](t-boost.md) | What rating-table models make possible: cell-level holdout A/E, unfolding into rating steps, model comparison with premium attribution, measured analyst adjustments (all awaiting a decision) | `TBOOST-02` |
-| [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; the quote store on the server (its engine awaiting IT); managing quotes in the app past the Quotes page: comparing revisions, validity, outcomes, many quotes at once; exports from the app (awaiting a decision on formats); test quotes past what Preview shows kept in full; actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources); and the fixes from the review of 15 October 2026: actions that land on their target, quotes written once, a regression gate that checks what the app sends, test quotes in the panel and in git, what the sheets show priced as shown, the form's Save, the app's quote life, building the sheets, and one mechanism per concern | `WB-14` |
+| [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; the quote store on the server (its engine awaiting IT); managing quotes in the app past the Quotes page: comparing revisions, validity, outcomes, many quotes at once; exports from the app (awaiting a decision on formats); test quotes past what Preview shows kept in full; actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources); and the fixes from the review of 15 October 2026: quotes written once, a regression gate that checks what the app sends, test quotes in the panel and in git, what the sheets show priced as shown, the form's Save, the app's quote life, building the sheets, and one mechanism per concern | `WB-15` |
 
 ## Delivery plan — 24 September 2026
 
@@ -59,7 +59,7 @@ requests #303 to #309 built, made at `main` `db7d03a5` by five Codex passes and
 six Fable 5.1 reviews, every finding verified at its source lines. It looked for
 defects, duplicated mechanisms and drift between the specifications and the code.
 It records its method, limits and evidence, and maps every finding to the package
-that tracks it: `WB-14` to `WB-22`, `BUG-32` to `BUG-36` and `FSH-R04`. It is a
+made for it: `WB-14` to `WB-22`, `BUG-32` to `BUG-36` and `FSH-R04`. It is a
 dated supporting report and owns no work; the packages in the component
 roadmaps above carry the plans.
 

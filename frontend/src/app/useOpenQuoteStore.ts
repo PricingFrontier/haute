@@ -96,7 +96,12 @@ interface OpenQuoteState {
   save: () => Promise<WorkbenchAppQuote | null>
   /** Save the values on the sheets as a new quote made from the quote they were opened as. */
   saveAsNew: () => Promise<WorkbenchAppQuote | null>
-  change: (change: QuoteChange, fields?: Record<string, string | number>) => Promise<WorkbenchAppQuote | null>
+  /**
+   * Make `change` to the open quote over the version its values are edited over. Given
+   * `asked`, the quote the change was asked about (a question may be answered after the page
+   * moved on), it is made only while that quote is the one open, and refused saying so otherwise.
+   */
+  change: (change: QuoteChange, fields?: Record<string, string | number>, asked?: WorkbenchAppQuote) => Promise<WorkbenchAppQuote | null>
   /**
    * Keep the values on the sheets in this browser while they are not saved, and drop what it
    * kept once they are; false when the browser would not keep them.
@@ -457,9 +462,13 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       }
     },
 
-    change: async (change, fields = {}) => {
+    change: async (change, fields = {}, asked) => {
       const { quote, changing, base } = get()
       if (quote === null || changing || !canEdit()) return null
+      if (asked !== undefined && asked.id !== quote.id) {
+        set({ error: `${asked.reference} is no longer the quote open, so it was not changed.` })
+        return null
+      }
       const session = opening
       set({ changing: true, error: null })
       try {

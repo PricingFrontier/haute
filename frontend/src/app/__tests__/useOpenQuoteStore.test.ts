@@ -467,6 +467,19 @@ describe("useOpenQuoteStore", () => {
     expect([store().base, store().revision?.number, store().baseline]).toEqual([3, 3, JSON.stringify(VALUES)])
   })
 
+  it("changes only the quote a change was asked about, leaving another opened by the answer alone", async () => {
+    vi.mocked(openAppQuote).mockResolvedValueOnce(answer()).mockResolvedValueOnce(answer({ id: "q2", reference: "Q-000002" }))
+    await store().openQuote("q1", null)
+    const asked = store().quote
+    // While "Mark Q-000001 final?" was open, Back opened another quote at the same revision.
+    await store().openQuote("q2", null)
+
+    expect(await store().change("final", { revision: 1 }, asked ?? undefined)).toBeNull()
+
+    expect(changeAppQuote).not.toHaveBeenCalled()
+    expect(store().error).toContain("Q-000001")
+  })
+
   it("keeps a note from moving the version a save names, so a save over a colleague's is refused", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     // Jo saved revision 2 meanwhile: the note's answer is the quote as it is now.

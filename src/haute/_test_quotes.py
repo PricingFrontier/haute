@@ -15,11 +15,10 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from haute._sandbox import contained_path
+from haute._artifact_paths import PathProblem, ordinary_path_problem
 from haute._workbench_config import WorkbenchError
 from haute._workbench_form import FormSpec
 from haute._workbench_tables import output_tables, port_tables, sample_quote
-from haute.errors import PathOutsideProjectError
 
 #: The test-quote file's name, in the test-quote directory.
 TEST_QUOTES_FILE = "test_quotes.sqlite"
@@ -39,8 +38,9 @@ class WorkbenchTestQuoteError(WorkbenchError):
 def project_test_quotes_path(project_root: Path) -> Path:
     """The project's test-quote file: ``test_quotes.sqlite`` in its test-quote directory.
 
-    The whole path is held inside the project, the file included, so a link at the file's
-    name that leads outside is refused as a directory that does is.
+    The path is an ordinary one inside the project, as the Files panels take one: no link or
+    junction on the way, and the file no hard link, which SQLite would write through to the
+    file it shares.
     """
     directory = DEFAULT_TEST_QUOTES_DIR
     toml_path = project_root / "haute.toml"
@@ -53,23 +53,40 @@ def project_test_quotes_path(project_root: Path) -> Path:
         configured = table.get("dir") if isinstance(table, dict) else None
         if isinstance(configured, str) and configured:
             directory = configured
-    try:
-        return contained_path(project_root.resolve(), Path(directory) / TEST_QUOTES_FILE)
-    except PathOutsideProjectError as exc:
-        raise WorkbenchTestQuoteError(
-            f"[test_quotes] dir {directory!r} must be a folder inside the project, and "
-            f"{TEST_QUOTES_FILE} a file inside it."
-        ) from exc
+    relative = Path(directory) / TEST_QUOTES_FILE
+    path, problem = ordinary_path_problem(project_root, str(relative))
+    if problem is None:
+        return path
+    named = relative.as_posix() if problem == "not_ordinary" else _from_root(project_root, path)
+    raise WorkbenchTestQuoteError(
+        f"{named} {_PATH_PROBLEMS[problem]}: [test_quotes] dir must be a folder of the "
+        f"project's own, and {TEST_QUOTES_FILE} a file inside it."
+    )
 
 
 def project_gitattributes_path(project_root: Path) -> Path:
-    """The project's ``.gitattributes``, refused when a link at its name leads outside."""
-    try:
-        return contained_path(project_root.resolve(), ".gitattributes")
-    except PathOutsideProjectError as exc:
-        raise WorkbenchTestQuoteError(
-            ".gitattributes leads outside the project: make it a file of the project's own."
-        ) from exc
+    """The project's ``.gitattributes``, an ordinary file of the project's own, as the test
+    quotes' path is."""
+    path, problem = ordinary_path_problem(project_root, ".gitattributes")
+    if problem is None:
+        return path
+    raise WorkbenchTestQuoteError(
+        f".gitattributes {_PATH_PROBLEMS[problem]}: make it a file of the project's own."
+    )
+
+
+#: Why a path the test quotes write through is refused, after the path it names.
+_PATH_PROBLEMS: dict[PathProblem, str] = {
+    "not_ordinary": "isn't a path inside the project, named from its folder",
+    "link": "is reached through a link or junction",
+    "multiply_linked": "is a hard link to another file, which a write would change too",
+    "not_a_file": "isn't an ordinary file or folder",
+    "outside": "is outside the project",
+}
+
+
+def _from_root(project_root: Path, path: Path) -> str:
+    return path.relative_to(project_root.resolve()).as_posix()
 
 
 def _attributes_pattern(relative: str) -> str:

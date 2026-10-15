@@ -531,7 +531,10 @@ Out of scope:
   opens its panel, Alt+Up and Alt+Down move the section, and Delete or Backspace deletes it,
   asking first when components are in it, while another section remains on the sheet; with
   the section's panel open, Escape closes it. None of that from a text
-  field or a select, whose own keys pick an option.
+  field or a select, whose own keys pick an option. Delete, Backspace, Ctrl/Cmd+D,
+  Ctrl/Cmd+C and the arrows act on the selected component only from the sheet, or with
+  nothing focused, as after a press on a component; from the properties panel, the
+  toolbar or a tab they are the focused element's own.
 - **The sheets' colours.** While building, Display in the toolbar opens a box under it,
   Haute's toolbar dropdown rather than a dialog so the sheet stays in view, holding the
   sheets' colours: the sheet's background, the components' background, their borders, the
@@ -704,7 +707,10 @@ Out of scope:
   outside a text field, as Undo and Redo do; the sheet's editing keys do nothing.
 - **Test quotes.** An analyst keeps test quotes in Preview, in the project's test-quote
   file: `test_quotes.sqlite` in the test-quote directory (`[test_quotes] dir` of
-  `haute.toml`, `tests/quotes` when absent), held by the quote store. The toolbar's Test
+  `haute.toml`, `tests/quotes` when absent), held by the quote store. The file and the
+  project's `.gitattributes` are ordinary files of the project's own, as the Files panels
+  take one: a path reached through a link or junction, or a file hard linked to another,
+  is refused naming why, before anything is written. The toolbar's Test
   quotes, in Preview, opens a panel beside the sheets that lists them, the most recently
   saved first:
   - **Saved.** The quote on the sheets, the sample, under a name, with its values whatever
@@ -779,6 +785,10 @@ Out of scope:
   the file as the project holds it, what the release is (`release.json`: an id taken from the form and the
   bundle, the form's revision, the pipeline's name, the Haute version that built it and
   when) and an entry point, `app.py`, serving it through the app Haute maintains.
+  The release goes into a folder of its own: one that is or holds the project or the
+  working directory, a file, or a folder holding anything but an earlier release is
+  refused, and an earlier release is replaced only once the new one has built beside it,
+  so a build that fails leaves it as it was.
   With `[deploy.container] base_image` set, pinned as a container deploy pins it, the
   release is also the image's build context, the container's Dockerfile copying it,
   and `haute app build --image TAG` builds the image with Docker; the image installs
@@ -885,7 +895,10 @@ Out of scope:
   were opened or saved at, which a note does not move, so a save over a quote a colleague
   moved on meanwhile is refused rather than written over theirs; an answer arriving once
   another quote is open, or the quote was left, is that quote's no longer and is dropped,
-  and a quote being opened takes nothing typed and saves nothing until it is read. The cells of `reference`,
+  and a quote being opened takes nothing typed and saves nothing until it is read. A
+  question asked about a quote (Mark final, Reopen, a name for who it is with) is dropped
+  as the page moves to another quote or is left, and a change only ever changes the quote
+  it was asked about, refused naming it once another is open. The cells of `reference`,
   `stage`, `assignee` and `archived` take no typing; assigning,
   archiving, restoring, marking final and reopening each write a revision of the newest
   with those details changed, its values and prices kept, which the sheets take on, what

@@ -69,7 +69,7 @@ async function saveOpen(): Promise<void> {
 async function undoArchive(archived: WorkbenchAppQuote): Promise<void> {
   const open = useOpenQuoteStore.getState()
   if (open.quote?.id === archived.id) {
-    await open.change("restore")
+    await open.change("restore", {}, archived)
     return
   }
   try {
@@ -104,6 +104,8 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
 
   const routeKey = route.page === "new" ? `new:${route.from?.quoteId ?? ""}:${route.from?.revision ?? ""}:${route.from?.relation ?? ""}` : `quote:${route.id}:${route.revision ?? ""}`
   useEffect(() => {
+    // A question asked about the quote the page has left is nobody's now.
+    useAppStore.getState().answer(null)
     const open = useOpenQuoteStore.getState()
     if (route.page === "new") {
       void open.openNew(route.from)
@@ -160,8 +162,12 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
     }
   }, [routeKey])
 
-  // Leaving the quote for the Quotes page ends it: an answer still to come opens nothing.
-  useEffect(() => () => useOpenQuoteStore.getState().close(), [])
+  // Leaving the quote for the Quotes page ends it: an answer still to come opens nothing, and
+  // a question asked about it is dropped.
+  useEffect(() => () => {
+    useAppStore.getState().answer(null)
+    useOpenQuoteStore.getState().close()
+  }, [])
 
   // Ctrl+S saves, a field being typed in committed first.
   useEffect(() => {
@@ -279,7 +285,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
       `Revision ${revision.number} is pinned as the final quotation. It cannot be saved over until someone reopens it, giving a reason; the final stays in its history.`,
       "Mark final",
     )
-    if (yes && (await change("final", { revision: revision.number })) !== null) addToast("success", `${quote.reference} is final`)
+    if (yes && (await change("final", { revision: revision.number }, quote)) !== null) addToast("success", `${quote.reference} is final`)
   }
 
   const reopen = async () => {
@@ -290,12 +296,12 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
       confirm: "Reopen",
       reason: { label: "Why it is being reopened" },
     })
-    if (answer !== null && (await change("reopen", { reason: answer.reason })) !== null) addToast("success", `${quote.reference} is reopened`)
+    if (answer !== null && (await change("reopen", { reason: answer.reason }, quote)) !== null) addToast("success", `${quote.reference} is reopened`)
   }
 
   const archive = async () => {
     if (quote === null) return
-    const archived = await change("archive")
+    const archived = await change("archive", {}, quote)
     if (archived === null) return
     addToast("success", `Archived ${quote.reference}`, { label: "Undo", run: () => void undoArchive(archived) })
   }
@@ -320,7 +326,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
     { label: "Renew", icon: RefreshCcw, run: () => derive("renewal"), disabled: quote === null || !editor, title: "A new quote renewing this one, from this revision's values" },
     { label: "Create alternative", icon: GitBranchPlus, run: () => derive("alternative"), disabled: quote === null || !editor, title: "A new quote offering other terms, from this revision's values" },
     quote?.archived
-      ? { label: "Restore", icon: ArchiveRestore, run: () => void change("restore"), disabled: changing || !editor }
+      ? { label: "Restore", icon: ArchiveRestore, run: () => void change("restore", {}, quote), disabled: changing || !editor }
       : { label: "Archive", icon: Archive, run: () => void archive(), disabled: quote === null || changing || !editor },
     { label: "Copy link", icon: Link2, run: () => void copyLink(), disabled: quote === null },
   ]
@@ -421,7 +427,7 @@ function QuoteLine() {
       if (answer === null) return
       assignee = answer.reason
     }
-    if (assignee !== quote.assignee) void change("assignee", { assignee })
+    if (assignee !== quote.assignee) void change("assignee", { assignee }, quote)
   }
   const choices = [...new Set([...(quote === null ? [] : [quote.assignee]), ...(release === null ? [] : [release.principal]), ...people])].sort()
 
@@ -583,7 +589,7 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
         </Notice>
       )}
       {reason === "archived" && quote !== null && (
-        <Notice tone="info" testId="notice-archived" actions={canEdit() && <button type="button" className={BUTTON} onClick={() => void change("restore")}>Restore</button>}>
+        <Notice tone="info" testId="notice-archived" actions={canEdit() && <button type="button" className={BUTTON} onClick={() => void change("restore", {}, quote)}>Restore</button>}>
           Archived{quote.archived_by !== null && ` by ${quote.archived_by}`}{quote.archived_at !== null && ` ${relativeTime(quote.archived_at)}`}, read only. Restore it to change it.
         </Notice>
       )}

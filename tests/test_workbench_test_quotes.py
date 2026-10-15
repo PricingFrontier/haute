@@ -121,15 +121,47 @@ def test_a_gitattributes_leading_outside_the_project_refuses_the_write_before_it
     outside = tmp_path_factory.mktemp("outside")
     _link_outside(project / ".gitattributes", outside)
 
-    with pytest.raises(WorkbenchTestQuoteError, match=".gitattributes leads outside"):
+    with pytest.raises(WorkbenchTestQuoteError, match=".gitattributes is reached through a link"):
         project_gitattributes_path(project)
     refused = save()
 
     # Refused before the quote was written: nothing to save twice on a retry.
     assert refused.status_code == 409, refused.text
-    assert ".gitattributes leads outside" in refused.json()["detail"]
+    assert ".gitattributes is reached through a link" in refused.json()["detail"]
     assert not (project / PATH).exists()
     assert [entry.name for entry in outside.rglob("*")] == [".gitattributes-target"]
+
+
+def test_a_hard_linked_test_quote_file_is_refused_and_the_file_it_shares_left_alone(
+    project: Path,
+) -> None:
+    enable(project)
+    (project / "tests" / "quotes").mkdir(parents=True)
+    shared = project / "shared.sqlite"
+    shared.write_bytes(b"another file's bytes")
+    os.link(shared, project / PATH)
+
+    with pytest.raises(WorkbenchTestQuoteError, match=f"{PATH} is a hard link"):
+        project_test_quotes_path(project)
+    refused = save()
+
+    assert refused.status_code == 409, refused.text
+    assert shared.read_bytes() == b"another file's bytes"
+
+
+def test_a_hard_linked_gitattributes_refuses_the_write_before_it_is_made(project: Path) -> None:
+    enable(project)
+    shared = project / "shared-attributes"
+    shared.write_text("*.csv text\n", encoding="utf-8")
+    os.link(shared, project / ".gitattributes")
+
+    with pytest.raises(WorkbenchTestQuoteError, match=".gitattributes is a hard link"):
+        project_gitattributes_path(project)
+    refused = save()
+
+    assert refused.status_code == 409, refused.text
+    assert not (project / PATH).exists()
+    assert shared.read_text(encoding="utf-8") == "*.csv text\n"
 
 
 def test_a_save_started_on_another_branch_is_refused_and_nothing_written(

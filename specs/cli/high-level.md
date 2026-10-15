@@ -96,8 +96,11 @@ Out of scope, owned elsewhere:
   validated and bundled as `haute deploy` does it, test quotes included, with the
   sheets, what the release is and its entry point, and, with `[deploy.container]
   base_image` set, the Dockerfile that makes it the image's build context; `--image`
-  builds that image with Docker. A directory holding anything but an earlier release
-  is refused, as are a project without a workbench and sheets never saved.
+  builds that image with Docker. A directory that is or holds the project or the working
+  directory, a file, and a directory holding anything but an earlier release are refused,
+  as are a project without a workbench and sheets never saved; an earlier release is
+  replaced only once the new one has built beside it, so a build that fails leaves it as
+  it was.
 - `haute app serve [--port PORT] [--static-dir DIR] [--reader]` builds the release
   under `.haute/app/release` and serves the underwriter app on `127.0.0.1` alone (port
   8001 by default), every request signed in as the analyst's git identity, able to

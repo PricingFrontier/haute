@@ -10,6 +10,16 @@ import { duplicateWidget, findWidget, moveWidget, pasteWidget, removeWidget, wid
 const NUDGE_BURST_MS = 800
 
 /**
+ * The keystroke landed on the sheet, or with nothing focused, as after a press on a
+ * component: from a panel, the toolbar or a tab, Delete, the arrows and the shortcuts on
+ * the selection are the focused element's, never the component's.
+ */
+function onSheet(target: EventTarget | null, viewport: HTMLElement | null): boolean {
+  if (!(target instanceof Node) || target === document || target === document.body || target === document.documentElement) return true
+  return viewport !== null && viewport.contains(target)
+}
+
+/**
  * The workbench view's keyboard shortcuts, registered while it shows (specs/workbench):
  * Ctrl+S saves the project through the host, as the toolbar's Save does, with a focused
  * field's edit included; building or in Preview, Ctrl+Z and Ctrl+Shift+Z (or Ctrl+Y) undo
@@ -18,9 +28,10 @@ const NUDGE_BURST_MS = 800
  * panel or the section's and, with a component selected, Escape deselects it, Delete or
  * Backspace removes it, Ctrl+D duplicates it, Ctrl+C copies it and the arrow keys nudge it
  * by a grid step (Shift: a pixel), kept inside its section,
- * a burst of nudges being one undo step; selected or not, Ctrl+V pastes the component
- * copied onto the sheet showing; none of that from a control, whose own keys pick
- * an option. A section header's own keys are its own. Keys in a modal dialog are the
+ * a burst of nudges being one undo step, those four from the sheet or with nothing
+ * focused, never from a panel, the toolbar or a tab; selected or not, Ctrl+V pastes the
+ * component copied onto the sheet showing; none of that from a control, whose own keys
+ * pick an option. A section header's own keys are its own. Keys in a modal dialog are the
  * dialog's, as they are for the pipeline editor's shortcuts.
  */
 export default function useWorkbenchShortcuts(onSave: () => void): void {
@@ -86,6 +97,8 @@ export default function useWorkbenchShortcuts(onSave: () => void): void {
       const selected = found.widget
       if (e.key === "Escape") {
         view.select(null)
+      } else if (!onSheet(e.target, view.viewport)) {
+        return
       } else if (e.key === "Delete" || e.key === "Backspace") {
         forms.change((spec) => removeWidget(spec, selected.id))
         view.select(null)

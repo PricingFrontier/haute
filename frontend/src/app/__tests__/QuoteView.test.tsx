@@ -179,6 +179,26 @@ describe("QuoteView", () => {
     await vi.waitFor(() => expect(screen.queryByTestId("notice-final")).toBeNull())
   })
 
+  it("drops a question about a quote once the page leaves it, changing nothing", async () => {
+    vi.mocked(openAppQuote).mockResolvedValueOnce(answer()).mockResolvedValueOnce(answer({ id: "q2", reference: "Q-000002" }))
+    const view = await opened()
+    fireEvent.click(screen.getByRole("button", { name: "Mark final" }))
+    expect(screen.getByTestId("app-question")).toHaveTextContent("Mark Q-000001 final?")
+
+    // Back, with the question open: another quote, at the same revision number, opens.
+    view.rerender(
+      <>
+        <QuoteView route={{ page: "quote", id: "q2", revision: null }} />
+        <QuestionDialog />
+        <ToastContainer />
+      </>,
+    )
+    await vi.waitFor(() => expect(screen.getByTestId("quote-reference")).toHaveTextContent("Q-000002"))
+
+    expect(screen.queryByTestId("app-question")).toBeNull()
+    expect(changeAppQuote).not.toHaveBeenCalled()
+  })
+
   it("does not mark final a draft or a quote priced on an earlier release, saying why", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer({ release: "rel-0" }, { release: "rel-0" }))
     await opened()

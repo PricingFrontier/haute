@@ -14,10 +14,10 @@ the app saves quotes to on the server; how underwriters manage their quotes in t
 exports from the app; the test quotes analysts keep and re-price in Preview; and the actions
 that fill the sheets from databases and APIs.
 
-`WB-14` to `WB-22` fix what the [review of 15 October 2026](workbench-review-2026-10-15.md)
+`WB-15` to `WB-22` fix what the [review of 15 October 2026](workbench-review-2026-10-15.md)
 found in what pull requests #303 to #309 built. Each names the review's findings it closes
 (`CX-n`, `FB-n`, `TQ-n`, `SD-n`, `MS-n`), and the review holds their evidence. They are
-taken in order, `WB-14` first: the first five close risks to persisted work, computed results
+taken in order, `WB-15` first: the first four close risks to persisted work, computed results
 and the regression gate, and `WB-22` merges the mechanisms written several times once the
 others have fixed their behaviour.
 
@@ -32,7 +32,6 @@ others have fixed their behaviour.
 | WB-11 | Decision | P2 | An underwriter exports a saved quote from the app in the formats the project needs, naming the release that priced it. |
 | WB-12 | Planned | P3 | A test quote whose response runs past what Preview shows is saved, run and compared in full, as every other test quote is. |
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, sees which quotes are about to lapse, records how a final quote ended, and archives or reassigns many quotes at once. |
-| WB-14 | Planned | P1 | Every action lands on the target it was asked for: a release build deletes only a release it made, a confirmed change acts on the quote it was asked about, the sheet's keys act from the sheet alone, and test-quote writes refuse links as the Files panels do. |
 | WB-15 | Planned | P1 | A quote is written once whatever is lost on the way: a save's operation key outlives a lost answer, an edit and a reload; a change and a save never race; the store refuses what it cannot keep rather than answering 500. |
 | WB-16 | Planned | P1 | CI, deploy and `haute app build` check each test quote as the app would send it, on one encoding of the response, so a change the panel shows is a change the check fails on. |
 | WB-17 | Planned | P2 | Test quotes behave in the panel and in git as quotes do in the app: the newest answer wins, one read per quote, drivers registered once and quietly, and the report compares a branch with its merge base. |
@@ -379,56 +378,6 @@ refused by name and the rest changed.
 lists, without outcomes or validity); `src/haute/deploy/_validators.py::response_changes` (a
 comparison by place, not by key); `frontend/src/app/QuotesPage.tsx::QuotesPage` (one quote
 changed at a time).
-
-### WB-14 — Every action lands on its target
-**Why:** The [review](workbench-review-2026-10-15.md) found four actions that can act on
-something other than what the analyst or underwriter chose:
-- `haute app build` replaces an earlier release by deleting its output folder whenever a
-  file named `release.json` is in it. `haute app build .` in a project holding a stray
-  `release.json` deletes the project, `.git` included (CX-22).
-- Mark final, Reopen and Assign ask in the app's one dialog, which outlives a page change,
-  and then change whichever quote is open when the answer comes. Back during "Mark Q-000001
-  final?" can finalise another quote whose newest revision has the same number (CX-14).
-- The sheet's selection keys act from inside the properties panel: Delete on a focused
-  Order row or pane tab removes the whole component, the arrows nudge it, and Ctrl/Cmd+D
-  duplicates it (FB-28).
-- The test-quote file and `.gitattributes` are written in place through a hard link,
-  which the Files panels refuse (CX-27).
-
-**Plan:**
-- `build_release` takes a folder as an earlier release only when its `release.json` reads
-  as a `Release` with `deploy_manifest.json` and `app.py` beside it. It refuses a folder
-  that is the project or holds it, its `haute.toml` or the working directory, and it builds
-  into a fresh sibling folder that replaces the old one only once the build has succeeded.
-- `change` in the open-quote store takes the id and version of the quote it was asked
-  about, and refuses when another quote is open. A question asked about a quote is answered
-  no when the page leaves that quote.
-- The workbench's selection keys (Escape to deselect, Delete, Backspace, the arrows,
-  Ctrl/Cmd+D and Ctrl/Cmd+C) act only when the keystroke lands on the sheet's viewport or
-  the page itself. Save, undo, redo, fit and paste stay document-wide.
-- `project_test_quotes_path` and `project_gitattributes_path` refuse what
-  `ordinary_path_problem` refuses, hard links included.
-
-**Acceptance:**
-- `haute app build` refuses the project folder, and a folder holding an unrelated
-  `release.json`, naming why, and leaves both untouched.
-- An earlier release is replaced only after its successor has built.
-- Confirming a question after Back changes nothing and says the quote changed.
-- Delete from a focused Order row or pane tab removes nothing from the sheet.
-- A test-quote save through a hard-linked file is refused before anything is written.
-
-Each has a test that fails today.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_workbench_app.py::build_release` (the folder deleted by its
-marker file); `src/haute/cli/_app.py::handle_app_build` (any OUTPUT resolved);
-`frontend/src/app/useOpenQuoteStore.ts::change` (the open quote read when the answer
-comes); `frontend/src/app/useAppStore.ts::ask` (one question at a time, outliving a page);
-`frontend/src/hooks/keyboardTargets.ts::isFormControl` (the only exemption the sheet's keys
-make); `src/haute/_test_quotes.py::project_test_quotes_path` (`contained_path`, which a hard
-link passes); `src/haute/_artifact_paths.py::ordinary_path_problem` (the Files panels'
-rule).
 
 ### WB-15 — A quote is written once
 **Why:** The quote store replays a save repeated with its operation key, but the app's
@@ -960,8 +909,7 @@ empty quote); `frontend/src/app/useOpenQuoteStore.ts::offerDraft`;
 
 Each has a test.
 
-**Dependencies:** `FSH-R04` for the shared refocus hook and form controls; `WB-14` for the
-sheet's keys.
+**Dependencies:** `FSH-R04` for the shared refocus hook and form controls.
 
 **Evidence:** `frontend/src/workbench/sheetInteractions.ts::startTransform` (a snap on the
 sheet, then in the section); `frontend/src/utils/sheetGeometry.ts::moveRect`;
