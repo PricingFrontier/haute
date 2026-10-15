@@ -52,6 +52,7 @@ import {
   addSection,
   addSpacer,
   chartGrain,
+  COLLECTION_COLUMNS_MAX,
   createSection,
   fieldColumn,
   findSection,
@@ -72,6 +73,7 @@ import {
   setSectionHeight,
   setSectionShowWhen,
   setTableRows,
+  TABLE_ROWS_MAX,
   tableGrain,
   toggleField,
   updateWidget,
@@ -545,7 +547,7 @@ function FieldsSettings({ form, widget }: { form: FormSpec; widget: FieldsWidget
                   dataTestId="widget-columns"
                   value={String(widget.columns)}
                   onCommit={(text) => change((spec) => updateWidget(spec, widget.id, { columns: Number(text) }))}
-                  validate={wholeNumber(1, 12)}
+                  validate={wholeNumber(1, COLLECTION_COLUMNS_MAX)}
                   containerClassName="w-16"
                   className={`${FIELD_CLASS} w-full tabular-nums`}
                   style={INPUT_STYLE}
@@ -555,7 +557,7 @@ function FieldsSettings({ form, widget }: { form: FormSpec; widget: FieldsWidget
                   dataTestId="widget-rows"
                   value={String(widget.rows)}
                   onCommit={(text) => change((spec) => setTableRows(spec, widget.id, Number(text)))}
-                  validate={wholeNumber(1, 50)}
+                  validate={wholeNumber(1, TABLE_ROWS_MAX)}
                   containerClassName="w-16"
                   className={`${FIELD_CLASS} w-full tabular-nums`}
                   style={INPUT_STYLE}

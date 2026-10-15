@@ -3116,6 +3116,46 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     expect(useWorkbenchFormStore.getState().dirty).toBe(false)
   })
 
+  it("Save puts back a copy an undo took back while it waited, and saves the pipeline carrying the form's tables", async () => {
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    const input = makeNode("wb_in", "Workbench Input", "workbenchInput")
+    input.data.config = { tables: [], sample: {} }
+    const output = makeNode("wb_out", "Workbench Output", "workbenchOutput")
+    output.data.config = { tables: [], mapping: {} }
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({ nodes: [input, output], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))
+    render(<App />)
+    await waitForAppReady()
+    await waitFor(() => expect(workbenchApi.fetchWorkbenchTables).toHaveBeenCalled())
+    const responseTables = [{ name: "premium", rows: "one" as const, columns: [] }]
+    vi.mocked(workbenchApi.fetchWorkbenchTables).mockResolvedValue({ tables: policyTables, sample: {}, response_tables: responseTables })
+    // The Workbench Input's update resolves its identity only when the test lets it.
+    const answer = vi.mocked(api.resolveEditorNodeIdentities).getMockImplementation()
+    let release: () => void = () => {}
+    vi.mocked(api.resolveEditorNodeIdentities).mockImplementationOnce(
+      (payload, options) => new Promise((resolve) => { release = () => resolve(answer!(payload, options)) }),
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
+    await waitFor(() => expect(api.resolveEditorNodeIdentities).toHaveBeenCalled())
+    const outputTables = () => (useGraphStore.getState().nodes.find((node) => node.id === "wb_out")?.data.config as { tables?: unknown }).tables
+    await waitFor(() => expect(outputTables()).toEqual(responseTables))
+
+    // While the save waits, an undo of an earlier edit puts back the Workbench Output's
+    // copy as it was before the form changed.
+    act(() => {
+      useGraphStore.getState().setNodesRaw((nodes) => nodes.map((node) => (
+        node.id === "wb_out" ? { ...node, data: { ...node.data, config: { tables: [], mapping: {} } } } : node
+      )))
+    })
+    expect(outputTables()).toEqual(responseTables)
+    act(() => release())
+
+    await waitFor(() => expect(api.savePipeline).toHaveBeenCalledTimes(1), { timeout: 10_000 })
+    const saved = vi.mocked(api.savePipeline).mock.calls[0][0].graph.nodes
+    expect((saved.find((node) => node.id === "wb_out")?.data.config as { tables?: unknown }).tables).toEqual(responseTables)
+    expect(savedInputTables()).toEqual(policyTables)
+  })
+
   it("Save is refused before the form is saved while the pipeline document cannot be saved, so the form is never saved ahead of the pipeline", async () => {
     vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
     const input = makeNode("wb_in", "Workbench Input", "workbenchInput")

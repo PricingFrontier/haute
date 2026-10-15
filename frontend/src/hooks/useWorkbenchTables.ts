@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react"
 import type { Edge, Node } from "@xyflow/react"
 
-import type { OnUpdateConfigResult } from "../panels/editors/_shared"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
+import useGraphStore from "../stores/useGraphStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { WORKBENCH_COPY_PATCHES, type WorkbenchTables } from "../utils/workbenchTables"
 import type { GraphCommitController } from "./useGraphCommitController"
@@ -19,28 +19,43 @@ export type UseWorkbenchTablesOptions = {
  * workbench supplies, and each Workbench Output with the response's tables
  * (specs/workbench). The tables are fetched when the workbench is enabled and whenever a
  * document is adopted (`executionGeneration`), and applied only to the document they were
- * fetched for: once per node for each fetch, while the document is editable and its top
- * level shows. A graph edit, an undo or a redo never runs it; a node created from the
- * palette is reported through `nodeCreated`, so one made while its tables were being
- * fetched still gets them. `bringUpToDate` fetches afresh, waits for that fetch and
- * applies it at once, for a save that must carry the form's tables rather than wait for
- * a render; it resolves false when the fetch failed, when the document cannot change,
- * read as it is now even for a save that began before a fence closed, and when an
- * update was refused outright, so the save is refused.
+ * fetched for, while the document is editable and its top level shows: to each node whose
+ * copy differs from them, committed without an undo step, since the copies follow the
+ * form and not the graph's history. They are checked again whenever the graph's nodes
+ * change, so an undo or a redo that puts back an older copy is followed at once by the
+ * copy the form gives; a node created from the palette is reported through
+ * `nodeCreated`, so one made while its tables were being fetched still gets them.
+ * `bringUpToDate` fetches afresh, waits for that fetch and applies it at once, for a save
+ * that must carry the form's tables rather than wait for a render; it resolves false when
+ * the fetch failed, when the document cannot change, read as it is now even for a save
+ * that began before a fence closed, and when an update was refused outright, so the save
+ * is refused. `copiesCurrent` checks the copies against the tables already fetched, for a
+ * save once its pending commits have settled.
  */
 export default function useWorkbenchTables({
   graphRef,
   onUpdateNode,
   editable,
-}: UseWorkbenchTablesOptions): { nodeCreated: (nodeId: string) => void; bringUpToDate: () => Promise<boolean> } {
+}: UseWorkbenchTablesOptions): {
+  nodeCreated: (nodeId: string) => void
+  bringUpToDate: () => Promise<boolean>
+  copiesCurrent: () => CopiesState
+} {
   const enabled = useWorkbenchStore((state) => state.enabled)
   const workbench = useWorkbenchStore((state) => state.tables)
   const generation = useDocumentStatusStore((state) => state.executionGeneration)
+  // Every change of the graph's nodes, an undo or a redo among them, checks the copies.
+  const nodes = useGraphStore((state) => state.nodes)
   // The fetch started when this generation's document was adopted: tables from an
   // earlier fetch were read for an earlier document.
   const adoptionFetch = useRef<{ generation: number; fetch: number } | null>(null)
-  // The fetch whose tables each workbench node has been given in this generation.
-  const given = useRef({ generation, fetches: new Map<string, number>() })
+  // The update on its way to each workbench node in this generation, by the fetch it
+  // carries: not sent again while it resolves, and no longer current once a newer
+  // fetch's update reaches the node.
+  const sent = useRef({ generation, fetches: new Map<string, number>() })
+  // Each node's config last found holding a fetch's tables, so a change elsewhere in the
+  // graph (a drag) compares nothing.
+  const checked = useRef(new Map<string, { config: unknown; fetch: number }>())
   const created = useRef<string[]>([])
   const [creations, setCreations] = useState(0)
   // `editable` as it is now, for a save that began before a fence closed (a submodel
@@ -67,30 +82,43 @@ export default function useWorkbenchTables({
     const adoption = adoptionFetch.current
     if (!editable || !editableRef.current || workbench === null || adoption === null) return false
     if (adoption.generation !== generation || workbench.fetch < adoption.fetch) return false
-    if (given.current.generation !== generation) given.current = { generation, fetches: new Map() }
+    if (sent.current.generation !== generation) {
+      sent.current = { generation, fetches: new Map() }
+      checked.current = new Map()
+    }
     const { fetch } = workbench
-    const fetches = given.current.fetches
+    const fetches = sent.current.fetches
     let accepted = true
     for (const node of graphRef.current.nodes) {
       const patchFor = WORKBENCH_COPY_PATCHES[String(node.data.nodeType)]
       if (patchFor === undefined || (only !== null && !only.has(node.id))) continue
-      const config = (node.data.config ?? {}) as Record<string, unknown>
       if (fetches.get(node.id) === fetch) continue
-      fetches.set(node.id, fetch)
+      const config = (node.data.config ?? {}) as Record<string, unknown>
+      const last = checked.current.get(node.id)
+      if (last !== undefined && last.config === node.data.config && last.fetch === fetch) continue
       const patch = patchFor(config, workbench)
-      if (patch === null) continue
+      if (patch === null) {
+        // An older fetch's update still resolving would leave the node behind this one.
+        fetches.delete(node.id)
+        checked.current.set(node.id, { config: node.data.config, fetch })
+        continue
+      }
+      fetches.set(node.id, fetch)
       // Current while the document is, and while no newer fetch has reached the node: an
       // update still resolving its identity when a newer fetch finds the node up to date
       // would otherwise commit the older tables over the newer.
       const isCurrent = () =>
         useDocumentStatusStore.getState().executionGeneration === generation && fetches.get(node.id) === fetch
-      // An update that does not commit, such as one a submodel opened while its identity
-      // was resolving, is forgotten, so the next pass (the top level showing again, or the
-      // next fetch) tries it again.
-      const onSettled = (result: OnUpdateConfigResult) => {
-        if (!result.ok && fetches.get(node.id) === fetch) fetches.delete(node.id)
+      // Settled, committed or not, it is on its way no more: a copy still behind (one a
+      // submodel opened over while its identity resolved) is sent again by the next pass.
+      const onSettled = () => {
+        if (fetches.get(node.id) === fetch) fetches.delete(node.id)
       }
-      const result = onUpdateNode(node.id, { ...node.data, config: { ...config, ...patch } }, { isCurrent, onSettled })
+      const result = onUpdateNode(
+        node.id,
+        { ...node.data, config: { ...config, ...patch } },
+        { isCurrent, onSettled, history: false },
+      )
       if (!result.ok) accepted = false
     }
     return accepted
@@ -98,7 +126,7 @@ export default function useWorkbenchTables({
 
   useEffect(() => {
     apply(workbench, null)
-  }, [apply, workbench])
+  }, [apply, workbench, nodes])
 
   useEffect(() => {
     if (created.current.length === 0) return
@@ -122,5 +150,16 @@ export default function useWorkbenchTables({
     if (!(await store.awaitTables())) return false
     return apply(useWorkbenchStore.getState().tables, null)
   }, [apply])
-  return { nodeCreated, bringUpToDate }
+  const copiesCurrent = useCallback((): CopiesState => {
+    if (!apply(useWorkbenchStore.getState().tables, null)) return "refused"
+    return sent.current.fetches.size > 0 ? "sent" : "current"
+  }, [apply])
+  return { nodeCreated, bringUpToDate, copiesCurrent }
 }
+
+/**
+ * The copies against the tables already fetched: each holding them (`current`), an update
+ * on its way to one, just sent or still resolving, to be waited for (`sent`), or an update
+ * refused outright or none possible, the document unable to change (`refused`).
+ */
+export type CopiesState = "current" | "sent" | "refused"

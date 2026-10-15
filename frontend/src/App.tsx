@@ -733,7 +733,7 @@ function FlowEditor() {
   // Core ReactFlow state with undo/redo
   const {
     nodes, edges,
-    setNodes, setEdges, setNodesAndEdges, setNodesAndEdgesAndSubmodels,
+    setNodes, setEdges, setNodesAndEdges, setNodesAndEdgesAndSubmodels, setNodesAndEdgesAndSubmodelsRaw,
     setNodesRaw, setEdgesRaw, setSubmodelsRaw,
     onNodesChange, onEdgesChange,
     undo, redo, canUndo, canRedo, pushSnapshot,
@@ -1238,6 +1238,13 @@ function FlowEditor() {
     ])
   }, [])
 
+  // A node update is an undo step, but for one that follows the form rather than an edit
+  // of the graph: the workbench nodes' copies of its tables.
+  const commitGraphUpdate = useCallback((nodes: Node[], edges: Edge[], submodels: Record<string, unknown>, history: boolean) => {
+    if (history) setNodesAndEdgesAndSubmodels(nodes, edges, submodels)
+    else setNodesAndEdgesAndSubmodelsRaw(nodes, edges, submodels)
+  }, [setNodesAndEdgesAndSubmodels, setNodesAndEdgesAndSubmodelsRaw])
+
   const { onUpdateNode, onRenameNode, waitForPendingCommits } = useGraphCommitController({
     graphRef,
     submodelsRef,
@@ -1247,14 +1254,14 @@ function FlowEditor() {
     resolveNodeIdentities,
     resolveRenameIdentities,
     readNamingContextKey,
-    commitGraph: setNodesAndEdgesAndSubmodels,
+    commitGraph: commitGraphUpdate,
     setSelectedNode,
     addToast,
   })
 
   // A Workbench Input and a Workbench Output keep their copies of the workbench's
   // tables current; they are at the top level, so only that level is updated.
-  const { nodeCreated, bringUpToDate } = useWorkbenchTables({
+  const { nodeCreated, bringUpToDate, copiesCurrent } = useWorkbenchTables({
     graphRef,
     onUpdateNode,
     editable: !editingReadOnly && viewStack.length === 1,
@@ -1331,9 +1338,27 @@ function FlowEditor() {
       addToast("error", pending.error)
       return false
     }
+    // An undo while the save waited can put back a copy older than the form's tables: it is
+    // brought up to them again, and the save waits for that update once more. A copy still
+    // behind after that saves nothing.
+    if (useWorkbenchStore.getState().enabled) {
+      let copies = copiesCurrent()
+      if (copies === "sent") {
+        const settled = await waitForPendingCommits()
+        if (!settled.ok) {
+          addToast("error", settled.error)
+          return false
+        }
+        copies = copiesCurrent()
+      }
+      if (copies !== "current") {
+        addToast("error", "The pipeline was not saved: its workbench nodes could not be brought up to date with the workbench's tables.")
+        return false
+      }
+    }
     if (refused()) return false
     return handleSave()
-  }, [addToast, bringUpToDate, handleSave, waitForPendingCommits])
+  }, [addToast, bringUpToDate, copiesCurrent, handleSave, waitForPendingCommits])
   const saveProjectNowRef = useRef(saveProjectNow)
   useEffect(() => { saveProjectNowRef.current = saveProjectNow }, [saveProjectNow])
 

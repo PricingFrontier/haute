@@ -14,6 +14,7 @@ from typing import cast
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler
+from fastapi.exceptions import RequestValidationError
 from starlette.responses import Response
 
 from haute._execution_admission import ExecutionAdmissionError
@@ -29,6 +30,7 @@ from haute.routes._contract_errors import (
     contract_error_payload,
     memory_limit_http_exception,
 )
+from haute.routes._validation_errors import request_validation_error_handler
 from haute.routes.git import git_error_http_exception
 
 logger = get_logger(component="server")
@@ -83,6 +85,7 @@ async def _path_error_handler(request: Request, exc: Exception) -> Response:
 
 def install_exception_handlers(app: FastAPI) -> None:
     """Register the application's exception handlers on *app*."""
+    app.add_exception_handler(RequestValidationError, request_validation_error_handler)
     for error_type in PUBLIC_CONTRACT_ERROR_TYPES:
         app.add_exception_handler(error_type, _public_contract_error_handler)
     for memory_error_type in (ExecutionAdmissionError, ExecutionMemoryLimitExceededError):

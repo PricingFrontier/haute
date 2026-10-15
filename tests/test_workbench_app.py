@@ -343,6 +343,12 @@ def test_a_request_past_the_deploy_body_limit_is_refused_before_it_is_read_whole
     assert malformed.status_code == 422
     unshaped = client.post("/api/app/price", json={"values": {}}, headers=SIGNED_IN)
     assert unshaped.status_code == 422
+    # Where and why, never the values sent again.
+    missing = unshaped.json()["detail"]
+    assert {"loc": ["form_revision"], "msg": "Field required"} in [
+        {"loc": error["loc"], "msg": error["msg"]} for error in missing
+    ]
+    assert not [error for error in missing if "input" in error]
 
 
 def _never(*_: Any, **__: Any) -> Any:

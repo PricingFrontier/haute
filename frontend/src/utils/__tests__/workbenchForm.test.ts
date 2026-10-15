@@ -149,6 +149,14 @@ const withTable = (...columns: SchemaColumn[]): FormSpec =>
 const messages = (spec: FormSpec, reserved: ReadonlySet<string> = new Set()) =>
   schemaProblems(spec, reserved).map((problem) => problem.message)
 
+describe("Haute's own table", () => {
+  it("names a table of the analyst's called quote_details in the server's own words, not as a repeated name", () => {
+    const spec = addSchemaTable(blank(), table("t_mine", "quote_details"))
+
+    expect(messages(spec)).toEqual(["quote_details is Haute's own table of a quote's details: name yours otherwise"])
+  })
+})
+
 describe("names", () => {
   it("makes a name unique by numbering it, and a column readable from its name", () => {
     expect(uniqueName("table", ["table", "table_2"])).toBe("table_3")

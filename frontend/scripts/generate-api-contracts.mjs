@@ -193,6 +193,43 @@ function propertySchemasWithoutTitles(properties) {
   );
 }
 
+// The keywords by which a schema says what it holds. A schema with none of them,
+// pydantic's `Any`, holds any JSON value, which json-schema-to-typescript would
+// otherwise declare an object.
+const TYPE_KEYWORDS = new Set([
+  "$ref",
+  "additionalProperties",
+  "allOf",
+  "anyOf",
+  "const",
+  "enum",
+  "items",
+  "not",
+  "oneOf",
+  "prefixItems",
+  "properties",
+  "type",
+]);
+// Where a schema holds schemas: one, a list of them, or a map of them by name.
+const SUBSCHEMA_KEYWORDS = new Set(["additionalProperties", "items", "not"]);
+const SUBSCHEMA_LIST_KEYWORDS = new Set(["allOf", "anyOf", "oneOf", "prefixItems"]);
+const SUBSCHEMA_MAP_KEYWORDS = new Set(["$defs", "patternProperties", "properties"]);
+
+export function untypedAsUnknown(schema) {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
+  const typed = Object.fromEntries(
+    Object.entries(schema).map(([key, value]) => {
+      if (SUBSCHEMA_KEYWORDS.has(key)) return [key, untypedAsUnknown(value)];
+      if (SUBSCHEMA_LIST_KEYWORDS.has(key) && Array.isArray(value)) return [key, value.map(untypedAsUnknown)];
+      if (SUBSCHEMA_MAP_KEYWORDS.has(key) && value && typeof value === "object") {
+        return [key, Object.fromEntries(Object.entries(value).map(([name, sub]) => [name, untypedAsUnknown(sub)]))];
+      }
+      return [key, value];
+    }),
+  );
+  return Object.keys(typed).some((key) => TYPE_KEYWORDS.has(key)) ? typed : { ...typed, tsType: "unknown" };
+}
+
 // Every contract root compiles into one declaration module, so a nested
 // definition is declared once. Only definitions keep their titles: a property
 // title would become an alias that json-schema-to-typescript numbers apart
@@ -201,7 +238,7 @@ function typeDeclarationSchema(schema, definitionNames) {
   const definitions = Object.fromEntries(
     Object.entries(schema.$defs).map(([name, definition]) => [
       name,
-      { ...withoutNestedTitles(definition), ...(definition.title ? { title: definition.title } : {}) },
+      { ...untypedAsUnknown(withoutNestedTitles(definition)), ...(definition.title ? { title: definition.title } : {}) },
     ]),
   );
   return compactNullableSchemas({

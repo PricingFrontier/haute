@@ -26,10 +26,9 @@ import {
   saveTestQuote,
   type PricedTables,
   type SheetQuote,
-  type TestQuoteChange,
 } from "../api/workbench"
 import { apiErrorMessage } from "../api/errors"
-import type { FormSpec, WorkbenchTestQuoteSummary } from "../api/types"
+import type { FormSpec, WorkbenchTestQuoteChange, WorkbenchTestQuoteSummary } from "../api/types"
 import { quoteEligible } from "../utils/sheetVisibility"
 import { withSample } from "../utils/workbenchForm"
 import { reportSaveCapture } from "./saveCapture"
@@ -50,7 +49,7 @@ export interface QuoteRun {
   dropped: string[]
   /** What the run priced, in full. */
   tables: PricedTables | null
-  changes: TestQuoteChange[]
+  changes: WorkbenchTestQuoteChange[]
   error: string | null
 }
 

@@ -14,12 +14,12 @@ the app saves quotes to on the server; how underwriters manage their quotes in t
 exports from the app; the test quotes analysts keep and re-price in Preview; and the actions
 that fill the sheets from databases and APIs.
 
-`WB-19` to `WB-23` fix what the [review of 15 October 2026](workbench-review-2026-10-15.md)
+`WB-20` to `WB-24` fix what the [review of 15 October 2026](workbench-review-2026-10-15.md)
 found in what pull requests #303 to #309 built. Each names the review's findings it closes
 (`CX-n`, `FB-n`, `TQ-n`, `SD-n`, `MS-n`), and the review holds their evidence. They are
-taken in order, `WB-19` first; `WB-22` merges the mechanisms written several times once
-the others have fixed their behaviour, and `WB-23` prices Preview in one run of the
-pipeline.
+taken in order, `WB-20` first; `WB-22` merges the mechanisms written several times once
+the others have fixed their behaviour, `WB-23` prices Preview in one run of the
+pipeline, and `WB-24` waits on two decisions about the form's file.
 
 ## Priorities
 
@@ -32,11 +32,11 @@ pipeline.
 | WB-11 | Decision | P2 | An underwriter exports a saved quote from the app in the formats the project needs, naming the release that priced it. |
 | WB-12 | Planned | P3 | A test quote whose response runs past what Preview shows is saved, run and compared in full, as every other test quote is. |
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, sees which quotes are about to lapse, records how a final quote ended, and archives or reassigns many quotes at once. |
-| WB-19 | Planned | P2 | The form and its Save say what is wrong and keep what was typed: readable refusals, unique ids, no silent no-op, recovery after a lost answer, and the node copies kept outside the undo history. |
 | WB-20 | Planned | P2 | The underwriter app's quote life is exact: a derived quote opens clean and new, drafts and history follow what is on the sheet, failures say why, and the release id changes with what prices alone. |
 | WB-21 | Planned | P2 | Building the sheets is exact and keyboard-complete: a drag lands where the pointer puts it, a gesture ends when the pointer does, the panels keep the selection, and the sheets read as laid out. |
 | WB-22 | Planned | P2 | Each concern has one mechanism: one way to drop a stale answer and take turns, one writer into the project, and the three largest view files split along their jobs. |
 | WB-23 | Planned | P3 | Preview prices every table of the Workbench Output from one run of the pipeline, as the app prices a quote in one scoring call. |
+| WB-24 | Decision | P3 | The editor learns of a change to the form's file on its own, and opens a merged form whose geometry is off so it can be repaired. |
 
 ## Planned improvements
 
@@ -376,93 +376,6 @@ lists, without outcomes or validity); `src/haute/deploy/_validators.py::response
 comparison by place, not by key); `frontend/src/app/QuotesPage.tsx::QuotesPage` (one quote
 changed at a time).
 
-### WB-19 — The form and its Save
-**Why:**
-- **Unreadable refusals.** A request body the form routes refuse is answered with
-  FastAPI's default 422, which repeats the whole form in pydantic's `input`, and the
-  browser shows that list as its JSON text. A table the analyst names `quote_details`,
-  which the editor flags only as a duplicate label while the server refuses it, turns Save
-  into a 5 KB toast and fails Preview's pricing the same way (review FB-19).
-- **Repeated ids.** Nothing refuses a repeated id in a form, and the editor's removals act
-  on every match. A hand-edited or merged file holding a copied block draws two components
-  with one id, and Delete removes both (FB-22).
-- **Saves that fail quietly or lose typing.**
-  - A Save queued behind a read can end with nothing saved and nothing said (FB-21).
-  - A save that landed but lost its answer leaves the next save refused as stale, and
-    Reload loses what was typed since, though the file holds exactly what was sent (FB-20).
-- **A refit mistaken for a read.** The view refits the zoom when the history looks like a
-  form read anew, and a save after an undo to the bottom of the stack looks the same
-  (FB-23).
-- **Locking.** The form save checks and writes outside the repository lock a branch switch
-  holds, while the test-quote writes hold it throughout (CX-24).
-- **The node copies and the undo history.**
-  - A copy update from a fetch is an undo step, so an Undo leaves the copy behind until the
-    next save (FB-17).
-  - An Undo inside a save's wait for pending commits can save a stale Workbench Output
-    copy, which deploy then refuses (CX-10).
-- **Mirrors and generated types.**
-  - The mirrored constants and limits are pinned on one side or neither: the blank sheet's
-    width and section height, Rows 1-50, Columns 1-12, and decimal places (FB-24).
-  - `WorkbenchTestQuoteChange`'s values are generated as objects, and the client shadows
-    the type with a cast (CX-12).
-- **Specification and decisions.**
-  - Two low-level invariants describe the retired Build and Preview model (SD-2).
-  - The form learns of a change on disk only when the pipeline file changes too (FB-26).
-  - A merged file whose geometry is off cannot be opened in the editor that would repair
-    it (FB-27).
-
-**Plan:**
-- **Readable refusals.**
-  - A `RequestValidationError` handler keeps FastAPI's list but leaves out `input` and
-    `ctx`.
-  - `apiErrorMessage` reads a list detail's first place and message.
-  - `schemaProblems` names a table called `quote_details` in the server's own words.
-- **Unique ids.** A `FormSpec` validator refuses repeated page, section, component, table
-  and column ids, naming the id, and `newId` is checked against the ids in use.
-- **Saves.**
-  - `save` says why when its turn finds the form being read.
-  - On a stale refusal, the store reads the file and takes its revision when the file holds
-    exactly what was sent.
-- **Refit on a read alone.** The form store counts its reads, and the view refits on a read
-  alone.
-- **Locking.** `repository_mutation` is held across the form save's check, write and
-  capture.
-- **The node copies.** Copies applied from a fetch are committed without a history entry.
-  They are checked again after pending commits settle and before the pipeline is saved.
-- **Mirrors and generated types.**
-  - The mirrored constants and limits are pinned by the existing cross-language test, with
-    decimal places through `PIVOT_DECIMAL_PLACES_MAX`.
-  - The contract generator maps an untyped schema to `unknown`.
-- **Specification and decisions.**
-  - The low-level invariants are rewritten for Build's new quote, editor Preview's sample
-    and the app's quote.
-  - FB-26 and FB-27 are decided with the owner before a slice.
-
-**Acceptance:**
-- Naming a table `quote_details` shows the server's sentence in the schema editor and in
-  the toast.
-- A form with a repeated id is refused at read and at save, naming the id.
-- A save after a lost answer is adopted when the file matches what was sent.
-- An undo never leaves a node copy behind.
-- The limits test fails when one side's limit changes.
-
-Each has a test that fails today.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/routes/_error_handlers.py` (no validation-error handler);
-`frontend/src/api/errors.ts::apiErrorMessage` (a list detail shown as text);
-`src/haute/_workbench_form.py::FormSpec` and
-`src/haute/_workbench_form.py::_check_quote_details`;
-`frontend/src/utils/workbenchForm.ts::newId`;
-`frontend/src/utils/workbenchForm.ts::removeWidget` (every match removed);
-`frontend/src/stores/useWorkbenchFormStore.ts::flush`;
-`frontend/src/stores/useWorkbenchViewStore.ts` (the refit inferred from the history);
-`src/haute/routes/workbench.py::_save_form`;
-`frontend/src/hooks/useWorkbenchTables.ts::useWorkbenchTables`;
-`frontend/src/App.tsx::saveProjectNow`; `src/haute/schemas.py::WorkbenchTestQuoteChange`;
-`frontend/src/api/workbench.ts::compareTestQuote` (the cast).
-
 ### WB-20 — The underwriter app's quote life
 **Why:**
 - **Derived quotes.**
@@ -635,7 +548,7 @@ sheet, then in the section); `frontend/src/utils/sheetGeometry.ts::moveRect`;
 
 ### WB-22 — One mechanism per concern
 **Why:** The [review](workbench-review-2026-10-15.md) found mechanisms written several
-times, each copy slightly different; the defects `WB-19` to `WB-21` fix sit where one copy
+times, each copy slightly different; the defects `WB-20` and `WB-21` fix sit where one copy
 was forgotten or scoped to the wrong thing:
 - **Stale answers and turn-taking**, hand-rolled about ten times:
   - the form store's turns;
@@ -667,7 +580,7 @@ was forgotten or scoped to the wrong thing:
 - **Two primitives in `frontend/src/utils`:** `serial()`, a turn queue, and
   `latest(scope)`, a ticket that stays current while its scope does (the document
   generation, the quote and its version, the folder, the list query). They are tested once
-  and adopted by every store above, after `WB-19` to `WB-21` have fixed each copy's
+  and adopted by every store above, after `WB-20` and `WB-21` have fixed each copy's
   behaviour.
 - **One project writer.**
   - It takes a project-relative path, the revision the caller saw, the bytes or a staged
@@ -692,7 +605,7 @@ was forgotten or scoped to the wrong thing:
 
 Behaviour is unchanged: the affected tests pass before and after.
 
-**Dependencies:** `WB-19` to `WB-21` first, so their fixes land before the copies are
+**Dependencies:** `WB-20` and `WB-21` first, so their fixes land before the copies are
 merged; `FSH-R04`.
 
 **Evidence:** `frontend/src/stores/useWorkbenchFormStore.ts::takeTurn`;
@@ -730,3 +643,28 @@ Each has a test.
 **Evidence:** `frontend/src/workbench/priceSample.ts::priceSample` (a preview per table);
 `src/haute/routes/pipeline.py::_preview_supersession_key` (a preview keyed by its port);
 `src/haute/executor.py::execute_graph` (one port's preview from the bundle).
+
+### WB-24 — The form's file changed or merged outside the editor
+**Why:** Two gaps the [review](workbench-review-2026-10-15.md) found, each a choice for the
+owner before a slice:
+- The view reads the form again when the pipeline's document is adopted anew, so a change
+  to `forms/form.json` alone, by hand or by a pull, shows only as a save refused as stale
+  (FB-26).
+- A merged or hand-edited file whose geometry is off (a component past its sheet's width
+  or below its section) is refused when it is read, so it cannot be opened in the editor
+  that would repair it (FB-27).
+
+**Plan:** Decisions first, recorded here before a slice:
+- FB-26: whether the file watcher announces a change to the form's file, as it does for
+  the pipeline's, so the view reads it again (and marks it stale over unsaved edits).
+- FB-27: whether a form whose geometry is off reads with each component kept inside its
+  section and sheet, said in a notice and saved as moved, or stays refused with the place
+  to fix by hand.
+
+**Acceptance:** Set by each decision.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/stores/useWorkbenchFormStore.ts::sync` (run on an adoption
+only); `src/haute/_workbench_form.py::Section` and `src/haute/_workbench_form.py::Page`
+(geometry refused at read).

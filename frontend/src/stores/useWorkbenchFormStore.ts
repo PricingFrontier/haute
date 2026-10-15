@@ -12,7 +12,7 @@
 import { create } from "zustand"
 import { ApiError } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
-import type { FormSpec } from "../api/types"
+import type { FormSpec, WorkbenchFormSaveResponse } from "../api/types"
 import { fetchWorkbenchForm, saveWorkbenchForm } from "../api/workbench"
 import { canonicalJson } from "../utils/canonicalJson"
 import { reportSaveCapture } from "./saveCapture"
@@ -46,6 +46,11 @@ interface WorkbenchFormState {
    */
   stale: boolean
   saving: boolean
+  /**
+   * How many times the form was read anew: by `load`, `reload`, or a sync adopting a
+   * changed file. The view fits the sheets after a read, never after a save or an undo.
+   */
+  reads: number
   /** Read the form, unless it has been. */
   load: () => Promise<void>
   /** Read the form again, dropping edits and history. */
@@ -129,6 +134,13 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
     gesture = null
   }
 
+  /**
+   * The form a save sent whose answer never came: it may have landed. A later save refused
+   * as stale reads the file, and when the file holds exactly this, takes its revision as
+   * the base and saves again, so the typing since is not lost to a reload.
+   */
+  let unanswered: string | null = null
+
   // A read takes a turn like a save or a sync: a sync queued behind it, as a document
   // adopted while the file is being read queues one, reads the file again after it, so
   // the form never ends on the branch the read began on.
@@ -138,7 +150,8 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
       try {
         const { form, revision } = await fetchWorkbenchForm()
         dropGesture()
-        set({
+        unanswered = null
+        set((state) => ({
           form,
           revision,
           status: "ready",
@@ -147,7 +160,8 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
           undoStack: [],
           redoStack: [],
           stale: false,
-        })
+          reads: state.reads + 1,
+        }))
       } catch (error: unknown) {
         set({ status: "failed", loadError: apiErrorMessage(error) })
       }
@@ -165,6 +179,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
     redoStack: [],
     stale: false,
     saving: false,
+    reads: 0,
     load: async () => {
       if (get().status === "idle") await read()
     },
@@ -182,7 +197,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
             return
           }
           dropGesture()
-          set({
+          set((state) => ({
             form,
             revision,
             savedForm: serialise(form),
@@ -190,7 +205,8 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
             undoStack: [],
             redoStack: [],
             stale: false,
-          })
+            reads: state.reads + 1,
+          }))
         } catch (error: unknown) {
           useToastStore.getState().addToast("error", `Could not read ${path} again: ${apiErrorMessage(error)}`)
         }
@@ -249,12 +265,29 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
     save: () =>
       takeTurn(async () => {
         const { form, revision, status } = get()
-        if (form === null || status !== "ready") return false
         const { addToast } = useToastStore.getState()
         const path = useWorkbenchStore.getState().formPath ?? "forms/form.json"
+        if (form === null) return false
+        // A reload asked for after this save drops the edits it would have saved.
+        if (status !== "ready") {
+          addToast("error", `Not saved: ${path} is being read again.`)
+          return false
+        }
         set({ saving: true })
         try {
-          const saved = await saveWorkbenchForm(form, revision)
+          let saved: WorkbenchFormSaveResponse
+          try {
+            saved = await saveWorkbenchForm(form, revision)
+          } catch (error: unknown) {
+            if (!isStaleRevision(error) || unanswered === null) throw error
+            // The save whose answer was lost may be what changed the file: when the file
+            // holds exactly what it sent, its revision is this save's base.
+            const file = await fetchWorkbenchForm()
+            if (serialise(file.form) !== unanswered) throw error
+            set({ revision: file.revision, savedForm: unanswered })
+            saved = await saveWorkbenchForm(form, file.revision)
+          }
+          unanswered = null
           const savedForm = serialise(saved.form)
           // The form may have been edited while the save ran: those edits stay unsaved.
           set({
@@ -276,6 +309,8 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
             set({ stale: true })
             addToast("error", `Save rejected: ${path} changed on disk. Reload the workbench first.`)
           } else {
+            // Its answer, not necessarily the save, was lost.
+            unanswered = serialise(form)
             addToast("error", `Could not save ${path}: ${apiErrorMessage(error)}`)
           }
           return false

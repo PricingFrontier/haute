@@ -28,6 +28,20 @@ describe("apiErrorStatus", () => {
 })
 
 describe("apiErrorMessage", () => {
+  it("reads a refused request's first place and message, a check's sentence without pydantic's prefix", () => {
+    const refused = (detail: unknown[]) => new ApiError("HTTP 422", 422, JSON.stringify(detail), { detail }, detail)
+    expect(apiErrorMessage(refused([
+      { type: "value_error", loc: ["body", "form"], msg: "Value error, quote_details is Haute's own table of a quote's details: name yours otherwise" },
+      { type: "missing", loc: ["body", "base_revision"], msg: "Field required" },
+    ]))).toBe("form: quote_details is Haute's own table of a quote's details: name yours otherwise")
+    expect(apiErrorMessage(refused([
+      { type: "greater_than", loc: ["body", "form", "pages", 0, "width"], msg: "Input should be greater than 0" },
+    ]))).toBe("form.pages.0.width: Input should be greater than 0")
+    expect(apiErrorMessage(refused([{ type: "missing", loc: ["form_revision"], msg: "Field required" }]))).toBe(
+      "form_revision: Field required",
+    )
+  })
+
   it("prefers a structured detail's message", () => {
     const error = new ApiError("HTTP 502", 502, undefined, undefined, {
       error_code: "mlflow_connectivity",

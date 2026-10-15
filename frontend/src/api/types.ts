@@ -565,6 +565,7 @@ export type {
   WorkbenchStatusResponse,
   WorkbenchTable,
   WorkbenchTablesResponse,
+  WorkbenchTestQuoteChange,
   WorkbenchTestQuoteCompareResponse,
   WorkbenchTestQuoteOpenResponse,
   WorkbenchTestQuotesResponse,

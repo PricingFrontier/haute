@@ -208,9 +208,15 @@ Out of scope:
   captured save on the file is tracked, so a milestone's sweep takes an edit made to it by
   hand. A file whose revision is no longer `base_revision`, edited by hand or by a branch
   switch, is left as it is and the save is refused with 409 and a `stale_document_revision`
-  detail, as the pipeline's save refuses a stale document; a first save (`base_revision`
-  `null`) creates the file unless one has appeared. Both routes answer 404 while the
-  workbench is not enabled.
+  detail, as the pipeline's save refuses a stale document; the view, when its last save
+  lost its answer and the file holds exactly what that save sent, takes the file's
+  revision and saves again, since that save is what changed it. A first save
+  (`base_revision` `null`) creates the file unless one has appeared. The check, the write
+  and the capture hold the repository's lock, as a branch switch does. A form that is not
+  one is refused 422 with the place and reason of each refusal, never the form sent back,
+  and a form giving one id to two sheets, sections, components, tables or columns of a
+  table is refused naming the id. Both routes answer 404 while the workbench is not
+  enabled.
 - **The view.** While the workbench is enabled, a view switcher at the bottom of the left
   palette offers "Pricing", the pipeline editor, and "Workbench".
   - **Showing it.** The Workbench view covers the area below the toolbar: its own left

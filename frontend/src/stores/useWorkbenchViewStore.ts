@@ -169,11 +169,10 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
 }))
 
 // A form read anew, on the view's first showing or after a branch switch, is fitted when its
-// sheets next show; the zoom chosen for the form before is nobody's.
+// sheets next show; the zoom chosen for the form before is nobody's. A save or an undo is no
+// read, however the history looks after it.
 useWorkbenchFormStore.subscribe((state, previous) => {
-  if (state.status === "ready" && (previous.status !== "ready" || state.revision !== previous.revision) && state.undoStack.length === 0 && !state.dirty) {
-    useWorkbenchViewStore.setState({ fitted: false })
-  }
+  if (state.reads !== previous.reads) useWorkbenchViewStore.setState({ fitted: false })
 })
 
 export default useWorkbenchViewStore

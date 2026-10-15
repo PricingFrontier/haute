@@ -8,7 +8,7 @@
  */
 import { Check, ChevronDown, ChevronRight, FlaskConical, FolderOpen, Play, Save, Trash2 } from "lucide-react"
 import { useEffect, useState, type FormEvent } from "react"
-import type { TestQuoteChange } from "../api/workbench"
+import type { WorkbenchTestQuoteChange } from "../api/types"
 import { SidePanel } from "../haute-ui"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import { usePricingContext } from "../stores/useWorkbenchPricingStore"
@@ -40,7 +40,7 @@ function shown(value: unknown): string {
   return text.length > 80 ? `${text.slice(0, 79)}…` : text
 }
 
-function ChangeLine({ change }: { change: TestQuoteChange }) {
+function ChangeLine({ change }: { change: WorkbenchTestQuoteChange }) {
   return (
     <li className="flex flex-wrap items-baseline gap-x-1.5 font-mono text-[11px]">
       <span style={{ color: "var(--text-primary)" }}>{change.path}</span>

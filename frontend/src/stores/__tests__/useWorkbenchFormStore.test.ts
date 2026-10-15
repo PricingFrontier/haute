@@ -92,6 +92,7 @@ function reset(): void {
     redoStack: [],
     stale: false,
     saving: false,
+    reads: 0,
   })
   useWorkbenchStore.setState({ enabled: true, formPath: "forms/form.json", formDirty: false, refreshTables: vi.fn(() => 1) })
   useGitStore.setState({ status: makeGitWorkingBranch({ state: "ready", last_save_sha: null }), modal: null, historyNonce: 0, uncaptured: [] })
@@ -535,6 +536,92 @@ describe("useWorkbenchFormStore", () => {
       undoStack: [],
       redoStack: [],
     })
+  })
+
+  it("takes the file's revision when a stale refusal follows a save whose answer was lost and the file holds what it sent", async () => {
+    // The server writes what it is sent at the revision it is given, and refuses another.
+    let file: { form: FormSpec; revision: string } = { form: blank, revision: "rev-0" }
+    let loseTheAnswer = false
+    const puts: Array<string | null> = []
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      if (init?.method !== "PUT") return json(file)
+      const body = JSON.parse(String(init.body)) as { form: FormSpec; base_revision: string | null }
+      puts.push(body.base_revision)
+      if (body.base_revision !== file.revision) {
+        return json({ detail: "stale_document_revision: forms/form.json changed on disk after the workbench read it." }, 409)
+      }
+      file = { form: body.form, revision: `rev-${puts.length}` }
+      if (loseTheAnswer) {
+        loseTheAnswer = false
+        throw new TypeError("Failed to fetch")
+      }
+      return saved(file.form, file.revision)
+    })
+    const store = useWorkbenchFormStore.getState
+    await store().load()
+    store().change((form) => ({ ...form, name: "home" }))
+    loseTheAnswer = true
+    await expect(store().save()).resolves.toBe(false)
+    expect(store().revision).toBe("rev-0")
+
+    // Typing since, then Save: refused as stale, the file read, and since it holds what the
+    // lost save sent, its revision is the base and the save goes through.
+    store().change((form) => ({ ...form, name: "boat" }))
+    await expect(store().save()).resolves.toBe(true)
+
+    expect(puts).toEqual(["rev-0", "rev-0", "rev-1"])
+    expect(store()).toMatchObject({ revision: "rev-3", stale: false, dirty: false, form: named("boat") })
+    expect(file.form).toEqual(named("boat"))
+  })
+
+  it("keeps a stale refusal stale when the file holds something else than a lost save sent", async () => {
+    const api = server({ form: blank, revision: "rev-0" })
+    const store = useWorkbenchFormStore.getState
+    await store().load()
+    store().change((form) => ({ ...form, name: "home" }))
+    api.refusePut(() => { throw new TypeError("Failed to fetch") })
+    await expect(store().save()).resolves.toBe(false)
+
+    // The file changed by hand instead.
+    api.writeFile(named("by hand"), "rev-7")
+    api.refusePut(() => json({ detail: "stale_document_revision: forms/form.json changed on disk." }, 409))
+    await expect(store().save()).resolves.toBe(false)
+
+    expect(store()).toMatchObject({ stale: true, revision: "rev-0", form: named("home") })
+  })
+
+  it("says why a save found the form being read again", async () => {
+    server({ form: blank, revision: "rev-0" })
+    const store = useWorkbenchFormStore.getState
+    await store().load()
+    store().change((form) => ({ ...form, name: "home" }))
+
+    // Save, then a reload asked for before the save's turn came.
+    const saving = store().flush()
+    const reading = store().reload()
+
+    await expect(saving).resolves.toBe(false)
+    await reading
+    expect(toasts()).toContainEqual(["error", "Not saved: forms/form.json is being read again."])
+  })
+
+  it("counts each read anew, and no save or undo as one", async () => {
+    const api = server({ form: blank, revision: "rev-0" })
+    const store = useWorkbenchFormStore.getState
+    await store().load()
+    expect(store().reads).toBe(1)
+
+    store().change((form) => ({ ...form, name: "home" }))
+    await store().save()
+    store().undo()
+    await store().save()
+    expect(store().reads).toBe(1)
+
+    api.writeFile(named("by hand"), "rev-9")
+    await store().sync()
+    expect(store().reads).toBe(2)
+    await store().reload()
+    expect(store().reads).toBe(3)
   })
 
   it("says why any other save failed", async () => {

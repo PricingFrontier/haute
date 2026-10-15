@@ -31,6 +31,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, Strict, ValidationError, model_validator
 
+from haute._explore_pivots import PIVOT_DECIMAL_PLACES_MAX
 from haute._file_ops import atomic_write_bytes
 from haute._hashing import content_hash_bytes
 from haute._workbench_config import WorkbenchConfig, WorkbenchError
@@ -102,6 +103,11 @@ BLANK_SECTION_HEIGHT = 560
 #: How wide a new form's sheet is, as the view starts one (``frontend/src/utils/sheetGeometry.ts``).
 BLANK_SHEET_WIDTH = 1280
 
+#: The most rows a Table starts with, and columns a Collection lays its boxes in, as the
+#: view's properties panel takes them (``frontend/src/utils/workbenchForm.ts``).
+TABLE_ROWS_MAX = 50
+COLLECTION_COLUMNS_MAX = 12
+
 
 class WorkbenchFormError(WorkbenchError):
     """The form file cannot be read as a form: unreadable, not JSON or misshapen."""
@@ -159,7 +165,7 @@ class TableInputWidget(_Placed):
     title: str = ""
     fields: list[FieldRef] = Field(default_factory=list)
     show_when: ShowWhen = Field(default_factory=ShowWhen)
-    rows: int = Field(default=3, ge=1, le=50)
+    rows: int = Field(default=3, ge=1, le=TABLE_ROWS_MAX)
     # How the grid looks, whether its rows are a set structure with no Add row and no
     # delete, whether it is transposed, its fields down its side and its rows across, and
     # whether its fields' schema groups head their labels: by default numbered, compact,
@@ -184,7 +190,7 @@ class CollectionWidget(_Placed):
     title: str = ""
     fields: list[FieldRef] = Field(default_factory=list)
     show_when: ShowWhen = Field(default_factory=ShowWhen)
-    columns: int = Field(default=3, ge=1, le=12)
+    columns: int = Field(default=3, ge=1, le=COLLECTION_COLUMNS_MAX)
     # How its boxes look: by default labelled above, comfortable and framed.
     labels: CollectionLabels = "above"
     density: Density = "comfortable"
@@ -335,7 +341,7 @@ class SchemaColumn(_Strict):
     # decimal places leaves an input as typed and an output as the data preview shows a
     # value. Columns of other types ignore them.
     number_format: ColumnFormat = "general"
-    decimal_places: int | None = Field(default=None, ge=0, le=10)
+    decimal_places: int | None = Field(default=None, ge=0, le=PIVOT_DECIMAL_PLACES_MAX)
     use_grouping: bool = True
 
 
@@ -422,9 +428,36 @@ class FormSpec(_Strict):
                 _check_quote_details(table)
         return self
 
+    @model_validator(mode="after")
+    def _gives_each_its_own_id(self) -> FormSpec:
+        """Refuse an id given twice: the editor finds, moves and removes a sheet, a section,
+        a component, a table or a column by its id, so a block copied by hand or by a merge
+        would be two things it takes for one."""
+        sections = [section for page in self.pages for section in page.sections]
+        _check_ids("sheets", [page.id for page in self.pages])
+        _check_ids("sections", [section.id for section in sections])
+        _check_ids("components", [w.id for section in sections for w in section.widgets])
+        _check_ids("tables", [table.id for table in self.data_schema.tables])
+        for table in self.data_schema.tables:
+            _check_ids(f"columns of {table.name}", [column.id for column in table.columns])
+        return self
+
+
+def _check_ids(things: str, ids: list[str]) -> None:
+    seen: set[str] = set()
+    for given in ids:
+        if given in seen:
+            raise ValueError(f"Two {things} have the id {given!r}: each needs one of its own")
+        seen.add(given)
+
 
 #: Haute's table of a quote's details: its id, also its name.
 QUOTE_DETAILS_ID = "quote_details"
+#: Why another table under its name is refused, in the words the view's schema editor uses
+#: too (``frontend/src/utils/workbenchForm.ts``).
+QUOTE_DETAILS_REFUSAL = (
+    f"{QUOTE_DETAILS_ID} is Haute's own table of a quote's details: name yours otherwise"
+)
 #: Its columns, in order: each one's id, name and type.
 QUOTE_DETAILS_COLUMNS: tuple[tuple[str, str, ColumnType], ...] = (
     ("qd_reference", "reference", "str"),
@@ -480,9 +513,7 @@ def _check_quote_details(table: SchemaTable) -> None:
     structure changed. Its columns' labels, groups, help and placeholders are the project's,
     as are the rules and defaults of the columns the app does not set."""
     if table.id != QUOTE_DETAILS_ID or table.name != QUOTE_DETAILS_ID:
-        raise ValueError(
-            f"{QUOTE_DETAILS_ID} is Haute's own table of a quote's details: name yours otherwise"
-        )
+        raise ValueError(QUOTE_DETAILS_REFUSAL)
     shape = [(column.id, column.name, column.type) for column in table.columns]
     if (
         table.role != "input"

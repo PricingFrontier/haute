@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -414,6 +415,75 @@ def test_a_body_that_is_not_a_form_is_refused_and_nothing_is_written(project: Pa
 
     assert refused.status_code == 422
     assert not (project / "forms").exists()
+
+
+def test_a_refused_form_is_answered_with_where_and_why_never_the_form_again(
+    project: Path,
+) -> None:
+    enable(project)
+    # The analyst names a table of their own quote_details, which is Haute's.
+    theirs = {"id": "t_mine", "name": "quote_details", "role": "input", "columns": []}
+    sent = {**form(POLICY), "schema": {"tables": [POLICY, theirs]}}
+
+    refused = client().put("/api/workbench/form", json={"form": sent, "base_revision": None})
+
+    assert refused.status_code == 422
+    [error] = refused.json()["detail"]
+    assert error["loc"] == ["body", "form"]
+    assert error["msg"] == (
+        "Value error, quote_details is Haute's own table of a quote's details: name yours otherwise"
+    )
+    # Neither the form refused nor the context its message already says.
+    assert "input" not in error and "ctx" not in error
+    assert len(refused.content) < 400
+    assert not (project / "forms").exists()
+
+
+def test_a_form_holding_an_id_twice_is_refused_naming_it(project: Path) -> None:
+    enable(project)
+    twice = form(POLICY)
+    twice["pages"].append(dict(twice["pages"][0]))
+
+    refused = client().put("/api/workbench/form", json={"form": twice, "base_revision": None})
+
+    assert refused.status_code == 422
+    [error] = refused.json()["detail"]
+    assert error["msg"].endswith("Two sheets have the id 'p': each needs one of its own")
+    assert not (project / "forms").exists()
+
+
+def test_a_form_save_holds_the_repository_lock_from_its_check_to_its_capture(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute import _git_lock
+    from haute.routes import workbench as routes
+
+    enable(project)
+    init_repo(project)
+    held: list[bool] = []
+    write = routes.write_form
+
+    def probed(path: Path, spec: Any) -> str:
+        # Another thread, as a branch switch would be, cannot take the lock meanwhile.
+        def probe() -> None:
+            locks = _git_lock._locks_for(project)
+            taken = [lock.acquire(blocking=False) for lock in locks]
+            for lock, got in zip(locks, taken, strict=True):
+                if got:
+                    lock.release()
+            held.append(not any(taken))
+
+        prober = threading.Thread(target=probe)
+        prober.start()
+        prober.join()
+        return write(path, spec)
+
+    monkeypatch.setattr(routes, "write_form", probed)
+
+    saved = client().put("/api/workbench/form", json={"form": form(POLICY), "base_revision": None})
+
+    assert saved.status_code == 200, saved.text
+    assert held == [True]
 
 
 def test_the_form_routes_answer_404_while_the_workbench_is_not_enabled(project: Path) -> None:

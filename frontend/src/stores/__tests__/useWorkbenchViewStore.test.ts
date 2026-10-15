@@ -41,6 +41,18 @@ describe("useWorkbenchViewStore", () => {
     expect(activePage(sheetForm(), "gone").id).toBe("p1")
   })
 
+  it("fits the sheets after a read of the form, never after a save or an undo", () => {
+    const view = useWorkbenchViewStore.getState
+    useWorkbenchViewStore.setState({ fitted: true })
+
+    // Edit, Save, Undo, Save: the history empty and the form as saved, at a new revision.
+    useWorkbenchFormStore.setState({ revision: "rev-2", undoStack: [], dirty: false })
+    expect(view().fitted).toBe(true)
+
+    useWorkbenchFormStore.setState((state) => ({ revision: "rev-3", reads: state.reads + 1 }))
+    expect(view().fitted).toBe(false)
+  })
+
   it("keeps the zoom within its bounds, whether set, stepped or fitted", () => {
     const store = useWorkbenchViewStore.getState
     store().setZoom(5)

@@ -10,6 +10,7 @@ import {
   extractContractSchema,
   extractModuleContractSchema,
   run,
+  untypedAsUnknown,
   validatorModules,
 } from "./generate-api-contracts.mjs";
 
@@ -170,3 +171,25 @@ test(
     }
   },
 );
+
+test("a schema that says nothing of its type is declared unknown, never an object", () => {
+  const change = {
+    type: "object",
+    properties: {
+      path: { type: "string" },
+      accepted: { default: null },
+      nested: { type: "array", items: {} },
+      either: { anyOf: [{ type: "string" }, {}] },
+    },
+  };
+
+  assert.deepEqual(untypedAsUnknown(change), {
+    type: "object",
+    properties: {
+      path: { type: "string" },
+      accepted: { default: null, tsType: "unknown" },
+      nested: { type: "array", items: { tsType: "unknown" } },
+      either: { anyOf: [{ type: "string" }, { tsType: "unknown" }] },
+    },
+  });
+});

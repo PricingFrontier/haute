@@ -39,7 +39,22 @@ export type ChartOptions = Pick<ChartWidget, "category" | "chart_type" | "orient
 /** How a Heading's text shows. */
 export type HeadingOptions = Pick<HeadingWidget, "size" | "align">
 
-export const newId = (prefix: string): string => `${prefix}_${crypto.randomUUID().slice(0, 8)}`
+/**
+ * A new id: 64 random bits, so two the view makes never meet in practice; the server
+ * refuses a form holding any id twice, a block copied by hand or by a merge among them.
+ */
+/**
+ * The most rows a Table starts with, and columns a Collection lays its boxes in, as the
+ * server's form takes them (`TABLE_ROWS_MAX` and `COLLECTION_COLUMNS_MAX` in
+ * `src/haute/_workbench_form.py`).
+ */
+export const TABLE_ROWS_MAX = 50
+export const COLLECTION_COLUMNS_MAX = 12
+
+export function newId(prefix: string): string {
+  const bits = crypto.getRandomValues(new Uint8Array(8))
+  return `${prefix}_${Array.from(bits, (byte) => byte.toString(16).padStart(2, "0")).join("")}`
+}
 
 /** `base`, or `base_2`, `base_3`… until it is none of `taken`. */
 export function uniqueName(base: string, taken: Iterable<string>): string {
@@ -1210,6 +1225,12 @@ export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<strin
   const { tables } = spec.schema
   tables.forEach((table, index) => {
     const name = `Table "${table.name}"`
+    // Haute's own table is the one with its id; the server refuses any other by its name,
+    // in these words.
+    if (table.name === QUOTE_DETAILS_ID && table.id !== QUOTE_DETAILS_ID) {
+      problems.push({ tableId: table.id, message: QUOTE_DETAILS_REFUSAL })
+      return
+    }
     const issue = apiInputLabelIssueMessage(
       apiInputLabelIssue(
         table.name,
@@ -1281,6 +1302,8 @@ function defaultProblem(column: SchemaColumn): string | null {
  * revision, and its Quotes page lists them.
  */
 export const QUOTE_DETAILS_ID = "quote_details"
+/** Why another table under its name is refused, in the server's words (`QUOTE_DETAILS_REFUSAL` in `src/haute/_workbench_form.py`). */
+export const QUOTE_DETAILS_REFUSAL = "quote_details is Haute's own table of a quote's details: name yours otherwise"
 
 /** Its columns, in order, as id, name and type (`QUOTE_DETAILS_COLUMNS`); their structure is fixed. */
 export const QUOTE_DETAILS_COLUMNS: ReadonlyArray<readonly [id: string, name: string, type: SchemaColumn["type"]]> = [

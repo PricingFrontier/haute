@@ -11,12 +11,17 @@ from typing import Any, get_args
 import pytest
 from pydantic import ValidationError
 
-from haute._explore_pivots import PIVOT_NUMBER_FORMATS
+from haute._explore_pivots import PIVOT_DECIMAL_PLACES_MAX, PIVOT_NUMBER_FORMATS
 from haute._workbench_config import WorkbenchConfig
 from haute._workbench_form import (
+    BLANK_SECTION_HEIGHT,
+    BLANK_SHEET_WIDTH,
+    COLLECTION_COLUMNS_MAX,
     QUOTE_DETAILS_COLUMNS,
     QUOTE_DETAILS_FIRST,
     QUOTE_DETAILS_MANAGED,
+    QUOTE_DETAILS_REFUSAL,
+    TABLE_ROWS_MAX,
     ColumnFormat,
     FormDocument,
     FormSpec,
@@ -274,6 +279,31 @@ def test_the_editor_names_the_quote_details_columns_the_server_does() -> None:
     assert tuple(columns) == QUOTE_DETAILS_COLUMNS
     assert managed is not None
     assert set(re.findall(r'"(\w+)"', managed.group(1))) == QUOTE_DETAILS_MANAGED
+
+
+def test_the_editor_mirrors_the_forms_limits_and_words() -> None:
+    """The view's own copies of the server's limits and refusals: a change to either side
+    alone fails here."""
+    frontend = Path(__file__).resolve().parents[1] / "frontend" / "src"
+
+    def constant(file: str, name: str) -> str:
+        source = (frontend / file).read_text(encoding="utf-8")
+        found = re.search(rf"export const {name} = (.+)", source)
+        assert found is not None, f"{file} has no {name}"
+        return found.group(1).strip()
+
+    assert int(constant("utils/sheetGeometry.ts", "BLANK_SHEET_WIDTH")) == BLANK_SHEET_WIDTH
+    assert int(constant("utils/sheetGeometry.ts", "BLANK_SECTION_HEIGHT")) == BLANK_SECTION_HEIGHT
+    assert int(constant("utils/workbenchForm.ts", "TABLE_ROWS_MAX")) == TABLE_ROWS_MAX
+    assert int(constant("utils/workbenchForm.ts", "COLLECTION_COLUMNS_MAX")) == (
+        COLLECTION_COLUMNS_MAX
+    )
+    assert int(constant("panels/explore/pivotConfig.ts", "PIVOT_DECIMAL_PLACES_MAX")) == (
+        PIVOT_DECIMAL_PLACES_MAX
+    )
+    assert json.loads(constant("utils/workbenchForm.ts", "QUOTE_DETAILS_REFUSAL")) == (
+        QUOTE_DETAILS_REFUSAL
+    )
 
 
 def test_the_blank_form_is_one_empty_sheet_named_after_the_project() -> None:
@@ -585,6 +615,30 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         # A cell is held as typed, text or a tick: a number is another client's shape.
         (lambda f: f.update(sample={"t1": [{"c1": 1}]}), "sample"),
         (lambda f: f.update(sample={"t1": [{"c1": None}]}), "sample"),
+        # Each sheet, section, component, table and column has an id of its own: a block
+        # copied by hand or by a merge is refused, naming the id.
+        (
+            lambda f: f["pages"].append(json.loads(json.dumps(f["pages"][0]))),
+            "Two sheets have the id 'page_1': each needs one of its own",
+        ),
+        (
+            lambda f: f["pages"][0]["sections"][1].update(id="s_cover"),
+            "Two sections have the id 's_cover'",
+        ),
+        (
+            lambda f: widgets(f)[1].update(id="w_policy"),
+            "Two components have the id 'w_policy'",
+        ),
+        (
+            lambda f: f["schema"]["tables"][1].update(id="t_policy"),
+            "Two tables have the id 't_policy'",
+        ),
+        (
+            lambda f: f["schema"]["tables"][0]["columns"][1].update(
+                id=f["schema"]["tables"][0]["columns"][0]["id"]
+            ),
+            "Two columns of policy_details have the id",
+        ),
     ],
 )
 def test_an_unknown_field_or_a_value_outside_the_shape_is_refused(

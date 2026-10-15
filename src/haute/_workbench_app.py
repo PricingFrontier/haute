@@ -52,6 +52,7 @@ from haute.deploy._request_limits import (
 )
 from haute.deploy._scorer import QuoteRequest, admit_deploy_execution, score_graph
 from haute.errors import HauteError, is_public_contract_error
+from haute.routes._validation_errors import request_validation_error_handler
 from haute.schemas import (
     WorkbenchAppFormResponse,
     WorkbenchAppPriceRequest,
@@ -533,6 +534,7 @@ def create_app(
                 book.close()
 
     app = FastAPI(title=f"{release.pipeline_name or 'Haute'} underwriter app", lifespan=lifespan)
+    app.add_exception_handler(RequestValidationError, request_validation_error_handler)
 
     @app.middleware("http")
     async def signed_in(request: Request, call_next: RequestResponseEndpoint) -> Response:

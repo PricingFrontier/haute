@@ -302,7 +302,8 @@ What did not hold: the places where mechanisms from different pull requests meet
 | CX-6, CX-9, FB-54, FB-55, FB-57, MS-1 | `WB-17` ([Workbench](workbench.md)) |
 | CX-1, CX-4, CX-7, CX-8, CX-25, CX-28, FB-12, FB-13, FB-15, FB-16, FB-18, FB-30, FB-31, SD-1 | `WB-18` ([Workbench](workbench.md)) |
 | CX-13 | `WB-23` ([Workbench](workbench.md)), after its measurement |
-| CX-10, CX-12, CX-24, FB-17, FB-19, FB-20, FB-21, FB-22, FB-23, FB-24, FB-26, FB-27, SD-2 | `WB-19` ([Workbench](workbench.md)) |
+| CX-10, CX-12, CX-24, FB-17, FB-19, FB-20, FB-21, FB-22, FB-23, FB-24, SD-2 | `WB-19` ([Workbench](workbench.md)) |
+| FB-26, FB-27 | `WB-24` ([Workbench](workbench.md)) |
 | CX-16, CX-19, CX-26, CX-29, CX-31, FB-1, FB-2, FB-4, FB-5, FB-8, FB-9, FB-10, FB-11, FB-52, FB-53, FB-56, TQ-4 | `WB-20` ([Workbench](workbench.md)) |
 | CX-17, CX-18, CX-20, CX-21, FB-29, FB-32 to FB-38, FB-40, FB-41, FB-42 | `WB-21` ([Workbench](workbench.md)) |
 | FB-25, and the mechanisms in section 9 | `WB-22` ([Workbench](workbench.md)) |

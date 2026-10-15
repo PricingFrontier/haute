@@ -112,23 +112,26 @@ def _saved_tables_response(config: WorkbenchConfig) -> WorkbenchTablesResponse:
 def _save_form(
     config: WorkbenchConfig, body: WorkbenchFormSaveRequest
 ) -> WorkbenchFormSaveResponse:
-    """Write the form unless the file changed since the view read it, and capture the write."""
-    current = form_file_revision(config)
-    if current != body.base_revision:
-        raise StaleDocumentRevisionError(
-            expected_revision=current,
-            provided_revision=body.base_revision,
-            message=f"{config.form} changed on disk after the workbench read it. "
-            "Reload the workbench before saving.",
-        )
-    form = with_quote_details(body.form)
-    revision = write_form(config.form_path, form)
-    # The written file is one save on the ledger, as the pipeline's written files are, so a
-    # milestone's sweep takes it from then on: a file this save created included. The path
-    # resolves inside the project (the config checked it), which is where the ledger is.
-    warnings: list[str] = []
-    form_path = config.form_path.resolve().relative_to(config.project_root.resolve()).as_posix()
-    captured = capture_save_in_ledger(config.project_root, [form_path], warnings)
+    """Write the form unless the file changed since the view read it, and capture the write,
+    the check, the write and the capture under the repository's lock, which a branch switch
+    holds too, as the test-quote writes are: a switch never lands between them."""
+    with repository_mutation(config.project_root):
+        current = form_file_revision(config)
+        if current != body.base_revision:
+            raise StaleDocumentRevisionError(
+                expected_revision=current,
+                provided_revision=body.base_revision,
+                message=f"{config.form} changed on disk after the workbench read it. "
+                "Reload the workbench before saving.",
+            )
+        form = with_quote_details(body.form)
+        revision = write_form(config.form_path, form)
+        # The written file is one save on the ledger, as the pipeline's written files are,
+        # so a milestone's sweep takes it from then on: a file this save created included.
+        # The path resolves inside the project (the config checked it), where the ledger is.
+        warnings: list[str] = []
+        form_path = config.form_path.resolve().relative_to(config.project_root.resolve()).as_posix()
+        captured = capture_save_in_ledger(config.project_root, [form_path], warnings)
     return WorkbenchFormSaveResponse(
         form=form, revision=revision, warnings=warnings, **captured._asdict()
     )

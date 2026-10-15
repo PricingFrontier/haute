@@ -2359,7 +2359,7 @@ export interface TrainStatusResponse {
   completed_fits: number | null;
   elapsed_seconds: number;
   error_code: string | null;
-  error_detail: unknown;
+  error_detail: unknown | null;
   execution_metrics: ExecutionMetricsPayload | null;
   export_receipts: TrainExportReceipts;
   feature_selection: TrainingFeatureSelectionDiagnosticPayload | null;
@@ -2795,14 +2795,10 @@ export interface WorkbenchTestQuoteCompareResponse {
  * One place the priced response differs from the accepted one.
  */
 export interface WorkbenchTestQuoteChange {
-  accepted: {
-    [k: string]: unknown;
-  };
+  accepted: unknown;
   kind: 'changed' | 'added' | 'removed';
   path: string;
-  priced: {
-    [k: string]: unknown;
-  };
+  priced: unknown;
 }
 /**
  * The underwriter app's release, and who the host signed in.
