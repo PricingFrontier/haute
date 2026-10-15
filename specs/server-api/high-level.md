@@ -404,7 +404,8 @@ pipeline's sources.
   `schemas.py`, which may re-export cohesive private domain modules, and raises through
   `errors.py`'s `HauteError` family. The execution-diagnostic and Explore-chart pilots, and the
   response models of each converted module group (`RESPONSE_CONTRACT_GROUPS` in
-  `scripts/generate_api_contracts.py`), generate reviewed browser declarations and standalone
+  `scripts/generate_api_contracts.py`), and the request bodies of each request group
+  (`REQUEST_CONTRACT_GROUPS`), generate reviewed browser declarations and standalone
   validators from their canonical Pydantic models; the browser checks those responses with the
   generated validators alone. Other frontend contracts remain explicitly maintained until they
   are converted, rather than being claimed as generated.

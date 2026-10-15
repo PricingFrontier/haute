@@ -101,6 +101,27 @@ describe("QuoteView", () => {
     expect(screen.getByTestId("quote-reference")).toHaveTextContent("Q-000001")
   })
 
+  it("takes a new quote to its own address once a repeated create makes it, though the edit after is unsaved", async () => {
+    await navigate("/quotes/new", { force: true })
+    vi.mocked(createAppQuote)
+      .mockRejectedValueOnce(new ApiError("HTTP 502", 502, "Bad gateway"))
+      .mockResolvedValue(answer({ stage: "draft" }, { tables: null, values: { policy: [{ "policy.state": "NY" }] } }))
+    vi.mocked(saveAppQuote).mockRejectedValue(new ApiError("HTTP 504", 504, "Gateway timeout"))
+    await opened({ page: "new", from: null })
+    type("NY")
+    fireEvent.click(screen.getByTestId("save-quote"))
+    expect(await screen.findByText("Bad gateway")).toBeInTheDocument()
+
+    type("CA")
+    fireEvent.click(screen.getByTestId("save-quote"))
+
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/q1"))
+    expect(await screen.findByText("Gateway timeout")).toBeInTheDocument()
+    expect(screen.queryByText(/^Saved Q-/)).toBeNull()
+    expect(openAppQuote).not.toHaveBeenCalled()
+    expect(useWorkbenchPreviewStore.getState().quote.policy[0]["policy.state"]).toBe("CA")
+  })
+
   it("stays on the Quotes page when a new quote's save answers after it was left", async () => {
     await navigate("/quotes/new", { force: true })
     let creating: (value: WorkbenchAppQuoteResponse) => void = () => {}
@@ -294,7 +315,7 @@ describe("QuoteView", () => {
     await vi.waitFor(() => expect(screen.getByTestId("quote-reference")).toHaveTextContent("Q-000002"))
     fireEvent.click(undo)
 
-    await vi.waitFor(() => expect(changeAppQuote).toHaveBeenLastCalledWith("q1", "restore", 2))
+    await vi.waitFor(() => expect(changeAppQuote).toHaveBeenLastCalledWith("q1", "restore", 2, {}))
     expect(useOpenQuoteStore.getState().quote?.id).toBe("q2")
   })
 
@@ -355,7 +376,7 @@ describe("QuoteView", () => {
 
   it("offers back values this browser kept", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    writeDraft(draftKey("motor", "ana@example.com", "q1"), { values: { policy: [{ "policy.state": "CA" }] }, version: 0, latest: 1, formRevision: "rev-9", keptAt: new Date().toISOString() })
+    writeDraft(draftKey("motor", "ana@example.com", "q1"), { values: { policy: [{ "policy.state": "CA" }] }, version: 0, latest: 1, formRevision: "rev-9", keptAt: new Date().toISOString(), pending: null })
     await opened()
 
     expect(screen.getByTestId("notice-recovered")).toHaveTextContent("not saved to the server. The quote has been saved since then.")

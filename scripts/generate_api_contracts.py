@@ -106,10 +106,18 @@ from haute.schemas import (
     WorkbenchAppCarryResponse,
     WorkbenchAppFormResponse,
     WorkbenchAppPeopleResponse,
+    WorkbenchAppPriceRequest,
     WorkbenchAppPriceResponse,
+    WorkbenchAppQuoteAssign,
+    WorkbenchAppQuoteChange,
     WorkbenchAppQuoteChangeResponse,
+    WorkbenchAppQuoteCreateRequest,
+    WorkbenchAppQuoteFinal,
     WorkbenchAppQuoteHistoryResponse,
+    WorkbenchAppQuoteNote,
+    WorkbenchAppQuoteReopen,
     WorkbenchAppQuoteResponse,
+    WorkbenchAppQuoteReviseRequest,
     WorkbenchAppQuotesResponse,
     WorkbenchAppReleaseResponse,
     WorkbenchFormResponse,
@@ -132,6 +140,24 @@ SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 _ContractModel = type[BaseModel] | type[RootModel[Any]]
 
 RESPONSE_GROUPS_KEYWORD = "x-haute-response-groups"
+REQUEST_GROUPS_KEYWORD = "x-haute-request-groups"
+
+# Request bodies the browser sends, by module group, described as their routes read them
+# (validation mode: a defaulted field may be left out), so what the browser builds is typed
+# by the model that reads it. The frontend generator emits one validator module per group,
+# which only the tests load.
+REQUEST_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
+    "workbench-app-requests": (
+        WorkbenchAppPriceRequest,
+        WorkbenchAppQuoteCreateRequest,
+        WorkbenchAppQuoteReviseRequest,
+        WorkbenchAppQuoteChange,
+        WorkbenchAppQuoteAssign,
+        WorkbenchAppQuoteFinal,
+        WorkbenchAppQuoteReopen,
+        WorkbenchAppQuoteNote,
+    ),
+}
 
 # Response models the browser parses with generated validators, by the module
 # group whose hand-written guards they replace. The frontend generator emits one
@@ -441,7 +467,8 @@ def _definitions_for(
 
 
 def build_contract_bundle() -> dict[str, Any]:
-    """Build one deterministic JSON Schema bundle for the pilots and response groups."""
+    """Build one deterministic JSON Schema bundle for the pilots, request groups and response
+    groups."""
     definitions: dict[str, Any] = {}
     for model in (
         ExecutionStrategyDiagnosticPayload,
@@ -454,6 +481,20 @@ def build_contract_bundle() -> dict[str, Any]:
         "execution_strategy_diagnostic": {"$ref": "#/$defs/ExecutionStrategyDiagnosticPayload"},
         "explore_charts": {"$ref": "#/$defs/ExploreChartsConfig"},
     }
+    if set(REQUEST_CONTRACT_GROUPS) & set(RESPONSE_CONTRACT_GROUPS):
+        raise RuntimeError("a contract group is both a request and a response group")
+    # Requests before responses: they are validation-mode definitions, as the pilots are, so
+    # a response's serialized copy of one is the copy renamed.
+    for group, models in REQUEST_CONTRACT_GROUPS.items():
+        if re.fullmatch(r"[a-z][a-z0-9-]*", group) is None or not models:
+            raise RuntimeError(f"invalid request contract group: {group!r}")
+        for request_model in models:
+            for name, definition in _definitions_for(request_model).items():
+                _merge_definition(definitions, name=name, value=definition)
+            root = request_model.__name__
+            if root in properties:
+                raise RuntimeError(f"request contract listed twice: {root}")
+            properties[root] = {"$ref": f"#/$defs/{root}"}
     for group, models in RESPONSE_CONTRACT_GROUPS.items():
         # The group names a generated module file.
         if re.fullmatch(r"[a-z][a-z0-9-]*", group) is None or not models:
@@ -484,7 +525,11 @@ def build_contract_bundle() -> dict[str, Any]:
         "properties": properties,
         "required": list(properties),
         "additionalProperties": False,
-        # The frontend generator emits one validator module per group from this.
+        # The frontend generator emits one validator module per group from these.
+        REQUEST_GROUPS_KEYWORD: {
+            group: [model.__name__ for model in models]
+            for group, models in REQUEST_CONTRACT_GROUPS.items()
+        },
         RESPONSE_GROUPS_KEYWORD: {
             group: [model.__name__ for model in models]
             for group, models in RESPONSE_CONTRACT_GROUPS.items()

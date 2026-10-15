@@ -11,6 +11,8 @@ from haute._execution_schemas import MAX_JSON_SAFE_INTEGER
 from haute.schemas import TrainEstimateResponse, UtilityWriteResponse
 from scripts.generate_api_contracts import (
     GENERATED_SCHEMA_PATH,
+    REQUEST_CONTRACT_GROUPS,
+    REQUEST_GROUPS_KEYWORD,
     RESPONSE_CONTRACT_GROUPS,
     RESPONSE_GROUPS_KEYWORD,
     _ResponseJsonSchema,
@@ -70,26 +72,37 @@ def test_contract_bundle_contains_closed_contract_roots() -> None:
     assert bundle["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert bundle["type"] == "object"
     assert bundle["additionalProperties"] is False
+    request_roots = [
+        model.__name__ for models in REQUEST_CONTRACT_GROUPS.values() for model in models
+    ]
     response_roots = [
         model.__name__ for models in RESPONSE_CONTRACT_GROUPS.values() for model in models
     ]
     assert bundle["required"] == [
         "execution_strategy_diagnostic",
         "explore_charts",
+        *request_roots,
         *response_roots,
     ]
     assert bundle["properties"] == {
         "execution_strategy_diagnostic": {"$ref": "#/$defs/ExecutionStrategyDiagnosticPayload"},
         "explore_charts": {"$ref": "#/$defs/ExploreChartsConfig"},
+        **{name: {"$ref": f"#/$defs/{name}"} for name in request_roots},
         **{name: {"$ref": f"#/$defs/{name}"} for name in response_roots},
+    }
+    assert bundle[REQUEST_GROUPS_KEYWORD] == {
+        group: [model.__name__ for model in models]
+        for group, models in REQUEST_CONTRACT_GROUPS.items()
     }
     assert bundle[RESPONSE_GROUPS_KEYWORD] == {
         group: [model.__name__ for model in models]
         for group, models in RESPONSE_CONTRACT_GROUPS.items()
     }
+    # One validator module per group, so no name is both a request and a response group.
+    assert not set(REQUEST_CONTRACT_GROUPS) & set(RESPONSE_CONTRACT_GROUPS)
 
     definitions = bundle["$defs"]
-    assert set(definitions) >= set(response_roots)
+    assert set(definitions) >= set(request_roots) | set(response_roots)
     # Every definition belongs to some contract root: nothing is orphaned.
     assert _reachable_definitions(bundle) == set(definitions)
     assert set(definitions) >= {
@@ -210,6 +223,22 @@ def test_response_contracts_require_every_field_the_server_sends() -> None:
     assert "evaluation_preview" in estimate["properties"]
     assert "evaluation_preview" not in estimate["required"]
     assert "was_downsampled" in estimate["required"]
+
+
+def test_request_contracts_read_a_body_as_its_route_does() -> None:
+    definitions = build_contract_bundle()["$defs"]
+    create = definitions["WorkbenchAppQuoteCreateRequest"]
+
+    # A defaulted field may be left out of a body the route reads, unlike a response's.
+    assert set(create["required"]) == {"operation", "form_revision", "release", "values"}
+    assert {"shown", "source"} <= set(create["properties"])
+    assert create["properties"]["operation"] == {
+        "maxLength": 64,
+        "minLength": 8,
+        "title": "Operation",
+        "type": "string",
+    }
+    assert set(definitions["WorkbenchAppQuoteReopen"]["required"]) == {"version", "reason"}
 
 
 def test_a_field_omitted_when_none_admits_no_null() -> None:

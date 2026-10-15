@@ -13,10 +13,19 @@ import type {
   WorkbenchAppCarryResponse,
   WorkbenchAppFormResponse,
   WorkbenchAppPeopleResponse,
+  WorkbenchAppPriceRequest,
   WorkbenchAppPriceResponse,
+  WorkbenchAppQuoteAssign,
+  WorkbenchAppQuoteChange,
   WorkbenchAppQuoteChangeResponse,
+  WorkbenchAppQuoteCreateRequest,
+  WorkbenchAppQuoteFinal,
   WorkbenchAppQuoteHistoryResponse,
+  WorkbenchAppQuoteNote,
+  WorkbenchAppQuoteReopen,
   WorkbenchAppQuoteResponse,
+  WorkbenchAppQuoteReviseRequest,
+  WorkbenchAppQuoteSource,
   WorkbenchAppQuotesResponse,
   WorkbenchAppReleaseResponse,
 } from "./types"
@@ -50,7 +59,8 @@ export async function priceAppQuote(
   release: string,
   values: Record<string, SampleRow[]>,
 ): Promise<WorkbenchAppPriceResponse> {
-  const data = await post<unknown>("/api/app/price", { form_revision: revision, release, values }, { timeout: PRICE_TIMEOUT_MS })
+  const body: WorkbenchAppPriceRequest = { form_revision: revision, release, values }
+  const data = await post<unknown>("/api/app/price", body, { timeout: PRICE_TIMEOUT_MS })
   return expectGeneratedContract(
     "WorkbenchAppPriceResponse",
     (await workbenchValidators()).validateWorkbenchAppPriceResponse,
@@ -68,19 +78,29 @@ export interface QuotesQuery {
 }
 
 /** How a quote is made from another's revision. */
-export type QuoteRelation = "duplicate" | "renewal" | "alternative"
+export type QuoteRelation = WorkbenchAppQuoteSource["relation"]
 
 /** What a save sends: the values on the sheets drawn from `revision` of `release`, and the prices shown for them or null. */
-export interface QuoteSave {
-  operation: string
-  form_revision: string
-  release: string
-  values: Record<string, SampleRow[]>
-  shown: Record<string, Record<string, unknown>[]> | null
+export type QuoteSave = Required<Omit<WorkbenchAppQuoteCreateRequest, "source">>
+
+/** The quote and revision a new quote is made from, and how. */
+export type QuoteSource = WorkbenchAppQuoteSource
+
+/** Each change a quote takes besides a save, by its route's name, and the body its route reads. */
+interface QuoteChangeBodies {
+  assignee: WorkbenchAppQuoteAssign
+  archive: WorkbenchAppQuoteChange
+  restore: WorkbenchAppQuoteChange
+  final: WorkbenchAppQuoteFinal
+  reopen: WorkbenchAppQuoteReopen
+  note: WorkbenchAppQuoteNote
 }
 
 /** A change a quote takes besides a save, by its route's name. */
-export type QuoteChange = "assignee" | "note" | "archive" | "restore" | "final" | "reopen"
+export type QuoteChange = keyof QuoteChangeBodies
+
+/** What change `C` sends besides the version it is made on. */
+export type QuoteChangeFields<C extends QuoteChange> = Omit<QuoteChangeBodies[C], "version">
 
 /** A page of `query`'s list, after `cursor` when given. */
 export async function fetchAppQuotes(query: QuotesQuery, cursor: string | null = null): Promise<WorkbenchAppQuotesResponse> {
@@ -98,11 +118,9 @@ async function quoteResponse(data: unknown): Promise<WorkbenchAppQuoteResponse> 
 }
 
 /** A new quote, made from `source` when given. */
-export async function createAppQuote(
-  save: QuoteSave,
-  source: { quote_id: string; revision: number; relation: QuoteRelation } | null,
-): Promise<WorkbenchAppQuoteResponse> {
-  return quoteResponse(await post<unknown>("/api/app/quotes", { ...save, source }, { timeout: PRICE_TIMEOUT_MS }))
+export async function createAppQuote(save: QuoteSave, source: QuoteSource | null): Promise<WorkbenchAppQuoteResponse> {
+  const body: WorkbenchAppQuoteCreateRequest = { ...save, source }
+  return quoteResponse(await post<unknown>("/api/app/quotes", body, { timeout: PRICE_TIMEOUT_MS }))
 }
 
 /** A quote with its newest revision, or revision `revision`. */
@@ -113,20 +131,22 @@ export async function openAppQuote(id: string, revision: number | null = null): 
 
 /** The quote's next revision, saved over `version` of it. */
 export async function saveAppQuote(id: string, save: QuoteSave, version: number): Promise<WorkbenchAppQuoteResponse> {
-  return quoteResponse(await post<unknown>(`/api/app/quotes/${encodeURIComponent(id)}/revisions`, { ...save, version }, { timeout: PRICE_TIMEOUT_MS }))
+  const body: WorkbenchAppQuoteReviseRequest = { ...save, version }
+  return quoteResponse(await post<unknown>(`/api/app/quotes/${encodeURIComponent(id)}/revisions`, body, { timeout: PRICE_TIMEOUT_MS }))
 }
 
 /**
  * A change to the quote at `version`, with what it changes, answered with the revision it
  * wrote. A note is no revision: it is written over whichever the quote is at.
  */
-export async function changeAppQuote(
+export async function changeAppQuote<C extends QuoteChange>(
   id: string,
-  change: QuoteChange,
+  change: C,
   version: number,
-  fields: Record<string, string | number> = {},
+  fields: QuoteChangeFields<C>,
 ): Promise<WorkbenchAppQuoteChangeResponse> {
-  const body = change === "note" ? fields : { version, ...fields }
+  // A note names no version; every other change's fields are its body's but the version.
+  const body = (change === "note" ? fields : { ...fields, version }) as QuoteChangeBodies[C]
   const data = await post<unknown>(`/api/app/quotes/${encodeURIComponent(id)}/${change}`, body)
   return expectGeneratedContract("WorkbenchAppQuoteChangeResponse", (await workbenchValidators()).validateWorkbenchAppQuoteChangeResponse, data)
 }

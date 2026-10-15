@@ -160,12 +160,12 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
 
   const archive = async (quote: WorkbenchAppQuote) => {
     try {
-      const { quote: archived } = await changeAppQuote(quote.id, "archive", quote.version)
+      const { quote: archived } = await changeAppQuote(quote.id, "archive", quote.version, {})
       void load(query, true)
       addToast("success", `Archived ${quote.reference}`, {
         label: "Undo",
         run: () => {
-          void changeAppQuote(archived.id, "restore", archived.version)
+          void changeAppQuote(archived.id, "restore", archived.version, {})
             .then(() => load(query, true))
             .catch((reason: unknown) => addToast("error", `Could not restore ${quote.reference}: ${apiErrorMessage(reason)}`))
         },
@@ -177,7 +177,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
 
   const restore = async (quote: WorkbenchAppQuote) => {
     try {
-      await changeAppQuote(quote.id, "restore", quote.version)
+      await changeAppQuote(quote.id, "restore", quote.version, {})
       void load(query, true)
       addToast("success", `Restored ${quote.reference}`)
     } catch (reason: unknown) {

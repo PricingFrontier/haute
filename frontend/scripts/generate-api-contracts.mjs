@@ -43,14 +43,15 @@ const PILOT_VALIDATOR_MODULES = [
   },
 ];
 
-// The Python stage owns the response module groups and records them here.
+// The Python stage owns the response and request module groups and records them here.
 const RESPONSE_GROUPS_KEYWORD = "x-haute-response-groups";
+const REQUEST_GROUPS_KEYWORD = "x-haute-request-groups";
 const TYPE_ROOT_NAME = "HauteApiContractRoots";
 
-function responseValidatorModules(schema) {
-  const groups = schema[RESPONSE_GROUPS_KEYWORD];
+function groupValidatorModules(schema, keyword, kind) {
+  const groups = schema[keyword];
   if (!groups || typeof groups !== "object" || Array.isArray(groups)) {
-    throw new Error(`Contract bundle is missing its ${RESPONSE_GROUPS_KEYWORD} map`);
+    throw new Error(`Contract bundle is missing its ${keyword} map`);
   }
   return Object.entries(groups).map(([group, definitionNames]) => {
     if (
@@ -59,7 +60,7 @@ function responseValidatorModules(schema) {
       || definitionNames.length === 0
       || definitionNames.some((name) => typeof name !== "string" || !/^[A-Z][A-Za-z0-9]*$/.test(name))
     ) {
-      throw new Error(`Invalid response contract group: ${group}`);
+      throw new Error(`Invalid ${kind} contract group: ${group}`);
     }
     return {
       validatorFilename: `api-contracts.${group}.validators.mjs`,
@@ -74,7 +75,16 @@ function responseValidatorModules(schema) {
 }
 
 export function validatorModules(schema) {
-  return [...PILOT_VALIDATOR_MODULES, ...responseValidatorModules(schema)];
+  const modules = [
+    ...PILOT_VALIDATOR_MODULES,
+    ...groupValidatorModules(schema, RESPONSE_GROUPS_KEYWORD, "response"),
+    ...groupValidatorModules(schema, REQUEST_GROUPS_KEYWORD, "request"),
+  ];
+  const filenames = modules.map(({ validatorFilename }) => validatorFilename);
+  if (new Set(filenames).size !== filenames.length) {
+    throw new Error("Two contract groups name the same validator module");
+  }
+  return modules;
 }
 
 function withBanner(contents) {

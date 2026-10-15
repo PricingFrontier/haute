@@ -38,10 +38,10 @@ import SheetCanvas from "../workbench/SheetCanvas"
 import AppHeader from "./AppHeader"
 import HistoryPanel from "./HistoryPanel"
 import { basisOf, fullTime, relativeTime, valuesKey } from "./quoteValues"
-import { followLink, navigate, newQuotePath, quotePath, revisionPath, setLeaveGuard, type AppRoute } from "./route"
+import { followLink, navigate, newQuotePath, quotePath, revisionPath, routeOf, setLeaveGuard, type AppRoute } from "./route"
 import { BUTTON, Menu, Notice, StageChip, type MenuItem } from "./ui"
 import useAppStore, { confirm } from "./useAppStore"
-import useOpenQuoteStore, { canEdit, readOnlyReason } from "./useOpenQuoteStore"
+import useOpenQuoteStore, { busy, canEdit, readOnlyReason } from "./useOpenQuoteStore"
 
 type QuoteRoute = Extract<AppRoute, { page: "new" } | { page: "quote" }>
 
@@ -53,16 +53,20 @@ const NAME_COLUMN = "qd_quote_name"
 /** A quote just saved as new, on the sheets already: its address is moved to without opening it again. */
 let adopted: string | null = null
 
-/** Save the open quote, and, for a new one, move to its own address. */
+/**
+ * Save the open quote, and, for a new one, move to its own address once it has one: a save
+ * that first repeats a create whose answer was lost makes the quote though the values typed
+ * after may still be unsaved.
+ */
 async function saveOpen(): Promise<void> {
   const before = useOpenQuoteStore.getState().quote
-  const quote = await useOpenQuoteStore.getState().save()
-  if (quote === null) return
-  if (before === null) {
-    adopted = quote.id
-    await navigate(quotePath(quote.id), { replace: true, force: true })
+  const saved = await useOpenQuoteStore.getState().save()
+  const made = useOpenQuoteStore.getState().quote
+  if (before === null && made !== null && routeOf(window.location).page === "new") {
+    adopted = made.id
+    await navigate(quotePath(made.id), { replace: true, force: true })
   }
-  useToastStore.getState().addToast("success", `Saved ${quote.reference}, revision ${quote.latest}`)
+  if (saved !== null) useToastStore.getState().addToast("success", `Saved ${saved.reference}, revision ${saved.latest}`)
 }
 
 /** Restore `archived`, as its archive left it: through the open quote while it is open, else on its own. */
@@ -73,7 +77,7 @@ async function undoArchive(archived: WorkbenchAppQuote): Promise<void> {
     return
   }
   try {
-    await changeAppQuote(archived.id, "restore", archived.version)
+    await changeAppQuote(archived.id, "restore", archived.version, {})
   } catch (reason: unknown) {
     useToastStore.getState().addToast("error", `Could not restore ${archived.reference}: ${apiErrorMessage(reason)}`)
   }
@@ -226,7 +230,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   const olderSheets = useOpenQuoteStore((s) => s.olderSheets)
   const source = useOpenQuoteStore((s) => s.source)
   const saving = useOpenQuoteStore((s) => s.saving)
-  const changing = useOpenQuoteStore((s) => s.changing)
+  const working = useOpenQuoteStore(busy)
   const historyOpen = useOpenQuoteStore((s) => s.historyOpen)
   const change = useOpenQuoteStore((s) => s.change)
   const setHistoryOpen = useOpenQuoteStore((s) => s.setHistoryOpen)
@@ -326,8 +330,8 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
     { label: "Renew", icon: RefreshCcw, run: () => derive("renewal"), disabled: quote === null || !editor, title: "A new quote renewing this one, from this revision's values" },
     { label: "Create alternative", icon: GitBranchPlus, run: () => derive("alternative"), disabled: quote === null || !editor, title: "A new quote offering other terms, from this revision's values" },
     quote?.archived
-      ? { label: "Restore", icon: ArchiveRestore, run: () => void change("restore", {}, quote), disabled: changing || !editor }
-      : { label: "Archive", icon: Archive, run: () => void archive(), disabled: quote === null || changing || !editor },
+      ? { label: "Restore", icon: ArchiveRestore, run: () => void change("restore", {}, quote), disabled: working || !editor }
+      : { label: "Archive", icon: Archive, run: () => void archive(), disabled: quote === null || working || !editor },
     { label: "Copy link", icon: Link2, run: () => void copyLink(), disabled: quote === null },
   ]
 
@@ -369,15 +373,15 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
         />
       </div>
       <ToolbarColumn role="group" aria-label="Save">
-        <button type="button" className="toolbar-fill toolbar-fill-save" onClick={() => void saveOpen()} disabled={!ready || saving || closed || !typed || nothingNew} title={nothingNew ? "Nothing has changed since the quote was saved" : saveTitle} data-testid="save-quote">
+        <button type="button" className="toolbar-fill toolbar-fill-save" onClick={() => void saveOpen()} disabled={!ready || working || closed || !typed || nothingNew} title={nothingNew ? "Nothing has changed since the quote was saved" : saveTitle} data-testid="save-quote">
           {saving ? "Saving…" : unpriceable && !closed ? "Save unpriced" : "Save"}
         </button>
         {quote?.stage === "final" ? (
-          <ToolbarButton icon={LockOpen} onClick={() => void reopen()} disabled={changing || !editor || past || olderSheets !== null || quote.archived} title="Reopen the quote for an amendment, giving a reason">
+          <ToolbarButton icon={LockOpen} onClick={() => void reopen()} disabled={working || !editor || past || olderSheets !== null || quote.archived} title="Reopen the quote for an amendment, giving a reason">
             Reopen
           </ToolbarButton>
         ) : (
-          <ToolbarButton icon={BadgeCheck} onClick={() => void markFinal()} disabled={changing || finalBlock !== null} title={finalBlock ?? "Pin this revision as the final quotation"}>
+          <ToolbarButton icon={BadgeCheck} onClick={() => void markFinal()} disabled={working || finalBlock !== null} title={finalBlock ?? "Pin this revision as the final quotation"}>
             Mark final
           </ToolbarButton>
         )}
@@ -406,7 +410,7 @@ function QuoteLine() {
   const quote = useOpenQuoteStore((s) => s.quote)
   const revision = useOpenQuoteStore((s) => s.revision)
   const source = useOpenQuoteStore((s) => s.source)
-  const changing = useOpenQuoteStore((s) => s.changing)
+  const working = useOpenQuoteStore(busy)
   const change = useOpenQuoteStore((s) => s.change)
 
   useEffect(() => {
@@ -479,7 +483,7 @@ function QuoteLine() {
             <select
               aria-label="Assigned to"
               value={quote.assignee}
-              disabled={changing || quote.archived || !canEdit()}
+              disabled={working || quote.archived || !canEdit()}
               onChange={(event) => void assign(event.target.value)}
               className="focus-ring rounded px-1 py-0.5 text-[11px]"
               style={{ border: "1px solid var(--border)", color: "var(--text-primary)" }}
@@ -510,7 +514,7 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
   const moved = useOpenQuoteStore((s) => s.moved)
   const dropped = useOpenQuoteStore((s) => s.dropped)
   const recovered = useOpenQuoteStore((s) => s.recovered)
-  const saving = useOpenQuoteStore((s) => s.saving)
+  const working = useOpenQuoteStore(busy)
   const dismiss = useOpenQuoteStore((s) => s.dismiss)
   const change = useOpenQuoteStore((s) => s.change)
   const restoreDraft = useOpenQuoteStore((s) => s.restoreDraft)
@@ -539,7 +543,7 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
               <button type="button" className={BUTTON} onClick={() => void openNewest()}>
                 Open the newest
               </button>
-              <button type="button" className={BUTTON} onClick={() => void saveOpenAsNew()} disabled={saving}>
+              <button type="button" className={BUTTON} onClick={() => void saveOpenAsNew()} disabled={working}>
                 Save mine as a new quote
               </button>
             </>
@@ -589,7 +593,7 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
         </Notice>
       )}
       {reason === "archived" && quote !== null && (
-        <Notice tone="info" testId="notice-archived" actions={canEdit() && <button type="button" className={BUTTON} onClick={() => void change("restore", {}, quote)}>Restore</button>}>
+        <Notice tone="info" testId="notice-archived" actions={canEdit() && <button type="button" className={BUTTON} onClick={() => void change("restore", {}, quote)} disabled={working}>Restore</button>}>
           Archived{quote.archived_by !== null && ` by ${quote.archived_by}`}{quote.archived_at !== null && ` ${relativeTime(quote.archived_at)}`}, read only. Restore it to change it.
         </Notice>
       )}

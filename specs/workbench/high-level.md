@@ -898,7 +898,13 @@ Out of scope:
   and a quote being opened takes nothing typed and saves nothing until it is read. A
   question asked about a quote (Mark final, Reopen, a name for who it is with) is dropped
   as the page moves to another quote or is left, and a change only ever changes the quote
-  it was asked about, refused naming it once another is open. The cells of `reference`,
+  it was asked about, refused naming it once another is open. A save is written once
+  whatever is lost on the way: its operation key stays bound to what it sent, and a save
+  whose answer never came, or came as a server failure (a status of 500 or more), is kept
+  as it was sent, in this browser's draft too, so the next Save repeats it exactly before
+  saving anything typed since as the quote's next revision; only a refusal (a status
+  below 500) lets it go. While a save or a change is being made, Save and every control
+  that changes the quote are off. The cells of `reference`,
   `stage`, `assignee` and `archived` take no typing; assigning,
   archiving, restoring, marking final and reopening each write a revision of the newest
   with those details changed, its values and prices kept, which the sheets take on, what
@@ -1228,7 +1234,10 @@ Out of scope:
   the newest, its values, request, prices and release kept and its details changed: the
   pipeline sees the new details, as any other input, the next time the quote is priced.
   A new quote is priced before it takes its reference, so its first pricing sees none. A
-  handover note is an event alone.
+  handover note is an event alone, written with the quote's row held as a revision holds
+  it, so a note never lands on a quote archived before it. A quote's name
+  (`quote_name`) is at most 200 characters, a longer one refused naming the limit at
+  any save.
   Who marked it final and when, when it was archived and by whom, the note, and the
   quote and revision it was made from and how, a duplicate, a renewal or an
   alternative, are read from its events; its version is its newest revision's number.

@@ -193,6 +193,18 @@ def test_a_quote_saved_unpriced_is_a_draft_and_an_empty_one_is_refused(page: Pag
         assert refused.json()["detail"] == "Type the quote first"
 
 
+def test_a_quote_name_past_its_length_is_refused_naming_the_limit(page: Page) -> None:
+    named = {**VALUES, "quote_details": [{**DETAILS, "qd_quote_name": "x" * 240}]}
+
+    refused = page.create(values=named)
+    quote = page.create().json()["quote"]
+    resaved = page.save(quote, values=named)
+
+    for each in (refused, resaved):
+        assert each.status_code == 422
+        assert "at most 200 characters" in each.json()["detail"]["message"]
+
+
 def test_a_save_from_a_page_of_another_release_is_refused(page: Page) -> None:
     for fields in ({"release": "another"}, {"form_revision": "0" * 64}):
         refused = page.create(**fields)
@@ -473,9 +485,20 @@ def test_with_an_edit_role_only_those_holding_it_change_quotes(tmp_path: Path, u
             made = client.post("/api/app/quotes", json=body, headers=editor)
             refused = client.post("/api/app/quotes", json=body, headers=reader)
             quote = made.json()["quote"]
-            change = client.post(
-                f"/api/app/quotes/{quote['id']}/archive", json={"version": 1}, headers=reader
-            )
+            # Every route that writes refuses a reader, each by its own check.
+            writes = {
+                "revisions": {**body, "operation": "operation-000002", "version": 1},
+                "note": {"note": "Call the broker"},
+                "assignee": {"version": 1, "assignee": "jo@example.com"},
+                "archive": {"version": 1},
+                "restore": {"version": 1},
+                "final": {"version": 1, "revision": 1},
+                "reopen": {"version": 1, "reason": "Broker asked"},
+            }
+            changes = [
+                client.post(f"/api/app/quotes/{quote['id']}/{path}", json=json, headers=reader)
+                for path, json in writes.items()
+            ]
             priced = client.post(
                 "/api/app/price",
                 json={k: body[k] for k in ("form_revision", "release", "values")},
@@ -483,9 +506,12 @@ def test_with_an_edit_role_only_those_holding_it_change_quotes(tmp_path: Path, u
             )
 
             assert made.status_code == 200
-            for each in (refused, change):
+            for each in (refused, *changes):
                 assert each.status_code == 403
                 assert each.json()["detail"]["error_code"] == "quote_read_only"
+            history = client.get(f"/api/app/quotes/{quote['id']}/history", headers=reader).json()
+            assert [event["kind"] for event in history["events"]] == ["created"]
+            assert len(history["revisions"]) == 1
             assert client.get("/api/app/quotes?view=team", headers=reader).status_code == 200
             assert priced.status_code == 200
             for headers in (ANA, {**ANA, EASY_AUTH_PRINCIPAL: "%%%"}):

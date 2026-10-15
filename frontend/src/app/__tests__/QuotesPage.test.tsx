@@ -168,8 +168,8 @@ describe("QuotesPage", () => {
 
     await vi.waitFor(() => expect(changeAppQuote).toHaveBeenCalledTimes(2))
     expect(vi.mocked(changeAppQuote).mock.calls).toEqual([
-      ["q1", "archive", 1],
-      ["q1", "restore", 2],
+      ["q1", "archive", 1, {}],
+      ["q1", "restore", 2, {}],
     ])
   })
 
@@ -191,7 +191,7 @@ describe("QuotesPage", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Restore Q-000001" }))
 
-    await vi.waitFor(() => expect(changeAppQuote).toHaveBeenCalledWith("q1", "restore", 1))
+    await vi.waitFor(() => expect(changeAppQuote).toHaveBeenCalledWith("q1", "restore", 1, {}))
     expect(await screen.findByText("Restored Q-000001")).toBeInTheDocument()
   })
 

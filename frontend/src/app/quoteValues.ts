@@ -4,6 +4,7 @@
  * quote_details columns the Quotes page lists and how each value shows in them, how long
  * ago a moment was, and the values kept in the browser until they are saved or discarded.
  */
+import type { QuoteSave, QuoteSource } from "../api/app"
 import type { FormSpec, SchemaColumn, WorkbenchAppQuote, WorkbenchAppQuoteEvent } from "../api/types"
 import type { SamplePrice } from "../stores/useWorkbenchPricingStore"
 import { canonicalJson } from "../utils/canonicalJson"
@@ -119,6 +120,21 @@ export const fullTime = (iso: string): string => new Date(iso).toLocaleString(un
 
 // ── Values kept in the browser ───────────────────────────────────────────
 
+/** A write a save sends: a new quote, made from a source or not, or a quote's next revision over `version`. */
+export type QuoteWrite =
+  | { kind: "create"; body: QuoteSave; source: QuoteSource | null }
+  | { kind: "save"; quoteId: string; version: number; body: QuoteSave }
+
+/**
+ * A write sent and not answered, or answered by a server failure, so it may have landed:
+ * its operation key is bound to what it saves, `basis` (the values, what they are saved as,
+ * and priced or not), and it is repeated exactly before anything else is saved.
+ */
+export interface PendingWrite {
+  basis: string
+  write: QuoteWrite
+}
+
 /** Values typed and not yet saved, kept in this browser as they were left. */
 export interface Draft {
   values: Values
@@ -128,6 +144,17 @@ export interface Draft {
   /** The sheets' revision they were typed into. */
   formRevision: string
   keptAt: string
+  /** The write a save still held when they were kept. */
+  pending: PendingWrite | null
+}
+
+const isPendingWrite = (value: unknown): value is PendingWrite => {
+  if (typeof value !== "object" || value === null) return false
+  const { basis, write } = value as Partial<PendingWrite>
+  if (typeof basis !== "string" || typeof write !== "object" || write === null) return false
+  const body = (write as { body?: Partial<QuoteSave> }).body
+  if (typeof body !== "object" || body === null || typeof body.operation !== "string" || typeof body.values !== "object") return false
+  return write.kind === "create" || (write.kind === "save" && typeof write.quoteId === "string" && typeof write.version === "number")
 }
 
 const DRAFT_PREFIX = "haute-app-draft"
@@ -141,7 +168,9 @@ export function readDraft(key: string): Draft | null {
     const text = window.localStorage.getItem(key)
     if (text === null) return null
     const draft = JSON.parse(text) as Draft
-    return typeof draft === "object" && draft !== null && typeof draft.values === "object" ? draft : null
+    if (typeof draft !== "object" || draft === null || typeof draft.values !== "object") return null
+    // A held write that is not one is none: the values are still offered back.
+    return { ...draft, pending: isPendingWrite(draft.pending) ? draft.pending : null }
   } catch {
     return null
   }

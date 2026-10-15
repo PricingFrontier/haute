@@ -15020,6 +15020,46 @@
       "title": "WorkbenchAppPeopleResponse",
       "type": "object"
     },
+    "WorkbenchAppPriceRequest": {
+      "description": "A quote typed into the app's sheets, with the form revision and the release the page\nwas drawn from.",
+      "properties": {
+        "form_revision": {
+          "title": "Form Revision",
+          "type": "string"
+        },
+        "release": {
+          "title": "Release",
+          "type": "string"
+        },
+        "values": {
+          "additionalProperties": {
+            "items": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "title": "Values",
+          "type": "object"
+        }
+      },
+      "required": [
+        "form_revision",
+        "release",
+        "values"
+      ],
+      "title": "WorkbenchAppPriceRequest",
+      "type": "object"
+    },
     "WorkbenchAppPriceResponse": {
       "description": "The quote priced: each output table's rows by name, and the request that was priced.",
       "properties": {
@@ -15324,6 +15364,43 @@
       "title": "WorkbenchAppQuote",
       "type": "object"
     },
+    "WorkbenchAppQuoteAssign": {
+      "description": "Who the quote is with now.",
+      "properties": {
+        "assignee": {
+          "maxLength": 320,
+          "minLength": 1,
+          "title": "Assignee",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "assignee"
+      ],
+      "title": "WorkbenchAppQuoteAssign",
+      "type": "object"
+    },
+    "WorkbenchAppQuoteChange": {
+      "description": "A change to a quote, made on ``version`` of it.",
+      "properties": {
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "title": "WorkbenchAppQuoteChange",
+      "type": "object"
+    },
     "WorkbenchAppQuoteChangeResponse": {
       "description": "The quote as the change left it, and the revision it wrote; a note writes none.",
       "properties": {
@@ -15347,6 +15424,83 @@
         "revision"
       ],
       "title": "WorkbenchAppQuoteChangeResponse",
+      "type": "object"
+    },
+    "WorkbenchAppQuoteCreateRequest": {
+      "description": "A new quote, and the quote it is made from when it is.",
+      "properties": {
+        "form_revision": {
+          "title": "Form Revision",
+          "type": "string"
+        },
+        "operation": {
+          "maxLength": 64,
+          "minLength": 8,
+          "title": "Operation",
+          "type": "string"
+        },
+        "release": {
+          "title": "Release",
+          "type": "string"
+        },
+        "shown": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Shown"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchAppQuoteSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "values": {
+          "additionalProperties": {
+            "items": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "title": "Values",
+          "type": "object"
+        }
+      },
+      "required": [
+        "operation",
+        "form_revision",
+        "release",
+        "values"
+      ],
+      "title": "WorkbenchAppQuoteCreateRequest",
       "type": "object"
     },
     "WorkbenchAppQuoteEvent": {
@@ -15408,6 +15562,27 @@
       "title": "WorkbenchAppQuoteEvent",
       "type": "object"
     },
+    "WorkbenchAppQuoteFinal": {
+      "description": "The revision the page showed, marked final: it must be the quote's newest.",
+      "properties": {
+        "revision": {
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "revision"
+      ],
+      "title": "WorkbenchAppQuoteFinal",
+      "type": "object"
+    },
     "WorkbenchAppQuoteHistoryResponse": {
       "description": "A quote's revisions, events, the quote it was made from and those made from it.",
       "properties": {
@@ -15453,6 +15628,43 @@
       "title": "WorkbenchAppQuoteHistoryResponse",
       "type": "object"
     },
+    "WorkbenchAppQuoteNote": {
+      "description": "The quote's handover note; blank clears it. A note is no revision, so it names none.",
+      "properties": {
+        "note": {
+          "maxLength": 4000,
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "note"
+      ],
+      "title": "WorkbenchAppQuoteNote",
+      "type": "object"
+    },
+    "WorkbenchAppQuoteReopen": {
+      "description": "Why a final quote is reopened.",
+      "properties": {
+        "reason": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "reason"
+      ],
+      "title": "WorkbenchAppQuoteReopen",
+      "type": "object"
+    },
     "WorkbenchAppQuoteResponse": {
       "description": "A quote with one revision. ``form`` is the sheets the revision was keyed into when\nthey are not the release's, which it opens on, read only; ``moved`` says a save's\nprices, made again on the server, are not the ones the page showed.",
       "properties": {
@@ -15486,6 +15698,78 @@
         "moved"
       ],
       "title": "WorkbenchAppQuoteResponse",
+      "type": "object"
+    },
+    "WorkbenchAppQuoteReviseRequest": {
+      "description": "A quote's next revision, saved over ``version`` of it.",
+      "properties": {
+        "form_revision": {
+          "title": "Form Revision",
+          "type": "string"
+        },
+        "operation": {
+          "maxLength": 64,
+          "minLength": 8,
+          "title": "Operation",
+          "type": "string"
+        },
+        "release": {
+          "title": "Release",
+          "type": "string"
+        },
+        "shown": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Shown"
+        },
+        "values": {
+          "additionalProperties": {
+            "items": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "title": "Values",
+          "type": "object"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "operation",
+        "form_revision",
+        "release",
+        "values",
+        "version"
+      ],
+      "title": "WorkbenchAppQuoteReviseRequest",
       "type": "object"
     },
     "WorkbenchAppQuoteRevision": {
@@ -15632,6 +15916,36 @@
         "stage"
       ],
       "title": "WorkbenchAppQuoteRevisionSummary",
+      "type": "object"
+    },
+    "WorkbenchAppQuoteSource": {
+      "description": "The quote and revision a new quote is made from, and how.",
+      "properties": {
+        "quote_id": {
+          "title": "Quote Id",
+          "type": "string"
+        },
+        "relation": {
+          "enum": [
+            "duplicate",
+            "renewal",
+            "alternative"
+          ],
+          "title": "Relation",
+          "type": "string"
+        },
+        "revision": {
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "quote_id",
+        "revision",
+        "relation"
+      ],
+      "title": "WorkbenchAppQuoteSource",
       "type": "object"
     },
     "WorkbenchAppQuotesResponse": {
@@ -16511,17 +16825,41 @@
     "WorkbenchAppPeopleResponse": {
       "$ref": "#/$defs/WorkbenchAppPeopleResponse"
     },
+    "WorkbenchAppPriceRequest": {
+      "$ref": "#/$defs/WorkbenchAppPriceRequest"
+    },
     "WorkbenchAppPriceResponse": {
       "$ref": "#/$defs/WorkbenchAppPriceResponse"
+    },
+    "WorkbenchAppQuoteAssign": {
+      "$ref": "#/$defs/WorkbenchAppQuoteAssign"
+    },
+    "WorkbenchAppQuoteChange": {
+      "$ref": "#/$defs/WorkbenchAppQuoteChange"
     },
     "WorkbenchAppQuoteChangeResponse": {
       "$ref": "#/$defs/WorkbenchAppQuoteChangeResponse"
     },
+    "WorkbenchAppQuoteCreateRequest": {
+      "$ref": "#/$defs/WorkbenchAppQuoteCreateRequest"
+    },
+    "WorkbenchAppQuoteFinal": {
+      "$ref": "#/$defs/WorkbenchAppQuoteFinal"
+    },
     "WorkbenchAppQuoteHistoryResponse": {
       "$ref": "#/$defs/WorkbenchAppQuoteHistoryResponse"
     },
+    "WorkbenchAppQuoteNote": {
+      "$ref": "#/$defs/WorkbenchAppQuoteNote"
+    },
+    "WorkbenchAppQuoteReopen": {
+      "$ref": "#/$defs/WorkbenchAppQuoteReopen"
+    },
     "WorkbenchAppQuoteResponse": {
       "$ref": "#/$defs/WorkbenchAppQuoteResponse"
+    },
+    "WorkbenchAppQuoteReviseRequest": {
+      "$ref": "#/$defs/WorkbenchAppQuoteReviseRequest"
     },
     "WorkbenchAppQuotesResponse": {
       "$ref": "#/$defs/WorkbenchAppQuotesResponse"
@@ -16569,6 +16907,14 @@
   "required": [
     "execution_strategy_diagnostic",
     "explore_charts",
+    "WorkbenchAppPriceRequest",
+    "WorkbenchAppQuoteCreateRequest",
+    "WorkbenchAppQuoteReviseRequest",
+    "WorkbenchAppQuoteChange",
+    "WorkbenchAppQuoteAssign",
+    "WorkbenchAppQuoteFinal",
+    "WorkbenchAppQuoteReopen",
+    "WorkbenchAppQuoteNote",
     "UtilityListResponse",
     "UtilityReadResponse",
     "UtilityWriteResponse",
@@ -16669,6 +17015,18 @@
   ],
   "title": "HauteApiContractBundle",
   "type": "object",
+  "x-haute-request-groups": {
+    "workbench-app-requests": [
+      "WorkbenchAppPriceRequest",
+      "WorkbenchAppQuoteCreateRequest",
+      "WorkbenchAppQuoteReviseRequest",
+      "WorkbenchAppQuoteChange",
+      "WorkbenchAppQuoteAssign",
+      "WorkbenchAppQuoteFinal",
+      "WorkbenchAppQuoteReopen",
+      "WorkbenchAppQuoteNote"
+    ]
+  },
   "x-haute-response-groups": {
     "databricks": [
       "WarehouseListResponse",

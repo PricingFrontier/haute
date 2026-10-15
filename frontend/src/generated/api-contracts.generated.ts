@@ -2972,3 +2972,95 @@ export interface WorkbenchAppCarryResponse {
 export interface WorkbenchAppPeopleResponse {
   people: string[];
 }
+/**
+ * A quote typed into the app's sheets, with the form revision and the release the page
+ * was drawn from.
+ */
+export interface WorkbenchAppPriceRequest {
+  form_revision: string;
+  release: string;
+  values: {
+    [k: string]: {
+      [k: string]: string | boolean;
+    }[];
+  };
+}
+/**
+ * A new quote, and the quote it is made from when it is.
+ */
+export interface WorkbenchAppQuoteCreateRequest {
+  form_revision: string;
+  operation: string;
+  release: string;
+  shown?: {
+    [k: string]: {
+      [k: string]: unknown;
+    }[];
+  } | null;
+  source?: WorkbenchAppQuoteSource | null;
+  values: {
+    [k: string]: {
+      [k: string]: string | boolean;
+    }[];
+  };
+}
+/**
+ * The quote and revision a new quote is made from, and how.
+ */
+export interface WorkbenchAppQuoteSource {
+  quote_id: string;
+  relation: 'duplicate' | 'renewal' | 'alternative';
+  revision: number;
+}
+/**
+ * A quote's next revision, saved over ``version`` of it.
+ */
+export interface WorkbenchAppQuoteReviseRequest {
+  form_revision: string;
+  operation: string;
+  release: string;
+  shown?: {
+    [k: string]: {
+      [k: string]: unknown;
+    }[];
+  } | null;
+  values: {
+    [k: string]: {
+      [k: string]: string | boolean;
+    }[];
+  };
+  version: number;
+}
+/**
+ * A change to a quote, made on ``version`` of it.
+ */
+export interface WorkbenchAppQuoteChange {
+  version: number;
+}
+/**
+ * Who the quote is with now.
+ */
+export interface WorkbenchAppQuoteAssign {
+  assignee: string;
+  version: number;
+}
+/**
+ * The revision the page showed, marked final: it must be the quote's newest.
+ */
+export interface WorkbenchAppQuoteFinal {
+  revision: number;
+  version: number;
+}
+/**
+ * Why a final quote is reopened.
+ */
+export interface WorkbenchAppQuoteReopen {
+  reason: string;
+  version: number;
+}
+/**
+ * The quote's handover note; blank clears it. A note is no revision, so it names none.
+ */
+export interface WorkbenchAppQuoteNote {
+  note: string;
+}
