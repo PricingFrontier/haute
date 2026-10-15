@@ -9,6 +9,7 @@ import pyarrow as pa
 import pytest
 
 from haute._databricks_io import (
+    _TABLE_NAME_RE,
     DatabricksConfigError,
     DatabricksSnapshotBuilder,
     FetchIntegrityError,
@@ -16,6 +17,7 @@ from haute._databricks_io import (
     _canonical_table,
     _connection_settings,
     _iter_databricks_batches,
+    _quoted_table_name,
     _validate_select_clause,
 )
 from haute._execution_context import ExecutionProfile
@@ -251,8 +253,20 @@ def test_iter_batches_streams_and_checks_cancellation() -> None:
     context = MagicMock()
     batches = _stream(cursor, context)
     assert [batch.num_rows for batch in batches] == [2]
-    assert cursor.executed == ["SELECT * FROM cat.sch.tbl"]
+    assert cursor.executed == ["SELECT * FROM `cat`.`sch`.`tbl`"]
     assert context.checkpoint.call_count == 4
+
+
+@pytest.mark.parametrize(
+    ("table", "expected"),
+    [
+        ("workspace.haute-data.claims", "`workspace`.`haute-data`.`claims`"),
+        ("`cat`.sch.`my-tbl`", "`cat`.`sch`.`my-tbl`"),
+    ],
+)
+def test_quoted_table_name_backticks_every_part(table: str, expected: str) -> None:
+    assert _TABLE_NAME_RE.fullmatch(table)
+    assert _quoted_table_name(table) == expected
 
 
 def test_iter_batches_checks_cancellation_before_connect_or_execute() -> None:

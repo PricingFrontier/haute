@@ -41,6 +41,16 @@ _DANGEROUS_SQL_RE = re.compile(
 _FROM_SQL_RE = re.compile(r"\bFROM\b", re.IGNORECASE)
 
 
+def _quoted_table_name(table: str) -> str:
+    """Backtick-quote each part of a ``_TABLE_NAME_RE``-valid table name.
+
+    Unity Catalog names may contain hyphens (``workspace.haute-data.claims``),
+    which Databricks SQL rejects unquoted. The regex admits no backtick inside
+    a part, so stripping the optional surrounding ones and re-wrapping is safe.
+    """
+    return ".".join(f"`{part.strip('`')}`" for part in table.split("."))
+
+
 def _validate_select_clause(query: str) -> None:
     """Validate that *query* is a safe SELECT clause.
 
@@ -208,7 +218,7 @@ def _iter_databricks_batches(
 
     host, auth_kwargs, resolved_http_path = _connection_settings(http_path)
     select_clause = query.strip() if query else "SELECT *"
-    sql_query = f"{select_clause} FROM {table}"  # noqa: S608
+    sql_query = f"{select_clause} FROM {_quoted_table_name(table)}"  # noqa: S608
     row_count = 0
     context.checkpoint()
     with dbsql.connect(
