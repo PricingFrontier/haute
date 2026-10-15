@@ -259,30 +259,42 @@ def sample_quote(spec: FormSpec) -> dict[str, Any]:
 
     An input table with values is an object under its name when it has one row per quote, and
     a list of objects when it has many; rows with nothing typed are left out, and so is a table
-    with none. A value in a column the sheets hide is left out, as if it had never been typed.
-    Values take their column's type: a number typed with a currency sign or separators becomes
-    a number, and an unticked box in a filled row is false. A value that isn't of its column's
-    type stays as typed, for the Workbench Input to report.
+    with none. A table a column gives a row for each value has those rows (:func:`preset_rows`),
+    each filled by its value; but those values are not typing, so a quote holding nothing else
+    is empty, as a blank one is. A value in a column the sheets hide is left out, as if it had
+    never been typed. Values take their column's type: a number typed with a currency sign or
+    separators becomes a number, and an unticked box in a filled row is false. A value that
+    isn't of its column's type stays as typed, for the Workbench Input to report.
     """
     # Imported here: the visibility rules read cells as this module types them.
     from haute._workbench_visibility import visibility
 
     hidden = visibility(spec, spec.sample).hidden
     sample: dict[str, Any] = {}
+    typed = False
     for table in spec.data_schema.tables:
         if table.role != "input":
             continue
         rows = preset_rows(table, spec.sample.get(table.id, []))
+        if table.rows == "one":
+            rows = rows[:1]
         columns = [column for column in table.columns if (table.id, column.id) not in hidden]
+        given = preset_column(table)
+        typed = typed or any(
+            _filled(row.get(column.id))
+            for row in rows
+            for column in columns
+            if not column.index and column is not given
+        )
         # Numbered as the rows stand, from 1, so deleting a row renumbers those after it.
         records = [
             record
-            for number, row in enumerate(rows if table.rows == "many" else rows[:1], 1)
+            for number, row in enumerate(rows, 1)
             if (record := _record(columns, row, number))
         ]
         if records:
             sample[table.name] = records if table.rows == "many" else records[0]
-    return sample
+    return sample if typed else {}
 
 
 def preset_column(table: SchemaTable) -> SchemaColumn | None:

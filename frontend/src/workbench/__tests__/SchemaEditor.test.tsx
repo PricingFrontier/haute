@@ -4,14 +4,14 @@
  * by a confirmation.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { ApiError } from "../../api/client"
 import { listProjectFiles } from "../../api/projectFiles"
 import type { FormSpec, ProjectFolderResponse, SchemaColumn, SchemaTable } from "../../api/types"
 import { fetchParamFile } from "../../api/workbench"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
-import { BLANK_THEME, COLLECTION_OPTIONS } from "../../utils/workbenchForm"
+import { BLANK_THEME, COLLECTION_OPTIONS, updateSchemaColumn } from "../../utils/workbenchForm"
 import SchemaEditor from "../SchemaEditor"
 import { detailsTable } from "./fixtures"
 
@@ -365,6 +365,39 @@ describe("SchemaEditor", () => {
     expect(
       within(tableNamed("policy_details")).getByText('Column "state" in Table "policy_details" has allowed values typed in, not read from a params file'),
     ).toBeInTheDocument()
+  })
+
+  it("shows allowed values typed in as a choice of their own, which the blank choice takes away though no params file is there", () => {
+    load(form(table("t_policy", "policy_details", { columns: [column("c_state", "state", { options: ["CA", "NY"] })] })))
+    render(<SchemaEditor />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of state" }))
+    const from = screen.getByRole("combobox", { name: "Where the allowed values of state come from" })
+    expect(from).toBeEnabled()
+    expect(within(from).getByRole("option", { selected: true })).toHaveTextContent("2 values typed in")
+    fireEvent.change(from, { target: { value: "" } })
+
+    expect(current().schema.tables[0].columns[0]).toMatchObject({ options: [], options_source: null })
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
+    expect(from).toBeDisabled()
+  })
+
+  it("drops a read of the values that the column's source changed under, as an undo changes it", async () => {
+    load(form(table("t_policy", "policy_details", { columns: [column("c_state", "state", { options: ["B1"], options_source: { file: "b.csv", column: "state" } })] })))
+    useWorkbenchFormStore.getState().change((spec) => updateSchemaColumn(spec, "t_policy", "c_state", { options: ["A1"], options_source: { file: "a.csv", column: "state" } }))
+    let answer: (values: string[]) => void = () => {}
+    vi.mocked(fetchParamFile).mockImplementation((_file, name) =>
+      name === undefined ? Promise.resolve({ columns: ["state"], values: [] }) : new Promise((resolve) => (answer = (values) => resolve({ columns: ["state"], values }))),
+    )
+    render(<SchemaEditor />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of state" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Read the allowed values of state again" }))
+    act(() => useWorkbenchFormStore.getState().undo())
+    await act(async () => answer(["A2"]))
+
+    expect(current().schema.tables[0].columns[0]).toMatchObject({ options: ["B1"], options_source: { file: "b.csv", column: "state" } })
+    expect(useWorkbenchFormStore.getState().redoStack).toHaveLength(1)
   })
 
   it("reads a column's values from its file again, and says why the file cannot give them", async () => {

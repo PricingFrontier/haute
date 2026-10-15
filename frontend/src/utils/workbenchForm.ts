@@ -929,7 +929,16 @@ export function widgetProblems(spec: FormSpec): WidgetProblem[] {
           problem(rows === "many" ? "shows a one-row table; a Collection shows those" : "shows a many-row table; a Table shows those")
         }
         const grains = new Set(found.flatMap((shown) => (shown !== null && shown.table.rows === rows ? [tableGrain(shown.table)] : [])))
-        if (grains.size > 1) problem("shows tables whose rows do not line up")
+        // A Table's many-row input tables sit side by side row by row, so a column giving one
+        // its rows must give each of them the same, in the same order.
+        const given = new Set(
+          found.flatMap((shown) =>
+            widget.type === "tableInput" && shown !== null && shown.table.role === "input" && shown.table.rows === "many" && !shown.column.index
+              ? [JSON.stringify(presetColumn(shown.table)?.options ?? null)]
+              : [],
+          ),
+        )
+        if (grains.size > 1 || given.size > 1) problem("shows tables whose rows do not line up")
       }
     }
     for (const message of conditionProblems(spec, widget, never)) problem(message)

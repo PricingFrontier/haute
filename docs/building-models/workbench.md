@@ -75,14 +75,16 @@ beside them reads them again, and `haute app build` always reads them from the f
 is, so the underwriter app allows what the file holds. A file or column that cannot give
 values (gone, unreadable, with no values or more than 5,000) says why under them, and stops
 `haute app build`. Choosing the blank file takes them away. Values typed in by hand, which
-an older form may hold, are named among the schema's problems until they are read from a
-params file.
+an older form may hold, show beside **Allowed** as typed in and are named among the
+schema's problems until they are read from a params file or taken away.
 
 In a many-row input table, **Rows** under a column's allowed values gives the table **a row
 for each** of them, in their order. A `coverage` table whose `peril` column takes its values
 from `perils.csv` (AOP, EQ, NW, WD, SCS, FLD) then has exactly six rows, one for each peril,
 and the underwriter types the other columns on each. The Tables that show it have those rows
-and no Add row or delete; the peril cells show the peril and take no typing. Every row goes
+and no Add row or delete; the peril cells show the peril and take no typing. A Table showing
+it beside another table whose rows differ shows every row of both and says their rows do
+not line up. Every row goes
 to the pipeline once the quote is priced, a peril with nothing else typed included, but the
 perils alone are not typing: a quote holding nothing else is not priced, marked or saved.
 The rows follow the params file: refresh the values, or build the app, and a new peril gets

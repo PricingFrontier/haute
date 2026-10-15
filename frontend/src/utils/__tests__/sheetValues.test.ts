@@ -173,6 +173,14 @@ describe("a row for each value", () => {
     expect(quoteFilled(schema, typed)).toBe(true)
     expect(quoteTyped(schema, typed)).toBe(true)
   })
+
+  it("counts nothing typed in a row left out, its value no longer one the column gives, as the server leaves it out", () => {
+    const schema = { tables: [policy, coverage] }
+    const gone: Record<string, SampleRow[]> = { coverage: [{ peril: "WD", limit: "5000" }] }
+
+    expect(quoteFilled(schema, gone)).toBe(false)
+    expect(quoteTyped(schema, gone)).toBe(false)
+  })
 })
 
 describe("formattedNumber", () => {

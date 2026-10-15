@@ -291,8 +291,10 @@ Out of scope:
   file's header, and the column's distinct values, as written, trimmed, blanks left out
   and in the order the file first gives them, copied in with where they came from as one
   edit; the refresh button beside them reads them again, an edit only when they changed,
-  and the blank file takes them away. What stops a file or a column giving them shows
-  under them. Changing a
+  and the blank file takes them away, values typed in as an older form holds them
+  included, which the choice shows as typed in. A read answers only while the column's
+  source is still the one it began from, so one an undo overtakes changes nothing. What
+  stops a file or a column giving them shows under them. Changing a
   column's type drops the rules and the format the new type cannot have, and its default
   when it becomes or stops being True/false, or becomes a Date while it is not a day.
   Every text field
@@ -550,13 +552,17 @@ Out of scope:
   wherever a table's values are read, on the sheets and in what the server prices, whatever
   the sample, a quote or a test quote holds: each value's row is the first holding it there,
   the rows holding nothing there fill the rows left in order, and any other row is left
-  out. Each row is filled by its value, so every one goes to the pipeline (while the sheets
-  hide that column, its value is left out, as any hidden value is), a Chart plots each and a
-  Table's output columns line up with each; but a row's value is not typing: a
-  quote holding nothing else typed is neither marked nor priced nor saved, as a blank one
-  is not. A grid showing the table shows its rows, whatever its rows and fixed rows, with no
-  Add row and no delete, the column's cells showing each row's value as text, which takes
-  no typing, and a value typed into the grid writes all its rows. The first such column in
+  out. Each row is filled by its value, so once anything else in the quote is typed every
+  one goes to the pipeline (while the sheets hide that column, its value is left out, as any
+  hidden value is), a Chart plots each and a Table's output columns line up with each; but
+  a row's value is not typing: a quote holding nothing else typed, a row left out included,
+  is neither marked nor priced nor saved, and the server takes it as the empty quote, as it
+  takes a blank one. A grid showing the table shows its rows, whatever its rows and fixed
+  rows, with no Add row and no delete, the column's cells showing each row's value as text,
+  which takes no typing, and a value typed into the grid writes all its rows. A grid
+  showing it beside another many-row table whose rows are not the same (another column's
+  values, or rows of its own) shows every row of each, a table's cells past its own rows
+  taking no typing, and says its tables' rows do not line up. The first such column in
   a table gives its rows: ticking another unticks it, and a form holding two names the
   second among the schema's problems. A column of a one-row or an output table, the index
   and one without allowed values give none; taking a column's allowed values away,

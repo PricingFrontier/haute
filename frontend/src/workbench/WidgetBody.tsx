@@ -399,12 +399,14 @@ function groupRuns(fields: ShownField[]): { group: string; start: number; size: 
  * in capitals and whether rows can be added and deleted; fixed, it never shows fewer than
  * `rows`, and fixed or not, it shows every row the values hold. Showing a table a column
  * gives a row for each value, it shows those rows, fixed, that column's cells holding each
- * row's value as text, and a value typed writes them whole. Transposed, its fields run
- * down its side, each labelled at the start of its line, and its rows across, numbered
- * above with a delete over each and an add at the end; the shading and the lines are the
- * grid's as drawn, an output field ruled off above its line. Showing groups, while a field
- * it shows is in one, each run of fields side by side in a schema group is headed by one
- * cell naming it, over their labels, or beside them when transposed (`groupRuns`).
+ * row's value as text, and a value typed writes them whole; beside a table whose rows
+ * differ, it shows every row of each, a table's cells past its own rows taking no typing.
+ * Transposed, its fields run down its side, each labelled at the start of its line, and its
+ * rows across, numbered above with a delete over each and an add at the end; the shading
+ * and the lines are the grid's as drawn, an output field ruled off above its line. Showing
+ * groups, while a field it shows is in one, each run of fields side by side in a schema
+ * group is headed by one cell naming it, over their labels, or beside them when
+ * transposed (`groupRuns`).
  */
 function FieldGrid({
   fields,
@@ -421,15 +423,24 @@ function FieldGrid({
   const oneRow = (found: Fillable) => found.table.rows === "one"
   const inputs = gridInputTables(fields)
   const inputTables = inputs.map((table) => table.id)
-  // A table a column gives a row for each value has those rows: none is added or deleted.
-  const given = inputs.map(presetColumn).find((column) => column !== null) ?? null
+  // The rows a column gives each table that has them, a row for each value: a grid showing one
+  // shows every row its tables hold, none added or deleted.
+  const givenRows = new Map(
+    inputs.flatMap((table) => {
+      const column = presetColumn(table)
+      return column === null ? [] : [[table.id, column.options.length] as const]
+    }),
+  )
+  const given = givenRows.size > 0
   const holding = Math.max(0, ...inputTables.map((id) => held[id]?.length ?? 0))
-  const count = given !== null ? given.options.length : holding === 0 ? rows : options.fixed_rows ? Math.max(rows, holding) : holding
+  const count = given ? holding : holding === 0 ? rows : options.fixed_rows ? Math.max(rows, holding) : holding
+  // A table a column gives its rows has no cells past them, beside a table whose rows differ.
+  const past = (found: NonNullable<Found>, row: number): boolean => row >= (givenRows.get(found.table.id) ?? Infinity)
   // Each input table's rows as the grid shows them.
   const shownRows = (id: string) => padRows(held[id] ?? [], count)
   // Its rows as shown are written whole until its tables hold rows, and always while a column gives them.
   const setValue = (tableId: string, row: number, columnId: string, value: SampleValue) => {
-    if (!inputTables.includes(tableId) || (holding > 0 && given === null)) setCell(tableId, row, columnId, value)
+    if (!inputTables.includes(tableId) || (holding > 0 && !given)) setCell(tableId, row, columnId, value)
     else setRows(Object.fromEntries(inputTables.map((id) => [id, id === tableId ? withCell(shownRows(id), row, columnId, value) : shownRows(id)])))
   }
   const addRow = () => setRows(Object.fromEntries(inputTables.map((id) => [id, padRows(held[id] ?? [], count + 1)])))
@@ -443,7 +454,7 @@ function FieldGrid({
 
   const { row_numbers: numbered, gridlines, striped, transposed } = options
   // Rows are not added or deleted in a grid of fixed rows, or of rows a column gives, or while the values are read only.
-  const fixed = options.fixed_rows || given !== null || readOnly
+  const fixed = options.fixed_rows || given || readOnly
   const height = ROW_HEIGHT[options.density]
   // The line before a field's column: an output's, and every column's in a full grid; none
   // without gridlines, or at the grid's left edge.
@@ -485,7 +496,7 @@ function FieldGrid({
         </td>
       )
     }
-    if (fillable(found)) {
+    if (fillable(found) && !past(found, row)) {
       const at = oneRow(found) ? 0 : row
       return (
         <td
@@ -523,7 +534,7 @@ function FieldGrid({
           opacity: output && stale ? 0.5 : 1,
         }}
       >
-        {found?.column.index ? row + 1 : output ? shown(priced, found) : null}
+        {found?.column.index ? (past(found, row) ? null : row + 1) : output ? shown(priced, found) : null}
       </td>
     )
   }

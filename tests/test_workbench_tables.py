@@ -15,6 +15,7 @@ import polars as pl
 import pytest
 
 from haute._json_shred._shred import _POLARS_TYPE_MAP
+from haute._test_quotes import quote_request
 from haute._workbench_form import FormSpec, SchemaTable
 from haute._workbench_input import workbench_request_frames, workbench_table_frames
 from haute._workbench_tables import (
@@ -396,7 +397,7 @@ def test_the_rows_a_column_gives_a_table_are_read_by_the_rule_the_view_applies(
     assert preset_rows(table, case["rows"]) == case["read"]
 
 
-def test_the_sample_sends_every_row_a_column_gives_in_the_values_order() -> None:
+def test_the_sample_sends_every_row_a_column_gives_once_anything_else_is_typed() -> None:
     spec = form(
         {
             "id": "t1",
@@ -421,14 +422,12 @@ def test_the_sample_sends_every_row_a_column_gives_in_the_values_order() -> None
             {"line": 3, "peril": "NW", "limit": 3.0},
         ]
     }
+    # The perils are not typing, nor is a value in a row left out: such a quote is empty, as
+    # a blank one is, so the app's pricing and saving refuse it.
     spec.sample = {}
-    assert sample_quote(spec) == {
-        "coverage": [
-            {"line": 1, "peril": "AOP"},
-            {"line": 2, "peril": "EQ"},
-            {"line": 3, "peril": "NW"},
-        ]
-    }
+    assert sample_quote(spec) == {}
+    assert quote_request(spec, {}) == {}
+    assert quote_request(spec, {"t1": [{"c_peril": "WD", "c_limit": "9"}]}) == {}
 
 
 def test_a_value_in_a_column_the_sheets_hide_is_left_out_of_the_sample() -> None:

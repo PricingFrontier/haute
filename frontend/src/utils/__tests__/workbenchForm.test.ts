@@ -731,6 +731,20 @@ describe("what the sheets show", () => {
       'Table "Equipment" shows tables whose rows do not line up',
     ])
   })
+
+  it("says a Table's tables do not line up when a column gives one its rows and another has rows of its own, or other values", () => {
+    const values = (options: string[]) => ({ options, options_source: { file: "plant.csv", column: "item" }, row_per_value: true })
+    let spec = updateSchemaColumn(sheet(), "equipment", "equipment.item", values(["Crane", "Lift"]))
+    // An input table keyed alike, shown beside it, its rows its own.
+    spec = addSchemaTable(spec, table("hire", "hire", { rows: "many", columns: [column("hire.item", "item", { key: true }), column("hire.days", "days", { type: "int" })] }))
+    spec = toggleField(spec, "w_grid", { table: "hire", column: "hire.days" })
+    const apart = ['Table "Equipment" shows tables whose rows do not line up']
+
+    expect(widgetProblems(spec).map((p) => p.message)).toEqual(apart)
+    // Given the same rows by its own column, in the same order, it lines up; given others, it does not.
+    expect(widgetProblems(updateSchemaColumn(spec, "hire", "hire.item", values(["Crane", "Lift"])))).toEqual([])
+    expect(widgetProblems(updateSchemaColumn(spec, "hire", "hire.item", values(["Lift", "Crane"]))).map((p) => p.message)).toEqual(apart)
+  })
 })
 
 describe("sections", () => {

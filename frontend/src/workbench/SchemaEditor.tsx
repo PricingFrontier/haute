@@ -600,7 +600,7 @@ function ColumnDetails({
           {column.type !== "bool" && column.type !== "date" && (
             <>
               <span style={{ color: "var(--text-muted)" }}>Allowed</span>
-              <AllowedField column={column} set={set} />
+              <AllowedField tableId={table.id} column={column} set={set} />
             </>
           )}
           {table.rows === "many" && column.type !== "bool" && column.type !== "date" && column.options.length > 0 && (
@@ -622,14 +622,20 @@ function ColumnDetails({
 /** Whether a file in the params folder is a CSV, whatever the case of its extension. */
 const isCsv = (name: string): boolean => name.toLowerCase().endsWith(".csv")
 
+/** The Allowed choice standing for values typed in, as an older form holds them: never a CSV's name. */
+const TYPED_IN = ":typed"
+
 /**
  * A column's allowed values: the distinct values of a column of a CSV in the pipeline's params
  * folder, its file chosen and then its column, copied in and read from the file again by
- * Refresh. The blank choice takes them away, with a row for each. Why a file or a column
- * cannot give values shows under them.
+ * Refresh. The blank choice takes them away, with a row for each, values typed in as an
+ * older form holds them included, which show as a choice of their own. A read answers only
+ * while the column's source in the form is the one it began from, so one an undo overtakes
+ * changes nothing. Why a file or a column cannot give values shows under them.
  */
-function AllowedField({ column, set }: { column: SchemaColumn; set: (patch: Partial<SchemaColumn>) => void }) {
+function AllowedField({ tableId, column, set }: { tableId: string; column: SchemaColumn; set: (patch: Partial<SchemaColumn>) => void }) {
   const source = column.options_source
+  const typedIn = source === null && column.options.length > 0
   // The CSV files in the params folder, read as the details open.
   const [files, setFiles] = useState<readonly string[]>([])
   // Each file's header as read, its columns to pick from.
@@ -665,24 +671,36 @@ function AllowedField({ column, set }: { column: SchemaColumn; set: (patch: Part
       })
   }, [file, header])
 
+  // The column as the form holds it now, which an undo, a redo or a sync may have changed
+  // while a read was under way.
+  const columnNow = () =>
+    useWorkbenchFormStore
+      .getState()
+      .form?.schema.tables.find((other) => other.id === tableId)
+      ?.columns.find((other) => other.id === column.id)
+  const sourceNow = () => JSON.stringify(columnNow()?.options_source ?? null)
   const readValues = (from: string, name: string, then: (values: string[]) => void) => {
     const ticket = ++latest.current
+    const began = sourceNow()
+    // A read answers only while it is the latest and the column's source is the one it began from.
+    const current = () => mounted.current && ticket === latest.current && sourceNow() === began
     setProblem(null)
     void fetchParamFile(from, name)
       .then(({ columns, values }) => {
-        if (!mounted.current || ticket !== latest.current) return
+        if (!current()) return
         setHeaders((read) => ({ ...read, [from]: columns }))
         then(values)
       })
       .catch((error: unknown) => {
-        if (mounted.current && ticket === latest.current) setProblem(apiErrorMessage(error))
+        if (current()) setProblem(apiErrorMessage(error))
       })
   }
   const chooseFile = (chosen: string) => {
     // A pick or a refresh still being read no longer answers.
     latest.current += 1
     setProblem(null)
-    if (chosen !== "") setPendingFile(chosen === source?.file ? null : chosen)
+    if (chosen === TYPED_IN) setPendingFile(null)
+    else if (chosen !== "") setPendingFile(chosen === source?.file ? null : chosen)
     else {
       setPendingFile(null)
       if (source !== null || column.options.length > 0) set({ options: [], options_source: null, row_per_value: false })
@@ -696,7 +714,7 @@ function AllowedField({ column, set }: { column: SchemaColumn; set: (patch: Part
   const refresh = () => {
     if (source === null) return
     readValues(source.file, source.column, (values) => {
-      if (JSON.stringify(values) !== JSON.stringify(column.options)) set({ options: values })
+      if (JSON.stringify(values) !== JSON.stringify(columnNow()?.options ?? column.options)) set({ options: values })
     })
   }
 
@@ -709,13 +727,18 @@ function AllowedField({ column, set }: { column: SchemaColumn; set: (patch: Part
       <div className="flex min-w-0 items-center gap-1.5">
         <select
           aria-label={`Where the allowed values of ${column.name} come from`}
-          value={file}
+          value={typedIn && pendingFile === null ? TYPED_IN : file}
           onChange={(e) => chooseFile(e.target.value)}
-          disabled={fileChoices.length === 0}
+          disabled={fileChoices.length === 0 && !typedIn}
           className={`${FIELD_CLASS} ${file === "" ? "flex-1" : "max-w-[50%]"}`}
           style={INPUT_STYLE}
         >
           <option value="" />
+          {typedIn && (
+            <option value={TYPED_IN}>
+              {column.options.length} {column.options.length === 1 ? "value" : "values"} typed in
+            </option>
+          )}
           {fileChoices.map((name) => (
             <option key={name} value={name}>
               {name}

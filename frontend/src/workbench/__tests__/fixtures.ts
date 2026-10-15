@@ -139,6 +139,41 @@ export const sheetForm = (): FormSpec => ({
   sample: {},
 })
 
+/**
+ * `sheetForm` with a coverage table given a row for each of its perils, AOP and EQ, and two
+ * Tables of it: its perils' shown only while the policy's year is 1900, so hidden, and its
+ * limits' always shown.
+ */
+export const hiddenPerilsForm = (): FormSpec => {
+  const form = sheetForm()
+  form.schema.tables.push(
+    table("coverage", "coverage", {
+      rows: "many",
+      columns: [
+        column("coverage.peril", "peril", { key: true, options: ["AOP", "EQ"], options_source: { file: "perils.csv", column: "peril" }, row_per_value: true }),
+        column("coverage.limit", "limit", { type: "float" }),
+      ],
+    }),
+  )
+  const grid = (id: string, shown: string, y: number, showWhen: ShowWhen): Widget => ({
+    id,
+    type: "tableInput",
+    x: 16,
+    y,
+    w: 400,
+    h: 120,
+    title: "",
+    rows: 3,
+    ...TABLE_OPTIONS,
+    fields: [{ table: "coverage", column: shown }],
+    show_when: showWhen,
+  })
+  const in1900: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.year", op: "equals", values: ["1900"] }] }
+  addTo(form, grid("w_perils", "coverage.peril", 380, in1900))
+  addTo(form, grid("w_limits", "coverage.limit", 520, ALWAYS))
+  return form
+}
+
 /** A Chart plotting `fields`, with a new Chart's options unless `overrides` says otherwise, always shown. */
 export const chartWidget = (id: string, fields: FieldRef[], overrides: Partial<ChartWidget> = {}): ChartWidget => ({
   id,

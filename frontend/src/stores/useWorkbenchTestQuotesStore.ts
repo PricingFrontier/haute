@@ -32,7 +32,7 @@ import {
 import { apiErrorMessage } from "../api/errors"
 import type { FormSpec, WorkbenchTestQuoteSummary, WorkbenchTestQuoteWriteResponse } from "../api/types"
 import { canonicalJson } from "../utils/canonicalJson"
-import { quoteFilled } from "../utils/sheetValues"
+import { quoteFilled, withPresetRows } from "../utils/sheetValues"
 import { quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
 import { withSample } from "../utils/workbenchForm"
 import { reportSaveCapture } from "./saveCapture"
@@ -144,7 +144,7 @@ function fixedPricer(): Pricer {
  * as Preview prices them.
  */
 function quoteRefusal(form: FormSpec, quote: SheetQuote): string | null {
-  return quoteFilled(quotedSchema(form.schema, sheetVisibility(form, quote).hidden), quote) ? null : "Type the quote first"
+  return quoteFilled(quotedSchema(form.schema, sheetVisibility(form, quote).hidden), withPresetRows(form.schema, quote)) ? null : "Type the quote first"
 }
 
 /** The run asked for last: an answer for an earlier one is nobody's. */

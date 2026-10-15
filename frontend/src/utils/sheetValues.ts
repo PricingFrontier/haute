@@ -95,10 +95,15 @@ export const quoteFilled = (schema: FormSchema, rows: RowsByTable): boolean =>
     return quotedRows(table, rows).some((row) => columns.some((column) => filled(row[column.id])))
   })
 
-/** An input table's rows as the server reads them: a one-row table's first alone. */
+/**
+ * An input table's rows as the server reads them: a one-row table's first alone, and a
+ * table a column gives its rows those rows (`presetRows`). A table whose column giving its
+ * rows the sheets hide has lost it from a quoted schema, so a caller leaving hidden columns
+ * out gives values already read through `withPresetRows` of the whole schema.
+ */
 const quotedRows = (table: SchemaTable, rows: RowsByTable): readonly SampleRow[] => {
   const held = rows[table.id] ?? []
-  return table.rows === "one" ? held.slice(0, 1) : held
+  return table.rows === "one" ? held.slice(0, 1) : presetRows(table, held)
 }
 
 /**

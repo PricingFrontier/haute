@@ -126,9 +126,9 @@ export function useQuoteValues(): SheetValues {
   return useMemo<SheetValues>(() => {
     const visibility = form === null ? NO_VISIBILITY : sheetVisibility(form, quote)
     const quoted = form === null ? NO_SCHEMA : quotedSchema(form.schema, visibility.hidden)
-    // The details the app sets are not typing, nor are the defaults a new quote starts with.
-    const typed = !readOnly && quoteTyped(quotedSchema(quoted, locked), quote)
     const rows = form === null ? quote : withPresetRows(form.schema, quote)
+    // The details the app sets are not typing, nor are the defaults a new quote starts with.
+    const typed = !readOnly && quoteTyped(quotedSchema(quoted, locked), rows)
     return {
       rows,
       setCell,
