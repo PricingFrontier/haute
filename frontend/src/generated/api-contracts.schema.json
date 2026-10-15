@@ -732,7 +732,7 @@
     },
     "CollectionWidget": {
       "additionalProperties": false,
-      "description": "A Collection: boxes showing columns of one-row schema tables, ``columns`` across.",
+      "description": "A Collection: boxes showing columns of one-row schema tables, ``columns`` across, with\na gap across it wherever one of its ``spacers`` sits among them.",
       "properties": {
         "columns": {
           "default": 3,
@@ -783,6 +783,14 @@
         "show_when": {
           "$ref": "#/$defs/ShowWhen"
         },
+        "spacers": {
+          "items": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "title": "Spacers",
+          "type": "array"
+        },
         "title": {
           "default": "",
           "title": "Title",
@@ -822,7 +830,8 @@
         "columns",
         "labels",
         "density",
-        "frame"
+        "frame",
+        "spacers"
       ],
       "title": "CollectionWidget",
       "type": "object"

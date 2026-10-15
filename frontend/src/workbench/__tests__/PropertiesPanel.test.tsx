@@ -4,7 +4,8 @@
  * fields ticked from the schema tables of its kind (a Chart's from every table, the columns
  * it cannot plot disabled), with tables whose rows do not line up greyed out; a Heading's
  * text, description, size, alignment and Show when; the showing sheet's own panel, its
- * title, its Show when and its width; and a section's panel, its title, its Show when, its
+ * title, its Show when, its width and its deletion, asked first in the editor's own dialog;
+ * and a section's panel, its title, its Show when, its
  * height and Fit, a section added below it, and its deletion.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -313,6 +314,56 @@ describe("PropertiesPanel", () => {
 
     fireEvent.click(within(order).getByRole("button", { name: "Stop showing Value" }))
     expect(grid().fields.map((field) => field.column)).toEqual(["equipment.item"])
+    // A Table has no spacers.
+    expect(screen.queryByRole("button", { name: "Add spacer" })).not.toBeInTheDocument()
+  })
+
+  it("puts spacers among a Collection's fields: added after the last, moved by the keys with the focus or dragged, and removed, each one undo step", () => {
+    // The policy's boxes showing its state, cover and year.
+    const form = coverForm()
+    fieldsWidget(form, "w_boxes").fields.push({ table: "policy", column: "policy.year" })
+    loadForm(form)
+    select("w_boxes")
+    render(<PropertiesPanel />)
+    const order = screen.getByRole("region", { name: "Order" })
+    const rows = () => within(order).getAllByRole("listitem")
+    const labels = () => rows().map((row) => row.getAttribute("aria-label"))
+    const spacers = () => {
+      const boxes = fieldsWidget(currentForm(), "w_boxes")
+      return boxes.type === "collection" ? boxes.spacers : null
+    }
+
+    fireEvent.click(within(order).getByRole("button", { name: "Add spacer" }))
+    expect(labels()).toEqual(["1. State", "2. Cover", "3. Year", "Spacer"])
+    expect(spacers()).toEqual([3])
+
+    // Up twice from the keyboard, between State and Cover, the focus going with it, then down
+    // again. Moving an element in the page drops its focus, which jsdom does not, so the row
+    // is seen given it where it lands.
+    act(() => rows()[3].focus())
+    const focus = vi.spyOn(HTMLElement.prototype, "focus")
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowUp", altKey: true })
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowUp", altKey: true })
+    expect(labels()).toEqual(["1. State", "Spacer", "2. Cover", "3. Year"])
+    expect(focus.mock.contexts.at(-1)).toBe(rows()[1])
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowDown", altKey: true })
+    expect(labels()).toEqual(["1. State", "2. Cover", "Spacer", "3. Year"])
+    expect(focus.mock.contexts.at(-1)).toBe(rows()[2])
+    expect(document.activeElement).toBe(rows()[2])
+    expect(spacers()).toEqual([2])
+
+    // Dragged onto State, it goes before it.
+    fireEvent.dragStart(rows()[2])
+    fireEvent.dragOver(rows()[0])
+    fireEvent.drop(rows()[0])
+    expect(labels()).toEqual(["Spacer", "1. State", "2. Cover", "3. Year"])
+    expect(spacers()).toEqual([0])
+
+    // Its cross removes it.
+    fireEvent.click(within(order).getByRole("button", { name: "Remove spacer" }))
+    expect(labels()).toEqual(["1. State", "2. Cover", "3. Year"])
+    expect(spacers()).toEqual([])
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(6)
   })
 
   it("points at the schema when it has no tables of the component's kind", () => {
@@ -460,6 +511,63 @@ describe("PropertiesPanel", () => {
     expect(currentForm().pages[0].width).toBe(1600)
     expect(screen.queryByTestId("sheet-width-error")).not.toBeInTheDocument()
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
+  })
+
+  it("deletes the showing sheet from the foot of its panel once asked in the editor's own dialog, never the browser's, as one undo step", () => {
+    const confirm = vi.spyOn(window, "confirm")
+    loadForm(sectionedForm())
+    useWorkbenchViewStore.setState({ pageId: "p1", sheetSelected: true })
+    render(<PropertiesPanel />)
+    const deleteSheet = () => screen.getByRole("button", { name: "Delete sheet" })
+    const dialog = () => screen.queryByRole("dialog", { name: 'Delete sheet "Sheet 1"' })
+
+    // Asked first, naming the sheet and counting the components in every section; Cancel keeps it.
+    fireEvent.click(deleteSheet())
+    expect(dialog()).toHaveTextContent('Delete "Sheet 1"?')
+    expect(dialog()).toHaveTextContent("The 3 components on it go with it. The schema and the sample stay.")
+    fireEvent.click(within(dialog()!).getByRole("button", { name: "Cancel" }))
+    expect(dialog()).not.toBeInTheDocument()
+    // Escape keeps it too.
+    fireEvent.click(deleteSheet())
+    fireEvent.keyDown(document, { key: "Escape" })
+    expect(dialog()).not.toBeInTheDocument()
+    expect(currentForm().pages).toHaveLength(2)
+
+    // Delete deletes it with its components, the schema kept; the first sheet left shows, its panel closed.
+    fireEvent.click(deleteSheet())
+    fireEvent.click(within(dialog()!).getByRole("button", { name: "Delete" }))
+    expect(currentForm().pages.map((page) => page.id)).toEqual(["p2"])
+    expect(currentForm().schema.tables).toHaveLength(3)
+    expect(useWorkbenchViewStore.getState()).toMatchObject({ pageId: "p2", sheetSelected: false })
+    expect(screen.queryByTestId("workbench-properties")).not.toBeInTheDocument()
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
+    expect(confirm).not.toHaveBeenCalled()
+  })
+
+  it("says what goes with a sheet as it asks, one component or nothing, and never deletes the last sheet", () => {
+    // Cover holds the Year boxes alone.
+    loadForm(coverForm())
+    useWorkbenchViewStore.setState({ pageId: "p2", sheetSelected: true })
+    const { unmount } = render(<PropertiesPanel />)
+    fireEvent.click(screen.getByRole("button", { name: "Delete sheet" }))
+    expect(screen.getByRole("dialog")).toHaveTextContent("The component on it goes with it. The schema and the sample stay.")
+    unmount()
+
+    loadForm(sheetForm())
+    useWorkbenchViewStore.setState({ pageId: "p2", sheetSelected: true })
+    const empty = render(<PropertiesPanel />)
+    fireEvent.click(screen.getByRole("button", { name: "Delete sheet" }))
+    expect(screen.getByRole("dialog")).toHaveTextContent("Nothing is on it. The schema and the sample stay.")
+    empty.unmount()
+
+    // The only sheet's Delete sheet is disabled.
+    const single = sheetForm()
+    single.pages = [single.pages[0]]
+    loadForm(single)
+    useWorkbenchViewStore.setState({ pageId: "p1", sheetSelected: true })
+    render(<PropertiesPanel />)
+    expect(screen.getByRole("button", { name: "Delete sheet" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Delete sheet" })).toHaveAttribute("title", "The last sheet cannot be deleted")
   })
 
   it("is a section's own panel while the section is selected: its title, a blank one kept out, and when it shows, each one undo step", () => {

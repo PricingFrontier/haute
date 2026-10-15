@@ -5,14 +5,14 @@
  * quote), which sheet, the selected component, the selected section or the sheet's own
  * panel, the sheet's zoom, a component being dragged out of the palette, a section being
  * moved by its header, the properties panel's width and the pane it last showed for each
- * component, and the sheet and viewport elements that drops are placed on and the zoom fits
- * to. None of it is part of the form, so none is saved or undone.
+ * component, the component copied, and the sheet and viewport elements that drops are placed
+ * on and the zoom fits to. None of it is part of the form, so none is saved or undone.
  */
 import { create } from "zustand"
 import type { FormSpec, Page, Section } from "../api/types"
 import { SHEET_PADDING, fitZoom as zoomToFit } from "../utils/sheetGeometry"
 import { sheetVisibility, type SheetVisibility } from "../utils/sheetVisibility"
-import type { PaletteType } from "../utils/workbenchForm"
+import type { PaletteType, Widget } from "../utils/workbenchForm"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "./useWorkbenchPreviewStore"
 
@@ -34,6 +34,12 @@ export interface MovingSection {
 
 /** A Table's or a Collection's properties pane: the data it shows, or how it shows it. */
 export type WidgetPane = "config" | "display"
+
+/** A component copied, as it was then, and the section it was in. */
+export interface Copied {
+  widget: Widget
+  sectionId: string
+}
 
 /** How far one Zoom In or Zoom Out changes the zoom. */
 export const ZOOM_STEP = 0.1
@@ -85,6 +91,8 @@ interface WorkbenchViewState {
   panelWidth: number
   /** The pane each component's properties panel last showed, by component id; Config until another is chosen. */
   widgetPanes: Record<string, WidgetPane>
+  /** The component Ctrl/Cmd+C copied, which Ctrl/Cmd+V pastes, or null. */
+  copied: Copied | null
   /** The sheet element and its scrolling viewport, while the sheets section shows. */
   sheet: HTMLElement | null
   viewport: HTMLElement | null
@@ -108,6 +116,7 @@ interface WorkbenchViewState {
   setMovingSection: (moving: MovingSection | null) => void
   setPanelWidth: (width: number) => void
   setWidgetPane: (id: string, pane: WidgetPane) => void
+  setCopied: (copied: Copied | null) => void
   setSheet: (element: HTMLElement | null) => void
   setViewport: (element: HTMLElement | null) => void
 }
@@ -125,6 +134,7 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   movingSection: null,
   panelWidth: DEFAULT_PANEL_WIDTH,
   widgetPanes: {},
+  copied: null,
   sheet: null,
   viewport: null,
   showSection: (section) => set({ section, selectedId: null, sheetSelected: false, sectionId: null }),
@@ -153,6 +163,7 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   setMovingSection: (movingSection) => set({ movingSection }),
   setPanelWidth: (panelWidth) => set({ panelWidth }),
   setWidgetPane: (id, pane) => set((s) => ({ widgetPanes: { ...s.widgetPanes, [id]: pane } })),
+  setCopied: (copied) => set({ copied }),
   setSheet: (sheet) => set({ sheet }),
   setViewport: (viewport) => set({ viewport }),
 }))

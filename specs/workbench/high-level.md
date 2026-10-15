@@ -127,9 +127,11 @@ Out of scope:
   automatic) and `use_grouping`. Every schema holds Haute's own table of a quote's
   details, `quote_details`, first: one row, an input, its columns `reference`,
   `quote_name`, `insured`, `broker`, `inception_date`, `expiry_date`, `valid_until`,
-  `currency`, `stage`, `assignee` and `archived`, in that order, the three dates Dates,
-  `archived` a True/false and the rest Text, each with the id `qd_` and its name. A form
-  read or saved without it takes it on; one whose `quote_details` is not Haute's (the
+  `currency`, `stage`, `assignee`, `archived` and `is_renewal`, in that order, the three
+  dates Dates, `archived` and `is_renewal` True/false and the rest Text, each with the id
+  `qd_` and its name. A form read or saved without it takes it on, and one holding its
+  columns as an earlier Haute made them (the first eleven, before `is_renewal`, or more of
+  them in order) takes the newer ones on after them; one whose `quote_details` is not Haute's (the
   name on another table, or its role, rows, columns, keys or index changed) is refused,
   as is a rule or a default on `reference`, `stage`, `assignee` or `archived`, which the
   underwriter app sets. Its labels, groups, help and placeholders are the project's, as are
@@ -143,7 +145,8 @@ Out of scope:
   are fixed and whether it is transposed: `row_numbers`, `density` (`compact` or
   `comfortable`), `gridlines` (`rows`, `all` or `none`), `striped`, `fixed_rows`,
   `transposed` and `groups`), a Collection (`collection`, boxes
-  showing columns of one-row tables, `columns` across), a Chart (`chart`, plotting number
+  showing columns of one-row tables, `columns` across, and its `spacers`, the gaps among
+  them, each the number of fields before it, in order and none past the last), a Chart (`chart`, plotting number
   columns, with what labels the rows of its many-row tables, `category`, a schema column
   named as a field is or null to number them, and how it draws: `chart_type` (`column`,
   `line`, `area` or `pie`), `orientation` (`vertical` or `horizontal`), `stacked`, `legend`
@@ -328,8 +331,8 @@ Out of scope:
   marked, a plus adds a sheet named in turn, double-click renames one, a tab dragged onto
   another moves its sheet there, as Alt+Left and Alt+Right move the focused tab's sheet a
   place, the tab keeping the focus, each move one undo step and the sheet showing still
-  the one that shows, and the showing sheet's cross
-  deletes it, asking first when components are on it, while another sheet remains; the
+  the one that shows, and the showing sheet's own panel
+  deletes it (the properties panel, below), while another sheet remains; the
   schema and the sample are untouched. A sheet is a stack of its sections, each a strip
   across its whole width as tall as its height, one under the next in their order, the
   sheet ending where the last one ends, so a taller section is a longer sheet; a new
@@ -377,7 +380,9 @@ Out of scope:
   none, the numbers and the deletes, or, transposed, a column of them before the
   labels, which stay in view beside it; a Collection as boxes, its columns across, their labels above
   them or, while `labels` is `beside`, beside them, a tick box in a box as the other fields
-  are, the boxes compact (28px) or comfortable (36px) as its `density` says; each of the two in a frame, a border round the panel's
+  are, the boxes compact (28px) or comfortable (36px) as its `density` says, and each
+  spacer a gap across its whole width where it sits among the fields, the fields after it
+  starting a new row below the gap; each of the two in a frame, a border round the panel's
   colour, unless `frame` is off, when it sits on the sheet as its title and fields alone,
   all in the sheets' colours (below);
   a Chart as its type draws the values it plots (Charts, below); a Heading as its
@@ -453,7 +458,9 @@ Out of scope:
   label; its legend, Bottom, Top, Left, Right or None; and whether it is stacked, horizontal
   and shows its values as data labels, a pie being neither stacked nor horizontal), and
   the order of the fields it shows, moved
-  by dragging or Alt+Up and Alt+Down, each with a cross that stops showing it; and its
+  by dragging or Alt+Up and Alt+Down, each with a cross that stops showing it, and in a
+  Collection's its spacers among them, each a row moved as a field is, with a cross that
+  removes it, and Add spacer under them adding one after the last field; and its
   fields, ticked from
   the schema tables of its
   kind, many-row tables for a Table, one-row tables for a Collection and any table for a
@@ -461,7 +468,11 @@ Out of scope:
   collapsible with its role and how many of its columns show, each column with its type's
   icon, its name and its label, a Chart's columns other than numbers and an index disabled,
   since a Chart plots numbers. Fields are held by table and column id, in the order
-  ticked, so a rename keeps them. A grid holds one kind of row, so once a Table shows a
+  ticked, so a rename keeps them. A Collection's spacers keep their places among its
+  fields: a field it stops showing, unticked, crossed out or gone from the schema, takes
+  its place in the count with it, a field ticked goes after any spacer at the end, and
+  one left showing no fields keeps no spacers.
+  A grid holds one kind of row, so once a Table shows a
   field, tables whose rows do not line up with it (keyed by other columns, or keyless) are
   greyed out with their unticked columns disabled; an input table and an output table
   keyed alike line up. A Chart's fields and the column labelling its rows line up the
@@ -476,9 +487,14 @@ Out of scope:
   it, each committed on blur or Enter, its Show when, and its look: its size, Large, Medium
   or Small, and its alignment, Left, Centre or Right, one of three toggles the arrow keys
   also move between. While building, the showing sheet's tab has a settings
-  mark beside its cross that opens the sheet's own panel in the same place, with its
+  mark, and no delete of its own, that opens the sheet's own panel in the same place, with its
   title, its Show when and its layout, its width in whole pixels (no less than 240 or
-  than its components reach, a value below that refused at the field), and a section's
+  than its components reach, a value below that refused at the field), and at its foot
+  Delete sheet, disabled while it is the only sheet, which asks first in a dialog of the
+  editor's own, never the browser's: it names the sheet and how many components go with
+  it, the schema and the sample staying; Cancel, Escape or a press outside it keeps the
+  sheet, and Delete deletes it as one undo step, the first sheet left showing and its
+  panel closed. A section's
   bar opens the section's panel there: its
   title, committed on blur or Enter (a blank one kept out), its Show when, and its layout,
   its height in whole pixels (no less than 48 or than its components reach, a value below
@@ -502,9 +518,16 @@ Out of scope:
   these are true". Each change is one undo step.
 - **The sheet's keyboard.** While the sheets show and a component is selected: Escape
   deselects it, Delete or Backspace removes it, Ctrl/Cmd+D duplicates it (16px below and
-  to the right, selected), and the arrow keys nudge it by a grid step, or a pixel with
+  to the right, selected), Ctrl/Cmd+C copies it, a note saying so, and the arrow keys nudge it by a grid step, or a pixel with
   Shift, a burst of nudges within 800ms being one undo step, kept inside its section, a
-  nudge that cannot move it recording nothing. With a section's bar focused: Enter or Space
+  nudge that cannot move it recording nothing. While the sheets show, selected or not,
+  Ctrl/Cmd+V pastes a copy of the component copied, as it was when copied but for the
+  columns the schema has lost since, which it no longer shows or tests, onto the sheet
+  showing: into the section selected, else the selected component's, else the section it
+  was copied from while it is on that sheet, else the sheet's first; where it sat, moved
+  16px down and to the right while a component there sits at exactly that place, kept
+  inside the section and the sheet's width, a new component, selected and one undo step.
+  The copy is held while the editor is open, neither saved nor undone. With a section's bar focused: Enter or Space
   opens its panel, Alt+Up and Alt+Down move the section, and Delete or Backspace deletes it,
   asking first when components are in it, while another section remains on the sheet; with
   the section's panel open, Escape closes it. None of that from a text
@@ -871,7 +894,8 @@ Out of scope:
   which gives it its reference and its own address; one made from another quote's
   revision (Duplicate, Renew, Create alternative) opens with that revision's values
   carried onto the current sheets and priced afresh, naming what it was made from and any
-  value that no longer fits. The sheets take no typing and are not priced, and Save is
+  value that no longer fits; a renewal opens with `is_renewal` ticked, which the
+  underwriter can untick, as one not made by Renew can be ticked by hand. The sheets take no typing and are not priced, and Save is
   off, while the quote is final, archived, shown at an earlier revision (at
   `/quotes/{id}/revisions/{n}`, with Open the newest) or saved on earlier sheets (opened
   on those sheets, with Move to current sheets, which carries its values onto the
@@ -1183,7 +1207,9 @@ Out of scope:
   app sets: a reference, `Q-` and six digits, taken from a counter in the transaction
   that creates the quote, so two quotes made at once take two and one whose creation
   fails keeps none; its stage, `draft` or `priced` as the revision was saved, or
-  `final`; who it is assigned to, at first who made it; and whether it is archived. The
+  `final`; who it is assigned to, at first who made it; and whether it is archived.
+  `is_renewal`, added after the others by the store's third migration, is null in the
+  rows written before it, which reads as unticked. The
   newest revision's row is the quote as the app lists, searches and orders it.
   Assigning, archiving, restoring, marking final and reopening each write a revision of
   the newest, its values, request, prices and release kept and its details changed: the
@@ -1217,11 +1243,16 @@ Out of scope:
   the store's migrations, numbered and shipped with Haute, so a Haute upgrade carries
   them; the store refuses to open a database behind the newest, naming what to run, and
   nothing migrates as it opens. A migration keeps the previous release's reads and
-  writes working: a column it adds is nullable or has a default, and it drops nothing;
-  and the database records the oldest schema whose Haute can still use it, so a Haute
-  behind the database's schema opens it when its own newest is at least that, as a
-  release rolled back after a migration does, and refuses it, naming the upgrade, when
-  it is not. A SQLite store keeps foreign keys on and its rollback journal, never
+  writes working where it can: a column it adds is nullable or has a default, and it
+  drops nothing; and the database records the oldest schema whose Haute can still use
+  it, so a Haute behind the database's schema opens it when its own newest is at least
+  that, as a release rolled back after a migration does, and refuses it, naming the
+  upgrade, when it is not. A migration after which the previous release could not read
+  what this one saves names itself as that oldest schema, so the previous release
+  refuses the database outright rather than failing on the quotes it cannot read: the
+  third does, as the sheets a quote is saved with now hold `is_renewal` in
+  `quote_details`, which a Haute at the second refuses. Rolling back past such a
+  migration means restoring the database as it was before it. A SQLite store keeps foreign keys on and its rollback journal, never
   write-ahead logging, so the file stands alone between writes.
 
 ## Design rationale

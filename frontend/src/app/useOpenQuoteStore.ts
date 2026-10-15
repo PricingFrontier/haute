@@ -5,7 +5,8 @@
  * not change; its saves and changes, each over the version the values were opened or saved
  * at (`base`), a change's details taken onto the sheets, and each answer the open quote's
  * alone, dropped when another was opened meanwhile; the values kept in this browser while
- * they are not saved; and what a save or change that could not be made offers instead.
+ * they are not saved; and what a save or change that could not be made offers instead. A
+ * renewal opens with `is_renewal` ticked.
  */
 import { create } from "zustand"
 import {
@@ -36,6 +37,12 @@ export interface QuoteSource {
   revision: number
   relation: QuoteRelation
   reference: string
+}
+
+/** A renewal's values: those carried from its source, with `is_renewal` ticked in its details. */
+function asRenewal(values: Values): Values {
+  const [details = {}] = values[QUOTE_DETAILS_ID] ?? []
+  return { ...values, [QUOTE_DETAILS_ID]: [{ ...details, qd_is_renewal: true }] }
 }
 
 /** Why the quote's values may not change, or null when they may. */
@@ -351,7 +358,8 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       try {
         const [origin, carried] = await Promise.all([openAppQuote(from.quoteId, from.revision), carryAppQuote(from.quoteId, from.revision)])
         if (attempt !== opening) return
-        useWorkbenchPreviewStore.getState().open(carried.values as Values, null, !canEdit())
+        const values = carried.values as Values
+        useWorkbenchPreviewStore.getState().open(from.relation === "renewal" ? asRenewal(values) : values, null, !canEdit())
         set({
           status: "ready",
           source: { ...from, reference: origin.quote.reference },

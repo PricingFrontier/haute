@@ -281,6 +281,7 @@ export function loadForm(form: FormSpec = sheetForm()): void {
     creating: null,
     movingSection: null,
     widgetPanes: {},
+    copied: null,
     sheet: null,
     viewport: null,
   })

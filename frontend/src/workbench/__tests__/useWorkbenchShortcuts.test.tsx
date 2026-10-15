@@ -1,14 +1,15 @@
 /**
  * The view's shortcuts on the sheets (specs/workbench): Ctrl+S saves the project through
  * the host, Ctrl+1 fits the sheet, Escape closes the sheet's panel or a section's, and
- * with a component selected Escape deselects, Delete removes, Ctrl+D duplicates and the
- * arrows nudge as one undo step per burst, kept inside its section, top and bottom, never
- * growing it; none of the sheet's keys from a field or a select, nor on the schema
- * section, nor in Preview, where Ctrl+1 applies, and undo and redo for the sample typed
- * there.
+ * with a component selected Escape deselects, Delete removes, Ctrl+D duplicates, Ctrl+C
+ * copies and the arrows nudge as one undo step per burst, kept inside its section, top and
+ * bottom, never growing it; Ctrl+V pastes the copy, selected or not; none of the sheet's
+ * keys from a field or a select, nor on the schema section, nor in Preview, where Ctrl+1
+ * applies, and undo and redo for the sample typed there.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react"
+import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { findWidget, updateWidget } from "../../utils/workbenchForm"
@@ -110,6 +111,84 @@ describe("useWorkbenchShortcuts on the sheets", () => {
     const copy = widgets()[1]
     expect(copy).toMatchObject({ type: "collection", title: "Policy", x: 32, y: 32 })
     expect(useWorkbenchViewStore.getState().selectedId).toBe(copy.id)
+  })
+
+  it("copies the selected component on Ctrl+C, as it is then, and pastes it past the original on Ctrl+V, then past that copy, each selected and one undo step", () => {
+    const toasts = () => useToastStore.getState().toasts.map((toast) => toast.text)
+    useToastStore.setState({ toasts: [] })
+    const original = widgets()[0]
+    // Copied with the browser's own copy of any text selected left to happen.
+    expect(key({ key: "c", ctrlKey: true })).toBe(true)
+    expect(toasts()).toContain('Collection "Policy" copied')
+    expect(widgets()).toHaveLength(2)
+
+    // A change after the copy is not pasted.
+    act(() => useWorkbenchFormStore.getState().change((spec) => updateWidget(spec, "w_boxes", { title: "Changed" })))
+    key({ key: "v", metaKey: true })
+    expect(widgets()).toHaveLength(3)
+    const pasted = widgets()[2]
+    expect(pasted).toEqual({ ...original, id: pasted.id, x: 32, y: 32 })
+    expect(pasted.id).not.toBe("w_boxes")
+    expect(useWorkbenchViewStore.getState().selectedId).toBe(pasted.id)
+
+    key({ key: "v", ctrlKey: true })
+    expect(widgets()[3]).toMatchObject({ title: "Policy", x: 48, y: 48 })
+    expect(useWorkbenchViewStore.getState().selectedId).toBe(widgets()[3].id)
+    // The change, then each paste, one undo step.
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(3)
+    key({ key: "z", ctrlKey: true })
+    expect(widgets()).toHaveLength(3)
+  })
+
+  it("pastes into the section selected, else the selected component's, else its own on its sheet, else the showing sheet's first, selected or not", () => {
+    loadForm(sectionedForm())
+    const view = useWorkbenchViewStore.getState
+    const sectionOf = (id: string) => findWidget(currentForm(), id)?.section.id
+    // The Table, in Flood, copied.
+    act(() => view().select("w_grid"))
+    key({ key: "c", ctrlKey: true })
+
+    // With nothing selected, into its own section.
+    act(() => view().select(null))
+    key({ key: "v", ctrlKey: true })
+    expect(sectionOf(view().selectedId!)).toBe("s_flood")
+    // Into the selected component's section: the policy's boxes'.
+    act(() => view().select("w_boxes"))
+    key({ key: "v", ctrlKey: true })
+    expect(sectionOf(view().selectedId!)).toBe("s_policy")
+    // Into the section selected: Notes, where it sat, Notes growing to hold it.
+    act(() => view().selectSection("s_notes"))
+    key({ key: "v", ctrlKey: true })
+    const inNotes = findWidget(currentForm(), view().selectedId!)
+    expect(inNotes).toMatchObject({ section: { id: "s_notes" }, widget: { x: 16, y: 0 } })
+    expect(inNotes?.section.height).toBe(200)
+
+    // On another sheet, its section's: the sheet's first, past the Year boxes where it sat.
+    act(() => view().showPage("p2"))
+    key({ key: "v", ctrlKey: true })
+    expect(findWidget(currentForm(), view().selectedId!)).toMatchObject({ page: { id: "p2" }, section: { id: "s_p2" }, widget: { type: "tableInput", x: 32, y: 32 } })
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(4)
+  })
+
+  it("pastes nothing before anything is copied, and copies and pastes nothing from a field, on the schema section or in Preview", () => {
+    key({ key: "v", ctrlKey: true })
+    expect(widgets()).toHaveLength(2)
+
+    // A field's copy and paste are its own.
+    const field = document.createElement("input")
+    document.body.appendChild(field)
+    key({ key: "c", ctrlKey: true }, field)
+    expect(useWorkbenchViewStore.getState().copied).toBeNull()
+    key({ key: "c", ctrlKey: true })
+    key({ key: "v", ctrlKey: true }, field)
+    field.remove()
+    expect(widgets()).toHaveLength(2)
+
+    useWorkbenchViewStore.setState({ section: "schema" })
+    key({ key: "v", ctrlKey: true })
+    useWorkbenchViewStore.setState({ section: "preview" })
+    key({ key: "v", ctrlKey: true })
+    expect(widgets()).toHaveLength(2)
   })
 
   it("nudges by a grid step, or a pixel with Shift, a burst of presses being one undo step", () => {

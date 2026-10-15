@@ -123,9 +123,13 @@ Every workbench has Haute's own table, `quote_details`, first in the Schema sect
 row of a quote's details, which the underwriter app keeps with each saved quote and lists
 on its Quotes page. Its columns are fixed: **reference**, **quote_name**, **insured**,
 **broker**, **inception_date**, **expiry_date**, **valid_until**, **currency**, **stage**,
-**assignee** and **archived**. Put them on the sheets as any other columns, and give them
+**assignee**, **archived** and **is_renewal**. Put them on the sheets as any other columns, and give them
 labels, groups, help, placeholders, defaults and rules; the pipeline receives the table as
 it receives any other input, so a rule can read a quote's inception date or its stage.
+**is_renewal** is a tick box: a quote made with the app's **Renew** opens with it ticked,
+and an underwriter ticks it for a renewal started any other way. A project saved before
+**is_renewal** existed takes it on when it is opened; save once so the Workbench Input
+copies it.
 
 The app sets **reference**, **stage**, **assignee** and **archived** itself: their cells take
 no typing in the app and take no rules and no default. Assigning, archiving, restoring, marking final and
@@ -193,7 +197,11 @@ with **+** at the end of the numbers to add one and a delete over each number; i
 and gridlines follow the lines as drawn. With **groups** ticked, the columns side by side
 in one schema group share a heading over their labels, as merged cells over a table's
 headers would in Excel; a column in no group has none. Transposed, the groups sit in a
-column before the labels. Order the fields so each group's columns are together. A
+column before the labels. Order the fields so each group's columns are together. To
+group a Collection's fields, press **Add spacer** under its order and drag the spacer
+between two fields (or move it with Alt+Up and Alt+Down): the Collection leaves a gap
+there, and the fields after it start a new row. Two spacers together make a wider gap,
+and a spacer's cross removes it. A
 Table's and a Collection's properties are in two
 panes: **Config**, the fields it shows and their order, and **Display**, its title, when it
 shows, its layout and its look. A Heading's properties are its **Text** and
@@ -204,8 +212,13 @@ to the grid. A component stays inside its section: it stops at the section's edg
 moves into another section only once its top is over it. Resizing a component past its
 section's bottom pushes the section's border down. It stays inside the sheet's width
 too, stopping at its edges; resizing it past the right edge widens the sheet. With a component selected (click it, or Tab to it), the
-arrow keys nudge it (Shift for a pixel), Ctrl+D duplicates it, Delete or Backspace removes
-it and Escape deselects it; Ctrl+Z and Ctrl+Y undo and redo. Ctrl+1 fits the sheet to the
+arrow keys nudge it (Shift for a pixel), Ctrl+D duplicates it, Ctrl+C copies it, Delete
+or Backspace removes it and Escape deselects it; Ctrl+Z and Ctrl+Y undo and redo. Ctrl+V
+pastes what you copied onto the sheet showing, another sheet too: into the section you
+have selected (or the selected component's, else the section it came from, else the
+sheet's first), where the original sat, moved down and right past one already there, and
+selected so you can drag it into place; a column deleted from the schema since you copied
+it is left out of the copy. Ctrl+1 fits the sheet to the
 window, and the zoom runs from 25% to 200%. A component with a problem — no fields, a
 Heading with no text, a column no longer in the schema, a table of the other kind, a
 Chart's field that is not a number or is an index, tables whose rows do not line up, a pie
@@ -233,9 +246,9 @@ double-click it to fit the section to what it holds. A section never shrinks by 
 Sheets have tabs along the top: **+** adds one, double-click (or F2) renames one, dragging
 a tab onto another moves its sheet there (or press Alt+Left and Alt+Right on a tab), the
 settings mark on the showing tab opens the sheet's own panel (its title, when it shows
-and its width),
-and the cross beside it deletes it (asking first when components are on it; the schema and
-the sample stay).
+and its width). **Delete sheet** at the foot of that panel deletes the sheet once you
+confirm it in the box that opens, which says how many components go with it; the schema
+and the sample stay, and Ctrl+Z brings the sheet back. The last sheet cannot be deleted.
 
 ## Showing sheets, sections and components conditionally
 
@@ -398,7 +411,9 @@ builder on screen. With a quote store it is where they manage their quotes too.
   app its SQLAlchemy URL in `HAUTE_QUOTE_STORE_URL`; without it the app prices and keeps
   nothing, and says so. The app does not start on a database it has not been migrated to:
   run `haute app migrate` (with `HAUTE_QUOTE_STORE_URL` set, or `--url`) before a release
-  that needs it starts.
+  that needs it starts. Back the database up first: after some migrations, such as the one
+  that adds **is_renewal**, an earlier release no longer starts on the database, so rolling
+  back means restoring that backup.
 
 A page opened before a new release is refused when it prices or saves, and reloading it
 picks up the release; its unsaved values stay in the browser.
@@ -431,7 +446,7 @@ name (its `quote_name`, saved with the next **Save**), its stage, and:
   running release; a final quote cannot be saved over until someone **reopens** it, giving a
   reason. The final stays in its history.
 - **More**: **Duplicate**, **Renew** and **Create alternative** each start a new quote from
-  the revision showing, linked to it; **Archive** takes it out of the lists (it opens read
+  the revision showing, linked to it, a renewal with **is_renewal** ticked; **Archive** takes it out of the lists (it opens read
   only until restored); **Copy link**.
 - **History**: the handover note, every revision (each opens as it was saved), what was done
   to the quote, by whom and when, and the quotes it came from or that were made from it.

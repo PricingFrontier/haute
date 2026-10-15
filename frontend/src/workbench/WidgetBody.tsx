@@ -8,7 +8,7 @@
  * those values gave its row, dimmed until the next answer. Pressing a cell types there.
  */
 import { Info, Plus, Trash2 } from "lucide-react"
-import { useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react"
+import { Fragment, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react"
 import type { HeadingWidget, Theme } from "../api/types"
 import { CommittedTextField } from "../components/form"
 import { INPUT_STYLE } from "../panels/editors/_shared"
@@ -78,6 +78,8 @@ const GRID_CELL_CLASS =
 const ROW_HEIGHT: Record<TableOptions["density"], string> = { compact: "h-7", comfortable: "h-9" }
 /** The space between a Collection's boxes, and round them, at each density. */
 const BOX_GAPS: Record<CollectionOptions["density"], string> = { compact: "gap-x-3 gap-y-2 p-2", comfortable: "gap-x-4 gap-y-3 p-3" }
+/** How tall a Collection's spacer is at each density: a gap between its boxes, so with the gaps round it, three. */
+const SPACER_HEIGHT: Record<CollectionOptions["density"], string> = { compact: "h-2", comfortable: "h-3" }
 /** A cell whose value breaks its column's rules: outlined as a field in error is, naming the problem. */
 const PROBLEM_STYLE: CSSProperties = { boxShadow: "inset 0 0 0 1px var(--danger-border-strong)" }
 
@@ -300,9 +302,10 @@ export default function WidgetBody({ widget, fields }: { widget: Widget; fields:
 
 /**
  * One-row columns as boxes, `columns` across and as many rows as it takes, each labelled
- * above its box or beside it, the boxes compact or comfortable, as its options say. An
- * output column shows what pricing gave its table's one row, dimmed while the price is for
- * other values, and a dash before the first answer or after pricing fails.
+ * above its box or beside it, the boxes compact or comfortable, as its options say, and a
+ * gap across its whole width where each of its spacers sits, the fields after it starting a
+ * new row. An output column shows what pricing gave its table's one row, dimmed while the
+ * price is for other values, and a dash before the first answer or after pricing fails.
  */
 function FieldBoxes({
   fields,
@@ -319,53 +322,64 @@ function FieldBoxes({
   const stale = price !== null && price.basis !== basis
   const height = ROW_HEIGHT[options.density]
   const beside = options.labels === "beside"
+  // The spacers before the field at `at`, or after the last field for the end.
+  const spacersAt = (at: number) =>
+    options.spacers.flatMap((place, n) =>
+      place === at || (at === fields.length && place > at)
+        ? [<div key={`spacer-${n}`} aria-hidden="true" data-testid="collection-spacer" className={SPACER_HEIGHT[options.density]} style={{ gridColumn: "1 / -1" }} />]
+        : [],
+    )
   return (
     <div
       className={`grid min-h-0 flex-1 content-start overflow-auto ${BOX_GAPS[options.density]}`}
       style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
     >
-      {fields.map(({ key, found }) => {
+      {fields.map(({ key, found }, index) => {
         const priced = found !== null && found.table.role === "output" ? price?.tables[found.table.name]?.[0]?.[found.column.name] : undefined
         return (
-          <div key={key} className={`flex min-w-0 ${beside ? "items-center gap-2" : "flex-col gap-1"}`} title={fieldTitle(found)}>
-            <span className={`truncate text-xs ${beside ? "w-2/5 shrink-0" : ""}`} style={{ color: labelColor(found, colours.font) }}>
-              <FieldLabel found={found} />
-            </span>
-            {fillable(found) ? (
-              <div
-                className={`pointer-events-auto ${beside ? "min-w-0 flex-1" : ""}`}
-                onPointerDown={typeHere}
-              >
-                <Cell
-                  found={found}
-                  value={rows[found.table.id]?.[0]?.[found.column.id]}
-                  onChange={(value) => setCell(found.table.id, 0, found.column.id, value)}
-                  label={fieldLabel(found)}
-                  height={height}
-                  boxed
-                  colours={colours}
-                  problem={problems[cellKey(found.table.id, 0, found.column.id)] ?? null}
-                  disabled={readOnly || locked.has(columnKey(found.table.id, found.column.id))}
-                />
-              </div>
-            ) : (
-              <div
-                data-testid={`priced-${key}`}
-                data-stale={stale && priced !== undefined ? "true" : undefined}
-                className={`flex ${height} items-center justify-end rounded-md px-2.5 text-xs tabular-nums transition-opacity ${beside ? "min-w-0 flex-1" : ""}`}
-                style={{
-                  border: `1px solid ${colours.frame}`,
-                  background: colours.output ?? "var(--bg-elevated)",
-                  color: priced === undefined || priced === null ? "var(--text-secondary)" : (colours.font ?? "var(--text-primary)"),
-                  opacity: stale ? 0.5 : 1,
-                }}
-              >
-                <span className="truncate">{found?.column.index ? "1" : shown(priced, found)}</span>
-              </div>
-            )}
-          </div>
+          <Fragment key={key}>
+            {spacersAt(index)}
+            <div className={`flex min-w-0 ${beside ? "items-center gap-2" : "flex-col gap-1"}`} title={fieldTitle(found)}>
+              <span className={`truncate text-xs ${beside ? "w-2/5 shrink-0" : ""}`} style={{ color: labelColor(found, colours.font) }}>
+                <FieldLabel found={found} />
+              </span>
+              {fillable(found) ? (
+                <div
+                  className={`pointer-events-auto ${beside ? "min-w-0 flex-1" : ""}`}
+                  onPointerDown={typeHere}
+                >
+                  <Cell
+                    found={found}
+                    value={rows[found.table.id]?.[0]?.[found.column.id]}
+                    onChange={(value) => setCell(found.table.id, 0, found.column.id, value)}
+                    label={fieldLabel(found)}
+                    height={height}
+                    boxed
+                    colours={colours}
+                    problem={problems[cellKey(found.table.id, 0, found.column.id)] ?? null}
+                    disabled={readOnly || locked.has(columnKey(found.table.id, found.column.id))}
+                  />
+                </div>
+              ) : (
+                <div
+                  data-testid={`priced-${key}`}
+                  data-stale={stale && priced !== undefined ? "true" : undefined}
+                  className={`flex ${height} items-center justify-end rounded-md px-2.5 text-xs tabular-nums transition-opacity ${beside ? "min-w-0 flex-1" : ""}`}
+                  style={{
+                    border: `1px solid ${colours.frame}`,
+                    background: colours.output ?? "var(--bg-elevated)",
+                    color: priced === undefined || priced === null ? "var(--text-secondary)" : (colours.font ?? "var(--text-primary)"),
+                    opacity: stale ? 0.5 : 1,
+                  }}
+                >
+                  <span className="truncate">{found?.column.index ? "1" : shown(priced, found)}</span>
+                </div>
+              )}
+            </div>
+          </Fragment>
         )
       })}
+      {spacersAt(fields.length)}
     </div>
   )
 }

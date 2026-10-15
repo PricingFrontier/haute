@@ -30,8 +30,10 @@ export type TableOptions = Pick<
   Extract<Widget, { type: "tableInput" }>,
   "row_numbers" | "density" | "gridlines" | "striped" | "fixed_rows" | "header" | "frame" | "transposed" | "groups"
 >
-/** How a Collection's boxes look. */
-export type CollectionOptions = Pick<Extract<Widget, { type: "collection" }>, "labels" | "density" | "frame">
+/** How a Collection's boxes look, and the gaps among them. */
+export type CollectionOptions = Pick<Extract<Widget, { type: "collection" }>, "labels" | "density" | "frame" | "spacers">
+/** A place in a component's order: one of its fields, or one of a Collection's spacers. */
+export type OrderItem = { kind: "field"; field: FieldRef } | { kind: "spacer" }
 /** What names a Chart's rows, and how it draws. */
 export type ChartOptions = Pick<ChartWidget, "category" | "chart_type" | "orientation" | "stacked" | "legend" | "data_labels">
 /** How a Heading's text shows. */
@@ -129,14 +131,19 @@ export const updateSchemaTable = (spec: FormSpec, id: string, patch: Partial<Sch
   })
 
 /**
- * Take the schema columns `drop` matches out of every widget that shows them, numbering
- * again the rows of a Chart that one of them labelled.
+ * Take the schema columns `drop` matches out of a widget that shows them, a Collection's
+ * spacers keeping their places among the fields left, numbering again the rows of a Chart
+ * that one of them labelled.
  */
+const dropShown = (widget: Widget, drop: (field: FieldRef) => boolean): void => {
+  if (!showsFields(widget)) return
+  setOrder(widget, orderItems(widget).filter((item) => item.kind === "spacer" || !drop(item.field)))
+  if (widget.type === "chart" && widget.category !== null && drop(widget.category)) widget.category = null
+}
+
+/** Take the schema columns `drop` matches out of every widget that shows them (`dropShown`). */
 const dropFields = (draft: FormSpec, drop: (field: FieldRef) => boolean): void => {
-  for (const widget of allWidgets(draft).filter(showsFields)) {
-    widget.fields = widget.fields.filter((field) => !drop(field))
-    if (widget.type === "chart" && widget.category !== null && drop(widget.category)) widget.category = null
-  }
+  for (const widget of allWidgets(draft)) dropShown(widget, drop)
 }
 
 /** Take the conditions `drop` matches out of every sheet, section and widget that tests them. */
@@ -532,8 +539,8 @@ export const TABLE_OPTIONS: Readonly<TableOptions> = {
   groups: false,
 }
 
-/** A new Collection's options: its labels above its boxes, comfortable and framed. */
-export const COLLECTION_OPTIONS: Readonly<CollectionOptions> = { labels: "above", density: "comfortable", frame: true }
+/** A new Collection's options: its labels above its boxes, comfortable, framed and with no spacers among them. */
+export const COLLECTION_OPTIONS: Readonly<CollectionOptions> = { labels: "above", density: "comfortable", frame: true, spacers: [] }
 
 /** A new Chart's options: its rows numbered, columns, upright, unstacked, its legend at the bottom and no data labels. */
 export const CHART_OPTIONS: Readonly<ChartOptions> = {
@@ -557,7 +564,8 @@ export function createWidget(type: WidgetType, rect: Rect): Widget {
   const showing = { title: "", fields: [] as FieldRef[], show_when: alwaysShown() }
   switch (type) {
     case "collection":
-      return { ...placed, type, ...showing, columns: 3, ...COLLECTION_OPTIONS }
+      // Spacers of its own, not the options' one list.
+      return { ...placed, type, ...showing, columns: 3, ...COLLECTION_OPTIONS, spacers: [] }
     case "chart":
       return { ...placed, type, ...showing, ...CHART_OPTIONS }
     case "tableInput":
@@ -698,6 +706,9 @@ export const removeWidget = (spec: FormSpec, id: string): FormSpec =>
     for (const section of allSections(draft)) section.widgets = section.widgets.filter((widget) => widget.id !== id)
   })
 
+/** How far below and to the right of a component its copy sits. */
+export const COPY_OFFSET = 16
+
 /** A copy of a component just below and to the right of it, in the same section, kept inside it and its sheet's width (`keptInside`). */
 export function duplicateWidget(spec: FormSpec, id: string): { spec: FormSpec; id: string } {
   const copyId = newId("w")
@@ -705,10 +716,42 @@ export function duplicateWidget(spec: FormSpec, id: string): { spec: FormSpec; i
     const found = findWidget(draft, id)
     if (found === null) throw new Error(`No sheet has a component ${id}`)
     const { x, y, w, h } = found.widget
-    const copy = { ...structuredClone(found.widget), id: copyId, x: keptInside(x + 16, w, found.page.width), y: keptInside(y + 16, h, found.section.height) }
+    const copy = {
+      ...structuredClone(found.widget),
+      id: copyId,
+      x: keptInside(x + COPY_OFFSET, w, found.page.width),
+      y: keptInside(y + COPY_OFFSET, h, found.section.height),
+    }
     found.section.widgets.splice(found.index + 1, 0, copy)
   })
   return { spec: next, id: copyId }
+}
+
+/**
+ * Paste a copy of `widget`, a component copied before, into a section: where it sat, moved
+ * `COPY_OFFSET` down and to the right while a component in the section sits at exactly that
+ * place, kept inside the section and its sheet's width (`addWidget`), with a new id. What it
+ * shows or tests of a column the schema has lost since is left out, as removing the column
+ * took it out of every component then.
+ */
+export function pasteWidget(spec: FormSpec, widget: Widget, sectionId: string): { spec: FormSpec; id: string } {
+  const found = findSection(spec, sectionId)
+  if (found === null) throw new Error(`No sheet has a section ${sectionId}`)
+  const { section, page } = found
+  const place = (x: number, y: number) => ({ x: keptInside(x, widget.w, page.width), y: keptInside(y, widget.h, section.height) })
+  let at = place(widget.x, widget.y)
+  while (section.widgets.some((other) => other.x === at.x && other.y === at.y)) {
+    const next = place(at.x + COPY_OFFSET, at.y + COPY_OFFSET)
+    // Held at the section's bottom right corner, it sits over the last one there.
+    if (next.x === at.x && next.y === at.y) break
+    at = next
+  }
+  const id = newId("w")
+  const copy: Widget = { ...structuredClone(widget), id, ...at }
+  const gone = (field: FieldRef) => fieldColumn(spec, field) === null
+  dropShown(copy, gone)
+  copy.show_when.conditions = copy.show_when.conditions.filter((condition) => !gone(condition))
+  return { spec: addWidget(spec, sectionId, copy), id }
 }
 
 /** Whose columns a Table or a Collection shows: a Table, many-row tables'; a Collection, one-row tables'. A Chart plots either. */
@@ -759,21 +802,85 @@ export function labelColumns(spec: FormSpec, widget: ChartWidget): { table: Sche
     .filter(({ columns }) => columns.length > 0)
 }
 
-/** Move a component's field from one place in its order to another. */
-export const moveField = (spec: FormSpec, widgetId: string, from: number, to: number): FormSpec =>
+/** A component's order: its fields, with a Collection's spacers among them where they sit. */
+export function orderItems(widget: FieldsWidget): OrderItem[] {
+  const spacers = widget.type === "collection" ? widget.spacers : []
+  const items: OrderItem[] = []
+  let next = 0
+  const spacersUpTo = (before: number) => {
+    while (next < spacers.length && spacers[next] <= before) {
+      items.push({ kind: "spacer" })
+      next += 1
+    }
+  }
+  widget.fields.forEach((field, index) => {
+    spacersUpTo(index)
+    items.push({ kind: "field", field })
+  })
+  spacersUpTo(Infinity)
+  return items
+}
+
+/** Write a component's order back to it, in a draft: its fields, and a Collection's spacers, none while it shows no fields. */
+function setOrder(widget: FieldsWidget, items: readonly OrderItem[]): void {
+  const fields: FieldRef[] = []
+  const spacers: number[] = []
+  for (const item of items) {
+    if (item.kind === "field") fields.push(item.field)
+    else spacers.push(fields.length)
+  }
+  widget.fields = fields
+  if (widget.type === "collection") widget.spacers = fields.length === 0 ? [] : spacers
+}
+
+/** The Collection with `id`: only a Collection has spacers. */
+function collectionOf(spec: FormSpec, id: string): Extract<Widget, { type: "collection" }> {
+  const widget = widgetOf(spec, id)
+  if (widget.type !== "collection") throw new Error("Only a Collection has spacers")
+  return widget
+}
+
+/** Move a field, or a Collection's spacer, from one place in its order (`orderItems`) to another. */
+export const moveInOrder = (spec: FormSpec, widgetId: string, from: number, to: number): FormSpec =>
   edit(spec, (draft) => {
-    const { fields } = fieldsWidgetOf(draft, widgetId)
-    const [field] = fields.splice(from, 1)
-    fields.splice(to, 0, field)
+    const widget = fieldsWidgetOf(draft, widgetId)
+    const items = orderItems(widget)
+    const [item] = items.splice(from, 1)
+    if (item === undefined) throw new Error(`Nothing is at ${from} in its order`)
+    items.splice(to, 0, item)
+    setOrder(widget, items)
   })
 
-/** Show the field in the component if it does not, or stop showing it if it does. */
+/**
+ * Show the field in the component if it does not, at the end of its order, after any spacer
+ * there; or stop showing it if it does, the spacers after it keeping their places among the
+ * fields.
+ */
 export const toggleField = (spec: FormSpec, widgetId: string, field: FieldRef): FormSpec =>
   edit(spec, (draft) => {
     const widget = fieldsWidgetOf(draft, widgetId)
-    const at = widget.fields.findIndex((shown) => shown.table === field.table && shown.column === field.column)
-    if (at >= 0) widget.fields.splice(at, 1)
-    else widget.fields.push(field)
+    const items = orderItems(widget)
+    const at = items.findIndex((item) => item.kind === "field" && item.field.table === field.table && item.field.column === field.column)
+    if (at >= 0) items.splice(at, 1)
+    else items.push({ kind: "field", field })
+    setOrder(widget, items)
+  })
+
+/** Add a spacer to a Collection, after its last field. */
+export const addSpacer = (spec: FormSpec, widgetId: string): FormSpec =>
+  edit(spec, (draft) => {
+    const widget = collectionOf(draft, widgetId)
+    widget.spacers.push(widget.fields.length)
+  })
+
+/** Remove the spacer at a place in a Collection's order (`orderItems`). */
+export const removeSpacer = (spec: FormSpec, widgetId: string, at: number): FormSpec =>
+  edit(spec, (draft) => {
+    const widget = collectionOf(draft, widgetId)
+    const items = orderItems(widget)
+    if (items[at]?.kind !== "spacer") throw new Error(`No spacer is at ${at}`)
+    items.splice(at, 1)
+    setOrder(widget, items)
   })
 
 // ─── The sample ──────────────────────────────────────────────────────────
@@ -1187,6 +1294,7 @@ export const QUOTE_DETAILS_COLUMNS: ReadonlyArray<readonly [id: string, name: st
   ["qd_stage", "stage", "str"],
   ["qd_assignee", "assignee", "str"],
   ["qd_archived", "archived", "bool"],
+  ["qd_is_renewal", "is_renewal", "bool"],
 ]
 
 /** The columns the underwriter app sets over whatever is typed, which take no rules (`QUOTE_DETAILS_MANAGED`). */

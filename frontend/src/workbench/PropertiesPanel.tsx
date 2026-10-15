@@ -7,20 +7,39 @@
  * Collection's labels, density and frame), a Chart's chart
  * (`ChartSettings`), the order of the fields it shows, and the fields themselves, ticked
  * from the schema tables of its kind: many-row tables for a Table, one-row tables for a
- * Collection, any table for a Chart, which plots number columns alone. A grid holds one
+ * Collection, any table for a Chart, which plots number columns alone, with a Collection's
+ * spacers among them in its order. A grid holds one
  * kind of row, so once a Table or a Chart shows a field, tables whose rows do not line up
  * with it are greyed out. A Table's and a Collection's are in two panes, as Haute's node
  * panel puts an Explore node's in panes: Config, the fields and their order, and Display,
  * the rest; a Chart's are one list. A Heading's panel is its text and description, when it
  * shows, and its size and alignment. Opened from the showing sheet's tab instead, it is the
- * sheet's panel: its title, when it shows and its width; opened from a section's header, the
+ * sheet's panel: its title, when it shows and its width, and deleting it, asked first in a
+ * dialog of the editor's own; opened from a section's header, the
  * section's: its title, when it shows, its height, and adding a section under it or
  * deleting it.
  */
-import { ChevronDown, ChevronRight, GripVertical, Plus, Rows3, Sheet, TextAlignCenter, TextAlignEnd, TextAlignStart, Trash2, X, type LucideIcon } from "lucide-react"
+import {
+  ChevronDown,
+  ChevronRight,
+  GripVertical,
+  Plus,
+  Rows3,
+  SeparatorHorizontal,
+  Sheet,
+  TextAlignCenter,
+  TextAlignEnd,
+  TextAlignStart,
+  Trash2,
+  X,
+  type LucideIcon,
+} from "lucide-react"
 import { useState, type KeyboardEvent, type ReactNode } from "react"
+import { flushSync } from "react-dom"
 import type { FieldRef, FormSpec, HeadingWidget, Page, SchemaTable, Section as SheetSection } from "../api/types"
 import { CommittedTextField, ConfigCheckbox, EditorLabel, ValidatedTextField } from "../components/form"
+import { ModalFormHeader } from "../components/ModalForm"
+import ModalShell from "../components/ModalShell"
 import ToggleButtonGroup from "../components/ToggleButtonGroup"
 import { SidePanel } from "../haute-ui"
 import useListReorder, { type RowDrag } from "../hooks/useListReorder"
@@ -31,16 +50,20 @@ import useWorkbenchViewStore, { activePage, type WidgetPane } from "../stores/us
 import { leastSectionHeight, leastSheetWidth } from "../utils/sheetGeometry"
 import {
   addSection,
+  addSpacer,
   chartGrain,
   createSection,
   fieldColumn,
   findSection,
   findWidget,
   fitSection,
-  moveField,
+  moveInOrder,
+  orderItems,
   pageWidgets,
   plottable,
   readableName,
+  removePage,
+  removeSpacer,
   renamePage,
   renameSection,
   rowsShown,
@@ -66,6 +89,8 @@ const MIN_WIDTH = 320
 /** At most half the window, so the sheet stays in view. */
 const maxWidth = () => Math.max(MIN_WIDTH, Math.floor(window.innerWidth / 2))
 const FIELD_CLASS = "focus-ring min-w-0 rounded-md px-1.5 py-1 text-xs"
+/** A dialog's buttons, as Haute's Files panel draws them. */
+const DIALOG_BUTTON = "px-3 py-1.5 text-[12px] font-medium rounded-md transition-colors"
 const DENSITIES: ReadonlyArray<{ value: TableOptions["density"]; label: string }> = [
   { value: "compact", label: "Compact" },
   { value: "comfortable", label: "Comfortable" },
@@ -141,11 +166,21 @@ export default function PropertiesPanel() {
 }
 
 /**
- * The showing sheet's panel: its title (a blank one kept out), when it shows, and its width
- * in whole pixels, never under what its components reach.
+ * The showing sheet's panel: its title (a blank one kept out), when it shows, its width in
+ * whole pixels, never under what its components reach, and at its foot Delete sheet, asking
+ * first in `DeleteSheetDialog`, while it is not the only sheet.
  */
 function SheetSettings({ form, page }: { form: FormSpec; page: Page }) {
   const change = useWorkbenchFormStore((s) => s.change)
+  const showPage = useWorkbenchViewStore((s) => s.showPage)
+  const [asking, setAsking] = useState(false)
+  const only = form.pages.length === 1
+  const deleteSheet = () => {
+    const remaining = form.pages.find((sheet) => sheet.id !== page.id)
+    if (remaining === undefined) return
+    change((spec) => removePage(spec, page.id))
+    showPage(remaining.id)
+  }
   const least = leastSheetWidth(pageWidgets(page))
   const width = (text: string) =>
     /^\d+$/.test(text.trim()) && Number.isSafeInteger(Number(text)) && Number(text) >= least ? null : `Enter a whole number of pixels, ${least} or more.`
@@ -186,7 +221,46 @@ function SheetSettings({ form, page }: { form: FormSpec; page: Page }) {
           />
         </label>
       </Section>
+      <div className="mt-auto pt-3" style={{ borderTop: "1px solid var(--border)" }}>
+        <button
+          type="button"
+          disabled={only}
+          title={only ? "The last sheet cannot be deleted" : undefined}
+          onClick={() => setAsking(true)}
+          className="focus-ring inline-flex items-center gap-1 rounded px-1 py-0.5 -ml-1 text-[11px] font-medium hover-bg disabled:opacity-50"
+          style={{ color: "var(--danger)" }}
+        >
+          <Trash2 size={11} aria-hidden="true" />
+          Delete sheet
+        </button>
+      </div>
+      {asking && <DeleteSheetDialog page={page} onCancel={() => setAsking(false)} onDelete={deleteSheet} />}
     </div>
+  )
+}
+
+/** Asks before a sheet is deleted, in the editor rather than the browser: what goes with it, and what stays. */
+function DeleteSheetDialog({ page, onCancel, onDelete }: { page: Page; onCancel: () => void; onDelete: () => void }) {
+  const count = pageWidgets(page).length
+  const going = count === 0 ? "Nothing is on it." : count === 1 ? "The component on it goes with it." : `The ${count} components on it go with it.`
+  return (
+    <ModalShell ariaLabel={`Delete sheet "${page.title}"`} onClose={onCancel} testId="sheet-delete-dialog">
+      <ModalFormHeader title={`Delete "${page.title}"?`}>{going} The schema and the sample stay.</ModalFormHeader>
+      <div className="flex justify-end gap-2 p-4">
+        <button type="button" className={DIALOG_BUTTON} style={{ color: "var(--text-secondary)" }} onClick={onCancel}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          data-testid="sheet-delete-confirm"
+          className={DIALOG_BUTTON}
+          style={{ background: "var(--danger)", color: "var(--text-on-accent)" }}
+          onClick={onDelete}
+        >
+          Delete
+        </button>
+      </div>
+    </ModalShell>
   )
 }
 
@@ -580,35 +654,74 @@ function FieldsSettings({ form, widget }: { form: FormSpec; widget: FieldsWidget
   )
 }
 
-/** The fields a component shows, in order: drag one, or Alt+Up and Alt+Down on it, to move it. */
+/**
+ * The fields a component shows, in order, with a Collection's spacers among them and Add
+ * spacer under them: drag a row, or Alt+Up and Alt+Down on it, to move it.
+ */
 function FieldOrder({ form, widget }: { form: FormSpec; widget: FieldsWidget }) {
   const change = useWorkbenchFormStore((s) => s.change)
-  const dragFor = useListReorder((from, to) => change((spec) => moveField(spec, widget.id, from, to)))
+  const dragFor = useListReorder((from, to) => change((spec) => moveInOrder(spec, widget.id, from, to)))
+  const items = orderItems(widget)
+  // A field is numbered among the fields, and a spacer keyed by its count among the spacers.
+  const rows: ReactNode[] = []
+  let fields = 0
+  let spacers = 0
+  items.forEach((item, place) => {
+    const placed = { widget, place, count: items.length, drag: dragFor(place) }
+    if (item.kind === "field") {
+      fields += 1
+      rows.push(<OrderRow key={fieldKey(item.field)} {...placed} form={form} field={item.field} number={fields} />)
+    } else {
+      rows.push(<SpacerRow key={`spacer-${spacers}`} {...placed} />)
+      spacers += 1
+    }
+  })
   return (
-    <div role="list" className="flex flex-col gap-0.5 rounded-md p-1" style={{ border: "1px solid var(--border)", background: "var(--bg-elevated)" }}>
-      {widget.fields.map((field, index) => (
-        <OrderRow key={fieldKey(field)} form={form} widget={widget} field={field} index={index} drag={dragFor(index)} />
-      ))}
-    </div>
+    <>
+      <div role="list" className="flex flex-col gap-0.5 rounded-md p-1" style={{ border: "1px solid var(--border)", background: "var(--bg-elevated)" }}>
+        {rows}
+      </div>
+      {widget.type === "collection" && (
+        <button
+          type="button"
+          onClick={() => change((spec) => addSpacer(spec, widget.id))}
+          className="quiet-action focus-ring inline-flex items-center gap-1 self-start rounded px-1 py-0.5 -ml-1 text-[11px] font-medium"
+        >
+          <Plus size={11} aria-hidden="true" />
+          Add spacer
+        </button>
+      )}
+    </>
   )
 }
 
-function OrderRow({ form, widget, field, index, drag }: { form: FormSpec; widget: FieldsWidget; field: FieldRef; index: number; drag: RowDrag }) {
+/** Where a row of the order sits: its component, its place among `count` rows, and its part in dragging them. */
+interface OrderPlace {
+  widget: FieldsWidget
+  place: number
+  count: number
+  drag: RowDrag
+}
+
+/** A row of the order, named `label`: picked up by its grip, or moved by Alt+Up and Alt+Down. */
+function OrderRowFrame({ widget, place, count, drag, label, children }: OrderPlace & { label: string; children: ReactNode }) {
   const change = useWorkbenchFormStore((s) => s.change)
-  const found = fieldColumn(form, field)
-  const label = found ? found.column.label || readableName(found.column.name) : "Missing column"
-  const type = found ? COLUMN_TYPES[found.column.type] : null
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return
     event.preventDefault()
-    const to = index + (event.key === "ArrowUp" ? -1 : 1)
-    if (to >= 0 && to < widget.fields.length) change((spec) => moveField(spec, widget.id, index, to))
+    const to = place + (event.key === "ArrowUp" ? -1 : 1)
+    if (to < 0 || to >= count) return
+    const list = event.currentTarget.parentElement
+    // Drawn at once, so the focus goes with the row: moving an element in the page drops it.
+    flushSync(() => change((spec) => moveInOrder(spec, widget.id, place, to)))
+    const moved = list?.children[to]
+    if (moved instanceof HTMLElement) moved.focus()
   }
   return (
     <div
       tabIndex={0}
       role="listitem"
-      aria-label={`${index + 1}. ${label}`}
+      aria-label={label}
       aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
       draggable
       onDragStart={drag.onStart}
@@ -621,8 +734,46 @@ function OrderRow({ form, widget, field, index, drag }: { form: FormSpec; widget
       style={{ opacity: drag.dragging ? 0.5 : 1, boxShadow: drag.target ? "0 -2px 0 0 var(--accent)" : undefined }}
     >
       <GripVertical size={12} aria-hidden="true" className="shrink-0" style={{ color: "var(--text-muted)" }} />
+      {children}
+    </div>
+  )
+}
+
+/** A Collection's spacer in its order, with a cross that removes it. */
+function SpacerRow(placed: OrderPlace) {
+  const change = useWorkbenchFormStore((s) => s.change)
+  return (
+    <OrderRowFrame {...placed} label="Spacer">
+      <span className="w-4 shrink-0" aria-hidden="true" />
+      <span className="flex size-4 shrink-0 items-center justify-center" style={{ color: "var(--text-muted)" }}>
+        <SeparatorHorizontal size={12} aria-hidden="true" />
+      </span>
+      <span className="min-w-0 flex-1 truncate" style={{ color: "var(--text-muted)" }}>
+        Spacer
+      </span>
+      <button
+        type="button"
+        onClick={() => change((spec) => removeSpacer(spec, placed.widget.id, placed.place))}
+        aria-label="Remove spacer"
+        title="Remove it"
+        className="icon-danger-btn focus-ring grid size-5 shrink-0 place-items-center rounded opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+      >
+        <X size={12} aria-hidden="true" />
+      </button>
+    </OrderRowFrame>
+  )
+}
+
+function OrderRow({ form, field, number, ...placed }: OrderPlace & { form: FormSpec; field: FieldRef; number: number }) {
+  const change = useWorkbenchFormStore((s) => s.change)
+  const { widget } = placed
+  const found = fieldColumn(form, field)
+  const label = found ? found.column.label || readableName(found.column.name) : "Missing column"
+  const type = found ? COLUMN_TYPES[found.column.type] : null
+  return (
+    <OrderRowFrame {...placed} label={`${number}. ${label}`}>
       <span className="w-4 shrink-0 text-right tabular-nums" style={{ color: "var(--text-muted)" }}>
-        {index + 1}
+        {number}
       </span>
       {type && (
         <span title={type.label} className={`flex size-4 shrink-0 items-center justify-center ${type.color}`}>
@@ -646,7 +797,7 @@ function OrderRow({ form, widget, field, index, drag }: { form: FormSpec; widget
       >
         <X size={12} aria-hidden="true" />
       </button>
-    </div>
+    </OrderRowFrame>
   )
 }
 

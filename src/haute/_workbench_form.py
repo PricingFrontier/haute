@@ -14,10 +14,12 @@ is its content hash, which a save quotes so a form that changed on disk since it
 is never overwritten.
 
 Every form holds Haute's own input table, ``quote_details``, first: the details of a quote
-(its reference, name, insured, broker, dates and currency, and its stage, who it is with and
-whether it is archived, which the underwriter app sets itself). Its structure is Haute's and
-a form that changes it is refused; a form read or saved without it has it added, the one
-exception to nothing migrating, so a project written before it existed takes it on.
+(its reference, name, insured, broker, dates and currency, its stage, who it is with and
+whether it is archived, which the underwriter app sets itself, and whether it is a renewal).
+Its structure is Haute's and a form that changes it is refused; a form read or saved without
+it has it added, and one holding its columns as an earlier Haute wrote them has the newer
+ones added after them, the one exception to nothing migrating, so a project written before
+either takes them on.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, Strict, ValidationError, model_validator
 
@@ -175,7 +177,8 @@ class TableInputWidget(_Placed):
 
 
 class CollectionWidget(_Placed):
-    """A Collection: boxes showing columns of one-row schema tables, ``columns`` across."""
+    """A Collection: boxes showing columns of one-row schema tables, ``columns`` across, with
+    a gap across it wherever one of its ``spacers`` sits among them."""
 
     type: Literal["collection"]
     title: str = ""
@@ -186,6 +189,23 @@ class CollectionWidget(_Placed):
     labels: CollectionLabels = "above"
     density: Density = "comfortable"
     frame: bool = True
+    #: Each spacer the number of its fields before it, in order, two at one place a wider
+    #: gap; the fields after one start a new row.
+    spacers: list[Annotated[int, Field(ge=0)]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _spaces_its_fields(self) -> CollectionWidget:
+        if self.spacers != sorted(self.spacers):
+            raise ValueError(
+                f"widget {self.id}'s spacers are out of order: each is the number of fields "
+                "before it, in order"
+            )
+        if self.spacers and self.spacers[-1] > len(self.fields):
+            raise ValueError(
+                f"widget {self.id} has a spacer after {self.spacers[-1]} fields, but shows "
+                f"{len(self.fields)}"
+            )
+        return self
 
 
 class ChartWidget(_Placed):
@@ -366,6 +386,35 @@ class FormSpec(_Strict):
     #: Held as typed, strictly: a number or a null for a cell is not a form the view writes.
     sample: dict[str, list[dict[str, Cell]]] = Field(default_factory=dict)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _brings_quote_details_up_to_date(cls, data: Any) -> Any:
+        """A form saved by an earlier Haute holds ``quote_details`` with the columns it had
+        then: the first ones (``QUOTE_DETAILS_FIRST``), or more of them in order. The newer
+        ones are added after them as Haute makes them, the caller's data left as it was."""
+        schema = data.get("schema") if isinstance(data, dict) else None
+        if not isinstance(schema, dict) or not isinstance(schema.get("tables"), list):
+            return data
+        tables = schema["tables"]
+        for index, table in enumerate(tables):
+            if not isinstance(table, dict) or table.get("id") != QUOTE_DETAILS_ID:
+                continue
+            columns = table.get("columns")
+            if not isinstance(columns, list):
+                return data
+            count = len(columns)
+            if not len(QUOTE_DETAILS_FIRST) <= count < len(QUOTE_DETAILS_COLUMNS):
+                return data
+            if _column_shapes(columns) != list(QUOTE_DETAILS_COLUMNS[:count]):
+                return data
+            newer = [
+                {"id": column_id, "name": name, "type": column_type}
+                for column_id, name, column_type in QUOTE_DETAILS_COLUMNS[count:]
+            ]
+            held = [*tables[:index], {**table, "columns": [*columns, *newer]}, *tables[index + 1 :]]
+            return {**data, "schema": {**schema, "tables": held}}
+        return data
+
     @model_validator(mode="after")
     def _keeps_quote_details_as_hautes(self) -> FormSpec:
         for table in self.data_schema.tables:
@@ -389,12 +438,27 @@ QUOTE_DETAILS_COLUMNS: tuple[tuple[str, str, ColumnType], ...] = (
     ("qd_stage", "stage", "str"),
     ("qd_assignee", "assignee", "str"),
     ("qd_archived", "archived", "bool"),
+    ("qd_is_renewal", "is_renewal", "bool"),
 )
+#: The columns it had first, before ``is_renewal``: a form holding these, or more of its
+#: columns after them in order, takes on the rest.
+QUOTE_DETAILS_FIRST = QUOTE_DETAILS_COLUMNS[:11]
 #: The columns the underwriter app sets itself, whatever a page sends: read only on its
 #: sheets, and taking no rules.
 QUOTE_DETAILS_MANAGED: frozenset[str] = frozenset(
     {"qd_reference", "qd_stage", "qd_assignee", "qd_archived"}
 )
+
+
+def _column_shapes(columns: list[Any]) -> list[tuple[Any, Any, Any]]:
+    """Each column's id, name and type as a form's raw data holds them, its type ``str`` when
+    left out, as a column's is."""
+    return [
+        (column.get("id"), column.get("name"), column.get("type", "str"))
+        if isinstance(column, dict)
+        else (None, None, None)
+        for column in columns
+    ]
 
 
 def quote_details_table() -> SchemaTable:

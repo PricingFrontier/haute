@@ -2573,7 +2573,8 @@ export interface FieldRef {
   table: string;
 }
 /**
- * A Collection: boxes showing columns of one-row schema tables, ``columns`` across.
+ * A Collection: boxes showing columns of one-row schema tables, ``columns`` across, with
+ * a gap across it wherever one of its ``spacers`` sits among them.
  */
 export interface CollectionWidget {
   columns: number;
@@ -2584,6 +2585,7 @@ export interface CollectionWidget {
   id: string;
   labels: 'above' | 'beside';
   show_when: ShowWhen;
+  spacers: number[];
   title: string;
   type: 'collection';
   w: number;

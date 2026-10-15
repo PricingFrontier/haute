@@ -402,6 +402,34 @@ describe("WidgetBody", () => {
     expect(framed.style.border).toBe("")
   })
 
+  it("leaves a gap across a Collection's whole width where each of its spacers sits, the fields after it starting a new row", () => {
+    // State, cover and year, two across, a spacer after State and two after the last field.
+    const fields = [
+      { table: "policy", column: "policy.state" },
+      { table: "policy", column: "policy.cover" },
+      { table: "policy", column: "policy.year" },
+    ]
+    loadForm(updateWidget(coverForm(), "w_boxes", { fields, spacers: [1, 3, 3] }))
+    renderBody("w_boxes")
+    const grid = screen.getByRole("combobox", { name: "State" }).closest("[title]")!.parentElement!
+    const drawn = () => [...grid.children].map((child) => (child.getAttribute("data-testid") === "collection-spacer" ? "gap" : child.getAttribute("title")))
+
+    expect(drawn()).toEqual(["policy.state", "gap", "policy.cover", "policy.year", "gap", "gap"])
+    for (const gap of screen.getAllByTestId("collection-spacer")) {
+      // Across every column, as tall as the gaps between the boxes, and nothing to a screen reader.
+      expect(gap.style.gridColumn).toBe("1 / -1")
+      expect(gap).toHaveClass("h-3")
+      expect(gap).toHaveAttribute("aria-hidden", "true")
+      expect(gap).toBeEmptyDOMElement()
+    }
+    cleanup()
+
+    // Compact, closer.
+    loadForm(updateWidget(currentForm(), "w_boxes", { density: "compact" }))
+    renderBody("w_boxes")
+    expect(screen.getAllByTestId("collection-spacer")[0]).toHaveClass("h-2")
+  })
+
   it("draws the components in the sheets' colours: the font, the borders, the backgrounds and the input and output cells' fills", () => {
     let form = toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premiums.premium" })
     form = toggleField(form, "w_boxes", { table: "premiums", column: "premiums.premium" })
