@@ -22,6 +22,8 @@ from haute._workbench_tables import (
     COLUMN_DTYPES,
     WorkbenchTable,
     WorkbenchTablesError,
+    _filled,
+    _typed,
     input_tables,
     output_tables,
     parse_workbench_tables,
@@ -198,7 +200,13 @@ def test_tables_the_pipeline_cannot_take_are_refused_naming_the_problem(
 def test_a_forms_table_the_pipeline_cannot_take_is_refused_by_the_nodes_name() -> None:
     spec = form(
         {"id": "t1", "name": "class", "role": "input", "columns": [column("x")]},
-        {"id": "t2", "name": "priced", "role": "output", "columns": [column("x"), column("x")]},
+        # Two columns of one name, each with an id of its own, as the form's checks ask.
+        {
+            "id": "t2",
+            "name": "priced",
+            "role": "output",
+            "columns": [column("x"), {**column("x"), "id": "c_x_again"}],
+        },
     )
 
     with pytest.raises(WorkbenchTablesError, match="The Workbench Input's table 'class'"):
@@ -377,6 +385,68 @@ def test_a_tables_index_is_an_integer_column_numbering_the_rows_as_they_stand() 
     assert sample_quote(spec) == {
         "equipment": [{"line": 1, "item_id": "A"}, {"line": 3, "item_id": "B", "value": 5.0}]
     }
+
+
+#: How typed text is read, which the view's ``parseTypedNumber`` and ``filled`` hold
+#: themselves to as well.
+TYPED_TEXT: dict[str, Any] = json.loads(
+    (
+        Path(__file__).resolve().parents[1] / "frontend/src/utils/__tests__/fixtures/typedText.json"
+    ).read_text(encoding="utf-8")
+)
+
+
+@pytest.mark.parametrize(
+    "case", TYPED_TEXT["numbers"], ids=[case["name"] for case in TYPED_TEXT["numbers"]]
+)
+def test_typed_text_is_read_by_the_rule_the_view_applies(case: dict[str, Any]) -> None:
+    text, number = case["text"], case["number"]
+
+    if number is None:
+        assert (_typed("float", text), _typed("int", text)) == (text, text)
+        return
+    assert _typed("float", text) == number
+    whole = _typed("int", text)
+    assert whole == number
+    assert isinstance(whole, int) is case["whole"]
+
+
+@pytest.mark.parametrize(
+    "case", TYPED_TEXT["filled"], ids=[case["name"] for case in TYPED_TEXT["filled"]]
+)
+def test_a_value_counts_as_typed_by_the_rule_the_view_applies(case: dict[str, Any]) -> None:
+    assert _filled(case["value"]) is case["filled"]
+
+
+#: Whether a quote has anything typed, which the view's ``quoteEligible`` holds itself to.
+TYPED_QUOTES: dict[str, Any] = json.loads(
+    (
+        Path(__file__).resolve().parents[1]
+        / "frontend/src/utils/__tests__/fixtures/typedQuotes.json"
+    ).read_text(encoding="utf-8")
+)
+
+
+@pytest.mark.parametrize(
+    "case", TYPED_QUOTES["cases"], ids=[case["name"] for case in TYPED_QUOTES["cases"]]
+)
+def test_a_quote_is_typed_by_the_rule_the_view_applies(case: dict[str, Any]) -> None:
+    spec = FormSpec.model_validate(TYPED_QUOTES["form"])
+    # The details the app sets are left out first, as its routes leave them out.
+    locked = {tuple(place) for place in case["locked"]}
+    values = {
+        table: [
+            {key: value for key, value in row.items() if (table, key) not in locked} for row in rows
+        ]
+        for table, rows in case["values"].items()
+    }
+
+    assert (sample_quote(spec.model_copy(update={"sample": values})) != {}) is case["typed"]
+
+
+def test_a_whole_number_past_a_double_is_kept_exactly() -> None:
+    assert _typed("int", "9007199254740993") == 9_007_199_254_740_993
+    assert _typed("int", "-12,345,678,901,234,567,891") == -12_345_678_901_234_567_891
 
 
 #: The cases the view's ``presetRows`` holds itself to as well.

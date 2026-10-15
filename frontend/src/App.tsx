@@ -29,6 +29,7 @@ import OptimiserDataPreview from "./panels/OptimiserDataPreview"
 import { TraceStatePanel } from "./panels/TraceStatePanel"
 import type { ProjectFilePlace } from "./api/types"
 import type { TraceResult } from "./types/trace"
+import QuestionDialog from "./components/QuestionDialog"
 import ToastContainer from "./components/Toast"
 import { ErrorBoundary } from "./components/ErrorBoundary"
 import ContextMenu from "./components/ContextMenu"
@@ -69,6 +70,7 @@ import useSettingsStore from "./stores/useSettingsStore"
 import useUIStore from "./stores/useUIStore"
 import useGraphStore from "./stores/useGraphStore"
 import useGitStore from "./stores/useGitStore"
+import { captureUncaptured } from "./stores/saveCapture"
 import useToastStore from "./stores/useToastStore"
 import useWorkbenchStore from "./stores/useWorkbenchStore"
 import ViewSwitcher from "./workbench/ViewSwitcher"
@@ -105,6 +107,7 @@ import AssistantWorkingPill from "./components/AssistantWorkingPill"
 import { withNativeDeletePolicy } from "./utils/submodelDeletionPolicy"
 import { requestSubmodelCreation } from "./utils/submodelCreation"
 import { resolveEditorGraphIdentities } from "./utils/editorIdentities"
+import { serial } from "./utils/serial"
 import { PaletteRevealStrip } from "./haute-ui"
 
 // ---------------------------------------------------------------------------
@@ -382,7 +385,6 @@ type FlowEditorOverlaysProps = {
   onCreateInstance: ComponentProps<typeof ContextMenu>["onCreateInstance"]
   onDissolveSubmodel: ComponentProps<typeof ContextMenu>["onDissolveSubmodel"]
   onGitModalConfirmed: () => void
-  onSave: () => Promise<boolean>
   onMoveConfirmed: (saveFirst: boolean) => Promise<void>
   onCreateSubmodel: (name: string, nodeIds: string[]) => Promise<SubmodelCreateResult>
   onRenameNode: (nodeId: string, label: string) => Promise<OnUpdateConfigResult>
@@ -404,7 +406,6 @@ function FlowEditorOverlays({
   onCreateInstance,
   onDissolveSubmodel,
   onGitModalConfirmed,
-  onSave,
   onMoveConfirmed,
   onCreateSubmodel,
   onRenameNode,
@@ -469,7 +470,7 @@ function FlowEditorOverlays({
       )}
       {gitModal === "identity" && (
         <Suspense fallback={null}>
-          <IdentityPromptModal onSaved={() => void onSave()} onClose={closeGitModal} />
+          <IdentityPromptModal onClose={closeGitModal} />
         </Suspense>
       )}
       {moveTarget && (
@@ -734,7 +735,7 @@ function FlowEditor() {
   // Core ReactFlow state with undo/redo
   const {
     nodes, edges,
-    setNodes, setEdges, setNodesAndEdges, setNodesAndEdgesAndSubmodels,
+    setNodes, setEdges, setNodesAndEdges, setNodesAndEdgesAndSubmodels, setNodesAndEdgesAndSubmodelsRaw,
     setNodesRaw, setEdgesRaw, setSubmodelsRaw,
     onNodesChange, onEdgesChange,
     undo, redo, canUndo, canRedo, pushSnapshot,
@@ -1239,6 +1240,13 @@ function FlowEditor() {
     ])
   }, [])
 
+  // A node update is an undo step, but for one that follows the form rather than an edit
+  // of the graph: the workbench nodes' copies of its tables.
+  const commitGraphUpdate = useCallback((nodes: Node[], edges: Edge[], submodels: Record<string, unknown>, history: boolean) => {
+    if (history) setNodesAndEdgesAndSubmodels(nodes, edges, submodels)
+    else setNodesAndEdgesAndSubmodelsRaw(nodes, edges, submodels)
+  }, [setNodesAndEdgesAndSubmodels, setNodesAndEdgesAndSubmodelsRaw])
+
   const { onUpdateNode, onRenameNode, waitForPendingCommits } = useGraphCommitController({
     graphRef,
     submodelsRef,
@@ -1248,14 +1256,14 @@ function FlowEditor() {
     resolveNodeIdentities,
     resolveRenameIdentities,
     readNamingContextKey,
-    commitGraph: setNodesAndEdgesAndSubmodels,
+    commitGraph: commitGraphUpdate,
     setSelectedNode,
     addToast,
   })
 
   // A Workbench Input and a Workbench Output keep their copies of the workbench's
   // tables current; they are at the top level, so only that level is updated.
-  const { nodeCreated, bringUpToDate } = useWorkbenchTables({
+  const { nodeCreated, bringUpToDate, copiesCurrent } = useWorkbenchTables({
     graphRef,
     onUpdateNode,
     editable: !editingReadOnly && viewStack.length === 1,
@@ -1308,15 +1316,14 @@ function FlowEditor() {
       return false
     }
     if (refused()) return false
+    // What earlier writes left off the ledger is captured first; a capture that fails
+    // says so, and the project is saved all the same.
+    await captureUncaptured()
     if (useWorkbenchStore.getState().enabled) {
       const { default: formStore } = await import("./stores/useWorkbenchFormStore")
       // A form save refused (stale, or failed) saves no pipeline: what is saved runs on
       // the form that was saved, never on copies of a form the view does not show.
       if (!(await formStore.getState().flush())) return false
-      // A test-quote write the ledger did not capture is captured now; a capture that
-      // fails says so and saves the pipeline all the same.
-      const { default: testQuotesStore } = await import("./stores/useWorkbenchTestQuotesStore")
-      await testQuotesStore.getState().flush()
       if (refused()) return false
       const brought = await bringUpToDate()
       if (refused()) return false
@@ -1333,9 +1340,27 @@ function FlowEditor() {
       addToast("error", pending.error)
       return false
     }
+    // An undo while the save waited can put back a copy older than the form's tables: it is
+    // brought up to them again, and the save waits for that update once more. A copy still
+    // behind after that saves nothing.
+    if (useWorkbenchStore.getState().enabled) {
+      let copies = copiesCurrent()
+      if (copies === "sent") {
+        const settled = await waitForPendingCommits()
+        if (!settled.ok) {
+          addToast("error", settled.error)
+          return false
+        }
+        copies = copiesCurrent()
+      }
+      if (copies !== "current") {
+        addToast("error", "The pipeline was not saved: its workbench nodes could not be brought up to date with the workbench's tables.")
+        return false
+      }
+    }
     if (refused()) return false
     return handleSave()
-  }, [addToast, bringUpToDate, handleSave, waitForPendingCommits])
+  }, [addToast, bringUpToDate, copiesCurrent, handleSave, waitForPendingCommits])
   const saveProjectNowRef = useRef(saveProjectNow)
   useEffect(() => { saveProjectNowRef.current = saveProjectNow }, [saveProjectNow])
 
@@ -1345,12 +1370,8 @@ function FlowEditor() {
   // first fetch's updates of the workbench nodes, and a save waits for every update
   // of the nodes, a superseded one counting as a failure, so both would be refused
   // and the pipeline saved by neither.
-  const projectSaveTurns = useRef<Promise<unknown>>(Promise.resolve())
-  const saveProject = useCallback((): Promise<boolean> => {
-    const turn = projectSaveTurns.current.then(() => saveProjectNowRef.current())
-    projectSaveTurns.current = turn.catch(() => undefined)
-    return turn
-  }, [])
+  const [projectSaveTurn] = useState(serial)
+  const saveProject = useCallback((): Promise<boolean> => projectSaveTurn(() => saveProjectNowRef.current()), [projectSaveTurn])
 
   // Flush the editor through the graph-commit fence before opening the
   // milestone modal, so Commit can never capture an older ledger snapshot.
@@ -2152,7 +2173,6 @@ function FlowEditor() {
         onCreateInstance={handleCreateInstance}
         onDissolveSubmodel={handleDissolveSubmodel}
         onGitModalConfirmed={handleGitModalConfirmed}
-        onSave={saveProject}
         onMoveConfirmed={handleMoveConfirmed}
         onCreateSubmodel={handleCreateSubmodel}
         onRenameNode={onRenameNode}
@@ -2164,6 +2184,7 @@ function FlowEditor() {
         onNodeSearchSelect={handleNodeSearchSelect}
       />
 
+      <QuestionDialog />
       <ErrorBoundary name="Toast">
         <ToastContainer />
       </ErrorBoundary>

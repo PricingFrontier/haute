@@ -5,6 +5,7 @@ import GlobalConstantsPanel from "../GlobalConstantsPanel"
 import useGraphStore from "../../stores/useGraphStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import type { GlobalConstantDraft } from "../../utils/globalConstants"
+import { answerQuestion, asked } from "../../test-utils/question"
 
 const uniform = (name: string, value: string): GlobalConstantDraft =>
   ({ name, type: "float", split: false, value, bySource: {} })
@@ -90,16 +91,17 @@ describe("GlobalConstantsPanel", () => {
     expect(screen.getByTestId("constant-value-issue-0-nb_batch")).toHaveTextContent("rate · nb_batch — Missing")
   })
 
-  it("asks before joining discards a differing source value, and keeps live", () => {
+  it("asks before joining discards a differing source value, and keeps live", async () => {
     load([{ name: "rate", type: "float", split: true, value: "", bySource: { live: "1", nb_batch: "2" } }])
     render(<GlobalConstantsPanel onClose={vi.fn()} />)
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true)
 
     fireEvent.click(screen.getByTestId("constant-split-0"))
-    expect(confirm).toHaveBeenLastCalledWith(expect.stringContaining("discards nb_batch: 2"))
+    expect(asked()).toMatchObject({ title: "Use one value for rate?", text: "This keeps the live value and discards nb_batch: 2." })
+    await answerQuestion(null)
     expect(constants()[0].split).toBe(true)
 
     fireEvent.click(screen.getByTestId("constant-split-0"))
+    await answerQuestion("confirm")
     expect(constants()[0]).toEqual(uniform("rate", "1"))
   })
 
@@ -124,44 +126,45 @@ describe("GlobalConstantsPanel", () => {
     expect(screen.getByTestId("constant-readers-1")).toHaveAttribute("title", "No node reads it")
   })
 
-  it("asks before deleting a constant that is read, naming its readers", () => {
+  it("asks before deleting a constant that is read, naming its readers", async () => {
     load([uniform("rate", "1")], { nodes: [reader("n1", "Pricing", "x = global_constants.rate")] })
     render(<GlobalConstantsPanel onClose={vi.fn()} />)
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true)
 
     fireEvent.click(screen.getByRole("button", { name: "Remove rate" }))
-    expect(confirm).toHaveBeenLastCalledWith("Delete rate? Pricing read it.")
+    expect(asked()).toMatchObject({ title: "Delete rate?", text: "Pricing read it.", confirm: "Delete", danger: true })
+    await answerQuestion(null)
     expect(constants()).toHaveLength(1)
 
     fireEvent.click(screen.getByRole("button", { name: "Remove rate" }))
+    await answerQuestion("confirm")
     expect(constants()).toEqual([])
   })
 
   it("deletes an unread constant without asking", () => {
     load([uniform("rate", "1")])
     render(<GlobalConstantsPanel onClose={vi.fn()} />)
-    const confirm = vi.spyOn(window, "confirm")
 
     fireEvent.click(screen.getByRole("button", { name: "Remove rate" }))
 
-    expect(confirm).not.toHaveBeenCalled()
+    expect(asked()).toBeNull()
     expect(constants()).toEqual([])
   })
 
-  it("asks before renaming a constant that is read, and restores the name when declined", () => {
+  it("asks before renaming a constant that is read, and restores the name when declined", async () => {
     load([uniform("rate", "1")], { nodes: [reader("n1", "Pricing", "x = global_constants.rate")] })
     render(<GlobalConstantsPanel onClose={vi.fn()} />)
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true)
     const name = screen.getByTestId("constant-name-0")
 
     fireEvent.change(name, { target: { value: "base_rate" } })
     fireEvent.blur(name)
-    expect(confirm).toHaveBeenLastCalledWith(expect.stringContaining("Pricing read rate"))
+    expect(asked()).toMatchObject({ title: "Rename rate to base_rate?", text: "Pricing read rate; edit their code to read base_rate." })
+    await answerQuestion(null)
     expect(constants()[0].name).toBe("rate")
     expect(name).toHaveValue("rate")
 
     fireEvent.change(name, { target: { value: "base_rate" } })
     fireEvent.blur(name)
+    await answerQuestion("confirm")
     expect(constants()[0].name).toBe("base_rate")
   })
 

@@ -8,7 +8,17 @@
 import type { ChartWidget, Condition, FieldRef, FormSchema, FormSpec, HeadingWidget, Page, SchemaColumn, SchemaTable, Section, ShowWhen, Theme } from "../api/types"
 import { ASCII_IDENTIFIER_RE, apiInputLabelIssue, apiInputLabelIssueMessage } from "./apiInputPorts"
 import { PYTHON_KEYWORDS } from "./globalConstants"
-import { BLANK_SECTION_HEIGHT, BLANK_SHEET_WIDTH, NEW_SECTION_HEIGHT, fittedSectionHeight, leastSectionHeight, leastSheetWidth, type Rect } from "./sheetGeometry"
+import {
+  BLANK_SECTION_HEIGHT,
+  BLANK_SHEET_WIDTH,
+  NEW_SECTION_HEIGHT,
+  fittedSectionHeight,
+  freePlace,
+  leastSectionHeight,
+  leastSheetWidth,
+  type Rect,
+  type Size,
+} from "./sheetGeometry"
 import { cellProblem, filled, isDay, parseTypedNumber, presetColumn, pricedRows, valuesBasis, type PricedRows, type RowsByTable } from "./sheetValues"
 import { columnKey, conditionFault, fieldKeys, neverShown, sheetVisibility, testLabel } from "./sheetVisibility"
 
@@ -39,7 +49,22 @@ export type ChartOptions = Pick<ChartWidget, "category" | "chart_type" | "orient
 /** How a Heading's text shows. */
 export type HeadingOptions = Pick<HeadingWidget, "size" | "align">
 
-export const newId = (prefix: string): string => `${prefix}_${crypto.randomUUID().slice(0, 8)}`
+/**
+ * A new id: 64 random bits, so two the view makes never meet in practice; the server
+ * refuses a form holding any id twice, a block copied by hand or by a merge among them.
+ */
+/**
+ * The most rows a Table starts with, and columns a Collection lays its boxes in, as the
+ * server's form takes them (`TABLE_ROWS_MAX` and `COLLECTION_COLUMNS_MAX` in
+ * `src/haute/_workbench_form.py`).
+ */
+export const TABLE_ROWS_MAX = 50
+export const COLLECTION_COLUMNS_MAX = 12
+
+export function newId(prefix: string): string {
+  const bits = crypto.getRandomValues(new Uint8Array(8))
+  return `${prefix}_${Array.from(bits, (byte) => byte.toString(16).padStart(2, "0")).join("")}`
+}
 
 /** `base`, or `base_2`, `base_3`… until it is none of `taken`. */
 export function uniqueName(base: string, taken: Iterable<string>): string {
@@ -68,6 +93,27 @@ const edit = (spec: FormSpec, change: (draft: FormSpec) => void): FormSpec => {
   const draft = structuredClone(spec)
   change(draft)
   return draft
+}
+
+/**
+ * A layout change, as each step of a drag makes: `spec` with its sheet `pageId` as `change`
+ * leaves a copy of it whose sections `sectionIds` are copied too, their lists of components
+ * with them; `change` copies a component it changes. Every other sheet, section and
+ * component, the schema and the sample stay the objects they were, so what draws them is
+ * not drawn again.
+ */
+function editLayout(spec: FormSpec, pageId: string, sectionIds: readonly string[], change: (page: Page) => void): FormSpec {
+  const page = { ...pageOf(spec, pageId) }
+  page.sections = page.sections.map((section) => (sectionIds.includes(section.id) ? { ...section, widgets: [...section.widgets] } : section))
+  change(page)
+  return { ...spec, pages: spec.pages.map((candidate) => (candidate.id === pageId ? page : candidate)) }
+}
+
+/** The section `id` of a sheet. */
+function sectionIn(page: Page, id: string): Section {
+  const section = page.sections.find((candidate) => candidate.id === id)
+  if (section === undefined) throw new Error(`Sheet ${page.title} has no section ${id}`)
+  return section
 }
 
 function schemaTableOf(spec: FormSpec, id: string): SchemaTable {
@@ -293,9 +339,9 @@ export const conditionUses = (spec: FormSpec, tableId: string, columnId?: string
     ),
   )
 
-/** The schema table and column a field names, or null when it is no longer in the schema. */
-export function fieldColumn(spec: FormSpec, field: FieldRef): { table: SchemaTable; column: SchemaColumn } | null {
-  const table = spec.schema.tables.find((candidate) => candidate.id === field.table)
+/** The schema table and column a field names, or null when it is no longer in the schema: of a form, or of the schema alone. */
+export function fieldColumn({ schema }: Pick<FormSpec, "schema">, field: FieldRef): { table: SchemaTable; column: SchemaColumn } | null {
+  const table = schema.tables.find((candidate) => candidate.id === field.table)
   const column = table?.columns.find((candidate) => candidate.id === field.column)
   return table && column ? { table, column } : null
 }
@@ -306,9 +352,9 @@ export interface ShownField {
   found: { table: SchemaTable; column: SchemaColumn } | null
 }
 
-/** The fields a component shows, each with its column, in the component's order; a Heading shows none. */
-export const shownFields = (spec: FormSpec, widget: Widget): ShownField[] =>
-  showsFields(widget) ? widget.fields.map((field) => ({ key: `${field.table}:${field.column}`, found: fieldColumn(spec, field) })) : []
+/** The fields a component shows, each with its column in `schema`, in the component's order; a Heading shows none. */
+export const shownFields = (schema: FormSchema, widget: Widget): ShownField[] =>
+  showsFields(widget) ? widget.fields.map((field) => ({ key: `${field.table}:${field.column}`, found: fieldColumn({ schema }, field) })) : []
 
 /** The input tables a Table's grid takes rows of, in its order: those of the many-row columns it shows that are typed into. */
 export const gridInputTables = (fields: readonly ShownField[]): SchemaTable[] => [
@@ -460,9 +506,11 @@ export const setSectionShowWhen = (spec: FormSpec, id: string, showWhen: ShowWhe
  * recorded, and for a height that is not a safe whole number, which the file cannot hold.
  */
 function withSectionHeight(spec: FormSpec, id: string, height: number): FormSpec {
-  if (sectionOf(spec, id).height === height || !Number.isSafeInteger(height)) return spec
-  return edit(spec, (draft) => {
-    sectionOf(draft, id).height = height
+  const found = findSection(spec, id)
+  if (found === null) throw new Error(`No sheet has a section ${id}`)
+  if (found.section.height === height || !Number.isSafeInteger(height)) return spec
+  return editLayout(spec, found.page.id, [id], (page) => {
+    sectionIn(page, id).height = height
   })
 }
 
@@ -507,7 +555,7 @@ export function findWidget(spec: FormSpec, id: string): { widget: Widget; page: 
   return null
 }
 
-/** Grow a section and its sheet, in a draft, to hold one of its components: as tall and as wide as the component reaches, at least. */
+/** Grow a section and its sheet, in a copy, to hold one of its components: as tall and as wide as the component reaches, at least. */
 const holdWidget = (page: Page, section: Section, widget: Widget): void => {
   section.height = Math.max(section.height, widget.y + widget.h)
   page.width = Math.max(page.width, widget.x + widget.w)
@@ -609,6 +657,24 @@ export const addWidget = (spec: FormSpec, sectionId: string, widget: Widget): Fo
   })
 
 /**
+ * Add a new component of `type`, `size` but no wider than its sheet, to a section, at the
+ * first place free in it (`freePlace`), the section growing to hold it where that is below
+ * its foot, as adding one from the palette's keys does; with its id.
+ */
+export function addWidgetInFreePlace(spec: FormSpec, sectionId: string, type: WidgetType, size: Size): { spec: FormSpec; id: string } {
+  const found = findSection(spec, sectionId)
+  if (found === null) throw new Error(`No sheet has a section ${sectionId}`)
+  const fitted = { w: Math.min(size.w, found.page.width), h: size.h }
+  const widget = createWidget(type, { ...freePlace(found.section.widgets, fitted, found.page.width), ...fitted })
+  const next = edit(spec, (draft) => {
+    const { page, section } = findSection(draft, sectionId)!
+    section.widgets.push(widget)
+    holdWidget(page, section, widget)
+  })
+  return { spec: next, id: widget.id }
+}
+
+/**
  * What any component can be given; `rows` and the Table's options are a Table's alone,
  * `columns` and the Collection's options a Collection's, but for the `density` and `frame`
  * the two share, the Chart's options a Chart's, and `text`, `description` and the
@@ -642,26 +708,29 @@ const NOT_HEADING = ["title", "fields"]
  * sheet's right edge, the sheet widens to hold it. Moves go through `placeWidget` and
  * `moveWidget`, which keep a component inside its section and its sheet's width.
  */
-export const updateWidget = (spec: FormSpec, id: string, patch: WidgetPatch): FormSpec =>
-  edit(spec, (draft) => {
-    const found = findWidget(draft, id)
-    if (found === null) throw new Error(`No sheet has a component ${id}`)
-    const { widget, section, page } = found
-    const tableOnly = TABLE_ONLY.find((key) => key in patch)
-    if (tableOnly !== undefined && widget.type !== "tableInput") throw new Error(`Only a Table has ${tableOnly}`)
-    const collectionOnly = COLLECTION_ONLY.find((key) => key in patch)
-    if (collectionOnly !== undefined && widget.type !== "collection") throw new Error(`Only a Collection has ${collectionOnly}`)
-    const shared = TABLE_OR_COLLECTION.find((key) => key in patch)
-    if (shared !== undefined && widget.type !== "tableInput" && widget.type !== "collection") throw new Error(`Only a Table or a Collection has ${shared}`)
-    const chartOnly = CHART_ONLY.find((key) => key in patch)
-    if (chartOnly !== undefined && widget.type !== "chart") throw new Error(`Only a Chart has ${chartOnly}`)
-    const headingOnly = HEADING_ONLY.find((key) => key in patch)
-    if (headingOnly !== undefined && widget.type !== "heading") throw new Error(`Only a Heading has ${headingOnly}`)
-    const notHeading = NOT_HEADING.find((key) => key in patch)
-    if (notHeading !== undefined && widget.type === "heading") throw new Error(`A Heading has no ${notHeading}`)
-    Object.assign(widget, patch)
-    holdWidget(page, section, widget)
+export function updateWidget(spec: FormSpec, id: string, patch: WidgetPatch): FormSpec {
+  const found = findWidget(spec, id)
+  if (found === null) throw new Error(`No sheet has a component ${id}`)
+  const { widget } = found
+  const tableOnly = TABLE_ONLY.find((key) => key in patch)
+  if (tableOnly !== undefined && widget.type !== "tableInput") throw new Error(`Only a Table has ${tableOnly}`)
+  const collectionOnly = COLLECTION_ONLY.find((key) => key in patch)
+  if (collectionOnly !== undefined && widget.type !== "collection") throw new Error(`Only a Collection has ${collectionOnly}`)
+  const shared = TABLE_OR_COLLECTION.find((key) => key in patch)
+  if (shared !== undefined && widget.type !== "tableInput" && widget.type !== "collection") throw new Error(`Only a Table or a Collection has ${shared}`)
+  const chartOnly = CHART_ONLY.find((key) => key in patch)
+  if (chartOnly !== undefined && widget.type !== "chart") throw new Error(`Only a Chart has ${chartOnly}`)
+  const headingOnly = HEADING_ONLY.find((key) => key in patch)
+  if (headingOnly !== undefined && widget.type !== "heading") throw new Error(`Only a Heading has ${headingOnly}`)
+  const notHeading = NOT_HEADING.find((key) => key in patch)
+  if (notHeading !== undefined && widget.type === "heading") throw new Error(`A Heading has no ${notHeading}`)
+  return editLayout(spec, found.page.id, [found.section.id], (page) => {
+    const section = sectionIn(page, found.section.id)
+    const changed = Object.assign({ ...widget }, patch)
+    section.widgets[found.index] = changed
+    holdWidget(page, section, changed)
   })
+}
 
 /**
  * Where a component `h` tall may sit in a section `height` tall, as near `y` as it can:
@@ -677,21 +746,26 @@ export const keptInside = (y: number, h: number, height: number): number => Math
  * components there. Only a component taller than the section it lands in grows it, or one
  * wider than the sheet widens it; the section it left keeps its height.
  */
-export const placeWidget = (spec: FormSpec, id: string, sectionId: string, rect: Rect): FormSpec =>
-  edit(spec, (draft) => {
-    const found = findWidget(draft, id)
-    if (found === null) throw new Error(`No sheet has a component ${id}`)
-    const target = findSection(draft, sectionId)
-    if (target === null) throw new Error(`No sheet has a section ${sectionId}`)
-    const { section, page } = target
-    if (section !== found.section) {
-      found.section.widgets.splice(found.index, 1)
-      section.widgets.push(found.widget)
-    }
+export function placeWidget(spec: FormSpec, id: string, sectionId: string, rect: Rect): FormSpec {
+  const found = findWidget(spec, id)
+  if (found === null) throw new Error(`No sheet has a component ${id}`)
+  const target = findSection(spec, sectionId)
+  if (target === null) throw new Error(`No sheet has a section ${sectionId}`)
+  if (target.page !== found.page) throw new Error(`Component ${id} moves only between the sections of its own sheet`)
+  return editLayout(spec, found.page.id, [found.section.id, sectionId], (page) => {
+    const from = sectionIn(page, found.section.id)
+    const section = sectionIn(page, sectionId)
     const { x, y, w, h } = rect
-    Object.assign(found.widget, { x: keptInside(x, w, page.width), y: keptInside(y, h, section.height), w, h })
-    holdWidget(page, section, found.widget)
+    const placed = { ...found.widget, x: keptInside(x, w, page.width), y: keptInside(y, h, section.height), w, h }
+    if (section === from) {
+      from.widgets[found.index] = placed
+    } else {
+      from.widgets.splice(found.index, 1)
+      section.widgets.push(placed)
+    }
+    holdWidget(page, section, placed)
   })
+}
 
 /** Move a component within its section, kept inside it and its sheet's width (`keptInside`): a nudge never crosses its section's top or bottom or the sheet's right edge. */
 export function moveWidget(spec: FormSpec, id: string, to: { x: number; y: number }): FormSpec {
@@ -777,10 +851,10 @@ export const tableGrain = (table: SchemaTable): string =>
  * Which rows a Chart's columns fill (`tableGrain`): its first field's table's, else that of
  * the column labelling its rows; null while it has neither. The rest line up with it.
  */
-export function chartGrain(spec: FormSpec, widget: ChartWidget): string | null {
+export function chartGrain(schema: FormSchema, widget: ChartWidget): string | null {
   const refs = widget.category === null ? widget.fields : [...widget.fields, widget.category]
   for (const field of refs) {
-    const found = fieldColumn(spec, field)
+    const found = fieldColumn({ schema }, field)
     if (found !== null) return tableGrain(found.table)
   }
   return null
@@ -794,7 +868,7 @@ export const plottable = (column: SchemaColumn): boolean => (column.type === "in
  * other than an index ("Row number" numbers the rows as an index does), by table.
  */
 export function labelColumns(spec: FormSpec, widget: ChartWidget): { table: SchemaTable; columns: SchemaColumn[] }[] {
-  const grain = chartGrain(spec, widget)
+  const grain = chartGrain(spec.schema, widget)
   if (grain === null || grain === "one") return []
   return spec.schema.tables
     .filter((table) => table.rows === "many" && tableGrain(table) === grain)
@@ -935,7 +1009,7 @@ const typedRows = (rows: readonly SampleRow[]): number => rows.reduce((last, row
  */
 export const setTableRows = (spec: FormSpec, widgetId: string, rows: number): FormSpec => {
   const next = updateWidget(spec, widgetId, { rows })
-  const tables = gridInputTables(shownFields(next, widgetOf(next, widgetId))).map((table) => table.id)
+  const tables = gridInputTables(shownFields(next.schema, widgetOf(next, widgetId))).map((table) => table.id)
   const kept = Math.max(0, ...tables.map((id) => typedRows(next.sample[id] ?? [])))
   return edit(next, (draft) => {
     for (const id of tables) {
@@ -991,6 +1065,36 @@ export function linedUpOutputs(
     const typed = price.sample[input.name]
     const grid = Array.from({ length: count }, (_, row) => held[input.id]?.[row])
     lined.set(output.id, pricedRows(read, grid, Array.isArray(typed) ? (typed as PricedRows) : [], price.tables[output.name] ?? []))
+  }
+  return lined
+}
+
+/** A row's value under `name`, there and not null: a value a key can match by. */
+const keyedBy = (row: Record<string, unknown> | undefined, name: string): boolean => row?.[name] !== undefined && row[name] !== null
+
+/**
+ * Output tables shown without an input table, lined up with the first one's answer: its
+ * rows as pricing gave them, and each other table's row keyed like each of them by the
+ * first's key columns (none without keys), as a Chart and a Table of output columns alone
+ * show them. Nothing while there is no price.
+ */
+export function answeredOutputs(
+  outputs: readonly SchemaTable[],
+  price: Priced | null,
+): Map<string, (Record<string, unknown> | undefined)[]> {
+  const lined = new Map<string, (Record<string, unknown> | undefined)[]>()
+  const [first] = outputs
+  if (first === undefined || price === null) return lined
+  const answer = price.tables[first.name] ?? []
+  const keys = first.columns.filter((column) => column.key).map((column) => column.name)
+  for (const table of outputs) {
+    if (lined.has(table.id)) continue
+    const own = price.tables[table.name] ?? []
+    const matched = (row: Record<string, unknown>) =>
+      keys.length === 0
+        ? undefined
+        : own.find((candidate) => keys.every((name) => keyedBy(row, name) && keyedBy(candidate, name) && String(candidate[name]) === String(row[name])))
+    lined.set(table.id, table.id === first.id ? [...answer] : answer.map(matched))
   }
   return lined
 }
@@ -1071,7 +1175,7 @@ function chartProblems(spec: FormSpec, widget: ChartWidget): string[] {
   if (category === null) problems.push("labels its rows by a column that is no longer in the schema")
   const lined = [...found, category ?? null].flatMap((shown) => (shown === null ? [] : [tableGrain(shown.table)]))
   if (new Set(lined).size > 1) problems.push("shows tables whose rows do not line up")
-  const grain = chartGrain(spec, widget)
+  const grain = chartGrain(spec.schema, widget)
   if (widget.chart_type === "pie" && grain !== null && grain !== "one" && widget.fields.length > 1) {
     problems.push("is a pie of many rows, so it plots only its first field")
   }
@@ -1190,9 +1294,10 @@ export function columnNameProblem(name: string): string | null {
   return null
 }
 
+/** Whether `text` is a number, a whole one when `whole`, as a cell and the server read one. */
 const isNumber = (text: string, whole: boolean): boolean => {
-  const n = Number(text)
-  return text.trim() !== "" && Number.isFinite(n) && (!whole || Number.isInteger(n))
+  const n = parseTypedNumber(text)
+  return n !== null && (!whole || Number.isInteger(n))
 }
 
 /**
@@ -1209,6 +1314,12 @@ export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<strin
   const { tables } = spec.schema
   tables.forEach((table, index) => {
     const name = `Table "${table.name}"`
+    // Haute's own table is the one with its id; the server refuses any other by its name,
+    // in these words.
+    if (table.name === QUOTE_DETAILS_ID && table.id !== QUOTE_DETAILS_ID) {
+      problems.push({ tableId: table.id, message: QUOTE_DETAILS_REFUSAL })
+      return
+    }
     const issue = apiInputLabelIssueMessage(
       apiInputLabelIssue(
         table.name,
@@ -1280,6 +1391,8 @@ function defaultProblem(column: SchemaColumn): string | null {
  * revision, and its Quotes page lists them.
  */
 export const QUOTE_DETAILS_ID = "quote_details"
+/** Why another table under its name is refused, in the server's words (`QUOTE_DETAILS_REFUSAL` in `src/haute/_workbench_form.py`). */
+export const QUOTE_DETAILS_REFUSAL = "quote_details is Haute's own table of a quote's details: name yours otherwise"
 
 /** Its columns, in order, as id, name and type (`QUOTE_DETAILS_COLUMNS`); their structure is fixed. */
 export const QUOTE_DETAILS_COLUMNS: ReadonlyArray<readonly [id: string, name: string, type: SchemaColumn["type"]]> = [

@@ -82,20 +82,6 @@ const typingColumns = (table: SchemaTable): SchemaColumn[] => {
 }
 
 /**
- * Whether anything is typed in the input tables the schema has now, as the server counts
- * it: a value in a column or a table since removed from the schema, or in a row past the
- * first of a table now with one row per quote, is left out of the quote the server types,
- * so it does not count; nor does a row's value in the column giving its table's rows,
- * which is not typing.
- */
-export const quoteFilled = (schema: FormSchema, rows: RowsByTable): boolean =>
-  schema.tables.some((table) => {
-    if (table.role !== "input") return false
-    const columns = typingColumns(table)
-    return quotedRows(table, rows).some((row) => columns.some((column) => filled(row[column.id])))
-  })
-
-/**
  * An input table's rows as the server reads them: a one-row table's first alone, and a
  * table a column gives its rows those rows (`presetRows`). A table whose column giving its
  * rows the sheets hide has lost it from a quoted schema, so a caller leaving hidden columns
@@ -139,9 +125,13 @@ export function newQuoteValues(schema: FormSchema): RowsByTable {
 }
 
 /**
- * Whether anything is typed beyond what a new quote starts with: as `quoteFilled` counts
- * it, a cell holding its column's default aside, so a new quote waits for the
- * underwriter's typing as a blank one does.
+ * Whether anything is typed in the input tables the schema has now, as the server counts
+ * it: a value in a column or a table since removed from the schema, or in a row past the
+ * first of a table now with one row per quote, is left out of the quote the server types,
+ * so it does not count; nor does a row's value in the column giving its table's rows, nor a
+ * cell holding the default a new quote starts its column with, so a new quote waits for the
+ * underwriter's typing as a blank one does. `quoteEligible` asks it of the columns the
+ * sheets show, the app's own aside.
  */
 export const quoteTyped = (schema: FormSchema, rows: RowsByTable): boolean =>
   schema.tables.some((table) => {
@@ -202,7 +192,11 @@ export function isDay(text: string): boolean {
  * index break nothing.
  */
 export function cellProblem(column: SchemaColumn, value: SampleValue | undefined): string | null {
-  if (column.type === "bool" || column.index) return null
+  if (column.index) return null
+  // A value of another type, left in a column since retyped: the server sends it as it is,
+  // and the Workbench Input refuses it, so it is marked where the sheet cannot show it.
+  if (column.type === "bool") return typeof value === "string" && value.trim() !== "" ? "Not a tick" : null
+  if (value === true) return "A tick, not a value"
   const text = typeof value === "string" ? value.trim() : ""
   if (text === "") return column.required ? "Required" : null
   if (column.type === "date" && !isDay(text)) return "Not a date"

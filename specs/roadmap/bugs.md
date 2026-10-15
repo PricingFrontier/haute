@@ -306,3 +306,4 @@ editor's result for the same request, through `/quote` for one quote and for sev
 **Evidence:** `src/haute/deploy/_scorer.py::_score_graph_lazy`;
 `src/haute/_graph_utils.py::select_edge_source_output`;
 `src/haute/_json_shred/_shred.py::shred_to_buffers`.
+

@@ -5,7 +5,9 @@
  * of the swatches, the neutrals then Haute's hues, or a colour of its own from the rainbow
  * square. A colour of its own shows on the sheet at each
  * step of its pick, and the whole pick is one undo step. Pressing outside the box, or
- * Escape, closes it.
+ * Escape, closes it, Escape giving the focus back to Display. While open the box holds the
+ * focus and is modal to the keyboard: a key pressed in it, Delete on a swatch among them,
+ * never reaches the sheet's shortcuts.
  */
 import { SlidersHorizontal } from "lucide-react"
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react"
@@ -34,6 +36,11 @@ export default function WorkbenchDisplay() {
   const theme = useWorkbenchFormStore((s) => s.form?.theme ?? BLANK_THEME)
   const [open, setOpen] = useState(false)
   const box = useRef<HTMLDivElement>(null)
+  const dialog = useRef<HTMLDivElement>(null)
+  // The box takes the focus as it opens.
+  useEffect(() => {
+    if (open) dialog.current?.focus()
+  }, [open])
   // A colour being picked commits as its picker is left: left first, before the box goes.
   const close = useCallback(() => {
     const focused = document.activeElement
@@ -55,6 +62,8 @@ export default function WorkbenchDisplay() {
     // Not the sheet's own Escape, which would deselect.
     event.preventDefault()
     close()
+    // Back to Display, the box's first child, as the control in the box goes with it.
+    box.current?.querySelector<HTMLButtonElement>(":scope > button")?.focus()
   }
 
   return (
@@ -72,8 +81,11 @@ export default function WorkbenchDisplay() {
       </ToolbarButton>
       {open && (
         <div
+          ref={dialog}
           role="dialog"
+          aria-modal="true"
           aria-label="Display"
+          tabIndex={-1}
           data-testid="workbench-display"
           className="absolute top-full left-0 z-50 mt-1 flex w-[26rem] flex-col gap-3 rounded-lg p-3 text-xs shadow-2xl"
           style={{ background: "var(--bg-panel)", border: "1px solid var(--border)" }}

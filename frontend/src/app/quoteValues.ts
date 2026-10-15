@@ -4,6 +4,8 @@
  * quote_details columns the Quotes page lists and how each value shows in them, how long
  * ago a moment was, and the values kept in the browser until they are saved or discarded.
  */
+import type { QuoteSave, QuoteSource } from "../api/app"
+import { apiErrorCode, apiErrorStatus } from "../api/errors"
 import type { FormSpec, SchemaColumn, WorkbenchAppQuote, WorkbenchAppQuoteEvent } from "../api/types"
 import type { SamplePrice } from "../stores/useWorkbenchPricingStore"
 import { canonicalJson } from "../utils/canonicalJson"
@@ -41,6 +43,38 @@ export function onSheets(form: FormSpec, values: Values): Values {
     kept[table.id] = rows.map((row) => Object.fromEntries(Object.entries(row).filter(([id]) => columns.has(id))))
   }
   return kept
+}
+
+/** A page drawn for another release than the one serving it: 409 without a code of the store's. */
+export const releaseMoved = (error: unknown): boolean => apiErrorStatus(error) === 409 && apiErrorCode(error) === null
+
+const placeKey = (tableId: string, columnId: string): string => `${tableId}:${columnId}`
+
+/** Where each value of `values` sits on `form`'s sheets, by `tableId:columnId`, named `table.column`. */
+export function cellPlaces(form: FormSpec, values: Values): Record<string, string> {
+  const places: Record<string, string> = {}
+  for (const table of form.schema.tables) {
+    for (const row of values[table.id] ?? []) {
+      for (const columnId of Object.keys(row)) {
+        const column = table.columns.find((candidate) => candidate.id === columnId)
+        if (column !== undefined) places[placeKey(table.id, columnId)] = `${table.name}.${column.name}`
+      }
+    }
+  }
+  return places
+}
+
+/** Each place of a value in `values` that `kept` left out, named as `places` names it, once each. */
+export function lostPlaces(values: Values, kept: Values, places: Readonly<Record<string, string>>): string[] {
+  const lost = new Set<string>()
+  for (const [tableId, rows] of Object.entries(normalisedValues(values))) {
+    rows.forEach((row, index) => {
+      for (const columnId of Object.keys(row)) {
+        if (kept[tableId]?.[index]?.[columnId] === undefined) lost.add(places[placeKey(tableId, columnId)] ?? `${tableId}.${columnId}`)
+      }
+    })
+  }
+  return [...lost]
 }
 
 /** The basis the sheets read `values` on `form` for: a price for another is out of date. */
@@ -119,15 +153,44 @@ export const fullTime = (iso: string): string => new Date(iso).toLocaleString(un
 
 // ── Values kept in the browser ───────────────────────────────────────────
 
+/** A write a save sends: a new quote, made from a source or not, or a quote's next revision over `version`. */
+export type QuoteWrite =
+  | { kind: "create"; body: QuoteSave; source: QuoteSource | null }
+  | { kind: "save"; quoteId: string; version: number; body: QuoteSave }
+
+/**
+ * A write sent and not answered, or answered by a server failure, so it may have landed:
+ * its operation key is bound to what it saves, `basis` (the values, what they are saved as,
+ * and priced or not), and it is repeated exactly before anything else is saved.
+ */
+export interface PendingWrite {
+  basis: string
+  write: QuoteWrite
+}
+
 /** Values typed and not yet saved, kept in this browser as they were left. */
 export interface Draft {
   values: Values
   /** The quote's version and newest revision they were typed over; null for a new quote. */
   version: number | null
   latest: number | null
-  /** The sheets' revision they were typed into. */
-  formRevision: string
+  /**
+   * Where each value sat on the sheets it was typed into, by `tableId:columnId`, named
+   * `table.column`, so a restore onto other sheets names what has no place on them.
+   */
+  places: Record<string, string>
   keptAt: string
+  /** The write a save still held when they were kept. */
+  pending: PendingWrite | null
+}
+
+const isPendingWrite = (value: unknown): value is PendingWrite => {
+  if (typeof value !== "object" || value === null) return false
+  const { basis, write } = value as Partial<PendingWrite>
+  if (typeof basis !== "string" || typeof write !== "object" || write === null) return false
+  const body = (write as { body?: Partial<QuoteSave> }).body
+  if (typeof body !== "object" || body === null || typeof body.operation !== "string" || typeof body.values !== "object") return false
+  return write.kind === "create" || (write.kind === "save" && typeof write.quoteId === "string" && typeof write.version === "number")
 }
 
 const DRAFT_PREFIX = "haute-app-draft"
@@ -141,7 +204,9 @@ export function readDraft(key: string): Draft | null {
     const text = window.localStorage.getItem(key)
     if (text === null) return null
     const draft = JSON.parse(text) as Draft
-    return typeof draft === "object" && draft !== null && typeof draft.values === "object" ? draft : null
+    if (typeof draft !== "object" || draft === null || typeof draft.values !== "object" || typeof draft.places !== "object") return null
+    // A held write that is not one is none: the values are still offered back.
+    return { ...draft, pending: isPendingWrite(draft.pending) ? draft.pending : null }
   } catch {
     return null
   }

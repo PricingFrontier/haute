@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react"
 
 import { EditorLabel } from "../../../components/form"
+import { confirmed } from "../../../stores/useQuestionStore"
 import {
   createPivotFormula,
   pivotFormulas,
@@ -260,11 +261,13 @@ export default function PivotFormulaSection({
               <button
                 type="button"
                 aria-label={`Delete formula ${editingFormula.display_name}`}
-                onClick={() => {
-                  if (!window.confirm(`Delete ${editingFormula.display_name} from every pivot?`)) return
-                  deleteFormula(editingFormula)
-                  closeEditor()
-                }}
+                onClick={() =>
+                  void (async () => {
+                    if (!(await confirmed({ title: `Delete ${editingFormula.display_name} from every pivot?`, confirm: "Delete", danger: true }))) return
+                    deleteFormula(editingFormula)
+                    closeEditor()
+                  })()
+                }
                 className="mr-auto rounded px-1.5 py-1 text-[10px]"
                 style={{ color: "var(--danger)" }}
               >

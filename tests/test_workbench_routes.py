@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -113,7 +114,9 @@ def init_repo(project: Path) -> None:
 
 
 def capture(response: dict[str, Any]) -> dict[str, Any]:
-    return {key: response[key] for key in ("git_sha", "warnings", "identity_required")}
+    return {
+        key: response[key] for key in ("git_sha", "warnings", "identity_required", "uncaptured")
+    }
 
 
 def test_a_project_without_the_table_has_no_workbench(project: Path) -> None:
@@ -177,6 +180,7 @@ def test_a_missing_form_is_the_blank_form_with_no_tables(project: Path) -> None:
     assert served.json() == {
         "form": json.loads(render_form(blank_form(project.name))),
         "revision": None,
+        "repairs": [],
     }
 
 
@@ -230,6 +234,7 @@ def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path
     assert client().get("/api/workbench/form").json() == {
         "form": renamed,
         "revision": saved.json()["revision"],
+        "repairs": [],
     }
     assert [t["name"] for t in client().get("/api/workbench/tables").json()["tables"]] == [
         "quote_details",
@@ -265,6 +270,72 @@ def test_a_save_against_a_form_that_changed_on_disk_is_refused_writing_nothing(
     )
     on_disk = json.loads((project / "forms" / "form.json").read_text(encoding="utf-8"))
     assert on_disk["schema"]["tables"][0]["name"] == "policy"
+
+
+def test_a_form_grown_to_open_says_what_grew_and_a_save_keeps_it(project: Path) -> None:
+    """A section too short for a component in it, as a merge can leave it, is grown as the
+    form is read and said; the file is as it was until a save writes the form as read."""
+    enable(project)
+    short = form(POLICY)
+    short["pages"][0]["sections"][0]["widgets"] = [
+        {
+            "id": "w_title",
+            "type": "heading",
+            "x": 0,
+            "y": 0,
+            "w": 200,
+            "h": 48,
+            "text": "Cover",
+            "description": "",
+            "size": "large",
+            "align": "left",
+            "show_when": {"match": "all", "conditions": []},
+        }
+    ]
+    short["pages"][0]["sections"][0]["height"] = 40
+    write_form(project, short)
+
+    served = client().get("/api/workbench/form").json()
+
+    assert served["repairs"] == [
+        'Section "s" grew from 40px to 48px tall to hold the Heading "Cover".'
+    ]
+    assert served["form"]["pages"][0]["sections"][0]["height"] == 48
+    saved = client().put(
+        "/api/workbench/form", json={"form": served["form"], "base_revision": served["revision"]}
+    )
+    assert saved.status_code == 200, saved.text
+    assert client().get("/api/workbench/form").json()["repairs"] == []
+
+
+def test_a_save_through_a_link_or_junction_on_the_forms_path_is_refused(
+    project: Path,
+) -> None:
+    """The form's path is checked at each save as the other writes' are: a junction at
+    ``forms/``, which stays inside the project and so passes the config's check, is no
+    ordinary file of the project's."""
+    import os
+
+    enable(project)
+    write_form(project, form(POLICY), at="kept/form.json")
+    link = project / "forms"
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(project / "kept"), str(link))
+    else:
+        os.symlink(project / "kept", link, target_is_directory=True)
+    served = client().get("/api/workbench/form").json()
+
+    refused = client().put(
+        "/api/workbench/form", json={"form": served["form"], "base_revision": served["revision"]}
+    )
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == (
+        "forms/form.json is reached through a link or junction: [workbench].form must name a "
+        "file of the project's own."
+    )
 
 
 def test_a_save_whose_file_cannot_be_written_says_so(
@@ -348,7 +419,13 @@ def test_a_save_without_a_working_branch_is_written_and_captured_nowhere(project
     saved = client().put("/api/workbench/form", json={"form": form(POLICY), "base_revision": None})
 
     assert saved.status_code == 200, saved.text
-    assert capture(saved.json()) == {"git_sha": None, "warnings": [], "identity_required": False}
+    # Nothing is owed: without a working branch nothing will ever capture it.
+    assert capture(saved.json()) == {
+        "git_sha": None,
+        "warnings": [],
+        "identity_required": False,
+        "uncaptured": [],
+    }
     assert (project / "forms" / "form.json").is_file()
     assert git(project, "status", "--porcelain", "--", "forms/form.json").startswith("??")
 
@@ -370,6 +447,7 @@ def test_a_save_the_ledger_cannot_capture_is_written_and_says_why(
     assert failed.json()["identity_required"] is False
     assert len(failed.json()["warnings"]) == 1
     assert failed.json()["warnings"][0].startswith("Changes saved; version capture failed: ")
+    assert failed.json()["uncaptured"] == ["forms/form.json"]
     assert (project / "forms" / "form.json").is_file()
 
     # No commit identity (a restored hosted container): the save lands, and the response
@@ -389,6 +467,7 @@ def test_a_save_the_ledger_cannot_capture_is_written_and_says_why(
             "Set your name and email to keep version history."
         ],
         "identity_required": True,
+        "uncaptured": ["forms/form.json"],
     }
     assert git(project, "rev-parse", LEDGER) == tip
     assert client().get("/api/workbench/form").json()["revision"] == uncaptured.json()["revision"]
@@ -404,6 +483,75 @@ def test_a_body_that_is_not_a_form_is_refused_and_nothing_is_written(project: Pa
 
     assert refused.status_code == 422
     assert not (project / "forms").exists()
+
+
+def test_a_refused_form_is_answered_with_where_and_why_never_the_form_again(
+    project: Path,
+) -> None:
+    enable(project)
+    # The analyst names a table of their own quote_details, which is Haute's.
+    theirs = {"id": "t_mine", "name": "quote_details", "role": "input", "columns": []}
+    sent = {**form(POLICY), "schema": {"tables": [POLICY, theirs]}}
+
+    refused = client().put("/api/workbench/form", json={"form": sent, "base_revision": None})
+
+    assert refused.status_code == 422
+    [error] = refused.json()["detail"]
+    assert error["loc"] == ["body", "form"]
+    assert error["msg"] == (
+        "Value error, quote_details is Haute's own table of a quote's details: name yours otherwise"
+    )
+    # Neither the form refused nor the context its message already says.
+    assert "input" not in error and "ctx" not in error
+    assert len(refused.content) < 400
+    assert not (project / "forms").exists()
+
+
+def test_a_form_holding_an_id_twice_is_refused_naming_it(project: Path) -> None:
+    enable(project)
+    twice = form(POLICY)
+    twice["pages"].append(dict(twice["pages"][0]))
+
+    refused = client().put("/api/workbench/form", json={"form": twice, "base_revision": None})
+
+    assert refused.status_code == 422
+    [error] = refused.json()["detail"]
+    assert error["msg"].endswith("Two sheets have the id 'p': each needs one of its own")
+    assert not (project / "forms").exists()
+
+
+def test_a_form_save_holds_the_repository_lock_from_its_check_to_its_capture(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute import _git_lock
+    from haute.routes import workbench as routes
+
+    enable(project)
+    init_repo(project)
+    held: list[bool] = []
+    write = routes.write_form
+
+    def probed(path: Path, spec: Any) -> str:
+        # Another thread, as a branch switch would be, cannot take the lock meanwhile.
+        def probe() -> None:
+            locks = _git_lock._locks_for(project)
+            taken = [lock.acquire(blocking=False) for lock in locks]
+            for lock, got in zip(locks, taken, strict=True):
+                if got:
+                    lock.release()
+            held.append(not any(taken))
+
+        prober = threading.Thread(target=probe)
+        prober.start()
+        prober.join()
+        return write(path, spec)
+
+    monkeypatch.setattr(routes, "write_form", probed)
+
+    saved = client().put("/api/workbench/form", json={"form": form(POLICY), "base_revision": None})
+
+    assert saved.status_code == 200, saved.text
+    assert held == [True]
 
 
 def test_the_form_routes_answer_404_while_the_workbench_is_not_enabled(project: Path) -> None:
@@ -631,8 +779,10 @@ async def test_two_saves_against_one_revision_take_turns_and_the_second_is_refus
     # left it bound to that test's loop, so the second save here would raise "bound to a
     # different event loop" instead of being refused as stale; and contending the shared
     # lock here would bind it for a later test. A fresh lock binds to this client's loop;
-    # serialisation is what the route needs from it.
-    monkeypatch.setattr(route, "save_lock", asyncio.Lock())
+    # serialisation is what the route needs from it, through `project_write`.
+    from haute.routes import _helpers
+
+    monkeypatch.setattr(_helpers, "save_lock", asyncio.Lock())
     transport = httpx.ASGITransport(app=app())
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         served = (await client.get("/api/workbench/form")).json()

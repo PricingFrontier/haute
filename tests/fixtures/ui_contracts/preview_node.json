@@ -57,6 +57,7 @@
   "preview_row_count": 2,
   "preview_row_limit": 10000,
   "preview_truncated": false,
+  "port_previews": {},
   "error": null,
   "error_line": null,
   "timing_ms": 3.5,

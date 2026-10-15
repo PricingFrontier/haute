@@ -152,6 +152,27 @@ class SessionStatusResponse(BaseModel):
     ok: bool = True
 
 
+class SaveCapture(BaseModel):
+    """A write's capture on the clone's save ledger, answered the same way by every route
+    that writes project files: the pipeline's save, the form's save, a test-quote write, a
+    project file written or deleted, and ``POST /api/git/capture``.
+
+    ``warnings`` are non-fatal, since the write has landed: a capture that failed among
+    them, and anything else left to see to (a transform with no code); an empty list means
+    no issues. ``git_sha`` is the ledger commit the write produced when the clone has a
+    working branch, else null. ``identity_required`` is true only when the capture was
+    skipped because git has no commit identity (a restored hosted container), for the
+    editor to ask for one. ``uncaptured`` names the files, relative to the project in POSIX
+    form, that a skipped or failed capture left off the ledger: the editor keeps them and
+    ``POST /api/git/capture`` takes them later.
+    """
+
+    warnings: list[str] = Field(default_factory=list)
+    git_sha: str | None = None
+    identity_required: bool = False
+    uncaptured: list[str] = Field(default_factory=list)
+
+
 class WorkbenchStatusResponse(BaseModel):
     """Whether the project's workbench is enabled (``[workbench]`` in ``haute.toml``)."""
 
@@ -174,8 +195,8 @@ class WorkbenchTablesResponse(BaseModel):
     response_tables: list[WorkbenchTable] = Field(default_factory=list)
 
 
-class WorkbenchFormResponse(BaseModel):
-    """The workbench's form as its file holds it now, with the file's revision.
+class WorkbenchFormFile(BaseModel):
+    """The workbench's form as its file holds it, with the file's revision.
 
     ``revision`` is the file's content hash, which a save quotes as its ``base_revision``;
     null while the form has never been saved, when ``form`` is the blank form.
@@ -183,6 +204,14 @@ class WorkbenchFormResponse(BaseModel):
 
     form: FormSpec
     revision: str | None = None
+
+
+class WorkbenchFormResponse(WorkbenchFormFile):
+    """The workbench's form as its file holds it now, with the file's revision."""
+
+    #: What reading the file grew to open it: each section or sheet too small for a
+    #: component in it, said. The form holds them; the file, until it is saved.
+    repairs: list[str] = []
 
 
 class WorkbenchFormSaveRequest(BaseModel):
@@ -196,18 +225,8 @@ class WorkbenchFormSaveRequest(BaseModel):
     base_revision: str | None = None
 
 
-class WorkbenchFormSaveResponse(WorkbenchFormResponse):
-    """The form as written, with its new revision and the save's version capture.
-
-    The capture fields mean what they mean on the pipeline save's response: ``git_sha`` is
-    the ledger commit the save produced when the clone has a working branch, else null;
-    ``warnings`` are non-fatal, a capture that failed among them; ``identity_required`` is
-    true only when the capture was skipped because git has no commit identity.
-    """
-
-    warnings: list[str] = Field(default_factory=list)
-    git_sha: str | None = None
-    identity_required: bool = False
+class WorkbenchFormSaveResponse(WorkbenchFormFile, SaveCapture):
+    """The form as written, with its new revision and the save's version capture."""
 
 
 class WorkbenchFormTablesRequest(BaseModel):
@@ -286,17 +305,13 @@ class WorkbenchTestQuoteAcceptRequest(BaseModel):
     tables: WorkbenchPricedTables
 
 
-class WorkbenchTestQuoteWriteResponse(BaseModel):
+class WorkbenchTestQuoteWriteResponse(SaveCapture):
     """A test-quote write and its capture on the save ledger.
 
-    ``quote`` is the test quote as written, null after a delete; the capture fields mean what
-    they mean on the form save's response.
+    ``quote`` is the test quote as written, null after a delete.
     """
 
     quote: WorkbenchTestQuoteSummary | None = None
-    warnings: list[str] = Field(default_factory=list)
-    git_sha: str | None = None
-    identity_required: bool = False
 
 
 class WorkbenchTestQuoteOpenRequest(BaseModel):
@@ -435,9 +450,6 @@ class WorkbenchAppQuote(BaseModel):
     source_reference: str | None = None
     source_revision: int | None = None
     relation: WorkbenchAppQuoteRelation | None = None
-    #: What a change to the quote names, its newest revision: one made on another is
-    #: refused (409).
-    version: int
 
 
 class WorkbenchAppQuotesResponse(BaseModel):
@@ -1571,24 +1583,13 @@ class SavePipelineRequest(BaseModel):
     )
 
 
-class SavePipelineResponse(BaseModel):
+class SavePipelineResponse(SaveCapture):
+    """The saved pipeline, with the save's version capture."""
+
     status: str = "saved"
     file: str
     pipeline_name: str
     source_revision: RevisionToken
-    # Non-fatal warnings surfaced to the UI (e.g. sanitized-name
-    # collisions that dropped a node position).  An empty list means
-    # "no issues" and callers can rely on truthiness for UX branches.
-    warnings: list[str] = Field(default_factory=list)
-    # SHA of the ledger commit this save produced, when the clone has a
-    # working branch configured; None otherwise. Consumed by the toolbar
-    # branch/SHA indicator — the save toast stays git-silent.
-    git_sha: str | None = None
-    # True when version capture was skipped purely because git has no commit
-    # identity (common on a restored hosted container). The UI prompts for a
-    # name/email and retries the save; every other capture failure stays a
-    # plain warning with this flag False.
-    identity_required: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -1599,6 +1600,17 @@ class SavePipelineResponse(BaseModel):
 class SchemaWarning(BaseModel):
     column: str
     status: str
+
+
+class PortPreview(BaseModel):
+    """One frame's preview of a multi-frame target asked for several (``port_labels``):
+    what a preview of that frame alone (``port_label``) answers in its ``row_count``,
+    ``columns``, ``preview`` and ``preview_truncated``."""
+
+    row_count: int = 0
+    columns: list[ColumnInfo] = Field(default_factory=list)
+    preview: list[dict[str, Any]] = Field(default_factory=list)
+    preview_truncated: bool = False
 
 
 class NodeResult(BaseModel):
@@ -1619,6 +1631,9 @@ class NodeResult(BaseModel):
     preview_row_count: int = 0
     preview_row_limit: int | None = None
     preview_truncated: bool = False
+    # Each frame asked for (``port_labels``) of a multi-frame target, by label, all from
+    # one run; empty otherwise.
+    port_previews: dict[str, PortPreview] = Field(default_factory=dict)
     error: str | None = None
     error_line: int | None = None
     timing_ms: float = 0
@@ -1716,9 +1731,20 @@ class PreviewNodeRequest(BaseModel):
     # Frame label selected for a multi-frame target. Single-frame targets
     # ignore it. It is part of the preview cache identity.
     port_label: str | None = None
+    # Several frames of a multi-frame target, each previewed from one run into
+    # ``port_previews`` (the workbench's Preview, a Workbench Output's tables). Not with
+    # ``port_label``. Part of the supersession identity, not the cache's: every frame of
+    # the target is computed and kept whichever are previewed.
+    port_labels: list[str] | None = Field(default=None, min_length=1)
     # Chosen by the client so it can poll this request's step progress. Not part
     # of any cache or supersession identity.
     request_id: str | None = Field(default=None, pattern=PREVIEW_REQUEST_ID_PATTERN)
+
+    @model_validator(mode="after")
+    def _one_frame_or_several(self) -> PreviewNodeRequest:
+        if self.port_label is not None and self.port_labels is not None:
+            raise ValueError("Give port_label for one frame or port_labels for several, not both.")
+        return self
 
 
 class PreviewProgressResponse(BaseModel):
@@ -2883,7 +2909,7 @@ class ProjectFolderResponse(BaseModel):
     entries: list[ProjectFileEntry]
 
 
-class ProjectFileWriteResponse(BaseModel):
+class ProjectFileWriteResponse(SaveCapture):
     """A written file, with the save-ledger capture of a pipeline-place write."""
 
     path: str
@@ -2891,18 +2917,12 @@ class ProjectFileWriteResponse(BaseModel):
     revision: str
     replaced: bool
     status: Literal["new", "changed", "ignored"] | None = None
-    git_sha: str | None = None
-    identity_required: bool = False
-    warnings: list[str] = Field(default_factory=list)
 
 
-class ProjectFileDeleteResponse(BaseModel):
+class ProjectFileDeleteResponse(SaveCapture):
     """A deleted file, with the save-ledger capture of a pipeline-place delete."""
 
     path: str
-    git_sha: str | None = None
-    identity_required: bool = False
-    warnings: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -5308,6 +5328,13 @@ class GitSetIdentityResponse(BaseModel):
     user_name: str
     user_email: str
     scope: Literal["local", "global"]
+
+
+class GitCaptureRequest(BaseModel):
+    """Files earlier writes reported ``uncaptured``, relative to the project in POSIX form,
+    to capture on the save ledger as they are on disk now."""
+
+    paths: list[str] = Field(min_length=1)
 
 
 # ---------------------------------------------------------------------------

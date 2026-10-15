@@ -13,6 +13,7 @@ from __future__ import annotations
 import errno
 import os
 import stat
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -24,7 +25,7 @@ from fastapi.responses import FileResponse
 from haute import _git
 from haute._artifact_paths import PathProblem, ordinary_path_problem
 from haute._file_ops import ensure_disk_headroom, publish_staged_file
-from haute._git_lock import repository_mutation
+from haute._git_core import _is_git_repo, git_binary_available
 from haute._git_read_models import FileState
 from haute._git_state import read_working_branch
 from haute._logging import get_logger
@@ -33,11 +34,12 @@ from haute._project_layout import (
     PIPELINE_FILES_SUBFOLDERS,
     VERSIONED_FILE_LIMIT_BYTES,
     pipeline_files_folder,
+    versioned_name,
 )
 from haute._sandbox import _get_project_root
 from haute.hosted import databricks_app_environment
-from haute.routes._helpers import save_lock
-from haute.routes._save_pipeline import capture_save_in_ledger
+from haute.routes._helpers import project_write
+from haute.routes._save_pipeline import LedgerCapture, capture_save_in_ledger
 from haute.schemas import (
     ProjectFileDeleteResponse,
     ProjectFileEntry,
@@ -55,6 +57,9 @@ _STAGING_SUFFIX = ".upload"
 # Uploads stage in the per-clone, ignored .haute/, never beside their target: a Commit while
 # one streams must not find a partial file in the pipeline folder to version.
 _STAGING_FOLDER = (".haute", "uploads")
+# When this server started: a staging file last written before then was left by a server
+# stopped mid-upload, and no upload of this one will finish it.
+_SERVER_STARTED = time.time()
 _WRITE_BUFFER_BYTES = 1024 * 1024
 _REPARSE_POINT = 0x400
 
@@ -110,6 +115,20 @@ def _place(project_root: Path, name: ProjectFilePlace) -> _Place:
                 "This project's pipeline sits at the project root, so it has no pipeline "
                 "folder to keep versioned files in.",
             )
+        # The place versions its files: without git or a repository, what it would promise
+        # of their history is untrue, so it refuses rather than list or write.
+        if not git_binary_available():
+            raise _refusal(
+                409,
+                "git_unavailable",
+                "Git is not available in this environment, so Pipeline files can't be versioned.",
+            )
+        if not _is_git_repo(project_root):
+            raise _refusal(
+                409,
+                "no_repository",
+                "This project has no git repository: run git init in it to version Pipeline files.",
+            )
         return _Place("pipeline", folder, PIPELINE_FILES_SUBFOLDERS)
     return _Place("local", "", LOCAL_FOLDERS)
 
@@ -122,10 +141,8 @@ def _target(project_root: Path, place_name: ProjectFilePlace, path: str) -> _Tar
     if (
         text.startswith("/")
         or PureWindowsPath(path).drive
-        or any(
-            part in ("", ".", "..") or part.startswith(".") or part.casefold() == "__pycache__"
-            for part in parts
-        )
+        or any(part in ("", ".", "..") for part in parts)
+        or (parts and not versioned_name(text))
     ):
         raise _refusal(400, "invalid_path", f"{path!r} isn't a path the Files panels can use.")
     relative = "/".join(parts)
@@ -149,7 +166,9 @@ def _revision(info: os.stat_result) -> str:
 
 
 def _hidden(entry: os.DirEntry[str]) -> bool:
-    if entry.name.startswith(".") or entry.name.casefold() == "__pycache__":
+    """An entry the panels leave out: a name the project does not version (``versioned_name``),
+    or a link or junction."""
+    if not versioned_name(entry.name):
         return True
     if entry.is_symlink():
         return True
@@ -337,10 +356,30 @@ def _staging_path(project_root: Path) -> Path:
     which could lead the partial file back into the pipeline folder or out of the project."""
     relative = f"{PurePosixPath(*_STAGING_FOLDER)}/{uuid.uuid4().hex}{_STAGING_SUFFIX}"
     _check_staging(project_root, relative)
-    project_root.joinpath(*_STAGING_FOLDER).mkdir(parents=True, exist_ok=True)
+    folder = project_root.joinpath(*_STAGING_FOLDER)
+    folder.mkdir(parents=True, exist_ok=True)
     # Again with the folders made: any of them might have been a link already.
     _check_staging(project_root, relative)
+    _remove_stale_staging(folder)
     return project_root / relative
+
+
+def _remove_stale_staging(folder: Path) -> None:
+    """Remove the staging files in *folder* last written before this server started: a
+    server stopped mid-upload leaves its file, and nothing else would ever remove it. One
+    that cannot be removed now is logged and tried again at the next upload."""
+    with os.scandir(folder) as entries:
+        for entry in entries:
+            if not entry.name.endswith(_STAGING_SUFFIX):
+                continue
+            try:
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISREG(info.st_mode) and info.st_mtime < _SERVER_STARTED:
+                    os.unlink(entry.path)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                logger.warning("stale_upload_not_removed", file=entry.name, error=str(exc))
 
 
 def _check_staging(project_root: Path, relative: str) -> None:
@@ -360,57 +399,52 @@ def _publish_write(
     project_root = _get_project_root().resolve()
     target = plan.target
     display = target.project_relative
-    with repository_mutation(project_root):
-        if target.place.name == "pipeline" and read_working_branch(project_root) != plan.branch:
-            raise _refusal(
-                409,
-                "branch_changed",
-                "The branch changed while the file was uploading, so nothing was written. "
-                "Add it again on this branch.",
-            )
-        _target(project_root, target.place.name, target.relative)
-        current = target.path.stat() if target.path.is_file() else None
-        if replace_revision is None and (current is not None or target.path.exists()):
-            raise _refusal(409, "file_exists", f"{display} already exists.")
-        if replace_revision is not None and (
-            current is None or _revision(current) != replace_revision
-        ):
-            raise _refusal(
-                412,
-                "file_changed",
-                f"{display} changed since you chose to replace it. Look again, then retry.",
-            )
-        try:
-            publish_staged_file(staging, target.path, replace=replace_revision is not None)
-        except FileExistsError:
-            raise _refusal(409, "file_exists", f"{display} already exists.") from None
-        except PermissionError:
-            raise _refusal(
-                409,
-                "file_in_use",
-                f"{display} is open in Haute or another program. Try again once it's closed.",
-            ) from None
-        written = target.path.stat()
-        warnings: list[str] = []
-        git_sha: str | None = None
-        identity_required = False
-        status: FileState | None = None
-        if target.place.name == "pipeline":
-            verb = "Replaced" if replace_revision is not None else "Added"
-            git_sha, identity_required = capture_save_in_ledger(
-                project_root, [display], warnings, message=f"{verb} {display}"
-            )
-            status = _state(_git.pipeline_file_states(display, cwd=project_root), display)
-    logger.info("project_file_written", path=display, size=written.st_size, sha=git_sha)
+    if target.place.name == "pipeline" and read_working_branch(project_root) != plan.branch:
+        raise _refusal(
+            409,
+            "branch_changed",
+            "The branch changed while the file was uploading, so nothing was written. "
+            "Add it again on this branch.",
+        )
+    _target(project_root, target.place.name, target.relative)
+    current = target.path.stat() if target.path.is_file() else None
+    if replace_revision is None and (current is not None or target.path.exists()):
+        raise _refusal(409, "file_exists", f"{display} already exists.")
+    if replace_revision is not None and (current is None or _revision(current) != replace_revision):
+        raise _refusal(
+            412,
+            "file_changed",
+            f"{display} changed since you chose to replace it. Look again, then retry.",
+        )
+    try:
+        publish_staged_file(staging, target.path, replace=replace_revision is not None)
+    except FileExistsError:
+        raise _refusal(409, "file_exists", f"{display} already exists.") from None
+    except PermissionError:
+        raise _refusal(
+            409,
+            "file_in_use",
+            f"{display} is open in Haute or another program. Try again once it's closed.",
+        ) from None
+    written = target.path.stat()
+    warnings: list[str] = []
+    captured = LedgerCapture(None, False, [])
+    status: FileState | None = None
+    if target.place.name == "pipeline":
+        verb = "Replaced" if replace_revision is not None else "Added"
+        captured = capture_save_in_ledger(
+            project_root, [display], warnings, message=f"{verb} {display}"
+        )
+        status = _state(_git.pipeline_file_states(display, cwd=project_root), display)
+    logger.info("project_file_written", path=display, size=written.st_size, sha=captured.git_sha)
     return ProjectFileWriteResponse(
         path=target.relative,
         size=written.st_size,
         revision=_revision(written),
         replaced=replace_revision is not None,
         status=status,
-        git_sha=git_sha,
-        identity_required=identity_required,
         warnings=warnings,
+        **captured._asdict(),
     )
 
 
@@ -448,8 +482,9 @@ async def write_project_file(
             raise _refusal(
                 400, "length_mismatch", f"The upload of {display} ended before it was complete."
             )
-        async with save_lock:
-            return await run_in_threadpool(_publish_write, plan, staging, replace_revision)
+        return await project_write(
+            _get_project_root().resolve(), lambda: _publish_write(plan, staging, replace_revision)
+        )
     except OSError as exc:
         if exc.errno == errno.ENOSPC:
             raise _refusal(507, "disk_full", f"There isn't room on disk for {display}.") from None
@@ -483,38 +518,31 @@ def _delete(place: ProjectFilePlace, path: str, revision: str) -> ProjectFileDel
     project_root = _get_project_root().resolve()
     target = _writable_file_target(project_root, place, path)
     display = target.project_relative
-    with repository_mutation(project_root):
-        _target(project_root, target.place.name, target.relative)
-        if not target.path.is_file():
-            raise _refusal(404, "file_missing", f"{display} doesn't exist.")
-        if _revision(target.path.stat()) != revision:
-            raise _refusal(
-                412,
-                "file_changed",
-                f"{display} changed since you chose to delete it. Look again, then retry.",
-            )
-        try:
-            target.path.unlink()
-        except PermissionError:
-            raise _refusal(
-                409,
-                "file_in_use",
-                f"{display} is open in Haute or another program. Try again once it's closed.",
-            ) from None
-        warnings: list[str] = []
-        git_sha: str | None = None
-        identity_required = False
-        if target.place.name == "pipeline":
-            git_sha, identity_required = capture_save_in_ledger(
-                project_root, [display], warnings, message=f"Deleted {display}"
-            )
-    logger.info("project_file_deleted", path=display, sha=git_sha)
-    return ProjectFileDeleteResponse(
-        path=target.relative,
-        git_sha=git_sha,
-        identity_required=identity_required,
-        warnings=warnings,
-    )
+    _target(project_root, target.place.name, target.relative)
+    if not target.path.is_file():
+        raise _refusal(404, "file_missing", f"{display} doesn't exist.")
+    if _revision(target.path.stat()) != revision:
+        raise _refusal(
+            412,
+            "file_changed",
+            f"{display} changed since you chose to delete it. Look again, then retry.",
+        )
+    try:
+        target.path.unlink()
+    except PermissionError:
+        raise _refusal(
+            409,
+            "file_in_use",
+            f"{display} is open in Haute or another program. Try again once it's closed.",
+        ) from None
+    warnings: list[str] = []
+    captured = LedgerCapture(None, False, [])
+    if target.place.name == "pipeline":
+        captured = capture_save_in_ledger(
+            project_root, [display], warnings, message=f"Deleted {display}"
+        )
+    logger.info("project_file_deleted", path=display, sha=captured.git_sha)
+    return ProjectFileDeleteResponse(path=target.relative, warnings=warnings, **captured._asdict())
 
 
 @router.delete("/content", response_model=ProjectFileDeleteResponse)
@@ -522,5 +550,6 @@ async def delete_project_file(
     place: ProjectFilePlace, path: str, revision: str
 ) -> ProjectFileDeleteResponse:
     """Delete one file, if it is still the revision the analyst saw."""
-    async with save_lock:
-        return await run_in_threadpool(_delete, place, path, revision)
+    return await project_write(
+        _get_project_root().resolve(), lambda: _delete(place, path, revision)
+    )

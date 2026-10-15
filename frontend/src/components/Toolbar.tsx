@@ -2,12 +2,13 @@ import { Suspense, lazy, useState, useMemo, useRef, useCallback } from "react"
 import { Scan, Network, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Variable, Loader2, Group, Ungroup, Link2 } from "lucide-react"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import type { NodeTiming, NodeMemory } from "../api/types"
-import { ToolbarBrand, UndoRedo, ZoomInOut } from "../haute-ui"
+import { ToolbarBrand, ToolbarButton, ToolbarColumn, UndoRedo, ZoomInOut } from "../haute-ui"
 import BreakdownDropdown, { type BreakdownItem } from "./BreakdownDropdown"
 import ProjectControls from "./ProjectControls"
 import useSettingsStore from "../stores/useSettingsStore"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
+import { confirmed } from "../stores/useQuestionStore"
 import { constantsWithSourceValue, withoutSource } from "../utils/globalConstants"
 import useClickOutside from "../hooks/useClickOutside"
 import { formatBytes } from "../utils/formatBytes"
@@ -34,15 +35,14 @@ const PIPELINE_SETTINGS_TITLE = "Pipeline settings - preview rows, chunk rows an
  * Remove *source*, first removing its values from split global constants. When
  * some constant holds a value for it, ask before discarding them.
  */
-function removeSourceWithConstants(source: string, removeSource: (source: string) => void): void {
-  const graph = useGraphStore.getState()
-  const holders = constantsWithSourceValue(graph.globalConstants, source)
+async function removeSourceWithConstants(source: string, removeSource: (source: string) => void): Promise<void> {
+  const holders = constantsWithSourceValue(useGraphStore.getState().globalConstants, source)
   if (holders.length > 0) {
-    const listed = holders.join(", ")
-    if (!window.confirm(`Remove source "${source}"? Its values for ${listed} will be deleted.`)) {
-      return
-    }
+    const text = `Its values for ${holders.join(", ")} will be deleted.`
+    if (!(await confirmed({ title: `Remove source "${source}"?`, text, confirm: "Remove", danger: true }))) return
   }
+  // The constants as they are once answered.
+  const graph = useGraphStore.getState()
   if (graph.globalConstants.some((draft) => draft.split && source in draft.bySource)) {
     graph.setGlobalConstantsRaw(withoutSource(graph.globalConstants, source))
   }
@@ -249,7 +249,7 @@ export default function Toolbar({
                 </button>
                 {activeSource !== "live" && (
                   <button
-                    onClick={() => { removeSourceWithConstants(activeSource, removeSource); setSourceOpen(false) }}
+                    onClick={() => { void removeSourceWithConstants(activeSource, removeSource); setSourceOpen(false) }}
                     className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--danger-soft)]"
                     style={{ color: 'var(--danger)' }}
                   >
@@ -266,6 +266,8 @@ export default function Toolbar({
             away is reported here: nothing calculates while it is offline.
             "Offline" is no wider than "Calculating", so going offline never
             widens the column; like "Manual", it can narrow it. */}
+        {/* Spelled as the Source selector over it is, whose chevron the kit's
+            centred action would not take, so the two texts line up. */}
         <button
           data-testid="toolbar-pipeline-settings"
           onClick={() => setPipelineSettingsOpen(true)}
@@ -291,18 +293,12 @@ export default function Toolbar({
         {/* Zoom controls column — Zoom In on top of Zoom Out */}
         <ZoomInOut onZoomIn={onZoomIn} onZoomOut={onZoomOut} />
         {/* Centre and Layout column — Centre on top of Layout */}
-        <div className="flex flex-col gap-1 w-fit">
-          <button
-            data-testid="toolbar-centre"
-            onClick={onCentre}
-            disabled={nodeCount === 0}
-            className="toolbar-btn px-2 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
-            title="Fit all nodes in view"
-          >
-            <Scan size={13} aria-hidden="true" />
+        <ToolbarColumn>
+          <ToolbarButton compact icon={Scan} data-testid="toolbar-centre" onClick={onCentre} disabled={nodeCount === 0} title="Fit all nodes in view">
             Centre
-          </button>
-          <button
+          </ToolbarButton>
+          <ToolbarButton
+            compact
             data-testid="toolbar-layout"
             onClick={onAutoLayout}
             disabled={editingDisabled || nodeCount === 0 || isAutoLayouting}
@@ -313,7 +309,7 @@ export default function Toolbar({
                and an ``aria-label`` that keeps the accessible name honest
                without costing any width. */
             aria-label={isAutoLayouting ? "Laying out" : "Layout"}
-            className="toolbar-btn relative px-2 py-1 text-[12px] font-medium rounded-md inline-flex items-center justify-center whitespace-nowrap w-full"
+            className="relative whitespace-nowrap"
             title={isAutoLayouting ? "Auto-arranging nodes" : "Auto-arrange nodes"}
           >
             {/* Keep the icon and label in flow while the spinner overlays them
@@ -329,8 +325,8 @@ export default function Toolbar({
                 className="animate-spin absolute inset-0 m-auto"
               />
             )}
-          </button>
-        </div>
+          </ToolbarButton>
+        </ToolbarColumn>
         {/* Selection actions.  These use ``aria-disabled`` rather than the
             ``disabled`` attribute: a disabled button is removed from the tab
             order AND swallows pointer events, so its title never appears -
@@ -339,8 +335,10 @@ export default function Toolbar({
             answers an unavailable click with the same toast Ctrl+G gives, so
             the reason reaches the keyboard and touch users a `title` cannot.
             ``can*`` therefore drives presentation only. */}
-        {/* Submodel and Instance column — Submodel on top of Instance */}
-        <div className="flex flex-col gap-1 w-fit">
+        {/* Submodel and Instance column — Submodel on top of Instance.  Submodel
+            keeps its own grid of two stacked labels, which the kit's flex
+            action rule would override. */}
+        <ToolbarColumn>
           <button
             data-testid="toolbar-submodel"
             onClick={onSubmodelAction}
@@ -363,40 +361,31 @@ export default function Toolbar({
               Dissolve
             </span>
           </button>
-          <button
+          <ToolbarButton
+            icon={Link2}
             data-testid="toolbar-instance"
             onClick={onCreateInstance}
             aria-disabled={!canCreateInstance}
-            className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
             title="Create a linked instance of the selected node - select exactly one"
           >
-            <Link2 size={13} aria-hidden="true" />
             Instance
-          </button>
-        </div>
+          </ToolbarButton>
+        </ToolbarColumn>
         {/* Utility and Constants column — Utility on top of Constants */}
-        <div className="flex flex-col gap-1 w-fit">
-          <button
-            data-testid="toolbar-utility"
-            onClick={onOpenUtility}
-            disabled={editingDisabled}
-            className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
-            title="Utility scripts - reusable functions"
-          >
-            <FileCode2 size={13} />
+        <ToolbarColumn>
+          <ToolbarButton icon={FileCode2} data-testid="toolbar-utility" onClick={onOpenUtility} disabled={editingDisabled} title="Utility scripts - reusable functions">
             Utility
-          </button>
-          <button
+          </ToolbarButton>
+          <ToolbarButton
+            icon={Variable}
             data-testid="toolbar-constants"
             onClick={onOpenConstants}
             disabled={editingDisabled}
-            className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
             title="Global constants - values every node can read, per source"
           >
-            <Variable size={13} />
             Constants
-          </button>
-        </div>
+          </ToolbarButton>
+        </ToolbarColumn>
       </div>
       {/* Timing + memory breakdowns column — Timing at the top, Memory at the bottom */}
       <div className="ml-2.5 flex flex-col gap-1 w-fit" data-testid="toolbar-breakdowns">

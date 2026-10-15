@@ -2,15 +2,18 @@
  * Pointer interactions on a sheet while building (specs/workbench): dragging a new
  * component or a new section out of the palette, moving or resizing a component by its
  * frame or a handle, and setting a section's height by its handle or moving the section by
- * its header; and deleting a section, asking first. Positions on the sheet are in unzoomed
+ * its header; and deleting a section, asking first (`confirmed`). Positions on the sheet are in unzoomed
  * pixels, each section under the bar that names it while building (`SECTION_HEADER`);
- * pointer movement is divided by the zoom. A move or a resize is one undo step: the form is
+ * a gesture follows the pointer on the live sheet, so a scroll while dragging is followed
+ * too, and ends at a release, on a release outside the window (a move with no button down)
+ * and when the window loses the focus. A move or a resize is one undo step: the form is
  * recorded when the pointer first moves, and each step after that replaces it without
  * history by a form made afresh from the form as pressed, so a click that does not move
  * records nothing and only the section a component lands in grows.
  */
 import type { PointerEvent as ReactPointerEvent } from "react"
 import type { Page, Section } from "../api/types"
+import { confirmed } from "../stores/useQuestionStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { activePage } from "../stores/useWorkbenchViewStore"
 import {
@@ -32,6 +35,7 @@ import {
 import {
   addSection,
   addWidget,
+  addWidgetInFreePlace,
   createSection,
   createWidget,
   findSection,
@@ -89,14 +93,16 @@ function onSheet(clientX: number, clientY: number): { page: Page; px: number; py
 }
 
 /**
- * The place in its section, snapped and kept inside it, never across its top or its bottom
- * or the right edge of a sheet `width` wide (`keptInside`), of a component whose place on
- * the sheet is `rect`, in the section its top edge is over among `stack`.
+ * The place in its section, snapped once in its section's coordinates and kept inside it,
+ * never across its top or its bottom or the right edge of a sheet `width` wide
+ * (`keptInside`), of a component whose place on the sheet is `rect`, in the section its top
+ * edge is over among `stack`. A section's top need not be on the grid (a typed height), so
+ * snapping on the sheet first would move a component sideways dragged off its row.
  */
 function landing<T extends { id: string; height: number }>(stack: readonly Stacked<T>[], rect: Rect, width: number): { section: Stacked<T>; rect: Rect } | null {
   const section = sectionAt(stack, rect.y)
   if (section === null) return null
-  return { section, rect: { ...rect, x: keptInside(rect.x, rect.w, width), y: keptInside(snap(rect.y - section.top), rect.h, section.section.height) } }
+  return { section, rect: { ...rect, x: keptInside(snap(rect.x), rect.w, width), y: keptInside(snap(rect.y - section.top), rect.h, section.section.height) } }
 }
 
 /** Where dropping a palette item at this pointer position would put a component, or null off the sheet. */
@@ -138,41 +144,86 @@ export function sectionDropAt(clientX: number, clientY: number): SectionDrop | n
   return { line: target.top + at, place: { split: target.section.id, at } }
 }
 
+/** Where the pointer was last, in the window. */
+interface Pointer {
+  clientX: number
+  clientY: number
+}
+
+/** A place in the window as a place on the showing sheet, unzoomed, from the sheet as it is now. */
+function onLiveSheet({ clientX, clientY }: Pointer): { x: number; y: number } {
+  const { sheet, zoom } = useWorkbenchViewStore.getState()
+  const origin = sheet?.getBoundingClientRect() ?? { left: 0, top: 0 }
+  return { x: (clientX - origin.left) / zoom, y: (clientY - origin.top) / zoom }
+}
+
 /**
- * Follow the pointer until it is released, calling `onMove` with the distance travelled;
- * what it returns stops following it at once, without `onEnd`.
+ * Follow the pointer until the gesture ends, calling `onMove` with how far it has moved over
+ * the sheet, unzoomed, taken from the sheet as it is at each step, so a scroll of the sheet
+ * under a still pointer moves what is dragged too. The gesture ends with `onEnd` at a
+ * release (`released` true once it moved), and without one at a cancel, a release outside
+ * the window (seen as a move with no button down) or the window losing the focus; what it
+ * returns stops following at once, without `onEnd`.
  */
 function track(
   e: ReactPointerEvent,
   cursor: string,
-  onMove: (dx: number, dy: number, event: PointerEvent) => void,
-  onEnd: (moved: boolean, event: PointerEvent) => void,
+  onMove: (dx: number, dy: number, pointer: Pointer) => void,
+  onEnd: (released: boolean, pointer: Pointer) => void,
 ): () => void {
-  const start = { x: e.clientX, y: e.clientY }
+  const start = onLiveSheet(e)
+  let last: Pointer = { clientX: e.clientX, clientY: e.clientY }
   let moved = false
-  const move = (event: PointerEvent) => {
-    const dx = event.clientX - start.x
-    const dy = event.clientY - start.y
-    if (!moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return
+  const follow = () => {
+    const at = onLiveSheet(last)
+    const dx = at.x - start.x
+    const dy = at.y - start.y
+    const { zoom } = useWorkbenchViewStore.getState()
+    if (!moved && Math.hypot(dx * zoom, dy * zoom) < DRAG_THRESHOLD) return
     if (!moved) document.body.style.cursor = cursor
     moved = true
-    onMove(dx, dy, event)
+    onMove(dx, dy, last)
+  }
+  const move = (event: PointerEvent) => {
+    // Released outside the window, where its release was never seen.
+    if (event.buttons === 0) {
+      finish(false)
+      return
+    }
+    last = { clientX: event.clientX, clientY: event.clientY }
+    follow()
+  }
+  const scrolled = () => {
+    if (moved) follow()
   }
   const stop = () => {
     window.removeEventListener("pointermove", move)
-    window.removeEventListener("pointerup", end)
-    window.removeEventListener("pointercancel", end)
+    window.removeEventListener("pointerup", up)
+    window.removeEventListener("pointercancel", cancel)
+    window.removeEventListener("blur", cancel)
+    window.removeEventListener("scroll", scrolled, true)
     document.body.style.cursor = ""
   }
-  const end = (event: PointerEvent) => {
+  const finish = (released: boolean) => {
     stop()
-    onEnd(moved && event.type === "pointerup", event)
+    onEnd(moved && released, last)
   }
+  const up = (event: PointerEvent) => {
+    last = { clientX: event.clientX, clientY: event.clientY }
+    finish(true)
+  }
+  const cancel = () => finish(false)
   window.addEventListener("pointermove", move)
-  window.addEventListener("pointerup", end)
-  window.addEventListener("pointercancel", end)
+  window.addEventListener("pointerup", up)
+  window.addEventListener("pointercancel", cancel)
+  window.addEventListener("blur", cancel)
+  // A scroll anywhere under the gesture, the sheet's viewport among them.
+  window.addEventListener("scroll", scrolled, true)
   return stop
 }
+
+/** The palette drag under way, stopped when another starts. */
+let creating: (() => void) | null = null
 
 /**
  * Commit a field being typed into before a gesture reads the form. A press whose default is
@@ -195,11 +246,13 @@ export function startCreate(e: ReactPointerEvent, type: PaletteType): void {
   e.preventDefault()
   leaveField(e.currentTarget)
   const { setCreating } = useWorkbenchViewStore.getState()
-  track(
+  creating?.()
+  const stop = track(
     e,
     "grabbing",
     (_dx, _dy, event) => setCreating({ type, clientX: event.clientX, clientY: event.clientY }),
     (moved, event) => {
+      creating = null
       setCreating(null)
       if (!moved) return
       const { form, change } = useWorkbenchFormStore.getState()
@@ -224,6 +277,43 @@ export function startCreate(e: ReactPointerEvent, type: PaletteType): void {
       view.select(widget.id)
     },
   )
+  creating = () => {
+    stop()
+    creating = null
+    setCreating(null)
+  }
+}
+
+/**
+ * Add what a palette item makes without a pointer, as Enter on it does: a component into
+ * the selected section, else the selected component's, else the sheet's first, at the
+ * first place free there (`addWidgetInFreePlace`); a section after the selected one, or
+ * the selected component's, else at the sheet's foot. What is added is selected, and its
+ * id answered: a component's, for the palette to give it the focus; null for a section.
+ */
+export function createWithoutPointer(type: PaletteType): string | null {
+  const { form, change } = useWorkbenchFormStore.getState()
+  if (form === null) return null
+  const view = useWorkbenchViewStore.getState()
+  const page = activePage(form, view.pageId)
+  const selected = view.selectedId === null ? null : findWidget(form, view.selectedId)
+  const at = page.sections.findIndex((section) => section.id === (view.sectionId ?? selected?.section.id))
+  if (type === "section") {
+    const section = createSection(page)
+    change((spec) => addSection(spec, page.id, section, at === -1 ? page.sections.length : at + 1))
+    view.showPage(page.id)
+    view.selectSection(section.id)
+    return null
+  }
+  let id = ""
+  change((spec) => {
+    const added = addWidgetInFreePlace(spec, page.sections[Math.max(at, 0)].id, type, WIDGET_KINDS[type].size)
+    id = added.id
+    return added.spec
+  })
+  view.showPage(page.id)
+  view.select(id)
+  return id
 }
 
 /**
@@ -236,7 +326,7 @@ export function startTransform(e: ReactPointerEvent, id: string, handle?: Handle
   e.preventDefault()
   // A cell focused earlier would otherwise keep taking the keys meant for the selected component.
   leaveField(e.currentTarget)
-  const { zoom, select } = useWorkbenchViewStore.getState()
+  const { select } = useWorkbenchViewStore.getState()
   const { form } = useWorkbenchFormStore.getState()
   const found = form === null ? null : findWidget(form, id)
   if (form === null || found === null) return
@@ -256,10 +346,10 @@ export function startTransform(e: ReactPointerEvent, id: string, handle?: Handle
       const store = useWorkbenchFormStore.getState()
       if (store.form === null) return
       if (handle) {
-        store.setFormRaw(updateWidget(pressed, id, resizeRect(original, handle, dx / zoom, dy / zoom, min)))
+        store.setFormRaw(updateWidget(pressed, id, resizeRect(original, handle, dx, dy, min)))
         return
       }
-      const landed = landing(stack, moveRect({ ...original, y: top + original.y }, dx / zoom, dy / zoom), found.page.width)
+      const landed = landing(stack, moveRect({ ...original, y: top + original.y }, dx, dy), found.page.width)
       if (landed !== null) store.setFormRaw(placeWidget(pressed, id, landed.section.section.id, landed.rect))
     },
     // Released or cancelled where it is: one undo step, none for a gesture that changed nothing.
@@ -277,7 +367,6 @@ export function startSectionResize(e: ReactPointerEvent, sectionId: string): voi
   e.stopPropagation()
   e.preventDefault()
   leaveField(e.currentTarget)
-  const { zoom } = useWorkbenchViewStore.getState()
   const { form } = useWorkbenchFormStore.getState()
   const found = form === null ? null : findSection(form, sectionId)
   if (form === null || found === null) return
@@ -289,7 +378,7 @@ export function startSectionResize(e: ReactPointerEvent, sectionId: string): voi
     (_dx, dy) => {
       const store = useWorkbenchFormStore.getState()
       if (store.form === null) return
-      store.setFormRaw(setSectionHeight(pressed, sectionId, snap(height + dy / zoom)))
+      store.setFormRaw(setSectionHeight(pressed, sectionId, snap(height + dy)))
     },
     () => useWorkbenchFormStore.getState().endGesture(),
   )
@@ -340,17 +429,15 @@ export function startSectionMove(e: ReactPointerEvent, sectionId: string): void 
 }
 
 /**
- * Delete a section with its components, asking first while components are in it; false
- * when the builder says no, and for a sheet's last section, which is never removed. The
- * section's panel closes with it.
+ * Delete a section with its components, asking first while components are in it; a sheet's
+ * last section is never removed. The section's panel closes with it.
  */
-export function deleteSection(page: Page, section: Section): boolean {
-  if (page.sections.length === 1) return false
+export async function deleteSection(page: Page, section: Section): Promise<void> {
+  if (page.sections.length === 1) return
   const count = section.widgets.length
-  const asked = `Delete "${section.title}" and the ${count} ${count === 1 ? "component" : "components"} in it? The schema and the sample stay.`
-  if (count > 0 && !window.confirm(asked)) return false
+  const title = `Delete "${section.title}" and the ${count} ${count === 1 ? "component" : "components"} in it?`
+  if (count > 0 && !(await confirmed({ title, text: "The schema and the sample stay.", confirm: "Delete", danger: true }))) return
   useWorkbenchFormStore.getState().change((spec) => removeSection(spec, section.id))
   const view = useWorkbenchViewStore.getState()
   if (view.sectionId === section.id) view.select(null)
-  return true
 }

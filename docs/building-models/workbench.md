@@ -39,9 +39,11 @@ on your branch's save ledger, so it shows in the Git panel's history. **Commit**
 milestone of the whole project after that save. A save is refused when the form file
 changed on disk since the workbench read it (an edit by hand, or a branch switched outside
 Haute), and then the pipeline is not saved either; the banner's **Reload** reads the file
-again, dropping your unsaved edits. When the pipeline is read again from disk and the file
-changed too, the workbench follows it, unless you have unsaved edits, when the banner
-appears instead.
+again, dropping your unsaved edits. When the form file changes on disk (an edit by hand, a
+pull, or a branch switched), the workbench follows it, unless you have unsaved edits, when
+the banner appears instead. A form whose file leaves a component below its section or past its
+sheet's edge, as a merge or an edit by hand can, opens with that section or sheet grown
+to hold it, nothing moved: a notice says what grew, and the next save keeps it.
 
 Both workbench nodes' panels have **Edit in Workbench**, which opens the view.
 
@@ -154,7 +156,10 @@ Preview, the sections under it move up to close the gap (see
 [Showing sheets, sections and components conditionally](#showing-sheets-sections-and-components-conditionally)).
 The palette on the left offers four components and a section; drag a component onto the
 sheet (a ghost shows where it lands) and it goes into the section under the top of the
-ghost:
+ghost. From the keyboard, Tab to an item and press Enter: a component goes into the
+selected section (or the selected component's, else the sheet's first) at the first free
+place, and is selected so the arrow keys move it; a section goes in after the selected
+one:
 
 - A **Table** shows columns of many-row tables as a grid that starts with its number of rows.
 - A **Collection** shows columns of one-row tables as labelled boxes, its number of boxes
@@ -212,7 +217,8 @@ to the grid. A component stays inside its section: it stops at the section's edg
 moves into another section only once its top is over it. Resizing a component past its
 section's bottom pushes the section's border down. It stays inside the sheet's width
 too, stopping at its edges; resizing it past the right edge widens the sheet. With a component selected (click it, or Tab to it), the
-arrow keys nudge it (Shift for a pixel), Ctrl+D duplicates it, Ctrl+C copies it, Delete
+arrow keys nudge it (Shift for a pixel), Ctrl and the arrow keys resize it from its
+bottom-right corner (Ctrl+Shift for a pixel), Ctrl+D duplicates it, Ctrl+C copies it, Delete
 or Backspace removes it and Escape deselects it; Ctrl+Z and Ctrl+Y undo and redo. Ctrl+V
 pastes what you copied onto the sheet showing, another sheet too: into the section you
 have selected (or the selected component's, else the section it came from, else the
@@ -223,9 +229,9 @@ window, and the zoom runs from 25% to 200%. A component with a problem — no fi
 Heading with no text, a column no longer in the schema, a table of the other kind, a
 Chart's field that is not a number or is an index, tables whose rows do not line up, a pie
 of many rows with more than one field — gets a dashed frame that names the problem. Tab,
-and a screen reader, go through the components as they sit on the sheet, section by
-section, then row by row from the top and left to right along each row, whatever order you
-added them in.
+and a screen reader, go through the sheet section by section, each section's bar and then
+its components as they sit, row by row from the top and left to right along each row,
+whatever order you added them in.
 
 To add a section, drag **Section** from the palette onto the sheet: a line shows where it
 will start, never through a component (it moves to the nearer edge of one) and never in
@@ -243,7 +249,8 @@ first when components are in it; a sheet keeps at least one section). A selected
 has a handle under the middle of its bottom: drag it to set the section's height, and
 double-click it to fit the section to what it holds. A section never shrinks by itself.
 
-Sheets have tabs along the top: **+** adds one, double-click (or F2) renames one, dragging
+Sheets have tabs along the top: **+** adds one, the Left and Right arrows (and Home and
+End) go from tab to tab, double-click (or F2) renames one, dragging
 a tab onto another moves its sheet there (or press Alt+Left and Alt+Right on a tab), the
 settings mark on the showing tab opens the sheet's own panel (its title, when it shows
 and its width). **Delete sheet** at the foot of that panel deletes the sheet once you
@@ -333,7 +340,10 @@ a choice or a date counts as you make it), and each time you open Preview, Haute
 editor, as it stands, saved or not, exactly as a deployed pipeline would price it. Every
 output column shows its value, a Collection's its table's one row and a Table's the row in
 the answer keyed like each grid row, dimmed while a newer answer is on its way, and every
-Chart plots the sample with what pricing it gave. There is no **Price** to press and no
+Chart plots the sample with what pricing it gave. A Table of output columns alone, such as
+a premium by peril, shows a row for each row of the answer, as a Chart of them does; until
+it is priced (or while its table has nothing connected) it shows its starting rows of
+dashes. There is no **Price** to press and no
 **Clear**: a sample with nothing typed is not priced, and its outputs show dashes. The
 sample is priced whatever its cells hold. Once anything is typed, a cell that breaks its
 column's rules (a required cell left empty, a number that is not one, a whole number that
@@ -366,9 +376,12 @@ the project.
 When the project deploys, the dry run prices every test quote again and fails on any
 output that moved and was not accepted, so a rate change arrives with its test quotes
 accepted. On a pull request, a project set up with `haute init --workbench` reports what
-the change does to the test quotes: GitHub posts the report on the pull request, and
-GitLab and Azure DevOps keep it with the run. `haute test-quotes report` writes the same
-report on your machine.
+the change does to the test quotes: GitHub adds the report to the run's summary and
+posts it on a pull request from the repository itself, and GitLab and Azure DevOps keep it
+with the run. `haute test-quotes report` writes the same report on your machine. If a
+merge finds the same test quote changed on both sides, git names it: keep one side's file
+with `git checkout --ours` or `--theirs`, then run those quotes in Preview and accept the
+results you want to keep.
 
 ## The underwriter app
 Underwriters use the sheets in an app of their own, apart from Haute: the sheets drawn as

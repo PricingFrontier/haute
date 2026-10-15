@@ -12,7 +12,7 @@ import { create } from "zustand"
 import type { FormSpec, Page, Section } from "../api/types"
 import { SHEET_PADDING, fitZoom as zoomToFit } from "../utils/sheetGeometry"
 import { sheetVisibility, type SheetVisibility } from "../utils/sheetVisibility"
-import type { PaletteType, Widget } from "../utils/workbenchForm"
+import { findWidget, type PaletteType, type Widget } from "../utils/workbenchForm"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "./useWorkbenchPreviewStore"
 
@@ -143,7 +143,8 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   select: (selectedId) => set({ selectedId, sheetSelected: false, sectionId: null }),
   selectSheet: () => set({ selectedId: null, sheetSelected: true, sectionId: null }),
   selectSection: (sectionId) => set({ selectedId: null, sheetSelected: false, sectionId }),
-  setZoom: (zoom) => set({ zoom: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom)) }),
+  // In whole percents, so steps of a tenth never leave 0.30000000000000004.
+  setZoom: (zoom) => set({ zoom: Math.round(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom)) * 100) / 100 }),
   zoomBy: (step) => get().setZoom(get().zoom + step),
   fitZoom: () => {
     const { viewport, pageId, section, underwriterApp } = get()
@@ -169,11 +170,16 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
 }))
 
 // A form read anew, on the view's first showing or after a branch switch, is fitted when its
-// sheets next show; the zoom chosen for the form before is nobody's.
+// sheets next show; the zoom chosen for the form before is nobody's. A save or an undo is no
+// read, however the history looks after it. The pane remembered for a component the form no
+// longer has, deleted or read away, is forgotten.
 useWorkbenchFormStore.subscribe((state, previous) => {
-  if (state.status === "ready" && (previous.status !== "ready" || state.revision !== previous.revision) && state.undoStack.length === 0 && !state.dirty) {
-    useWorkbenchViewStore.setState({ fitted: false })
-  }
+  if (state.reads !== previous.reads) useWorkbenchViewStore.setState({ fitted: false })
+  if (state.form === previous.form) return
+  const { widgetPanes } = useWorkbenchViewStore.getState()
+  const form = state.form
+  const gone = Object.keys(widgetPanes).filter((id) => form === null || findWidget(form, id) === null)
+  if (gone.length > 0) useWorkbenchViewStore.setState({ widgetPanes: Object.fromEntries(Object.entries(widgetPanes).filter(([id]) => !gone.includes(id))) })
 })
 
 export default useWorkbenchViewStore

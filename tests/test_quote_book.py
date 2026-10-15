@@ -28,6 +28,7 @@ from haute._quote_store import (
     store_url,
     with_details,
 )
+from haute._quote_store._tables import NAME_LENGTH
 from haute._workbench_form import FormSpec, with_quote_details
 
 FORM = with_quote_details(
@@ -558,6 +559,57 @@ def test_an_archived_final_quote_stays_final_when_restored(book: QuoteBook) -> N
     restored = book.restore(quote.id, version=archived.latest, actor=ANA)
 
     assert (archived.stage, restored.stage) == ("final", "final")
+
+
+def test_a_note_never_lands_after_an_archive_made_while_it_is_written(
+    book: QuoteBook, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    quote = _create(book)
+    real = QuoteBook._event
+    archiving: list[threading.Thread] = []
+
+    def archive_meanwhile(
+        self: QuoteBook,
+        connection: Any,
+        quote_id: str,
+        actor: str,
+        kind: Any,
+        *rest: Any,
+        **named: Any,
+    ) -> int:
+        if kind == "noted" and not archiving:
+            # Between the note's check and its event, a colleague archives the quote: held
+            # by the note, the archive waits for it rather than landing first.
+            thread = threading.Thread(
+                target=lambda: book.archive(quote.id, version=quote.latest, actor=JO)
+            )
+            archiving.append(thread)
+            thread.start()
+            thread.join(timeout=0.5)
+        return real(self, connection, quote_id, actor, kind, *rest, **named)
+
+    monkeypatch.setattr(QuoteBook, "_event", archive_meanwhile)
+    book.set_note(quote.id, actor=ANA, note="Call the broker")
+    archiving[0].join(timeout=10)
+
+    assert not archiving[0].is_alive()
+    assert _kinds(book, quote.id) == ["created", "noted", "archived"]
+    with pytest.raises(QuoteLockedError, match="archived"):
+        book.set_note(quote.id, actor=ANA, note="Too late")
+
+
+def test_a_quote_name_past_its_length_is_refused_at_any_save(book: QuoteBook) -> None:
+    long = "x" * (NAME_LENGTH + 1)
+
+    with pytest.raises(QuoteStoreError, match=f"at most {NAME_LENGTH} characters"):
+        _create(book, inputs=_values(quote_name=long))
+    quote = _create(book)
+    with pytest.raises(QuoteStoreError, match=f"at most {NAME_LENGTH} characters"):
+        _save(book, quote, inputs=_values(quote_name=long))
+
+    assert book.get(quote.id).latest == 1
+    kept = _create(book, inputs=_values(quote_name="x" * NAME_LENGTH))
+    assert kept.details["quote_name"] == "x" * NAME_LENGTH
 
 
 def test_a_note_is_an_event_not_a_revision(book: QuoteBook) -> None:

@@ -160,7 +160,7 @@ describe("QuotesPage", () => {
 
   it("archives a quote with Undo, which restores it", async () => {
     vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote()]))
-    vi.mocked(changeAppQuote).mockResolvedValueOnce({ quote: appQuote({ version: 2, archived: true, archived_at: "2026-10-12T10:00:00+00:00" }), revision: null }).mockResolvedValueOnce({ quote: appQuote({ version: 3 }), revision: null })
+    vi.mocked(changeAppQuote).mockResolvedValueOnce({ quote: appQuote({ archived: true, archived_at: "2026-10-12T10:00:00+00:00", latest: 2 }), revision: null }).mockResolvedValueOnce({ quote: appQuote({ latest: 3 }), revision: null })
     show()
 
     fireEvent.click(await screen.findByRole("button", { name: "Archive Q-000001" }))
@@ -168,9 +168,30 @@ describe("QuotesPage", () => {
 
     await vi.waitFor(() => expect(changeAppQuote).toHaveBeenCalledTimes(2))
     expect(vi.mocked(changeAppQuote).mock.calls).toEqual([
-      ["q1", "archive", 1],
-      ["q1", "restore", 2],
+      ["q1", "archive", 1, {}],
+      ["q1", "restore", 2, {}],
     ])
+  })
+
+  it("reloads the list shown when Undo is pressed, though another than the one archived from", async () => {
+    vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote()]))
+    vi.mocked(changeAppQuote).mockResolvedValueOnce({ quote: appQuote({ archived: true, archived_at: "2026-10-12T10:00:00+00:00", latest: 2 }), revision: null }).mockResolvedValueOnce({ quote: appQuote({ latest: 3 }), revision: null })
+    const view = show()
+    fireEvent.click(await screen.findByRole("button", { name: "Archive Q-000001" }))
+    const undo = await screen.findByRole("button", { name: "Undo" })
+
+    const team = quotesQueryOf("?view=team")
+    view.rerender(
+      <>
+        <QuotesPage query={team} />
+        <ToastContainer />
+      </>,
+    )
+    await vi.waitFor(() => expect(useQuoteListStore.getState().query).toEqual(team))
+    fireEvent.click(undo)
+
+    await vi.waitFor(() => expect(changeAppQuote).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(vi.mocked(fetchAppQuotes).mock.calls.at(-1)?.[0]).toEqual(team))
   })
 
   it("says when a quote could not be archived", async () => {
@@ -186,12 +207,12 @@ describe("QuotesPage", () => {
   it("restores an archived quote from the archive", async () => {
     // A list row knows it is archived, not by whom or when: those are read with the quote.
     vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote({ archived: true })]))
-    vi.mocked(changeAppQuote).mockResolvedValue({ quote: appQuote({ version: 2 }), revision: null })
+    vi.mocked(changeAppQuote).mockResolvedValue({ quote: appQuote({ latest: 2 }), revision: null })
     show(quotesQueryOf("?view=archived"))
 
     fireEvent.click(await screen.findByRole("button", { name: "Restore Q-000001" }))
 
-    await vi.waitFor(() => expect(changeAppQuote).toHaveBeenCalledWith("q1", "restore", 1))
+    await vi.waitFor(() => expect(changeAppQuote).toHaveBeenCalledWith("q1", "restore", 1, {}))
     expect(await screen.findByText("Restored Q-000001")).toBeInTheDocument()
   })
 

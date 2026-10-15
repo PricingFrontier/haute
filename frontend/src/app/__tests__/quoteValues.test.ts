@@ -122,7 +122,7 @@ describe("drafts", () => {
     window.localStorage.clear()
   })
 
-  const draft = { values: { policy: [{ a: "1" }] }, version: 2, latest: 1, formRevision: "rev", keptAt: "2026-10-12T12:00:00Z" }
+  const draft = { values: { policy: [{ a: "1" }] }, version: 2, latest: 1, places: {}, keptAt: "2026-10-12T12:00:00Z", pending: null }
 
   it("are kept per app, person and quote, read back and cleared", () => {
     const key = draftKey("motor", "ana", "q1")

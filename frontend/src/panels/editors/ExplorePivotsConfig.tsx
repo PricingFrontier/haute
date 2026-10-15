@@ -3,6 +3,7 @@ import { ArrowLeft } from "lucide-react"
 
 import { EditorLabel } from "../../components/form"
 import useUIStore from "../../stores/useUIStore"
+import { confirmed } from "../../stores/useQuestionStore"
 import { PIVOT_CONDITIONAL_FORMAT_COLORS } from "../../theme/colors"
 import {
   dependentChartsForPivot,
@@ -650,13 +651,15 @@ export default function ExplorePivotsConfig({
       charts={parsedCharts.charts}
       onUpdate={persistPivot}
       onConfigure={(pivotId) => setExploreConfiguredPivot(nodeId, pivotId)}
-      onDelete={(pivot) => {
-        if (!window.confirm(`Delete ${pivot.name}?`)) return
-        if (configuredPivotId === pivot.id) {
-          setExploreConfiguredPivot(nodeId, null)
-        }
-        persistExploreState(pivots.filter((candidate) => candidate.id !== pivot.id))
-      }}
+      onDelete={(pivot) =>
+        void (async () => {
+          if (!(await confirmed({ title: `Delete ${pivot.name}?`, confirm: "Delete", danger: true }))) return
+          if (configuredPivotId === pivot.id) {
+            setExploreConfiguredPivot(nodeId, null)
+          }
+          persistExploreState(pivots.filter((candidate) => candidate.id !== pivot.id))
+        })()
+      }
     />
   )
 }

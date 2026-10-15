@@ -1,15 +1,11 @@
 /**
  * The underwriter app's small pieces (specs/workbench), at Haute's density: a quote's stage
- * as a chip, a one-line notice with its actions, a menu behind a button, and the question
- * the app asks, yes or no, with a reason when one is needed.
+ * as a chip, a one-line notice with its actions, and a menu behind a button.
  */
 import { AlertTriangle, ChevronDown, Info, X, type LucideIcon } from "lucide-react"
 import { useEffect, useRef, useState, type ReactNode } from "react"
-import ModalShell from "../components/ModalShell"
-import { ModalFormHeader, ModalTextInput } from "../components/ModalForm"
 import type { WorkbenchAppQuote } from "../api/types"
 import { STAGE_LABEL } from "./quoteValues"
-import useAppStore, { type Question } from "./useAppStore"
 
 export const BUTTON = "toolbar-btn inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium disabled:opacity-50"
 export const ICON_BUTTON = "toolbar-btn inline-flex items-center rounded-md p-1 disabled:opacity-50"
@@ -159,44 +155,3 @@ export function Menu({ label, icon: Icon, items, testId }: { label: string; icon
   )
 }
 
-/** The question the app is asking, if any: yes, no, and a reason when one is needed. */
-export function QuestionDialog() {
-  const question = useAppStore((s) => s.question)
-  const answer = useAppStore((s) => s.answer)
-  if (question === null) return null
-  return <QuestionForm key={question.id} question={question} answer={answer} />
-}
-
-function QuestionForm({ question, answer }: { question: Question; answer: (answer: { reason: string } | null) => void }) {
-  const [reason, setReason] = useState("")
-  const needsReason = question.reason !== undefined
-  const ready = !needsReason || reason.trim() !== ""
-  return (
-    <ModalShell ariaLabel={question.title} onClose={() => answer(null)} width="w-[420px]" testId="app-question">
-      <form
-        onSubmit={(event) => {
-          event.preventDefault()
-          if (ready) answer({ reason: reason.trim() })
-        }}
-      >
-        <ModalFormHeader title={question.title}>{question.text}</ModalFormHeader>
-        {needsReason && (
-          <div className="flex flex-col gap-1 px-4 pt-3">
-            <label className="text-[12px]" style={{ color: "var(--text-secondary)" }} htmlFor="app-question-reason">
-              {question.reason?.label}
-            </label>
-            <ModalTextInput id="app-question-reason" value={reason} onChange={(event) => setReason(event.target.value)} autoFocus maxLength={1000} />
-          </div>
-        )}
-        <div className="flex justify-end gap-2 px-4 py-3">
-          <button type="button" className={BUTTON} onClick={() => answer(null)}>
-            Cancel
-          </button>
-          <button type="submit" className={FILL_BUTTON} style={FILL_STYLE} disabled={!ready} autoFocus={!needsReason}>
-            {question.confirm}
-          </button>
-        </div>
-      </form>
-    </ModalShell>
-  )
-}

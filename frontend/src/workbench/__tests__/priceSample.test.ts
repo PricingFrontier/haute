@@ -1,7 +1,7 @@
 /**
  * A sample priced on the pipeline open in the editor (specs/workbench): the top-level
  * workbench nodes given the form's tables and sample for that request alone, and the
- * Workbench Output previewed a table at a time.
+ * Workbench Output's tables previewed all at once, from one run.
  */
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -47,24 +47,32 @@ function graph(): GraphPayload {
   }
 }
 
-const ok = (rows: Record<string, unknown>[]): PreviewNodeResponse => ({ node_id: "response", status: "ok", preview: rows })
+/** A preview's answer: each table asked for with its rows, as many as it has and not cut short unless said. */
+const ok = (tables: Record<string, Record<string, unknown>[]>, cut: Record<string, number> = {}): PreviewNodeResponse => ({
+  node_id: "response",
+  status: "ok",
+  port_previews: Object.fromEntries(
+    Object.entries(tables).map(([label, rows]) => [
+      label,
+      { row_count: cut[label] ?? rows.length, columns: [], preview: rows, preview_truncated: label in cut },
+    ]),
+  ),
+})
 
 afterEach(() => {
   preview.mockReset()
 })
 
 describe("priceSample", () => {
-  it("previews each of the Workbench Output's tables on the tables and sample given, leaving the document alone", async () => {
-    preview.mockImplementation(async ({ portLabel }) =>
-      ok(portLabel === "pricing_output" ? [{ premium: 2000 }] : [{ layer: 1 }, { layer: 2 }]),
-    )
+  it("previews every one of the Workbench Output's tables in one request on the tables and sample given, leaving the document alone", async () => {
+    preview.mockResolvedValue(ok({ pricing_output: [{ premium: 2000 }], layer_premiums: [{ layer: 1 }, { layer: 2 }] }))
     const document = graph()
     const before = structuredClone(document)
 
     const priced = await priceSample(document, workbench([pricing, layers]), "live")
 
     expect(priced).toEqual({ tables: { pricing_output: [{ premium: 2000 }], layer_premiums: [{ layer: 1 }, { layer: 2 }] } })
-    expect(preview.mock.calls.map(([args]) => args.portLabel)).toEqual(["pricing_output", "layer_premiums"])
+    expect(preview.mock.calls.map(([args]) => args.portLabels)).toEqual([["pricing_output", "layer_premiums"]])
     const [{ graph: sent, nodeId, source }] = preview.mock.calls[0]
     expect(nodeId).toBe("response")
     expect(source).toBe("live")
@@ -86,7 +94,31 @@ describe("priceSample", () => {
     expect(preview).not.toHaveBeenCalled()
   })
 
-  it("rejects with a table's preview error", async () => {
+  it("refuses a pipeline whose sheets reach no top-level Workbench Input, saying what to replace or move", async () => {
+    // A Quote Input beside the Workbench Output, which the singleton rules allow.
+    const quoted = graph()
+    quoted.nodes = quoted.nodes.map((n) => (n.id === "quote" ? node("quote", "apiInput", { tables: [] }) : n))
+    await expect(priceSample(quoted, workbench([pricing]), "live")).rejects.toThrow(
+      "The pipeline reads its quotes from a Quote Input, which the sheets never fill: replace it with a Workbench Input.",
+    )
+    // The Workbench Input inside a submodel alone.
+    const nested = graph()
+    nested.nodes = nested.nodes.filter((n) => n.id !== "quote")
+    await expect(priceSample(nested, workbench([pricing]), "live")).rejects.toThrow(
+      "The pipeline has no Workbench Input at its top level, so the sheets reach nothing: add one, or move the one inside a submodel out of it.",
+    )
+    expect(preview).not.toHaveBeenCalled()
+  })
+
+  it("rejects when a table asked for is missing from the answer", async () => {
+    preview.mockResolvedValue(ok({ pricing_output: [{ premium: 2000 }] }))
+
+    await expect(priceSample(graph(), workbench([pricing, layers]), "live")).rejects.toThrow(
+      "The Workbench Output's 'layer_premiums' table was not previewed.",
+    )
+  })
+
+  it("rejects with the preview's error", async () => {
     preview.mockResolvedValue({
       node_id: "response",
       status: "error",
@@ -106,7 +138,7 @@ describe("priceSample", () => {
   })
 
   it("refuses, when the complete response is asked for, a table Preview cut short", async () => {
-    preview.mockResolvedValue({ ...ok([{ layer: 1 }]), row_count: 12000, preview_truncated: true })
+    preview.mockResolvedValue(ok({ layer_premiums: [{ layer: 1 }] }, { layer_premiums: 12000 }))
 
     // Preview itself shows the rows it has; a test quote keeps the whole response.
     await expect(priceSample(graph(), workbench([layers]), "live")).resolves.toEqual({ tables: { layer_premiums: [{ layer: 1 }] } })

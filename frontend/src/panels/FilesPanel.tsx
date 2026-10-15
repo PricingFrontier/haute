@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState, type DragEvent } from "react"
 import { ChevronRight, Download, File as FileIcon, Folder, FolderGit2, FolderOpen, RefreshCw, Trash2, Upload, X } from "lucide-react"
 import PanelShell from "./PanelShell"
-import ModalShell from "../components/ModalShell"
-import { ModalFormHeader } from "../components/ModalForm"
 import { deleteProjectFile, listProjectFiles, projectFileDownloadUrl, uploadProjectFile } from "../api/projectFiles"
 import { apiErrorMessage } from "../api/errors"
 import type { ProjectFileEntry, ProjectFilePlace, ProjectFolderResponse } from "../api/types"
 import { reportSaveCapture } from "../stores/saveCapture"
+import useDataEpochStore from "../stores/useDataEpochStore"
 import useNodeDataStore from "../stores/useNodeDataStore"
+import useQuestionStore, { confirmed } from "../stores/useQuestionStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
 import { formatBytes } from "../utils/formatBytes"
@@ -30,12 +30,14 @@ interface UploadRow {
 
 type FileStatus = ProjectFileEntry["status"]
 
-type Confirmation =
-  | { kind: "replace"; folder: string; files: File[]; revisions: Map<string, string>; statuses: Map<string, FileStatus> }
-  | { kind: "delete"; entry: ProjectFileEntry }
-
 function joinPath(folder: string, name: string): string {
   return folder ? `${folder}/${name}` : name
+}
+
+/** The folder a place-relative *path* is in: "" for the place's root. */
+function folderOf(path: string): string {
+  const slash = path.lastIndexOf("/")
+  return slash < 0 ? "" : path.slice(0, slash)
 }
 
 /** Whether files can be added to *folder* (relative to the place) and deleted from it. */
@@ -119,7 +121,6 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
   const loading = answered !== request
   const [uploads, setUploads] = useState<UploadRow[]>([])
   const [dropTarget, setDropTarget] = useState<string | null>(null)
-  const [confirmation, setConfirmation] = useState<Confirmation | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const nextUpload = useRef(0)
   const addToast = useToastStore((s) => s.addToast)
@@ -143,11 +144,14 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
   }, [place, path, request])
 
   const root = listing?.root ?? ""
+  // The listing of the folder shown: until it answers, another folder's rows, and what they
+  // offer, are not shown, so nothing acts on a folder that is no longer open.
+  const shown = listing !== null && listing.place === place && listing.path === path ? listing : null
   const shownFolder = (folder: string) => (folder ? joinPath(root, folder) : root) || "the project folder"
   // The open folder's own listing says whether it takes files (a pipeline folder
   // .gitignore ignores does not); any other folder goes by its place.
   const takesFiles = (folder: string) =>
-    folder === path && listing !== null ? listing.writable : folderTakesFiles(place, folder)
+    folder === path && shown !== null ? shown.writable : folderTakesFiles(place, folder)
   const refusal = (folder: string) =>
     place === "pipeline"
       ? `${shownFolder(folder)} is ignored by .gitignore, so files added there couldn't be versioned.`
@@ -155,6 +159,7 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
 
   async function uploadAll(folder: string, files: File[], revisions: Map<string, string>) {
     let replaced = false
+    let wrote = false
     for (const file of files) {
       const id = nextUpload.current++
       const job = uploadProjectFile(place, joinPath(folder, file.name), file, {
@@ -166,6 +171,7 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
         const written = await job.promise
         if (place === "pipeline") reportSaveCapture(written)
         replaced ||= written.replaced
+        wrote = true
       } catch (caught) {
         if (!isAbort(caught)) addToast("error", `${file.name}: ${apiErrorMessage(caught, "The file was not added.")}`)
       } finally {
@@ -175,6 +181,8 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
     useSettingsStore.getState().clearFileListCache()
     // A displayed preview may have read the file just replaced.
     if (replaced) useNodeDataStore.getState().bumpEpoch()
+    // What was priced on the data before is stale: a file the pipeline reads may be new.
+    if (wrote) useDataEpochStore.getState().moved()
     refresh()
   }
 
@@ -184,7 +192,8 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
       addToast("error", refusal(folder))
       return
     }
-    let entries = folder === path && listing ? listing.entries : null
+    // A clash is checked against a listing of the folder written to, never another's.
+    let entries = folder === path && shown !== null ? shown.entries : null
     if (entries === null) {
       try {
         entries = (await listProjectFiles(place, folder)).entries
@@ -201,11 +210,35 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
       revisions.set(entry.name, entry.revision)
       statuses.set(entry.name, entry.status)
     }
-    if (files.some((file) => revisions.has(file.name))) {
-      setConfirmation({ kind: "replace", folder, files, revisions, statuses })
+    const clashing = files.filter((file) => revisions.has(file.name))
+    if (clashing.length === 0) {
+      await uploadAll(folder, files, new Map())
       return
     }
-    await uploadAll(folder, files, new Map())
+    // Asked first, saying what the replace loses; the files that clash nothing may go alone.
+    const lost = clashing.filter((file) => (statuses.get(file.name) ?? null) !== null).length
+    const fresh = files.filter((file) => !revisions.has(file.name))
+    const answer = await useQuestionStore.getState().ask({
+      title: clashing.length === 1 ? `Replace ${clashing[0].name} in ${shownFolder(folder)}?` : `Replace ${clashing.length} files in ${shownFolder(folder)}?`,
+      text: clashing.length === 1 ? fateOf(place, statuses.get(clashing[0].name) ?? null, "The version it replaces") : fateOfMany(place, clashing.length, lost),
+      confirm: "Replace",
+      ...(fresh.length > 0 ? { other: "Skip these" } : {}),
+      ...(clashing.length > 1 ? { list: clashing.map((file) => file.name) } : {}),
+    })
+    if (answer === null) return
+    if (answer.choice === "other") await uploadAll(folder, fresh, new Map())
+    else await uploadAll(folder, files, revisions)
+  }
+
+  /** Delete a file once asked, saying whether it can be recovered. */
+  async function askToDelete(entry: ProjectFileEntry) {
+    const yes = await confirmed({
+      title: `Delete ${entry.name} from ${shownFolder(folderOf(entry.path))}?`,
+      text: fateOf(place, entry.status, "It"),
+      confirm: "Delete",
+      danger: true,
+    })
+    if (yes) await deleteFile(entry)
   }
 
   function onDrop(event: DragEvent, folder: string) {
@@ -232,6 +265,7 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
       const removed = await deleteProjectFile(place, entry.path, entry.revision ?? "")
       if (place === "pipeline") reportSaveCapture(removed)
       useSettingsStore.getState().clearFileListCache()
+      useDataEpochStore.getState().moved()
     } catch (caught) {
       addToast("error", `${entry.name}: ${apiErrorMessage(caught, "The file was not deleted.")}`)
     }
@@ -240,7 +274,7 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
 
   const crumbs = path ? path.split("/") : []
   const openFolder = dropFolder(place, path)
-  const writable = listing?.writable ?? false
+  const writable = shown?.writable ?? false
   const now = new Date()
 
   return (
@@ -292,7 +326,7 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
             type="button"
             data-testid="files-upload"
             onClick={() => inputRef.current?.click()}
-            disabled={listing === null || !takesFiles(openFolder)}
+            disabled={shown === null || !takesFiles(openFolder)}
             className={ICON_BUTTON}
             style={MUTED}
             title="Upload"
@@ -333,11 +367,13 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
             <span className="flex-1">{error}</span>
             <button type="button" onClick={refresh} className="underline">Try again</button>
           </div>
-        ) : listing !== null && listing.entries.length === 0 && uploads.length === 0 ? (
+        ) : shown === null ? (
+          <div className="px-3 py-2 text-[12px]" style={MUTED} data-testid="files-loading">Loading…</div>
+        ) : shown.entries.length === 0 && uploads.length === 0 ? (
           <div className="px-3 py-2 text-[12px]" style={MUTED}>Empty folder</div>
         ) : (
           <ul aria-label={TITLES[place]}>
-            {listing?.entries.map((entry) =>
+            {shown.entries.map((entry) =>
               entry.kind === "folder" ? (
                 <li
                   key={entry.path}
@@ -385,7 +421,7 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
                         type="button"
                         className={ICON_BUTTON}
                         style={MUTED}
-                        onClick={() => setConfirmation({ kind: "delete", entry })}
+                        onClick={() => void askToDelete(entry)}
                         title="Delete"
                         aria-label={`Delete ${entry.name}`}
                       >
@@ -399,22 +435,6 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
           </ul>
         )}
       </div>
-      {confirmation !== null && (
-        <ConfirmDialog
-          place={place}
-          confirmation={confirmation}
-          shownFolder={shownFolder}
-          onCancel={() => setConfirmation(null)}
-          onReplace={(filesToSend, revisions) => {
-            setConfirmation(null)
-            void uploadAll(confirmation.kind === "replace" ? confirmation.folder : path, filesToSend, revisions)
-          }}
-          onDelete={(entry) => {
-            setConfirmation(null)
-            void deleteFile(entry)
-          }}
-        />
-      )}
     </PanelShell>
   )
 }
@@ -427,81 +447,3 @@ function Marker({ label, title }: { label: string; title: string }) {
   )
 }
 
-const DIALOG_BUTTON = "px-3 py-1.5 text-[12px] font-medium rounded-md transition-colors"
-
-function ConfirmDialog({
-  place,
-  confirmation,
-  shownFolder,
-  onCancel,
-  onReplace,
-  onDelete,
-}: {
-  place: ProjectFilePlace
-  confirmation: Confirmation
-  shownFolder: (folder: string) => string
-  onCancel: () => void
-  onReplace: (files: File[], revisions: Map<string, string>) => void
-  onDelete: (entry: ProjectFileEntry) => void
-}) {
-  if (confirmation.kind === "delete") {
-    return (
-      <ModalShell ariaLabel={`Delete ${confirmation.entry.name}`} onClose={onCancel} testId="files-delete-dialog">
-        <ModalFormHeader title={`Delete ${confirmation.entry.name}?`}>
-          {fateOf(place, confirmation.entry.status, "It")}
-        </ModalFormHeader>
-        <div className="flex justify-end gap-2 p-4">
-          <button type="button" className={DIALOG_BUTTON} style={{ color: "var(--text-secondary)" }} onClick={onCancel}>Cancel</button>
-          <button
-            type="button"
-            data-testid="files-delete-confirm"
-            className={DIALOG_BUTTON}
-            style={{ background: "var(--danger)", color: "var(--text-on-accent)" }}
-            onClick={() => onDelete(confirmation.entry)}
-          >
-            Delete
-          </button>
-        </div>
-      </ModalShell>
-    )
-  }
-  const { folder, files, revisions, statuses } = confirmation
-  const clashing = files.filter((file) => revisions.has(file.name))
-  const lost = clashing.filter((file) => (statuses.get(file.name) ?? null) !== null).length
-  const fate = clashing.length === 1
-    ? fateOf(place, statuses.get(clashing[0].name) ?? null, "The version it replaces")
-    : fateOfMany(place, clashing.length, lost)
-  const fresh = files.filter((file) => !revisions.has(file.name))
-  const title = clashing.length === 1
-    ? `Replace ${clashing[0].name} in ${shownFolder(folder)}?`
-    : `Replace ${clashing.length} files in ${shownFolder(folder)}?`
-  return (
-    <ModalShell ariaLabel={title} onClose={onCancel} width="w-[420px]" testId="files-replace-dialog">
-      <ModalFormHeader title={title}>
-        {fate}
-      </ModalFormHeader>
-      {clashing.length > 1 && (
-        <ul className="max-h-40 overflow-y-auto px-4 pt-2 text-[12px]">
-          {clashing.map((file) => <li key={file.name} className="truncate">{file.name}</li>)}
-        </ul>
-      )}
-      <div className="flex justify-end gap-2 p-4">
-        <button type="button" className={DIALOG_BUTTON} style={{ color: "var(--text-secondary)" }} onClick={onCancel}>Cancel</button>
-        {fresh.length > 0 && (
-          <button type="button" data-testid="files-replace-skip" className={DIALOG_BUTTON} style={{ color: "var(--text-primary)", border: "1px solid var(--border)" }} onClick={() => onReplace(fresh, new Map())}>
-            Skip these
-          </button>
-        )}
-        <button
-          type="button"
-          data-testid="files-replace-confirm"
-          className={DIALOG_BUTTON}
-          style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
-          onClick={() => onReplace(files, revisions)}
-        >
-          Replace
-        </button>
-      </div>
-    </ModalShell>
-  )
-}

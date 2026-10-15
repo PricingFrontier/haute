@@ -18,6 +18,7 @@ import type {
   WorkbenchParamFileResponse,
   WorkbenchStatusResponse,
   WorkbenchTablesResponse,
+  WorkbenchTestQuoteChange,
   WorkbenchTestQuoteCompareResponse,
   WorkbenchTestQuoteOpenResponse,
   WorkbenchTestQuotesResponse,
@@ -110,14 +111,6 @@ export type SheetQuote = Record<string, Record<string, string | boolean>[]>
 /** Priced output tables: each table's rows by its name, as Preview's pricing gives them. */
 export type PricedTables = Record<string, Record<string, unknown>[]>
 
-/** One place a priced response differs from the accepted one; a value may be any JSON. */
-export interface TestQuoteChange {
-  path: string
-  kind: "changed" | "added" | "removed"
-  accepted: unknown
-  priced: unknown
-}
-
 const JSON_HEADERS = { "Content-Type": "application/json" }
 
 export async function fetchTestQuotes(): Promise<WorkbenchTestQuotesResponse> {
@@ -188,7 +181,7 @@ export async function openTestQuote(id: string, form: FormSpec): Promise<Workben
  */
 export async function compareTestQuote(
   id: string, form: FormSpec, values: SheetQuote, tables: PricedTables, number: number, digest: string,
-): Promise<{ number: number; digest: string; changes: TestQuoteChange[] }> {
+): Promise<{ number: number; digest: string; changes: WorkbenchTestQuoteChange[] }> {
   const data = await request<unknown>(`/api/workbench/test-quotes/${encodeURIComponent(id)}/compare`, {
     method: "POST",
     headers: JSON_HEADERS,
@@ -199,12 +192,7 @@ export async function compareTestQuote(
     (await workbenchValidators()).validateWorkbenchTestQuoteCompareResponse,
     data,
   )
-  // The generated type reads an any-valued field as an object; a value may be any JSON.
-  return {
-    number: compared.number,
-    digest: compared.revision_digest,
-    changes: compared.changes as unknown as TestQuoteChange[],
-  }
+  return { number: compared.number, digest: compared.revision_digest, changes: compared.changes }
 }
 
 /**
@@ -219,15 +207,6 @@ export async function acceptTestQuote(
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify({ after, revision_digest: digest, form, values, tables }),
-    retry: { maxRetries: 0 },
-  })
-  return writeResponse(data)
-}
-
-/** The test-quote file captured on the save ledger as it is: a skipped capture's retry. */
-export async function captureTestQuotes(): Promise<WorkbenchTestQuoteWriteResponse> {
-  const data = await request<unknown>("/api/workbench/test-quotes/capture", {
-    method: "POST",
     retry: { maxRetries: 0 },
   })
   return writeResponse(data)

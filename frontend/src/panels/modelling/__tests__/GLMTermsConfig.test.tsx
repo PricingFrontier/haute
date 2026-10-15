@@ -1,8 +1,9 @@
 import { useState } from "react"
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { OnUpdateConfig } from "../../editors/_shared"
+import { answerQuestion, asked } from "../../../test-utils/question"
 import { GLMTermsConfig } from "../GLMTermsConfig"
 
 const columns = [
@@ -48,11 +49,7 @@ const unresolvedGroup = () => screen.getByRole("group", { name: "Unresolved term
 const optionValues = (select: HTMLElement) => Array.from(select.querySelectorAll("option")).map((option) => option.value)
 
 describe("GLMTermsConfig", () => {
-  beforeEach(() => vi.stubGlobal("confirm", vi.fn(() => true)))
-  afterEach(() => {
-    cleanup()
-    vi.unstubAllGlobals()
-  })
+  afterEach(cleanup)
 
   it("counts eligible columns and Add term writes the dtype default", () => {
     const onUpdate = setup()
@@ -213,7 +210,7 @@ describe("GLMTermsConfig", () => {
     expect(latest.config.terms).toMatchObject({ age_sq: { type: "expression", expr: "age * income" } })
   })
 
-  it("Fit all with defaults adds eligible columns only and Remove all clears terms and interactions", () => {
+  it("Fit all with defaults adds eligible columns only and Remove all clears terms and interactions", async () => {
     const onUpdate = setup({ terms: { age: { type: "bs", df: 4 } } })
     fireEvent.click(screen.getByRole("button", { name: "Fit all with defaults" }))
     expect(onUpdate).toHaveBeenCalledWith("terms", {
@@ -225,6 +222,8 @@ describe("GLMTermsConfig", () => {
       constructor: { type: "linear" },
     })
     fireEvent.click(screen.getByRole("button", { name: "Remove all terms" }))
+    expect(asked()).toMatchObject({ title: "Remove every term and interaction from this model?", confirm: "Remove all" })
+    await answerQuestion("confirm")
     expect(onUpdate).toHaveBeenCalledWith({ terms: {}, interactions: [] })
   })
 

@@ -26,7 +26,7 @@ import {
 } from "lucide-react"
 import { useId, useState, type ReactNode } from "react"
 
-import { CommittedTextField, IconSelect } from "../../../components/form"
+import { CommittedTextField, IconSelect, QuietAction } from "../../../components/form"
 import { getDtypeColor } from "../../../utils/dtypeColors"
 import { INPUT_STYLE } from "../_shared"
 import type { GlobalConstantType } from "../../../utils/globalConstants"
@@ -306,20 +306,6 @@ export function QuantileField({ value, onChange, ariaLabel }: { value: number | 
   )
 }
 
-/** The quiet "+ Add …" text action under a list. */
-export function AddRow({ onClick, label }: { onClick: () => void; label: string }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="quiet-action focus-ring inline-flex items-center gap-1 justify-self-start rounded px-1 py-0.5 -ml-1 text-[11px] font-medium"
-    >
-      <Plus size={11} aria-hidden="true" />
-      {label}
-    </button>
-  )
-}
-
 /** The icon-only remove action at the end of a row. */
 export function RowRemove({ onClick, label }: { onClick: () => void; label: string }) {
   return (
@@ -375,7 +361,7 @@ export function RowList<T>({
         </div>
       ))}
       {children}
-      <AddRow label={addLabel} onClick={() => onChange([...rows, create()])} />
+      <QuietAction onClick={() => onChange([...rows, create()])} className="justify-self-start">{addLabel}</QuietAction>
     </div>
   )
 }
@@ -1243,7 +1229,7 @@ export function ConditionList({
           onRemove={conditions.length > 1 ? () => onChange(conditions.filter((_, i) => i !== index), match) : undefined}
         />
       ))}
-      <AddRow label="Add condition" onClick={() => onChange([...conditions, defaultCondition()], match)} />
+      <QuietAction onClick={() => onChange([...conditions, defaultCondition()], match)} className="justify-self-start">Add condition</QuietAction>
     </div>
   )
 }

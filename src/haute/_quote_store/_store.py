@@ -27,6 +27,8 @@ from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import (
     Connection,
     Engine,
+    RowMapping,
+    Select,
     create_engine,
     delete,
     event,
@@ -293,6 +295,32 @@ def open_store(url: str, *, clock: Callable[[], datetime] | None = None) -> Quot
     return QuoteStore(engine, clock=clock or (lambda: datetime.now(UTC)))
 
 
+def _summaries() -> Select[Any]:
+    """Each quote with its newest revision's saver, time and whether it was priced."""
+    return select(
+        QUOTES,
+        QUOTE_REVISIONS.c.saved_by,
+        QUOTE_REVISIONS.c.saved_at,
+        QUOTE_REVISIONS.c.response.is_not(None).label("priced"),
+    ).join(
+        QUOTE_REVISIONS,
+        (QUOTE_REVISIONS.c.quote_id == QUOTES.c.id) & (QUOTE_REVISIONS.c.number == QUOTES.c.latest),
+    )
+
+
+def _summary(row: RowMapping) -> QuoteSummary:
+    return QuoteSummary(
+        id=row["id"],
+        name=row["name"],
+        owner=row["owner"],
+        created_at=row["created_at"],
+        latest=row["latest"],
+        saved_by=row["saved_by"],
+        saved_at=row["saved_at"],
+        priced=bool(row["priced"]),
+    )
+
+
 def _read_revision(connection: Connection, quote_id: str, number: int | None) -> QuoteRevision:
     """Revision *number* of quote *quote_id* on *connection*, its newest when *number* is None."""
     query = select(QUOTE_REVISIONS).where(QUOTE_REVISIONS.c.quote_id == quote_id)
@@ -557,37 +585,24 @@ class QuoteStore:
 
     def quotes(self, *, owner: str | None = None) -> list[QuoteSummary]:
         """The quotes, *owner*'s alone when given, the most recently saved first."""
-        query = (
-            select(
-                QUOTES,
-                QUOTE_REVISIONS.c.saved_by,
-                QUOTE_REVISIONS.c.saved_at,
-                QUOTE_REVISIONS.c.response.is_not(None).label("priced"),
-            )
-            .join(
-                QUOTE_REVISIONS,
-                (QUOTE_REVISIONS.c.quote_id == QUOTES.c.id)
-                & (QUOTE_REVISIONS.c.number == QUOTES.c.latest),
-            )
-            .order_by(QUOTE_REVISIONS.c.saved_at.desc(), QUOTES.c.id)
-        )
+        query = _summaries().order_by(QUOTE_REVISIONS.c.saved_at.desc(), QUOTES.c.id)
         if owner is not None:
             query = query.where(QUOTES.c.owner == owner)
         with self._engine.connect() as connection:
             rows = connection.execute(query).mappings().all()
-        return [
-            QuoteSummary(
-                id=row["id"],
-                name=row["name"],
-                owner=row["owner"],
-                created_at=row["created_at"],
-                latest=row["latest"],
-                saved_by=row["saved_by"],
-                saved_at=row["saved_at"],
-                priced=bool(row["priced"]),
+        return [_summary(row) for row in rows]
+
+    def summary(self, quote_id: str) -> QuoteSummary:
+        """Quote *quote_id* as the list shows it, read alone."""
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(_summaries().where(QUOTES.c.id == quote_id))
+                .mappings()
+                .one_or_none()
             )
-            for row in rows
-        ]
+        if row is None:
+            raise QuoteNotFoundError(f"The quote store holds no quote {quote_id!r}.")
+        return _summary(row)
 
     def histories(self) -> dict[str, QuoteHistory]:
         """Every quote whole, by id."""

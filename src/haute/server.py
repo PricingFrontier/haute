@@ -58,6 +58,7 @@ from haute._pipeline_settings import (
     stop_following_chunk_rows,
 )
 from haute._sandbox import _get_project_root
+from haute._workbench_config import WorkbenchConfigError, read_workbench_config
 from haute.hosted import FORWARDED_USER_SCOPE_KEY
 from haute.routes._error_handlers import install_exception_handlers
 from haute.routes._helpers import (
@@ -134,6 +135,7 @@ _WATCHER_FLUSH_MAX_RETRIES = 3
 _WATCHER_FLUSH_RETRY_BASE_SECONDS = 0.1
 WS_FRAME_PARSE_ERROR = "parse_error"
 WS_FRAME_PIPELINE_DOCUMENT_UPDATE = "pipeline_document_update"
+WS_FRAME_WORKBENCH_FORM_CHANGED = "workbench_form_changed"
 PIPELINE_DOCUMENT_SCHEMA_VERSION = 1
 PIPELINE_DOCUMENT_LOAD_ERROR = (
     "Pipeline document could not be loaded. Check the server logs for details."
@@ -387,7 +389,15 @@ def _ws_pipeline_document_update_subscriber(payload: dict[str, Any]) -> None:
     )
 
 
+def _ws_workbench_form_changed_subscriber(payload: dict[str, Any]) -> None:
+    """Forward ``workbench.form.changed`` events to WebSocket clients."""
+    _broadcast_event_as_ws_message(WS_FRAME_WORKBENCH_FORM_CHANGED, payload)
+
+
 _unsubscribe_parse_error = default_bus.subscribe("parse.error", _ws_parse_error_subscriber)
+_unsubscribe_workbench_form_changed = default_bus.subscribe(
+    "workbench.form.changed", _ws_workbench_form_changed_subscriber
+)
 _unsubscribe_pipeline_document_update = default_bus.subscribe(
     "pipeline.document.update", _ws_pipeline_document_update_subscriber
 )
@@ -765,8 +775,23 @@ async def _watcher_forever() -> None:
             await asyncio.sleep(_WATCHER_RESTART_DELAY_SECONDS)
 
 
+def _workbench_form_file(project_root: Path) -> tuple[str, str] | None:
+    """The workbench's form file as ``haute.toml`` names it, with its resolved path, while
+    the workbench is enabled: None while it is not, or while ``haute.toml`` cannot be read,
+    which the workbench's own routes report."""
+    try:
+        config = read_workbench_config(project_root)
+    except WorkbenchConfigError:
+        return None
+    return (config.form, str(config.form_path.resolve())) if config.enabled else None
+
+
 async def _file_watcher() -> None:
     """Watch pipeline directories for .py changes and broadcast to GUI.
+
+    A change to the workbench's form file is announced once a batch
+    (``workbench.form.changed``), the form's own saves included: the view that saved finds
+    its own revision and reads nothing more, and every other view reads the file again.
 
     Uses a 300ms debounce window to batch rapid edits (e.g. IDE auto-save)
     into a single parse + broadcast cycle.
@@ -834,6 +859,8 @@ async def _file_watcher() -> None:
             config_changed = False
             recovery_artifact_changes: list[Path] = []
             self_write_keys: set[str] = set()
+            form_file = _workbench_form_file(cwd)
+            form_changed = False
             for change_type, changed_path in to_process:
                 p = Path(changed_path)
                 key = str(p.resolve())
@@ -847,6 +874,9 @@ async def _file_watcher() -> None:
                     logger.debug("file_watcher_skipped_self_write", file=str(p))
                     continue
                 if change_type not in (Change.modified, Change.added, Change.deleted):
+                    continue
+                if form_file is not None and key == form_file[1]:
+                    form_changed = True
                     continue
                 # Recovery sidecars are dependencies of their owning document,
                 # not global configuration changes.  This must precede the
@@ -874,6 +904,9 @@ async def _file_watcher() -> None:
                     direct_index_changed = True
                     if change_type != Change.deleted:
                         direct_py_changes.append(p)
+
+            if form_file is not None and form_changed:
+                default_bus.publish("workbench.form.changed", {"form": form_file[0]})
 
             known_pipelines: dict[str, Path] = {}
             if direct_py_changes:

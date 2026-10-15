@@ -217,8 +217,6 @@ Two more settings, if your code is in **Azure Repos Git**:
       paths:
         include:
           - rating/
-          - data/
-          - models/
           - tests/quotes/
           - haute.toml
           - pyproject.toml

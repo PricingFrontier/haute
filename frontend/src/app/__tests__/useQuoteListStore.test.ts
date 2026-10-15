@@ -41,6 +41,19 @@ describe("useQuoteListStore", () => {
     expect(store().quotes.map((quote) => quote.id)).toEqual(["a", "b"])
   })
 
+  it("loads the list shown again, whichever it is now", async () => {
+    vi.mocked(fetchAppQuotes).mockResolvedValue({ quotes: [], counts: {}, next_cursor: null })
+    await store().reload()
+    expect(fetchAppQuotes).not.toHaveBeenCalled()
+
+    await store().load(MINE)
+    await store().load(TEAM)
+    await store().reload()
+
+    expect(vi.mocked(fetchAppQuotes).mock.calls.at(-1)?.[0]).toEqual(TEAM)
+    expect(fetchAppQuotes).toHaveBeenCalledTimes(3)
+  })
+
   it("drops an answer to a list since left", async () => {
     let first: (value: WorkbenchAppQuotesResponse) => void = () => {}
     vi.mocked(fetchAppQuotes).mockReturnValueOnce(new Promise((resolve) => (first = resolve))).mockResolvedValueOnce(page(["team"]))

@@ -16,9 +16,27 @@ export function inModalDialog(target: EventTarget | null): boolean {
 
 /** The keystroke landed in a text field or a text area, which commit on blur. */
 export function isTextField(target: EventTarget | null): boolean {
-  const tag = element(target)?.tagName
-  return tag === "INPUT" || tag === "TEXTAREA"
+  const found = element(target)
+  if (found instanceof HTMLTextAreaElement) return true
+  // A checkbox, a radio, a button or a range takes no typing: the window's keys act from it.
+  return found instanceof HTMLInputElement && TEXT_INPUT_TYPES.has(found.type)
 }
+
+/** The input types typed into. */
+const TEXT_INPUT_TYPES: ReadonlySet<string> = new Set([
+  "text",
+  "search",
+  "email",
+  "url",
+  "tel",
+  "password",
+  "number",
+  "date",
+  "datetime-local",
+  "month",
+  "time",
+  "week",
+])
 
 /** The keystroke is typing: in a text field, a text area or a code editor. */
 export function isTypingTarget(target: EventTarget | null): boolean {

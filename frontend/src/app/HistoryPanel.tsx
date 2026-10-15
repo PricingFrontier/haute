@@ -11,7 +11,7 @@ import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { RELATION_TEXT as RELATION, eventText, fullTime, relativeTime } from "./quoteValues"
 import { followLink, quotePath, revisionPath } from "./route"
 import { BUTTON } from "./ui"
-import useOpenQuoteStore, { canEdit } from "./useOpenQuoteStore"
+import useOpenQuoteStore, { busy, canEdit } from "./useOpenQuoteStore"
 
 const MIN_WIDTH = 300
 const maxWidth = () => Math.max(MIN_WIDTH, Math.floor(window.innerWidth / 2))
@@ -32,7 +32,7 @@ function Section({ title, count, children }: { title: string; count?: number; ch
 
 function NoteEditor({ quote }: { quote: WorkbenchAppQuote }) {
   const change = useOpenQuoteStore((s) => s.change)
-  const changing = useOpenQuoteStore((s) => s.changing)
+  const working = useOpenQuoteStore(busy)
   const [note, setNote] = useState(quote.note)
   const [editedFrom, setEditedFrom] = useState(quote.note)
   // The quote's note changed under the editor (saved here or elsewhere): show it.
@@ -47,7 +47,7 @@ function NoteEditor({ quote }: { quote: WorkbenchAppQuote }) {
         aria-label="Handover note"
         value={note}
         onChange={(event) => setNote(event.target.value)}
-        disabled={locked || changing}
+        disabled={locked || working}
         maxLength={4000}
         rows={3}
         placeholder="What a colleague picking this quote up should know"
@@ -56,7 +56,7 @@ function NoteEditor({ quote }: { quote: WorkbenchAppQuote }) {
       />
       <div className="flex items-center gap-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
         {quote.note_by !== null && quote.note_at !== null && <span title={fullTime(quote.note_at)}>By {quote.note_by}, {relativeTime(quote.note_at)}</span>}
-        <button type="button" className={`${BUTTON} ml-auto`} disabled={locked || changing || note.trim() === quote.note} onClick={() => void change("note", { note: note.trim() })}>
+        <button type="button" className={`${BUTTON} ml-auto`} disabled={locked || working || note.trim() === quote.note} onClick={() => void change("note", { note: note.trim() }, quote)}>
           Save note
         </button>
       </div>

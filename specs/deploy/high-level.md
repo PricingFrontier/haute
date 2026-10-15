@@ -117,7 +117,9 @@ refused, not read as the blank form the editor starts from, and a table or a col
 has and the copy lacks, or the copy has and the form lacks, a table's rows per quote, a
 column's type and their order are each named, with the way to bring the copies up to date, a
 Save in the editor. A project whose workbench is off, or a pipeline with no Workbench node, is
-not checked against a form. When `test_quotes.dir` is configured, the path must exist, be a
+not checked against a form. The test quotes are read where the editor keeps them:
+`test_quotes.dir`, or `tests/quotes` when `haute.toml` names none, which is checked only
+when it holds test quotes. When `test_quotes.dir` is configured, the path must exist, be a
 directory, and contain at least one `*.json` quote or the test-quote file; otherwise
 validation fails rather than silently disabling the gate. Every quote is scored through the resolved graph. Every
 test-quote row wraps its request as `input`, with an optional `expected` output and
@@ -125,10 +127,16 @@ test-quote row wraps its request as `input`, with an optional `expected` output 
 top-level key, is refused naming the row, and any row whose actual output falls outside
 tolerance fails the deploy. Beside the JSON files the directory may hold the workbench's
 test-quote file, `test_quotes.sqlite` ([workbench](../workbench/high-level.md)): each of
-its test quotes is a case named by the quote, its request the input and the response it
-was accepted with the expected output, compared whole, every place the answer differs
-failing (a number within one part in a billion), the answer encoded as a preview encodes
-it; one saved unpriced is priced with nothing to compare. The directory needs at least
+its test quotes is a case named by the quote, its input the request its newest revision's
+values make carried onto the form as the project holds it (each input column's allowed
+values read again from its params file, as the app's release reads them, or the form the
+release ships when `haute app build` checks), and the response it was accepted with the
+expected output. A value with no place on the form, a rebuilt request that differs from
+the one the revision keeps (named by its place under `request.`) and a quote with nothing
+typed each fail it. The answer is compared whole, every place it differs failing (a
+number within one part in a billion), the answer encoded as a preview encodes it and both
+sides as a deployed pipeline renders a response, a null value and an empty table left out,
+so null and absent compare alike; one saved unpriced is priced with nothing to compare. The directory needs at least
 one JSON file or that file. The starter JSON quote `haute init` writes takes the row shape,
 so a new project's test quotes parse before the analyst replaces them. All failures — structural,
 form and test-quote — are collected and raised together as one `DeployError` so an

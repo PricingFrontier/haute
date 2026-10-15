@@ -361,6 +361,11 @@ class TestMilestoneMerge:
             "rating/__pycache__/main.cpython-314.pyc": "bytecode",
             "rating/.haute_build/deploy_manifest.json": "{}",
             "rating/stale.pyc": "bytecode",
+            # Names the Files panels hide: never recorded, nor published, by a milestone.
+            "rating/.env.local": "SECRET=1\n",
+            "rating/.ipynb_checkpoints/model-checkpoint.ipynb": "{}",
+            "rating/files/data/.DS_Store": "finder",
+            "rating/files/data/.~lock.rates.csv#": "lock",
             "rating/files/data/scratch.tmp": "ignored\n",
             "notes.txt": "outside the pipeline folder\n",
         }
@@ -738,6 +743,8 @@ class TestLedgerCaptureOnSave:
         assert result.identity_required is True
         assert result.git_sha is None
         assert any("needs a git identity" in w for w in result.warnings)
+        # What the skipped capture would have taken, for the editor to capture later.
+        assert "demo.py" in result.uncaptured
         assert (repo / "demo.py").exists()
         ledger_after = subprocess.run(
             ["git", "rev-parse", "--verify", "--quiet", LEDGER],
@@ -753,6 +760,7 @@ class TestLedgerCaptureOnSave:
         result = self._service_save(repo)
         assert result.identity_required is False
         assert result.git_sha is not None
+        assert result.uncaptured == []
 
     def test_setting_identity_lets_the_next_save_capture(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

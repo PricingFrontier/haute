@@ -5,11 +5,10 @@
  * column's cell is; with two or more, all of them must hold or any. Every change is handed
  * up whole, so the panel commits it as one undo step.
  */
-import { Eye, EyeOff, Plus, X } from "lucide-react"
+import { Eye, EyeOff, X } from "lucide-react"
 import type { CSSProperties } from "react"
 import type { Condition, FormSpec, SchemaColumn, SchemaTable, ShowWhen } from "../api/types"
-import { CommittedTextField, ConfigCheckbox } from "../components/form"
-import { INPUT_STYLE } from "../panels/editors/_shared"
+import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, QuietAction } from "../components/form"
 import {
   CONDITION_TESTS,
   conditionFault,
@@ -23,7 +22,6 @@ import {
 import { fieldColumn, readableName } from "../utils/workbenchForm"
 import { COLUMN_TYPES } from "./columnTypes"
 
-const FIELD_CLASS = "focus-ring min-w-0 rounded-md px-1.5 py-1 text-xs"
 const MATCHES: ReadonlyArray<{ value: ShowWhen["match"]; label: string }> = [
   { value: "all", label: "all" },
   { value: "any", label: "any" },
@@ -85,17 +83,15 @@ export function ShowWhenEditor({
         />
       ))}
       <div className="flex items-center gap-2">
-        <button
-          type="button"
+        <QuietAction
           disabled={fresh === null}
           onClick={() => {
             if (fresh !== null) setConditions([...conditions, fresh])
           }}
-          className="quiet-action focus-ring inline-flex items-center gap-1 self-start rounded px-1 py-0.5 -ml-1 text-[11px] font-medium disabled:opacity-50"
+          className="self-start"
         >
-          <Plus size={11} aria-hidden="true" />
           Add condition
-        </button>
+        </QuietAction>
         {fresh === null && (
           <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
             Conditions test one-row input tables; the schema has none with a column.
@@ -253,7 +249,8 @@ function ConditionValue({
     )
   }
   if (column?.type === "date") {
-    return <input type="date" aria-label={aria} value={value} onChange={(event) => one(event.target.value)} className={`${FIELD_CLASS} flex-1`} style={INPUT_STYLE} />
+    // Committed on blur or Enter: a year typed digit by digit is one change.
+    return <CommittedTextField type="date" aria-label={aria} value={value} onCommit={one} className={`${FIELD_CLASS} flex-1`} style={INPUT_STYLE} />
   }
   return (
     <CommittedTextField

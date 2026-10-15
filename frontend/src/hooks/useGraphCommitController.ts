@@ -42,10 +42,12 @@ export type UseGraphCommitControllerOptions = {
   /** A key of everything a rename's verdict depends on (every name, the support
    *  code); a rename resolved against an older key is resolved again. */
   readNamingContextKey: () => string
+  /** Commit the graph, as an undo step while `history` holds. */
   commitGraph: (
     nodes: Node[],
     edges: Edge[],
     submodels: Record<string, unknown>,
+    history: boolean,
   ) => void
   setSelectedNode: Dispatch<SetStateAction<Node | null>>
   addToast: (type: ToastType, text: string) => void
@@ -62,6 +64,11 @@ export type NodeUpdateOptions = {
    * after identity resolution for a request input, whose call returns before it commits.
    */
   onSettled?: (result: OnUpdateConfigResult) => void
+  /**
+   * False for an update that follows something outside the graph rather than an edit of
+   * it, the workbench nodes' copies of the form's tables: committed without an undo step.
+   */
+  history?: false
 }
 
 export type GraphCommitController = {
@@ -172,12 +179,12 @@ export default function useGraphCommitController({
     || editKey(request.nodeId) !== request.editKey
   ), [editKey, requestInvalidated])
 
-  const commit = useCallback((prepared: PreparedNodeUpdate): void => {
+  const commit = useCallback((prepared: PreparedNodeUpdate, history: boolean): void => {
     // Keep request-facing refs coherent immediately; the store subscription
     // effects will observe the same identities after React commits.
     graphRef.current = { nodes: prepared.nodes, edges: prepared.edges }
     submodelsRef.current = prepared.submodels
-    commitGraph(prepared.nodes, prepared.edges, prepared.submodels)
+    commitGraph(prepared.nodes, prepared.edges, prepared.submodels, history)
     setSelectedNode((previous) => (
       previous?.id === prepared.nodeId
         ? { ...previous, data: prepared.data }
@@ -223,8 +230,9 @@ export default function useGraphCommitController({
     const preflight = prepare(nodeId, data, false)
     if (!preflight.ok) return settle(preflight)
     const request = beginRequest(nodeId)
+    const history = options.history !== false
     if (!isRequestInputType(data.nodeType)) {
-      commit(preflight)
+      commit(preflight, history)
       return settle({ ok: true })
     }
 
@@ -242,7 +250,7 @@ export default function useGraphCommitController({
           if (requestIsStale(attemptRequest)) continue
           const finalPlan = prepare(nodeId, resolved[0].data, true)
           if (!finalPlan.ok) return finalPlan
-          commit(finalPlan)
+          commit(finalPlan, history)
           return { ok: true }
         }
         return {
@@ -344,7 +352,7 @@ export default function useGraphCommitController({
           }
           const prepared = prepare(nodeId, resolved[0].data, true)
           if (!prepared.ok) return prepared
-          commit(prepared)
+          commit(prepared, true)
           return { ok: true }
         }
         return {

@@ -324,6 +324,17 @@ export interface ExecutionMetrics {
   data_output_write_native_reason?: string | null
 }
 
+/**
+ * One frame's preview of a multi-frame target asked for several (`port_labels`): what a
+ * preview of that frame alone answers.
+ */
+export interface PortPreview {
+  row_count: number
+  columns: ColumnInfo[]
+  preview: Record<string, unknown>[]
+  preview_truncated: boolean
+}
+
 export interface NodeResult {
   status: BackendNodeStatus
   row_count?: number
@@ -339,6 +350,8 @@ export interface NodeResult {
   preview_row_count?: number
   preview_row_limit?: number | null
   preview_truncated?: boolean
+  /** Each frame asked for (`port_labels`) of a multi-frame target, by label, from one run. */
+  port_previews?: Record<string, PortPreview>
   error?: string | null
   error_line?: number | null
   timing_ms?: number
@@ -377,8 +390,10 @@ export interface SavePipelineResponse {
   git_sha?: string | null
   source_revision: string
   /** True when version capture was skipped only because git has no commit
-   *  identity. The app prompts for a name/email and retries the save. */
+   *  identity. The app prompts for a name/email, then captures what was skipped. */
   identity_required?: boolean
+  /** The files, relative to the project, the save's capture skipped or failed on. */
+  uncaptured?: string[]
 }
 
 /** One shared-snapshot generation a preview's collected rows were computed from. */
@@ -537,13 +552,22 @@ export type {
   WorkbenchAppCarryResponse,
   WorkbenchAppFormResponse,
   WorkbenchAppPeopleResponse,
+  WorkbenchAppPriceRequest,
   WorkbenchAppPriceResponse,
   WorkbenchAppQuote,
+  WorkbenchAppQuoteAssign,
+  WorkbenchAppQuoteChange,
   WorkbenchAppQuoteChangeResponse,
+  WorkbenchAppQuoteCreateRequest,
   WorkbenchAppQuoteEvent,
+  WorkbenchAppQuoteFinal,
   WorkbenchAppQuoteHistoryResponse,
+  WorkbenchAppQuoteNote,
+  WorkbenchAppQuoteReopen,
   WorkbenchAppQuoteResponse,
+  WorkbenchAppQuoteReviseRequest,
   WorkbenchAppQuoteRevision,
+  WorkbenchAppQuoteSource,
   WorkbenchAppQuotesResponse,
   WorkbenchAppRelatedQuote,
   WorkbenchAppReleaseResponse,
@@ -554,6 +578,7 @@ export type {
   WorkbenchStatusResponse,
   WorkbenchTable,
   WorkbenchTablesResponse,
+  WorkbenchTestQuoteChange,
   WorkbenchTestQuoteCompareResponse,
   WorkbenchTestQuoteOpenResponse,
   WorkbenchTestQuotesResponse,
@@ -1588,6 +1613,7 @@ export type {
   GitWorkingBranchesResponse,
   GitWorkingBranchResponse,
   GitUpstreamStatusResponse as GitUpstreamStatus,
+  SaveCapture,
 } from "../generated/api-contracts.generated"
 
 export type WorkingBranchState = GeneratedGitWorkingBranchResponse["state"]

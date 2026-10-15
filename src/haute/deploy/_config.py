@@ -331,7 +331,7 @@ class DeployConfig:
         # output-schema context an operator needs to correct it.
         output_fields = list(output_fields_raw) if output_fields_raw is not None else None
 
-        tq_dir = (path.parent / tq["dir"]).resolve() if tq.get("dir") else None
+        tq_dir = _test_quotes_dir(path.parent, tq)
 
         db_config = DatabricksConfig(
             experiment_name=db_raw.get("experiment_name", "/Shared/haute/default"),
@@ -454,6 +454,20 @@ class DeployConfig:
             if val is not None and hasattr(c, key):
                 setattr(c, key, val)
         return c
+
+
+def _test_quotes_dir(project_dir: Path, table: object) -> Path | None:
+    """The test quotes' folder, read as the editor reads it (``test_quotes_path``):
+    ``[test_quotes] dir``, or ``tests/quotes`` when *table* names none, which is checked only
+    while it holds test quotes, so a project with neither has no gate to fail."""
+    from haute._test_quotes import WorkbenchTestQuoteError, test_quote_files, test_quotes_path
+
+    try:
+        directory = test_quotes_path(project_dir, table).parent
+    except WorkbenchTestQuoteError as exc:
+        raise ValueError(exc.message) from exc
+    named = isinstance(table, dict) and bool(table.get("dir"))
+    return directory if named or test_quote_files(directory) else None
 
 
 def _apply_env_overrides(config: DeployConfig) -> DeployConfig:

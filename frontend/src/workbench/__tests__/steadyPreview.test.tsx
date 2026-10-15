@@ -23,6 +23,9 @@ function Held({ value, active = true, onClick }: { value: string; active?: boole
         </button>
         <input aria-label="A field" />
         <input aria-label="Another field" />
+        <select aria-label="A select">
+          <option value="a">A</option>
+        </select>
       </div>
       <button type="button">Outside</button>
     </>
@@ -183,6 +186,15 @@ describe("useHeldWhilePressed", () => {
     const { rerender } = render(<Held value="before" />)
 
     fireEvent.pointerDown(screen.getByRole("button", { name: "Outside" }))
+    rerender(<Held value="after" />)
+    expect(shown()).toBe("after")
+  })
+
+  it("holds nothing for a press on a select, whose menu takes the release and opens where it is", () => {
+    const { rerender } = render(<Held value="before" />)
+
+    // In Chromium the release goes to the select's menu, never reaching the window.
+    fireEvent.pointerDown(screen.getByRole("combobox", { name: "A select" }))
     rerender(<Held value="after" />)
     expect(shown()).toBe("after")
   })

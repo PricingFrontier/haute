@@ -1,0 +1,122 @@
+{
+  "about": "Whether a quote has anything typed to price or save: a value in a column the sheets show, other than a column the app sets (locked), the index, the column giving a table its rows, and a one-row table's column holding the default a new quote starts it with. Each case gives the values (rows by table id, cells by column id), the locked columns as [table, column], and whether the quote is typed. The form spells each column with what it sets, the rest as a new column's. frontend/src/utils/__tests__/sheetVisibility.test.ts holds quoteEligible to every case, and tests/test_workbench_tables.py holds the server's rule to them, the locked columns' values left out first as the app's routes leave out the details they set: one rule in two languages.",
+  "form": {
+    "version": 1,
+    "name": "typed",
+    "schema": {
+      "tables": [
+        {
+          "id": "t_policy",
+          "name": "policy",
+          "role": "input",
+          "rows": "one",
+          "columns": [
+            { "id": "c_state", "name": "state" },
+            { "id": "c_limit", "name": "limit", "type": "int", "default_value": "1000" },
+            { "id": "c_flood", "name": "flood_cover", "type": "bool" },
+            { "id": "c_reference", "name": "reference" }
+          ]
+        },
+        {
+          "id": "t_flood",
+          "name": "flood",
+          "role": "input",
+          "rows": "one",
+          "columns": [{ "id": "c_flood_si", "name": "flood_si", "type": "float" }]
+        },
+        {
+          "id": "t_perils",
+          "name": "perils",
+          "role": "input",
+          "rows": "many",
+          "columns": [
+            { "id": "c_line", "name": "line", "type": "int", "index": true },
+            { "id": "c_peril", "name": "peril", "options": ["AOP", "EQ"], "row_per_value": true },
+            { "id": "c_peril_limit", "name": "peril_limit", "type": "float" }
+          ]
+        },
+        {
+          "id": "t_out",
+          "name": "pricing",
+          "role": "output",
+          "rows": "one",
+          "columns": [{ "id": "c_premium", "name": "premium", "type": "float" }]
+        }
+      ]
+    },
+    "pages": [
+      {
+        "id": "p_main",
+        "title": "Main",
+        "width": 1280,
+        "sections": [
+          {
+            "id": "s_main",
+            "title": "Section 1",
+            "height": 640,
+            "widgets": [
+              {
+                "id": "w_policy",
+                "x": 0,
+                "y": 0,
+                "w": 720,
+                "h": 120,
+                "type": "collection",
+                "fields": [
+                  { "table": "t_policy", "column": "c_state" },
+                  { "table": "t_policy", "column": "c_limit" },
+                  { "table": "t_policy", "column": "c_flood" },
+                  { "table": "t_policy", "column": "c_reference" }
+                ]
+              },
+              {
+                "id": "w_flood",
+                "x": 0,
+                "y": 160,
+                "w": 720,
+                "h": 120,
+                "type": "collection",
+                "fields": [{ "table": "t_flood", "column": "c_flood_si" }],
+                "show_when": {
+                  "match": "all",
+                  "conditions": [{ "table": "t_policy", "column": "c_flood", "op": "ticked", "values": [] }]
+                }
+              },
+              {
+                "id": "w_perils",
+                "x": 0,
+                "y": 320,
+                "w": 720,
+                "h": 200,
+                "type": "tableInput",
+                "fields": [
+                  { "table": "t_perils", "column": "c_line" },
+                  { "table": "t_perils", "column": "c_peril" },
+                  { "table": "t_perils", "column": "c_peril_limit" }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "cases": [
+    { "name": "nothing", "values": {}, "locked": [], "typed": false },
+    { "name": "a value", "values": { "t_policy": [{ "c_state": "NY" }] }, "locked": [], "typed": true },
+    { "name": "blank text", "values": { "t_policy": [{ "c_state": "  " }] }, "locked": [], "typed": false },
+    { "name": "a tick", "values": { "t_policy": [{ "c_flood": true }] }, "locked": [], "typed": true },
+    { "name": "the default alone", "values": { "t_policy": [{ "c_limit": "1000" }] }, "locked": [], "typed": false },
+    { "name": "a value other than the default", "values": { "t_policy": [{ "c_limit": "2000" }] }, "locked": [], "typed": true },
+    { "name": "the default beside a value", "values": { "t_policy": [{ "c_limit": "1000", "c_state": "NY" }] }, "locked": [], "typed": true },
+    { "name": "a value the sheets hide", "values": { "t_flood": [{ "c_flood_si": "5000" }] }, "locked": [], "typed": false },
+    { "name": "a value the sheets show once its condition holds", "values": { "t_policy": [{ "c_flood": true }], "t_flood": [{ "c_flood_si": "5000" }] }, "locked": [], "typed": true },
+    { "name": "a value the app sets", "values": { "t_policy": [{ "c_reference": "Q-000001" }] }, "locked": [["t_policy", "c_reference"]], "typed": false },
+    { "name": "a value the app sets beside one typed", "values": { "t_policy": [{ "c_reference": "Q-000001", "c_state": "NY" }] }, "locked": [["t_policy", "c_reference"]], "typed": true },
+    { "name": "the rows a column gives alone", "values": { "t_perils": [{ "c_peril": "AOP" }, { "c_peril": "EQ" }] }, "locked": [], "typed": false },
+    { "name": "a value in a row a column gives", "values": { "t_perils": [{ "c_peril": "EQ", "c_peril_limit": "250" }] }, "locked": [], "typed": true },
+    { "name": "a value in a row no allowed value gives", "values": { "t_perils": [{ "c_peril": "AOP" }, { "c_peril": "EQ" }, { "c_peril": "XX", "c_peril_limit": "9" }] }, "locked": [], "typed": false },
+    { "name": "a second row of a one-row table", "values": { "t_policy": [{}, { "c_state": "NY" }] }, "locked": [], "typed": false },
+    { "name": "a table the form no longer has", "values": { "t_gone": [{ "c_state": "NY" }] }, "locked": [], "typed": false }
+  ]
+}

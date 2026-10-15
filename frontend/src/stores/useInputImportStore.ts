@@ -9,6 +9,7 @@ import useDocumentStatusStore, {
   captureDocumentExecutionFence,
   isDocumentExecutionFenceCurrent,
 } from "./useDocumentStatusStore"
+import useDataEpochStore from "./useDataEpochStore"
 import useGraphStore from "./useGraphStore"
 import useNodeDataStore from "./useNodeDataStore"
 import useNodeWorkStore, { registerNodeStop } from "./useNodeWorkStore"
@@ -91,6 +92,8 @@ export function startInputImport(nodeId: string, input: Node, onImported: (nodeI
     if (!release()) return
     if (!isDocumentExecutionFenceCurrent(fence)) return
     useNodeDataStore.getState().bumpEpoch()
+    // A source imported anew is data a price made before did not read.
+    if (completed) useDataEpochStore.getState().moved()
     if (completed && !controller.signal.aborted && currentSourceKey(nodeId) === sourceKey) {
       onImported(nodeId)
     }

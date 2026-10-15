@@ -261,7 +261,8 @@ def sample_quote(spec: FormSpec) -> dict[str, Any]:
     a list of objects when it has many; rows with nothing typed are left out, and so is a table
     with none. A table a column gives a row for each value has those rows (:func:`preset_rows`),
     each filled by its value; but those values are not typing, so a quote holding nothing else
-    is empty, as a blank one is. A value in a column the sheets hide is left out, as if it had
+    is empty, as a blank one is, and so are the defaults a new quote starts with, which are
+    not typing either. A value in a column the sheets hide is left out, as if it had
     never been typed. Values take their column's type: a number typed with a currency sign or
     separators becomes a number, and an unticked box in a filled row is false. A value that
     isn't of its column's type stays as typed, for the Workbench Input to report.
@@ -281,7 +282,7 @@ def sample_quote(spec: FormSpec) -> dict[str, Any]:
         columns = [column for column in table.columns if (table.id, column.id) not in hidden]
         given = preset_column(table)
         typed = typed or any(
-            _filled(row.get(column.id))
+            _filled(row.get(column.id)) and not _starting(table, column, row.get(column.id))
             for row in rows
             for column in columns
             if not column.index and column is not given
@@ -371,6 +372,18 @@ def _record(
     return record
 
 
+def _starting(table: SchemaTable, column: SchemaColumn, raw: str | bool | None) -> bool:
+    """Whether *raw* is the default a new quote starts *column* with, which is not typing:
+    a one-row input table's column holding its default (``startingValue`` in the view)."""
+    return (
+        table.role == "input"
+        and table.rows == "one"
+        and not column.index
+        and _filled(column.default_value)
+        and raw == column.default_value
+    )
+
+
 def _filled(raw: str | bool | None) -> bool:
     return raw is True or (isinstance(raw, str) and raw.strip() != "")
 
@@ -379,6 +392,7 @@ def _filled(raw: str | bool | None) -> bool:
 #: view's ``parseTypedNumber`` (``frontend/src/utils/sheetValues.ts``) applies too, so a cell
 #: the view marks is one the server would keep as typed.
 _NUMBER = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+_WHOLE = re.compile(r"[+-]?[0-9]+")
 
 
 def _typed(column_type: str, text: str) -> Any:
@@ -388,6 +402,9 @@ def _typed(column_type: str, text: str) -> Any:
     cleaned = re.sub(r"[$£€,\s]", "", text)
     if _NUMBER.fullmatch(cleaned) is None:
         return text
+    if column_type == "int" and _WHOLE.fullmatch(cleaned):
+        # Digits alone are a whole number, read exactly however large: not through a float.
+        return int(cleaned)
     number = float(cleaned)
     if not math.isfinite(number):
         return text

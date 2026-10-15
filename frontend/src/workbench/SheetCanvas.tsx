@@ -1,10 +1,11 @@
 import { useLayoutEffect, useMemo, useRef, type ReactNode } from "react"
 import type { Page, Section } from "../api/types"
+import useRefocusAfterMove from "../hooks/useRefocusAfterMove"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { activePage, previewSections, shownPage } from "../stores/useWorkbenchViewStore"
 import { GRID, readingOrder, SECTION_HEADER, SHEET_PADDING, sheetHeight, stackBottom, stackSections } from "../utils/sheetGeometry"
-import { pageWidgets, showWhenText, shownFields, widgetProblems } from "../utils/workbenchForm"
-import SectionHeaders from "./SectionHeaders"
+import { pageWidgets, sectionProblems, showWhenText, widgetProblems } from "../utils/workbenchForm"
+import { SectionBar, SectionMoveLine } from "./SectionHeaders"
 import { dropAt, leaveField, sectionDropAt } from "./sheetInteractions"
 import SheetWidget from "./SheetWidget"
 import { useHeldWhilePressed, useKeptPlace } from "./steadyPreview"
@@ -22,13 +23,15 @@ const NO_SECTIONS: readonly Section[] = []
  * quote while building; in Preview the sample, or the underwriter app's quote), with,
  * while building, a ghost where a component dragged out of the palette would land, or a
  * line where a section would start. While building every section and component is drawn,
- * those a new quote hides faded, each section under its bar (`SectionHeaders`); in
+ * those a new quote hides faded, each section under its bar (`SectionBar`), drawn first in
+ * it; in
  * Preview only the sections and components the values show, on
  * the first sheet that shows when the chosen one does not, the sections that show closing
  * up the space of those that do not, held while a pointer is pressed on the sheet and kept
  * in the underwriter's view as they move. The components are drawn in the order they are
  * read, section by section and, within each, row by row and left to right along each row
- * (`readingOrder`), so a screen reader and Tab follow the layout, on the sheet's background
+ * (`readingOrder`), so a screen reader and Tab follow the layout, each section's bar before
+ * its components while building, on the sheet's background
  * (the form's `theme`, else the editor's own), and stacked in the form's
  * order, so where two overlap the one added later covers the other (a copy its original),
  * the selected one covers both and the ghost covers all. Pressing the empty sheet
@@ -36,7 +39,8 @@ const NO_SECTIONS: readonly Section[] = []
  * viewport are registered with the view store, which places drops on them and fits the
  * zoom to them; what is on the sheet is fitted to the viewport when the sheets first show
  * for a form, and a zoom chosen since is kept across a trip to the schema or the pipeline
- * editor.
+ * editor. Only the values in use are made, and a component is drawn again only when what it
+ * shows changes, so a drag redraws what it moves.
  */
 export default function SheetCanvas() {
   const form = useWorkbenchFormStore((s) => s.form)
@@ -52,9 +56,11 @@ export default function SheetCanvas() {
   const viewport = useWorkbenchViewStore((s) => s.viewport)
   const fitZoom = useWorkbenchViewStore((s) => s.fitZoom)
   const fitted = useWorkbenchViewStore((s) => s.fitted)
-  const newQuote = useNewQuoteValues()
-  const sample = useSampleValues()
-  const quote = useQuoteValues()
+  const newQuote = useNewQuoteValues(!previewing)
+  const sample = useSampleValues(previewing && !underwriterApp)
+  const quote = useQuoteValues(previewing && underwriterApp)
+  // The bars' focus, kept through a section moved by the keyboard.
+  const bars = useRefocusAfterMove<HTMLButtonElement>()
   const viewportRef = useRef<HTMLDivElement>(null)
   useLayoutEffect(() => {
     setViewport(viewportRef.current)
@@ -67,6 +73,11 @@ export default function SheetCanvas() {
     const byWidget = new Map<string, string>()
     if (form !== null) for (const problem of widgetProblems(form)) if (!byWidget.has(problem.widgetId)) byWidget.set(problem.widgetId, problem.message)
     return byWidget
+  }, [form])
+  const barProblems = useMemo(() => {
+    const bySection = new Map<string, string>()
+    if (form !== null) for (const problem of sectionProblems(form)) if (!bySection.has(problem.sectionId)) bySection.set(problem.sectionId, problem.message)
+    return bySection
   }, [form])
   const values = !previewing ? newQuote : underwriterApp ? quote : sample
   const { visibility } = values
@@ -96,6 +107,10 @@ export default function SheetCanvas() {
       className="min-h-0 flex-1 overflow-auto"
       style={{ background: "var(--bg-canvas)", overflowAnchor: "none" }}
       onPointerDown={(event) => {
+        // A press on a scrollbar, outside the viewport's client box, scrolls and selects nothing.
+        const viewport = event.currentTarget
+        const box = viewport.getBoundingClientRect()
+        if (event.clientX - box.left - viewport.clientLeft >= viewport.clientWidth || event.clientY - box.top - viewport.clientTop >= viewport.clientHeight) return
         leaveField(event.currentTarget)
         select(null)
       }}
@@ -125,15 +140,29 @@ export default function SheetCanvas() {
             }}
           >
             <SheetValuesContext value={values}>
-              {stack.map(({ section, top: sectionTop }) => (
+              {stack.map(({ section, top: sectionTop }, index) => (
                 <SheetSection key={section.id} section={section} top={sectionTop} building={!previewing} selected={!previewing && selectedSection === section.id} zoom={zoom}>
+                  {!previewing && (
+                    <SectionBar
+                      page={page}
+                      section={section}
+                      index={index}
+                      zoom={zoom}
+                      layer={top + 1}
+                      selected={selectedSection === section.id}
+                      hidden={!visibility.sections.has(section.id)}
+                      conditions={section.show_when.conditions.length > 0 ? showWhenText(form, section.show_when) : null}
+                      problem={barProblems.get(section.id) ?? null}
+                      refocus={bars}
+                    />
+                  )}
                   {readingOrder(section.widgets).map((widget) => {
                     const selected = !previewing && selectedId === widget.id
                     return (
                       <SheetWidget
                         key={widget.id}
                         widget={widget}
-                        fields={shownFields(form, widget)}
+                        schema={form.schema}
                         selected={selected}
                         problem={problems.get(widget.id) ?? null}
                         editable={!previewing}
@@ -147,7 +176,7 @@ export default function SheetCanvas() {
                 </SheetSection>
               ))}
             </SheetValuesContext>
-            {!previewing && <SectionHeaders page={page} stack={stack} zoom={zoom} layer={top + 1} />}
+            {!previewing && <SectionMoveLine stack={stack} zoom={zoom} layer={top + 1} />}
             {!previewing && <DropGhost layer={top + 1} zoom={zoom} />}
           </div>
         </div>

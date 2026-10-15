@@ -3,6 +3,7 @@ app serving it, signed in by its host and pricing through the release's pipeline
 
 from __future__ import annotations
 
+import copy
 import json
 import time
 from pathlib import Path
@@ -38,6 +39,10 @@ from tests.test_workbench_routes import POLICY, PRICING, form
 FORM = form(POLICY, PRICING, sample={"t1": [{"c_state": "NY", "c_exposure": "1000"}]})
 VALUES = {"t1": [{"c_state": "NY", "c_exposure": "$1,000"}]}
 SIGNED_IN = {EASY_AUTH_NAME: "uw@example.com"}
+
+
+#: The runtime a test release prices on, as a build reads it from the installed versions.
+RUNTIME = ["polars==1.0.0", "pydantic==2.0.0"]
 
 
 def _node(nid: str, node_type: NodeType, config: dict[str, Any]) -> GraphNode:
@@ -95,7 +100,7 @@ def release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
             "pruned_graph": shipped_graph(_graph()),
         }
         (directory / "deploy_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-        write_release(directory, FormSpec.model_validate(spec), host)
+        write_release(directory, FormSpec.model_validate(spec), host, runtime=RUNTIME)
         return directory
 
     yield build
@@ -140,12 +145,12 @@ def test_the_release_id_is_taken_from_the_form_and_the_bundle(release: Any, tmp_
     first = read_release(release())[0].id
     directory = tmp_path / "release"
 
-    def rebuilt(**changes: Any) -> str:
+    def rebuilt(runtime: list[str] = RUNTIME, **changes: Any) -> str:
         manifest_path = tmp_path / "release" / "deploy_manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest.update(changes)
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        return write_release(directory, FormSpec.model_validate(FORM), None).id
+        return write_release(directory, FormSpec.model_validate(FORM), None, runtime=runtime).id
 
     # Built again later, by someone else, from another checkout and for another target, the
     # same project is the same release.
@@ -170,6 +175,26 @@ def test_the_release_id_is_taken_from_the_form_and_the_bundle(release: Any, tmp_
     here = rebuilt(pruned_graph={**graph, "source_file": "C:/checkouts/one/main.py"})
     assert rebuilt(pruned_graph={**graph, "source_file": "D:/two/main.py"}) == here == first
 
+    # Nor do where its nodes sit on the canvas, a node's description, an edge's canvas id or
+    # the order the nodes are listed in.
+    laid_out = copy.deepcopy(graph)
+    for node in laid_out["nodes"]:
+        node["position"] = {"x": 999.0, "y": -40.0}
+        node["data"]["description"] = "moved"
+    for edge in laid_out["edges"]:
+        edge["id"] = f"redrawn-{edge['id']}"
+    laid_out["nodes"].reverse()
+    assert rebuilt(pruned_graph=laid_out) == first
+    # A node's config does.
+    reconfigured = copy.deepcopy(graph)
+    first_node = reconfigured["nodes"][0]["data"]
+    first_node["config"] = {**first_node["config"], "changed": True}
+    assert rebuilt(pruned_graph=reconfigured) != first
+    rebuilt(pruned_graph=graph)
+
+    # Another runtime under the same versions of everything else is another release.
+    assert rebuilt(runtime=["polars==9.9.9"]) != first
+
     # A model retrained under the same name is another release.
     release()
     model = tmp_path / "release" / "artifacts" / "model.cbm"
@@ -186,6 +211,37 @@ def test_the_release_id_is_taken_from_the_form_and_the_bundle(release: Any, tmp_
     helped = rebuilt()
     helper.write_text("RATE = 2\n", encoding="utf-8")
     assert rebuilt() not in (retrained, helped)
+
+
+@pytest.mark.parametrize(
+    ("file", "content", "said"),
+    [
+        ("release.json", "[]", "The release's release.json is not a release: it is not a JSON"),
+        ("release.json", '{"id": "x"}', "The release's release.json is not a release:"),
+        (
+            "form.json",
+            '{"name": "x"}',
+            "The release's form.json is not a form: pages: Field required",
+        ),
+        (
+            "deploy_manifest.json",
+            '{"pruned_graph": {}}',
+            "The release's deploy_manifest.json is not a bundle's manifest: it has no "
+            "input_node_ids, output_node_id, artifacts",
+        ),
+        ("deploy_manifest.json", "[]", "it has no pruned_graph, input_node_ids"),
+    ],
+)
+def test_a_release_that_is_not_one_says_which_file_and_why(
+    release: Any, file: str, content: str, said: str
+) -> None:
+    directory = release()
+    (directory / file).write_text(content, encoding="utf-8")
+
+    with pytest.raises(WorkbenchAppError) as refused:
+        read_release(directory)
+
+    assert said in refused.value.message
 
 
 def test_the_app_reads_what_the_pipeline_ships_from_the_release(release: Any) -> None:
@@ -279,6 +335,28 @@ def test_a_quote_is_priced_through_the_releases_pipeline(release: Any) -> None:
     }
 
 
+def test_a_quote_whose_answer_is_all_empty_is_priced_to_nothing(
+    release: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polars as pl
+
+    client = _client(release())
+    # A pipeline that answers this quote with a null premium and no rows of a table.
+    answer = pl.DataFrame(
+        {"pricing_output": [{"premium": None}], "items": [[]]},
+        schema={
+            "pricing_output": pl.Struct({"premium": pl.Float64}),
+            "items": pl.List(pl.Struct({"item": pl.String})),
+        },
+    )
+    monkeypatch.setattr(workbench_app, "score_graph", lambda **_: answer)
+
+    priced = _price(client)
+
+    assert priced.status_code == 200, priced.text
+    assert priced.json()["tables"] == {}
+
+
 def test_a_page_drawn_for_another_release_is_refused(release: Any) -> None:
     client = _client(release())
     other_sheets = _price(client, revision="0" * 64)
@@ -321,6 +399,12 @@ def test_a_request_past_the_deploy_body_limit_is_refused_before_it_is_read_whole
     assert malformed.status_code == 422
     unshaped = client.post("/api/app/price", json={"values": {}}, headers=SIGNED_IN)
     assert unshaped.status_code == 422
+    # Where and why, never the values sent again.
+    missing = unshaped.json()["detail"]
+    assert {"loc": ["form_revision"], "msg": "Field required"} in [
+        {"loc": error["loc"], "msg": error["msg"]} for error in missing
+    ]
+    assert not [error for error in missing if "input" in error]
 
 
 def _never(*_: Any, **__: Any) -> Any:
@@ -338,6 +422,39 @@ def test_a_pricing_that_runs_too_long_answers_that_it_timed_out(
 
     assert answered.status_code == 504
     assert answered.json()["detail"] == "Pricing the quote took too long; try again."
+
+
+def test_a_pipeline_failing_on_the_quote_answers_why(
+    release: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(**_: Any) -> None:
+        raise KeyError("vehicle_factor")
+
+    monkeypatch.setattr(workbench_app, "score_graph", fail)
+
+    answered = _price(_client(release()))
+
+    assert answered.status_code == 500
+    assert answered.json()["detail"] == "The pipeline failed on this quote: 'vehicle_factor'"
+
+
+def test_the_admission_is_held_until_the_answer_is_the_tables_sent_back(
+    release: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    held: list[bool] = []
+    score = workbench_app.score_graph
+
+    def scored(**options: Any) -> Any:
+        # The pricing asks to keep its admission past the scoring.
+        held.append(options["retain_admission_on_success"])
+        return score(**options)
+
+    monkeypatch.setattr(workbench_app, "score_graph", scored)
+
+    answered = _price(_client(release()))
+
+    assert answered.status_code == 200, answered.text
+    assert held == [True]
 
 
 def test_a_pricing_the_app_cannot_admit_answers_that_it_is_busy(
@@ -639,6 +756,43 @@ def test_a_release_is_refused_for_what_the_project_cannot_ship(project: Path) ->
     assert "has no workbench" in refused()
 
 
+def test_a_build_replaces_only_a_release_it_made(project: Path) -> None:
+    """The project, a folder holding it, and a folder whose release.json is not a release
+    are refused, each left as it was: a stray release.json is no licence to delete."""
+    (project / "release.json").write_text("{}", encoding="utf-8")
+    for output in (project, project.parent):
+        with pytest.raises(WorkbenchAppError, match="is the project or holds it"):
+            build_release(project, output)
+        assert (project / "haute.toml").is_file()
+        assert (project / "release.json").read_text(encoding="utf-8") == "{}"
+
+    notes = project / "build" / "notes"
+    notes.mkdir(parents=True)
+    (notes / "release.json").write_text('{"not": "a release"}', encoding="utf-8")
+    (notes / "mine.txt").write_text("mine", encoding="utf-8")
+    with pytest.raises(WorkbenchAppError, match="not a release"):
+        build_release(project, notes)
+    assert (notes / "mine.txt").read_text(encoding="utf-8") == "mine"
+
+
+def test_an_earlier_release_is_replaced_only_once_its_successor_has_built(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release_dir = project / "build" / "app"
+    earlier = build_release(project, release_dir)
+
+    def unwritten(*_: Any, **__: Any) -> Any:
+        raise WorkbenchAppError("the release could not be written")
+
+    monkeypatch.setattr("haute._workbench_app.write_release", unwritten)
+    with pytest.raises(WorkbenchAppError, match="could not be written"):
+        build_release(project, release_dir)
+
+    assert read_release(release_dir)[0].id == earlier.id
+    # Nothing of the build that failed is left beside it.
+    assert [path.name for path in release_dir.parent.iterdir()] == ["app"]
+
+
 def test_haute_app_build_writes_the_release(project: Path) -> None:
     from click.testing import CliRunner
 
@@ -654,6 +808,24 @@ def test_haute_app_build_writes_the_release(project: Path) -> None:
     # ignores, model files and all.
     assert CliRunner().invoke(cli, ["app", "build"]).exit_code == 0
     assert (project / ".haute" / "app" / "release" / "release.json").is_file()
+
+
+def test_the_app_commands_say_a_fault_and_print_no_traceback(project: Path) -> None:
+    from click.testing import CliRunner
+
+    from haute.cli import cli
+
+    # A store URL SQLAlchemy cannot read.
+    unread = CliRunner().invoke(cli, ["app", "migrate", "--url", "nosuchdialect://quotes"])
+    # A project whose haute.toml is not TOML.
+    (project / "haute.toml").write_text("[project\n", encoding="utf-8")
+    unbuilt = CliRunner().invoke(cli, ["app", "build", "out"])
+
+    for result in (unread, unbuilt):
+        assert result.exit_code == 1, result.output
+        assert "\nError: " in f"\n{result.output}", result.output
+        assert "Traceback" not in result.output
+        assert isinstance(result.exception, SystemExit), result.exception
 
 
 def test_haute_app_serve_serves_the_release_on_loopback_as_the_analyst(
@@ -867,24 +1039,29 @@ def test_the_release_prices_and_keeps_quotes_with_only_the_images_runtime_instal
 
 def test_a_release_without_a_quote_store_prices_without_its_packages(release: Any) -> None:
     """Without a store the app imports nothing of the store's: a scoring image without its
-    packages serves the sheets and prices."""
+    packages serves the sheets and prices a quote."""
     import subprocess
     import sys
 
     script = (
-        "import importlib.abc, sys\n"
+        "import importlib.abc, json, sys\n"
         "class Block(importlib.abc.MetaPathFinder):\n"
         "    def find_spec(self, name, path=None, target=None):\n"
         "        if name.split('.')[0] in ('sqlalchemy', 'alembic'):\n"
         "            raise ModuleNotFoundError(name)\n"
         "sys.meta_path.insert(0, Block())\n"
         "from pathlib import Path\n"
+        "from fastapi.testclient import TestClient\n"
         "from haute._workbench_app import create_app\n"
-        "create_app(Path(sys.argv[1]))\n"
-        "print('served')\n"
+        "client = TestClient(create_app(Path(sys.argv[1]), local_principal='uw@example.com'))\n"
+        "revision = client.get('/api/app/form').json()['revision']\n"
+        "release = client.get('/api/app/release').json()['id']\n"
+        "priced = client.post('/api/app/price', json={'form_revision': revision,\n"
+        "    'release': release, 'values': json.loads(sys.argv[2])})\n"
+        "print(json.dumps({'status': priced.status_code, 'body': priced.json()}))\n"
     )
     completed = subprocess.run(
-        [sys.executable, "-c", script, str(release())],
+        [sys.executable, "-c", script, str(release()), json.dumps(VALUES)],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -892,4 +1069,6 @@ def test_a_release_without_a_quote_store_prices_without_its_packages(release: An
     )
 
     assert completed.returncode == 0, completed.stderr[-4000:]
-    assert completed.stdout.strip().endswith("served")
+    answer = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert answer["status"] == 200, answer
+    assert answer["body"]["tables"]

@@ -67,13 +67,18 @@ Out of scope (owned by neighbouring components):
 save ledger `<W>-save`. Ordinary "saves" are commits on the ledger — one commit per save,
 scoped to exactly the files that changed: the pipeline's files, the workbench's form, or a
 file added, replaced or deleted in the pipeline folder's `files/` through the Pipeline files
-panel ([server-api](../server-api/high-level.md)).
+panel ([server-api](../server-api/high-level.md)). A save whose capture is skipped for want
+of a git identity, or fails, still lands on disk, and its answer names the files it left off
+the ledger: no later save's pathspec takes them, so the editor keeps them and one capture
+route takes them once an identity is set, and at each Save.
 HEAD lives on the ledger during normal use, so
 the user is always looking at their latest saved state. "Commit" (a milestone) first
 sweeps into one final ledger save every modified file already tracked by Git and every new
 file in the pipeline folder, which is versioned as a whole
 ([pipeline-config](../pipeline-config/high-level.md)). A new file elsewhere is never included
-implicitly, and neither is one that `.gitignore` ignores. A file in the pipeline folder
+implicitly, and neither is one that `.gitignore` ignores nor one the Files panels hide (a
+dot-name such as `.env.local`, `__pycache__/`, bytecode), so Commit never records a file the
+analyst could not see in Haute. A file in the pipeline folder
 larger than 100 MiB refuses the Commit, naming the file, before anything is recorded. Commit
 then folds every pending ledger commit into
 a single, always-real merge commit on the working branch, with the user's own message and an

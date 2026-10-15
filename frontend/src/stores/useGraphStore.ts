@@ -26,11 +26,14 @@
  *     and clears `redoStack`. An atomic graph commit whose authored fingerprint
  *     is unchanged (such as generated step-code refresh) preserves both stacks.
  *
- *   - Raw: `setNodesRaw`, `setEdgesRaw`, `setSubmodelsRaw`, `setPreambleRaw`.
+ *   - Raw: `setNodesRaw`, `setEdgesRaw`, `setSubmodelsRaw`, `setPreambleRaw`,
+ *     `setNodesAndEdgesAndSubmodelsRaw`. No
  *     history push — used for mid-drag position updates (React Flow's
  *     `onNodesChange` replays many `position` events per frame; snapshotting
  *     each would fill undo with ~60 entries per drag), for WebSocket sync,
- *     and for guarded external synchronisation.
+ *     for guarded external synchronisation, and for the workbench nodes'
+ *     copies of the form's tables, which follow the form, not the graph's
+ *     history (an undo puts them back at once).
  *
  * The 100-entry MAX_HISTORY cap prevents unbounded growth on long editing
  * sessions.
@@ -142,6 +145,12 @@ export interface GraphStore {
   setPreamble: (value: string) => void
 
   // Raw actions (skip history push — for mid-drag and guarded WS sync)
+  /** `setNodesAndEdgesAndSubmodels` without touching the undo or redo stack. */
+  setNodesAndEdgesAndSubmodelsRaw: (
+    nodes: Node[] | ((nds: Node[]) => Node[]),
+    edges: PipelineEdge[] | ((eds: PipelineEdge[]) => PipelineEdge[]),
+    submodels: Record<string, unknown>,
+  ) => void
   setNodesRaw: (nodes: Node[] | ((nds: Node[]) => Node[])) => void
   setEdgesRaw: (edges: PipelineEdge[] | ((eds: PipelineEdge[]) => PipelineEdge[])) => void
   setSubmodelsRaw: (submodels: Record<string, unknown>) => void
@@ -535,6 +544,55 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     return appendHistoryEntry(undoStack, snap)
   }
 
+  /**
+   * One atomic graph commit of nodes, edges and submodels (and the preamble when given),
+   * as an undo step when `history` holds and the authored graph changed. A render can
+   * refresh generated step code without changing authored graph state: that cache update
+   * consumes neither Undo nor Redo.
+   */
+  function commitGraphState(
+    state: GraphStore,
+    nodesUpdater: Node[] | ((nds: Node[]) => Node[]),
+    edgesUpdater: PipelineEdge[] | ((eds: PipelineEdge[]) => PipelineEdge[]),
+    submodels: Record<string, unknown>,
+    preamble: string | undefined,
+    history: boolean,
+  ): Partial<GraphStore> {
+    const nodes = applyUpdater(state.nodes, nodesUpdater)
+    const edges = applyUpdater(state.edges, edgesUpdater)
+    const nextPreamble = preamble === undefined ? state.preamble : preamble
+    const nextPersistedFingerprint = computePersistedFingerprint(
+      nodes,
+      edges,
+      nextPreamble,
+      submodels,
+      state.globalConstants,
+    )
+    const nextFingerprint = computeStructuralFingerprint(nodes, edges, nextPreamble, state.globalConstants)
+    const recorded = history && nextPersistedFingerprint !== state.persistedFingerprint
+    return {
+      undoStack: recorded ? pushSnapshotInternal() : state.undoStack,
+      redoStack: recorded ? [] : state.redoStack,
+      nodes,
+      edges,
+      preamble: nextPreamble,
+      submodels,
+      ...computePanelContextPatch(state, nodes, edges),
+      persistedFingerprint: nextPersistedFingerprint,
+      dirty: computeDirty(
+        state.lastSavedSnapshot,
+        state.savedPersistedFingerprint,
+        nextPersistedFingerprint,
+      ),
+      ...(nextFingerprint === state.structuralFingerprint
+        ? {}
+        : {
+            structuralFingerprint: nextFingerprint,
+            structuralVersion: state.structuralVersion + 1,
+          }),
+    }
+  }
+
   return {
     ...createInitialGraphState(),
 
@@ -649,43 +707,11 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     },
 
     setNodesAndEdgesAndSubmodels: (nodesUpdater, edgesUpdater, submodels, preamble) => {
-      set((state) => {
-        const nodes = applyUpdater(state.nodes, nodesUpdater)
-        const edges = applyUpdater(state.edges, edgesUpdater)
-        const nextPreamble = preamble === undefined ? state.preamble : preamble
-        const nextPersistedFingerprint = computePersistedFingerprint(
-          nodes,
-          edges,
-          nextPreamble,
-          submodels,
-          state.globalConstants,
-        )
-        const nextFingerprint = computeStructuralFingerprint(nodes, edges, nextPreamble, state.globalConstants)
-        // A render can refresh generated step code without changing authored
-        // graph state. Apply that cache update without consuming Undo or Redo.
-        const authoredChange = nextPersistedFingerprint !== state.persistedFingerprint
-        return {
-          undoStack: authoredChange ? pushSnapshotInternal() : state.undoStack,
-          redoStack: authoredChange ? [] : state.redoStack,
-          nodes,
-          edges,
-          preamble: nextPreamble,
-          submodels,
-          ...computePanelContextPatch(state, nodes, edges),
-          persistedFingerprint: nextPersistedFingerprint,
-          dirty: computeDirty(
-            state.lastSavedSnapshot,
-            state.savedPersistedFingerprint,
-            nextPersistedFingerprint,
-          ),
-          ...(nextFingerprint === state.structuralFingerprint
-            ? {}
-            : {
-                structuralFingerprint: nextFingerprint,
-                structuralVersion: state.structuralVersion + 1,
-              }),
-        }
-      })
+      set((state) => commitGraphState(state, nodesUpdater, edgesUpdater, submodels, preamble, true))
+    },
+
+    setNodesAndEdgesAndSubmodelsRaw: (nodesUpdater, edgesUpdater, submodels) => {
+      set((state) => commitGraphState(state, nodesUpdater, edgesUpdater, submodels, undefined, false))
     },
 
     setPreamble: (value) => {

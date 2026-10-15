@@ -156,7 +156,7 @@ const valuesOfSeries = (data: ChartData) => data.series.map(({ key, values }) =>
 describe("a Chart of one-row tables", () => {
   it("plots a point per field, typed with a currency sign and separators read as a number, and priced", () => {
     const { spec, widget } = charted([field("policy", "sum_insured"), field("quote", "premium")])
-    const data = sheetChartData(spec, widget, valuesOf(spec, { policy: [{ sum_insured: "£250,000" }] }, priced({ quote: [{ premium: 1234.5 }] })))
+    const data = sheetChartData(spec.schema, widget, valuesOf(spec, { policy: [{ sum_insured: "£250,000" }] }, priced({ quote: [{ premium: 1234.5 }] })))
     expect(data.rows).toBe("one")
     expect(data.categories).toEqual(["Sum insured", "Premium"])
     expect(data.series).toEqual([{ key: "points", name: "Chart", values: [250000, 1234.5], labels: ["£250,000.00", "£1,234.50"] }])
@@ -165,19 +165,19 @@ describe("a Chart of one-row tables", () => {
   it("leaves a gap for text that is not a number, a column the quote leaves out and a price that is not a number", () => {
     const { spec, widget } = charted([field("policy", "sum_insured"), field("policy", "excess"), field("quote", "premium")])
     // Cover is not ticked, so the excess is on no component that shows: the quote leaves it out however the Chart plots it.
-    const data = sheetChartData(spec, widget, valuesOf(spec, { policy: [{ sum_insured: "lots", excess: "500" }] }, priced({ quote: [{ premium: "n/a" }] })))
+    const data = sheetChartData(spec.schema, widget, valuesOf(spec, { policy: [{ sum_insured: "lots", excess: "500" }] }, priced({ quote: [{ premium: "n/a" }] })))
     expect(data.categories).toEqual(["Sum insured", "Excess", "Premium"])
     expect(data.series[0].values).toEqual([null, null, null])
     expect(data.series[0].labels).toEqual([null, null, null])
     expect(hasValues(data)).toBe(false)
 
-    const covered = sheetChartData(spec, widget, valuesOf(spec, { policy: [{ cover: true, excess: "500" }] }))
+    const covered = sheetChartData(spec.schema, widget, valuesOf(spec, { policy: [{ cover: true, excess: "500" }] }))
     expect(covered.series[0].values).toEqual([null, 500, null])
   })
 
   it("leaves out a field it cannot plot, a text column or an index, and one whose rows do not line up", () => {
     const { spec, widget } = charted([field("policy", "state"), field("policy", "sum_insured"), field("equipment", "row"), field("equipment", "value")])
-    const data = sheetChartData(spec, widget, valuesOf(spec, { policy: [{ state: "CA", sum_insured: "100" }], equipment: [{ item: "Crane", value: "5" }] }))
+    const data = sheetChartData(spec.schema, widget, valuesOf(spec, { policy: [{ state: "CA", sum_insured: "100" }], equipment: [{ item: "Crane", value: "5" }] }))
     expect(data.categories).toEqual(["Sum insured"])
     expect(data.series[0].values).toEqual([100])
   })
@@ -194,7 +194,7 @@ describe("a Chart of many-row tables", () => {
 
   it("plots a series per field over the rows typed into its input tables, a row with nothing the quote takes left out, numbered as the grid numbers them", () => {
     const { spec, widget } = charted([field("equipment", "value")])
-    const data = sheetChartData(spec, widget, valuesOf(spec, { equipment }))
+    const data = sheetChartData(spec.schema, widget, valuesOf(spec, { equipment }))
     expect(data.rows).toBe("many")
     expect(data.categories).toEqual(["1", "3", "5"])
     expect(data.series).toEqual([{ key: "equipment:value", name: "Value", values: [5000, null, 200], labels: ["£5,000.00", null, "£200.00"] }])
@@ -206,7 +206,7 @@ describe("a Chart of many-row tables", () => {
     const widget = { ...(createWidget("chart", { x: 760, y: 0, w: 480, h: 280 }) as ChartWidget), title: "Chart", fields: [field("equipment", "value"), field("cover", "excess")] }
     const spec = addWidget(form, "s1", widget)
     // Row 1 is typed into equipment alone, row 2 into cover alone, side by side as a Table's grid has them.
-    const data = sheetChartData(spec, widget, valuesOf(spec, { equipment: [{ item: "Crane", value: "5" }, {}], cover: [{}, { item: "Crane", excess: "250" }] }))
+    const data = sheetChartData(spec.schema, widget, valuesOf(spec, { equipment: [{ item: "Crane", value: "5" }, {}], cover: [{}, { item: "Crane", excess: "250" }] }))
     expect(data.categories).toEqual(["1", "2"])
     expect(valuesOfSeries(data)).toEqual([
       { key: "equipment:value", values: [5, null] },
@@ -217,7 +217,7 @@ describe("a Chart of many-row tables", () => {
   it("lines its output tables' rows up with the typed rows by key", () => {
     const { spec, widget } = charted([field("equipment", "value"), field("premiums", "premium")])
     const price = priced({ premiums: [{ item: "Lathe", premium: 20 }, { item: "Crane", premium: 500 }] }, { equipment: typed })
-    const data = sheetChartData(spec, widget, valuesOf(spec, { equipment }, price))
+    const data = sheetChartData(spec.schema, widget, valuesOf(spec, { equipment }, price))
     expect(valuesOfSeries(data)).toEqual([
       { key: "equipment:value", values: [5000, null, 200] },
       { key: "premiums:premium", values: [500, null, 20] },
@@ -230,20 +230,20 @@ describe("a Chart of many-row tables", () => {
       premiums: [{ item: "Crane", premium: 500 }, { item: "Drill", premium: "n/a" }],
       fees: [{ item: "Drill", fee: 4 }, { item: "Crane", fee: 3 }],
     })
-    const data = sheetChartData(spec, widget, valuesOf(spec, {}, price))
+    const data = sheetChartData(spec.schema, widget, valuesOf(spec, {}, price))
     expect(data.categories).toEqual(["1", "2"])
     expect(valuesOfSeries(data)).toEqual([
       { key: "premiums:premium", values: [500, null] },
       { key: "fees:fee", values: [3, 4] },
     ])
-    expect(sheetChartData(spec, widget, valuesOf(spec, {})).categories).toEqual([])
+    expect(sheetChartData(spec.schema, widget, valuesOf(spec, {})).categories).toEqual([])
   })
 
   it("names its rows by an input column as typed: a number in its column's format, a tick Yes or No, a blank as a dash", () => {
     const rows: RowsByTable = { equipment: [{ item: "Crane", value: "5000", new: true }, { item: " ", value: "lots" }, { item: "Lathe", value: "", count: "2" }] }
     const names = (category: FieldRef) => {
       const { spec, widget } = charted([field("equipment", "count")], { category })
-      return sheetChartData(spec, widget, valuesOf(spec, rows)).categories
+      return sheetChartData(spec.schema, widget, valuesOf(spec, rows)).categories
     }
     expect(names(field("equipment", "item"))).toEqual(["Crane", "—", "Lathe"])
     expect(names(field("equipment", "value"))).toEqual(["£5,000.00", "lots", "—"])
@@ -255,24 +255,24 @@ describe("a Chart of many-row tables", () => {
   it("names its rows by an output column as an output cell shows it, a dash where the price has none", () => {
     const { spec, widget } = charted([field("equipment", "value")], { category: field("premiums", "premium") })
     const price = priced({ premiums: [{ item: "Crane", premium: 1500 }] }, { equipment: typed })
-    expect(sheetChartData(spec, widget, valuesOf(spec, { equipment }, price)).categories).toEqual(["£1,500.00", "—", "—"])
+    expect(sheetChartData(spec.schema, widget, valuesOf(spec, { equipment }, price)).categories).toEqual(["£1,500.00", "—", "—"])
   })
 
   it("numbers its rows while the column naming them does not line up", () => {
     const { spec, widget } = charted([field("equipment", "value")], { category: field("vehicles", "reg") })
-    const data = sheetChartData(spec, widget, valuesOf(spec, { equipment, vehicles: [{ reg: "AB12" }] }))
+    const data = sheetChartData(spec.schema, widget, valuesOf(spec, { equipment, vehicles: [{ reg: "AB12" }] }))
     expect(data.categories).toEqual(["1", "3", "5"])
   })
 
   it("leaves out a field it cannot plot and a field whose rows do not line up", () => {
     const { spec, widget } = charted([field("equipment", "item"), field("equipment", "row"), field("equipment", "value"), field("vehicles", "value"), field("policy", "sum_insured")])
-    const data = sheetChartData(spec, widget, valuesOf(spec, { equipment, vehicles: [{ reg: "AB12", value: "9" }], policy: [{ sum_insured: "1" }] }))
+    const data = sheetChartData(spec.schema, widget, valuesOf(spec, { equipment, vehicles: [{ reg: "AB12", value: "9" }], policy: [{ sum_insured: "1" }] }))
     expect(data.series.map(({ key }) => key)).toEqual(["equipment:value"])
   })
 
   it("keeps a pie's first series, a slice per row", () => {
     const { spec, widget } = charted([field("equipment", "count"), field("equipment", "value")], { chart_type: "pie" })
-    const data = sheetChartData(spec, widget, valuesOf(spec, { equipment }))
+    const data = sheetChartData(spec.schema, widget, valuesOf(spec, { equipment }))
     expect(data.series.map(({ key }) => key)).toEqual(["equipment:count"])
   })
 })
@@ -280,9 +280,9 @@ describe("a Chart of many-row tables", () => {
 describe("a Chart's axis and freshness", () => {
   it("gives the axis the format every plotted column shares, and none when they differ", () => {
     const shared = charted([field("policy", "sum_insured"), field("policy", "excess"), field("quote", "premium")])
-    expect(sheetChartData(shared.spec, shared.widget, valuesOf(shared.spec, {})).axis).toMatchObject({ number_format: "currency_gbp", decimal_places: null })
+    expect(sheetChartData(shared.spec.schema, shared.widget, valuesOf(shared.spec, {})).axis).toMatchObject({ number_format: "currency_gbp", decimal_places: null })
     const mixed = charted([field("policy", "sum_insured"), field("quote", "tax")])
-    expect(sheetChartData(mixed.spec, mixed.widget, valuesOf(mixed.spec, {})).axis).toBeNull()
+    expect(sheetChartData(mixed.spec.schema, mixed.widget, valuesOf(mixed.spec, {})).axis).toBeNull()
   })
 
   it("is stale only while it plots an output, or names its rows by one, priced for other values", () => {
@@ -290,7 +290,7 @@ describe("a Chart's axis and freshness", () => {
     const inputs = charted([field("policy", "sum_insured")])
     const namedByPrice = charted([field("equipment", "value")], { category: field("premiums", "premium") })
     const stale = (chart: { spec: FormSpec; widget: ChartWidget }, price: Price | null) =>
-      sheetChartData(chart.spec, chart.widget, valuesOf(chart.spec, {}, price, "now")).stale
+      sheetChartData(chart.spec.schema, chart.widget, valuesOf(chart.spec, {}, price, "now")).stale
     expect(stale(outputs, priced({}, {}, "before"))).toBe(true)
     expect(stale(outputs, priced({}, {}, "now"))).toBe(false)
     expect(stale(outputs, null)).toBe(false)

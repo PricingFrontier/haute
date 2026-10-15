@@ -8,11 +8,11 @@
  */
 import { Check, ChevronDown, ChevronRight, FlaskConical, FolderOpen, Play, Save, Trash2 } from "lucide-react"
 import { useEffect, useState, type FormEvent } from "react"
-import type { TestQuoteChange } from "../api/workbench"
+import type { WorkbenchTestQuoteChange } from "../api/types"
 import { SidePanel } from "../haute-ui"
-import useGraphStore from "../stores/useGraphStore"
-import useSettingsStore from "../stores/useSettingsStore"
+import { confirmed } from "../stores/useQuestionStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
+import { usePricingContext } from "../stores/useWorkbenchPricingStore"
 import useWorkbenchTestQuotesStore, { runIsStale, type QuoteRun } from "../stores/useWorkbenchTestQuotesStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 
@@ -41,7 +41,7 @@ function shown(value: unknown): string {
   return text.length > 80 ? `${text.slice(0, 79)}…` : text
 }
 
-function ChangeLine({ change }: { change: TestQuoteChange }) {
+function ChangeLine({ change }: { change: WorkbenchTestQuoteChange }) {
   return (
     <li className="flex flex-wrap items-baseline gap-x-1.5 font-mono text-[11px]">
       <span style={{ color: "var(--text-primary)" }}>{change.path}</span>
@@ -81,9 +81,7 @@ export default function TestQuotesPanel() {
   const setPanelWidth = useWorkbenchViewStore((s) => s.setPanelWidth)
   const form = useWorkbenchFormStore((s) => s.form)
   // Read so the panel redraws when what a run priced on changes.
-  useGraphStore((s) => s.structuralFingerprint)
-  useGraphStore((s) => s.submodels)
-  useSettingsStore((s) => s.activeSource)
+  usePricingContext()
   const [name, setName] = useState("")
   const [expanded, setExpanded] = useState<string | null>(null)
 
@@ -219,7 +217,9 @@ export default function TestQuotesPanel() {
                     <button
                       type="button"
                       className={ICON_BUTTON}
-                      onClick={() => { if (window.confirm(`Delete the test quote '${quote.name}'?`)) void remove(quote.id) }}
+                      onClick={() => void (async () => {
+                        if (await confirmed({ title: `Delete the test quote '${quote.name}'?`, confirm: "Delete", danger: true })) await remove(quote.id)
+                      })()}
                       title={`Delete ${quote.name}`}
                       aria-label={`Delete ${quote.name}`}
                     >

@@ -80,10 +80,12 @@ Out of scope, owned elsewhere:
   An endpoint suffix is a Databricks naming override; HTTP targets reject it and direct operators
   to configure the complete staging endpoint URL instead.
 - `haute test-quotes report [--base REF] [--output FILE]` compares the workbench's test-quote
-  file with the one at `REF` (`origin/main` by default) and writes, as Markdown, the test
-  quotes added, removed and accepted anew, each with the outputs that moved; a file absent
-  on either side reads as no test quotes, one an older Haute wrote is read through a
-  migrated copy, and the report never fails the run.
+  file with the one where the branch left `REF` (`origin/main` by default), their merge
+  base, so test quotes `REF` accepted since are not counted as the branch's, and writes, as
+  Markdown, the test quotes added, removed and accepted anew, each with the outputs that
+  moved; a file absent on either side reads as no test quotes, one an older Haute wrote is
+  read through a migrated copy, a `REF` with no history in common is said, and the report
+  never fails the run.
 - `haute test-quotes dump FILE` writes the test-quote file at `FILE` as text, each quote by
   name with its newest revision, who saved it and when, its request and its response, the
   JSON with sorted keys, for git's diff driver.
@@ -96,8 +98,11 @@ Out of scope, owned elsewhere:
   validated and bundled as `haute deploy` does it, test quotes included, with the
   sheets, what the release is and its entry point, and, with `[deploy.container]
   base_image` set, the Dockerfile that makes it the image's build context; `--image`
-  builds that image with Docker. A directory holding anything but an earlier release
-  is refused, as are a project without a workbench and sheets never saved.
+  builds that image with Docker. A directory that is or holds the project or the working
+  directory, a file, and a directory holding anything but an earlier release are refused,
+  as are a project without a workbench and sheets never saved; an earlier release is
+  replaced only once the new one has built beside it, so a build that fails leaves it as
+  it was.
 - `haute app serve [--port PORT] [--static-dir DIR] [--reader]` builds the release
   under `.haute/app/release` and serves the underwriter app on `127.0.0.1` alone (port
   8001 by default), every request signed in as the analyst's git identity, able to

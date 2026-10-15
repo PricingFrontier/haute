@@ -97,6 +97,10 @@ interface GitData {
    *  pending. Distinct from `comparison` (read-only view) — a move mutates the
    *  working tree. */
   moveTarget: GitComparison | null
+  /** The files, relative to the project, that writes reported uncaptured (a capture
+   *  skipped for want of an identity, or failed), kept by `reportSaveCapture` until
+   *  `captureUncaptured` takes them. */
+  uncaptured: string[]
 }
 
 interface GitActions {
@@ -182,6 +186,7 @@ const freshGitData = (): GitData => ({
   commitNonce: 0,
   comparison: null,
   moveTarget: null,
+  uncaptured: [],
 })
 
 const useGitStore = create<GitState>()((set, get) => ({

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import useUIStore from "../../stores/useUIStore"
 import ExplorePivotsConfig from "../../panels/editors/ExplorePivotsConfig"
+import { answerQuestion, asked } from "../../test-utils/question"
 import type { OnUpdateConfig } from "../../panels/editors/_shared"
 import {
   createExploreChart,
@@ -480,7 +481,7 @@ describe("ExplorePivotsConfig", () => {
     expect(screen.getByRole("group", { name: "Twice average in Values" })).toBeVisible()
   })
 
-  it("deletes a shared formula from every pivot without disturbing other Values", () => {
+  it("deletes a shared formula from every pivot without disturbing other Values", async () => {
     const formula: PivotFormulaPlacement = {
       id: "formula_1",
       reference: "double_claims",
@@ -507,7 +508,6 @@ describe("ExplorePivotsConfig", () => {
       formulas: [formula],
       value_order: ["formula_1"],
     })
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true)
     render(
       <PivotConfigHarness
         initialConfig={{
@@ -523,7 +523,8 @@ describe("ExplorePivotsConfig", () => {
     fireEvent.click(screen.getByRole("button", { name: "Edit formula Double claims" }))
     fireEvent.click(screen.getByRole("button", { name: "Delete formula Double claims" }))
 
-    expect(confirm).toHaveBeenCalledWith("Delete Double claims from every pivot?")
+    expect(asked()).toMatchObject({ title: "Delete Double claims from every pivot?", confirm: "Delete" })
+    await answerQuestion("confirm")
     const persisted = JSON.parse(
       screen.getByTestId("persisted-config").textContent ?? "{}",
     )
@@ -539,7 +540,6 @@ describe("ExplorePivotsConfig", () => {
     expect(screen.queryByRole("group", { name: "Calculated field Double claims" }))
       .not.toBeInTheDocument()
     expect(screen.getByRole("group", { name: "claims in Values" })).toBeVisible()
-    confirm.mockRestore()
   })
 
   it("keeps concise section titles outside their settings boxes after the field grid", () => {
@@ -1588,7 +1588,7 @@ describe("ExplorePivotsConfig", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(/name must be unique/i)
   })
 
-  it("blocks deletion while charts depend on a Pivot and lists those charts", () => {
+  it("blocks deletion while charts depend on a Pivot and lists those charts", async () => {
     const used = fullPivot({
       values: [
         {
@@ -1607,7 +1607,6 @@ describe("ExplorePivotsConfig", () => {
       pivot_id: used.id,
       value_encodings: seedValueEncodings(used),
     }
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true)
     render(
       <PivotConfigHarness
         initialConfig={{ pivots: [used, free], charts: [dependent] }}
@@ -1620,14 +1619,14 @@ describe("ExplorePivotsConfig", () => {
     )
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Pivot 2" }))
-    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(asked()).toMatchObject({ title: "Delete Pivot 2?", confirm: "Delete" })
+    await answerQuestion("confirm")
     const persisted = JSON.parse(
       screen.getByTestId("persisted-config").textContent ?? "{}",
     )
     expect(persisted.pivots.map((item: ExplorePivotConfig) => item.id)).toEqual([
       "pivot_1",
     ])
-    confirm.mockRestore()
   })
 
   it("surfaces malformed persisted pivots without destructive controls", () => {

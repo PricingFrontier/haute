@@ -140,28 +140,61 @@ def test_a_revision_under_the_same_number_with_another_response_is_accepted_anew
     assert report_markdown(base, base).count("1 unchanged") == 1
 
 
-def test_a_base_without_the_file_reads_as_no_test_quotes(project: Path) -> None:
-    # A commit of the empty tree: a base that never had the file.
+def _output(project: Path, *args: str) -> str:
+    done = subprocess.run(["git", *args], cwd=project, capture_output=True, check=True)
+    return done.stdout.decode().strip()
+
+
+def _empty_commit(project: Path) -> str:
+    """A commit of the empty tree, with no parent: history that never had the file."""
     tree = (
         subprocess.run(["git", "mktree"], cwd=project, input=b"", capture_output=True, check=True)
         .stdout.decode()
         .strip()
     )
-    commit = (
-        subprocess.run(
-            ["git", "commit-tree", tree, "-m", "empty"],
-            cwd=project,
-            capture_output=True,
-            check=True,
-        )
-        .stdout.decode()
-        .strip()
-    )
-    git(project, "branch", "empty", commit)
+    return _output(project, "commit-tree", tree, "-m", "empty")
+
+
+def test_a_base_without_the_file_reads_as_no_test_quotes(project: Path) -> None:
+    # The branch left its base before the base had test quotes: the branch's history starts
+    # at an empty commit the base still points at.
+    empty = _empty_commit(project)
+    tip = _output(project, "commit-tree", "HEAD^{tree}", "-p", empty, "-m", "the quotes")
+    git(project, "branch", "empty", empty)
+    git(project, "reset", "--soft", tip)
 
     report = handle_report(ReportConfig(base="empty", output=None))
 
     assert "**0 accepted anew, 2 added, 0 removed, 0 unchanged.**" in report
+
+
+def test_what_the_base_gained_since_the_branch_left_it_is_not_the_branchs(
+    project: Path,
+) -> None:
+    # The base takes a quote after the branch left it; the branch adds one of its own.
+    git(project, "checkout", "main")
+    with quotes(project) as store:
+        create(store, "Accepted on main later", {"pricing": {"premium": 9.0}})
+    git(project, "commit", "-am", "a quote on main")
+    git(project, "checkout", "rates")
+    with quotes(project) as store:
+        create(store, "Coastal", {"pricing": {"premium": 1.0}})
+
+    report = handle_report(ReportConfig(base="main", output=None))
+
+    assert "**0 accepted anew, 1 added, 0 removed, 2 unchanged.**" in report
+    assert "Accepted on main later" not in report
+
+
+def test_a_base_with_no_history_in_common_is_said(project: Path) -> None:
+    git(project, "branch", "unrelated", _empty_commit(project))
+
+    report = handle_report(ReportConfig(base="unrelated", output=None))
+
+    assert (
+        "_unrelated shares no history with this branch here: fetch the full history to compare "
+        "with it._"
+    ) in report
 
 
 def test_a_base_that_cannot_be_read_is_said_and_the_report_still_written(
@@ -271,6 +304,9 @@ def test_a_quote_both_sides_changed_is_a_conflict_and_ours_is_left_alone(
 
     assert result.exit_code == 1
     assert "both sides changed 'Northern fleet'" in result.output
+    # How to resolve it: one side's file, then the quotes run again in Preview.
+    assert "Take one side's test-quote file with git checkout --ours or --theirs" in result.output
+    assert "run those quotes in Preview and accept the results you keep" in result.output
     assert ours.read_bytes() == before
 
 
@@ -289,8 +325,11 @@ def test_a_merge_with_no_common_base_takes_both_sides_quotes(tmp_path: Path) -> 
 
 
 def test_git_merges_two_branches_quotes_through_the_registered_driver(project: Path) -> None:
-    assert ensure_test_quote_git(project, FILE) is True
-    assert ensure_test_quote_git(project, FILE) is False
+    assert ensure_test_quote_git(project, FILE) == []
+    assert ensure_test_quote_git(project, FILE) == []
+    assert (project / ".gitattributes").read_text(encoding="utf-8") == (
+        f"{FILE} diff=haute-test-quotes merge=haute-test-quotes\n"
+    )
     git(project, "add", ".gitattributes")
     git(project, "commit", "-m", "the test-quote drivers")
     git(project, "branch", "coast")
@@ -303,7 +342,12 @@ def test_git_merges_two_branches_quotes_through_the_registered_driver(project: P
     git(project, "commit", "-am", "a quote on coast")
     git(project, "checkout", "rates")
 
-    git(project, "merge", "--no-edit", "coast")
+    merged = subprocess.run(
+        ["git", "merge", "--no-edit", "coast"], cwd=project, capture_output=True, text=True
+    )
+    assert merged.returncode == 0, merged.stderr
+    # The drivers run from a module of their own: Python warns of none run twice.
+    assert "RuntimeWarning" not in merged.stderr
 
     assert _names(project / FILE) == [
         "Coast branch's quote",
@@ -311,12 +355,14 @@ def test_git_merges_two_branches_quotes_through_the_registered_driver(project: P
         "Rates branch's quote",
         "Southern fleet",
     ]
-    shown = subprocess.run(
+    diffed = subprocess.run(
         ["git", "diff", "HEAD^1", "HEAD", "--", FILE],
         cwd=project,
         capture_output=True,
         text=True,
         check=True,
-    ).stdout
+    )
+    assert "RuntimeWarning" not in diffed.stderr
+    shown = diffed.stdout
     # The diff driver shows the file as text: the quote the merge brought in, by name.
     assert "+# Coast branch's quote (" in shown

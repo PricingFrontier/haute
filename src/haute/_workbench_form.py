@@ -31,6 +31,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, Strict, ValidationError, model_validator
 
+from haute._explore_pivots import PIVOT_DECIMAL_PLACES_MAX
 from haute._file_ops import atomic_write_bytes
 from haute._hashing import content_hash_bytes
 from haute._workbench_config import WorkbenchConfig, WorkbenchError
@@ -102,6 +103,11 @@ BLANK_SECTION_HEIGHT = 560
 #: How wide a new form's sheet is, as the view starts one (``frontend/src/utils/sheetGeometry.ts``).
 BLANK_SHEET_WIDTH = 1280
 
+#: The most rows a Table starts with, and columns a Collection lays its boxes in, as the
+#: view's properties panel takes them (``frontend/src/utils/workbenchForm.ts``).
+TABLE_ROWS_MAX = 50
+COLLECTION_COLUMNS_MAX = 12
+
 
 class WorkbenchFormError(WorkbenchError):
     """The form file cannot be read as a form: unreadable, not JSON or misshapen."""
@@ -159,7 +165,7 @@ class TableInputWidget(_Placed):
     title: str = ""
     fields: list[FieldRef] = Field(default_factory=list)
     show_when: ShowWhen = Field(default_factory=ShowWhen)
-    rows: int = Field(default=3, ge=1, le=50)
+    rows: int = Field(default=3, ge=1, le=TABLE_ROWS_MAX)
     # How the grid looks, whether its rows are a set structure with no Add row and no
     # delete, whether it is transposed, its fields down its side and its rows across, and
     # whether its fields' schema groups head their labels: by default numbered, compact,
@@ -184,7 +190,7 @@ class CollectionWidget(_Placed):
     title: str = ""
     fields: list[FieldRef] = Field(default_factory=list)
     show_when: ShowWhen = Field(default_factory=ShowWhen)
-    columns: int = Field(default=3, ge=1, le=12)
+    columns: int = Field(default=3, ge=1, le=COLLECTION_COLUMNS_MAX)
     # How its boxes look: by default labelled above, comfortable and framed.
     labels: CollectionLabels = "above"
     density: Density = "comfortable"
@@ -335,7 +341,7 @@ class SchemaColumn(_Strict):
     # decimal places leaves an input as typed and an output as the data preview shows a
     # value. Columns of other types ignore them.
     number_format: ColumnFormat = "general"
-    decimal_places: int | None = Field(default=None, ge=0, le=10)
+    decimal_places: int | None = Field(default=None, ge=0, le=PIVOT_DECIMAL_PLACES_MAX)
     use_grouping: bool = True
 
 
@@ -422,9 +428,36 @@ class FormSpec(_Strict):
                 _check_quote_details(table)
         return self
 
+    @model_validator(mode="after")
+    def _gives_each_its_own_id(self) -> FormSpec:
+        """Refuse an id given twice: the editor finds, moves and removes a sheet, a section,
+        a component, a table or a column by its id, so a block copied by hand or by a merge
+        would be two things it takes for one."""
+        sections = [section for page in self.pages for section in page.sections]
+        _check_ids("sheets", [page.id for page in self.pages])
+        _check_ids("sections", [section.id for section in sections])
+        _check_ids("components", [w.id for section in sections for w in section.widgets])
+        _check_ids("tables", [table.id for table in self.data_schema.tables])
+        for table in self.data_schema.tables:
+            _check_ids(f"columns of {table.name}", [column.id for column in table.columns])
+        return self
+
+
+def _check_ids(things: str, ids: list[str]) -> None:
+    seen: set[str] = set()
+    for given in ids:
+        if given in seen:
+            raise ValueError(f"Two {things} have the id {given!r}: each needs one of its own")
+        seen.add(given)
+
 
 #: Haute's table of a quote's details: its id, also its name.
 QUOTE_DETAILS_ID = "quote_details"
+#: Why another table under its name is refused, in the words the view's schema editor uses
+#: too (``frontend/src/utils/workbenchForm.ts``).
+QUOTE_DETAILS_REFUSAL = (
+    f"{QUOTE_DETAILS_ID} is Haute's own table of a quote's details: name yours otherwise"
+)
 #: Its columns, in order: each one's id, name and type.
 QUOTE_DETAILS_COLUMNS: tuple[tuple[str, str, ColumnType], ...] = (
     ("qd_reference", "reference", "str"),
@@ -480,9 +513,7 @@ def _check_quote_details(table: SchemaTable) -> None:
     structure changed. Its columns' labels, groups, help and placeholders are the project's,
     as are the rules and defaults of the columns the app does not set."""
     if table.id != QUOTE_DETAILS_ID or table.name != QUOTE_DETAILS_ID:
-        raise ValueError(
-            f"{QUOTE_DETAILS_ID} is Haute's own table of a quote's details: name yours otherwise"
-        )
+        raise ValueError(QUOTE_DETAILS_REFUSAL)
     shape = [(column.id, column.name, column.type) for column in table.columns]
     if (
         table.role != "input"
@@ -528,6 +559,9 @@ class FormDocument:
     #: The file's content hash, or None while the form has never been saved: the file
     #: does not exist and ``spec`` is the blank form.
     revision: str | None
+    #: What reading the file grew to open it (`_grown_to_hold`), each said; the file is as
+    #: it was until the form is saved.
+    repairs: tuple[str, ...] = ()
 
 
 def blank_form(name: str) -> FormSpec:
@@ -591,13 +625,72 @@ def _refuse_page_widgets(config: WorkbenchConfig, parsed: object) -> None:
             )
 
 
+#: Each kind of component as the editor names it.
+_KINDS = {"tableInput": "Table", "collection": "Collection", "chart": "Chart", "heading": "Heading"}
+
+
+def _component_named(widget: dict[str, Any]) -> str:
+    """A component as a repair names it: its kind and its title, a Heading's text."""
+    kind = _KINDS.get(str(widget.get("type")), "component")
+    said = widget.get("text") if widget.get("type") == "heading" else widget.get("title")
+    return f'the {kind} "{said.strip()}"' if isinstance(said, str) and said.strip() else f"a {kind}"
+
+
+def _whole(value: object) -> int | None:
+    return value if type(value) is int else None
+
+
+def _grown_to_hold(parsed: object) -> list[str]:
+    """Grow, in *parsed*, each section too short and each sheet too narrow for a component
+    in it, as a resize past an edge grows them in the editor, and say what grew: a merge or
+    a hand edit can leave a component below its section or past its sheet's width, which
+    the form's checks refuse, so the editor that would repair it could not open it. Nothing
+    moves. A shape this cannot read, or a size that is no size (0 or less), is left for the
+    checks to name."""
+    repairs: list[str] = []
+    pages = parsed.get("pages") if isinstance(parsed, dict) else None
+    for page in pages if isinstance(pages, list) else []:
+        if not isinstance(page, dict) or not isinstance(page.get("sections"), list):
+            continue
+        widest: tuple[int, dict[str, Any]] | None = None
+        for section in page["sections"]:
+            if not isinstance(section, dict) or not isinstance(section.get("widgets"), list):
+                continue
+            deepest: tuple[int, dict[str, Any]] | None = None
+            for widget in section["widgets"]:
+                if not isinstance(widget, dict):
+                    continue
+                x, y, w, h = (_whole(widget.get(key)) for key in ("x", "y", "w", "h"))
+                if y is not None and h is not None and (deepest is None or y + h > deepest[0]):
+                    deepest = (y + h, widget)
+                if x is not None and w is not None and (widest is None or x + w > widest[0]):
+                    widest = (x + w, widget)
+            height = _whole(section.get("height"))
+            if deepest is not None and height is not None and 0 < height < deepest[0]:
+                section["height"] = deepest[0]
+                repairs.append(
+                    f'Section "{section.get("title")}" grew from {height}px to {deepest[0]}px '
+                    f"tall to hold {_component_named(deepest[1])}."
+                )
+        width = _whole(page.get("width"))
+        if widest is not None and width is not None and 0 < width < widest[0]:
+            page["width"] = widest[0]
+            repairs.append(
+                f'Sheet "{page.get("title")}" grew from {width}px to {widest[0]}px wide to '
+                f"hold {_component_named(widest[1])}."
+            )
+    return repairs
+
+
 def read_form_document(config: WorkbenchConfig) -> FormDocument:
     """The form at ``config.form_path``, read whole and checked, with the file's revision.
 
     A file that does not exist is the blank form, named after the project, with no
-    revision. Raises :class:`WorkbenchFormError`, naming the file as ``haute.toml`` names it
-    and what is wrong, when the file cannot be read, is not UTF-8 text, is not JSON or does
-    not fit the shape, a sheet holding widgets of its own named with what replaced them.
+    revision. A section or sheet too small for a component in it is grown to hold it, and
+    said in ``repairs`` (`_grown_to_hold`). Raises :class:`WorkbenchFormError`, naming the
+    file as ``haute.toml`` names it and what is wrong, when the file cannot be read, is not
+    UTF-8 text, is not JSON or does not fit the shape, a sheet holding widgets of its own
+    named with what replaced them.
     """
     path = config.form_path
     data = _read_form_bytes(config)
@@ -612,6 +705,7 @@ def read_form_document(config: WorkbenchConfig) -> FormDocument:
     except json.JSONDecodeError as exc:
         raise WorkbenchFormError(f"{config.form} is not JSON: {exc}", path=str(path)) from exc
     _refuse_page_widgets(config, parsed)
+    repairs = _grown_to_hold(parsed)
     try:
         spec = FormSpec.model_validate(parsed)
     except ValidationError as exc:
@@ -621,4 +715,4 @@ def read_form_document(config: WorkbenchConfig) -> FormDocument:
         raise WorkbenchFormError(
             f"{config.form} is not a workbench form: {where}: {first['msg']}", path=str(path)
         ) from exc
-    return FormDocument(with_quote_details(spec), form_revision(data))
+    return FormDocument(with_quote_details(spec), form_revision(data), tuple(repairs))

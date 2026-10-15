@@ -387,6 +387,35 @@ def test_a_revision_saved_apart_under_the_same_number_is_refused_by_its_digest(
     assert third.number == 3
 
 
+def test_two_revisions_saved_apart_under_one_number_have_different_digests(
+    tmp_path: Path, url: str, store: QuoteStore
+) -> None:
+    first = _create(store)
+    fields = {
+        "saved_by": "ben@example.com",
+        "form": FORM,
+        "request": REQUEST,
+        "response": RESPONSE,
+        "release": None,
+    }
+    # Two branches part after revision 1, and each saves its own revision 2.
+    path = Path(url.removeprefix("sqlite:///"))
+    branch = tmp_path / "branch.sqlite"
+    shutil.copyfile(path, branch)
+    other_values = {**VALUES, "t_policy": [{"c_region": "south"}]}
+    here = store.save_revision(first.quote_id, after=1, inputs=VALUES, **fields)
+    with open_store(store_url(branch)) as other:
+        there = other.save_revision(first.quote_id, after=1, inputs=other_values, **fields)
+
+    assert (here.number, there.number) == (2, 2)
+    assert here.digest != there.digest
+    # A run read the other branch's revision 2: here it is refused, not compared.
+    with pytest.raises(StaleQuoteError, match="saved apart, on another branch"):
+        store.save_revision(
+            first.quote_id, after=2, after_digest=there.digest, inputs=VALUES, **fields
+        )
+
+
 def test_an_unknown_quote_or_revision_is_refused_naming_it(store: QuoteStore) -> None:
     created = _create(store)
 
@@ -438,6 +467,33 @@ def test_the_list_of_quotes_is_newest_first_for_one_owner_or_all(store: QuoteSto
     assert [quote.name for quote in store.quotes()] == ["Northern fleet", "Southern fleet"]
     [only_ben] = store.quotes(owner="ben@example.com")
     assert (only_ben.id, only_ben.latest, only_ben.priced) == (ben.quote_id, 1, True)
+
+
+def test_one_quote_is_read_as_the_list_shows_it(store: QuoteStore) -> None:
+    ana = _create(store, name="Northern fleet")
+    _create(store, name="Southern fleet", owner="ben@example.com")
+    store.save_revision(
+        ana.quote_id,
+        after=1,
+        saved_by="cy@example.com",
+        form=FORM,
+        inputs=VALUES,
+        request=REQUEST,
+        response=None,
+        release=None,
+    )
+
+    summary = store.summary(ana.quote_id)
+
+    assert summary == next(quote for quote in store.quotes() if quote.id == ana.quote_id)
+    assert (summary.name, summary.latest, summary.saved_by, summary.priced) == (
+        "Northern fleet",
+        2,
+        "cy@example.com",
+        False,
+    )
+    with pytest.raises(QuoteNotFoundError, match="holds no quote 'nope'"):
+        store.summary("nope")
 
 
 # ── A saved quote's values on the current form ────────────────────────────

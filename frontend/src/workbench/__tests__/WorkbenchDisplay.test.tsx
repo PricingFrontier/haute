@@ -95,9 +95,13 @@ describe("WorkbenchDisplay", () => {
       </>,
     )
     fireEvent.click(display())
+    // Modal to the keyboard, holding the focus: no key pressed in it reaches the sheet.
+    expect(box()).toHaveAttribute("aria-modal", "true")
+    expect(document.activeElement).toBe(box())
     // Its default prevented: the sheet's own Escape, which deselects, does not run.
     expect(fireEvent.keyDown(within(box()).getByRole("button", { name: "Automatic colour for Font" }), { key: "Escape" })).toBe(false)
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    expect(document.activeElement).toBe(display())
 
     fireEvent.click(display())
     const custom = within(box()).getByLabelText("Custom colour for Input cells")

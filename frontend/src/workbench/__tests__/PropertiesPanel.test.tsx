@@ -13,6 +13,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { findSection, findWidget } from "../../utils/workbenchForm"
+import { answerQuestion, asked } from "../../test-utils/question"
 import PropertiesPanel from "../PropertiesPanel"
 import type { FieldRef, FormSpec, Section } from "../../api/types"
 import { COMPONENT_COLOR } from "../widgetKinds"
@@ -74,6 +75,29 @@ describe("PropertiesPanel", () => {
 
     fireEvent.click(screen.getByTitle("Close"))
     expect(useWorkbenchViewStore.getState().selectedId).toBeNull()
+  })
+
+  it("shows the next component's own values, never a value refused for the one before", () => {
+    const form = sheetForm()
+    // The same Rows as the first, so only the key tells the two fields apart.
+    const copy = { ...structuredClone(fieldsWidget(form, "w_grid")), id: "w_grid_2" }
+    form.pages[0].sections[0].widgets.push(copy)
+    loadForm(form)
+    // Both open on Display, so the field stays drawn from one to the other.
+    useWorkbenchViewStore.getState().setWidgetPane("w_grid", "display")
+    useWorkbenchViewStore.getState().setWidgetPane("w_grid_2", "display")
+    select("w_grid")
+    render(<PropertiesPanel />)
+    const rows = () => screen.getByTestId("widget-rows") as HTMLInputElement
+
+    // Past the 50 a Table may start with: refused, the draft kept on screen.
+    fireEvent.change(rows(), { target: { value: "99" } })
+    fireEvent.blur(rows())
+    expect(rows().value).toBe("99")
+
+    act(() => select("w_grid_2"))
+    // Its own Rows, 3, never the 99 refused for the first.
+    expect(rows().value).toBe("3")
   })
 
   it("puts a Table's and a Collection's settings in two panes, Config with the data it shows and Display with how, keeping each component's pane", () => {
@@ -513,35 +537,26 @@ describe("PropertiesPanel", () => {
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
   })
 
-  it("deletes the showing sheet from the foot of its panel once asked in the editor's own dialog, never the browser's, as one undo step", () => {
-    const confirm = vi.spyOn(window, "confirm")
+  it("deletes the showing sheet from the foot of its panel once asked in the page's own question, as one undo step", async () => {
     loadForm(sectionedForm())
     useWorkbenchViewStore.setState({ pageId: "p1", sheetSelected: true })
     render(<PropertiesPanel />)
     const deleteSheet = () => screen.getByRole("button", { name: "Delete sheet" })
-    const dialog = () => screen.queryByRole("dialog", { name: 'Delete sheet "Sheet 1"' })
 
-    // Asked first, naming the sheet and counting the components in every section; Cancel keeps it.
+    // Asked first, naming the sheet and counting the components in every section; no keeps it.
     fireEvent.click(deleteSheet())
-    expect(dialog()).toHaveTextContent('Delete "Sheet 1"?')
-    expect(dialog()).toHaveTextContent("The 3 components on it go with it. The schema and the sample stay.")
-    fireEvent.click(within(dialog()!).getByRole("button", { name: "Cancel" }))
-    expect(dialog()).not.toBeInTheDocument()
-    // Escape keeps it too.
-    fireEvent.click(deleteSheet())
-    fireEvent.keyDown(document, { key: "Escape" })
-    expect(dialog()).not.toBeInTheDocument()
+    expect(asked()).toMatchObject({ title: 'Delete "Sheet 1"?', text: "The 3 components on it go with it. The schema and the sample stay.", confirm: "Delete", danger: true })
+    await answerQuestion(null)
     expect(currentForm().pages).toHaveLength(2)
 
     // Delete deletes it with its components, the schema kept; the first sheet left shows, its panel closed.
     fireEvent.click(deleteSheet())
-    fireEvent.click(within(dialog()!).getByRole("button", { name: "Delete" }))
+    await answerQuestion("confirm")
     expect(currentForm().pages.map((page) => page.id)).toEqual(["p2"])
     expect(currentForm().schema.tables).toHaveLength(3)
     expect(useWorkbenchViewStore.getState()).toMatchObject({ pageId: "p2", sheetSelected: false })
     expect(screen.queryByTestId("workbench-properties")).not.toBeInTheDocument()
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
-    expect(confirm).not.toHaveBeenCalled()
   })
 
   it("says what goes with a sheet as it asks, one component or nothing, and never deletes the last sheet", () => {
@@ -550,14 +565,14 @@ describe("PropertiesPanel", () => {
     useWorkbenchViewStore.setState({ pageId: "p2", sheetSelected: true })
     const { unmount } = render(<PropertiesPanel />)
     fireEvent.click(screen.getByRole("button", { name: "Delete sheet" }))
-    expect(screen.getByRole("dialog")).toHaveTextContent("The component on it goes with it. The schema and the sample stay.")
+    expect(asked()?.text).toBe("The component on it goes with it. The schema and the sample stay.")
     unmount()
 
     loadForm(sheetForm())
     useWorkbenchViewStore.setState({ pageId: "p2", sheetSelected: true })
     const empty = render(<PropertiesPanel />)
     fireEvent.click(screen.getByRole("button", { name: "Delete sheet" }))
-    expect(screen.getByRole("dialog")).toHaveTextContent("Nothing is on it. The schema and the sample stay.")
+    expect(asked()?.text).toBe("Nothing is on it. The schema and the sample stay.")
     empty.unmount()
 
     // The only sheet's Delete sheet is disabled.
@@ -702,21 +717,21 @@ describe("PropertiesPanel", () => {
     expect(sectionOf(added.id).height).toBe(48)
   })
 
-  it("deletes a section with its components, asking first while it holds any, and closes its panel", () => {
+  it("deletes a section with its components, asking first while it holds any, and closes its panel", async () => {
     const form = sectionedForm()
     form.pages[0].sections.push({ id: "s_empty", title: "Empty", height: 48, show_when: { match: "all", conditions: [] }, widgets: [] })
     loadForm(form)
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false)
     openSection("s_flood")
     render(<PropertiesPanel />)
 
     fireEvent.click(screen.getByRole("button", { name: "Delete section" }))
-    expect(confirm).toHaveBeenCalledWith('Delete "Flood" and the 1 component in it? The schema and the sample stay.')
+    expect(asked()).toMatchObject({ title: 'Delete "Flood" and the 1 component in it?', text: "The schema and the sample stay." })
+    await answerQuestion(null)
     expect(sectionIds()).toEqual(["s_policy", "s_flood", "s_notes", "s_empty"])
     expect(screen.getByRole("textbox", { name: "Section title" })).toHaveValue("Flood")
 
-    confirm.mockReturnValue(true)
     fireEvent.click(screen.getByRole("button", { name: "Delete section" }))
+    await answerQuestion("confirm")
     expect(sectionIds()).toEqual(["s_policy", "s_notes", "s_empty"])
     expect(findWidget(currentForm(), "w_grid")).toBeNull()
     // The schema stays.
@@ -726,16 +741,14 @@ describe("PropertiesPanel", () => {
     expect(screen.queryByTestId("workbench-properties")).not.toBeInTheDocument()
 
     // An empty section goes without asking.
-    confirm.mockClear()
     openSection("s_empty")
     fireEvent.click(screen.getByRole("button", { name: "Delete section" }))
-    expect(confirm).not.toHaveBeenCalled()
+    expect(asked()).toBeNull()
     expect(sectionIds()).toEqual(["s_policy", "s_notes"])
     expect(screen.queryByTestId("workbench-properties")).not.toBeInTheDocument()
   })
 
   it("never deletes a sheet's only section: its Delete section is disabled", () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true)
     openSection("s_p1")
     render(<PropertiesPanel />)
 
@@ -743,7 +756,7 @@ describe("PropertiesPanel", () => {
     expect(remove).toBeDisabled()
     expect(remove).toHaveAttribute("title", "A sheet keeps at least one section")
     fireEvent.click(remove)
-    expect(confirm).not.toHaveBeenCalled()
+    expect(asked()).toBeNull()
     expect(sectionIds()).toEqual(["s_p1"])
     expect(widgetsOf(currentForm())).toHaveLength(2)
     expect(useWorkbenchViewStore.getState().sectionId).toBe("s_p1")

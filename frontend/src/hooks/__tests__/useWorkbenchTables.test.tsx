@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vite
 import useWorkbenchTables from "../useWorkbenchTables"
 import useGraphCommitController, { type GraphCommitController } from "../useGraphCommitController"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
+import useGraphStore from "../../stores/useGraphStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 
 const tables = (name: string) => [{ name, rows: "one" as const, columns: [] }]
@@ -155,6 +156,54 @@ describe("useWorkbenchTables", () => {
 
     adopt(2)
     expect(isCurrent?.()).toBe(false)
+  })
+
+  it("gives the copies without an undo step: they follow the form, not the graph's history", () => {
+    render()
+    publish(1, "policy")
+
+    expect(onUpdateNode).toHaveBeenCalledOnce()
+    expect(onUpdateNode.mock.calls[0][2]).toMatchObject({ history: false })
+  })
+
+  it("puts back at once the copy an undo or a redo took back to an older form's", () => {
+    graphRef.current.nodes = [workbenchInput({ tables: tables("policy"), sample: {} })]
+    render()
+    publish(1, "policy")
+    expect(onUpdateNode).not.toHaveBeenCalled()
+
+    // An undo of an earlier edit restores the graph as it was then, the copy with it.
+    const restored = [workbenchInput({ tables: tables("older"), sample: {} })]
+    graphRef.current.nodes = restored
+    act(() => useGraphStore.setState({ nodes: restored }))
+
+    expect(updates()).toEqual([["workbench", tables("policy")]])
+    // A change elsewhere in the graph compares nothing again and sends nothing.
+    graphRef.current.nodes = [workbenchInput({ tables: tables("policy"), sample: {} }), quoteInput({})]
+    act(() => useGraphStore.setState({ nodes: graphRef.current.nodes }))
+    expect(onUpdateNode).toHaveBeenCalledOnce()
+  })
+
+  it("says, for a save, whether the copies hold the tables fetched, one is on its way, or none can be given", () => {
+    graphRef.current.nodes = [workbenchInput({ tables: tables("policy"), sample: {} })]
+    const hook = render()
+    publish(1, "policy")
+    expect(hook.result.current.copiesCurrent()).toBe("current")
+
+    // An undo while the save waited: the copy behind, its update sent and resolving.
+    graphRef.current.nodes = [workbenchInput({ tables: tables("older"), sample: {} })]
+    expect(hook.result.current.copiesCurrent()).toBe("sent")
+    expect(hook.result.current.copiesCurrent()).toBe("sent")
+    expect(onUpdateNode).toHaveBeenCalledOnce()
+
+    // Settled, the copy as the tables give it.
+    const [, , options] = onUpdateNode.mock.calls[0]
+    graphRef.current.nodes = [workbenchInput({ tables: tables("policy"), sample: {} })]
+    options?.onSettled?.({ ok: true })
+    expect(hook.result.current.copiesCurrent()).toBe("current")
+
+    hook.rerender({ editable: false })
+    expect(hook.result.current.copiesCurrent()).toBe("refused")
   })
 
   it("drops an update still resolving when a newer fetch finds the node up to date", () => {

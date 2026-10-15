@@ -4,16 +4,14 @@ import type { ColumnInfo } from "../../types/node"
 import { listFiles } from "../../api/client"
 import type { FileListItem } from "../../api/types"
 import ColumnTable from "../../components/ColumnTable"
+import { INPUT_STYLE } from "../../components/form/fieldStyle"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { formatValue } from "../../utils/formatValue"
 import { formatBytes } from "../../utils/formatBytes"
 
 // ─── Shared Styles ───────────────────────────────────────────────
-export const INPUT_STYLE = {
-  background: 'var(--bg-input)',
-  border: '1px solid var(--border)',
-  color: 'var(--text-primary)',
-} as const
+// The input's look is the form kit's, which every panel shares.
+export { INPUT_STYLE }
 
 export const SELECT_STYLE = INPUT_STYLE
 

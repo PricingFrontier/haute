@@ -17,10 +17,11 @@ import polars as pl
 from haute._io import read_user_text
 from haute._json_safe import to_json_safe
 from haute._logging import get_logger
-from haute._test_quotes import TEST_QUOTES_FILE
+from haute._output_assembler import pruned_document
+from haute._test_quotes import TEST_QUOTES_FILE, test_quote_files
 from haute._types import GLOBAL_CONSTANTS_FILE, NodeType, PipelineGraph
 from haute._workbench_config import WorkbenchConfigError, read_workbench_config
-from haute._workbench_form import WorkbenchFormError, read_form_document
+from haute._workbench_form import FormSpec, WorkbenchFormError, read_form_document
 from haute._workbench_tables import (
     WorkbenchTablesError,
     input_tables,
@@ -46,6 +47,11 @@ class _TestQuoteCase:
     whole: bool = False
     #: How a failure names the case; ``row <n>`` of its file when None.
     label: str | None = None
+    #: Why the case fails before its answer is read: a workbench test quote whose values
+    #: have no place on the form now, or whose request the form now builds otherwise.
+    problems: tuple[str, ...] = ()
+    #: Nothing of the quote is left to send: it is not priced, its problems say why.
+    empty: bool = False
 
 
 _GOLDEN_QUOTE_KEYS = frozenset({"input", "expected", "tolerance_pct"})
@@ -116,19 +122,38 @@ def _parse_test_quote_case(row: Any, *, row_index: int) -> _TestQuoteCase:
     )
 
 
-def test_quote_files(directory: Path) -> list[Path]:
-    """The test-quote files in *directory*: its JSON files, then the workbench's test-quote
-    file when there is one."""
-    files = sorted(directory.glob("*.json"))
-    saved = directory / TEST_QUOTES_FILE
-    return [*files, saved] if saved.is_file() else files
+def checked_form(project_root: Path) -> FormSpec:
+    """The form the workbench's test quotes are checked against, as the app's release ships
+    it: the workbench's saved form, each input column's allowed values read again from its
+    params file. Raises ``ValueError`` saying why there is none to check against."""
+    from haute._workbench_params import ParamFileError, with_param_options
+
+    try:
+        config = read_workbench_config(project_root)
+    except WorkbenchConfigError as exc:
+        raise ValueError(str(exc)) from exc
+    if not config.enabled:
+        raise ValueError(
+            f"{TEST_QUOTES_FILE} holds the workbench's test quotes, which are checked against "
+            "its form: turn the workbench on in haute.toml."
+        )
+    try:
+        document = read_form_document(config)
+        if document.revision is None:
+            raise ValueError(f"{config.form} has never been saved: save the sheets first.")
+        return with_param_options(document.spec, project_root)
+    except (WorkbenchFormError, ParamFileError) as exc:
+        raise ValueError(f"{config.form}: {exc}") from exc
 
 
-def _saved_test_quote_cases(path: Path) -> list[_TestQuoteCase]:
-    """The workbench's test quotes as cases, by name: each newest revision's request, and
-    the response it was accepted with to compare the answer with whole."""
-    from haute._quote_store import QuoteStoreNotMigratedError, open_store, store_url
-    from haute._test_quotes import ACCEPTED_TOLERANCE
+def _saved_test_quote_cases(path: Path, form: FormSpec) -> list[_TestQuoteCase]:
+    """The workbench's test quotes as cases, by name, each priced on the request the app
+    would send now: its newest revision's values carried onto *form* and built into a
+    request as a run builds one, the response it was accepted with to compare the answer
+    with whole. A value with no place on *form*, a rebuilt request that differs from the
+    one the revision keeps, and nothing left to send are each a problem of the case."""
+    from haute._quote_store import QuoteStoreNotMigratedError, carry_values, open_store, store_url
+    from haute._test_quotes import ACCEPTED_TOLERANCE, quote_request
 
     try:
         store = open_store(store_url(path))
@@ -141,28 +166,55 @@ def _saved_test_quote_cases(path: Path) -> list[_TestQuoteCase]:
         cases: list[_TestQuoteCase] = []
         for summary in sorted(store.quotes(), key=lambda quote: (quote.name, quote.id)):
             revision = store.revision(summary.id)
+            carried = carry_values(revision.inputs, store.form(revision.form_revision), form)
+            request = quote_request(form, carried.values)
+            problems = [f"{place} has no place on the sheets now" for place in carried.dropped]
+            if not request:
+                problems.append("nothing typed in it has a place on the sheets now")
+            # Named as a run names them, so CI and the panel point at the same place.
+            problems.extend(
+                f"request.{change.path} {change.kind}, accepted {change.accepted!r}, "
+                f"built {change.priced!r}"
+                for change in response_changes(request, revision.request, ACCEPTED_TOLERANCE)
+                if request
+            )
             cases.append(
                 _TestQuoteCase(
-                    input=revision.request,
+                    input=request,
                     expected=revision.response,
                     tolerance_pct=ACCEPTED_TOLERANCE,
                     whole=True,
                     label=f"quote {summary.name!r}",
+                    problems=tuple(problems),
+                    empty=not request,
                 )
             )
     return cases
 
 
-def _load_test_quote_cases(path: Path) -> list[_TestQuoteCase]:
+def _load_test_quote_cases(
+    path: Path, *, form: FormSpec | None = None, project_root: Path | None = None
+) -> list[_TestQuoteCase]:
+    """*path*'s cases: a JSON file's rows, or the workbench's test quotes rebuilt against
+    *form*, else against the form :func:`checked_form` reads from *project_root*."""
     if path.name == TEST_QUOTES_FILE:
-        return _saved_test_quote_cases(path)
+        if form is None:
+            if project_root is None:
+                raise ValueError(
+                    f"{TEST_QUOTES_FILE} is checked against the workbench's form, and none "
+                    "was given."
+                )
+            form = checked_form(project_root)
+        return _saved_test_quote_cases(path, form)
     raw = json.loads(read_user_text(path))
     if not isinstance(raw, list):
         raise ValueError("Expected a JSON array of quote objects")
     return [_parse_test_quote_case(row, row_index=i) for i, row in enumerate(raw)]
 
 
-def load_test_quote_file(path: Path) -> list[dict]:
+def load_test_quote_file(
+    path: Path, *, form: FormSpec | None = None, project_root: Path | None = None
+) -> list[dict]:
     """Load a test quote JSON file, strip metadata fields (``_`` prefixed).
 
     Rows use ``{"input": {...}, "expected": {...}?}``; live smoke tests send
@@ -173,7 +225,9 @@ def load_test_quote_file(path: Path) -> list[dict]:
     Raises:
         ValueError: If the file is not a JSON array.
     """
-    return [case.input for case in _load_test_quote_cases(path)]
+    return [
+        case.input for case in _load_test_quote_cases(path, form=form, project_root=project_root)
+    ]
 
 
 def _is_numeric(value: Any) -> bool:
@@ -297,12 +351,15 @@ class ResponseChange(NamedTuple):
 def response_changes(priced: Any, accepted: Any, tolerance_pct: float) -> list[ResponseChange]:
     """Every place *priced* differs from *accepted*, in the accepted response's order.
 
-    The walk is :func:`_first_mismatch`'s, into objects and lists, a leaf compared by
+    Both are first rendered as a deployed pipeline renders a response
+    (:func:`pruned_document`), so a null and an absent value are alike, and an empty table
+    and none; a request, which holds neither, is unchanged by it. The walk is
+    :func:`_first_mismatch`'s, into objects and lists, a leaf compared by
     :func:`_expected_value_matches` within *tolerance_pct*; but both sides are whole
     responses, so a key or a list item on one side only is a difference too.
     """
     changes: list[ResponseChange] = []
-    _walk_changes(priced, accepted, tolerance_pct, "", changes)
+    _walk_changes(pruned_document(priced), pruned_document(accepted), tolerance_pct, "", changes)
     return changes
 
 
@@ -425,9 +482,10 @@ def _validate_expected_outputs(
 def _validate_expected_outputs_per_case(
     *,
     cases: list[_TestQuoteCase],
-    outputs: list[pl.DataFrame],
+    outputs: list[pl.DataFrame | None],
 ) -> None:
-    """Check each case against its own request's output, numbered as in its file.
+    """Check each case against its own request's output, numbered as in its file; a case
+    not priced (None) has its problems alone.
 
     A request answers one quote with one row, so a case's output holding other than one
     row is wrong on its own, never made up for by another case's.
@@ -435,7 +493,8 @@ def _validate_expected_outputs_per_case(
     errors: list[str] = []
     missing_columns: set[str] = set()
     for row_index, (case, output) in enumerate(zip(cases, outputs, strict=True)):
-        errors.extend(_response_errors(row_index, case, output.to_dicts(), missing_columns))
+        rows = [] if output is None else output.to_dicts()
+        errors.extend(_response_errors(row_index, case, rows, missing_columns))
     if errors:
         raise ValueError("expected-output validation failed: " + "; ".join(errors))
 
@@ -447,24 +506,29 @@ def _response_errors(
     missing_columns: set[str],
 ) -> list[str]:
     """What *rows*, the answer to *case*'s own request (row *row_index* of its file), gets
-    wrong against its expected output; nothing when the case expects none."""
-    if case.expected is None:
-        return []
+    wrong against its expected output, after the case's own problems; nothing more when the
+    case expects none or was not priced."""
     where = case.label or f"row {row_index}"
+    problems = [f"{where}: {problem}" for problem in case.problems]
+    if case.expected is None or case.empty:
+        return problems
     if len(rows) != 1:
-        return [f"{where}: expected one output row, {len(rows)} output row(s)."]
+        return [*problems, f"{where}: expected one output row, {len(rows)} output row(s)."]
     [row] = rows
     if not isinstance(row, dict):
-        return [f"{where}: the response is {row!r}, not an object of output columns."]
+        return [*problems, f"{where}: the response is {row!r}, not an object of output columns."]
     if case.whole:
         # Encoded as a preview encodes it, as the accepted response was: a date as its text.
         changes = response_changes(to_json_safe(row), case.expected, case.tolerance_pct)
         return [
-            f"{where}: {change.path} {change.kind}, accepted {change.accepted!r}, "
-            f"answered {change.priced!r}"
-            for change in changes
+            *problems,
+            *(
+                f"{where}: {change.path} {change.kind}, accepted {change.accepted!r}, "
+                f"answered {change.priced!r}"
+                for change in changes
+            ),
         ]
-    return _case_errors(
+    return problems + _case_errors(
         row_index=row_index,
         case=case,
         row=row,
@@ -482,20 +546,28 @@ class LiveTestQuotes(NamedTuple):
 
 
 def price_test_quotes_live(
-    path: Path, price: Callable[[dict[str, Any]], list[Any]]
+    path: Path,
+    price: Callable[[dict[str, Any]], list[Any]],
+    *,
+    project_root: Path | None = None,
 ) -> LiveTestQuotes:
     """Price each case of the test-quote file at *path* as a request of its own.
 
     *price* sends one quote to the endpoint and returns the rows it answers. Each case's
     expected output is compared with its own answer as deploy compares it, walked into a
-    Workbench Output's tables. A request that fails is reported by its row and the rest are
-    still priced. Raises ``ValueError`` when the file cannot be read as test quotes.
+    Workbench Output's tables; the workbench's test quotes are rebuilt against the form of
+    the project at *project_root*, as deploy rebuilds them. A request that fails is
+    reported by its row and the rest are still priced. Raises ``ValueError`` when the file
+    cannot be read as test quotes.
     """
-    cases = _load_test_quote_cases(path)
+    cases = _load_test_quote_cases(path, project_root=project_root)
     priced = checked = 0
     errors: list[str] = []
     missing_columns: set[str] = set()
     for row_index, case in enumerate(cases):
+        if case.empty:
+            errors.extend(_response_errors(row_index, case, [], missing_columns))
+            continue
         try:
             rows = price(case.input)
         except Exception as exc:  # reported by its row; the other cases still run
@@ -506,6 +578,10 @@ def price_test_quotes_live(
             checked += 1
         errors.extend(_response_errors(row_index, case, rows, missing_columns))
     return LiveTestQuotes(priced, checked, errors)
+
+
+def _project_root(resolved: ResolvedDeploy) -> Path:
+    return (resolved.config.project_dir or resolved.config.pipeline_file.parent).resolve()
 
 
 def _workbench_form_errors(resolved: ResolvedDeploy) -> list[str]:
@@ -523,9 +599,8 @@ def _workbench_form_errors(resolved: ResolvedDeploy) -> list[str]:
     ]
     if not nodes:
         return []
-    project_root = (resolved.config.project_dir or resolved.config.pipeline_file.parent).resolve()
     try:
-        config = read_workbench_config(project_root)
+        config = read_workbench_config(_project_root(resolved))
         if not config.enabled:
             return []
         document = read_form_document(config)
@@ -586,8 +661,11 @@ def _global_constant_errors(graph: PipelineGraph) -> list[str]:
     return errors
 
 
-def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
-    """Run all pre-deploy validations.
+def validate_deploy(
+    resolved: ResolvedDeploy, *, form: FormSpec | None = None
+) -> list[TestQuoteResult]:
+    """Run all pre-deploy validations; the workbench's test quotes are rebuilt against
+    *form*, the form a release ships, or the project's (:func:`checked_form`) when None.
 
     Structural errors and test-quote failures are collected first, then
     aggregated into a single :class:`DeployError` so the operator sees the
@@ -727,7 +805,7 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
         reads_quotes = _reads_one_quote_per_request(resolved)
         for jf in test_quote_files(tq_dir):
             try:
-                cleaned = load_test_quote_file(jf)
+                cleaned = load_test_quote_file(jf, form=form, project_root=_project_root(resolved))
             except Exception as exc:
                 test_quote_errors.append(f"test quote {jf.name!r} failed: could not parse ({exc})")
                 continue
@@ -743,7 +821,7 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
                     break
 
         # Actual scoring pass — surfaces runtime errors.
-        quote_results = score_test_quotes(resolved, tq_dir)
+        quote_results = score_test_quotes(resolved, tq_dir, form=form)
         for q in quote_results:
             if q.get("status") == "error":
                 test_quote_errors.append(
@@ -777,6 +855,8 @@ def _reads_one_quote_per_request(resolved: ResolvedDeploy) -> bool:
 def score_test_quotes(
     resolved: ResolvedDeploy,
     test_quotes_dir: Path | None = None,
+    *,
+    form: FormSpec | None = None,
 ) -> list[TestQuoteResult]:
     """Score every JSON file in the test_quotes directory.
 
@@ -789,6 +869,8 @@ def score_test_quotes(
         resolved: Fully resolved deployment config.
         test_quotes_dir: Directory containing ``.json`` files.
             Falls back to ``resolved.config.test_quotes_dir``.
+        form: The form the workbench's test quotes are rebuilt against; the project's,
+            read by :func:`checked_form`, when None.
 
     Returns:
         List of result dicts with keys: file, rows, status, time_ms, error.
@@ -820,14 +902,16 @@ def score_test_quotes(
     for jf in json_files:
         t0 = time.perf_counter()
         try:
-            cases = _load_test_quote_cases(jf)
+            cases = _load_test_quote_cases(jf, form=form, project_root=_project_root(resolved))
             if not cases:
                 rows = 0
             elif one_quote_per_request:
                 # Each case as its request was sent: the Workbench Input types it.
-                outputs = [score(QuoteRequest((case.input,))) for case in cases]
+                outputs = [
+                    None if case.empty else score(QuoteRequest((case.input,))) for case in cases
+                ]
                 _validate_expected_outputs_per_case(cases=cases, outputs=outputs)
-                rows = sum(output.height for output in outputs)
+                rows = sum(output.height for output in outputs if output is not None)
             else:
                 output = score(pl.DataFrame([case.input for case in cases]))
                 _validate_expected_outputs(cases=cases, output=output)

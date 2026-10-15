@@ -9,8 +9,8 @@
 | `frontend/src/panels/gitPanelCache.ts` | Module-level session caches (`branchHistory`, `milestoneSaves`, whole-forest `graphCache`) with LRU eviction, feeding `useGitHistory`'s stale-while-revalidate hydration and unchanged-payload short-circuit. |
 | `frontend/src/panels/gitgraph/layout.ts` | Pure layout: `computeGitGraphLayout` turns a `GitGraphResponse` + the panel's row list into a `RailModel` (lanes, dots, curves, magnifiers, spawn stubs); `computeRailRuns` consolidates per-row cells into whole-length vertical line segments. No DOM, no fetch. |
 | `frontend/src/panels/gitgraph/GraphCell.tsx` | Rendering: `GraphRailCell` (per-row SVG cell), `GraphRailOverlay` (the measured whole-box overlay of consolidated runs), `GraphRailHeader` (top departing-branch chip strip), `Magnifier`. Pure presentation over `frontend/src/panels/gitgraph/layout.ts` types. |
-| `frontend/src/stores/useGitStore.ts` | Zustand store: working-branch readiness + retry error, shared branch-list state/action, modal routing (`GitModalMode`), peek/comparison/move targets, and the refresh-triggering nonces (`historyNonce`, `commitNonce`, `branchesExpandNonce`). |
-| `frontend/src/stores/saveCapture.ts` | `reportSaveCapture`: what a save answered about its version capture, reported the same way for the pipeline's save and the workbench's form save — the ledger commit onto the status for the branch indicator through `setLastSaveSha` (left as it is when the answer has no commit field), `notifyHistoryChanged` so an open panel refetches, each warning in a toast of its own, and the identity modal opened on `identity_required` unless it was dismissed this session (`isIdentityPromptDismissed`) or is already open. |
+| `frontend/src/stores/useGitStore.ts` | Zustand store: working-branch readiness + retry error, shared branch-list state/action, modal routing (`GitModalMode`), peek/comparison/move targets, the refresh-triggering nonces (`historyNonce`, `commitNonce`, `branchesExpandNonce`), and `uncaptured`, the files writes reported left off the ledger, kept for a capture. |
+| `frontend/src/stores/saveCapture.ts` | `reportSaveCapture`: what a write answered about its version capture, reported the same way for every write (the pipeline's save, the form's save, a test-quote write, a Pipeline file written or deleted) — the ledger commit onto the status for the branch indicator through `setLastSaveSha` (left as it is when the answer has no commit field), `notifyHistoryChanged` so an open panel refetches, the answer's `uncaptured` files added, each once, to the git store's `uncaptured`, each warning in a toast of its own, and the identity modal opened on `identity_required` unless it was dismissed this session (`isIdentityPromptDismissed`) or is already open. `captureUncaptured`: nothing while nothing is kept; else the kept files taken off the store, sent to `POST /api/git/capture` (`captureFiles`) and the answer reported, so a file still uncaptured is kept again, while a request that fails keeps them all and toasts "Version capture failed: <reason>"; the identity prompt calls it once an identity is recorded and the project save at its start. |
 | `frontend/src/stores/gitBranchLoader.ts` | Lazily loaded branch-list request coordinator. It publishes results into `useGitStore` while delegating the in-flight/queued-refresh bookkeeping to `singleFlight.ts`, keeping branch-only client code out of the initial editor bundle. |
 | `frontend/src/stores/singleFlight.ts` | Shared resettable single-flight utility: request joining, the trailing-refresh queue (exactly one follow-up per active request, generation-anchored), and the stalled-request watchdog. Consumed by `useGitStore.ts` (working-branch status) and `gitBranchLoader.ts` (branch list). Test seam: both stores' `reset…ForTests` exports delegate to its `reset()`. |
 | `frontend/src/components/BranchIndicator.tsx` | Toolbar entry point: explicit repository/readiness/error labels with Retry, plus a ready branch-name button that opens the panel on the current branch. Truncated errors use the shared `Tooltip` to expose the full diagnostic on error hover or Retry focus; its function child places `aria-describedby` on Retry. |
@@ -379,7 +379,10 @@ Library component/unit tests (no e2e for this surface).
 
 - **`frontend/src/stores/__tests__/saveCapture.test.ts`** — the save-capture report: the
   indicator's SHA (and left as it is without the field), the history nonce, each warning's
-  toast, and the identity prompt opened once per session and not over itself.
+  toast, the identity prompt opened once per session and not over itself, the uncaptured
+  files kept once each and taken by one capture, nothing sent with nothing kept, a file
+  still skipped kept again and every file kept with its toast when the request fails, and
+  a file a write reports while the capture is under way kept.
 - **`frontend/src/panels/__tests__/GitPanel.test.tsx`** — the primary behavioural suite: rendering, milestone
   expand/collapse, pending-save display, both refresh nonces, right-click menus
   (fork/view/move) in every row context (milestone / pending save / expanded save),
@@ -454,7 +457,8 @@ Library component/unit tests (no e2e for this surface).
   rendering nothing when `moveTarget` is `null`.
 - **`frontend/src/__tests__/App.integration.test.tsx`** — the parent-owned move transaction rejects a
   failed `moveToVersion` request with an error toast and clears `moveTarget`, proving the
-  busy-locked `MoveConfirmModal` cannot remain stranded after its promise settles.
+  busy-locked `MoveConfirmModal` cannot remain stranded after its promise settles; and Save
+  captures the files earlier writes left uncaptured before it saves the pipeline.
 - **`frontend/src/components/__tests__/MilestoneCommitModal.test.tsx`** — submit gating on message
   presence, visible validation above the 500-character maximum, successful commit
   with/without a version label, the 409 fork-warning → commit-anyway override flow, and

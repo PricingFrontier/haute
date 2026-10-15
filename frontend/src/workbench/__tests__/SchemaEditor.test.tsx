@@ -11,7 +11,8 @@ import type { FormSpec, ProjectFolderResponse, SchemaColumn, SchemaTable } from 
 import { fetchParamFile } from "../../api/workbench"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
-import { BLANK_THEME, COLLECTION_OPTIONS, updateSchemaColumn } from "../../utils/workbenchForm"
+import { answerQuestion, asked } from "../../test-utils/question"
+import { BLANK_THEME, COLLECTION_OPTIONS, TABLE_OPTIONS, updateSchemaColumn } from "../../utils/workbenchForm"
 import SchemaEditor from "../SchemaEditor"
 import { detailsTable } from "./fixtures"
 
@@ -248,6 +249,24 @@ describe("SchemaEditor", () => {
 
     fireEvent.keyDown(added, { key: "ArrowDown", altKey: true })
     expect(columnNames("policy_details")).toEqual(["state", "exposure", "column"])
+    // The name field keeps the focus in its new place.
+    expect(within(tableNamed("policy_details")).getAllByRole("textbox", { name: "Column name" })[2]).toBe(document.activeElement)
+  })
+
+  it("says why the params files could not be listed, and lists them again on Retry", async () => {
+    vi.mocked(listProjectFiles)
+      .mockRejectedValueOnce(new Error("This project's pipeline sits at the project root, so it has no pipeline folder to keep versioned files in."))
+      .mockResolvedValueOnce(paramsFolder("states.csv"))
+    render(<SchemaEditor />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of state" }))
+
+    const said = await screen.findByTestId("params-unlisted")
+    expect(said).toHaveTextContent("This project's pipeline sits at the project root")
+    const asked = vi.mocked(listProjectFiles).mock.calls.length
+    fireEvent.click(within(said).getByRole("button", { name: "Retry" }))
+    await waitFor(() => expect(screen.queryByTestId("params-unlisted")).toBeNull())
+    expect(vi.mocked(listProjectFiles).mock.calls.length).toBeGreaterThan(asked)
   })
 
   it("shows a column's label and rules, each saved as it commits", () => {
@@ -462,7 +481,7 @@ describe("SchemaEditor", () => {
     expect(screen.queryByRole("textbox", { name: "Placeholder of on" })).not.toBeInTheDocument()
   })
 
-  it("asks before removing a column or a table a sheet shows, and takes it off the sheet", () => {
+  it("asks before removing a column or a table a sheet shows, and takes it off the sheet", async () => {
     const shown = form(POLICY, LAYERS)
     shown.pages[0].sections[0].widgets = [
       { id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "t_policy", column: "c_state" }], show_when: { match: "all", conditions: [] } },
@@ -474,19 +493,22 @@ describe("SchemaEditor", () => {
     expect(columnNames("policy_details")).toEqual(["state"])
 
     fireEvent.click(screen.getByRole("button", { name: "Remove column state" }))
-    expect(screen.getByRole("alert")).toHaveTextContent("Shown in 1 component; removing it takes it out of that too.")
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+    expect(asked()).toMatchObject({ title: "Remove column state?", text: "Shown in 1 component; removing it takes it out of that too.", confirm: "Remove", danger: true })
+    await answerQuestion(null)
     expect(columnNames("policy_details")).toEqual(["state"])
     fireEvent.click(screen.getByRole("button", { name: "Remove column state" }))
-    fireEvent.click(screen.getByRole("button", { name: "Remove" }))
+    await answerQuestion("confirm")
     expect(columnNames("policy_details")).toEqual([])
     expect(current().pages[0].sections[0].widgets[0]).toMatchObject({ fields: [] })
 
+    // Nothing shows the layers: deleted without a question.
     fireEvent.click(screen.getByRole("button", { name: "Delete table layers" }))
+    await act(async () => undefined)
+    expect(asked()).toBeNull()
     expect(screen.queryByRole("region", { name: "Table layers" })).not.toBeInTheDocument()
   })
 
-  it("asks before removing a column or a table a condition tests, and takes the condition with it", () => {
+  it("asks before removing a column or a table a condition tests, and takes the condition with it", async () => {
     const tested = form(POLICY, LAYERS)
     const condition = { table: "t_policy", column: "c_state", op: "filled" as const, values: [] }
     tested.pages[0].show_when = { match: "all", conditions: [condition] }
@@ -497,19 +519,19 @@ describe("SchemaEditor", () => {
     render(<SchemaEditor />)
 
     fireEvent.click(screen.getByRole("button", { name: "Remove column state" }))
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "Shown in 1 component and tested by the conditions of 1 sheet, section or component; removing it takes it out of them too.",
-    )
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+    expect(asked()?.text).toBe("Shown in 1 component and tested by the conditions of 1 sheet, section or component; removing it takes it out of them too.")
+    await answerQuestion(null)
     fireEvent.click(screen.getByRole("button", { name: "Delete table policy_details" }))
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "Its columns are shown in 1 component and tested by the conditions of 1 sheet, section or component; deleting it takes them out of them too.",
-    )
-    fireEvent.click(screen.getByRole("button", { name: "Delete" }))
+    expect(asked()).toMatchObject({
+      title: "Delete table policy_details?",
+      text: "Its columns are shown in 1 component and tested by the conditions of 1 sheet, section or component; deleting it takes them out of them too.",
+      confirm: "Delete",
+    })
+    await answerQuestion("confirm")
     expect(current().pages[0].show_when.conditions).toEqual([])
   })
 
-  it("counts a section whose conditions test a column or a table in the confirmation, and takes those conditions out of it", () => {
+  it("counts a section whose conditions test a column or a table in the confirmation, and takes those conditions out of it", async () => {
     const tested = form(POLICY, LAYERS)
     const state = { table: "t_policy", column: "c_state", op: "filled" as const, values: [] }
     const exposure = { table: "t_policy", column: "c_exposure", op: "above" as const, values: ["100"] }
@@ -521,15 +543,15 @@ describe("SchemaEditor", () => {
 
     // The state is tested by the sheet's conditions and the section's.
     fireEvent.click(screen.getByRole("button", { name: "Remove column state" }))
-    expect(screen.getByRole("alert")).toHaveTextContent("Tested by the conditions of 2 sheets, sections or components; removing it takes it out of them too.")
-    fireEvent.click(screen.getByRole("button", { name: "Remove" }))
+    expect(asked()?.text).toBe("Tested by the conditions of 2 sheets, sections or components; removing it takes it out of them too.")
+    await answerQuestion("confirm")
     expect(current().pages[0].show_when.conditions).toEqual([])
     expect(sectionConditions()).toEqual([exposure])
 
     // What is left of the table is tested by the section's alone.
     fireEvent.click(screen.getByRole("button", { name: "Delete table policy_details" }))
-    expect(screen.getByRole("alert")).toHaveTextContent("Its columns are tested by the conditions of 1 sheet, section or component; deleting it takes them out of it too.")
-    fireEvent.click(screen.getByRole("button", { name: "Delete" }))
+    expect(asked()?.text).toBe("Its columns are tested by the conditions of 1 sheet, section or component; deleting it takes them out of it too.")
+    await answerQuestion("confirm")
     expect(sectionConditions()).toEqual([])
     expect(current().pages[0].sections.map((section) => section.id)).toEqual(["section_1", "section_2"])
   })
@@ -551,6 +573,23 @@ describe("SchemaEditor", () => {
     expect(screen.queryByRole("checkbox", { name: "Add index to policy_details" })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Add index to layers" }))
+    expect(columnNames("layers")).toEqual(["layer", "limit"])
+  })
+
+  it("asks before removing an index a sheet shows", async () => {
+    const indexed = form(POLICY, { ...LAYERS, columns: [column("c_row", "row_number", { type: "int", index: true }), ...LAYERS.columns] })
+    indexed.pages[0].sections[0].widgets = [
+      { id: "w", type: "tableInput", x: 0, y: 0, w: 400, h: 100, title: "Layers", rows: 3, ...TABLE_OPTIONS, fields: [{ table: "t_layers", column: "c_row" }], show_when: { match: "all", conditions: [] } },
+    ]
+    load(indexed)
+    render(<SchemaEditor />)
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Add index to layers" }))
+    expect(asked()).toMatchObject({ title: "Remove the index of layers?", text: "The index is shown in 1 component; removing it takes it out of that too." })
+    await answerQuestion(null)
+    expect(columnNames("layers")).toEqual(["row_number", "layer", "limit"])
+    fireEvent.click(screen.getByRole("checkbox", { name: "Add index to layers" }))
+    await answerQuestion("confirm")
     expect(columnNames("layers")).toEqual(["layer", "limit"])
   })
 

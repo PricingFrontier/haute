@@ -12033,6 +12033,13 @@
           "title": "Path",
           "type": "string"
         },
+        "uncaptured": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Uncaptured",
+          "type": "array"
+        },
         "warnings": {
           "items": {
             "type": "string"
@@ -12042,10 +12049,11 @@
         }
       },
       "required": [
-        "path",
+        "warnings",
         "git_sha",
         "identity_required",
-        "warnings"
+        "uncaptured",
+        "path"
       ],
       "title": "ProjectFileDeleteResponse",
       "type": "object"
@@ -12188,6 +12196,13 @@
           "default": null,
           "title": "Status"
         },
+        "uncaptured": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Uncaptured",
+          "type": "array"
+        },
         "warnings": {
           "items": {
             "type": "string"
@@ -12197,14 +12212,15 @@
         }
       },
       "required": [
+        "warnings",
+        "git_sha",
+        "identity_required",
+        "uncaptured",
         "path",
         "size",
         "revision",
         "replaced",
-        "status",
-        "git_sha",
-        "identity_required",
-        "warnings"
+        "status"
       ],
       "title": "ProjectFileWriteResponse",
       "type": "object"
@@ -12351,6 +12367,50 @@
         "columns"
       ],
       "title": "RatingLevelsResponse",
+      "type": "object"
+    },
+    "SaveCapture": {
+      "description": "A write's capture on the clone's save ledger, answered the same way by every route\nthat writes project files: the pipeline's save, the form's save, a test-quote write, a\nproject file written or deleted, and ``POST /api/git/capture``.\n\n``warnings`` are non-fatal, since the write has landed: a capture that failed among\nthem, and anything else left to see to (a transform with no code); an empty list means\nno issues. ``git_sha`` is the ledger commit the write produced when the clone has a\nworking branch, else null. ``identity_required`` is true only when the capture was\nskipped because git has no commit identity (a restored hosted container), for the\neditor to ask for one. ``uncaptured`` names the files, relative to the project in POSIX\nform, that a skipped or failed capture left off the ledger: the editor keeps them and\n``POST /api/git/capture`` takes them later.",
+      "properties": {
+        "git_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Git Sha"
+        },
+        "identity_required": {
+          "default": false,
+          "title": "Identity Required",
+          "type": "boolean"
+        },
+        "uncaptured": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Uncaptured",
+          "type": "array"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "warnings",
+        "git_sha",
+        "identity_required",
+        "uncaptured"
+      ],
+      "title": "SaveCapture",
       "type": "object"
     },
     "SaveModelResponse": {
@@ -15020,6 +15080,46 @@
       "title": "WorkbenchAppPeopleResponse",
       "type": "object"
     },
+    "WorkbenchAppPriceRequest": {
+      "description": "A quote typed into the app's sheets, with the form revision and the release the page\nwas drawn from.",
+      "properties": {
+        "form_revision": {
+          "title": "Form Revision",
+          "type": "string"
+        },
+        "release": {
+          "title": "Release",
+          "type": "string"
+        },
+        "values": {
+          "additionalProperties": {
+            "items": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "title": "Values",
+          "type": "object"
+        }
+      },
+      "required": [
+        "form_revision",
+        "release",
+        "values"
+      ],
+      "title": "WorkbenchAppPriceRequest",
+      "type": "object"
+    },
     "WorkbenchAppPriceResponse": {
       "description": "The quote priced: each output table's rows by name, and the request that was priced.",
       "properties": {
@@ -15285,10 +15385,6 @@
         "title": {
           "title": "Title",
           "type": "string"
-        },
-        "version": {
-          "title": "Version",
-          "type": "integer"
         }
       },
       "required": [
@@ -15318,10 +15414,46 @@
         "source_quote_id",
         "source_reference",
         "source_revision",
-        "relation",
-        "version"
+        "relation"
       ],
       "title": "WorkbenchAppQuote",
+      "type": "object"
+    },
+    "WorkbenchAppQuoteAssign": {
+      "description": "Who the quote is with now.",
+      "properties": {
+        "assignee": {
+          "maxLength": 320,
+          "minLength": 1,
+          "title": "Assignee",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "assignee"
+      ],
+      "title": "WorkbenchAppQuoteAssign",
+      "type": "object"
+    },
+    "WorkbenchAppQuoteChange": {
+      "description": "A change to a quote, made on ``version`` of it.",
+      "properties": {
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "title": "WorkbenchAppQuoteChange",
       "type": "object"
     },
     "WorkbenchAppQuoteChangeResponse": {
@@ -15347,6 +15479,83 @@
         "revision"
       ],
       "title": "WorkbenchAppQuoteChangeResponse",
+      "type": "object"
+    },
+    "WorkbenchAppQuoteCreateRequest": {
+      "description": "A new quote, and the quote it is made from when it is.",
+      "properties": {
+        "form_revision": {
+          "title": "Form Revision",
+          "type": "string"
+        },
+        "operation": {
+          "maxLength": 64,
+          "minLength": 8,
+          "title": "Operation",
+          "type": "string"
+        },
+        "release": {
+          "title": "Release",
+          "type": "string"
+        },
+        "shown": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Shown"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchAppQuoteSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "values": {
+          "additionalProperties": {
+            "items": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "title": "Values",
+          "type": "object"
+        }
+      },
+      "required": [
+        "operation",
+        "form_revision",
+        "release",
+        "values"
+      ],
+      "title": "WorkbenchAppQuoteCreateRequest",
       "type": "object"
     },
     "WorkbenchAppQuoteEvent": {
@@ -15408,6 +15617,27 @@
       "title": "WorkbenchAppQuoteEvent",
       "type": "object"
     },
+    "WorkbenchAppQuoteFinal": {
+      "description": "The revision the page showed, marked final: it must be the quote's newest.",
+      "properties": {
+        "revision": {
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "revision"
+      ],
+      "title": "WorkbenchAppQuoteFinal",
+      "type": "object"
+    },
     "WorkbenchAppQuoteHistoryResponse": {
       "description": "A quote's revisions, events, the quote it was made from and those made from it.",
       "properties": {
@@ -15453,6 +15683,43 @@
       "title": "WorkbenchAppQuoteHistoryResponse",
       "type": "object"
     },
+    "WorkbenchAppQuoteNote": {
+      "description": "The quote's handover note; blank clears it. A note is no revision, so it names none.",
+      "properties": {
+        "note": {
+          "maxLength": 4000,
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "note"
+      ],
+      "title": "WorkbenchAppQuoteNote",
+      "type": "object"
+    },
+    "WorkbenchAppQuoteReopen": {
+      "description": "Why a final quote is reopened.",
+      "properties": {
+        "reason": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "reason"
+      ],
+      "title": "WorkbenchAppQuoteReopen",
+      "type": "object"
+    },
     "WorkbenchAppQuoteResponse": {
       "description": "A quote with one revision. ``form`` is the sheets the revision was keyed into when\nthey are not the release's, which it opens on, read only; ``moved`` says a save's\nprices, made again on the server, are not the ones the page showed.",
       "properties": {
@@ -15486,6 +15753,78 @@
         "moved"
       ],
       "title": "WorkbenchAppQuoteResponse",
+      "type": "object"
+    },
+    "WorkbenchAppQuoteReviseRequest": {
+      "description": "A quote's next revision, saved over ``version`` of it.",
+      "properties": {
+        "form_revision": {
+          "title": "Form Revision",
+          "type": "string"
+        },
+        "operation": {
+          "maxLength": 64,
+          "minLength": 8,
+          "title": "Operation",
+          "type": "string"
+        },
+        "release": {
+          "title": "Release",
+          "type": "string"
+        },
+        "shown": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Shown"
+        },
+        "values": {
+          "additionalProperties": {
+            "items": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "title": "Values",
+          "type": "object"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "operation",
+        "form_revision",
+        "release",
+        "values",
+        "version"
+      ],
+      "title": "WorkbenchAppQuoteReviseRequest",
       "type": "object"
     },
     "WorkbenchAppQuoteRevision": {
@@ -15632,6 +15971,36 @@
         "stage"
       ],
       "title": "WorkbenchAppQuoteRevisionSummary",
+      "type": "object"
+    },
+    "WorkbenchAppQuoteSource": {
+      "description": "The quote and revision a new quote is made from, and how.",
+      "properties": {
+        "quote_id": {
+          "title": "Quote Id",
+          "type": "string"
+        },
+        "relation": {
+          "enum": [
+            "duplicate",
+            "renewal",
+            "alternative"
+          ],
+          "title": "Relation",
+          "type": "string"
+        },
+        "revision": {
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "quote_id",
+        "revision",
+        "relation"
+      ],
+      "title": "WorkbenchAppQuoteSource",
       "type": "object"
     },
     "WorkbenchAppQuotesResponse": {
@@ -15811,10 +16180,18 @@
       "type": "object"
     },
     "WorkbenchFormResponse": {
-      "description": "The workbench's form as its file holds it now, with the file's revision.\n\n``revision`` is the file's content hash, which a save quotes as its ``base_revision``;\nnull while the form has never been saved, when ``form`` is the blank form.",
+      "description": "The workbench's form as its file holds it now, with the file's revision.",
       "properties": {
         "form": {
           "$ref": "#/$defs/FormSpec"
+        },
+        "repairs": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Repairs",
+          "type": "array"
         },
         "revision": {
           "anyOf": [
@@ -15831,13 +16208,14 @@
       },
       "required": [
         "form",
-        "revision"
+        "revision",
+        "repairs"
       ],
       "title": "WorkbenchFormResponse",
       "type": "object"
     },
     "WorkbenchFormSaveResponse": {
-      "description": "The form as written, with its new revision and the save's version capture.\n\nThe capture fields mean what they mean on the pipeline save's response: ``git_sha`` is\nthe ledger commit the save produced when the clone has a working branch, else null;\n``warnings`` are non-fatal, a capture that failed among them; ``identity_required`` is\ntrue only when the capture was skipped because git has no commit identity.",
+      "description": "The form as written, with its new revision and the save's version capture.",
       "properties": {
         "form": {
           "$ref": "#/$defs/FormSpec"
@@ -15871,6 +16249,13 @@
           "default": null,
           "title": "Revision"
         },
+        "uncaptured": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Uncaptured",
+          "type": "array"
+        },
         "warnings": {
           "items": {
             "type": "string"
@@ -15880,11 +16265,12 @@
         }
       },
       "required": [
-        "form",
-        "revision",
         "warnings",
         "git_sha",
-        "identity_required"
+        "identity_required",
+        "uncaptured",
+        "form",
+        "revision"
       ],
       "title": "WorkbenchFormSaveResponse",
       "type": "object"
@@ -16177,7 +16563,7 @@
       "type": "object"
     },
     "WorkbenchTestQuoteWriteResponse": {
-      "description": "A test-quote write and its capture on the save ledger.\n\n``quote`` is the test quote as written, null after a delete; the capture fields mean what\nthey mean on the form save's response.",
+      "description": "A test-quote write and its capture on the save ledger.\n\n``quote`` is the test quote as written, null after a delete.",
       "properties": {
         "git_sha": {
           "anyOf": [
@@ -16207,6 +16593,13 @@
           ],
           "default": null
         },
+        "uncaptured": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Uncaptured",
+          "type": "array"
+        },
         "warnings": {
           "items": {
             "type": "string"
@@ -16216,10 +16609,11 @@
         }
       },
       "required": [
-        "quote",
         "warnings",
         "git_sha",
-        "identity_required"
+        "identity_required",
+        "uncaptured",
+        "quote"
       ],
       "title": "WorkbenchTestQuoteWriteResponse",
       "type": "object"
@@ -16466,6 +16860,9 @@
     "RatingLevelsResponse": {
       "$ref": "#/$defs/RatingLevelsResponse"
     },
+    "SaveCapture": {
+      "$ref": "#/$defs/SaveCapture"
+    },
     "SaveModelResponse": {
       "$ref": "#/$defs/SaveModelResponse"
     },
@@ -16511,17 +16908,41 @@
     "WorkbenchAppPeopleResponse": {
       "$ref": "#/$defs/WorkbenchAppPeopleResponse"
     },
+    "WorkbenchAppPriceRequest": {
+      "$ref": "#/$defs/WorkbenchAppPriceRequest"
+    },
     "WorkbenchAppPriceResponse": {
       "$ref": "#/$defs/WorkbenchAppPriceResponse"
+    },
+    "WorkbenchAppQuoteAssign": {
+      "$ref": "#/$defs/WorkbenchAppQuoteAssign"
+    },
+    "WorkbenchAppQuoteChange": {
+      "$ref": "#/$defs/WorkbenchAppQuoteChange"
     },
     "WorkbenchAppQuoteChangeResponse": {
       "$ref": "#/$defs/WorkbenchAppQuoteChangeResponse"
     },
+    "WorkbenchAppQuoteCreateRequest": {
+      "$ref": "#/$defs/WorkbenchAppQuoteCreateRequest"
+    },
+    "WorkbenchAppQuoteFinal": {
+      "$ref": "#/$defs/WorkbenchAppQuoteFinal"
+    },
     "WorkbenchAppQuoteHistoryResponse": {
       "$ref": "#/$defs/WorkbenchAppQuoteHistoryResponse"
     },
+    "WorkbenchAppQuoteNote": {
+      "$ref": "#/$defs/WorkbenchAppQuoteNote"
+    },
+    "WorkbenchAppQuoteReopen": {
+      "$ref": "#/$defs/WorkbenchAppQuoteReopen"
+    },
     "WorkbenchAppQuoteResponse": {
       "$ref": "#/$defs/WorkbenchAppQuoteResponse"
+    },
+    "WorkbenchAppQuoteReviseRequest": {
+      "$ref": "#/$defs/WorkbenchAppQuoteReviseRequest"
     },
     "WorkbenchAppQuotesResponse": {
       "$ref": "#/$defs/WorkbenchAppQuotesResponse"
@@ -16569,6 +16990,14 @@
   "required": [
     "execution_strategy_diagnostic",
     "explore_charts",
+    "WorkbenchAppPriceRequest",
+    "WorkbenchAppQuoteCreateRequest",
+    "WorkbenchAppQuoteReviseRequest",
+    "WorkbenchAppQuoteChange",
+    "WorkbenchAppQuoteAssign",
+    "WorkbenchAppQuoteFinal",
+    "WorkbenchAppQuoteReopen",
+    "WorkbenchAppQuoteNote",
     "UtilityListResponse",
     "UtilityReadResponse",
     "UtilityWriteResponse",
@@ -16616,6 +17045,7 @@
     "GitUpstreamStatusResponse",
     "GitPushRejection",
     "GitMilestoneFork",
+    "SaveCapture",
     "TrainResponse",
     "TrainStatusResponse",
     "ExplorePivotRunResponse",
@@ -16669,6 +17099,18 @@
   ],
   "title": "HauteApiContractBundle",
   "type": "object",
+  "x-haute-request-groups": {
+    "workbench-app-requests": [
+      "WorkbenchAppPriceRequest",
+      "WorkbenchAppQuoteCreateRequest",
+      "WorkbenchAppQuoteReviseRequest",
+      "WorkbenchAppQuoteChange",
+      "WorkbenchAppQuoteAssign",
+      "WorkbenchAppQuoteFinal",
+      "WorkbenchAppQuoteReopen",
+      "WorkbenchAppQuoteNote"
+    ]
+  },
   "x-haute-response-groups": {
     "databricks": [
       "WarehouseListResponse",
@@ -16717,7 +17159,8 @@
       "GitForkStorageResponse",
       "GitUpstreamStatusResponse",
       "GitPushRejection",
-      "GitMilestoneFork"
+      "GitMilestoneFork",
+      "SaveCapture"
     ],
     "io": [
       "IoCapabilitiesResponse"

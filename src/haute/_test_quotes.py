@@ -15,11 +15,10 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from haute._sandbox import contained_path
+from haute._artifact_paths import PATH_PROBLEMS, ordinary_path_problem
 from haute._workbench_config import WorkbenchError
 from haute._workbench_form import FormSpec
 from haute._workbench_tables import output_tables, port_tables, sample_quote
-from haute.errors import PathOutsideProjectError
 
 #: The test-quote file's name, in the test-quote directory.
 TEST_QUOTES_FILE = "test_quotes.sqlite"
@@ -37,12 +36,9 @@ class WorkbenchTestQuoteError(WorkbenchError):
 
 
 def project_test_quotes_path(project_root: Path) -> Path:
-    """The project's test-quote file: ``test_quotes.sqlite`` in its test-quote directory.
-
-    The whole path is held inside the project, the file included, so a link at the file's
-    name that leads outside is refused as a directory that does is.
-    """
-    directory = DEFAULT_TEST_QUOTES_DIR
+    """The project's test-quote file: ``test_quotes.sqlite`` in its test-quote directory,
+    as :func:`test_quotes_path` takes it from ``haute.toml``'s ``[test_quotes]`` table."""
+    table: object = {}
     toml_path = project_root / "haute.toml"
     if toml_path.is_file():
         try:
@@ -50,26 +46,54 @@ def project_test_quotes_path(project_root: Path) -> Path:
                 table = tomllib.load(handle).get("test_quotes", {})
         except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
             raise WorkbenchTestQuoteError(f"haute.toml could not be read: {exc}") from exc
-        configured = table.get("dir") if isinstance(table, dict) else None
-        if isinstance(configured, str) and configured:
-            directory = configured
-    try:
-        return contained_path(project_root.resolve(), Path(directory) / TEST_QUOTES_FILE)
-    except PathOutsideProjectError as exc:
-        raise WorkbenchTestQuoteError(
-            f"[test_quotes] dir {directory!r} must be a folder inside the project, and "
-            f"{TEST_QUOTES_FILE} a file inside it."
-        ) from exc
+    return test_quotes_path(project_root, table)
+
+
+def test_quotes_path(project_root: Path, table: object) -> Path:
+    """``test_quotes.sqlite`` in the test-quote directory a parsed ``[test_quotes]`` *table*
+    names, ``tests/quotes`` when it names none: the one reading of the folder, which the
+    editor and deploy share.
+
+    The path is an ordinary one inside the project, as the Files panels take one: no link or
+    junction on the way, and the file no hard link, which SQLite would write through to the
+    file it shares.
+    """
+    configured = table.get("dir") if isinstance(table, dict) else None
+    directory = (
+        configured if isinstance(configured, str) and configured else DEFAULT_TEST_QUOTES_DIR
+    )
+    relative = Path(directory) / TEST_QUOTES_FILE
+    path, problem = ordinary_path_problem(project_root, str(relative))
+    if problem is None:
+        return path
+    named = relative.as_posix() if problem == "not_ordinary" else _from_root(project_root, path)
+    raise WorkbenchTestQuoteError(
+        f"{named} {PATH_PROBLEMS[problem]}: [test_quotes] dir must be a folder of the "
+        f"project's own, and {TEST_QUOTES_FILE} a file inside it."
+    )
+
+
+def test_quote_files(directory: Path) -> list[Path]:
+    """The test-quote files in *directory*: its JSON files, then the workbench's test-quote
+    file when there is one."""
+    files = sorted(directory.glob("*.json"))
+    saved = directory / TEST_QUOTES_FILE
+    return [*files, saved] if saved.is_file() else files
 
 
 def project_gitattributes_path(project_root: Path) -> Path:
-    """The project's ``.gitattributes``, refused when a link at its name leads outside."""
-    try:
-        return contained_path(project_root.resolve(), ".gitattributes")
-    except PathOutsideProjectError as exc:
-        raise WorkbenchTestQuoteError(
-            ".gitattributes leads outside the project: make it a file of the project's own."
-        ) from exc
+    """The project's ``.gitattributes``, an ordinary file of the project's own, as the test
+    quotes' path is."""
+    path, problem = ordinary_path_problem(project_root, ".gitattributes")
+    if problem is None:
+        return path
+    raise WorkbenchTestQuoteError(
+        f".gitattributes {PATH_PROBLEMS[problem]}: make it a file of the project's own."
+    )
+
+
+def _from_root(project_root: Path, path: Path) -> str:
+    return path.relative_to(project_root.resolve()).as_posix()
 
 
 def _attributes_pattern(relative: str) -> str:
@@ -98,38 +122,56 @@ def test_quotes_branch(project_root: Path) -> str | None:
 #: The git drivers' name for the test-quote file, in ``.gitattributes`` and the clone's config.
 GIT_DRIVER = "haute-test-quotes"
 
+#: The clones whose config this process gave the drivers, by project and interpreter: checked
+#: once a process, while a registration that failed is tried again at the next call.
+_REGISTERED: set[tuple[str, str]] = set()
 
-def ensure_test_quote_git(project_root: Path, relative: str) -> bool:
-    """Give the clone at *project_root* git's drivers for the test-quote file at *relative*.
 
-    ``.gitattributes`` names the file with the drivers, and the clone's own config runs them
-    through the Python running Haute: ``dump`` for a diff and ``merge`` for a merge. Returns
-    whether ``.gitattributes`` changed, for the caller to capture; nothing outside a repository.
+def ensure_test_quote_git(project_root: Path, relative: str) -> list[str]:
+    """Give the clone at *project_root* git's drivers for the test-quote file at *relative*;
+    the warnings, a registration that failed among them. Nothing outside a repository.
+
+    ``.gitattributes`` names the file with the drivers, read at every call and given the line
+    when it lacks it; an ``OSError`` writing it is the caller's. The clone's own config runs
+    the drivers through the Python running Haute, from ``haute._test_quote_driver``: ``dump``
+    for a diff and ``merge`` for a merge.
     """
     from haute._git_core import _run_git_ok
 
     if not (project_root / ".git").exists():
-        return False
+        return []
+    warnings: list[str] = []
     python = Path(sys.executable).as_posix()
-    wanted = {
-        f"diff.{GIT_DRIVER}.textconv": f'"{python}" -m haute.cli._test_quotes dump',
-        f"merge.{GIT_DRIVER}.name": "Haute's test quotes, merged quote by quote",
-        f"merge.{GIT_DRIVER}.driver": f'"{python}" -m haute.cli._test_quotes merge %O %A %B',
-    }
-    for key, value in wanted.items():
-        ok, current = _run_git_ok("config", "--local", "--get", key, cwd=project_root)
-        if not ok or current.strip() != value:
-            _run_git_ok("config", "--local", key, value, cwd=project_root)
+    clone = (str(project_root.resolve()), python)
+    if clone not in _REGISTERED:
+        driver = f'"{python}" -m haute._test_quote_driver'
+        wanted = {
+            f"diff.{GIT_DRIVER}.textconv": f"{driver} dump",
+            f"merge.{GIT_DRIVER}.name": "Haute's test quotes, merged quote by quote",
+            f"merge.{GIT_DRIVER}.driver": f"{driver} merge %O %A %B",
+        }
+        registered = True
+        for key, value in wanted.items():
+            ok, current = _run_git_ok("config", "--local", "--get", key, cwd=project_root)
+            if not ok or current != value:
+                written, _ = _run_git_ok("config", "--local", key, value, cwd=project_root)
+                registered = registered and written
+        if registered:
+            _REGISTERED.add(clone)
+        else:
+            warnings.append(
+                "The test quotes' git drivers could not be registered in this clone's git "
+                "config, so a diff shows the file as binary and a merge conflicts on it."
+            )
     attributes = project_gitattributes_path(project_root)
     line = f"{_attributes_pattern(relative)} diff={GIT_DRIVER} merge={GIT_DRIVER}"
     text = attributes.read_text(encoding="utf-8") if attributes.is_file() else ""
-    if line in text.splitlines():
-        return False
-    # A file that does not end its last line would run the two lines together.
-    lead = "\n" if text and not text.endswith("\n") else ""
-    with attributes.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(f"{lead}{line}\n")
-    return True
+    if line not in text.splitlines():
+        # A file that does not end its last line would run the two lines together.
+        lead = "\n" if text and not text.endswith("\n") else ""
+        with attributes.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(f"{lead}{line}\n")
+    return warnings
 
 
 def quote_request(spec: FormSpec, values: Mapping[str, Any]) -> dict[str, Any]:

@@ -45,7 +45,6 @@ export function appQuote(overrides: Partial<WorkbenchAppQuote> = {}): WorkbenchA
     source_reference: null,
     source_revision: null,
     relation: null,
-    version: overrides.latest ?? 1,
     ...overrides,
   }
 }
@@ -72,8 +71,8 @@ export function answer(quote: Partial<WorkbenchAppQuote> = {}, revision: Partial
 }
 
 /**
- * A change's answer as the server gives it: the quote with `latest` and `version` the
- * revision the change wrote, and that revision.
+ * A change's answer as the server gives it: the quote with `latest` the revision the change
+ * wrote, and that revision.
  */
 export function changed(quote: Partial<WorkbenchAppQuote>, revision: Partial<WorkbenchAppQuoteResponse["revision"]> = {}): WorkbenchAppQuoteChangeResponse {
   const made = answer(quote, revision)

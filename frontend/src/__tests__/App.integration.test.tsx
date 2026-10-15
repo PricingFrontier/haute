@@ -64,6 +64,7 @@ vi.mock("../api/workbench", () => ({
       sample: {},
     },
     revision: "form-rev-0",
+    repairs: [],
   })),
   saveWorkbenchForm: vi.fn((form: unknown) => Promise.resolve({ form, revision: "form-rev-1" })),
 }))
@@ -130,6 +131,7 @@ vi.mock("../api/client", async () => {
     previewRecoveryNode: vi.fn(() => Promise.resolve({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })),
     applyRemoveUnavailableNode: vi.fn(() => Promise.resolve({})),
     savePipeline: vi.fn(() => Promise.resolve({ file: "pipeline.py", pipeline_name: "main" })),
+    captureFiles: vi.fn(() => Promise.resolve({ git_sha: "ledger-9", warnings: [], identity_required: false, uncaptured: [] })),
     traceCell: vi.fn(() => Promise.resolve({ status: "ok" })),
     executeSink: vi.fn(() => Promise.resolve({ status: "ok" })),
     // Submodel
@@ -577,7 +579,7 @@ beforeEach(() => {
   vi.mocked(api.commitMilestone).mockReset().mockResolvedValue({ sha: "deadbeef0000", short_sha: "deadbee", working_branch: "dev", version_label: null })
   vi.mocked(api.getMilestones).mockReset().mockResolvedValue({ working_branch: "dev", entries: [] })
   vi.mocked(api.moveToVersion).mockReset().mockResolvedValue({ sha: "abc1234def", short_sha: "abc1234", prior_branch: "dev-save", is_detached: true })
-  useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, moveTarget: null })
+  useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, moveTarget: null, uncaptured: [] })
 })
 
 afterEach(() => {
@@ -1377,6 +1379,23 @@ describe("App integration - save pipeline", () => {
     expect(payload.graph.nodes).toHaveLength(1)
     expect(payload.graph.nodes[0].id).toBe("polars_0")
     expect(payload.graph.edges).toEqual([])
+  })
+
+  it("Save captures the files earlier writes left uncaptured, then saves the pipeline", async () => {
+    vi.mocked(api.captureFiles).mockClear()
+    render(<App />)
+    await waitForAppReady()
+    // An upload whose capture waited on a git identity, set since in the Git panel.
+    useGitStore.setState({ uncaptured: ["rating/files/data/rates.csv"] })
+
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
+
+    await waitFor(() => expect(vi.mocked(api.savePipeline)).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(api.captureFiles)).toHaveBeenCalledWith(["rating/files/data/rates.csv"])
+    expect(vi.mocked(api.captureFiles).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(api.savePipeline).mock.invocationCallOrder[0],
+    )
+    expect(useGitStore.getState().uncaptured).toEqual([])
   })
 
   it("shows a success toast when savePipeline resolves", async () => {
@@ -2937,7 +2956,7 @@ describe("App integration - a Model Training node's results panel", () => {
 describe("App integration - the workbench view (specs/workbench)", () => {
   afterEach(() => {
     useWorkbenchStore.setState({ enabled: false, formPath: null, activeView: "pipeline", tables: null, formDirty: false })
-    useWorkbenchFormStore.setState({ form: null, revision: null, status: "idle", undoStack: [], redoStack: [], dirty: false, stale: false, uncaptured: false })
+    useWorkbenchFormStore.setState({ form: null, revision: null, status: "idle", undoStack: [], redoStack: [], dirty: false, stale: false })
     vi.mocked(workbenchApi.saveWorkbenchForm).mockClear()
     vi.mocked(workbenchApi.fetchWorkbenchTables).mockReset().mockImplementation(() => Promise.resolve({ tables: [], sample: {}, response_tables: [] }))
   })
@@ -3098,6 +3117,46 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     expect(useWorkbenchFormStore.getState().dirty).toBe(false)
   })
 
+  it("Save puts back a copy an undo took back while it waited, and saves the pipeline carrying the form's tables", async () => {
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    const input = makeNode("wb_in", "Workbench Input", "workbenchInput")
+    input.data.config = { tables: [], sample: {} }
+    const output = makeNode("wb_out", "Workbench Output", "workbenchOutput")
+    output.data.config = { tables: [], mapping: {} }
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({ nodes: [input, output], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))
+    render(<App />)
+    await waitForAppReady()
+    await waitFor(() => expect(workbenchApi.fetchWorkbenchTables).toHaveBeenCalled())
+    const responseTables = [{ name: "premium", rows: "one" as const, columns: [] }]
+    vi.mocked(workbenchApi.fetchWorkbenchTables).mockResolvedValue({ tables: policyTables, sample: {}, response_tables: responseTables })
+    // The Workbench Input's update resolves its identity only when the test lets it.
+    const answer = vi.mocked(api.resolveEditorNodeIdentities).getMockImplementation()
+    let release: () => void = () => {}
+    vi.mocked(api.resolveEditorNodeIdentities).mockImplementationOnce(
+      (payload, options) => new Promise((resolve) => { release = () => resolve(answer!(payload, options)) }),
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
+    await waitFor(() => expect(api.resolveEditorNodeIdentities).toHaveBeenCalled())
+    const outputTables = () => (useGraphStore.getState().nodes.find((node) => node.id === "wb_out")?.data.config as { tables?: unknown }).tables
+    await waitFor(() => expect(outputTables()).toEqual(responseTables))
+
+    // While the save waits, an undo of an earlier edit puts back the Workbench Output's
+    // copy as it was before the form changed.
+    act(() => {
+      useGraphStore.getState().setNodesRaw((nodes) => nodes.map((node) => (
+        node.id === "wb_out" ? { ...node, data: { ...node.data, config: { tables: [], mapping: {} } } } : node
+      )))
+    })
+    expect(outputTables()).toEqual(responseTables)
+    act(() => release())
+
+    await waitFor(() => expect(api.savePipeline).toHaveBeenCalledTimes(1), { timeout: 10_000 })
+    const saved = vi.mocked(api.savePipeline).mock.calls[0][0].graph.nodes
+    expect((saved.find((node) => node.id === "wb_out")?.data.config as { tables?: unknown }).tables).toEqual(responseTables)
+    expect(savedInputTables()).toEqual(policyTables)
+  })
+
   it("Save is refused before the form is saved while the pipeline document cannot be saved, so the form is never saved ahead of the pipeline", async () => {
     vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
     const input = makeNode("wb_in", "Workbench Input", "workbenchInput")
@@ -3225,7 +3284,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     let answerFormSave: () => void = () => {}
     vi.mocked(workbenchApi.saveWorkbenchForm).mockImplementationOnce(
       (form) => new Promise((resolve) => {
-        answerFormSave = () => resolve({ form, revision: "form-rev-1", warnings: [], git_sha: null, identity_required: false })
+        answerFormSave = () => resolve({ form, revision: "form-rev-1", warnings: [], git_sha: null, identity_required: false, uncaptured: [] })
       }),
     )
 

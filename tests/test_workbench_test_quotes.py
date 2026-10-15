@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
 from haute import _git
 from haute._quote_store import migrate_store, open_store, store_url
@@ -23,10 +24,12 @@ from haute._test_quotes import (
 )
 from haute._workbench_form import FormSpec
 from haute.deploy._validators import response_changes
+from haute.routes.git import router as git_router
 from tests.test_workbench_routes import (
     LEDGER,
     POLICY,
     PRICING,
+    app,
     client,
     column,
     enable,
@@ -121,15 +124,47 @@ def test_a_gitattributes_leading_outside_the_project_refuses_the_write_before_it
     outside = tmp_path_factory.mktemp("outside")
     _link_outside(project / ".gitattributes", outside)
 
-    with pytest.raises(WorkbenchTestQuoteError, match=".gitattributes leads outside"):
+    with pytest.raises(WorkbenchTestQuoteError, match=".gitattributes is reached through a link"):
         project_gitattributes_path(project)
     refused = save()
 
     # Refused before the quote was written: nothing to save twice on a retry.
     assert refused.status_code == 409, refused.text
-    assert ".gitattributes leads outside" in refused.json()["detail"]
+    assert ".gitattributes is reached through a link" in refused.json()["detail"]
     assert not (project / PATH).exists()
     assert [entry.name for entry in outside.rglob("*")] == [".gitattributes-target"]
+
+
+def test_a_hard_linked_test_quote_file_is_refused_and_the_file_it_shares_left_alone(
+    project: Path,
+) -> None:
+    enable(project)
+    (project / "tests" / "quotes").mkdir(parents=True)
+    shared = project / "shared.sqlite"
+    shared.write_bytes(b"another file's bytes")
+    os.link(shared, project / PATH)
+
+    with pytest.raises(WorkbenchTestQuoteError, match=f"{PATH} is a hard link"):
+        project_test_quotes_path(project)
+    refused = save()
+
+    assert refused.status_code == 409, refused.text
+    assert shared.read_bytes() == b"another file's bytes"
+
+
+def test_a_hard_linked_gitattributes_refuses_the_write_before_it_is_made(project: Path) -> None:
+    enable(project)
+    shared = project / "shared-attributes"
+    shared.write_text("*.csv text\n", encoding="utf-8")
+    os.link(shared, project / ".gitattributes")
+
+    with pytest.raises(WorkbenchTestQuoteError, match=".gitattributes is a hard link"):
+        project_gitattributes_path(project)
+    refused = save()
+
+    assert refused.status_code == 409, refused.text
+    assert not (project / PATH).exists()
+    assert shared.read_text(encoding="utf-8") == "*.csv text\n"
 
 
 def test_a_save_started_on_another_branch_is_refused_and_nothing_written(
@@ -228,6 +263,18 @@ def test_every_change_to_a_response_is_listed_by_its_place() -> None:
     ]
 
 
+def test_responses_are_compared_as_a_deployed_pipeline_renders_them() -> None:
+    # Preview keeps a null and an empty table; a deployed pipeline leaves both out.
+    accepted = {"pricing": {"premium": 100.0, "note": None}, "items": [], "extras": {}}
+    rendered = {"pricing": {"premium": 100.0}}
+
+    assert response_changes(rendered, accepted, 1e-9) == []
+    assert response_changes(accepted, rendered, 1e-9) == []
+    assert [tuple(change) for change in response_changes({"pricing": {}}, accepted, 1e-9)] == [
+        ("pricing", "removed", {"premium": 100.0}, None)
+    ]
+
+
 # ── The routes ────────────────────────────────────────────────────────────
 
 
@@ -250,12 +297,74 @@ def test_a_save_creates_the_file_at_the_newest_schema_and_captures_it(project: P
     assert (project / ".gitattributes").read_text(encoding="utf-8") == (
         f"{PATH} diff=haute-test-quotes merge=haute-test-quotes\n"
     )
-    assert "haute.cli._test_quotes merge %O %A %B" in git(
+    assert "-m haute._test_quote_driver merge %O %A %B" in git(
         project, "config", "--local", "merge.haute-test-quotes.driver"
     )
     assert sorted(path.name for path in (project / "tests/quotes").iterdir()) == [
         "test_quotes.sqlite"
     ]
+
+
+def test_the_drivers_are_registered_once_a_process(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute import _git_core
+
+    enable(project)
+    init_repo(project)
+    assert save().status_code == 200
+    configs: list[tuple[str, ...]] = []
+    run_git_ok = _git_core._run_git_ok
+
+    def counted(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
+        if args[0] == "config":
+            configs.append(args)
+        return run_git_ok(*args, cwd=cwd)
+
+    monkeypatch.setattr(_git_core, "_run_git_ok", counted)
+    [quote] = client().get("/api/workbench/test-quotes").json()["quotes"]
+
+    # A run of 30 quotes: each open and each list asks git nothing more.
+    opened = f"/api/workbench/test-quotes/{quote['id']}/open"
+    for _ in range(30):
+        assert client().post(opened, json={"form": FORM}).status_code == 200
+        assert client().get("/api/workbench/test-quotes").status_code == 200
+    assert save("Southern fleet").status_code == 200
+
+    assert configs == []
+
+
+def test_a_registration_that_failed_is_said_and_tried_again(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute import _git_core
+
+    enable(project)
+    init_repo(project)
+    run_git_ok = _git_core._run_git_ok
+    refused: list[tuple[str, ...]] = []
+
+    def refusing(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
+        if args[:2] == ("config", "--local") and args[2] != "--get":
+            refused.append(args)
+            return False, ""
+        return run_git_ok(*args, cwd=cwd)
+
+    monkeypatch.setattr(_git_core, "_run_git_ok", refusing)
+    saved = save()
+
+    assert saved.status_code == 200, saved.text
+    assert (
+        "The test quotes' git drivers could not be registered in this clone's git config, so a "
+        "diff shows the file as binary and a merge conflicts on it."
+    ) in saved.json()["warnings"]
+    tried = len(refused)
+    assert tried == 3
+
+    # Not taken as done: the next write tries again, and says so again.
+    again = save("Southern fleet")
+    assert len(refused) == 2 * tried
+    assert any("could not be registered" in warning for warning in again.json()["warnings"])
 
 
 def test_the_list_is_the_most_recently_saved_first(project: Path) -> None:
@@ -501,38 +610,42 @@ def test_every_test_quote_route_is_404_while_the_workbench_is_off(project: Path)
             {"after": 1, "revision_digest": "t", **write},
         ),
         ("DELETE", "/api/workbench/test-quotes/q", None),
-        ("POST", "/api/workbench/test-quotes/capture", None),
         ("GET", "/api/workbench/test-quotes/branch", None),
     ):
         answered = client().request(method, url, json=body)
         assert answered.status_code == 404, (url, answered.text)
 
 
-def test_a_write_the_ledger_did_not_capture_is_captured_again_without_writing(
+def test_a_write_the_ledger_did_not_capture_is_captured_later_without_writing(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     enable(project)
     init_repo(project)
-    # Nothing to capture before there is a file, and capturing makes none.
-    nothing = client().post("/api/workbench/test-quotes/capture")
-    assert nothing.status_code == 200, nothing.text
-    assert not (project / PATH).exists()
 
-    # No commit identity: the save lands, and the response says the capture waits on one.
+    # No commit identity: the save lands, and the response says the capture waits on one,
+    # naming the file and the .gitattributes that holds its drivers.
     identity = _git.get_identity
     monkeypatch.setattr(_git, "get_identity", lambda cwd=None: (None, None))
     saved = save()
     assert saved.status_code == 200, saved.text
     assert saved.json()["identity_required"] is True
+    assert saved.json()["uncaptured"] == [PATH, ".gitattributes"]
     assert PATH not in git(project, "ls-tree", "-r", "--name-only", LEDGER).splitlines()
     monkeypatch.setattr(_git, "get_identity", identity)
 
-    captured = client().post("/api/workbench/test-quotes/capture")
+    # The editor's one capture route takes it, as it takes every write's.
+    editor = app()
+    editor.include_router(git_router)
+    captured = TestClient(editor).post(
+        "/api/git/capture", json={"paths": saved.json()["uncaptured"]}
+    )
 
     assert captured.status_code == 200, captured.text
     assert captured.json()["git_sha"] is not None
-    assert captured.json()["quote"] is None
-    assert PATH in git(project, "ls-tree", "-r", "--name-only", LEDGER).splitlines()
+    assert captured.json()["uncaptured"] == []
+    ledger = git(project, "ls-tree", "-r", "--name-only", LEDGER).splitlines()
+    assert PATH in ledger
+    assert ".gitattributes" in ledger
     # The retry wrote nothing: still the one test quote, at its first revision.
     [listed] = client().get("/api/workbench/test-quotes").json()["quotes"]
     assert listed["number"] == 1

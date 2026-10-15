@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from "vitest"
 import fixture from "./fixtures/sheetVisibility.json"
+import typedQuotes from "./fixtures/typedQuotes.json"
 import type { Condition, FormSpec, Page, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
 import type { RowsByTable } from "../sheetValues"
 import { BLANK_THEME, COLLECTION_OPTIONS } from "../workbenchForm"
@@ -15,6 +16,7 @@ import {
   conditionFault,
   neverShown,
   newCondition,
+  quoteEligible,
   quotedSchema,
   sheetVisibility,
   testLabel,
@@ -144,6 +146,31 @@ const formOf = (pages: Page[], tables: SchemaTable[] = [policy, items, premium])
   schema: { tables },
   pages,
   sample: {},
+})
+
+describe("quoteEligible", () => {
+  // The fixture spells each column with what it sets, the rest as a new column's.
+  const form: FormSpec = {
+    ...formOf([]),
+    name: typedQuotes.form.name,
+    schema: {
+      tables: typedQuotes.form.schema.tables.map((table) => ({
+        ...table,
+        columns: table.columns.map(({ id, name, ...set }) => column(id, name, set as Partial<SchemaColumn>)),
+      })) as SchemaTable[],
+    },
+    pages: typedQuotes.form.pages.map((sheet) =>
+      sectioned(
+        sheet.id,
+        sheet.sections.map((each) => section(each.id, each.widgets.map((widget) => ({ title: "", show_when: ALWAYS, ...widget }) as Widget))),
+      ),
+    ),
+  }
+
+  it.each(typedQuotes.cases)("says whether $name is typed as the server does", ({ values, locked, typed }) => {
+    const appSet = new Set(locked.map(([table, columnId]) => columnKey(table, columnId)))
+    expect(quoteEligible(form, values as RowsByTable, appSet)).toBe(typed)
+  })
 })
 
 describe("sheetVisibility", () => {

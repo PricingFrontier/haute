@@ -78,6 +78,21 @@ def test_a_file_excel_saved_as_windows_1252_reads_as_written(project: Path) -> N
     assert read_param_file(project, "states.csv", "state").values == ["Québec", "Ontario"]
 
 
+def test_a_header_excel_saved_as_windows_1252_is_offered_as_written(project: Path) -> None:
+    # A header's bytes are read as the file's encoding, not replaced where UTF-8 fails.
+    params(project, "regions.csv", "Région,Limit (£)\nÎle,5\n".encode("cp1252"))
+
+    read = read_param_file(project, "regions.csv", "Région")
+    assert (read.columns, read.values) == (["Région", "Limit (£)"], ["Île"])
+
+
+def test_a_header_mangled_by_an_earlier_save_is_refused(project: Path) -> None:
+    params(project, "regions.csv", "R�gion\nNorth\n".encode())
+
+    with pytest.raises(ParamFileError, match="R�gion.*save it as CSV UTF-8"):
+        read_param_file(project, "regions.csv")
+
+
 @pytest.mark.parametrize(
     ("name", "data", "column", "message"),
     [

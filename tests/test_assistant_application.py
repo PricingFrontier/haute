@@ -790,12 +790,14 @@ class TestChangeCard:
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ):
         import haute.assistant._application as application_module
-        from haute.routes._save_pipeline import SavePipelineService
+        from haute.routes._save_pipeline import LedgerCapture, SavePipelineService
 
         # A ledger-captured save, so the payloads carry a commit and its parent.
         commit, parent = "a" * 40, "b" * 40
         monkeypatch.setattr(
-            SavePipelineService, "_capture_save_in_ledger", lambda *_args: (commit, False)
+            SavePipelineService,
+            "_capture_save_in_ledger",
+            lambda *_args: LedgerCapture(commit, False, []),
         )
         monkeypatch.setattr(
             application_module, "commit_parent", lambda sha, _cwd: parent if sha == commit else None

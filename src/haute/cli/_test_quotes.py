@@ -48,14 +48,24 @@ class _Saved:
     response: dict[str, Any] | None
 
 
+def _migrated_copy(path: Path, scratch: Path, name: str | None = None) -> str:
+    """The store URL of a copy of the test-quote file at *path* in *scratch*, migrated to
+    the store's newest schema: a file is read, or merged, without changing it. The copy is
+    named *name*, or numbered in turn."""
+    from haute._quote_store import migrate_store, store_url
+
+    copy = scratch / (name or f"{len(list(scratch.iterdir()))}.sqlite")
+    shutil.copyfile(path, copy)
+    url = store_url(copy)
+    migrate_store(url)
+    return url
+
+
 def _read_quotes(path: Path, scratch: Path) -> dict[str, _Saved]:
     """The test quotes in the file at *path*, read through a migrated copy in *scratch*."""
-    from haute._quote_store import migrate_store, open_store, store_url
+    from haute._quote_store import open_store
 
-    copy = scratch / f"{len(list(scratch.iterdir()))}.sqlite"
-    shutil.copyfile(path, copy)
-    migrate_store(store_url(copy))
-    with open_store(store_url(copy)) as store:
+    with open_store(_migrated_copy(path, scratch)) as store:
         return {
             summary.id: _Saved(summary.name, summary.latest, store.revision(summary.id).response)
             for summary in store.quotes()
@@ -63,14 +73,21 @@ def _read_quotes(path: Path, scratch: Path) -> dict[str, _Saved]:
 
 
 def _base_file(project: Path, base: str, relative: str, scratch: Path) -> Path | str | None:
-    """The test-quote file at *base* as a file in *scratch*; None when *base* has none; the
-    reason, as text, when *base* cannot be read."""
+    """The test-quote file where this branch left *base*, their merge base, as a file in
+    *scratch*: what *base* gained since is not this branch's. None when the merge base has
+    no file; the reason, as text, when *base* or the merge base cannot be read."""
     from haute._git_core import _run_git_ok, _run_git_process
 
     resolved, _ = _run_git_ok("rev-parse", "--verify", "--quiet", f"{base}^{{commit}}", cwd=project)
     if not resolved:
         return f"{base} could not be read as a commit"
-    shown = _run_git_process("show", f"{base}:{relative}", binary=True, cwd=project)
+    found, merge_base = _run_git_ok("merge-base", "HEAD", base, cwd=project)
+    if not found:
+        return (
+            f"{base} shares no history with this branch here: fetch the full history "
+            "to compare with it"
+        )
+    shown = _run_git_process("show", f"{merge_base}:{relative}", binary=True, cwd=project)
     if shown.returncode != 0:
         return None
     path = scratch / "base-file.sqlite"
@@ -83,12 +100,9 @@ def _histories(path: Path, scratch: Path) -> dict[str, QuoteHistory]:
 
     An empty file, as git gives a merge with no base, is a file with no test quotes.
     """
-    from haute._quote_store import migrate_store, open_store, store_url
+    from haute._quote_store import open_store
 
-    copy = scratch / f"{len(list(scratch.iterdir()))}.sqlite"
-    shutil.copyfile(path, copy)
-    migrate_store(store_url(copy))
-    with open_store(store_url(copy)) as store:
+    with open_store(_migrated_copy(path, scratch)) as store:
         return store.histories()
 
 
@@ -124,7 +138,7 @@ def merge_files(base: Path, ours: Path, theirs: Path) -> list[str]:
     otherwise is a conflict. The result is written over a copy of *ours*, at the store's
     newest schema, and moved into place only when nothing conflicts.
     """
-    from haute._quote_store import migrate_store, open_store, store_url
+    from haute._quote_store import open_store
 
     with tempfile.TemporaryDirectory() as directory:
         scratch = Path(directory)
@@ -149,15 +163,12 @@ def merge_files(base: Path, ours: Path, theirs: Path) -> list[str]:
                 taken.append(came)
         if conflicts:
             return sorted(conflicts)
-        merged = scratch / "merged.sqlite"
-        shutil.copyfile(ours, merged)
-        migrate_store(store_url(merged))
-        with open_store(store_url(merged)) as store:
+        with open_store(_migrated_copy(ours, scratch, "merged.sqlite")) as store:
             for quote_id in dropped:
                 store.delete(quote_id)
             for history in taken:
                 store.put_history(history)
-        shutil.copyfile(merged, ours)
+        shutil.copyfile(scratch / "merged.sqlite", ours)
     return []
 
 
@@ -267,7 +278,10 @@ def merge(base: Path, ours: Path, theirs: Path) -> None:
     conflicts = merge_files(base, ours, theirs)
     if conflicts:
         click.echo(
-            "The test quotes conflict: both sides changed " + ", ".join(repr(n) for n in conflicts),
+            "The test quotes conflict: both sides changed "
+            + ", ".join(repr(n) for n in conflicts)
+            + ". Take one side's test-quote file with git checkout --ours or --theirs, then "
+            "run those quotes in Preview and accept the results you keep.",
             err=True,
         )
         raise SystemExit(1)
@@ -289,9 +303,3 @@ def merge(base: Path, ours: Path, theirs: Path) -> None:
 def report(base: str, output: Path | None) -> None:
     """Report the test quotes this branch added, removed and accepted anew against BASE."""
     handle_report(ReportConfig(base=base, output=output))
-
-
-if __name__ == "__main__":
-    # git runs its drivers here: the group alone, without the CLI's process set-up, whose
-    # log line would join the text a diff shows.
-    test_quotes()

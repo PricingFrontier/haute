@@ -19,12 +19,12 @@ vi.mock("../../api/app", () => ({
 
 import { carryAppQuote, changeAppQuote, createAppQuote, fetchAppQuoteHistory, openAppQuote, saveAppQuote } from "../../api/app"
 import { ApiError } from "../../api/client"
-import type { FormSpec, WorkbenchAppQuoteChangeResponse, WorkbenchAppQuoteResponse } from "../../api/types"
+import type { WorkbenchAppQuoteHistoryResponse, FormSpec, WorkbenchAppQuoteChangeResponse, WorkbenchAppQuoteResponse } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { type QuotePricer } from "../../stores/useWorkbenchPricingStore"
 import { detailsTable, sheetForm } from "../../workbench/__tests__/fixtures"
-import { basisOf, draftKey, readDraft, writeDraft } from "../quoteValues"
+import { basisOf, draftKey, readDraft, valuesKey, writeDraft } from "../quoteValues"
 import useAppStore from "../useAppStore"
 import useOpenQuoteStore, { openDraftKey, readOnlyReason } from "../useOpenQuoteStore"
 import { answer, appQuote, changed, release, TABLES, VALUES } from "./fixtures"
@@ -33,13 +33,13 @@ import { answer, appQuote, changed, release, TABLES, VALUES } from "./fixtures"
 const store = () => useOpenQuoteStore.getState()
 const preview = () => useWorkbenchPreviewStore.getState()
 const stale = (who = "jo") =>
-  new ApiError("HTTP 409", 409, "moved", { detail: {} }, { message: `Q-000001 has changed since you opened it: ${who} saved it.`, error_code: "stale_quote_revision", quote: appQuote({ version: 3, latest: 2 }) })
+  new ApiError("HTTP 409", 409, "moved", { detail: {} }, { message: `Q-000001 has changed since you opened it: ${who} saved it.`, error_code: "stale_quote_revision", quote: appQuote({ latest: 2 }) })
 
 describe("useOpenQuoteStore", () => {
   let form: FormSpec
   beforeEach(() => {
     form = sheetForm()
-    useAppStore.setState({ release, form, revision: "rev-9", people: [], question: null })
+    useAppStore.setState({ release, form, revision: "rev-9", people: [], releaseChanged: false })
     useWorkbenchFormStore.setState({ form, status: "ready" })
     useWorkbenchPreviewStore.setState({ quote: {}, price: null, error: null, pricing: false, readOnly: false })
     useOpenQuoteStore.setState({ status: "idle", quote: null, revision: null, base: null, past: false, olderSheets: null, source: null, pending: null, conflict: null, error: null, historyOpen: false })
@@ -92,7 +92,7 @@ describe("useOpenQuoteStore", () => {
 
   it("saves a quote priced when the sheets show a price for the values as they are", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(saveAppQuote).mockResolvedValue(answer({ latest: 2, version: 2 }, { number: 2 }))
+    vi.mocked(saveAppQuote).mockResolvedValue(answer({ latest: 2 }, { number: 2 }))
     await store().openQuote("q1", null)
 
     await store().save()
@@ -106,7 +106,7 @@ describe("useOpenQuoteStore", () => {
 
   it("saves a quote unpriced when its price is for other values, and says when the server's price moved", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(saveAppQuote).mockResolvedValue(answer({ latest: 2, version: 2, stage: "draft" }, { number: 2, tables: null }, { moved: true }))
+    vi.mocked(saveAppQuote).mockResolvedValue(answer({ latest: 2, stage: "draft" }, { number: 2, tables: null }, { moved: true }))
     await store().openQuote("q1", null)
     preview().setCell("policy", 0, "policy.state", "CA")
 
@@ -125,7 +125,7 @@ describe("useOpenQuoteStore", () => {
     const saving = store().save()
     await vi.waitFor(() => expect(saveAppQuote).toHaveBeenCalled())
     preview().setCell("policy", 0, "policy.state", "CA")
-    release_(answer({ latest: 2, version: 2 }, { number: 2 }))
+    release_(answer({ latest: 2 }, { number: 2 }))
     await saving
 
     expect(preview().quote.policy[0]["policy.state"]).toBe("CA")
@@ -136,7 +136,7 @@ describe("useOpenQuoteStore", () => {
 
   it("saves once the quote's pricing settles, keeping the price it settles on", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(saveAppQuote).mockResolvedValue(answer({ latest: 2, version: 2 }, { number: 2 }))
+    vi.mocked(saveAppQuote).mockResolvedValue(answer({ latest: 2 }, { number: 2 }))
     const tables = { premiums: [{ item: "Crane", premium: 9 }] }
     useWorkbenchPricingStore.setState({ quotePricer: vi.fn<QuotePricer>(() => Promise.resolve({ tables, sample: {} })) })
     await store().openQuote("q1", null)
@@ -170,7 +170,7 @@ describe("useOpenQuoteStore", () => {
 
     expect(await store().save()).toBeNull()
 
-    expect(store().conflict).toEqual({ message: "Q-000001 has changed since you opened it: jo saved it.", latest: expect.objectContaining({ version: 3 }) })
+    expect(store().conflict).toEqual({ message: "Q-000001 has changed since you opened it: jo saved it.", latest: expect.objectContaining({ latest: 2 }) })
     expect(preview().quote.policy[0]["policy.state"]).toBe("CA")
   })
 
@@ -196,12 +196,16 @@ describe("useOpenQuoteStore", () => {
 
     await store().save()
 
-    expect(store().releaseChanged).toBe(true)
+    expect(useAppStore.getState().releaseChanged).toBe(true)
   })
 
-  it("keeps a save's operation key for a retry after a lost answer, and mints one for anything else", async () => {
+  it("keeps a save's operation key after a lost answer or a server failure, and lets it go on a refusal", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(saveAppQuote).mockRejectedValueOnce(new TypeError("Failed to fetch")).mockRejectedValueOnce(new ApiError("HTTP 422", 422, "No")).mockResolvedValue(answer({ latest: 2, version: 2 }))
+    vi.mocked(saveAppQuote)
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new ApiError("HTTP 504", 504, "Gateway timeout"))
+      .mockRejectedValueOnce(new ApiError("HTTP 422", 422, "No"))
+      .mockResolvedValue(answer({ latest: 2 }))
     await store().openQuote("q1", null)
     preview().setCell("policy", 0, "policy.state", "CA")
 
@@ -209,10 +213,182 @@ describe("useOpenQuoteStore", () => {
     expect(store().error).toContain("Failed to fetch")
     await store().save()
     await store().save()
+    await store().save()
 
     const keys = vi.mocked(saveAppQuote).mock.calls.map((call) => call[1].operation)
     expect(keys[1]).toBe(keys[0])
-    expect(keys[2]).not.toBe(keys[1])
+    expect(keys[2]).toBe(keys[0])
+    expect(keys[3]).not.toBe(keys[2])
+  })
+
+  it("writes a new quote once though its answer is lost and it is edited before Save is pressed again", async () => {
+    const first = { policy: [{ "policy.state": "CA" }] }
+    const edited = { policy: [{ "policy.state": "TX" }] }
+    vi.mocked(createAppQuote)
+      .mockRejectedValueOnce(new ApiError("HTTP 502", 502, "Bad gateway"))
+      .mockResolvedValue(answer({ id: "q7", reference: "Q-000007" }, { values: first, tables: null }))
+    vi.mocked(saveAppQuote).mockResolvedValue(answer({ id: "q7", reference: "Q-000007", latest: 2 }, { number: 2, values: edited, tables: null }))
+    await store().openNew(null)
+    preview().setCell("policy", 0, "policy.state", "CA")
+    expect(await store().save()).toBeNull()
+
+    preview().setCell("policy", 0, "policy.state", "TX")
+    const saved = await store().save()
+
+    // The create the lost answer left uncertain is repeated exactly, so it writes once...
+    const creates = vi.mocked(createAppQuote).mock.calls.map(([body]) => body)
+    expect(creates).toHaveLength(2)
+    expect(creates[1]).toEqual(creates[0])
+    expect(creates[1].values).toEqual(first)
+    // ...and the edit is saved over the quote it made, under a key of its own.
+    expect(saveAppQuote).toHaveBeenCalledTimes(1)
+    const [id, body, version] = vi.mocked(saveAppQuote).mock.calls[0]
+    expect([id, version, body.values]).toEqual(["q7", 1, edited])
+    expect(body.operation).not.toBe(creates[0].operation)
+    expect(saved?.latest).toBe(2)
+    expect(store()).toMatchObject({ base: 2, pending: null, saving: false })
+    expect(preview().quote).toEqual(edited)
+  })
+
+  it("repeats a create whose answer was lost once its draft is restored, then saves what was typed after", async () => {
+    const first = { policy: [{ "policy.state": "CA" }] }
+    const edited = { policy: [{ "policy.state": "TX" }] }
+    vi.mocked(createAppQuote)
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValue(answer({ id: "q7", reference: "Q-000007" }, { values: first, tables: null }))
+    vi.mocked(saveAppQuote).mockResolvedValue(answer({ id: "q7", reference: "Q-000007", latest: 2 }, { number: 2, values: edited, tables: null }))
+    await store().openNew(null)
+    preview().setCell("policy", 0, "policy.state", "CA")
+    await store().save()
+
+    // The page is reloaded: the draft holds the values and the create still to be answered.
+    store().close()
+    await store().openNew(null)
+    expect(store().recovered?.values).toEqual(first)
+    store().restoreDraft()
+    preview().setCell("policy", 0, "policy.state", "TX")
+    await store().save()
+
+    const creates = vi.mocked(createAppQuote).mock.calls.map(([body]) => body)
+    expect(creates).toHaveLength(2)
+    expect(creates[1]).toEqual(creates[0])
+    expect(vi.mocked(saveAppQuote).mock.calls[0].slice(0, 1)).toEqual(["q7"])
+    expect(vi.mocked(saveAppQuote).mock.calls[0][1].values).toEqual(edited)
+    expect(store().quote?.latest).toBe(2)
+  })
+
+  it("repeats a lost create an unanswered offer holds before saving what was typed instead of restoring it", async () => {
+    const first = { policy: [{ "policy.state": "CA" }] }
+    const typed = { policy: [{ "policy.state": "TX" }] }
+    vi.mocked(createAppQuote)
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValue(answer({ id: "q7", reference: "Q-000007" }, { values: first, tables: null }))
+    vi.mocked(saveAppQuote).mockResolvedValue(answer({ id: "q7", reference: "Q-000007", latest: 2 }, { number: 2, values: typed, tables: null }))
+    await store().openNew(null)
+    preview().setCell("policy", 0, "policy.state", "CA")
+    await store().save()
+    store().close()
+
+    // Reopened: the offer is left unanswered, and other values typed and saved.
+    await store().openNew(null)
+    expect(store().recovered?.pending).not.toBeNull()
+    preview().setCell("policy", 0, "policy.state", "TX")
+    await store().save()
+
+    const creates = vi.mocked(createAppQuote).mock.calls.map(([body]) => body)
+    expect(creates).toHaveLength(2)
+    expect(creates[1].operation).toBe(creates[0].operation)
+    expect(vi.mocked(saveAppQuote).mock.calls[0][0]).toBe("q7")
+    expect(vi.mocked(saveAppQuote).mock.calls[0][1].values).toEqual(typed)
+    expect(store().quote?.latest).toBe(2)
+    expect(store().recovered).toBeNull()
+  })
+
+  it("keeps a draft offered back whole while the quote is left without restoring or discarding it", async () => {
+    vi.mocked(createAppQuote).mockRejectedValueOnce(new TypeError("Failed to fetch"))
+    await store().openNew(null)
+    preview().setCell("policy", 0, "policy.state", "CA")
+    await store().save()
+    preview().setCell("policy", 0, "policy.state", "TX")
+    store().close()
+
+    await store().openNew(null)
+    expect(store().recovered?.values).toEqual({ policy: [{ "policy.state": "TX" }] })
+    // Left again, offered and unanswered.
+    store().close()
+    await store().openNew(null)
+
+    expect(store().recovered?.values).toEqual({ policy: [{ "policy.state": "TX" }] })
+    expect(store().recovered?.pending?.write.body.values).toEqual({ policy: [{ "policy.state": "CA" }] })
+  })
+
+  it("writes a quote made from another once though it is saved as it opened and its answer is lost", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    vi.mocked(carryAppQuote).mockResolvedValue({ values: VALUES, dropped: [] })
+    vi.mocked(createAppQuote)
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValue(answer({ id: "q2", reference: "Q-000002" }, { values: VALUES, tables: null }))
+    const from = { quoteId: "q1", revision: 1, relation: "duplicate" as const }
+    await store().openNew(from)
+    await store().save()
+
+    // The page is reloaded: the create still to be answered is offered back, though the
+    // values are as they opened, and restored it is repeated with its operation key.
+    store().close()
+    await store().openNew(from)
+    expect(store().recovered?.pending).not.toBeNull()
+    store().restoreDraft()
+    await store().save()
+
+    const creates = vi.mocked(createAppQuote).mock.calls.map(([body]) => body)
+    expect(creates).toHaveLength(2)
+    expect(creates[1].operation).toBe(creates[0].operation)
+    expect(store().quote?.reference).toBe("Q-000002")
+  })
+
+  it("keeps a duplicate's draft and lost create apart from an alternative made from the same revision", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    vi.mocked(carryAppQuote).mockResolvedValue({ values: VALUES, dropped: [] })
+    vi.mocked(createAppQuote)
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValue(answer({ id: "q3", reference: "Q-000003", relation: "alternative" }))
+    await store().openNew({ quoteId: "q1", revision: 1, relation: "duplicate" })
+    preview().setCell("policy", 0, "policy.state", "TX")
+    await store().save()
+
+    store().close()
+    await store().openNew({ quoteId: "q1", revision: 1, relation: "alternative" })
+    // The duplicate's draft is not the alternative's.
+    expect(store().recovered).toBeNull()
+    preview().setCell("policy", 0, "policy.state", "TX")
+    await store().save()
+
+    const [duplicate, alternative] = vi.mocked(createAppQuote).mock.calls
+    expect(alternative[1]).toEqual({ quote_id: "q1", revision: 1, relation: "alternative" })
+    expect(alternative[0].operation).not.toBe(duplicate[0].operation)
+  })
+
+  it("makes no change while a save is being made, and no save while a change is", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    let saving_: (value: WorkbenchAppQuoteResponse) => void = () => {}
+    vi.mocked(saveAppQuote).mockReturnValue(new Promise((resolve) => (saving_ = resolve)))
+    let changing_: (value: WorkbenchAppQuoteChangeResponse) => void = () => {}
+    vi.mocked(changeAppQuote).mockReturnValue(new Promise((resolve) => (changing_ = resolve)))
+    await store().openQuote("q1", null)
+    preview().setCell("policy", 0, "policy.state", "CA")
+
+    const saving = store().save()
+    expect(await store().change("archive", {})).toBeNull()
+    expect(changeAppQuote).not.toHaveBeenCalled()
+    saving_(answer({ latest: 2 }, { number: 2, values: { policy: [{ "policy.state": "CA" }] } }))
+    await saving
+
+    const changing = store().change("archive", {})
+    preview().setCell("policy", 0, "policy.state", "TX")
+    expect(await store().save()).toBeNull()
+    expect(saveAppQuote).toHaveBeenCalledTimes(1)
+    changing_(changed({ latest: 3, archived: true }, { number: 3 }))
+    await changing
   })
 
   it("keeps a save as new's operation key for a retry after a lost answer", async () => {
@@ -255,7 +431,7 @@ describe("useOpenQuoteStore", () => {
     await store().openQuote("q1", null)
     preview().setCell("policy", 0, "policy.state", "CA")
 
-    const change = store().change("archive")
+    const change = store().change("archive", {})
     preview().setCell("policy", 0, "policy.year", "2028")
     archiving(changed({ latest: 2, archived: true, archived_at: "2026-10-12T11:00:00+00:00" }))
     await change
@@ -271,12 +447,12 @@ describe("useOpenQuoteStore", () => {
     vi.mocked(changeAppQuote).mockResolvedValueOnce(changed(archived)).mockResolvedValueOnce(changed({ latest: 3 }))
     await store().openQuote("q1", null)
     preview().setCell("policy", 0, "policy.state", "CA")
-    await store().change("archive")
+    await store().change("archive", {})
     store().close()
 
     await store().openQuote("q1", null)
     expect(store().recovered).toBeNull()
-    await store().change("restore")
+    await store().change("restore", {})
     expect(store().recovered?.values).toEqual({ policy: [{ "policy.state": "CA" }] })
     store().close()
 
@@ -285,7 +461,7 @@ describe("useOpenQuoteStore", () => {
 
   it("keeps nothing and saves nothing while a quote is being opened, the quote before off the sheets", async () => {
     const fresh = draftKey("motor", "ana@example.com", "new")
-    writeDraft(fresh, { values: { policy: [{ "policy.state": "UNSAVED-NEW" }] }, version: null, latest: null, formRevision: "rev-9", keptAt: "2026-10-12T10:00:00Z" })
+    writeDraft(fresh, { values: { policy: [{ "policy.state": "UNSAVED-NEW" }] }, version: null, latest: null, places: {}, keptAt: "2026-10-12T10:00:00Z", pending: null })
     let reading: (value: WorkbenchAppQuoteResponse) => void = () => {}
     vi.mocked(openAppQuote).mockResolvedValueOnce(answer()).mockReturnValueOnce(new Promise((resolve) => (reading = resolve)))
     await store().openQuote("q1", null)
@@ -380,6 +556,20 @@ describe("useOpenQuoteStore", () => {
     }
   })
 
+  it("opens a quote made from another clean, its values carried without the source's details: nothing kept, nothing to ask", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    vi.mocked(carryAppQuote).mockResolvedValue({ values: VALUES, dropped: [] })
+
+    for (const relation of ["duplicate", "renewal", "alternative"] as const) {
+      await store().openNew({ quoteId: "q1", revision: 1, relation })
+      expect(valuesKey(preview().quote)).toBe(store().baseline)
+      expect(store().keepDraft()).toBe(true)
+      expect(readDraft(openDraftKey(store()) ?? "")).toBeNull()
+    }
+    // Carried without the details the app set for the source, which are not the new quote's.
+    expect(vi.mocked(carryAppQuote).mock.calls).toEqual([["q1", 1], ["q1", 1], ["q1", 1]])
+  })
+
   it("says why a quote to make one from could not be read", async () => {
     vi.mocked(openAppQuote).mockRejectedValue(new ApiError("HTTP 404", 404, "No such quote"))
     vi.mocked(carryAppQuote).mockResolvedValue({ values: {}, dropped: [] })
@@ -397,6 +587,8 @@ describe("useOpenQuoteStore", () => {
 
     await store().moveToCurrentSheets()
 
+    // The same quote: carried with the details the app set for it.
+    expect(carryAppQuote).toHaveBeenCalledWith("q1", 1, true)
     expect(useWorkbenchFormStore.getState().form).toBe(form)
     expect(store()).toMatchObject({ olderSheets: null, dropped: ["policy.old"] })
     expect(preview()).toMatchObject({ readOnly: false, price: null, quote: { policy: [{ "policy.state": "CA" }] } })
@@ -405,7 +597,7 @@ describe("useOpenQuoteStore", () => {
   it("offers back values this browser kept, restores them or discards them", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     const key = draftKey("motor", "ana@example.com", "q1")
-    writeDraft(key, { values: { policy: [{ "policy.state": "CA" }] }, version: 1, latest: 1, formRevision: "rev-9", keptAt: "2026-10-12T10:00:00Z" })
+    writeDraft(key, { values: { policy: [{ "policy.state": "CA" }] }, version: 1, latest: 1, places: {}, keptAt: "2026-10-12T10:00:00Z", pending: null })
     await store().openQuote("q1", null)
     expect(openDraftKey(store())).toBe(key)
     expect(store().recovered?.values).toEqual({ policy: [{ "policy.state": "CA" }] })
@@ -422,12 +614,12 @@ describe("useOpenQuoteStore", () => {
   it("offers back no draft on a quote that may not change, and puts back only what fits the sheets", async () => {
     const key = draftKey("motor", "ana@example.com", "q1")
     const kept = { policy: [{ "policy.state": "CA", "policy.gone": "x" }], removed: [{ c: "1" }], quote_details: [{ qd_stage: "draft", qd_insured: "Acme" }] }
-    writeDraft(key, { values: kept, version: 1, latest: 1, formRevision: "rev-8", keptAt: "2026-10-12T10:00:00Z" })
+    writeDraft(key, { values: kept, version: 1, latest: 1, places: {}, keptAt: "2026-10-12T10:00:00Z", pending: null })
     vi.mocked(openAppQuote).mockResolvedValueOnce(answer({ stage: "final", final_revision: 1 }))
     await store().openQuote("q1", null)
     expect(store().recovered).toBeNull()
     // Offered while it could change, then held read only, it is not put back.
-    useOpenQuoteStore.setState({ recovered: { values: kept, version: 1, latest: 1, formRevision: "rev-8", keptAt: "2026-10-12T10:00:00Z" } })
+    useOpenQuoteStore.setState({ recovered: { values: kept, version: 1, latest: 1, places: {}, keptAt: "2026-10-12T10:00:00Z", pending: null } })
     store().restoreDraft()
     expect(preview().quote).toEqual(VALUES)
     expect(preview().readOnly).toBe(true)
@@ -441,9 +633,49 @@ describe("useOpenQuoteStore", () => {
     expect(preview().quote).toEqual({ policy: [{ "policy.state": "CA" }], quote_details: [{ qd_insured: "Acme", ...details }] })
   })
 
+  it("names what a restored draft holds that has no place on the sheets, as the sheets it was typed on named it", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    const key = draftKey("motor", "ana@example.com", "q1")
+    const values = { policy: [{ "policy.state": "CA", "policy.gone": "x" }], removed: [{ c: "1" }] }
+    const places = { "policy:policy.state": "policy.state", "policy:policy.gone": "policy.cover", "removed:c": "extras.note" }
+    writeDraft(key, { values, version: 1, latest: 1, places, keptAt: "2026-10-12T10:00:00Z", pending: null })
+    await store().openQuote("q1", null)
+
+    store().restoreDraft()
+
+    expect(preview().quote).toEqual({ policy: [{ "policy.state": "CA" }] })
+    expect(store().dropped).toEqual(["policy.cover", "extras.note"])
+  })
+
+  it("keeps where each value typed sits on the sheets with the draft", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    await store().openQuote("q1", null)
+    preview().setCell("policy", 0, "policy.state", "CA")
+
+    expect(store().keepDraft()).toBe(true)
+
+    const kept = readDraft(draftKey("motor", "ana@example.com", "q1"))
+    expect(Object.keys(kept?.places ?? {})).toContain("policy:policy.state")
+  })
+
+  it("offers back no draft already on the sheet, as after an archive and a restore with the typing still there", async () => {
+    const archived = { latest: 2, archived: true, archived_at: "2026-10-12T11:00:00+00:00" }
+    vi.mocked(openAppQuote).mockResolvedValueOnce(answer())
+    vi.mocked(changeAppQuote).mockResolvedValueOnce(changed(archived)).mockResolvedValueOnce(changed({ latest: 3 }))
+    await store().openQuote("q1", null)
+    preview().setCell("policy", 0, "policy.state", "CA")
+    store().keepDraft()
+
+    await store().change("archive", {})
+    await store().change("restore", {})
+
+    expect(preview().quote.policy?.[0]["policy.state"]).toBe("CA")
+    expect(store().recovered).toBeNull()
+  })
+
   it("does not offer back a draft the same as what is saved", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    writeDraft(draftKey("motor", "ana@example.com", "q1"), { values: VALUES, version: 1, latest: 1, formRevision: "rev-9", keptAt: "2026-10-12T10:00:00Z" })
+    writeDraft(draftKey("motor", "ana@example.com", "q1"), { values: VALUES, version: 1, latest: 1, places: {}, keptAt: "2026-10-12T10:00:00Z", pending: null })
 
     await store().openQuote("q1", null)
 
@@ -453,8 +685,8 @@ describe("useOpenQuoteStore", () => {
   it("changes the quote over the revision it wrote, holding it read only as the change leaves it", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     vi.mocked(changeAppQuote)
-      .mockResolvedValueOnce(changed({ stage: "final", final_revision: 2, latest: 2, version: 2 }))
-      .mockResolvedValueOnce(changed({ latest: 3, version: 3 }))
+      .mockResolvedValueOnce(changed({ stage: "final", final_revision: 2, latest: 2 }))
+      .mockResolvedValueOnce(changed({ latest: 3 }))
     await store().openQuote("q1", null)
 
     await store().change("final", { revision: 1 })
@@ -467,10 +699,23 @@ describe("useOpenQuoteStore", () => {
     expect([store().base, store().revision?.number, store().baseline]).toEqual([3, 3, JSON.stringify(VALUES)])
   })
 
+  it("changes only the quote a change was asked about, leaving another opened by the answer alone", async () => {
+    vi.mocked(openAppQuote).mockResolvedValueOnce(answer()).mockResolvedValueOnce(answer({ id: "q2", reference: "Q-000002" }))
+    await store().openQuote("q1", null)
+    const asked = store().quote
+    // While "Mark Q-000001 final?" was open, Back opened another quote at the same revision.
+    await store().openQuote("q2", null)
+
+    expect(await store().change("final", { revision: 1 }, asked ?? undefined)).toBeNull()
+
+    expect(changeAppQuote).not.toHaveBeenCalled()
+    expect(store().error).toContain("Q-000001")
+  })
+
   it("keeps a note from moving the version a save names, so a save over a colleague's is refused", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     // Jo saved revision 2 meanwhile: the note's answer is the quote as it is now.
-    vi.mocked(changeAppQuote).mockResolvedValue({ quote: appQuote({ latest: 2, version: 2, note: "Call the broker" }), revision: null })
+    vi.mocked(changeAppQuote).mockResolvedValue({ quote: appQuote({ latest: 2, note: "Call the broker" }), revision: null })
     vi.mocked(saveAppQuote).mockRejectedValue(stale())
     await store().openQuote("q1", null)
 
@@ -487,16 +732,16 @@ describe("useOpenQuoteStore", () => {
     let saving: (value: WorkbenchAppQuoteResponse) => void = () => {}
     vi.mocked(openAppQuote).mockResolvedValueOnce(answer()).mockResolvedValueOnce(answer({ id: "q2", reference: "Q-000002" }, { values: { policy: [{ "policy.state": "TX" }] } }))
     vi.mocked(saveAppQuote).mockReturnValue(new Promise((resolve) => (saving = resolve)))
-    vi.mocked(changeAppQuote).mockResolvedValue(changed({ latest: 2, version: 2, assignee: "jo@example.com" }))
+    vi.mocked(changeAppQuote).mockResolvedValue(changed({ latest: 2, assignee: "jo@example.com" }))
     await store().openQuote("q1", null)
     preview().setCell("policy", 0, "policy.state", "CA")
-    writeDraft(draftKey("motor", "ana@example.com", "q1"), { values: preview().quote, version: 1, latest: 1, formRevision: "rev-9", keptAt: "2026-10-12T10:00:00Z" })
+    writeDraft(draftKey("motor", "ana@example.com", "q1"), { values: preview().quote, version: 1, latest: 1, places: {}, keptAt: "2026-10-12T10:00:00Z", pending: null })
     const saved = store().save()
     await vi.waitFor(() => expect(saveAppQuote).toHaveBeenCalled())
     const assigning = store().change("assignee", { assignee: "jo@example.com" })
     await store().openQuote("q2", null)
 
-    saving(answer({ latest: 2, version: 2 }, { number: 2 }))
+    saving(answer({ latest: 2 }, { number: 2 }))
     expect(await saved).toBeNull()
     await assigning
 
@@ -511,8 +756,8 @@ describe("useOpenQuoteStore", () => {
     vi.mocked(changeAppQuote).mockRejectedValue(stale())
     await store().openQuote("q1", null)
 
-    expect(await store().change("archive")).toBeNull()
-    expect(store().conflict?.latest?.version).toBe(3)
+    expect(await store().change("archive", {})).toBeNull()
+    expect(store().conflict?.latest?.latest).toBe(2)
     store().dismiss("conflict")
     expect(store().conflict).toBeNull()
   })
@@ -526,6 +771,45 @@ describe("useOpenQuoteStore", () => {
     await vi.waitFor(() => expect(store().history).not.toBeNull())
     await store().loadHistory()
     expect(store().error).toContain("history could not be read")
+  })
+
+  it("shows the history asked for last, whichever answers first", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    const answers: Array<(value: WorkbenchAppQuoteHistoryResponse) => void> = []
+    vi.mocked(fetchAppQuoteHistory).mockImplementation(() => new Promise((resolve) => { answers.push(resolve) }))
+    await store().openQuote("q1", null)
+    const history = (numbers: number[]): WorkbenchAppQuoteHistoryResponse => ({
+      revisions: numbers.map((number) => ({ number, saved_by: "ana@example.com", saved_at: "2026-10-12T09:00:00+00:00", priced: true, release: "r1", form_revision: "rev-9", stage: "priced" })),
+      events: [],
+      source: null,
+      derived: [],
+    })
+
+    const before = store().loadHistory()
+    const after = store().loadHistory()
+    answers[1](history([1, 2]))
+    await after
+    answers[0](history([1]))
+    await before
+
+    expect(store().history?.revisions.map((revision) => revision.number)).toEqual([1, 2])
+  })
+
+  it("says nothing of an earlier history read that fails after a later one answered", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    const settles: Array<{ resolve: (value: WorkbenchAppQuoteHistoryResponse) => void; reject: (error: Error) => void }> = []
+    vi.mocked(fetchAppQuoteHistory).mockImplementation(() => new Promise((resolve, reject) => { settles.push({ resolve, reject }) }))
+    await store().openQuote("q1", null)
+
+    const before = store().loadHistory()
+    const after = store().loadHistory()
+    settles[1].resolve({ revisions: [], events: [], source: null, derived: [] })
+    await after
+    settles[0].reject(new Error("down"))
+    await before
+
+    expect(store().history).not.toBeNull()
+    expect(store().error).toBeNull()
   })
 
   it("keeps the newest open when an earlier one answers last", async () => {
@@ -559,7 +843,7 @@ describe("useOpenQuoteStore", () => {
   })
 
   it("does nothing with no quote open, and nothing with no release read", async () => {
-    expect(await store().change("archive")).toBeNull()
+    expect(await store().change("archive", {})).toBeNull()
     await store().moveToCurrentSheets()
     store().restoreDraft()
     await store().loadHistory()
@@ -573,8 +857,8 @@ describe("useOpenQuoteStore", () => {
 
   it("reads the history again as an open quote is opened, saved and changed", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(saveAppQuote).mockResolvedValue(answer({ latest: 2, version: 2 }, { number: 2 }))
-    vi.mocked(changeAppQuote).mockResolvedValue({ quote: appQuote({ version: 3 }), revision: null })
+    vi.mocked(saveAppQuote).mockResolvedValue(answer({ latest: 2 }, { number: 2 }))
+    vi.mocked(changeAppQuote).mockResolvedValue({ quote: appQuote({ latest: 3 }), revision: null })
     vi.mocked(fetchAppQuoteHistory).mockResolvedValue({ revisions: [], events: [], source: null, derived: [] })
     useOpenQuoteStore.setState({ historyOpen: true })
 
@@ -615,7 +899,7 @@ describe("useOpenQuoteStore", () => {
     expect(readOnlyReason(store())).toBe("reader")
     expect(preview().readOnly).toBe(true)
     expect(await store().save()).toBeNull()
-    expect(await store().change("archive")).toBeNull()
+    expect(await store().change("archive", {})).toBeNull()
     expect(await store().saveAsNew()).toBeNull()
     await store().openNew(null)
     expect(preview().readOnly).toBe(true)

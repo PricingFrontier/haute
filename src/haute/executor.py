@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -86,6 +86,7 @@ from haute.schemas import (
     ColumnInfo,
     ExecutionMetricsPayload,
     NodeResult,
+    PortPreview,
     SchemaWarning,
     WriteOutputResponse,
 )
@@ -608,6 +609,28 @@ def _preview_row_limit_for_width(max_preview_rows: int, column_count: int) -> in
     return min(max_preview_rows, PREVIEW_MAX_CELLS // column_count)
 
 
+def _frame_preview(
+    node_data: NodeData,
+    df: pl.DataFrame,
+    requested_preview_columns: list[str] | None,
+    max_preview_rows: int,
+) -> tuple[list[dict[str, Any]], list[str], int | None]:
+    """A frame's preview rows, the columns they hold and the row limit they were cut to:
+    the requested columns, else the node's, as many rows as the width allows, an OUTPUT
+    node's as the response document it assembles."""
+    preview_columns = _preview_projection_columns(
+        df, _normalise_requested_preview_columns(node_data, df, requested_preview_columns)
+    )
+    preview_row_limit = _preview_row_limit_for_width(max_preview_rows, len(preview_columns))
+    preview_frame = df.select(preview_columns).head(preview_row_limit)
+    if node_data.nodeType == NodeType.OUTPUT:
+        # The OUTPUT node carries the assembled response document
+        # (struct columns, ragged → null-filled). Render it as the
+        # pruned JSON so the canvas preview shows the real shape.
+        return render_output_document(preview_frame), preview_columns, preview_row_limit
+    return preview_frame.to_dicts(), preview_columns, preview_row_limit
+
+
 def _preview_projection_columns(
     df: pl.DataFrame,
     requested_preview_columns: list[str] | None,  # pragma: no mutate
@@ -937,6 +960,7 @@ def execute_graph(
     requested_preview_columns: list[str] | None = None,  # pragma: no mutate
     include_schema_metadata: bool = False,
     port_label: str | None = None,  # pragma: no mutate
+    port_labels: Sequence[str] | None = None,
     execution_context: ExecutionContext | None = None,  # pragma: no mutate
     shared_snapshots: bool = False,
     staging_token: str | None = None,  # pragma: no mutate
@@ -974,6 +998,11 @@ def execute_graph(
             frame whose rows/columns the flat ``columns`` / ``preview`` should
             reflect. Single-frame targets ignore it. Threaded into the preview
             cache key so each frame is a distinct cache entry.
+        port_labels: Several frames of a multi-frame target, each previewed
+            from the one run into the target's ``port_previews``, as
+            ``port_label`` previews one; a label the target does not emit
+            fails the target. Not in the cache key: every frame is computed
+            and kept whichever are previewed.
         shared_snapshots: When set (the preview route) and caching is on in
             the project's pipeline settings, a target whose lineage
             ``preview_lineage_admitted`` accepts runs under a seed plan: it
@@ -1012,6 +1041,7 @@ def execute_graph(
                 requested_preview_columns=requested_preview_columns,
                 include_schema_metadata=include_schema_metadata,
                 port_label=port_label,
+                port_labels=port_labels,
                 execution_context=admitted_context,
                 shared_snapshots=shared_snapshots,
                 staging_token=staging_token,
@@ -1031,6 +1061,7 @@ def execute_graph(
         requested_preview_columns=requested_preview_columns,
         include_schema_metadata=include_schema_metadata,
         port_label=port_label,
+        port_labels=None if port_labels is None else tuple(port_labels),
         execution_context=execution_context,
     )
     execution_context.record_preview_seed_plan(())
@@ -1080,6 +1111,7 @@ def _execute_graph_core(
     requested_preview_columns: list[str] | None,  # pragma: no mutate
     include_schema_metadata: bool,
     port_label: str | None,  # pragma: no mutate
+    port_labels: tuple[str, ...] | None,
     execution_context: ExecutionContext,
     snapshot_plan: SeedPlan | None,  # pragma: no mutate
     seed_plan_request: SeedPlanRequest | None,  # pragma: no mutate
@@ -1478,8 +1510,10 @@ def _execute_graph_core(
             node_id: str,
             df: pl.DataFrame | None,  # pragma: no mutate
         ) -> tuple[list[ColumnInfo], list[ColumnInfo]]:
+            # A bundle of frames records no flat schema of its own: one of its frames,
+            # previewed, is read from the frame.
             full_output = output_cols.get(node_id)
-            if full_output is not None:
+            if full_output:
                 columns = [ColumnInfo(name=n, dtype=d) for n, d in full_output]
             elif df is not None:
                 columns = [ColumnInfo(name=c, dtype=str(df[c].dtype)) for c in df.columns]
@@ -1540,6 +1574,32 @@ def _execute_graph_core(
             }
             is_frame_bundle = isinstance(df, dict)
             is_multi_frame_output = is_frame_bundle and len(df) > 1
+            # Each frame asked for, previewed from this run's bundle as a preview of it
+            # alone would be.
+            port_previews: dict[str, PortPreview] = {}
+            if nid == target_node_id and port_labels is not None:
+                bundle = df if is_frame_bundle else {}
+                unknown = next((label for label in port_labels if label not in bundle), None)
+                if unknown is not None:
+                    results[nid] = NodeResult(
+                        status="error",
+                        error=f"{node_map[nid].data.label} has no table '{unknown}' to preview.",
+                        timing_ms=timings.get(nid, 0),
+                        memory_bytes=memory_bytes.get(nid, 0),
+                    )
+                    continue
+                for label in port_labels:
+                    frame = bundle[label]
+                    frame_preview, _, frame_row_limit = _frame_preview(
+                        node_map[nid].data, frame, requested_preview_columns, max_preview_rows
+                    )
+                    port_previews[label] = PortPreview(
+                        row_count=len(frame),
+                        columns=_column_infos_for_node(nid, frame)[0],
+                        preview=frame_preview,
+                        preview_truncated=frame_row_limit is not None
+                        and len(frame) > len(frame_preview),
+                    )
             if is_frame_bundle:
                 if len(df) == 1:
                     # A singleton bundle has exactly one canonical flat frame.
@@ -1572,6 +1632,7 @@ def _execute_graph_core(
                         columns=columns,
                         available_columns=avail_col_infos,
                         frame_columns=frame_columns,
+                        port_previews=port_previews,
                         timing_ms=timings.get(nid, 0),
                         memory_bytes=memory_bytes.get(nid, 0),
                         schema_warnings=node_warnings,
@@ -1587,26 +1648,12 @@ def _execute_graph_core(
             node_data = node_map[nid].data
 
             if nid in preview_node_ids:
-                preview_columns = _preview_projection_columns(
+                preview, preview_columns, preview_row_limit = _frame_preview(
+                    node_data,
                     df,
-                    _normalise_requested_preview_columns(
-                        node_data,
-                        df,
-                        requested_preview_columns if nid == target_node_id else None,
-                    ),
-                )
-                preview_row_limit = _preview_row_limit_for_width(
+                    requested_preview_columns if nid == target_node_id else None,
                     max_preview_rows,
-                    len(preview_columns),
                 )
-                preview_frame = df.select(preview_columns).head(preview_row_limit)
-                if node_data.nodeType == NodeType.OUTPUT:
-                    # The OUTPUT node carries the assembled response document
-                    # (struct columns, ragged → null-filled). Render it as the
-                    # pruned JSON so the canvas preview shows the real shape.
-                    preview = render_output_document(preview_frame)
-                else:
-                    preview = preview_frame.to_dicts()
             else:
                 preview_columns = []
                 preview_row_limit = None
@@ -1624,6 +1671,7 @@ def _execute_graph_core(
                 preview_row_count=len(preview),
                 preview_row_limit=preview_row_limit,
                 preview_truncated=preview_row_limit is not None and len(df) > len(preview),
+                port_previews=port_previews,
                 timing_ms=timings.get(nid, 0),
                 memory_bytes=memory_bytes.get(nid, 0),
                 schema_warnings=node_warnings,

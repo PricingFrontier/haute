@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { ApiError } from "../client"
-import { apiErrorCode, apiErrorMessage, apiErrorStatus } from "../errors"
+import { apiErrorCode, apiErrorMessage, apiErrorStatus, isStaleRevision } from "../errors"
 
 describe("apiErrorCode", () => {
   it("reads the code from a structured detail", () => {
@@ -18,6 +18,17 @@ describe("apiErrorCode", () => {
   })
 })
 
+describe("isStaleRevision", () => {
+  it("knows a save refused for a stale document or quote, from a flat detail or a structured one", () => {
+    expect(isStaleRevision(new ApiError("HTTP 409", 409, "stale_document_revision: changed", undefined, "stale_document_revision: changed"))).toBe(true)
+    expect(isStaleRevision(new ApiError("HTTP 409", 409, "stale_quote_revision: saved since", undefined, "stale_quote_revision: saved since"))).toBe(true)
+    expect(isStaleRevision(new ApiError("HTTP 409", 409, undefined, undefined, { error_code: "stale_quote_revision", message: "saved since" }))).toBe(true)
+    expect(isStaleRevision(new ApiError("HTTP 409", 409, "git_unavailable: no git", undefined, "git_unavailable: no git"))).toBe(false)
+    expect(isStaleRevision(new ApiError("HTTP 409", 409, "The release changed", undefined, "The release changed"))).toBe(false)
+    expect(isStaleRevision(new Error("stale_document_revision"))).toBe(false)
+  })
+})
+
 describe("apiErrorStatus", () => {
   it("reads an HTTP error's status and nothing else's", () => {
     expect(apiErrorStatus(new ApiError("HTTP 410", 410, "gone"))).toBe(410)
@@ -28,6 +39,20 @@ describe("apiErrorStatus", () => {
 })
 
 describe("apiErrorMessage", () => {
+  it("reads a refused request's first place and message, a check's sentence without pydantic's prefix", () => {
+    const refused = (detail: unknown[]) => new ApiError("HTTP 422", 422, JSON.stringify(detail), { detail }, detail)
+    expect(apiErrorMessage(refused([
+      { type: "value_error", loc: ["body", "form"], msg: "Value error, quote_details is Haute's own table of a quote's details: name yours otherwise" },
+      { type: "missing", loc: ["body", "base_revision"], msg: "Field required" },
+    ]))).toBe("form: quote_details is Haute's own table of a quote's details: name yours otherwise")
+    expect(apiErrorMessage(refused([
+      { type: "greater_than", loc: ["body", "form", "pages", 0, "width"], msg: "Input should be greater than 0" },
+    ]))).toBe("form.pages.0.width: Input should be greater than 0")
+    expect(apiErrorMessage(refused([{ type: "missing", loc: ["form_revision"], msg: "Field required" }]))).toBe(
+      "form_revision: Field required",
+    )
+  })
+
   it("prefers a structured detail's message", () => {
     const error = new ApiError("HTTP 502", 502, undefined, undefined, {
       error_code: "mlflow_connectivity",

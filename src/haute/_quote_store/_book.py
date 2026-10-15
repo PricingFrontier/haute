@@ -50,6 +50,7 @@ from haute._quote_store._store import (
     _read_revision,
 )
 from haute._quote_store._tables import (
+    NAME_LENGTH,
     OPERATION_LENGTH,
     PRINCIPAL_LENGTH,
     QUOTE_COUNTER,
@@ -264,6 +265,16 @@ def _check_principal(principal: str, what: str) -> str:
     if not value or len(value) > PRINCIPAL_LENGTH:
         raise QuoteStoreError(f"{what} is a name of 1 to {PRINCIPAL_LENGTH} characters.")
     return value
+
+
+def _check_name(details: Mapping[str, Any]) -> None:
+    """Refuse a quote name longer than the store keeps one, at any save, not only the first,
+    which copies it into the quote's own row."""
+    name = details.get("quote_name")
+    if isinstance(name, str) and len(name) > NAME_LENGTH:
+        raise QuoteStoreError(
+            f"A quote's name is at most {NAME_LENGTH} characters; this one has {len(name)}."
+        )
 
 
 def _row_details(row: RowMapping) -> dict[str, Any]:
@@ -715,6 +726,7 @@ class QuoteBook:
             if source is not None:
                 origin = self._get(connection, source.quote_id)
                 _read_revision(connection, source.quote_id, source.revision)
+            _check_name(details_of(inputs))
             reference = self._next_reference(connection)
             now = self._clock()
             details = {
@@ -799,6 +811,7 @@ class QuoteBook:
             if done is not None:
                 return done
             quote = self._current(connection, quote_id, version)
+            _check_name(details_of(inputs))
             if quote.archived:
                 raise QuoteLockedError(f"{quote.reference} is archived: restore it to change it.")
             if quote.stage == "final":
@@ -911,6 +924,7 @@ class QuoteBook:
         actor = _check_principal(actor, "Who writes a note")
         note = note.strip()
         with self._engine.begin() as connection:
+            self._hold(connection, quote_id)
             quote = self._get(connection, quote_id)
             if quote.archived:
                 raise QuoteLockedError(f"{quote.reference} is archived: restore it to change it.")
@@ -971,6 +985,16 @@ class QuoteBook:
             self._write_details(connection, quote_id, revision.number, details)
             self._event(connection, quote_id, actor, kind, revision.number, detail, at=now)
             return self._full(connection, quote_id)
+
+    def _hold(self, connection: Connection, quote_id: str) -> None:
+        """Hold the quote's row until the transaction ends, as `_advance`'s update of it holds
+        it for every save and revision, so a write that is no revision, a note, serializes
+        with them: what it reads cannot change before it writes. A no-op update takes the row's
+        lock on every engine, and on SQLite the database's, which pysqlite takes only at a
+        statement that writes, the reads before it being outside the transaction."""
+        connection.execute(
+            update(QUOTES).where(QUOTES.c.id == quote_id).values(latest=QUOTES.c.latest)
+        )
 
     def _current(self, connection: Connection, quote_id: str, version: int) -> AppQuote:
         """The quote with what its events say of it, refused as stale unless its newest

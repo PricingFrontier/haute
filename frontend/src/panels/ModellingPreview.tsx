@@ -9,6 +9,7 @@ import { useEffect, useState } from "react"
 import type { TrainProgress, TrainResult } from "../stores/useNodeResultsStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useGraphStore from "../stores/useGraphStore"
+import { confirmed } from "../stores/useQuestionStore"
 import useUIStore from "../stores/useUIStore"
 import { nodeData } from "../types/node"
 import { NODE_TYPES } from "../utils/nodeTypes"
@@ -174,10 +175,8 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
   const tabs = availableTabs.map((key) => ({ key, label: TAB_LABELS[key] }))
   const introduction = activeTab === "summary" ? null : { title: VIEW_TITLES[activeTab] }
 
-  const useBestAsFixedParameters = (params: Record<string, unknown>) => {
-    if (!window.confirm("Use the winning parameters as fixed parameters and disable tuning?")) {
-      return
-    }
+  const fixBestParameters = async (params: Record<string, unknown>) => {
+    if (!(await confirmed({ title: "Use the winning parameters as fixed parameters and disable tuning?", confirm: "Use them" }))) return
 
     useGraphStore.getState().setNodes((nodes) =>
       nodes.map((node) => {
@@ -233,7 +232,7 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
       {activeTab === "summary" && (
         <SummaryTab
           result={result}
-          onUseBestParameters={useBestAsFixedParameters}
+          onUseBestParameters={(params) => void fixBestParameters(params)}
           elapsedSeconds={trainProgress?.elapsed_seconds}
         />
       )}

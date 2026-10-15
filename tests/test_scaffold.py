@@ -524,8 +524,8 @@ class TestAzureDevopsYml:
         from haute._scaffold import azure_devops_yml
 
         result = azure_devops_yml("databricks")
-        assert "- data/" in result
-        assert "- models/" in result
+        assert "- rating/" in result
+        assert "- tests/quotes/" in result
 
 
 # ---------------------------------------------------------------------------
@@ -633,6 +633,14 @@ def _deploy_trigger_paths(provider: str, *, workbench: bool) -> list[str]:
 class TestDeployTriggers:
     """A push to main that changes a release input starts the deploy; GitLab filters no paths."""
 
+    def test_only_folders_a_scaffolded_project_has_start_a_deploy(self, provider: str) -> None:
+        # The pipeline folder (its code, config and versioned files) and the test quotes;
+        # the root's ignored data/ and a root pipeline's models/ never change a release.
+        paths = _deploy_trigger_paths(provider, workbench=False)
+        folders = [path for path in paths if "." not in path]
+        suffix = "/**" if provider == "github" else "/"
+        assert folders == [f"rating{suffix}", f"tests/quotes{suffix}"]
+
     def test_a_dependency_change_starts_a_deploy(self, provider: str) -> None:
         paths = _deploy_trigger_paths(provider, workbench=False)
         assert {"pyproject.toml", "uv.lock"} <= set(paths)
@@ -654,13 +662,21 @@ class TestTestQuotesReport:
         assert steps[0]["with"] == {"fetch-depth": 0}
         run = " ".join(step.get("run", "") for step in steps)
         assert 'haute test-quotes report --base "origin/${{ github.base_ref }}"' in run
-        assert "gh pr comment" in run and "--edit-last --create-if-none" in run
         assert "GITHUB_STEP_SUMMARY" in run
+        # The comment only on a pull request from the repository itself: a fork's token
+        # cannot comment, and the summary still holds the report.
+        [comment] = [step for step in steps if "gh pr comment" in step.get("run", "")]
+        assert "--edit-last --create-if-none" in comment["run"]
+        assert comment["if"] == "github.event.pull_request.head.repo.full_name == github.repository"
+        [summary] = [step for step in steps if "GITHUB_STEP_SUMMARY" in step.get("run", "")]
+        assert "if" not in summary
         assert "test-quotes" not in yaml.safe_load(github_ci_yml())["jobs"]
 
     def test_gitlab_keeps_the_report_with_a_merge_requests_run(self) -> None:
         job = yaml.safe_load(gitlab_ci_yml("databricks", workbench=True))["test-quotes-report"]
         assert job["stage"] == "validate"
+        # The whole history, so the report finds where the branch left its target.
+        assert job["variables"] == {"GIT_DEPTH": "0"}
         assert job["artifacts"] == {"paths": ["test-quotes-report.md"]}
         assert job["rules"] == [{"if": '$CI_PIPELINE_SOURCE == "merge_request_event"'}]
         assert "test-quotes-report" not in yaml.safe_load(gitlab_ci_yml("databricks"))

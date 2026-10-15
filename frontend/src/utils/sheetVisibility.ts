@@ -7,7 +7,7 @@
  * are held to the cases in __tests__/fixtures/sheetVisibility.json.
  */
 import type { Condition, FormSchema, FormSpec, SchemaColumn, SchemaTable, Section, ShowWhen } from "../api/types"
-import { filled, isDay, parseTypedNumber, type RowsByTable } from "./sheetValues"
+import { filled, isDay, parseTypedNumber, quoteTyped, withPresetRows, type RowsByTable } from "./sheetValues"
 
 export type ConditionTest = Condition["op"]
 type ColumnType = SchemaColumn["type"]
@@ -326,6 +326,20 @@ export function quotedSchema(schema: FormSchema, hidden: ReadonlySet<string>): F
       return columns.length === table.columns.length ? table : { ...table, columns }
     }),
   }
+}
+
+const NO_COLUMNS: ReadonlySet<string> = new Set()
+
+/**
+ * Whether a quote has anything typed to price or save, as the server counts it: a value in
+ * a column the sheets show, other than a column the app sets (`locked`, by `columnKey`),
+ * the index, the column giving a table its rows (`withPresetRows`) and the default a new
+ * quote starts a column with (`quoteTyped`). Preview, the app's pricing and its Save, and
+ * the test quotes all ask this one rule, which the server's is held to by a shared fixture.
+ */
+export function quoteEligible(form: FormSpec, values: RowsByTable, locked: ReadonlySet<string> = NO_COLUMNS): boolean {
+  const { hidden } = sheetVisibility(form, values)
+  return quoteTyped(quotedSchema(quotedSchema(form.schema, hidden), locked), withPresetRows(form.schema, values))
 }
 
 /**

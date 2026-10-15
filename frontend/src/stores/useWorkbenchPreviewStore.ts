@@ -9,11 +9,13 @@
  */
 import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
-import { quoteTyped, valuesBasis, withPresetRows } from "../utils/sheetValues"
-import { columnKey, quotedSchema, sheetVisibility } from "../utils/sheetVisibility"
+import { valuesBasis } from "../utils/sheetValues"
+import { columnKey, quoteEligible, sheetVisibility } from "../utils/sheetVisibility"
 import { withCell, type SampleRow, type SampleValue } from "../utils/workbenchForm"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
+import { pricingLoop } from "./pricingLoop"
 import useWorkbenchPricingStore, { PRICING_DELAY_MS, type SamplePrice } from "./useWorkbenchPricingStore"
+import { latest } from "../utils/latest"
 
 interface WorkbenchPreviewState {
   /** The quote, by table id, rows keyed by column id, as typed. */
@@ -65,46 +67,36 @@ interface WorkbenchPreviewState {
 }
 
 /** The pricing asked for last; an answer to an earlier one is dropped. */
-let asked = 0
-
-/** The pricing waiting for typing to pause, the one running, and whether to run another after it. */
-let timer: ReturnType<typeof setTimeout> | null = null
-let run: Promise<void> | null = null
-let again = false
+const asked = latest()
 
 const NOTHING_LOCKED: ReadonlySet<string> = new Set()
 
 const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => {
-  const stopWaiting = () => {
-    if (timer !== null) clearTimeout(timer)
-    timer = null
-  }
-
   const priceOnce = async () => {
     const { form, status } = useWorkbenchFormStore.getState()
     const { quotePricer } = useWorkbenchPricingStore.getState()
     const { quote, locked, readOnly, price } = get()
     if (readOnly || form === null || status !== "ready" || quotePricer === null) return
-    const { hidden } = sheetVisibility(form, quote)
-    if (!quoteTyped(quotedSchema(quotedSchema(form.schema, hidden), locked), withPresetRows(form.schema, quote))) {
+    if (!quoteEligible(form, quote, locked)) {
       set({ price: null, error: null })
       return
     }
-    const basis = valuesBasis(form.schema, hidden, quote)
+    const basis = valuesBasis(form.schema, sheetVisibility(form, quote).hidden, quote)
     if (price !== null && price.basis === basis) return
-    const attempt = ++asked
+    const attempt = asked.take()
     set({ pricing: true, error: null })
     // Another quote opened meanwhile, or the host left: the answer is nobody's.
-    const current = () => attempt === asked && useWorkbenchPricingStore.getState().quotePricer === quotePricer
+    const current = () => asked.is(attempt) && useWorkbenchPricingStore.getState().quotePricer === quotePricer
     try {
       const priced = await quotePricer(form, quote)
       if (current()) set({ price: { basis, ...priced } })
     } catch (error: unknown) {
       if (current()) set({ price: null, error: `Pricing failed: ${apiErrorMessage(error)}` })
     } finally {
-      if (attempt === asked) set({ pricing: false })
+      if (asked.is(attempt)) set({ pricing: false })
     }
   }
+  const loop = pricingLoop(priceOnce, PRICING_DELAY_MS)
 
   return {
     quote: {},
@@ -125,8 +117,8 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => {
       get().schedule()
     },
     open: (quote, price, readOnly) => {
-      asked += 1
-      stopWaiting()
+      asked.bump()
+      loop.cancel()
       set({ quote, price, error: null, pricing: false, readOnly })
       if (!readOnly && price === null) get().schedule()
     },
@@ -135,42 +127,9 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => {
       if (!readOnly) get().schedule()
     },
     setLocked: (locked) => set({ locked }),
-    schedule: () => {
-      stopWaiting()
-      timer = setTimeout(() => {
-        timer = null
-        void get().priceNow()
-      }, PRICING_DELAY_MS)
-    },
-    priceNow: () => {
-      if (run !== null) {
-        again = true
-        return run
-      }
-      run = (async () => {
-        try {
-          do {
-            again = false
-            await priceOnce()
-          } while (again)
-        } finally {
-          run = null
-        }
-      })()
-      return run
-    },
-    settle: async () => {
-      // A value entered while it waits is priced before it settles: it settles once
-      // nothing waits for the pause and nothing is being priced.
-      while (timer !== null || run !== null) {
-        if (timer !== null) {
-          stopWaiting()
-          await get().priceNow()
-        } else {
-          await run
-        }
-      }
-    },
+    schedule: loop.schedule,
+    priceNow: loop.priceNow,
+    settle: loop.settle,
   }
 })
 

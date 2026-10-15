@@ -243,33 +243,42 @@ def _rollback_artifacts(touched: list[_TouchedFile]) -> list[Path]:
     return failed
 
 
+class LedgerCapture(NamedTuple):
+    """What `capture_save_in_ledger` did: the capture fields of ``schemas.SaveCapture``
+    besides its warnings, which the caller's list collects."""
+
+    git_sha: str | None
+    identity_required: bool
+    uncaptured: list[str]
+
+
 def capture_save_in_ledger(
     root: Path, rel_paths: list[str], warnings: list[str], message: str | None = None
-) -> tuple[str | None, bool]:
+) -> LedgerCapture:
     """Commit a save's files to the clone's ledger branch, when configured.
 
     *rel_paths* are the files the save wrote or removed, relative to *root* in
-    POSIX form: the commit's pathspec. The pipeline save captures its files
-    through it, and the workbench's form save its file.
+    POSIX form: the commit's pathspec. Every route that writes project files
+    captures them through it: the pipeline save, the form save, a test-quote
+    write, a project file written or deleted, and the capture retry.
 
-    Returns ``(sha, identity_required)``.  ``identity_required`` is True
-    only when the capture was skipped because git has no commit identity
-    — a restored hosted container starts that way, and without a
-    structural signal the UI can never prompt for one, so the user's work
-    would silently never be version-captured.
+    ``identity_required`` is True only when the capture was skipped because git
+    has no commit identity — a restored hosted container starts that way, and
+    without a structural signal the UI can never prompt for one, so the user's
+    work would silently never be version-captured.
 
-    Additive by design: with no working branch recorded (or no git repo)
-    saves behave exactly as before, and a failed capture degrades to a
-    warning appended to *warnings* — the on-disk save has already
-    succeeded, and the next successful capture sweeps the orphaned delta up
-    because the ledger commit is computed from working-tree state, not from
-    this call's bookkeeping.
+    Additive by design: with no working branch recorded (or no git repo) saves
+    behave exactly as before, and a failed capture degrades to a warning
+    appended to *warnings*, the on-disk save having already succeeded. A
+    skipped or failed capture names *rel_paths* in ``uncaptured``: the commit is
+    pathspec-scoped, so no later save's capture takes them, and the editor
+    keeps them for ``POST /api/git/capture``.
     """
     from haute._git_state import read_working_branch
 
     working = read_working_branch(root)
     if working is None or not rel_paths:
-        return None, False
+        return LedgerCapture(None, False, [])
 
     from haute import _git
 
@@ -283,7 +292,7 @@ def capture_save_in_ledger(
             "Changes saved, but version capture needs a git identity. "
             "Set your name and email to keep version history."
         )
-        return None, True
+        return LedgerCapture(None, True, list(rel_paths))
 
     try:
         sha = _git.commit_save(rel_paths, working, cwd=root, message=message)
@@ -292,7 +301,7 @@ def capture_save_in_ledger(
             from haute import _project_storage
 
             _project_storage.enqueue_push()
-        return sha, False
+        return LedgerCapture(sha, False, [])
     except _git.GitDomainError as exc:
         # Hand-authored messages (incl. guardrails) are safe verbatim.
         warnings.append(f"Changes saved; version capture failed: {exc}")
@@ -300,7 +309,7 @@ def capture_save_in_ledger(
         # Raw git stderr may leak paths/remotes — full detail is already
         # in the structured log from _run_git.
         warnings.append("Changes saved; version capture failed (git error — see server log).")
-    return None, False
+    return LedgerCapture(None, False, list(rel_paths))
 
 
 class SavePipelineService:
@@ -531,17 +540,14 @@ class SavePipelineService:
         # after all files land successfully.
         invalidate_pipeline_index()
 
-        git_sha, identity_required = self._capture_save_in_ledger(
-            touched, removed, warnings, commit_message
-        )
+        captured = self._capture_save_in_ledger(touched, removed, warnings, commit_message)
 
         return SavePipelineResponse(
             file=str(py_path.relative_to(self._root)),
             pipeline_name=body.name,
             source_revision=source_revision,
             warnings=warnings,
-            git_sha=git_sha,
-            identity_required=identity_required,
+            **captured._asdict(),
         )
 
     def _capture_save_in_ledger(
@@ -550,7 +556,7 @@ class SavePipelineService:
         removed: list[Path],
         warnings: list[str],
         message: str | None,
-    ) -> tuple[str | None, bool]:
+    ) -> LedgerCapture:
         """Capture the files this save wrote or removed: `capture_save_in_ledger` on them."""
         rel_paths: list[str] = []
         for path in [t.target for t in touched] + removed:

@@ -80,22 +80,22 @@ export default function ProjectControls({
         </ToolbarButton>
       </ToolbarColumn>
       {/* Assistant and Help column — equal width, paired with branch name & save/commit */}
-      <div className="flex flex-col gap-1 w-fit">
+      <ToolbarColumn>
         {/* A running turn fences the canvas, but the panel that shows and
             stops it stays reachable. */}
-        <button
+        <ToolbarButton
           data-testid="toolbar-assistant"
           onClick={() => setAssistantOpen(!assistantOpen)}
           disabled={editingDisabled && assistantTurn === null}
           aria-label={assistantState === null ? "Assistant" : `Assistant: ${assistantState}`}
           aria-pressed={assistantOpen}
-          className="toolbar-btn relative px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
+          className="relative"
           title={assistantState ?? "Pricing assistant"}
         >
           {assistantTurn !== null ? (
             <Loader2 size={13} className="animate-spin" data-testid="toolbar-assistant-working" aria-hidden="true" />
           ) : (
-            <Bot size={13} />
+            <Bot size={13} aria-hidden="true" />
           )}
           Assistant
           {assistantUnseenOutcome && assistantTurn === null && (
@@ -106,7 +106,7 @@ export default function ProjectControls({
               style={{ background: "var(--accent)" }}
             />
           )}
-        </button>
+        </ToolbarButton>
         <div
           ref={helpRef}
           className="relative w-full"
@@ -126,17 +126,16 @@ export default function ProjectControls({
             items[(index + step + items.length) % items.length]?.focus()
           }}
         >
-          <button
+          <ToolbarButton
+            icon={CircleHelp}
             data-testid="toolbar-help"
             onClick={() => setHelpOpen((v) => !v)}
             aria-haspopup="menu"
             aria-expanded={helpOpen}
-            className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
             title="Help"
           >
-            <CircleHelp size={13} />
             Help
-          </button>
+          </ToolbarButton>
           {helpOpen && (
             <div
               role="menu"
@@ -184,7 +183,7 @@ export default function ProjectControls({
             </div>
           )}
         </div>
-      </div>
+      </ToolbarColumn>
       <BranchIndicator>
         {/* Save then Commit, in the order the work happens: a save is itself a
             commit to the save branch, and Commit rolls those saves into a

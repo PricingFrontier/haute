@@ -226,8 +226,6 @@ Every job installs with `uv sync --frozen`, which needs the project's `uv.lock`:
         branches: [main]
         paths:
           - "rating/**"
-          - "data/**"
-          - "models/**"
           - "tests/quotes/**"
           - "haute.toml"
           - "pyproject.toml"

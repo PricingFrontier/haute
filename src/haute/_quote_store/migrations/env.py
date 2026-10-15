@@ -15,7 +15,9 @@ context.configure(
     connection=connection,
     target_metadata=METADATA,
     version_table=VERSION_TABLE,
-    # SQLite alters a table by copying it; batch mode does that for every migration.
+    # SQLite changes a column or a constraint only by copying the table. This shapes only the
+    # scripts `--autogenerate` writes: a migration written by hand that changes one does so
+    # inside `op.batch_alter_table` itself, or it fails on SQLite.
     render_as_batch=True,
 )
 with context.begin_transaction():

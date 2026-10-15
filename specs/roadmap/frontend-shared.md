@@ -6,7 +6,7 @@ The browser's shared hooks, stores, helpers and API client. Current
 behaviour is specified in
 [the frontend-shared specification](../frontend-shared/high-level.md).
 Generating the API contract is planned in the
-[server API roadmap](server-api.md) (`API-R03`). These packages come from the
+[server API roadmap](server-api.md) (`API-R03`). `FSH-R03` comes from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md).
 
 ## Priorities
@@ -34,3 +34,4 @@ derivation; its tests cover state transitions only.
 
 **Evidence:** `frontend/src/stores/useNodeResultsStore.ts::applyFrontierPointSummary`;
 `frontend/src/stores/useNodeResultsStore.ts::hashConfig`.
+

@@ -67,15 +67,9 @@ export function SidePanel({ children, width, onWidthChange, minWidth, maxWidth, 
   })
 
   useEffect(() => {
-    const onMouseMove = (e: globalThis.MouseEvent) => {
-      if (!dragging.current) return
-      const { minWidth: min, maxWidth: max } = latest.current
-      const next = Math.min(max(), Math.max(min, start.current.width + start.current.x - e.clientX))
-      current.current = next
-      // Straight to the element while dragging; the host hears once, at the end.
-      if (panel.current) panel.current.style.width = `${next}px`
-    }
-    const onMouseUp = () => {
+    // One routine for every way a resize ends: a release, a release outside the window (a
+    // move with no button down), the window losing the focus, and the panel going.
+    const finish = () => {
       if (!dragging.current) return
       dragging.current = false
       document.body.style.cursor = ""
@@ -83,11 +77,26 @@ export function SidePanel({ children, width, onWidthChange, minWidth, maxWidth, 
       latest.current.onWidthChange(current.current)
       setDragActive(false)
     }
+    const onMouseMove = (e: globalThis.MouseEvent) => {
+      if (!dragging.current) return
+      if (e.buttons === 0) {
+        finish()
+        return
+      }
+      const { minWidth: min, maxWidth: max } = latest.current
+      const next = Math.min(max(), Math.max(min, start.current.width + start.current.x - e.clientX))
+      current.current = next
+      // Straight to the element while dragging; the host hears once, at the end.
+      if (panel.current) panel.current.style.width = `${next}px`
+    }
     window.addEventListener("mousemove", onMouseMove)
-    window.addEventListener("mouseup", onMouseUp)
+    window.addEventListener("mouseup", finish)
+    window.addEventListener("blur", finish)
     return () => {
       window.removeEventListener("mousemove", onMouseMove)
-      window.removeEventListener("mouseup", onMouseUp)
+      window.removeEventListener("mouseup", finish)
+      window.removeEventListener("blur", finish)
+      finish()
     }
   }, [])
 

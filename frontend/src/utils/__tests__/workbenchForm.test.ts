@@ -35,6 +35,7 @@ import {
   keptInside,
   labelColumns,
   linedUpOutputs,
+  answeredOutputs,
   moveInOrder,
   movePage,
   moveSchemaColumn,
@@ -43,6 +44,7 @@ import {
   orderItems,
   pageProblems,
   pasteWidget,
+  addWidgetInFreePlace,
   placeWidget,
   plottable,
   pricingBasis,
@@ -148,6 +150,14 @@ const withTable = (...columns: SchemaColumn[]): FormSpec =>
 
 const messages = (spec: FormSpec, reserved: ReadonlySet<string> = new Set()) =>
   schemaProblems(spec, reserved).map((problem) => problem.message)
+
+describe("Haute's own table", () => {
+  it("names a table of the analyst's called quote_details in the server's own words, not as a repeated name", () => {
+    const spec = addSchemaTable(blank(), table("t_mine", "quote_details"))
+
+    expect(messages(spec)).toEqual(["quote_details is Haute's own table of a quote's details: name yours otherwise"])
+  })
+})
 
 describe("names", () => {
   it("makes a name unique by numbering it, and a column readable from its name", () => {
@@ -308,6 +318,16 @@ describe("problems", () => {
       'Column "state" in Table "t" has allowed values typed in, not read from a params file',
     ])
     expect(messages(updateSchemaTable(spec, "t", { role: "output" }))).toEqual([])
+  })
+
+  it("reads a number column's allowed values as its cells and the server read them", () => {
+    const spec = withTable(
+      column("a", "limit", { type: "float", options: ["1,000", "$2,500.50", "0x10"], options_source: { file: "limits.csv", column: "limit" } }),
+      column("b", "years", { type: "int", options: ["3", "5.0", "1e3"], options_source: { file: "years.csv", column: "years" } }),
+    )
+
+    // `1,000` is priced as 1000, so it is a number; `0x10` fails as a cell, so it is not.
+    expect(messages(spec)).toEqual([`Column "limit" in Table "t" allows "0x10", which isn't a number`])
   })
 
   it("checks a one-row input column's default against its rules, as a cell typed into it is", () => {
@@ -614,7 +634,7 @@ describe("what the sheets show", () => {
     expect(() => updateWidget(spec, heading.id, { rows: 2 })).toThrow("Only a Table has rows")
     expect(() => toggleField(spec, heading.id, { table: "t", column: "c" })).toThrow("A Heading shows no fields")
     expect(() => moveInOrder(spec, heading.id, 0, 1)).toThrow("A Heading shows no fields")
-    expect(shownFields(spec, heading)).toEqual([])
+    expect(shownFields(spec.schema, heading)).toEqual([])
 
     const copied = duplicateWidget(spec, heading.id)
     expect(findWidget(copied.spec, copied.id)).toMatchObject({ index: 1, widget: { type: "heading", ...look, x: 32, y: 16 } })
@@ -1118,6 +1138,37 @@ describe("sections", () => {
     expect(() => placeWidget(spec, "w_boxes", "missing", nowhere)).toThrow("No sheet has a section missing")
   })
 
+  it("copies only what a move, a resize or a section's height changes, leaving the form it was made from as it was", () => {
+    const spec = { ...stacked(), pages: [...stacked().pages, { ...blank().pages[0], id: "p_other", sections: [section("s_other", "Other", 48)] }] }
+    const before = structuredClone(spec)
+    const [policy, equipment, notes] = spec.pages[0].sections
+    const grid = findWidget(spec, "w_grid")?.widget
+
+    // The boxes into Equipment: Policy and Equipment are copied, Notes, the Table, the other sheet and the rest kept.
+    const moved = placeWidget(spec, "w_boxes", "s_equipment", { x: 16, y: 40, w: 400, h: 120 })
+    expect(moved.pages[0].sections[0]).not.toBe(policy)
+    expect(moved.pages[0].sections[1]).not.toBe(equipment)
+    expect(moved.pages[0].sections[2]).toBe(notes)
+    expect(findWidget(moved, "w_grid")?.widget).toBe(grid)
+    expect(moved.pages[1]).toBe(spec.pages[1])
+    expect(moved.schema).toBe(spec.schema)
+    expect(moved.sample).toBe(spec.sample)
+    expect(moved.theme).toBe(spec.theme)
+    // The Table resized: the boxes and Policy kept.
+    const resized = updateWidget(spec, "w_grid", { h: 260 })
+    expect(resized.pages[0].sections[0]).toBe(policy)
+    expect(findWidget(resized, "w_boxes")?.widget).toBe(policy.widgets[0])
+    // Notes made taller: Policy and Equipment kept, their components with them.
+    const taller = setSectionHeight(spec, "s_notes", 96)
+    expect(taller.pages[0].sections.slice(0, 2)).toEqual([policy, equipment])
+    expect(taller.pages[0].sections[0]).toBe(policy)
+    expect(taller.pages[0].sections[1]).toBe(equipment)
+    // None of them changes the form they were made from.
+    expect(spec).toEqual(before)
+    // A component moves only within its own sheet.
+    expect(() => placeWidget(spec, "w_boxes", "s_other", nowhere)).toThrow("Component w_boxes moves only between the sections of its own sheet")
+  })
+
   it("places a component in its own section keeping its place in the order, kept inside it, growing it only for a component taller than it and never shrinking it", () => {
     const spec = addWidget(stacked(), "s_policy", { ...createWidget("heading", { x: 432, y: 16, w: 200, h: 48 }), id: "w_title" })
 
@@ -1180,6 +1231,28 @@ describe("sections", () => {
     const roomy = duplicateWidget(setSectionHeight(spec, "s_policy", 400), "w_boxes")
     expect(findWidget(roomy.spec, roomy.id)?.widget).toMatchObject({ x: 32, y: 32 })
     expect(heights(roomy.spec)).toEqual([400, 232, 48])
+  })
+
+  it("adds a new component at the first place free in a section, the section growing to hold it and the sheet's width kept", () => {
+    const spec = stacked()
+    const added = (next: { spec: FormSpec; id: string }) => findWidget(next.spec, next.id)
+
+    // Beside Policy's Collection, Policy growing to hold it.
+    const chart = addWidgetInFreePlace(spec, "s_policy", "chart", { w: 480, h: 280 })
+    expect(added(chart)).toMatchObject({ section: { id: "s_policy" }, widget: { type: "chart", x: 432, y: 8, w: 480, h: 280, title: "", fields: [] } })
+    expect(heights(chart.spec)).toEqual([288, 232, 48])
+    // No room beside Equipment's Table: below it, Equipment growing.
+    const table = addWidgetInFreePlace(spec, "s_equipment", "tableInput", { w: 720, h: 200 })
+    expect(added(table)?.widget).toMatchObject({ x: 8, y: 232 })
+    expect(heights(table.spec)).toEqual([136, 432, 48])
+    // Into the empty Notes.
+    expect(added(addWidgetInFreePlace(spec, "s_notes", "heading", { w: 480, h: 48 }))?.widget).toMatchObject({ x: 8, y: 8, text: "" })
+    // Wider than its sheet: as wide as the sheet, which keeps its width.
+    const narrow = { ...blank(), pages: [{ ...blank().pages[0], width: 600 }] }
+    const wide = addWidgetInFreePlace(narrow, narrow.pages[0].sections[0].id, "tableInput", { w: 720, h: 200 })
+    expect(added(wide)?.widget).toMatchObject({ x: 0, y: 8, w: 600 })
+    expect(wide.spec.pages[0].width).toBe(600)
+    expect(() => addWidgetInFreePlace(spec, "missing", "chart", { w: 480, h: 280 })).toThrow("No sheet has a section missing")
   })
 
   it("pastes a copy where its component sat, past one already there, into any section, kept inside it, the original untouched", () => {
@@ -1546,11 +1619,11 @@ describe("charts", () => {
   it("takes a Chart's rows from its first field's table, else from the column labelling them", () => {
     const spec = charted(chart([]))
 
-    expect(chartGrain(spec, chart([ref("equipment", "equipment.value")]))).toBe("many:item")
-    expect(chartGrain(spec, chart([ref("policy", "policy.si")], { category: ref("equipment", "equipment.item") }))).toBe("one")
-    expect(chartGrain(spec, chart([], { category: ref("premiums", "premiums.item") }))).toBe("many:item")
-    expect(chartGrain(spec, chart([ref("gone", "gone.x"), ref("claims", "claims.paid")]))).toBe("many:claim")
-    expect(chartGrain(spec, chart([]))).toBeNull()
+    expect(chartGrain(spec.schema, chart([ref("equipment", "equipment.value")]))).toBe("many:item")
+    expect(chartGrain(spec.schema, chart([ref("policy", "policy.si")], { category: ref("equipment", "equipment.item") }))).toBe("one")
+    expect(chartGrain(spec.schema, chart([], { category: ref("premiums", "premiums.item") }))).toBe("many:item")
+    expect(chartGrain(spec.schema, chart([ref("gone", "gone.x"), ref("claims", "claims.paid")]))).toBe("many:claim")
+    expect(chartGrain(spec.schema, chart([]))).toBeNull()
   })
 
   it("plots number columns other than the index", () => {
@@ -1629,6 +1702,24 @@ describe("output tables lined up with a grid's rows", () => {
     expect([...lined.keys()]).toEqual(["t_premiums"])
     expect(lined.get("t_premiums")).toEqual([{ item: "A", premium: 10 }, undefined, { item: "B", premium: 20 }, undefined])
     expect(linedUpOutputs([claims, equipment], [premiums], held, 4, null, schema)).toEqual(new Map())
+  })
+
+  it("lines output tables alone up with the first one's answer, the others by its keys, nothing before a price", () => {
+    // Premiums keyed by item; a second output keyed alike, answered in another order and short a row.
+    const charges = table("t_charges", "charges", { role: "output", rows: "many", columns: [column("c_c_item", "item", { key: true })] })
+    const answered = answeredOutputs([premiums, charges], {
+      sample: {},
+      tables: { premiums: [{ item: "B", premium: 20 }, { item: "A", premium: 10 }], charges: [{ item: "A", charge: 1 }] },
+    })
+
+    expect([...answered.keys()]).toEqual(["t_premiums", "t_charges"])
+    expect(answered.get("t_premiums")).toEqual([{ item: "B", premium: 20 }, { item: "A", premium: 10 }])
+    expect(answered.get("t_charges")).toEqual([undefined, { item: "A", charge: 1 }])
+    // The first without keys: the others have nothing to match it by.
+    const unkeyed = { ...premiums, columns: premiums.columns.map((c) => ({ ...c, key: false })) }
+    expect(answeredOutputs([unkeyed, charges], price([])).get("t_charges")).toEqual([undefined, undefined])
+    expect(answeredOutputs([premiums], null)).toEqual(new Map())
+    expect(answeredOutputs([], price([]))).toEqual(new Map())
   })
 
   it("reads the grid's rows as the quote does: a value in a column it leaves out fills no row", () => {

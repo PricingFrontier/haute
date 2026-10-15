@@ -253,7 +253,8 @@ toolbar's Pipeline files and Local files panels show, in two places
 ([pipeline-config](../pipeline-config/high-level.md)). The pipeline place is the pipeline
 folder's `files/`: it is versioned, so a file written or deleted there is recorded at once as
 a save on the ledger, and a file larger than 100 MiB, or one `.gitignore` would ignore, is
-refused. The local place is the root's `data/`, which takes and deletes files, and `outputs/`,
+refused. Without git, or in a project that is not a repository, the place refuses every
+listing and write, saying which, rather than promise a history it cannot keep. The local place is the root's `data/`, which takes and deletes files, and `outputs/`,
 which only downloads. Neither local folder is versioned, and a hosted app refuses files there
 because its disk does not survive a restart
 ([hosted-project-storage](../hosted-project-storage/high-level.md)). Every operation refuses
@@ -404,7 +405,8 @@ pipeline's sources.
   `schemas.py`, which may re-export cohesive private domain modules, and raises through
   `errors.py`'s `HauteError` family. The execution-diagnostic and Explore-chart pilots, and the
   response models of each converted module group (`RESPONSE_CONTRACT_GROUPS` in
-  `scripts/generate_api_contracts.py`), generate reviewed browser declarations and standalone
+  `scripts/generate_api_contracts.py`), and the request bodies of each request group
+  (`REQUEST_CONTRACT_GROUPS`), generate reviewed browser declarations and standalone
   validators from their canonical Pydantic models; the browser checks those responses with the
   generated validators alone. Other frontend contracts remain explicitly maintained until they
   are converted, rather than being claimed as generated.
@@ -664,7 +666,8 @@ update replaces the canvas with the parse-error view; no earlier canvas stays vi
 local graph stays in the client, fenced and hidden, until a renderable document arrives. If the editor document itself cannot
 be read or built, the server logs the underlying exception and sends a sanitized
 `parse_error`; that frame carries only document transport failure — authored errors always
-arrive as degraded or source-only documents.
+arrive as degraded or source-only documents. A change on disk to the workbench's form file
+is announced as `workbench_form_changed`, naming the file; the workbench reads it again.
 
 ## Minimal transactional pipeline repair
 

@@ -14,7 +14,8 @@ const LET_GO = ["pointerup", "pointercancel", "contextmenu"] as const
 /**
  * `value` as it was when the primary pointer button was pressed on `viewport` while
  * `active`, until a turn after the press ends (`LET_GO`, or the window losing the focus), so
- * the press's own click lands first; else `value` as it is.
+ * the press's own click lands first; else `value` as it is. A press on a select holds
+ * nothing.
  */
 export function useHeldWhilePressed<T>(value: T, active: boolean, viewport: HTMLElement | null): T {
   const [held, setHeld] = useState<{ value: T } | null>(null)
@@ -26,7 +27,9 @@ export function useHeldWhilePressed<T>(value: T, active: boolean, viewport: HTML
     if (!active || viewport === null) return
     let release: number | undefined
     const press = (event: PointerEvent) => {
-      if (event.button !== 0) return
+      // A select's menu opens on the press, where the select is, and takes its release,
+      // which would never reach the window: it needs no hold, and would keep one.
+      if (event.button !== 0 || (event.target instanceof Element && event.target.closest("select") !== null)) return
       window.clearTimeout(release)
       setHeld({ value: latest.current })
     }

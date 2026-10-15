@@ -251,7 +251,6 @@ beforeEach(() => {
   mockLogToMlflow.mockReset()
   mockSaveTrainedModel.mockReset()
   mockResolveModelSaveDestination.mockReset().mockReturnValue(new Promise(() => {}))
-  vi.stubGlobal("confirm", vi.fn(() => true))
   // Return a never-resolving promise by default so the useEffect doesn't cause
   // act() warnings from resolved promises after unmount.
   mockEstimateTrainingRam.mockReset().mockReturnValue(new Promise(() => {}))
@@ -469,7 +468,6 @@ describe("ModellingConfig", () => {
     })
 
     it("unticking a feature removes it from feature_columns", () => {
-      vi.spyOn(window, "confirm").mockReturnValue(true)
       const { props } = renderConfig({ activePane: "features" })
       fireEvent.click(
         within(screen.getByRole("group", { name: "age feature" })).getByRole(

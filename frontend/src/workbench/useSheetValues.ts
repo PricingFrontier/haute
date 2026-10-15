@@ -6,17 +6,20 @@
  * gave with the basis it was priced for, the cells that break their column's rules, which
  * sheets and components the values show, and the schema as the values' quote reads it,
  * without the columns the sheets hide. Each reads a table a column gives its rows as those
- * rows (`withPresetRows`), as the server prices them.
+ * rows (`withPresetRows`), as the server prices them. Each is made only while `active`, as
+ * the sheet uses one at a time, and stays the same object through a change that leaves
+ * what it holds and shows alone, as dragging a component makes, so the components on the
+ * sheet are not drawn again.
  */
-import { createContext, useContext, useMemo } from "react"
+import { createContext, useContext, useMemo, useState } from "react"
 import type { FormSchema } from "../api/types"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
-import useWorkbenchPricingStore, { type SamplePrice } from "../stores/useWorkbenchPricingStore"
+import useWorkbenchPricingStore, { previewBasis, usePricingContext, type SamplePrice } from "../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
-import { newQuoteValues, quoteFilled, quoteProblems, quoteTyped, valuesBasis, withPresetRows, type RowsByTable } from "../utils/sheetValues"
-import { quotedSchema, sheetVisibility, type SheetVisibility } from "../utils/sheetVisibility"
-import { pricingBasis, withSampleCell, withSampleRows, type SampleRow, type SampleValue } from "../utils/workbenchForm"
+import { newQuoteValues, quoteProblems, valuesBasis, withPresetRows, type RowsByTable } from "../utils/sheetValues"
+import { quoteEligible, quotedSchema, sheetVisibility, type SheetVisibility } from "../utils/sheetVisibility"
+import { withSampleCell, withSampleRows, type SampleRow, type SampleValue } from "../utils/workbenchForm"
 
 export interface SheetValues {
   rows: RowsByTable
@@ -57,17 +60,44 @@ const NO_SCHEMA: FormSchema = { tables: [] }
 const NOTHING_LOCKED: ReadonlySet<string> = new Set()
 const TYPE_NOTHING = () => {}
 
+const sameMembers = (a: ReadonlySet<string>, b: ReadonlySet<string>): boolean => a.size === b.size && [...a].every((id) => b.has(id))
+
+/**
+ * The visibility last given while `next` shows and hides the same sheets, sections,
+ * components and columns, else `next`: a change that shows and hides nothing new keeps the
+ * values the same object.
+ */
+function useSteadyVisibility(next: SheetVisibility): SheetVisibility {
+  const [kept, setKept] = useState(next)
+  if (
+    kept === next
+    || (sameMembers(kept.pages, next.pages) && sameMembers(kept.sections, next.sections) && sameMembers(kept.widgets, next.widgets) && sameMembers(kept.hidden, next.hidden))
+  ) {
+    return kept
+  }
+  setKept(next)
+  return next
+}
+
+/** The schema as a quote with `visibility` reads it, made again only when either changes. */
+const useQuoted = (schema: FormSchema | null, visibility: SheetVisibility): FormSchema =>
+  useMemo(() => (schema === null ? NO_SCHEMA : quotedSchema(schema, visibility.hidden)), [schema, visibility])
+
 /**
  * A new quote while building: the sheets as an underwriter's new quote opens them, holding
  * its columns' defaults and nothing priced. Its cells are drawn as a new quote's, not as a
  * read-only quote's, and take no typing: the sheet holds them inert while building.
  */
-export function useNewQuoteValues(): SheetValues {
-  const form = useWorkbenchFormStore((s) => s.form)
-  return useMemo<SheetValues>(() => {
-    const rows = form === null ? NO_ROWS : withPresetRows(form.schema, newQuoteValues(form.schema))
-    const visibility = form === null ? NO_VISIBILITY : sheetVisibility(form, rows)
-    return {
+export function useNewQuoteValues(active = true): SheetValues {
+  const form = useWorkbenchFormStore((s) => (active ? s.form : null))
+  const schema = form?.schema ?? null
+  // A new quote holds the schema's defaults alone.
+  const rows = useMemo(() => (schema === null ? NO_ROWS : withPresetRows(schema, newQuoteValues(schema))), [schema])
+  const shown = useMemo(() => (form === null ? NO_VISIBILITY : sheetVisibility(form, rows)), [form, rows])
+  const visibility = useSteadyVisibility(shown)
+  const quoted = useQuoted(schema, visibility)
+  return useMemo<SheetValues>(
+    () => ({
       rows,
       setCell: TYPE_NOTHING,
       setRows: TYPE_NOTHING,
@@ -75,11 +105,12 @@ export function useNewQuoteValues(): SheetValues {
       basis: "",
       problems: NO_PROBLEMS,
       visibility,
-      quoted: form === null ? NO_SCHEMA : quotedSchema(form.schema, visibility.hidden),
+      quoted,
       readOnly: false,
       locked: NOTHING_LOCKED,
-    }
-  }, [form])
+    }),
+    [rows, visibility, quoted],
+  )
 }
 
 /**
@@ -87,27 +118,36 @@ export function useNewQuoteValues(): SheetValues {
  * whatever its cells hold, and checked against the columns' rules once anything is typed,
  * the marks never stopping its pricing.
  */
-export function useSampleValues(): SheetValues {
-  const form = useWorkbenchFormStore((s) => s.form)
+export function useSampleValues(active = true): SheetValues {
+  const form = useWorkbenchFormStore((s) => (active ? s.form : null))
   const change = useWorkbenchFormStore((s) => s.change)
   const price = useWorkbenchPricingStore((s) => s.price)
-  return useMemo<SheetValues>(() => {
-    const visibility = form === null ? NO_VISIBILITY : sheetVisibility(form, form.sample)
-    const quoted = form === null ? NO_SCHEMA : quotedSchema(form.schema, visibility.hidden)
-    const rows = form === null ? NO_ROWS : withPresetRows(form.schema, form.sample)
-    return {
+  // A price made in another context (the pipeline, its data or source moved) shows stale.
+  const context = usePricingContext()
+  const schema = form?.schema ?? null
+  const sample = form?.sample ?? null
+  const rows = useMemo(() => (schema === null || sample === null ? NO_ROWS : withPresetRows(schema, sample)), [schema, sample])
+  const shown = useMemo(() => (form === null ? NO_VISIBILITY : sheetVisibility(form, form.sample)), [form])
+  const visibility = useSteadyVisibility(shown)
+  const quoted = useQuoted(schema, visibility)
+  const eligible = useMemo(() => form !== null && quoteEligible(form, form.sample), [form])
+  const problems = useMemo(() => (eligible ? quoteProblems(quoted, rows) : NO_PROBLEMS), [eligible, quoted, rows])
+  const basis = useMemo(() => (form === null ? "" : previewBasis(form, context)), [form, context])
+  return useMemo<SheetValues>(
+    () => ({
       rows,
       setCell: (tableId, row, columnId, value) => change((spec) => withSampleCell(spec, tableId, row, columnId, value)),
       setRows: (rowsByTable) => change((spec) => withSampleRows(spec, rowsByTable)),
       price,
-      basis: form === null ? "" : pricingBasis(form),
-      problems: quoteFilled(quoted, rows) ? quoteProblems(quoted, rows) : NO_PROBLEMS,
+      basis,
+      problems,
       visibility,
       quoted,
       readOnly: false,
       locked: NOTHING_LOCKED,
-    }
-  }, [form, change, price])
+    }),
+    [rows, change, price, basis, problems, visibility, quoted],
+  )
 }
 
 /**
@@ -115,39 +155,32 @@ export function useSampleValues(): SheetValues {
  * against the columns' rules once anything beyond its defaults is typed while it may
  * change, and read as the server makes the quote, without the values the sheets hide.
  */
-export function useQuoteValues(): SheetValues {
-  const form = useWorkbenchFormStore((s) => s.form)
+export function useQuoteValues(active = true): SheetValues {
+  const form = useWorkbenchFormStore((s) => (active ? s.form : null))
   const quote = useWorkbenchPreviewStore((s) => s.quote)
   const price = useWorkbenchPreviewStore((s) => s.price)
   const setCell = useWorkbenchPreviewStore((s) => s.setCell)
   const setRows = useWorkbenchPreviewStore((s) => s.setRows)
   const readOnly = useWorkbenchPreviewStore((s) => s.readOnly)
   const locked = useWorkbenchPreviewStore((s) => s.locked)
-  return useMemo<SheetValues>(() => {
-    const visibility = form === null ? NO_VISIBILITY : sheetVisibility(form, quote)
-    const quoted = form === null ? NO_SCHEMA : quotedSchema(form.schema, visibility.hidden)
-    const rows = form === null ? quote : withPresetRows(form.schema, quote)
-    // The details the app sets are not typing, nor are the defaults a new quote starts with.
-    const typed = !readOnly && quoteTyped(quotedSchema(quoted, locked), rows)
-    return {
-      rows,
-      setCell,
-      setRows,
-      price,
-      basis: form === null ? "" : valuesBasis(form.schema, visibility.hidden, quote),
-      problems: typed ? quoteProblems(quoted, rows) : NO_PROBLEMS,
-      visibility,
-      quoted,
-      readOnly,
-      locked,
-    }
-  }, [form, quote, price, setCell, setRows, readOnly, locked])
+  const schema = form?.schema ?? null
+  const rows = useMemo(() => (schema === null ? quote : withPresetRows(schema, quote)), [schema, quote])
+  const shown = useMemo(() => (form === null ? NO_VISIBILITY : sheetVisibility(form, quote)), [form, quote])
+  const visibility = useSteadyVisibility(shown)
+  const quoted = useQuoted(schema, visibility)
+  // As the server counts typing: what the sheets show, the details the app sets and the defaults aside.
+  const typed = useMemo(() => !readOnly && form !== null && quoteEligible(form, quote, locked), [readOnly, form, quote, locked])
+  const problems = useMemo(() => (typed ? quoteProblems(quoted, rows) : NO_PROBLEMS), [typed, quoted, rows])
+  const basis = useMemo(() => (schema === null ? "" : valuesBasis(schema, visibility.hidden, quote)), [schema, visibility, quote])
+  return useMemo<SheetValues>(
+    () => ({ rows, setCell, setRows, price, basis, problems, visibility, quoted, readOnly, locked }),
+    [rows, setCell, setRows, price, basis, problems, visibility, quoted, readOnly, locked],
+  )
 }
 
 /**
- * Which sheets and components show, for what draws outside the sheet (the tabs and the
- * section bars): a new quote's while building; in Preview, the sample's, or the quote's in
- * the underwriter app.
+ * Which sheets and components show, for what draws outside the sheet (the tabs): a new
+ * quote's while building; in Preview, the sample's, or the quote's in the underwriter app.
  */
 export function useSheetVisibility(previewing: boolean): SheetVisibility {
   const form = useWorkbenchFormStore((s) => s.form)

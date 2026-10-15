@@ -632,11 +632,8 @@ html, body, #root {
   animation: none !important;
 }
 
-/* Animations - GPU accelerated (transform + opacity only) */
-@keyframes slide-in {
-  from { opacity: 0; transform: translateX(16px); }
-  to { opacity: 1; transform: translateX(0); }
-}
+/* Animations - GPU accelerated (transform + opacity only). A slide in from the right is
+   the side panel's own (haute-ui/side-panel.css), which a toast shares. */
 @keyframes fade-in {
   from { opacity: 0; transform: scale(0.96); }
   to { opacity: 1; transform: scale(1); }
@@ -645,7 +642,7 @@ html, body, #root {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
 }
-.animate-slide-in { animation: slide-in 0.2s ease-out; }
+.animate-slide-in { animation: side-panel-in 0.2s ease-out; }
 .animate-fade-in { animation: fade-in 0.12s ease-out; }
 .animate-pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
 

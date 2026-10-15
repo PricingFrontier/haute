@@ -1,49 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 
-import type { TuningReport } from "../../../api/types"
-import { makeTrainResult } from "../../../test-utils/factories"
+import { makeTrainResult, makeTuningReport } from "../../../test-utils/factories"
 import { SummaryTab } from "../SummaryTab"
 
 afterEach(cleanup)
-
-function makeTuningReport(overrides: Partial<TuningReport> = {}): TuningReport {
-  const trials = Array.from({ length: 12 }, (_, trialIndex) => ({
-    schema_version: 1 as const,
-    trial_index: trialIndex,
-    label: trialIndex === 0 ? "baseline" as const : "sampled" as const,
-    sampled_params: trialIndex === 0 ? {} : { depth: trialIndex + 4 },
-    resolved_params: { iterations: 500, depth: trialIndex + 4 },
-    fits: [],
-    aggregate_metrics: { gini: 0.4 + trialIndex / 100 },
-    objective: 0.4 + trialIndex / 100,
-    elapsed_seconds: 1,
-  }))
-
-  return {
-    schema_version: 1,
-    plan_sha256: "c".repeat(64),
-    trials_sha256: "d".repeat(64),
-    evaluation_plan_sha256: "a".repeat(64),
-    metric: "gini",
-    direction: "maximize",
-    baseline_objective: 0.4,
-    winner_trial_index: 11,
-    winner_objective: 0.51,
-    improvement: 0.11,
-    best_sampled_params: { depth: 15 },
-    final_params: { iterations: 412, depth: 15 },
-    final_tree_count: 412,
-    trial_count: 12,
-    trial_fit_count: 12,
-    total_fit_count: 13,
-    trials,
-    plan_path: "outputs/model.tuning-plan.json",
-    trials_path: "outputs/model.tuning-trials.json",
-    report_path: "outputs/model.tuning-report.json",
-    ...overrides,
-  }
-}
 
 describe("SummaryTab", () => {
   it("offers no export action or model path: those live in the Export pane", () => {

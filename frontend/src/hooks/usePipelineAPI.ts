@@ -44,7 +44,7 @@ import { executionWarningNodeIds } from "../utils/executionDiagnostics"
 import { instanceOriginal } from "../utils/instanceOriginal"
 import { refreshRereadInput } from "../utils/inputSnapshotSource"
 import { newPreviewRequestId, pollPreviewProgress } from "./previewProgressPoller"
-import { apiErrorMessage } from "../api/errors"
+import { apiErrorMessage, isStaleRevision } from "../api/errors"
 import { useDebouncedCallback } from "./useDebouncedCallback"
 import { constantDrafts, constantsPayload, saveRefusal } from "../utils/globalConstants"
 export { columnFingerprint } from "../utils/columnFingerprint"
@@ -1455,12 +1455,7 @@ export default function usePipelineAPI({
       reportSaveCapture(data)
       return true
     } catch (err: unknown) {
-      if (
-        err instanceof ApiError &&
-        err.status === 409 &&
-        typeof err.detail === "string" &&
-        err.detail.startsWith("stale_document_revision")
-      ) {
+      if (isStaleRevision(err)) {
         if (
           useDocumentStatusStore.getState().sourceFile !== saveSourceFile ||
           sourceRevisionRef.current !== saveSourceRevision ||

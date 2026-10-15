@@ -14,6 +14,11 @@ the app saves quotes to on the server; how underwriters manage their quotes in t
 exports from the app; the test quotes analysts keep and re-price in Preview; and the actions
 that fill the sheets from databases and APIs.
 
+`WB-25` takes on what is left of the [review of 15 October
+2026](workbench-review-2026-10-15.md) of what pull requests #303 to #309 built: the app's
+sign-in, which waits on the Azure work. It names the review's findings it closes
+(`FB-n`), and the review holds their evidence.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -25,6 +30,7 @@ that fill the sheets from databases and APIs.
 | WB-11 | Decision | P2 | An underwriter exports a saved quote from the app in the formats the project needs, naming the release that priced it. |
 | WB-12 | Planned | P3 | A test quote whose response runs past what Preview shows is saved, run and compared in full, as every other test quote is. |
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, sees which quotes are about to lapse, records how a final quote ended, and archives or reassigns many quotes at once. |
+| WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 
 ## Planned improvements
 
@@ -363,3 +369,25 @@ refused by name and the rest changed.
 lists, without outcomes or validity); `src/haute/deploy/_validators.py::response_changes` (a
 comparison by place, not by key); `frontend/src/app/QuotesPage.tsx::QuotesPage` (one quote
 changed at a time).
+
+### WB-25 — The app's sign-in
+**Why:** The app trusts the Easy Auth headers because `release.json` names the host, so a
+container reached without Easy Auth in front signs in whoever names themselves, with edit
+rights when no edit role is set (FB-9, from the
+[review](workbench-review-2026-10-15.md)). The owner takes it up with the Azure work in the
+next pull request. The review's FB-10 is decided as the app works now: the underwriter
+ticks `is_renewal` while quoting (Renew opens the quote with it ticked), and the server
+records the relation, not the column.
+
+**Plan:** The decision first, recorded here before a slice: a startup check that the
+host's sign-in is in front, or an explicit trust setting the operator sets, refusing the
+misconfiguration either way.
+
+**Acceptance:** Set by the decision.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_workbench_app.py::create_app` (the principal read from the
+headers when the release names its host); `frontend/src/app/useOpenQuoteStore.ts::openNew`
+(`asRenewal`, the browser's tick).
+

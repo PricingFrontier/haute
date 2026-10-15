@@ -3,11 +3,22 @@ import { hasModifier, inModalDialog, isFormControl, isTypingTarget, saveCommitti
 import useToastStore from "../stores/useToastStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { activePage } from "../stores/useWorkbenchViewStore"
-import { GRID } from "../utils/sheetGeometry"
-import { duplicateWidget, findWidget, moveWidget, pasteWidget, removeWidget, widgetName } from "../utils/workbenchForm"
+import { GRID, grownRect } from "../utils/sheetGeometry"
+import { duplicateWidget, findWidget, moveWidget, pasteWidget, removeWidget, updateWidget, widgetName } from "../utils/workbenchForm"
+import { WIDGET_KINDS } from "./widgetKinds"
 
 /** Arrow presses this close together nudge as one undo step, as a drag is one. */
 const NUDGE_BURST_MS = 800
+
+/**
+ * The keystroke landed on the sheet, or with nothing focused, as after a press on a
+ * component: from a panel, the toolbar or a tab, Delete, the arrows and the shortcuts on
+ * the selection are the focused element's, never the component's.
+ */
+function onSheet(target: EventTarget | null, viewport: HTMLElement | null): boolean {
+  if (!(target instanceof Node) || target === document || target === document.body || target === document.documentElement) return true
+  return viewport !== null && viewport.contains(target)
+}
 
 /**
  * The workbench view's keyboard shortcuts, registered while it shows (specs/workbench):
@@ -16,11 +27,13 @@ const NUDGE_BURST_MS = 800
  * and redo an edit outside a text field. While the sheets show, building or in Preview,
  * Ctrl+1 fits the sheet to its viewport; while building, Escape closes the sheet's own
  * panel or the section's and, with a component selected, Escape deselects it, Delete or
- * Backspace removes it, Ctrl+D duplicates it, Ctrl+C copies it and the arrow keys nudge it
- * by a grid step (Shift: a pixel), kept inside its section,
- * a burst of nudges being one undo step; selected or not, Ctrl+V pastes the component
- * copied onto the sheet showing; none of that from a control, whose own keys pick
- * an option. A section header's own keys are its own. Keys in a modal dialog are the
+ * Backspace removes it, Ctrl+D duplicates it, Ctrl+C copies it, the arrow keys nudge it
+ * by a grid step (Shift: a pixel), kept inside its section, and with Ctrl resize it from
+ * its bottom-right corner by as much, never under its least size, its section and sheet
+ * growing to hold it, a burst of nudges or resizes being one undo step, those from the sheet or with nothing
+ * focused, never from a panel, the toolbar or a tab; selected or not, Ctrl+V pastes the
+ * component copied onto the sheet showing; none of that from a control, whose own keys
+ * pick an option. A section header's own keys are its own. Keys in a modal dialog are the
  * dialog's, as they are for the pipeline editor's shortcuts.
  */
 export default function useWorkbenchShortcuts(onSave: () => void): void {
@@ -86,6 +99,8 @@ export default function useWorkbenchShortcuts(onSave: () => void): void {
       const selected = found.widget
       if (e.key === "Escape") {
         view.select(null)
+      } else if (!onSheet(e.target, view.viewport)) {
+        return
       } else if (e.key === "Delete" || e.key === "Backspace") {
         forms.change((spec) => removeWidget(spec, selected.id))
         view.select(null)
@@ -107,10 +122,13 @@ export default function useWorkbenchShortcuts(onSave: () => void): void {
         const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0
         const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0
         if (dx === 0 && dy === 0) return
-        const nudged = moveWidget(forms.form, selected.id, { x: selected.x + dx, y: selected.y + dy })
+        // With Ctrl (Cmd), a resize from the bottom-right corner, as its handle there makes.
+        const nudged = mod
+          ? updateWidget(forms.form, selected.id, grownRect(selected, dx, dy, WIDGET_KINDS[selected.type].min))
+          : moveWidget(forms.form, selected.id, { x: selected.x + dx, y: selected.y + dy })
         const moved = findWidget(nudged, selected.id)?.widget
-        // Held at its section's edge or the sheet's left: nothing moves, so nothing is recorded.
-        if (moved !== undefined && moved.x === selected.x && moved.y === selected.y) {
+        // Held at its section's edge, the sheet's left or its least size: nothing changes, so nothing is recorded.
+        if (moved !== undefined && moved.x === selected.x && moved.y === selected.y && moved.w === selected.w && moved.h === selected.h) {
           e.preventDefault()
           return
         }

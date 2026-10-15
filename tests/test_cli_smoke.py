@@ -586,30 +586,43 @@ class TestSmokeTestQuoteFile:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from haute._quote_store import migrate_store, open_store, store_url
-        from haute._workbench_form import FormSpec
+        from haute._test_quotes import quote_request
+        from haute._workbench_form import FormSpec, write_form
 
         _setup_smoke_project(tmp_path, monkeypatch)
+        with (tmp_path / "haute.toml").open("a", encoding="utf-8") as toml:
+            toml.write("[workbench]\nenabled = true\n")
         quotes_dir = tmp_path / "tests" / "quotes"
         for stale in quotes_dir.glob("*.json"):
             stale.unlink()
         url = store_url(quotes_dir / "test_quotes.sqlite")
         migrate_store(url)
         blank = {"id": "s", "title": "s", "height": 120, "widgets": []}
+        policy = {
+            "id": "t_policy",
+            "name": "policy",
+            "rows": "one",
+            "columns": [{"id": "c_limit", "name": "limit", "type": "int"}],
+        }
         form = FormSpec.model_validate(
             {
                 "name": "m",
-                "schema": {"tables": []},
+                "schema": {"tables": [policy]},
                 "pages": [{"id": "p", "title": "S", "width": 1280, "sections": [blank]}],
             }
         )
+        # The project's form, which the quote is rebuilt against before it is sent.
+        (tmp_path / "forms").mkdir()
+        write_form(tmp_path / "forms" / "form.json", form)
+        values = {"t_policy": [{"c_limit": "5"}]}
         with open_store(url) as store:
             store.create(
                 name="Northern fleet",
                 owner="ana",
                 saved_by="ana",
                 form=form,
-                inputs={},
-                request={"policy": {"limit": 5}},
+                inputs=values,
+                request=quote_request(form, values),
                 response={"pricing": {"premium": 50.0}},
                 release=None,
             )

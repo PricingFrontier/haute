@@ -21,7 +21,7 @@
 | `src/haute/_graph_shape.py` | Topology-only invariants independent of any single node's config (`validate_graph_shape_contracts`, `validate_pipeline_graph_shape_contracts`), including submodel child graphs. |
 | `src/haute/_scaffold.py` | `haute init` template strings: `haute.toml`, `.env.example`, CI YAML for 3 providers × 7 deploy targets, starter pipeline/tests/utilities, pre-commit hook. |
 | `src/haute/_project.py` | Project-root discovery (`get_project_root`, `is_haute_project`) and pipeline-file resolution (`resolve_pipeline_file`, 4-tier fallback). |
-| `src/haute/_project_layout.py` | The project's folder layout: `PIPELINE_FILES_FOLDER` and `PIPELINE_FILES_SUBFOLDERS` (the pipeline folder's `files/` with `data/`, `models/` and `params/`), `LOCAL_FOLDERS` (the root's unversioned `data/` and `outputs/`), `VERSIONED_FILE_LIMIT_BYTES`, `pipeline_folder` (the configured pipeline folder when it lies below the project root), `pipeline_files_folder` and `default_model_folder`. |
+| `src/haute/_project_layout.py` | The project's folder layout: `PIPELINE_FILES_FOLDER` and `PIPELINE_FILES_SUBFOLDERS` (the pipeline folder's `files/` with `data/`, `models/` and `params/`), `LOCAL_FOLDERS` (the root's unversioned `data/` and `outputs/`), `VERSIONED_FILE_LIMIT_BYTES`, `versioned_name` (whether a path names a file the project versions through Haute), `pipeline_folder` (the configured pipeline folder when it lies below the project root), `pipeline_files_folder` and `default_model_folder`. |
 | `haute.toml` (repo root) | Concrete instance of the schema emitted by `src/haute/_scaffold.py::haute_toml`; `[project].pipeline` is read back by `src/haute/_project.py::_toml_configured_pipeline`, the one reader behind pipeline binding, `src/haute/_builders.py::_configured_pipeline_dir` and `src/haute/routes/_helpers.py::pipeline_dir`. |
 
 ## Key types and data structures
@@ -328,6 +328,9 @@ pipeline sits at the root, because then there is no folder to version as a whole
 without a pipeline folder: the folder a bare model or optimiser-result filename lands in.
 `VERSIONED_FILE_LIMIT_BYTES` is 100 MiB (104,857,600 bytes); Commit refuses to version a
 larger file from the pipeline folder ([git-integration](../git-integration/low-level.md)).
+`versioned_name(relative)` says whether a `/`-separated path names a file the project
+versions through Haute: no part a dot-name or `__pycache__`, and not a `*.pyc` file. The
+Files panels show and take only such names, and a milestone sweeps in only such new files.
 `LOCAL_FOLDERS` names the root's `data` and `outputs`, which stay out of version history.
 
 **Scaffold generation (`src/haute/_scaffold.py`, driven by `src/haute/cli/_init_cmd.py::handle_init`).** Every
@@ -356,7 +359,9 @@ workbench's by `haute._workbench_config`, so deployment parsing and each reader 
 list out of `TARGETS` through provider-specific formatters (`_github_secrets_env`,
 `_gitlab_secrets_env`, `_azure_devops_secrets_env`) so a target's credential list is defined
 once and rendered three ways. The release inputs that start a deploy are listed once
-too (`_RELEASE_INPUT_DIRS`, `_RELEASE_INPUT_FILES`, and `DEFAULT_FORM_PATH`'s directory
+too (`_RELEASE_INPUT_DIRS`, the pipeline folder of `PIPELINE_FILE`, the file the
+scaffolded `haute.toml` names, and the test quotes' folder, `_RELEASE_INPUT_FILES`, and
+`DEFAULT_FORM_PATH`'s directory
 through `_release_input_dirs` when `workbench` is set) and rendered by
 `_github_trigger_paths` and `_azure_devops_trigger_paths`; `github_deploy_yml` and
 `azure_devops_yml` take `workbench`, which `handle_init` passes from `--workbench`, as do
@@ -773,7 +778,9 @@ API and real JSON round-trips rather than mocks:
   matching, and round-trip drift (`TestRoundTripDrift`).
 - **`test_scaffold.py`** — every CI provider × deploy target combination, complete
   YAML/TOML structural validation (including release conditions and exact secret
-  placement), blank starter pipeline/test content, root-`main.py` removal, and absence of
+  placement, the test-quote report's GitHub comment only on a same-repository pull
+  request and GitLab's whole-history clone, the deploy triggers naming only the pipeline
+  folder and the test quotes' folder among folders), blank starter pipeline/test content, root-`main.py` removal, and absence of
   generated prompts and node sidecars.
 - **`test_docs_accuracy.py`** — executable deployment-documentation parity for the
   real scaffold tree and starter node count, registered CLI commands, public Python

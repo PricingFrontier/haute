@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { fetchAppForm, fetchAppRelease } from "../api/app"
 import { apiErrorMessage } from "../api/errors"
+import QuestionDialog from "../components/QuestionDialog"
 import ToastContainer from "../components/Toast"
 import { ZoomInOut } from "../haute-ui"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
@@ -13,7 +14,7 @@ import { openRelease } from "./openRelease"
 import QuotesPage from "./QuotesPage"
 import QuoteView from "./QuoteView"
 import { followLink, useAppRoute } from "./route"
-import { BUTTON, Notice, QuestionDialog } from "./ui"
+import { BUTTON, Notice } from "./ui"
 import useAppStore from "./useAppStore"
 
 type Loaded = { quotes: boolean } | { error: string }

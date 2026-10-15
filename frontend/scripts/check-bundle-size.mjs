@@ -149,7 +149,12 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // A column's allowed values read from a params file, and a many-row table given a row for
 // each of them (the schema editor's Allowed and Rows and the rows read alike on the sheets,
 // in the lazy workbench chunks) bring it to 1,676.3 KiB; 1,678 KiB restores about 1.7 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1678
+// The Workbench review's fixes (the in-page question dialog every confirm now goes
+// through, a write's capture retried for what it skipped, one pricing context, the form
+// following its file, adding and resizing components by keyboard, Tables of outputs
+// alone, and the previews of several tables in one run) bring it to 1,681.0 KiB; 1,683 KiB
+// restores about 2 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1683
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
@@ -278,7 +283,13 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // alignment toggles), which land in the eager vendor-ui chunk as every lucide icon does;
 // the Heading itself stays in the lazy workbench chunks. The merged initial bundle is
 // 293.0 KiB; 295 KiB restores ~2 KiB of headroom.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 295
+// The Workbench review's fixes add ~2.1 KiB of deliberate eager code: the question store
+// that replaces every window.confirm, the git store's capture of what a write skipped
+// (`uncaptured`, `POST /api/git/capture`), the WebSocket's count of form-file changes
+// (`formChanges`) and the preview parser's `port_previews`. Nothing lazy became eager
+// (the modulepreload check below). The merged initial bundle is 296.3 KiB; 298 KiB
+// restores ~1.7 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 298
 
 // Chunks that should only be fetched when their preview or editor is needed.
 // If one appears as a startup modulepreload, the app has likely

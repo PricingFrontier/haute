@@ -57,7 +57,7 @@ describe("ChartBody's runtime", () => {
     const chart = widgetsOf(currentForm())[2]
     render(
       <OnSheet>
-        <WidgetBody widget={chart} fields={shownFields(currentForm(), chart)} />
+        <WidgetBody widget={chart} fields={shownFields(currentForm().schema, chart)} />
       </OnSheet>,
     )
 

@@ -2,6 +2,7 @@ import { AlertTriangle, Code } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 
 import useListReorder from "../../../hooks/useListReorder"
+import { confirmed } from "../../../stores/useQuestionStore"
 import { NODE_GROUP_COLORS } from "../../../theme/colors"
 import type { StepStart } from "../../../utils/polarsStepInputs"
 import { InputSourcesBar, INPUT_STYLE } from "../_shared"
@@ -24,8 +25,12 @@ function newStepId(): string {
   return `s${Date.now().toString(36)}${stepCounter.toString(36)}`
 }
 
-const SWITCH_CONFIRMATION =
-  "Switch this node to code? The steps are removed and the generated code becomes editable. This cannot be undone."
+const SWITCH_QUESTION = {
+  title: "Switch this node to code?",
+  text: "The steps are removed and the generated code becomes editable. This cannot be undone.",
+  confirm: "Switch to code",
+  danger: true,
+}
 
 /** Join and concat need an input name to reference; withheld while none is eligible. */
 const INPUT_REFERENCING_KINDS: ReadonlySet<Exclude<StepKind, "source">> = new Set(["join", "concat"])
@@ -273,12 +278,16 @@ export default function PolarsStepsEditor({
   const switchEnabled = switchAllowed && onReplaceConfig !== undefined
   const switchToCode = () => {
     if (!switchAllowed || !onReplaceConfig) return
-    if (!window.confirm(SWITCH_CONFIRMATION)) return
+    const replace = onReplaceConfig
+    // The code as it is when asked, which the answer switches to.
+    const code = steps.length === 0 ? "" : rendered.code
     const rest: Record<string, unknown> = {}
     for (const [key, value] of Object.entries(config)) {
       if (key !== "steps" && key !== "_steps_error") rest[key] = value
     }
-    onReplaceConfig({ ...rest, code: steps.length === 0 ? "" : rendered.code })
+    void (async () => {
+      if (await confirmed(SWITCH_QUESTION)) replace({ ...rest, code })
+    })()
   }
 
   const currentStepLines = rendered.status === "ok" && rendered.revisionRendered === rendered.revision ? rendered.stepLines : []

@@ -1,8 +1,8 @@
 import { AlertTriangle, Plus, SlidersHorizontal } from "lucide-react"
-import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
-import { CommittedTextField } from "../components/form"
+import { useMemo, useState, type KeyboardEvent } from "react"
+import { CommittedTextField, INPUT_STYLE } from "../components/form"
 import useListReorder from "../hooks/useListReorder"
-import { INPUT_STYLE } from "../panels/editors/_shared"
+import useRefocusAfterMove, { altArrowMove } from "../hooks/useRefocusAfterMove"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { activePage, shownPage } from "../stores/useWorkbenchViewStore"
 import { addPage, createPage, movePage, pageProblems, renamePage, showWhenText } from "../utils/workbenchForm"
@@ -14,15 +14,19 @@ function moveSheet(from: number, to: number): void {
   const { form, change } = useWorkbenchFormStore.getState()
   const view = useWorkbenchViewStore.getState()
   if (form === null) throw new Error("The sheet tabs need the form loaded")
-  // While no sheet has been chosen the first one shows, and the move may put another first.
+  // While no sheet has been chosen the first one shows, and the move may put another first:
+  // the sheet is pinned, the selection left as it is.
   const showing = activePage(form, view.pageId)
-  if (view.pageId !== showing.id) view.showPage(showing.id)
+  if (view.pageId !== showing.id) useWorkbenchViewStore.setState({ pageId: showing.id })
   change((spec) => movePage(spec, from, to))
 }
 
 /**
  * The sheets' tabs along the top (specs/workbench): one per sheet, the showing one
- * marked; double-click a tab to rename it; drag a tab onto another to move its sheet
+ * marked and the one Tab stops at, Left and Right going to the tab before or after, round
+ * the ends, and Home and End to the first and the last, each showing its sheet;
+ * double-click a tab, or press F2 on it, to rename it, the tab taking the focus back once
+ * Enter or Escape ends the renaming; drag a tab onto another to move its sheet
  * there, or press Alt+Left or Alt+Right on it; a plus adds a sheet; the showing sheet's
  * settings mark opens its own panel, which deletes it, a tab having no delete of its own.
  * A sheet with conditions carries an
@@ -41,14 +45,7 @@ export default function PageTabs({ readOnly = false }: { readOnly?: boolean }) {
   const dragFor = useListReorder(moveSheet)
   // A tab moved by the keyboard is put back in the focus, as its button may be moved in
   // the page to reorder the tabs, which loses the focus.
-  const tabs = useRef(new Map<string, HTMLButtonElement>())
-  const refocus = useRef<string | null>(null)
-  useLayoutEffect(() => {
-    const moved = refocus.current
-    if (moved === null) return
-    refocus.current = null
-    tabs.current.get(moved)?.focus()
-  })
+  const tabs = useRefocusAfterMove<HTMLButtonElement>()
   const problems = useMemo(() => {
     const byPage = new Map<string, string>()
     if (form !== null) for (const problem of pageProblems(form)) if (!byPage.has(problem.pageId)) byPage.set(problem.pageId, problem.message)
@@ -64,18 +61,28 @@ export default function PageTabs({ readOnly = false }: { readOnly?: boolean }) {
     change((spec) => addPage(spec, sheet))
     showPage(sheet.id)
   }
-  // F2 renames the tab's sheet; Alt+Left and Alt+Right move it a place, never past an end.
+  // Left and Right go to the tab before or after, round the ends, and Home and End to the
+  // first and the last, showing its sheet. While building, F2 renames the tab's sheet, and
+  // Alt+Left and Alt+Right move it a place, never past an end.
   const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, sheetId: string, index: number) => {
-    if (event.key === "F2") {
+    if (event.altKey) {
+      const to = readOnly ? null : altArrowMove(event, "horizontal", index, form.pages.length)
+      if (to === null) return
+      tabs.moved(sheetId)
+      moveSheet(index, to)
+      return
+    }
+    if (event.key === "F2" && !readOnly) {
       setRenaming(sheetId)
       return
     }
-    if (!event.altKey || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) return
+    const place =
+      event.key === "ArrowLeft" ? index - 1 : event.key === "ArrowRight" ? index + 1 : event.key === "Home" ? 0 : event.key === "End" ? sheets.length - 1 : null
+    if (place === null) return
     event.preventDefault()
-    const to = index + (event.key === "ArrowLeft" ? -1 : 1)
-    if (to < 0 || to >= form.pages.length) return
-    refocus.current = sheetId
-    moveSheet(index, to)
+    const next = sheets[(place + sheets.length) % sheets.length]
+    tabs.element(next.id)?.focus()
+    showPage(next.id)
   }
 
   return (
@@ -95,7 +102,10 @@ export default function PageTabs({ readOnly = false }: { readOnly?: boolean }) {
               }}
               onBlur={() => setRenaming(null)}
               onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === "Escape") setRenaming(null)
+                if (event.key !== "Enter" && event.key !== "Escape") return
+                // The tab takes the focus back as the field goes.
+                tabs.moved(sheet.id)
+                setRenaming(null)
               }}
               className="focus-ring w-32 rounded-md px-2 py-1 text-xs"
               style={INPUT_STYLE}
@@ -120,18 +130,15 @@ export default function PageTabs({ readOnly = false }: { readOnly?: boolean }) {
             style={{ opacity: drag?.dragging ? 0.5 : undefined, boxShadow: drag?.target ? "inset 2px 0 0 0 var(--accent)" : undefined }}
           >
             <button
-              ref={(element) => {
-                if (element === null) tabs.current.delete(sheet.id)
-                else tabs.current.set(sheet.id, element)
-              }}
+              ref={tabs.register(sheet.id)}
               type="button"
               role="tab"
               aria-selected={active}
+              tabIndex={active ? 0 : -1}
               aria-keyshortcuts={readOnly ? undefined : "F2 Alt+ArrowLeft Alt+ArrowRight"}
               onClick={() => showPage(sheet.id)}
               onDoubleClick={readOnly ? undefined : () => setRenaming(sheet.id)}
-              onKeyDown={readOnly ? undefined : (event) => onTabKeyDown(event, sheet.id, index)}
-              title={readOnly ? undefined : "Double-click, or F2, to rename; drag, or Alt+Left and Alt+Right, to move"}
+              onKeyDown={(event) => onTabKeyDown(event, sheet.id, index)}
               data-hidden={hidden ? "true" : undefined}
               className="-mb-px flex items-center gap-1 border-b-2 px-3 py-2 text-xs"
               style={{
@@ -155,7 +162,7 @@ export default function PageTabs({ readOnly = false }: { readOnly?: boolean }) {
                 type="button"
                 onClick={selectSheet}
                 aria-label={`Settings of sheet ${sheet.title}`}
-                title="Sheet settings: its title, when it shows, its width, and deleting it"
+                title="Sheet settings"
                 className="focus-ring hover-bg -ml-1 rounded p-0.5"
                 style={{ color: "var(--text-muted)" }}
               >

@@ -10,16 +10,17 @@
  * form.
  */
 import { create } from "zustand"
-import { ApiError } from "../api/client"
-import { apiErrorMessage } from "../api/errors"
-import type { FormSpec } from "../api/types"
+import { apiErrorMessage, isStaleRevision } from "../api/errors"
+import type { FormSpec, WorkbenchFormSaveResponse } from "../api/types"
 import { fetchWorkbenchForm, saveWorkbenchForm } from "../api/workbench"
 import { canonicalJson } from "../utils/canonicalJson"
 import { reportSaveCapture } from "./saveCapture"
 import useDocumentStatusStore from "./useDocumentStatusStore"
+import useQuestionStore from "./useQuestionStore"
 import { appendHistoryEntry } from "./useGraphStore"
 import useToastStore from "./useToastStore"
 import useWorkbenchStore from "./useWorkbenchStore"
+import { serial } from "../utils/serial"
 
 export type FormLoadStatus = "idle" | "loading" | "ready" | "failed"
 
@@ -47,16 +48,21 @@ interface WorkbenchFormState {
   stale: boolean
   saving: boolean
   /**
-   * The last save was written but not captured on the ledger, for want of a git identity
-   * or because the capture failed: the next flush saves the form again, unchanged, so a
-   * capture can be made (a new file is otherwise never tracked, and a milestone's sweep
-   * takes tracked files alone).
+   * How many times the form was read anew: by `load`, `reload`, or a sync adopting a
+   * changed file. The view fits the sheets after a read, never after a save or an undo.
    */
-  uncaptured: boolean
+  reads: number
   /** Read the form, unless it has been. */
   load: () => Promise<void>
   /** Read the form again, dropping edits and history. */
   reload: () => Promise<void>
+  /**
+   * Put in place a form read elsewhere, at `revision`, as the underwriter app puts the
+   * release's sheets or a quote's older ones: as saved, without history, a gesture or a
+   * save's lost answer from the form before. It is no read of the file (`reads`), so the
+   * app's view keeps its zoom as a quote on other sheets opens.
+   */
+  install: (form: FormSpec, revision: string | null) => void
   /**
    * Read the file again after the pipeline's document was adopted anew. A file at the same
    * revision changes nothing; a changed one is adopted, history dropped, while the form has
@@ -70,7 +76,10 @@ interface WorkbenchFormState {
    * the whole burst is then one undo step.
    */
   pushSnapshot: () => void
-  /** Replace the form without recording history, for each step of a gesture. */
+  /**
+   * Replace the form without recording history, for each step of a gesture or a burst;
+   * while a gesture is under way, whether the form is unsaved is worked out as it ends.
+   */
   setFormRaw: (form: FormSpec) => void
   /**
    * Start a gesture on `before`, the form as pressed, its steps through `setFormRaw`;
@@ -83,7 +92,7 @@ interface WorkbenchFormState {
   /**
    * Finish the gesture under way: the form as it found it recorded for undo, so the whole
    * gesture is one undo step, and nothing, redo kept, while the form is as it found it
-   * (held at a limit, or back where it began).
+   * (held at a limit, or back where it began); and whether the form is unsaved worked out.
    */
   endGesture: () => void
   undo: () => void
@@ -94,49 +103,75 @@ interface WorkbenchFormState {
    * changed on disk since it was read is never overwritten.
    */
   save: () => Promise<boolean>
-  /**
-   * The git flows' save, before a milestone, a move or an identity retry: `save` when the
-   * form holds unsaved edits or a save the ledger did not capture, else true without a
-   * request.
-   */
+  /** The project save's form step: `save` when the form holds unsaved edits, else true
+   *  without a request. */
   flush: () => Promise<boolean>
 }
 
 /** The form as compared for unsaved edits: the server writes its keys in its own order. */
 const serialise = (form: FormSpec): string => canonicalJson(form)
 
-const isStaleRevision = (error: unknown): boolean =>
-  error instanceof ApiError
-  && error.status === 409
-  && typeof error.detail === "string"
-  && error.detail.startsWith("stale_document_revision")
-
 /** The gesture under way: the form as it found it, and what stops it following the pointer. */
 let gesture: { before: FormSpec; stop: () => void } | null = null
 
 /** Saves and syncs take turns, each acting on the form as it is when its turn comes. */
-let turns: Promise<unknown> = Promise.resolve()
-
-const takeTurn = <T>(act: () => Promise<T>): Promise<T> => {
-  const turn = turns.then(act)
-  turns = turn.catch(() => undefined)
-  return turn
-}
+const takeTurn = serial()
 
 const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
+  /**
+   * Whether the form holds unsaved edits now: worked out afresh while a gesture is under
+   * way, whose steps leave `dirty` as it was until it ends.
+   */
+  const unsaved = (): boolean => {
+    const { form, savedForm, dirty } = get()
+    return gesture === null || form === null ? dirty : serialise(form) !== savedForm
+  }
+
   const finishGesture = (): void => {
     const active = gesture
     if (active === null) return
     gesture = null
     active.stop()
-    const { form, undoStack } = get()
-    if (form === null || serialise(form) === serialise(active.before)) return
-    set({ undoStack: appendHistoryEntry(undoStack, active.before), redoStack: [] })
+    const { form, undoStack, savedForm } = get()
+    if (form === null) return
+    // Worked out once here, not at each of the gesture's steps.
+    const now = serialise(form)
+    const dirty = now !== savedForm
+    if (now === serialise(active.before)) set({ dirty })
+    else set({ undoStack: appendHistoryEntry(undoStack, active.before), redoStack: [], dirty })
   }
   // A form read anew drops the history a gesture under way would join, and the gesture.
   const dropGesture = (): void => {
     gesture?.stop()
     gesture = null
+  }
+
+  /**
+   * The form a save sent whose answer never came: it may have landed. A later save refused
+   * as stale reads the file, and when the file holds exactly this, takes its revision as
+   * the base and saves again, so the typing since is not lost to a reload.
+   */
+  let unanswered: string | null = null
+
+  /**
+   * A form read anew, as the store holds it: as saved, without history, unless reading the
+   * file grew a section or a sheet to open it (`repairs`), which a warning says: the form
+   * as read is then unsaved, and the next Save writes it.
+   */
+  const readAnew = (form: FormSpec, revision: string | null, repairs: readonly string[]) => {
+    if (repairs.length > 0) {
+      const path = useWorkbenchStore.getState().formPath ?? "forms/form.json"
+      useToastStore.getState().addToast("warning", `${path} opened with its layout fixed, unsaved: ${repairs.join(" ")}`)
+    }
+    return {
+      form,
+      revision,
+      savedForm: repairs.length > 0 ? "" : serialise(form),
+      dirty: repairs.length > 0,
+      undoStack: [],
+      redoStack: [],
+      stale: false,
+    }
   }
 
   // A read takes a turn like a save or a sync: a sync queued behind it, as a document
@@ -146,18 +181,10 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
     set({ status: "loading", loadError: null })
     return takeTurn(async () => {
       try {
-        const { form, revision } = await fetchWorkbenchForm()
+        const { form, revision, repairs } = await fetchWorkbenchForm()
         dropGesture()
-        set({
-          form,
-          revision,
-          status: "ready",
-          savedForm: serialise(form),
-          dirty: false,
-          undoStack: [],
-          redoStack: [],
-          stale: false,
-        })
+        unanswered = null
+        set((state) => ({ ...readAnew(form, revision, repairs), status: "ready", reads: state.reads + 1 }))
       } catch (error: unknown) {
         set({ status: "failed", loadError: apiErrorMessage(error) })
       }
@@ -175,33 +202,30 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
     redoStack: [],
     stale: false,
     saving: false,
-    uncaptured: false,
+    reads: 0,
     load: async () => {
       if (get().status === "idle") await read()
     },
     reload: read,
+    install: (form, revision) => {
+      dropGesture()
+      unanswered = null
+      set({ form, revision, status: "ready", loadError: null, savedForm: serialise(form), dirty: false, undoStack: [], redoStack: [], stale: false })
+    },
     sync: () =>
       takeTurn(async () => {
         if (get().status !== "ready") return
         const path = useWorkbenchStore.getState().formPath ?? "forms/form.json"
         try {
-          const { form, revision } = await fetchWorkbenchForm()
+          const { form, revision, repairs } = await fetchWorkbenchForm()
           if (revision === get().revision) return
-          if (get().dirty) {
+          if (unsaved()) {
             // The banner says the file changed on disk, and its Reload reads it.
             set({ stale: true })
             return
           }
           dropGesture()
-          set({
-            form,
-            revision,
-            savedForm: serialise(form),
-            dirty: false,
-            undoStack: [],
-            redoStack: [],
-            stale: false,
-          })
+          set((state) => ({ ...readAnew(form, revision, repairs), reads: state.reads + 1 }))
         } catch (error: unknown) {
           useToastStore.getState().addToast("error", `Could not read ${path} again: ${apiErrorMessage(error)}`)
         }
@@ -226,7 +250,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
       set({ undoStack: appendHistoryEntry(undoStack, form), redoStack: [] })
     },
     setFormRaw: (form) => {
-      set({ form, dirty: serialise(form) !== get().savedForm })
+      set(gesture === null ? { form, dirty: serialise(form) !== get().savedForm } : { form })
     },
     beginGesture: (before, stop) => {
       finishGesture()
@@ -260,12 +284,29 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
     save: () =>
       takeTurn(async () => {
         const { form, revision, status } = get()
-        if (form === null || status !== "ready") return false
         const { addToast } = useToastStore.getState()
         const path = useWorkbenchStore.getState().formPath ?? "forms/form.json"
+        if (form === null) return false
+        // A reload asked for after this save drops the edits it would have saved.
+        if (status !== "ready") {
+          addToast("error", `Not saved: ${path} is being read again.`)
+          return false
+        }
         set({ saving: true })
         try {
-          const saved = await saveWorkbenchForm(form, revision)
+          let saved: WorkbenchFormSaveResponse
+          try {
+            saved = await saveWorkbenchForm(form, revision)
+          } catch (error: unknown) {
+            if (!isStaleRevision(error) || unanswered === null) throw error
+            // The save whose answer was lost may be what changed the file: when the file
+            // holds exactly what it sent, its revision is this save's base.
+            const file = await fetchWorkbenchForm()
+            if (serialise(file.form) !== unanswered) throw error
+            set({ revision: file.revision, savedForm: unanswered })
+            saved = await saveWorkbenchForm(form, file.revision)
+          }
+          unanswered = null
           const savedForm = serialise(saved.form)
           // The form may have been edited while the save ran: those edits stay unsaved.
           set({
@@ -273,8 +314,6 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
             savedForm,
             dirty: serialise(get().form ?? saved.form) !== savedForm,
             stale: false,
-            // Every warning on a form save is the capture's: there is nothing else to warn of.
-            uncaptured: saved.identity_required || (saved.git_sha === null && saved.warnings.length > 0),
           })
           addToast("success", `Saved → ${path}`)
           reportSaveCapture(saved)
@@ -289,6 +328,8 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
             set({ stale: true })
             addToast("error", `Save rejected: ${path} changed on disk. Reload the workbench first.`)
           } else {
+            // Its answer, not necessarily the save, was lost.
+            unanswered = serialise(form)
             addToast("error", `Could not save ${path}: ${apiErrorMessage(error)}`)
           }
           return false
@@ -296,10 +337,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
           set({ saving: false })
         }
       }),
-    flush: () => {
-      const { status, dirty, uncaptured } = get()
-      return status === "ready" && (dirty || uncaptured) ? get().save() : Promise.resolve(true)
-    },
+    flush: () => (get().status === "ready" && unsaved() ? get().save() : Promise.resolve(true)),
   }
 })
 
@@ -307,10 +345,17 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
 // too: they read the mirror on the eager workbench store, since this store is a lazy chunk.
 useWorkbenchFormStore.subscribe((state, previous) => {
   if (state.dirty !== previous.dirty) useWorkbenchStore.setState({ formDirty: state.dirty })
+  // A question asked of the form before it was read anew is nobody's: what it would delete
+  // may be gone, or another thing under the same id.
+  if (state.reads !== previous.reads) useQuestionStore.getState().answer(null)
 })
 
-// The form follows the pipeline's document: each adoption of one (`executionGeneration`),
-// as a branch switched by hand or a change on disk brings, reads the file again.
+// The form follows its file: each change the server sees on disk (`formChanges`), and each
+// adoption of the pipeline's document (`executionGeneration`), as a branch switch brings,
+// reads the file again.
+useWorkbenchStore.subscribe((state, previous) => {
+  if (state.formChanges !== previous.formChanges) void useWorkbenchFormStore.getState().sync()
+})
 useDocumentStatusStore.subscribe((state, previous) => {
   if (state.executionGeneration !== previous.executionGeneration) void useWorkbenchFormStore.getState().sync()
 })

@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, TypeVar
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
+from haute._artifact_paths import PATH_PROBLEMS, ordinary_path_problem
 from haute._git_lock import repository_mutation
 from haute._logging import get_logger
 from haute._workbench_config import WorkbenchConfig, read_workbench_config
@@ -41,7 +42,7 @@ from haute._workbench_form import (
 from haute._workbench_params import read_param_file
 from haute._workbench_tables import WorkbenchTablesError, workbench_tables
 from haute.routes._contract_errors import contract_error_http_exception
-from haute.routes._helpers import save_lock
+from haute.routes._helpers import project_write
 from haute.routes._save_pipeline import StaleDocumentRevisionError, capture_save_in_ledger
 from haute.schemas import (
     WorkbenchFormResponse,
@@ -112,7 +113,16 @@ def _saved_tables_response(config: WorkbenchConfig) -> WorkbenchTablesResponse:
 def _save_form(
     config: WorkbenchConfig, body: WorkbenchFormSaveRequest
 ) -> WorkbenchFormSaveResponse:
-    """Write the form unless the file changed since the view read it, and capture the write."""
+    """Write the form unless the file changed since the view read it, or its path is no
+    ordinary file of the project's (a link or junction on the way), and capture the write:
+    one `project_write`."""
+    _, problem = ordinary_path_problem(config.project_root, config.form)
+    if problem is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{config.form} {PATH_PROBLEMS[problem]}: [workbench].form must name a "
+            "file of the project's own.",
+        )
     current = form_file_revision(config)
     if current != body.base_revision:
         raise StaleDocumentRevisionError(
@@ -123,18 +133,14 @@ def _save_form(
         )
     form = with_quote_details(body.form)
     revision = write_form(config.form_path, form)
-    # The written file is one save on the ledger, as the pipeline's written files are, so a
-    # milestone's sweep takes it from then on: a file this save created included. The path
-    # resolves inside the project (the config checked it), which is where the ledger is.
+    # The written file is one save on the ledger, as the pipeline's written files are,
+    # so a milestone's sweep takes it from then on: a file this save created included.
+    # The path is an ordinary one inside the project (checked above), where the ledger is.
     warnings: list[str] = []
     form_path = config.form_path.resolve().relative_to(config.project_root.resolve()).as_posix()
-    git_sha, identity_required = capture_save_in_ledger(config.project_root, [form_path], warnings)
+    captured = capture_save_in_ledger(config.project_root, [form_path], warnings)
     return WorkbenchFormSaveResponse(
-        form=form,
-        revision=revision,
-        warnings=warnings,
-        git_sha=git_sha,
-        identity_required=identity_required,
+        form=form, revision=revision, warnings=warnings, **captured._asdict()
     )
 
 
@@ -166,7 +172,9 @@ async def get_workbench_form() -> WorkbenchFormResponse:
     """The form as its file holds it now, with the file's revision."""
     config = await _enabled_config()
     document = await run_in_threadpool(read_form_document, config)
-    return WorkbenchFormResponse(form=document.spec, revision=document.revision)
+    return WorkbenchFormResponse(
+        form=document.spec, revision=document.revision, repairs=list(document.repairs)
+    )
 
 
 @router.put("/form", response_model=WorkbenchFormSaveResponse)
@@ -174,11 +182,9 @@ async def put_workbench_form(body: WorkbenchFormSaveRequest) -> WorkbenchFormSav
     """Write the form, unless its file changed since the view read it, and capture the write."""
     config = await _enabled_config()
     try:
-        # Under the shared save lock, as the pipeline's save is: two saves never pass the
-        # revision check together, and a capture never races a pipeline save's on the
-        # git index.
-        async with save_lock:
-            return await run_in_threadpool(_save_form, config, body)
+        # In turn with every other save, the pipeline's too: two saves never pass the
+        # revision check together, and a capture never races another's on the git index.
+        return await project_write(config.project_root, lambda: _save_form(config, body))
     except StaleDocumentRevisionError as exc:
         # The view's form is behind the disk; nothing was written. The detail leads with
         # the same stable code the pipeline save answers, so the client matches one.
@@ -239,7 +245,8 @@ def _read_test_quotes(config: WorkbenchConfig, read: Callable[[QuoteStore], _T])
         if not path.is_file():
             return None
         # The clone's drivers; .gitattributes, if it changes, rides the next write's capture.
-        # A file that cannot be written leaves the read as it is: the next write says so.
+        # A file that cannot be written, or a registration that failed, leaves the read as it
+        # is: the next write tries again and says so.
         with suppress(OSError):
             ensure_test_quote_git(config.project_root, relative)
         try:
@@ -265,7 +272,7 @@ def _write_test_quotes(
     branch: object = _ANY_BRANCH,
 ) -> tuple[_T, WorkbenchTestQuoteWriteResponse]:
     """*write* on the test-quote file, brought to the newest schema if it must be (and made,
-    when *create*), under the repository's lock, then the write captured on the ledger.
+    when *create*), then the write captured on the ledger: one `project_write`.
 
     Everything that can refuse it does so before anything is written, so a refusal never
     reports as unsaved a write that landed: *branch*, when given, must be the branch checked
@@ -280,52 +287,43 @@ def _write_test_quotes(
         test_quotes_branch,
     )
 
-    with repository_mutation(config.project_root):
-        path, relative = _test_quotes_file(config)
-        project_gitattributes_path(config.project_root)
-        if branch is not _ANY_BRANCH and test_quotes_branch(config.project_root) != branch:
-            raise WorkbenchTestQuoteError(
-                "The branch changed while the quote was priced: save it again on this one."
-            )
-        if not create and not path.is_file():
-            raise QuoteNotFoundError(f"{relative} holds no test quotes yet.")
-        try:
-            ensure_test_quote_git(config.project_root, relative)
-        except OSError as exc:
-            raise WorkbenchTestQuoteError(
-                f".gitattributes could not be written, so nothing was saved: {exc}"
-            ) from exc
-        path.parent.mkdir(parents=True, exist_ok=True)
-        migrate_store(store_url(path))
-        name, email = get_identity(config.project_root)
-        with open_store(store_url(path)) as store:
-            result = write(store, email or name or "")
-        captured = _capture_test_quotes(config, relative)
+    path, relative = _test_quotes_file(config)
+    project_gitattributes_path(config.project_root)
+    if branch is not _ANY_BRANCH and test_quotes_branch(config.project_root) != branch:
+        raise WorkbenchTestQuoteError(
+            "The branch changed while the quote was priced: save it again on this one."
+        )
+    if not create and not path.is_file():
+        raise QuoteNotFoundError(f"{relative} holds no test quotes yet.")
+    try:
+        registration = ensure_test_quote_git(config.project_root, relative)
+    except OSError as exc:
+        raise WorkbenchTestQuoteError(
+            f".gitattributes could not be written, so nothing was saved: {exc}"
+        ) from exc
+    path.parent.mkdir(parents=True, exist_ok=True)
+    migrate_store(store_url(path))
+    name, email = get_identity(config.project_root)
+    with open_store(store_url(path)) as store:
+        result = write(store, email or name or "")
+    captured = _capture_test_quotes(config, relative, registration)
     return result, captured
 
 
-def _capture_test_quotes(config: WorkbenchConfig, relative: str) -> WorkbenchTestQuoteWriteResponse:
-    """The test-quote file at *relative* captured on the save ledger as it is, with the
-    drivers in ``.gitattributes``, under the repository's lock the caller holds. Whatever
-    cannot be done is a warning: the write, if any, has landed."""
-    from haute._test_quotes import (
-        WorkbenchTestQuoteError,
-        ensure_test_quote_git,
-        project_gitattributes_path,
-    )
+def _capture_test_quotes(
+    config: WorkbenchConfig, relative: str, warnings: list[str]
+) -> WorkbenchTestQuoteWriteResponse:
+    """The test-quote file at *relative* captured on the save ledger as written, with the
+    ``.gitattributes`` its write registered the drivers in, under the repository's lock the
+    caller holds, after the write's *warnings*. A capture that cannot happen is a warning
+    too: the write has landed."""
+    from haute._test_quotes import project_gitattributes_path
 
-    warnings: list[str] = []
     captured = [relative]
-    try:
-        ensure_test_quote_git(config.project_root, relative)
-        if project_gitattributes_path(config.project_root).is_file():
-            captured.append(".gitattributes")
-    except (OSError, WorkbenchTestQuoteError) as exc:
-        warnings.append(f"The test quotes' git drivers could not be registered: {exc}")
-    git_sha, identity_required = capture_save_in_ledger(config.project_root, captured, warnings)
-    return WorkbenchTestQuoteWriteResponse(
-        warnings=warnings, git_sha=git_sha, identity_required=identity_required
-    )
+    if project_gitattributes_path(config.project_root).is_file():
+        captured.append(".gitattributes")
+    capture = capture_save_in_ledger(config.project_root, captured, warnings)
+    return WorkbenchTestQuoteWriteResponse(warnings=warnings, **capture._asdict())
 
 
 def _store_error(exc: Exception) -> HTTPException:
@@ -337,8 +335,7 @@ def _store_error(exc: Exception) -> HTTPException:
 
 
 def _written(store: QuoteStore, revision: QuoteRevision) -> WorkbenchTestQuoteSummary:
-    [summary] = [quote for quote in store.quotes() if quote.id == revision.quote_id]
-    return _summary(summary)
+    return _summary(store.summary(revision.quote_id))
 
 
 @router.get("/test-quotes", response_model=WorkbenchTestQuotesResponse)
@@ -385,30 +382,13 @@ async def save_test_quote(body: WorkbenchTestQuoteSaveRequest) -> WorkbenchTestQ
         return _written(store, revision)
 
     try:
-        async with save_lock:
-            quote, written = await run_in_threadpool(
-                lambda: _write_test_quotes(config, write, create=True, branch=body.branch)
-            )
+        quote, written = await project_write(
+            config.project_root,
+            lambda: _write_test_quotes(config, write, create=True, branch=body.branch),
+        )
     except QuoteStoreError as exc:
         raise _store_error(exc) from None
     return written.model_copy(update={"quote": quote})
-
-
-@router.post("/test-quotes/capture", response_model=WorkbenchTestQuoteWriteResponse)
-async def capture_test_quotes() -> WorkbenchTestQuoteWriteResponse:
-    """The test-quote file captured on the save ledger as it is, nothing written to it: the
-    retry of a write whose capture was skipped or failed. Nothing to capture without a file."""
-    config = await _enabled_config()
-
-    def capture() -> WorkbenchTestQuoteWriteResponse:
-        with repository_mutation(config.project_root):
-            path, relative = _test_quotes_file(config)
-            if not path.is_file():
-                return WorkbenchTestQuoteWriteResponse()
-            return _capture_test_quotes(config, relative)
-
-    async with save_lock:
-        return await run_in_threadpool(capture)
 
 
 @router.post("/test-quotes/{quote_id}/open", response_model=WorkbenchTestQuoteOpenResponse)
@@ -422,7 +402,7 @@ async def open_test_quote(
 
     def read(store: QuoteStore) -> WorkbenchTestQuoteOpenResponse:
         revision = store.revision(quote_id)
-        [summary] = [quote for quote in store.quotes() if quote.id == quote_id]
+        summary = store.summary(quote_id)
         carried = carry_values(revision.inputs, store.form(revision.form_revision), body.form)
         return WorkbenchTestQuoteOpenResponse(
             id=quote_id,
@@ -513,8 +493,9 @@ async def accept_test_quote(
         return _written(store, revision)
 
     try:
-        async with save_lock:
-            quote, written = await run_in_threadpool(_write_test_quotes, config, write)
+        quote, written = await project_write(
+            config.project_root, lambda: _write_test_quotes(config, write)
+        )
     except QuoteStoreError as exc:
         raise _store_error(exc) from None
     return written.model_copy(update={"quote": quote})
@@ -527,10 +508,10 @@ async def delete_test_quote(quote_id: str) -> WorkbenchTestQuoteWriteResponse:
 
     config = await _enabled_config()
     try:
-        async with save_lock:
-            _, written = await run_in_threadpool(
-                _write_test_quotes, config, lambda store, _saved_by: store.delete(quote_id)
-            )
+        _, written = await project_write(
+            config.project_root,
+            lambda: _write_test_quotes(config, lambda store, _saved_by: store.delete(quote_id)),
+        )
     except QuoteStoreError as exc:
         raise _store_error(exc) from None
     return written

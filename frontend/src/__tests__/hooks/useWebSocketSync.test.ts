@@ -109,6 +109,7 @@ import useToastStore from "../../stores/useToastStore.ts"
 import useUIStore from "../../stores/useUIStore.ts"
 import useGraphStore from "../../stores/useGraphStore.ts"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore.ts"
+import useWorkbenchStore from "../../stores/useWorkbenchStore.ts"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture.ts"
 import { HAUTE_SESSION_EXPIRED_EVENT } from "../../api/client.ts"
 
@@ -1040,6 +1041,32 @@ describe("useWebSocketSync", () => {
       })
 
       expect(useDocumentStatusStore.getState().systemFailure).toBeNull()
+    })
+
+    it("counts each connection as a possible change of the form's file, which went unannounced while disconnected", () => {
+      const params = makeHookParams("rating/main.py")
+      useWorkbenchStore.setState({ formChanges: 0 })
+      renderHook(() => useWebSocketSync(params))
+
+      act(() => latestWS().onopen?.(new Event("open")))
+
+      expect(useWorkbenchStore.getState().formChanges).toBe(1)
+    })
+
+    it("counts each change of the workbench's form file on disk, and nothing else", async () => {
+      const params = makeHookParams("rating/main.py")
+      useWorkbenchStore.setState({ formChanges: 0 })
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({ type: "workbench_form_changed", form: "forms/form.json" }),
+        }))
+      })
+
+      expect(useWorkbenchStore.getState().formChanges).toBe(1)
+      expect(useDocumentStatusStore.getState().systemFailure).toBeNull()
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
     })
 
     it("sends the initially loaded document's fingerprint on the first connection", () => {

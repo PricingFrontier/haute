@@ -18,6 +18,15 @@ MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
 #: path that leaves the root.
 PathProblem = Literal["not_ordinary", "link", "multiply_linked", "not_a_file", "outside"]
 
+#: Why a path a write goes through is refused, after the path it names.
+PATH_PROBLEMS: dict[PathProblem, str] = {
+    "not_ordinary": "isn't a path inside the project, named from its folder",
+    "link": "is reached through a link or junction",
+    "multiply_linked": "is a hard link to another file, which a write would change too",
+    "not_a_file": "isn't an ordinary file or folder",
+    "outside": "is outside the project",
+}
+
 _RECOVERY_REFUSALS: dict[PathProblem, str] = {
     "not_ordinary": "Recovery requires an ordinary project-relative artifact path.",
     "link": "Recovery cannot operate through a symlink or directory junction.",

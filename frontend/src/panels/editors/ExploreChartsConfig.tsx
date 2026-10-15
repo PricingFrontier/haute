@@ -8,6 +8,7 @@ import {
 
 import useNodeDataStore, { profileForConsumer, slotForConsumer } from "../../stores/useNodeDataStore"
 import useNodeResultsStore, { explorePivotResultKey } from "../../stores/useNodeResultsStore"
+import { confirmed } from "../../stores/useQuestionStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { exploreDataView } from "../explore/exploreDataView"
 import useUIStore from "../../stores/useUIStore"
@@ -706,11 +707,13 @@ export default function ExploreChartsConfig({
                     charts.map((x) => (x.id === c.id ? { ...x, enabled } : x)),
                   )
                 }
-                onDelete={() => {
-                  if (!window.confirm(`Delete ${c.name}?`)) return
-                  if (configuredId === c.id) setExploreConfiguredChart(nodeId, null)
-                  onUpdate("charts", charts.filter((candidate) => candidate.id !== c.id))
-                }}
+                onDelete={() =>
+                  void (async () => {
+                    if (!(await confirmed({ title: `Delete ${c.name}?`, confirm: "Delete", danger: true }))) return
+                    if (configuredId === c.id) setExploreConfiguredChart(nodeId, null)
+                    onUpdate("charts", charts.filter((candidate) => candidate.id !== c.id))
+                  })()
+                }
                 onConfigure={() => {
                   setMessage(null)
                   setExploreConfiguredChart(nodeId, c.id)
@@ -767,13 +770,17 @@ export default function ExploreChartsConfig({
         .filter((group): group is string => group !== null),
     ).size > 1
   const detectedPreset = detectChartPreset(chart)
-  const selectPivot = (id: string) => {
+  const selectPivot = async (id: string) => {
     const next = pivots.find((p) => p.id === id)
     if (!next) return
     if (
       chart.pivot_id !== null &&
       (chart.value_encodings.length > 0 || chart.series_overrides.length > 0) &&
-      !window.confirm("Changing the source Pivot resets chart mappings and series overrides.")
+      !(await confirmed({
+        title: "Change the source Pivot?",
+        text: "Changing the source Pivot resets chart mappings and series overrides.",
+        confirm: "Change",
+      }))
     )
       return
     commit({
@@ -885,7 +892,7 @@ export default function ExploreChartsConfig({
             value={chart.pivot_id ?? ""}
             className="rounded px-2 py-1 text-xs"
             style={INPUT_STYLE}
-            onChange={(e) => selectPivot(e.target.value)}
+            onChange={(e) => void selectPivot(e.target.value)}
           >
             <option value="" disabled>
               Select a Pivot

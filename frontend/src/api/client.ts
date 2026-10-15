@@ -79,6 +79,7 @@ import type {
   MlflowLogResponse,
   ModelSaveDestinationRequest,
   ModelSaveDestinationResponse,
+  SaveCapture,
   SaveModelRequest,
   SaveModelResponse,
   MlflowModel,
@@ -783,6 +784,9 @@ export interface PreviewNodeArgs {
    * multi-table apiInput). Sent as `port_label`; part of the backend preview
    * cache key, so each frame is a distinct cache entry. */
   portLabel?: string
+  /** Several frames of a multi-frame producer, each previewed from one run into the
+   * answer's `port_previews`. Sent as `port_labels`; not with `portLabel`. */
+  portLabels?: string[]
   /** Chosen by the caller so it can poll this request's step progress. */
   requestId?: string
   signal?: AbortSignal
@@ -797,6 +801,7 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
     source,
     requestedPreviewColumns,
     portLabel,
+    portLabels,
     requestId,
     signal,
     timeout = null,
@@ -810,6 +815,7 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
       source: source ?? "live",
       ...(requestedPreviewColumns ? { requested_preview_columns: requestedPreviewColumns } : {}),
       ...(portLabel !== undefined ? { port_label: portLabel } : {}),
+      ...(portLabels !== undefined ? { port_labels: portLabels } : {}),
       ...(requestId !== undefined ? { request_id: requestId } : {}),
     },
     { signal, timeout },
@@ -2097,6 +2103,12 @@ export function setGitIdentity(
     { user_name: userName, user_email: userEmail, set_global: setGlobal },
     options,
   ).then(async (data) => expectGeneratedContract("GitSetIdentityResponse", (await gitValidators()).validateGitSetIdentityResponse, data))
+}
+
+/** Capture on the save ledger the files earlier writes reported uncaptured, as they are on
+ *  disk now. Capturing again what is already captured commits nothing, so a retry is safe. */
+export function captureFiles(paths: string[], options?: { signal?: AbortSignal }): Promise<SaveCapture> {
+  return post<unknown>("/api/git/capture", { paths }, options).then(async (data) => expectGeneratedContract("SaveCapture", (await gitValidators()).validateSaveCapture, data))
 }
 
 export function commitMilestone(

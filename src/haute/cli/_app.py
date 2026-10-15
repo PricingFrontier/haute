@@ -20,6 +20,8 @@ schema this Haute writes, before a release that needs it starts.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,12 +55,29 @@ class AppServeConfig:
     reader: bool = False
 
 
-def _built(project_dir: Path, release_dir: Path) -> None:
-    from haute._workbench_app import WorkbenchAppError, build_release
+@contextmanager
+def _said() -> Iterator[None]:
+    """A fault Haute or the quote store names, said as the command's error rather than a
+    traceback: a project, release or store that is not as the command needs it. Any other
+    error is a fault of Haute's and keeps its traceback."""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from haute.errors import HauteError
 
     try:
-        release = build_release(project_dir, release_dir)
-    except (WorkbenchAppError, FileNotFoundError, ValueError) as exc:
+        yield
+    except (HauteError, SQLAlchemyError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def _built(project_dir: Path, release_dir: Path) -> None:
+    from haute._workbench_app import build_release
+
+    try:
+        with _said():
+            release = build_release(project_dir, release_dir)
+    # A project file the build reads missing, or one it cannot parse.
+    except (FileNotFoundError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"  ✓ Release {release.id} of {release.pipeline_name} in {release_dir}")
     if release.host is None:
@@ -71,16 +90,14 @@ def _built(project_dir: Path, release_dir: Path) -> None:
 def handle_app_build(config: AppBuildConfig) -> None:
     """Build the project in the working directory into ``config.output``, and its image when
     ``config.image`` names a tag."""
-    from haute._workbench_app import WorkbenchAppError, build_image
+    from haute._workbench_app import build_image
 
     release_dir = config.output.resolve()
     _built(Path.cwd(), release_dir)
     if config.image is None:
         return
-    try:
+    with _said():
         build_image(release_dir, config.image)
-    except WorkbenchAppError as exc:
-        raise click.ClickException(str(exc)) from exc
     click.echo(f"  ✓ Image built: {config.image}")
 
 
@@ -102,13 +119,14 @@ def handle_app_serve(config: AppServeConfig) -> None:
     release_dir = (project_dir / RELEASE_DIR).resolve()
     _built(project_dir, release_dir)
     url = _local_store(project_dir)
-    application = create_app(
-        release_dir,
-        local_principal=principal,
-        static_dir=config.static_dir,
-        store_url=url,
-        local_reader=config.reader,
-    )
+    with _said():
+        application = create_app(
+            release_dir,
+            local_principal=principal,
+            static_dir=config.static_dir,
+            store_url=url,
+            local_reader=config.reader,
+        )
     reading = ", reading quotes only" if config.reader else ""
     click.echo(f"  ✓ Signed in as {principal} (your git identity){reading}")
     click.echo(f"  ✓ Quotes kept in {QUOTES_FILE.as_posix()}")
@@ -118,22 +136,20 @@ def handle_app_serve(config: AppServeConfig) -> None:
 
 def _local_store(project_dir: Path) -> str:
     """The URL of ``serve``'s own quote store, made and migrated as it starts."""
-    from haute._quote_store import QuoteStoreError, migrate_store, store_url
+    from haute._quote_store import migrate_store, store_url
 
     path = project_dir / QUOTES_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
     url = store_url(path)
-    try:
+    with _said():
         migrate_store(url)
-    except QuoteStoreError as exc:
-        raise click.ClickException(str(exc)) from exc
     return url
 
 
 def handle_app_migrate(url: str | None) -> None:
     """Bring the quote store at *url*, else at ``HAUTE_QUOTE_STORE_URL``, to the newest
     schema."""
-    from haute._quote_store import QuoteStoreError, migrate_store
+    from haute._quote_store import migrate_store
     from haute._workbench_app import STORE_URL_ENV, quote_store_url
 
     target = url or quote_store_url()
@@ -141,10 +157,8 @@ def handle_app_migrate(url: str | None) -> None:
         raise click.ClickException(
             f"Name the quote store: pass --url or set {STORE_URL_ENV} to its SQLAlchemy URL."
         )
-    try:
+    with _said():
         migrate_store(target)
-    except QuoteStoreError as exc:
-        raise click.ClickException(str(exc)) from exc
     click.echo("  ✓ The quote store is at the newest schema")
 
 

@@ -9,6 +9,7 @@ import type { FormSpec, WorkbenchTestQuoteSummary } from "../../api/types"
 import useGraphStore from "../../stores/useGraphStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchTestQuotesStore, { currentBasis, type QuoteRun } from "../../stores/useWorkbenchTestQuotesStore"
+import { answerQuestion, asked } from "../../test-utils/question"
 import { BLANK_THEME } from "../../utils/workbenchForm"
 import { sheet } from "./fixtures"
 import TestQuotesPanel from "../TestQuotesPanel"
@@ -156,17 +157,17 @@ describe("TestQuotesPanel", () => {
     expect(screen.getByRole("button", { name: "Run all" })).toBeDisabled()
   })
 
-  it("opens a test quote onto the sheets, and deletes one once confirmed", () => {
+  it("opens a test quote onto the sheets, and deletes one once confirmed", async () => {
     render(<TestQuotesPanel />)
     fireEvent.click(screen.getByRole("button", { name: "Open Southern fleet" }))
     expect(actions.openQuote).toHaveBeenCalledWith("b")
 
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false)
     fireEvent.click(screen.getByRole("button", { name: "Delete Southern fleet" }))
-    expect(confirm).toHaveBeenCalledWith("Delete the test quote 'Southern fleet'?")
+    expect(asked()).toMatchObject({ title: "Delete the test quote 'Southern fleet'?", confirm: "Delete", danger: true })
+    await answerQuestion(null)
     expect(actions.remove).not.toHaveBeenCalled()
-    confirm.mockReturnValue(true)
     fireEvent.click(screen.getByRole("button", { name: "Delete Southern fleet" }))
+    await answerQuestion("confirm")
     expect(actions.remove).toHaveBeenCalledWith("b")
   })
 
