@@ -64,6 +64,7 @@ vi.mock("../api/workbench", () => ({
       sample: {},
     },
     revision: "form-rev-0",
+    repairs: [],
   })),
   saveWorkbenchForm: vi.fn((form: unknown) => Promise.resolve({ form, revision: "form-rev-1" })),
 }))

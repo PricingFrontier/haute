@@ -5,7 +5,8 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/_editor_identities.py` | Pure derivation of node function names, default/handle input identities, and config references used by editor documents and the bounded prospective-identity endpoint. |
-| `src/haute/server.py` | App factory (`app = FastAPI(...)`), lifespan (bytecode clear, logging config, env load, marked optimiser-artifact reaping, pipeline-index priming, watcher task lifecycle), middleware registration, router inclusion, `/api/session` health/bootstrap routes, bounded request-ID selection, the API/WS 404 guard, the `/ws/sync` WebSocket endpoint, the debounced file watcher, and credential-free static SPA serving. |
+| `src/haute/server.py` | App factory (`app = FastAPI(...)`), lifespan (bytecode clear, logging config, env load, marked optimiser-artifact reaping, pipeline-index priming, watcher task lifecycle), middleware registration, router inclusion, `/api/session` health/bootstrap routes, bounded request-ID selection, the API/WS 404 guard, the `/ws/sync` WebSocket endpoint, the debounced file watcher (the workbench's form file announced through
+`workbench.form.changed`, forwarded as `workbench_form_changed`), and credential-free static SPA serving. |
 | `src/haute/_local_security.py` | [sandbox-security](../sandbox-security/low-level.md)-owned per-process local-session token, trusted-Origin/Host parsing (including bracketed IPv6), `LocalSessionMiddleware`, `LocalTrustedHostMiddleware`, and the HTTP/WebSocket token-validation contract. |
 | `src/haute/schemas.py` | Stable shared Pydantic request/response import surface used across the app — re-exports canonical graph types from `_types.py`, re-exports execution-strategy DTOs from `_execution_schemas.py`, and defines the remaining per-feature model groups, including the structurally separate pipeline editor-recovery document and diagnostics. The OUTPUT dry-run models are the deliberate route-local exception. |
 | `src/haute/errors.py` | The `HauteError` hierarchy, including execution, bounded-memory, schema/contract, deployment, and feature errors. Route-visible public subclasses carry stable `error_code` and `public_fields` metadata consumed by `_contract_errors.py`. |
@@ -297,10 +298,12 @@ The client sends `{"type":"resync","source_file":str,"document_schema_version":1
 "document_fingerprint"?:sha256}`; a resync whose `document_schema_version` is not the
 current literal `1` receives a `parse_error` frame naming the unsupported version, and
 plain text, malformed JSON, non-object JSON, and unknown message types are keep-alive
-no-ops. The server sends exactly two frame types: a complete
+no-ops. The server sends exactly three frame types: a complete
 `{"type":"pipeline_document_update","schema_version":1,"document":object,
-"document_fingerprint":sha256,"source_file":str,"origin"?:object}` or
-`{"type":"parse_error","error":str,"source_file":str}`. `origin` is present only on an
+"document_fingerprint":sha256,"source_file":str,"origin"?:object}`,
+`{"type":"parse_error","error":str,"source_file":str}`, or
+`{"type":"workbench_form_changed","form":str}`, the workbench's form file, as
+`haute.toml` names it, changed on disk (see [workbench](../workbench/low-level.md)). `origin` is present only on an
 update an assistant apply or undo published: `{"kind":"assistant","session_id":str,
 "change_id":str,"node_ids":[str]}` (see [assistant](../assistant/high-level.md)); the
 watcher and resyncs never send it.
@@ -402,7 +405,12 @@ crash. Every filesystem event batches into `pending_changes`; a 300ms debounce t
    processed as an external change. A consumed marker also clears the path's
    last-broadcast fingerprint, so an external restore of previously broadcast content is
    broadcast rather than deduplicated.
-4. Classifies each remaining `.py`/`.json` change: `config/*.json` → re-parse every
+4. Classifies each remaining `.py`/`.json` change: the workbench's form file, as
+   `haute.toml` names it while the workbench is enabled (`_workbench_form_file`, read at
+   each flush, nothing while `haute.toml` cannot be read) → one `workbench.form.changed`
+   publish for the batch, `{"form": <its path as haute.toml names it>}`, the form's own
+   saves included (no self-write marker: the view that saved finds its own revision);
+   `config/*.json` → re-parse every
    discovered pipeline; `modules/*.py` → re-parse only pipelines importing that module stem
    (case-insensitively, via `_module_dep_key`); any other `.py` (excluding `utility/` and
    dunder-prefixed files) → re-parse that pipeline directly when added/modified. Any direct
@@ -1176,7 +1184,8 @@ for route-level tests, and direct unit tests for the pure-function modules.
   middleware behaviour, static SPA serving (including the partial-build fail-fast case), the
   `/ws/sync` protocol (resync requests, fingerprint short-circuit, rejection reasons), and
   the file watcher end-to-end (debounce, module-dependency re-parse, config-triggered
-  full-reparse, content-identity self-write suppression: an external write to a
+  full-reparse, the workbench's form file announced once a batch, as `haute.toml` names it,
+  other JSON and a disabled workbench not, content-identity self-write suppression: an external write to a
   server-written path before the coalesced flush is broadcast, an unchanged self-write
   and a self-deletion are suppressed, an external recreate and an unrelated same-batch
   edit are broadcast with their actual document content).

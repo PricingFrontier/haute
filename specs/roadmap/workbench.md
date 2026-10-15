@@ -17,9 +17,8 @@ that fill the sheets from databases and APIs.
 `WB-23` to `WB-26` take on what is left of the [review of 15 October
 2026](workbench-review-2026-10-15.md) of what pull requests #303 to #309 built. Each names
 the review's findings it closes (`CX-n`, `FB-n`, `TQ-n`, `SD-n`, `MS-n`), and the review
-holds their evidence. `WB-23` prices Preview in one run of the pipeline; and `WB-24`,
-`WB-25` and `WB-26` wait on decisions about the form's file, the app's sign-in, and
-building the sheets without a pointer.
+holds their evidence. `WB-23` prices Preview in one run of the pipeline; `WB-25` waits on
+the app's sign-in, and `WB-26` on decisions about building the sheets without a pointer.
 
 ## Priorities
 
@@ -33,7 +32,6 @@ building the sheets without a pointer.
 | WB-12 | Planned | P3 | A test quote whose response runs past what Preview shows is saved, run and compared in full, as every other test quote is. |
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, sees which quotes are about to lapse, records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-23 | Planned | P3 | Preview prices every table of the Workbench Output from one run of the pipeline, as the app prices a quote in one scoring call. |
-| WB-24 | Decision | P3 | The editor learns of a change to the form's file on its own, and opens a merged form whose geometry is off so it can be repaired. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-26 | Decision | P3 | A component is added to a sheet and resized from the keyboard, and a Table of output columns alone shows its rows, or says why it has none. |
 
@@ -402,31 +400,6 @@ Each has a test.
 **Evidence:** `frontend/src/workbench/priceSample.ts::priceSample` (a preview per table);
 `src/haute/routes/pipeline.py::_preview_supersession_key` (a preview keyed by its port);
 `src/haute/executor.py::execute_graph` (one port's preview from the bundle).
-
-### WB-24 — The form's file changed or merged outside the editor
-**Why:** Two gaps the [review](workbench-review-2026-10-15.md) found, each a choice for the
-owner before a slice:
-- The view reads the form again when the pipeline's document is adopted anew, so a change
-  to `forms/form.json` alone, by hand or by a pull, shows only as a save refused as stale
-  (FB-26).
-- A merged or hand-edited file whose geometry is off (a component past its sheet's width
-  or below its section) is refused when it is read, so it cannot be opened in the editor
-  that would repair it (FB-27).
-
-**Plan:** Decisions first, recorded here before a slice:
-- FB-26: whether the file watcher announces a change to the form's file, as it does for
-  the pipeline's, so the view reads it again (and marks it stale over unsaved edits).
-- FB-27: whether a form whose geometry is off reads with each component kept inside its
-  section and sheet, said in a notice and saved as moved, or stays refused with the place
-  to fix by hand.
-
-**Acceptance:** Set by each decision.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/stores/useWorkbenchFormStore.ts::sync` (run on an adoption
-only); `src/haute/_workbench_form.py::Section` and `src/haute/_workbench_form.py::Page`
-(geometry refused at read).
 
 ### WB-25 — The app's sign-in
 **Why:** The app trusts the Easy Auth headers because `release.json` names the host, so a

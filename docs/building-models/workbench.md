@@ -39,9 +39,11 @@ on your branch's save ledger, so it shows in the Git panel's history. **Commit**
 milestone of the whole project after that save. A save is refused when the form file
 changed on disk since the workbench read it (an edit by hand, or a branch switched outside
 Haute), and then the pipeline is not saved either; the banner's **Reload** reads the file
-again, dropping your unsaved edits. When the pipeline is read again from disk and the file
-changed too, the workbench follows it, unless you have unsaved edits, when the banner
-appears instead.
+again, dropping your unsaved edits. When the form file changes on disk (an edit by hand, a
+pull, or a branch switched), the workbench follows it, unless you have unsaved edits, when
+the banner appears instead. A form whose file leaves a component below its section or past its
+sheet's edge, as a merge or an edit by hand can, opens with that section or sheet grown
+to hold it, nothing moved: a notice says what grew, and the next save keeps it.
 
 Both workbench nodes' panels have **Edit in Workbench**, which opens the view.
 

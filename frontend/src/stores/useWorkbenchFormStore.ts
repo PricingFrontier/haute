@@ -153,6 +153,27 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
    */
   let unanswered: string | null = null
 
+  /**
+   * A form read anew, as the store holds it: as saved, without history, unless reading the
+   * file grew a section or a sheet to open it (`repairs`), which a warning says: the form
+   * as read is then unsaved, and the next Save writes it.
+   */
+  const readAnew = (form: FormSpec, revision: string | null, repairs: readonly string[]) => {
+    if (repairs.length > 0) {
+      const path = useWorkbenchStore.getState().formPath ?? "forms/form.json"
+      useToastStore.getState().addToast("warning", `${path} opened with its layout fixed, unsaved: ${repairs.join(" ")}`)
+    }
+    return {
+      form,
+      revision,
+      savedForm: repairs.length > 0 ? "" : serialise(form),
+      dirty: repairs.length > 0,
+      undoStack: [],
+      redoStack: [],
+      stale: false,
+    }
+  }
+
   // A read takes a turn like a save or a sync: a sync queued behind it, as a document
   // adopted while the file is being read queues one, reads the file again after it, so
   // the form never ends on the branch the read began on.
@@ -160,20 +181,10 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
     set({ status: "loading", loadError: null })
     return takeTurn(async () => {
       try {
-        const { form, revision } = await fetchWorkbenchForm()
+        const { form, revision, repairs } = await fetchWorkbenchForm()
         dropGesture()
         unanswered = null
-        set((state) => ({
-          form,
-          revision,
-          status: "ready",
-          savedForm: serialise(form),
-          dirty: false,
-          undoStack: [],
-          redoStack: [],
-          stale: false,
-          reads: state.reads + 1,
-        }))
+        set((state) => ({ ...readAnew(form, revision, repairs), status: "ready", reads: state.reads + 1 }))
       } catch (error: unknown) {
         set({ status: "failed", loadError: apiErrorMessage(error) })
       }
@@ -206,7 +217,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
         if (get().status !== "ready") return
         const path = useWorkbenchStore.getState().formPath ?? "forms/form.json"
         try {
-          const { form, revision } = await fetchWorkbenchForm()
+          const { form, revision, repairs } = await fetchWorkbenchForm()
           if (revision === get().revision) return
           if (unsaved()) {
             // The banner says the file changed on disk, and its Reload reads it.
@@ -214,16 +225,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
             return
           }
           dropGesture()
-          set((state) => ({
-            form,
-            revision,
-            savedForm: serialise(form),
-            dirty: false,
-            undoStack: [],
-            redoStack: [],
-            stale: false,
-            reads: state.reads + 1,
-          }))
+          set((state) => ({ ...readAnew(form, revision, repairs), reads: state.reads + 1 }))
         } catch (error: unknown) {
           useToastStore.getState().addToast("error", `Could not read ${path} again: ${apiErrorMessage(error)}`)
         }
@@ -348,8 +350,12 @@ useWorkbenchFormStore.subscribe((state, previous) => {
   if (state.reads !== previous.reads) useQuestionStore.getState().answer(null)
 })
 
-// The form follows the pipeline's document: each adoption of one (`executionGeneration`),
-// as a branch switched by hand or a change on disk brings, reads the file again.
+// The form follows its file: each change the server sees on disk (`formChanges`), and each
+// adoption of the pipeline's document (`executionGeneration`), as a branch switch brings,
+// reads the file again.
+useWorkbenchStore.subscribe((state, previous) => {
+  if (state.formChanges !== previous.formChanges) void useWorkbenchFormStore.getState().sync()
+})
 useDocumentStatusStore.subscribe((state, previous) => {
   if (state.executionGeneration !== previous.executionGeneration) void useWorkbenchFormStore.getState().sync()
 })

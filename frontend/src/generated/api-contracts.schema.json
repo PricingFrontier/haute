@@ -16180,10 +16180,18 @@
       "type": "object"
     },
     "WorkbenchFormResponse": {
-      "description": "The workbench's form as its file holds it now, with the file's revision.\n\n``revision`` is the file's content hash, which a save quotes as its ``base_revision``;\nnull while the form has never been saved, when ``form`` is the blank form.",
+      "description": "The workbench's form as its file holds it now, with the file's revision.",
       "properties": {
         "form": {
           "$ref": "#/$defs/FormSpec"
+        },
+        "repairs": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Repairs",
+          "type": "array"
         },
         "revision": {
           "anyOf": [
@@ -16200,7 +16208,8 @@
       },
       "required": [
         "form",
-        "revision"
+        "revision",
+        "repairs"
       ],
       "title": "WorkbenchFormResponse",
       "type": "object"

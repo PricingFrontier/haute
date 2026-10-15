@@ -592,13 +592,10 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
             lambda f: f["pages"][0]["sections"][1].update(widgets=[], height=-48),
             "pages.0.sections.1.height",
         ),
-        (lambda f: f["pages"][0]["sections"][1].update(height=47), "pages.0.sections.1"),
-        (lambda f: f["pages"][0]["sections"][1].update(height=47), "widget w_title reaches"),
         # A sheet has a width, at least a pixel, holding its components inside it: the Chart,
         # 760 across and 480 wide, needs 1240.
         (lambda f: f["pages"][0].pop("width"), "pages.0.width"),
         (lambda f: f["pages"][0].update(width=0), "pages.0.width"),
-        (lambda f: f["pages"][0].update(width=1239), "widget w_limits reaches 1240px across"),
         (lambda f: f["pages"][0]["sections"][0].update(colour="red"), "colour"),
         (lambda f: f["pages"][0]["sections"][1]["show_when"].update(match="most"), "match"),
         (lambda f: widgets(f)[0].update(type="slider"), "type"),
@@ -654,6 +651,38 @@ def test_an_unknown_field_or_a_value_outside_the_shape_is_refused(
     ) as caught:
         read_form_document(config(tmp_path))
     assert where in str(caught.value)
+
+
+def test_a_section_or_sheet_too_small_for_a_component_is_grown_as_it_is_read_and_said(
+    tmp_path: Path,
+) -> None:
+    """A merge or a hand edit can leave a component below its section or past its sheet's
+    width: the form reads, each grown to hold it as a resize past the edge would, nothing
+    moved, the file as it was."""
+    merged = json.loads(json.dumps(FORM))
+    merged["pages"][0]["sections"][1]["height"] = 40
+    merged["pages"][0]["width"] = 1000
+    (tmp_path / "forms").mkdir()
+    text = json.dumps(merged)
+    (tmp_path / "forms" / "form.json").write_text(text, encoding="utf-8")
+
+    document = read_form_document(config(tmp_path))
+
+    assert document.spec.pages[0].sections[1].height == 48
+    assert document.spec.pages[0].width == 1240
+    assert document.repairs == (
+        'Section "Equipment" grew from 40px to 48px tall to hold the Heading '
+        '"Équipement des entrepreneurs".',
+        'Sheet "Sheet 1" grew from 1000px to 1240px wide to hold the Chart "Limits".',
+    )
+    assert (tmp_path / "forms" / "form.json").read_text(encoding="utf-8") == text
+    # The form's own checks still refuse such geometry, so a save of it is refused.
+    with pytest.raises(ValidationError, match="widget w_title reaches 48px down"):
+        FormSpec.model_validate(merged)
+    narrow = json.loads(json.dumps(FORM))
+    narrow["pages"][0]["width"] = 1239
+    with pytest.raises(ValidationError, match="widget w_limits reaches 1240px across"):
+        FormSpec.model_validate(narrow)
 
 
 def test_a_section_as_tall_as_its_components_reach_holds_them(tmp_path: Path) -> None:

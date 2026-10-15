@@ -2478,12 +2478,10 @@ export interface WorkbenchColumn {
 }
 /**
  * The workbench's form as its file holds it now, with the file's revision.
- *
- * ``revision`` is the file's content hash, which a save quotes as its ``base_revision``;
- * null while the form has never been saved, when ``form`` is the blank form.
  */
 export interface WorkbenchFormResponse {
   form: FormSpec;
+  repairs: string[];
   revision: string | null;
 }
 /**

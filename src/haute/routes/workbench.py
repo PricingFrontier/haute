@@ -172,7 +172,9 @@ async def get_workbench_form() -> WorkbenchFormResponse:
     """The form as its file holds it now, with the file's revision."""
     config = await _enabled_config()
     document = await run_in_threadpool(read_form_document, config)
-    return WorkbenchFormResponse(form=document.spec, revision=document.revision)
+    return WorkbenchFormResponse(
+        form=document.spec, revision=document.revision, repairs=list(document.repairs)
+    )
 
 
 @router.put("/form", response_model=WorkbenchFormSaveResponse)

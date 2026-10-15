@@ -10,6 +10,7 @@ import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
+import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { constantDrafts } from "../utils/globalConstants"
 import {
   adaptPipelineEditorDocument,
@@ -469,6 +470,12 @@ export default function useWebSocketSync({
             if (!mounted || updateSeq !== graphUpdateSeq) return
             addToast("error", `WebSocket sync error: ${formatSyncError(err)}`)
           }
+          return
+        }
+
+        if (msg.type === "workbench_form_changed") {
+          // The form store, once loaded, reads the file again.
+          useWorkbenchStore.setState((state) => ({ formChanges: state.formChanges + 1 }))
           return
         }
 

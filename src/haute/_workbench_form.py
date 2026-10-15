@@ -559,6 +559,9 @@ class FormDocument:
     #: The file's content hash, or None while the form has never been saved: the file
     #: does not exist and ``spec`` is the blank form.
     revision: str | None
+    #: What reading the file grew to open it (`_grown_to_hold`), each said; the file is as
+    #: it was until the form is saved.
+    repairs: tuple[str, ...] = ()
 
 
 def blank_form(name: str) -> FormSpec:
@@ -622,13 +625,72 @@ def _refuse_page_widgets(config: WorkbenchConfig, parsed: object) -> None:
             )
 
 
+#: Each kind of component as the editor names it.
+_KINDS = {"tableInput": "Table", "collection": "Collection", "chart": "Chart", "heading": "Heading"}
+
+
+def _component_named(widget: dict[str, Any]) -> str:
+    """A component as a repair names it: its kind and its title, a Heading's text."""
+    kind = _KINDS.get(str(widget.get("type")), "component")
+    said = widget.get("text") if widget.get("type") == "heading" else widget.get("title")
+    return f'the {kind} "{said.strip()}"' if isinstance(said, str) and said.strip() else f"a {kind}"
+
+
+def _whole(value: object) -> int | None:
+    return value if type(value) is int else None
+
+
+def _grown_to_hold(parsed: object) -> list[str]:
+    """Grow, in *parsed*, each section too short and each sheet too narrow for a component
+    in it, as a resize past an edge grows them in the editor, and say what grew: a merge or
+    a hand edit can leave a component below its section or past its sheet's width, which
+    the form's checks refuse, so the editor that would repair it could not open it. Nothing
+    moves. A shape this cannot read, or a size that is no size (0 or less), is left for the
+    checks to name."""
+    repairs: list[str] = []
+    pages = parsed.get("pages") if isinstance(parsed, dict) else None
+    for page in pages if isinstance(pages, list) else []:
+        if not isinstance(page, dict) or not isinstance(page.get("sections"), list):
+            continue
+        widest: tuple[int, dict[str, Any]] | None = None
+        for section in page["sections"]:
+            if not isinstance(section, dict) or not isinstance(section.get("widgets"), list):
+                continue
+            deepest: tuple[int, dict[str, Any]] | None = None
+            for widget in section["widgets"]:
+                if not isinstance(widget, dict):
+                    continue
+                x, y, w, h = (_whole(widget.get(key)) for key in ("x", "y", "w", "h"))
+                if y is not None and h is not None and (deepest is None or y + h > deepest[0]):
+                    deepest = (y + h, widget)
+                if x is not None and w is not None and (widest is None or x + w > widest[0]):
+                    widest = (x + w, widget)
+            height = _whole(section.get("height"))
+            if deepest is not None and height is not None and 0 < height < deepest[0]:
+                section["height"] = deepest[0]
+                repairs.append(
+                    f'Section "{section.get("title")}" grew from {height}px to {deepest[0]}px '
+                    f"tall to hold {_component_named(deepest[1])}."
+                )
+        width = _whole(page.get("width"))
+        if widest is not None and width is not None and 0 < width < widest[0]:
+            page["width"] = widest[0]
+            repairs.append(
+                f'Sheet "{page.get("title")}" grew from {width}px to {widest[0]}px wide to '
+                f"hold {_component_named(widest[1])}."
+            )
+    return repairs
+
+
 def read_form_document(config: WorkbenchConfig) -> FormDocument:
     """The form at ``config.form_path``, read whole and checked, with the file's revision.
 
     A file that does not exist is the blank form, named after the project, with no
-    revision. Raises :class:`WorkbenchFormError`, naming the file as ``haute.toml`` names it
-    and what is wrong, when the file cannot be read, is not UTF-8 text, is not JSON or does
-    not fit the shape, a sheet holding widgets of its own named with what replaced them.
+    revision. A section or sheet too small for a component in it is grown to hold it, and
+    said in ``repairs`` (`_grown_to_hold`). Raises :class:`WorkbenchFormError`, naming the
+    file as ``haute.toml`` names it and what is wrong, when the file cannot be read, is not
+    UTF-8 text, is not JSON or does not fit the shape, a sheet holding widgets of its own
+    named with what replaced them.
     """
     path = config.form_path
     data = _read_form_bytes(config)
@@ -643,6 +705,7 @@ def read_form_document(config: WorkbenchConfig) -> FormDocument:
     except json.JSONDecodeError as exc:
         raise WorkbenchFormError(f"{config.form} is not JSON: {exc}", path=str(path)) from exc
     _refuse_page_widgets(config, parsed)
+    repairs = _grown_to_hold(parsed)
     try:
         spec = FormSpec.model_validate(parsed)
     except ValidationError as exc:
@@ -652,4 +715,4 @@ def read_form_document(config: WorkbenchConfig) -> FormDocument:
         raise WorkbenchFormError(
             f"{config.form} is not a workbench form: {where}: {first['msg']}", path=str(path)
         ) from exc
-    return FormDocument(with_quote_details(spec), form_revision(data))
+    return FormDocument(with_quote_details(spec), form_revision(data), tuple(repairs))

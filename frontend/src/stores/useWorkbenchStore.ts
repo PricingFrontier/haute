@@ -33,6 +33,12 @@ interface WorkbenchState {
    * the form store is loaded.
    */
   formDirty: boolean
+  /**
+   * How many times the server has said the form's file changed on disk (an edit by hand,
+   * a pull or a merge outside Haute, a save from another window): counted here, on the
+   * eager store, for the form store (a lazy chunk), which reads the file again at each.
+   */
+  formChanges: number
   /** The workbench's tables from the newest fetch that succeeded; null until one has. */
   tables: WorkbenchTables | null
   /**
@@ -73,6 +79,7 @@ const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
     set({ activeView: view })
   },
   formDirty: false,
+  formChanges: 0,
   tables: null,
   refreshTables: () => {
     if (!get().enabled) return null

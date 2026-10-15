@@ -180,6 +180,7 @@ def test_a_missing_form_is_the_blank_form_with_no_tables(project: Path) -> None:
     assert served.json() == {
         "form": json.loads(render_form(blank_form(project.name))),
         "revision": None,
+        "repairs": [],
     }
 
 
@@ -233,6 +234,7 @@ def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path
     assert client().get("/api/workbench/form").json() == {
         "form": renamed,
         "revision": saved.json()["revision"],
+        "repairs": [],
     }
     assert [t["name"] for t in client().get("/api/workbench/tables").json()["tables"]] == [
         "quote_details",
@@ -268,6 +270,42 @@ def test_a_save_against_a_form_that_changed_on_disk_is_refused_writing_nothing(
     )
     on_disk = json.loads((project / "forms" / "form.json").read_text(encoding="utf-8"))
     assert on_disk["schema"]["tables"][0]["name"] == "policy"
+
+
+def test_a_form_grown_to_open_says_what_grew_and_a_save_keeps_it(project: Path) -> None:
+    """A section too short for a component in it, as a merge can leave it, is grown as the
+    form is read and said; the file is as it was until a save writes the form as read."""
+    enable(project)
+    short = form(POLICY)
+    short["pages"][0]["sections"][0]["widgets"] = [
+        {
+            "id": "w_title",
+            "type": "heading",
+            "x": 0,
+            "y": 0,
+            "w": 200,
+            "h": 48,
+            "text": "Cover",
+            "description": "",
+            "size": "large",
+            "align": "left",
+            "show_when": {"match": "all", "conditions": []},
+        }
+    ]
+    short["pages"][0]["sections"][0]["height"] = 40
+    write_form(project, short)
+
+    served = client().get("/api/workbench/form").json()
+
+    assert served["repairs"] == [
+        'Section "s" grew from 40px to 48px tall to hold the Heading "Cover".'
+    ]
+    assert served["form"]["pages"][0]["sections"][0]["height"] == 48
+    saved = client().put(
+        "/api/workbench/form", json={"form": served["form"], "base_revision": served["revision"]}
+    )
+    assert saved.status_code == 200, saved.text
+    assert client().get("/api/workbench/form").json()["repairs"] == []
 
 
 def test_a_save_through_a_link_or_junction_on_the_forms_path_is_refused(

@@ -195,8 +195,8 @@ class WorkbenchTablesResponse(BaseModel):
     response_tables: list[WorkbenchTable] = Field(default_factory=list)
 
 
-class WorkbenchFormResponse(BaseModel):
-    """The workbench's form as its file holds it now, with the file's revision.
+class WorkbenchFormFile(BaseModel):
+    """The workbench's form as its file holds it, with the file's revision.
 
     ``revision`` is the file's content hash, which a save quotes as its ``base_revision``;
     null while the form has never been saved, when ``form`` is the blank form.
@@ -204,6 +204,14 @@ class WorkbenchFormResponse(BaseModel):
 
     form: FormSpec
     revision: str | None = None
+
+
+class WorkbenchFormResponse(WorkbenchFormFile):
+    """The workbench's form as its file holds it now, with the file's revision."""
+
+    #: What reading the file grew to open it: each section or sheet too small for a
+    #: component in it, said. The form holds them; the file, until it is saved.
+    repairs: list[str] = []
 
 
 class WorkbenchFormSaveRequest(BaseModel):
@@ -217,7 +225,7 @@ class WorkbenchFormSaveRequest(BaseModel):
     base_revision: str | None = None
 
 
-class WorkbenchFormSaveResponse(WorkbenchFormResponse, SaveCapture):
+class WorkbenchFormSaveResponse(WorkbenchFormFile, SaveCapture):
     """The form as written, with its new revision and the save's version capture."""
 
 

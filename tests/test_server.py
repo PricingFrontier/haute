@@ -2336,6 +2336,66 @@ class TestFileWatcher:
 
         assert len(broadcast_calls) == 0
 
+    @pytest.mark.parametrize(
+        ("workbench", "changed", "announced"),
+        [
+            ("enabled = true", ["forms/form.json"], ["workbench_form_changed"]),
+            # Once for a batch, however many events the write made.
+            ("enabled = true", ["forms/form.json", "forms/form.json"], ["workbench_form_changed"]),
+            (
+                'enabled = true\nform = "sheets/quote.json"',
+                ["sheets/quote.json"],
+                ["workbench_form_changed"],
+            ),
+            ("enabled = true", ["forms/other.json"], []),
+            ("enabled = false", ["forms/form.json"], []),
+        ],
+    )
+    def test_the_workbench_form_changed_on_disk_is_announced(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        workbench: str,
+        changed: list[str],
+        announced: list[str],
+    ):
+        """A change to the form file haute.toml names, by hand or by git outside Haute, is
+        announced so the workbench can read it again; other JSON is not the form."""
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        monkeypatch.chdir(pipeline_dir)
+        (pipeline_dir / "haute.toml").write_text(
+            f'[project]\nname = "x"\n\n[workbench]\n{workbench}\n', encoding="utf-8"
+        )
+        fake_changes = [(Change.modified, str(pipeline_dir / path)) for path in changed]
+
+        async def _fake_awatch(*dirs, **kw):
+            yield fake_changes
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        with (
+            patch("watchfiles.awatch", _fake_awatch),
+            patch("haute.server.broadcast", _capture_broadcast),
+            patch("haute.server.is_self_write", return_value=False),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run_file_watcher_and_drain())
+            finally:
+                loop.close()
+
+        assert [call["type"] for call in broadcast_calls] == announced
+        for call in broadcast_calls:
+            assert call["form"] == changed[0]
+
     def test_self_write_skips_broadcast(self, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch):
         """Changes during self-write cooldown should be skipped."""
         import asyncio
