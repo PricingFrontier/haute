@@ -65,6 +65,32 @@ export function resizeRect(rect: Rect, handle: Handle, dx: number, dy: number, m
   return { x: left, y: top, w: right - left, h: bottom - top }
 }
 
+/**
+ * A component grown, or shrunk, from its bottom-right corner by (dw, dh), as Ctrl and the
+ * arrow keys resize it: unsnapped, as a nudge moves it, and never under `min`.
+ */
+export function grownRect(rect: Rect, dw: number, dh: number, min: Size): Rect {
+  return { ...rect, w: Math.max(min.w, rect.w + dw), h: Math.max(min.h, rect.h + dh) }
+}
+
+/**
+ * Where a new component of `size` goes in a section holding `rects`, on a sheet `width`
+ * across, added without a pointer: the first place on the grid, row by row from the top
+ * and left to right along each, a grid step in from the section's top and left and
+ * `SECTION_FIT_GAP` clear of every component; below them all when no place above is free,
+ * at the sheet's left edge when it is as wide as the sheet.
+ */
+export function freePlace(rects: readonly Rect[], size: Size, width: number): { x: number; y: number } {
+  const gap = SECTION_FIT_GAP
+  const clear = (x: number, y: number) =>
+    rects.every((r) => x >= r.x + r.w + gap || x + size.w + gap <= r.x || y >= r.y + r.h + gap || y + size.h + gap <= r.y)
+  const below = rects.length === 0 ? GRID : Math.ceil((contentBottom(rects) + gap) / GRID) * GRID
+  for (let y = GRID; y < below; y += GRID) {
+    for (let x = GRID; x + size.w <= width; x += GRID) if (clear(x, y)) return { x, y }
+  }
+  return { x: Math.min(GRID, Math.max(0, width - size.w)), y: below }
+}
+
 /** A new component of `size` with its top-left corner at (px, py) on the sheet, snapped once where it lands. */
 export function placeAt(px: number, py: number, size: Size): Rect {
   return { x: px, y: py, ...size }

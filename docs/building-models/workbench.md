@@ -156,7 +156,10 @@ Preview, the sections under it move up to close the gap (see
 [Showing sheets, sections and components conditionally](#showing-sheets-sections-and-components-conditionally)).
 The palette on the left offers four components and a section; drag a component onto the
 sheet (a ghost shows where it lands) and it goes into the section under the top of the
-ghost:
+ghost. From the keyboard, Tab to an item and press Enter: a component goes into the
+selected section (or the selected component's, else the sheet's first) at the first free
+place, and is selected so the arrow keys move it; a section goes in after the selected
+one:
 
 - A **Table** shows columns of many-row tables as a grid that starts with its number of rows.
 - A **Collection** shows columns of one-row tables as labelled boxes, its number of boxes
@@ -214,7 +217,8 @@ to the grid. A component stays inside its section: it stops at the section's edg
 moves into another section only once its top is over it. Resizing a component past its
 section's bottom pushes the section's border down. It stays inside the sheet's width
 too, stopping at its edges; resizing it past the right edge widens the sheet. With a component selected (click it, or Tab to it), the
-arrow keys nudge it (Shift for a pixel), Ctrl+D duplicates it, Ctrl+C copies it, Delete
+arrow keys nudge it (Shift for a pixel), Ctrl and the arrow keys resize it from its
+bottom-right corner (Ctrl+Shift for a pixel), Ctrl+D duplicates it, Ctrl+C copies it, Delete
 or Backspace removes it and Escape deselects it; Ctrl+Z and Ctrl+Y undo and redo. Ctrl+V
 pastes what you copied onto the sheet showing, another sheet too: into the section you
 have selected (or the selected component's, else the section it came from, else the

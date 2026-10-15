@@ -450,7 +450,13 @@ Out of scope:
   across, a Chart 480 by 280 of columns, upright, unstacked, its rows numbered, its legend
   at the bottom and no data labels, a Heading 480 by 48 of medium size, aligned left),
   showing nothing yet, and selected.
-  A click adds nothing. The palette shares the node palette's open state, so collapsing it
+  A click adds nothing. Each item is a button in the tab order: Enter or Space adds its
+  component, at that size, into the selected section, else the selected component's,
+  else the sheet's first, at the first place free there (a grid step in from its top and
+  left, 16px clear of the others, row by row from the top, else below them all, the
+  section growing to hold it), selected and given the focus so the arrow keys move it, one
+  undo step; Section adds a section after the selected one, or the selected component's,
+  else at the sheet's foot, selected. The palette shares the node palette's open state, so collapsing it
   in either view collapses both; collapsed, it is the reveal strip with the compact
   switcher under it.
 - **The properties panel.** Selecting a component opens its panel on the right, Haute's
@@ -528,8 +534,10 @@ Out of scope:
 - **The sheet's keyboard.** While the sheets show and a component is selected: Escape
   deselects it, Delete or Backspace removes it, Ctrl/Cmd+D duplicates it (16px below and
   to the right, selected), Ctrl/Cmd+C copies it, a note saying so, and the arrow keys nudge it by a grid step, or a pixel with
-  Shift, a burst of nudges within 800ms being one undo step, kept inside its section, a
-  nudge that cannot move it recording nothing. While the sheets show, selected or not,
+  Shift, and with Ctrl/Cmd resize it from its bottom-right corner by as much, never under
+  its kind's least size, its section and the sheet growing to hold it as the handle's
+  resize grows them, a burst of nudges or resizes within 800ms being one undo step, kept
+  inside its section, a nudge or resize that cannot change it recording nothing. While the sheets show, selected or not,
   Ctrl/Cmd+V pastes a copy of the component copied, as it was when copied but for the
   columns the schema has lost since, which it no longer shows or tests, onto the sheet
   showing: into the section selected, else the selected component's, else the section it

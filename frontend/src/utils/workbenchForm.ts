@@ -8,7 +8,17 @@
 import type { ChartWidget, Condition, FieldRef, FormSchema, FormSpec, HeadingWidget, Page, SchemaColumn, SchemaTable, Section, ShowWhen, Theme } from "../api/types"
 import { ASCII_IDENTIFIER_RE, apiInputLabelIssue, apiInputLabelIssueMessage } from "./apiInputPorts"
 import { PYTHON_KEYWORDS } from "./globalConstants"
-import { BLANK_SECTION_HEIGHT, BLANK_SHEET_WIDTH, NEW_SECTION_HEIGHT, fittedSectionHeight, leastSectionHeight, leastSheetWidth, type Rect } from "./sheetGeometry"
+import {
+  BLANK_SECTION_HEIGHT,
+  BLANK_SHEET_WIDTH,
+  NEW_SECTION_HEIGHT,
+  fittedSectionHeight,
+  freePlace,
+  leastSectionHeight,
+  leastSheetWidth,
+  type Rect,
+  type Size,
+} from "./sheetGeometry"
 import { cellProblem, filled, isDay, parseTypedNumber, presetColumn, pricedRows, valuesBasis, type PricedRows, type RowsByTable } from "./sheetValues"
 import { columnKey, conditionFault, fieldKeys, neverShown, sheetVisibility, testLabel } from "./sheetVisibility"
 
@@ -645,6 +655,24 @@ export const addWidget = (spec: FormSpec, sectionId: string, widget: Widget): Fo
     section.widgets.push(kept)
     holdWidget(page, section, kept)
   })
+
+/**
+ * Add a new component of `type`, `size` but no wider than its sheet, to a section, at the
+ * first place free in it (`freePlace`), the section growing to hold it where that is below
+ * its foot, as adding one from the palette's keys does; with its id.
+ */
+export function addWidgetInFreePlace(spec: FormSpec, sectionId: string, type: WidgetType, size: Size): { spec: FormSpec; id: string } {
+  const found = findSection(spec, sectionId)
+  if (found === null) throw new Error(`No sheet has a section ${sectionId}`)
+  const fitted = { w: Math.min(size.w, found.page.width), h: size.h }
+  const widget = createWidget(type, { ...freePlace(found.section.widgets, fitted, found.page.width), ...fitted })
+  const next = edit(spec, (draft) => {
+    const { page, section } = findSection(draft, sectionId)!
+    section.widgets.push(widget)
+    holdWidget(page, section, widget)
+  })
+  return { spec: next, id: widget.id }
+}
 
 /**
  * What any component can be given; `rows` and the Table's options are a Table's alone,

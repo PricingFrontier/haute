@@ -20,6 +20,8 @@ import {
   cutRun,
   fittedSectionHeight,
   fitZoom,
+  freePlace,
+  grownRect,
   leastSectionHeight,
   leastSheetWidth,
   moveRect,
@@ -70,6 +72,28 @@ describe("sheetGeometry", () => {
     expect(placeAt(13, -20, { w: 240, h: 64 })).toEqual({ x: 13, y: -20, w: 240, h: 64 })
     expect(contentRight([rect, { x: 0, y: 0, w: 400, h: 10 }])).toBe(400)
     expect(contentRight([])).toBe(0)
+  })
+
+  it("finds the first place free for a new component: a grid step in, row by row from the top, 16 clear of the others, else below them all", () => {
+    // An empty section: a grid step in from its top left.
+    expect(freePlace([], { w: 480, h: 48 }, 936)).toEqual({ x: GRID, y: GRID })
+    // Beside one, 16 clear, while the sheet is wide enough.
+    const boxes = { x: 16, y: 16, w: 400, h: 120 }
+    expect(freePlace([boxes], { w: 480, h: 280 }, 936)).toEqual({ x: 432, y: 8 })
+    // Not wide enough beside it: below it, 16 clear.
+    expect(freePlace([boxes], { w: 480, h: 280 }, 900)).toEqual({ x: 8, y: 152 })
+    // Above another where it fits, the rows read from the top.
+    const grid = { x: 16, y: 160, w: 720, h: 200 }
+    expect(freePlace([boxes, grid], { w: 480, h: 48 }, 936)).toEqual({ x: 432, y: 8 })
+    // Too tall to fit above it: below them all.
+    expect(freePlace([boxes, grid], { w: 480, h: 280 }, 936)).toEqual({ x: 8, y: 376 })
+    // As wide as the sheet: at its left edge, below them all.
+    expect(freePlace([boxes], { w: 936, h: 48 }, 936)).toEqual({ x: 0, y: 152 })
+  })
+
+  it("grows or shrinks a component from its bottom right corner by what is given, unsnapped, never under its least size", () => {
+    expect(grownRect(rect, 8, -1, min)).toEqual({ x: 96, y: 96, w: 208, h: 63 })
+    expect(grownRect(rect, -500, -500, min)).toEqual({ x: 96, y: 96, w: 80, h: 56 })
   })
 
   it("tells how far down components reach, and the least and the fitted height of a section holding them", () => {

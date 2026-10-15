@@ -15,7 +15,7 @@
  * holding the focus kept in place on the screen.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
@@ -591,6 +591,39 @@ describe("SheetCanvas", () => {
     expect(heights()).toEqual([560])
     expect(useWorkbenchViewStore.getState().selectedId).toBe(added.id)
     expect(useWorkbenchViewStore.getState().creating).toBeNull()
+  })
+
+  it("adds a component on Enter on its palette item, at the first place free in the selected section, selected and focused; a Section after it", async () => {
+    render(
+      <>
+        <WorkbenchPalette />
+        <SheetCanvas />
+      </>,
+    )
+
+    // Nothing selected: the sheet's first section, beside the Collection, above the Table.
+    fireEvent.keyDown(screen.getByTestId("palette-item-heading"), { key: "Enter" })
+    const heading = widgetsOf(currentForm())[2]
+    expect(heading).toMatchObject({ type: "heading", x: 432, y: 8, w: 480, h: 48 })
+    expect(useWorkbenchViewStore.getState().selectedId).toBe(heading.id)
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId(`sheet-widget-${heading.id}`)))
+    // The undo step it is: one.
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
+
+    // Space too, as for a button: a Chart, too tall to fit above the Table, goes below it all, the section growing.
+    fireEvent.keyDown(screen.getByTestId("palette-item-chart"), { key: " " })
+    const chart = widgetsOf(currentForm())[3]
+    expect(chart).toMatchObject({ type: "chart", x: 8, y: 376 })
+    expect(heights()).toEqual([656])
+
+    // A Section goes in after the selected component's section, selected.
+    fireEvent.keyDown(screen.getByTestId("palette-item-section"), { key: "Enter" })
+    const sections = currentForm().pages[0].sections
+    expect(sections).toHaveLength(2)
+    expect(useWorkbenchViewStore.getState().sectionId).toBe(sections[1].id)
+    // With that section selected, a component goes into it.
+    fireEvent.keyDown(screen.getByTestId("palette-item-collection"), { key: "Enter" })
+    expect(widgetsOf(currentForm(), 0, 1)).toMatchObject([{ type: "collection", x: 8, y: 8 }])
   })
 
   it("adds a component dropped out of the palette to the section the ghost's top edge is over, kept inside it, the ghost drawn where it lands", () => {

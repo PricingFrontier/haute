@@ -294,6 +294,30 @@ describe("useWorkbenchShortcuts on the sheets", () => {
     expect([forms().undoStack.length, forms().redoStack.length]).toEqual([1, 0])
   })
 
+  it("resizes from the bottom right corner with Ctrl and the arrows, by a grid step or a pixel with Shift, a burst one undo step, never under its least size", () => {
+    vi.useFakeTimers()
+    const forms = useWorkbenchFormStore.getState
+    key({ key: "ArrowRight", ctrlKey: true })
+    key({ key: "ArrowDown", metaKey: true })
+    key({ key: "ArrowLeft", ctrlKey: true, shiftKey: true })
+    expect(widgets()[0]).toMatchObject({ x: 16, y: 16, w: 407, h: 128 })
+    expect(forms().undoStack).toHaveLength(1)
+
+    // Held at a Collection's least height, 72: the press past it records nothing.
+    vi.advanceTimersByTime(1000)
+    for (let press = 0; press < 7; press += 1) key({ key: "ArrowUp", ctrlKey: true })
+    expect(widgets()[0]).toMatchObject({ h: 72 })
+    expect(forms().undoStack).toHaveLength(2)
+    vi.advanceTimersByTime(1000)
+    key({ key: "ArrowUp", ctrlKey: true })
+    expect(forms().undoStack).toHaveLength(2)
+
+    // Past the sheet's right edge, the sheet widens, as a resize by the handle widens it.
+    act(() => forms().change((spec) => updateWidget(spec, "w_boxes", { w: 920 })))
+    key({ key: "ArrowRight", ctrlKey: true })
+    expect(currentForm().pages[0].width).toBe(944)
+  })
+
   it("fits the sheet on Ctrl+1", () => {
     const fitZoom = vi.fn()
     useWorkbenchViewStore.setState({ fitZoom })

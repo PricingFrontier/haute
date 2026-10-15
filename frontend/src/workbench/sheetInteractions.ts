@@ -35,6 +35,7 @@ import {
 import {
   addSection,
   addWidget,
+  addWidgetInFreePlace,
   createSection,
   createWidget,
   findSection,
@@ -281,6 +282,38 @@ export function startCreate(e: ReactPointerEvent, type: PaletteType): void {
     creating = null
     setCreating(null)
   }
+}
+
+/**
+ * Add what a palette item makes without a pointer, as Enter on it does: a component into
+ * the selected section, else the selected component's, else the sheet's first, at the
+ * first place free there (`addWidgetInFreePlace`); a section after the selected one, or
+ * the selected component's, else at the sheet's foot. What is added is selected, and its
+ * id answered: a component's, for the palette to give it the focus; null for a section.
+ */
+export function createWithoutPointer(type: PaletteType): string | null {
+  const { form, change } = useWorkbenchFormStore.getState()
+  if (form === null) return null
+  const view = useWorkbenchViewStore.getState()
+  const page = activePage(form, view.pageId)
+  const selected = view.selectedId === null ? null : findWidget(form, view.selectedId)
+  const at = page.sections.findIndex((section) => section.id === (view.sectionId ?? selected?.section.id))
+  if (type === "section") {
+    const section = createSection(page)
+    change((spec) => addSection(spec, page.id, section, at === -1 ? page.sections.length : at + 1))
+    view.showPage(page.id)
+    view.selectSection(section.id)
+    return null
+  }
+  let id = ""
+  change((spec) => {
+    const added = addWidgetInFreePlace(spec, page.sections[Math.max(at, 0)].id, type, WIDGET_KINDS[type].size)
+    id = added.id
+    return added.spec
+  })
+  view.showPage(page.id)
+  view.select(id)
+  return id
 }
 
 /**

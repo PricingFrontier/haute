@@ -43,6 +43,7 @@ import {
   orderItems,
   pageProblems,
   pasteWidget,
+  addWidgetInFreePlace,
   placeWidget,
   plottable,
   pricingBasis,
@@ -1229,6 +1230,28 @@ describe("sections", () => {
     const roomy = duplicateWidget(setSectionHeight(spec, "s_policy", 400), "w_boxes")
     expect(findWidget(roomy.spec, roomy.id)?.widget).toMatchObject({ x: 32, y: 32 })
     expect(heights(roomy.spec)).toEqual([400, 232, 48])
+  })
+
+  it("adds a new component at the first place free in a section, the section growing to hold it and the sheet's width kept", () => {
+    const spec = stacked()
+    const added = (next: { spec: FormSpec; id: string }) => findWidget(next.spec, next.id)
+
+    // Beside Policy's Collection, Policy growing to hold it.
+    const chart = addWidgetInFreePlace(spec, "s_policy", "chart", { w: 480, h: 280 })
+    expect(added(chart)).toMatchObject({ section: { id: "s_policy" }, widget: { type: "chart", x: 432, y: 8, w: 480, h: 280, title: "", fields: [] } })
+    expect(heights(chart.spec)).toEqual([288, 232, 48])
+    // No room beside Equipment's Table: below it, Equipment growing.
+    const table = addWidgetInFreePlace(spec, "s_equipment", "tableInput", { w: 720, h: 200 })
+    expect(added(table)?.widget).toMatchObject({ x: 8, y: 232 })
+    expect(heights(table.spec)).toEqual([136, 432, 48])
+    // Into the empty Notes.
+    expect(added(addWidgetInFreePlace(spec, "s_notes", "heading", { w: 480, h: 48 }))?.widget).toMatchObject({ x: 8, y: 8, text: "" })
+    // Wider than its sheet: as wide as the sheet, which keeps its width.
+    const narrow = { ...blank(), pages: [{ ...blank().pages[0], width: 600 }] }
+    const wide = addWidgetInFreePlace(narrow, narrow.pages[0].sections[0].id, "tableInput", { w: 720, h: 200 })
+    expect(added(wide)?.widget).toMatchObject({ x: 0, y: 8, w: 600 })
+    expect(wide.spec.pages[0].width).toBe(600)
+    expect(() => addWidgetInFreePlace(spec, "missing", "chart", { w: 480, h: 280 })).toThrow("No sheet has a section missing")
   })
 
   it("pastes a copy where its component sat, past one already there, into any section, kept inside it, the original untouched", () => {

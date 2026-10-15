@@ -18,7 +18,7 @@ that fill the sheets from databases and APIs.
 2026](workbench-review-2026-10-15.md) of what pull requests #303 to #309 built. Each names
 the review's findings it closes (`CX-n`, `FB-n`, `TQ-n`, `SD-n`, `MS-n`), and the review
 holds their evidence. `WB-23` prices Preview in one run of the pipeline; `WB-25` waits on
-the app's sign-in, and `WB-26` on decisions about building the sheets without a pointer.
+the app's sign-in, and `WB-26` on a decision about Tables of output columns alone.
 
 ## Priorities
 
@@ -33,7 +33,7 @@ the app's sign-in, and `WB-26` on decisions about building the sheets without a 
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, sees which quotes are about to lapse, records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-23 | Planned | P3 | Preview prices every table of the Workbench Output from one run of the pipeline, as the app prices a quote in one scoring call. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
-| WB-26 | Decision | P3 | A component is added to a sheet and resized from the keyboard, and a Table of output columns alone shows its rows, or says why it has none. |
+| WB-26 | Decision | P3 | A Table of output columns alone shows the answer's rows, or says why it has none. |
 
 ## Planned improvements
 
@@ -422,29 +422,25 @@ misconfiguration either way.
 headers when the release names its host); `frontend/src/app/useOpenQuoteStore.ts::openNew`
 (`asRenewal`, the browser's tick).
 
-### WB-26 — Building the sheets without a pointer, and Tables of outputs alone
-**Why:** Two gaps the [review](workbench-review-2026-10-15.md) found, each a choice for the
-owner before a slice:
-- A component reaches the sheet only by dragging it out of the palette, and is resized
-  only by its handles: the arrow keys move a selected component but nothing adds or
-  resizes one (FB-40).
-- A Table whose fields are all output columns draws a dash in each cell with no reason,
-  where a Chart of the same columns plots the first output table's answer (FB-41).
+### WB-26 — Tables of outputs alone
+**Why:** A Table's rows come from the input tables whose columns it shows, so a Table whose
+fields are all output columns, such as a premium by peril, has none to count: it draws its
+starting rows of dashes, after pricing too, where a Chart of the same columns plots the
+first output table's answer (FB-41, from the [review](workbench-review-2026-10-15.md)).
 
-**Plan:** Decisions first, recorded here before a slice:
-- FB-40: whether Enter on a palette item adds it to the selected section, or the first,
-  at the first place free, selected; and which keys resize the selected component on
-  the grid, as the arrow keys move it.
-- FB-41: whether a Table of outputs alone takes its rows from the first output table's
-  answer, the others matched by key, as a Chart does, or names in its place why it has
-  no rows.
+**Plan:** A decision first, recorded here before the slice: whether a Table of outputs
+alone takes its rows from the first output table's answer, the others matched by key,
+read only and empty before the first price, as a Chart does, which the owner leans to; or
+names in its place why it has no rows.
 
-**Acceptance:** Set by each decision.
+**Acceptance:** Set by the decision. For the first: in Preview and in the app, a Table of
+an output table's columns alone shows a row for each of the answer's rows once priced,
+none before, and takes no typing, as a Chart of the same columns plots them.
 
 **Dependencies:** None.
 
-**Evidence:** `frontend/src/workbench/WorkbenchPalette.tsx` (items dragged, no key adds
-one); `frontend/src/workbench/useWorkbenchShortcuts.ts` (the arrow keys nudge, none
-resize); `frontend/src/workbench/WidgetBody.tsx` (a value not held drawn as a dash);
-`frontend/src/utils/sheetChart.ts::sheetChartData` (a Chart's rows from the first output
-table's answer).
+**Evidence:** `frontend/src/workbench/sheet/FieldGrid.tsx` (a grid's rows counted from its
+input tables, its starting rows while they hold none);
+`frontend/src/workbench/sheet/fieldCells.ts` (an output cell without a value drawn as a
+dash); `frontend/src/utils/sheetChart.ts::sheetChartData` (a Chart's rows from the first
+output table's answer).

@@ -75,6 +75,7 @@ export default memo(function SheetWidget({
       title={problem ?? undefined}
       tabIndex={editable ? 0 : undefined}
       data-testid={`sheet-widget-${widget.id}`}
+      data-widget={widget.id}
       data-selected={selected ? "true" : undefined}
       className={`group focus-ring absolute ${editable ? "cursor-move" : ""}`}
       style={{ left: widget.x, top: widget.y, width: widget.w, height: widget.h, zIndex: layer }}

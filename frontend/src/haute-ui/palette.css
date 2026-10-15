@@ -69,6 +69,11 @@
 .palette-item:hover {
   background: var(--chrome-hover);
 }
+.palette-item:focus-visible {
+  outline: none;
+  background: var(--chrome-hover);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
 /* After :hover and :active, which it outranks by coming later. */
 .palette-item.palette-item-disabled {
   opacity: 0.35;

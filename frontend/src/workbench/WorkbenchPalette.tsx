@@ -1,14 +1,15 @@
 import { PaletteColumn, PaletteHeader, PaletteItem, PaletteItems, PaletteRevealStrip } from "../haute-ui"
 import useUIStore from "../stores/useUIStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
-import { startCreate } from "./sheetInteractions"
+import { createWithoutPointer, startCreate } from "./sheetInteractions"
 import ViewSwitcher from "./ViewSwitcher"
 import { PALETTE_KINDS, paletteKind } from "./widgetKinds"
 
 /**
  * The workbench's left column (specs/workbench), in Haute's palette shell: the components
- * a sheet can hold and a section, dragged onto it while building and disabled in Preview,
- * and the view switcher at the bottom. It shares the node palette's open state, so collapsing it in
+ * a sheet can hold and a section, dragged onto it while building, or added by Enter (or
+ * Space) on the item, a component then taking the focus, and disabled in Preview, and the
+ * view switcher at the bottom. It shares the node palette's open state, so collapsing it in
  * either view collapses both; collapsed, it is the reveal strip with the compact switcher
  * under it.
  */
@@ -41,7 +42,21 @@ export default function WorkbenchPalette() {
               color={kind.color}
               disabled={previewing}
               title={previewing ? "Build to lay out the sheets" : kind.hint}
+              role="button"
+              tabIndex={previewing ? -1 : 0}
+              aria-keyshortcuts={previewing ? undefined : "Enter"}
               onPointerDown={previewing ? undefined : (event) => startCreate(event, type)}
+              onKeyDown={
+                previewing
+                  ? undefined
+                  : (event) => {
+                      if (event.key !== "Enter" && event.key !== " ") return
+                      event.preventDefault()
+                      const id = createWithoutPointer(type)
+                      // Once drawn, the new component takes the focus, so the arrows move it.
+                      if (id !== null) requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-widget="${id}"]`)?.focus())
+                    }
+              }
             />
           )
         })}
