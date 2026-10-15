@@ -2,9 +2,12 @@
  * The one question the page asks at a time (specs/frontend-shared), in a dialog of the
  * page's own (`QuestionDialog`), never the browser's: whether to go on with an action that
  * deletes or discards, a second way on beside it (Skip these, beside Replace), and a
- * reason when one is needed. A question asked while another is open answers that one no.
+ * reason when one is needed. A question asked while another is open answers that one no,
+ * and so does the pipeline's document adopted anew (a branch switched, a change on disk):
+ * what the question was asked of may be gone, or another thing under the same id.
  */
 import { create } from "zustand"
+import useDocumentStatusStore from "./useDocumentStatusStore"
 
 export interface QuestionAsked {
   title: string
@@ -58,6 +61,10 @@ const useQuestionStore = create<QuestionState>()((set, get) => ({
     question?.answer(answer)
   },
 }))
+
+useDocumentStatusStore.subscribe((state, previous) => {
+  if (state.executionGeneration !== previous.executionGeneration) useQuestionStore.getState().answer(null)
+})
 
 /** Ask whether to go on; true for yes. */
 export async function confirmed(question: Omit<QuestionAsked, "other" | "reason">): Promise<boolean> {

@@ -3,6 +3,7 @@
  * first no, and `confirmed` true for yes alone.
  */
 import { afterEach, describe, expect, it } from "vitest"
+import useDocumentStatusStore from "../useDocumentStatusStore"
 import useQuestionStore, { confirmed } from "../useQuestionStore"
 
 describe("useQuestionStore", () => {
@@ -18,6 +19,13 @@ describe("useQuestionStore", () => {
 
     expect(await first).toBe(false)
     expect(await second).toEqual({ choice: "other", reason: "because" })
+    expect(useQuestionStore.getState().question).toBeNull()
+  })
+
+  it("is answered no as the pipeline's document is adopted anew", async () => {
+    const asked = confirmed({ title: "Delete it?", confirm: "Delete" })
+    useDocumentStatusStore.setState((state) => ({ executionGeneration: state.executionGeneration + 1 }))
+    expect(await asked).toBe(false)
     expect(useQuestionStore.getState().question).toBeNull()
   })
 

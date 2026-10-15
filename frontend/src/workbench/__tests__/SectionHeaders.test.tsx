@@ -12,6 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, renderHook, screen, within } from "@testing-library/react"
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { findSection, findWidget, renameSection, withSampleCell } from "../../utils/workbenchForm"
@@ -200,6 +201,20 @@ describe("SectionHeaders", () => {
     // Without Alt an arrow is not the bar's.
     expect(fireEvent.keyDown(bar("s_flood"), { key: "ArrowDown" })).toBe(true)
     expect(order()).toEqual(["s_flood", "s_policy", "s_notes"])
+  })
+
+  it("deletes nothing once the pipeline's document is adopted anew while it asks", async () => {
+    render(<SheetCanvas />)
+
+    fireEvent.keyDown(bar("s_flood"), { key: "Delete" })
+    expect(asked()).not.toBeNull()
+    // A branch switched meanwhile: the form read anew may hold another section of that id.
+    act(() => useDocumentStatusStore.setState((state) => ({ executionGeneration: state.executionGeneration + 1 })))
+    await act(async () => undefined)
+
+    expect(asked()).toBeNull()
+    expect(order()).toEqual(SECTIONS)
+    expect(undoSteps()).toBe(0)
   })
 
   it("deletes the focused bar's section with Delete or Backspace, asking first while components are in it, and never a sheet's last", async () => {

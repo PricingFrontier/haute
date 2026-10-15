@@ -277,6 +277,52 @@ describe("useOpenQuoteStore", () => {
     expect(store().quote?.latest).toBe(2)
   })
 
+  it("writes a quote made from another once though it is saved as it opened and its answer is lost", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    vi.mocked(carryAppQuote).mockResolvedValue({ values: VALUES, dropped: [] })
+    vi.mocked(createAppQuote)
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValue(answer({ id: "q2", reference: "Q-000002" }, { values: VALUES, tables: null }))
+    const from = { quoteId: "q1", revision: 1, relation: "duplicate" as const }
+    await store().openNew(from)
+    await store().save()
+
+    // The page is reloaded: the create still to be answered is offered back, though the
+    // values are as they opened, and restored it is repeated with its operation key.
+    store().close()
+    await store().openNew(from)
+    expect(store().recovered?.pending).not.toBeNull()
+    store().restoreDraft()
+    await store().save()
+
+    const creates = vi.mocked(createAppQuote).mock.calls.map(([body]) => body)
+    expect(creates).toHaveLength(2)
+    expect(creates[1].operation).toBe(creates[0].operation)
+    expect(store().quote?.reference).toBe("Q-000002")
+  })
+
+  it("keeps a duplicate's draft and lost create apart from an alternative made from the same revision", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    vi.mocked(carryAppQuote).mockResolvedValue({ values: VALUES, dropped: [] })
+    vi.mocked(createAppQuote)
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValue(answer({ id: "q3", reference: "Q-000003", relation: "alternative" }))
+    await store().openNew({ quoteId: "q1", revision: 1, relation: "duplicate" })
+    preview().setCell("policy", 0, "policy.state", "TX")
+    await store().save()
+
+    store().close()
+    await store().openNew({ quoteId: "q1", revision: 1, relation: "alternative" })
+    // The duplicate's draft is not the alternative's.
+    expect(store().recovered).toBeNull()
+    preview().setCell("policy", 0, "policy.state", "TX")
+    await store().save()
+
+    const [duplicate, alternative] = vi.mocked(createAppQuote).mock.calls
+    expect(alternative[1]).toEqual({ quote_id: "q1", revision: 1, relation: "alternative" })
+    expect(alternative[0].operation).not.toBe(duplicate[0].operation)
+  })
+
   it("makes no change while a save is being made, and no save while a change is", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     let saving_: (value: WorkbenchAppQuoteResponse) => void = () => {}
@@ -702,6 +748,23 @@ describe("useOpenQuoteStore", () => {
     await before
 
     expect(store().history?.revisions.map((revision) => revision.number)).toEqual([1, 2])
+  })
+
+  it("says nothing of an earlier history read that fails after a later one answered", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    const settles: Array<{ resolve: (value: WorkbenchAppQuoteHistoryResponse) => void; reject: (error: Error) => void }> = []
+    vi.mocked(fetchAppQuoteHistory).mockImplementation(() => new Promise((resolve, reject) => { settles.push({ resolve, reject }) }))
+    await store().openQuote("q1", null)
+
+    const before = store().loadHistory()
+    const after = store().loadHistory()
+    settles[1].resolve({ revisions: [], events: [], source: null, derived: [] })
+    await after
+    settles[0].reject(new Error("down"))
+    await before
+
+    expect(store().history).not.toBeNull()
+    expect(store().error).toBeNull()
   })
 
   it("keeps the newest open when an earlier one answers last", async () => {

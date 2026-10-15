@@ -156,12 +156,19 @@ export const busy = (state: Pick<OpenQuoteState, "saving" | "changing">): boolea
 /** Whoever is signed in may change quotes: false for one who may only read them. */
 export const canEdit = (): boolean => useAppStore.getState().release?.can_edit ?? true
 
+/**
+ * Which new quote the open one is: a plain one, or one made from a quote's revision as a
+ * duplicate, a renewal or an alternative, each a quote of its own, so neither its draft nor
+ * a write held after a lost answer is taken for another's.
+ */
+const newQuoteName = (source: QuoteSource | null): string =>
+  source === null ? "new" : `new-from-${source.quoteId}-${source.revision}-${source.relation}`
+
 /** The open quote's draft key in this browser. */
 export function openDraftKey(state: Pick<OpenQuoteState, "quote" | "source">): string | null {
   const { release } = useAppStore.getState()
   if (release === null) return null
-  const which = state.quote?.id ?? (state.source === null ? "new" : `new-from-${state.source.quoteId}-${state.source.revision}`)
-  return draftKey(release.pipeline_name || "app", release.principal, which)
+  return draftKey(release.pipeline_name || "app", release.principal, state.quote?.id ?? newQuoteName(state.source))
 }
 
 /** Put `form` on the sheets, the release's or a quote's older ones. */
@@ -265,15 +272,16 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
   }
 
   /**
-   * Offer back what this browser kept of the open quote, when it differs from what is saved
-   * and the quote may change as it is shown.
+   * Offer back what this browser kept of the open quote, when it differs from what is saved,
+   * or holds a write whose answer was lost, and the quote may change as it is shown.
    */
   const offerDraft = (): void => {
     const key = openDraftKey(get())
     const draft = key === null || readOnlyReason(get()) !== null ? null : readDraft(key)
-    // Offered only when it differs from the sheet: values already there are not offered back.
+    // Offered only when it differs from the sheet, values already there not offered back,
+    // or when a write is held: restored, it is repeated, so it is written once.
     const shown = valuesKey(useWorkbenchPreviewStore.getState().quote)
-    set({ recovered: draft !== null && valuesKey(draft.values) !== shown ? draft : null })
+    set({ recovered: draft !== null && (valuesKey(draft.values) !== shown || draft.pending !== null) ? draft : null })
   }
 
   const keepDraft = (): boolean => {
@@ -281,7 +289,11 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     // Only a quote open, and as it may change, has values of its own to keep.
     if (key === null || get().status !== "ready" || readOnlyReason(get()) !== null) return true
     const values = useWorkbenchPreviewStore.getState().quote
-    if (valuesKey(values) === get().baseline) {
+    // A draft offered back and not yet answered keeps the write it held.
+    const pending = get().pending ?? get().recovered?.pending ?? null
+    // Values as they opened keep nothing, unless a write of them is held: a quote made from
+    // another and saved as it opened, its answer lost, is written once.
+    if (valuesKey(values) === get().baseline && pending === null) {
       // A draft offered back and not yet answered stays offered.
       if (get().recovered === null) clearDraft(key)
       return true
@@ -294,8 +306,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       // Named on the sheets installed, the ones typed into.
       places: sheets === null ? {} : cellPlaces(sheets, values),
       keptAt: new Date().toISOString(),
-      // A draft offered back and not yet answered keeps the write it held.
-      pending: get().pending ?? get().recovered?.pending ?? null,
+      pending,
     })
   }
 
@@ -515,7 +526,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
         if (readOnlyReason(get()) !== null || (quote !== null && base === null)) return null
         if (quote !== null) return nextRevision()
         const from = source === null ? null : { quote_id: source.quoteId, revision: source.revision, relation: source.relation }
-        return prepare("new", (body) => ({ kind: "create", body, source: from }))
+        return prepare(newQuoteName(source), (body) => ({ kind: "create", body, source: from }))
       })
     },
 
@@ -623,7 +634,10 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
         const history = await fetchAppQuoteHistory(quote.id)
         if (loads.is(session) && historyAsked.is(asked) && get().quote?.id === quote.id) set({ history })
       } catch (error: unknown) {
-        if (loads.is(session)) set({ error: `The quote's history could not be read: ${apiErrorMessage(error)}` })
+        // A read asked for since answers in its place.
+        if (loads.is(session) && historyAsked.is(asked) && get().quote?.id === quote.id) {
+          set({ error: `The quote's history could not be read: ${apiErrorMessage(error)}` })
+        }
       }
     },
 
