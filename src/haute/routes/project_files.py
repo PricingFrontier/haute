@@ -26,7 +26,6 @@ from haute import _git
 from haute._artifact_paths import PathProblem, ordinary_path_problem
 from haute._file_ops import ensure_disk_headroom, publish_staged_file
 from haute._git_core import _is_git_repo, git_binary_available
-from haute._git_lock import repository_mutation
 from haute._git_read_models import FileState
 from haute._git_state import read_working_branch
 from haute._logging import get_logger
@@ -39,7 +38,7 @@ from haute._project_layout import (
 )
 from haute._sandbox import _get_project_root
 from haute.hosted import databricks_app_environment
-from haute.routes._helpers import save_lock
+from haute.routes._helpers import project_write
 from haute.routes._save_pipeline import LedgerCapture, capture_save_in_ledger
 from haute.schemas import (
     ProjectFileDeleteResponse,
@@ -400,46 +399,43 @@ def _publish_write(
     project_root = _get_project_root().resolve()
     target = plan.target
     display = target.project_relative
-    with repository_mutation(project_root):
-        if target.place.name == "pipeline" and read_working_branch(project_root) != plan.branch:
-            raise _refusal(
-                409,
-                "branch_changed",
-                "The branch changed while the file was uploading, so nothing was written. "
-                "Add it again on this branch.",
-            )
-        _target(project_root, target.place.name, target.relative)
-        current = target.path.stat() if target.path.is_file() else None
-        if replace_revision is None and (current is not None or target.path.exists()):
-            raise _refusal(409, "file_exists", f"{display} already exists.")
-        if replace_revision is not None and (
-            current is None or _revision(current) != replace_revision
-        ):
-            raise _refusal(
-                412,
-                "file_changed",
-                f"{display} changed since you chose to replace it. Look again, then retry.",
-            )
-        try:
-            publish_staged_file(staging, target.path, replace=replace_revision is not None)
-        except FileExistsError:
-            raise _refusal(409, "file_exists", f"{display} already exists.") from None
-        except PermissionError:
-            raise _refusal(
-                409,
-                "file_in_use",
-                f"{display} is open in Haute or another program. Try again once it's closed.",
-            ) from None
-        written = target.path.stat()
-        warnings: list[str] = []
-        captured = LedgerCapture(None, False, [])
-        status: FileState | None = None
-        if target.place.name == "pipeline":
-            verb = "Replaced" if replace_revision is not None else "Added"
-            captured = capture_save_in_ledger(
-                project_root, [display], warnings, message=f"{verb} {display}"
-            )
-            status = _state(_git.pipeline_file_states(display, cwd=project_root), display)
+    if target.place.name == "pipeline" and read_working_branch(project_root) != plan.branch:
+        raise _refusal(
+            409,
+            "branch_changed",
+            "The branch changed while the file was uploading, so nothing was written. "
+            "Add it again on this branch.",
+        )
+    _target(project_root, target.place.name, target.relative)
+    current = target.path.stat() if target.path.is_file() else None
+    if replace_revision is None and (current is not None or target.path.exists()):
+        raise _refusal(409, "file_exists", f"{display} already exists.")
+    if replace_revision is not None and (current is None or _revision(current) != replace_revision):
+        raise _refusal(
+            412,
+            "file_changed",
+            f"{display} changed since you chose to replace it. Look again, then retry.",
+        )
+    try:
+        publish_staged_file(staging, target.path, replace=replace_revision is not None)
+    except FileExistsError:
+        raise _refusal(409, "file_exists", f"{display} already exists.") from None
+    except PermissionError:
+        raise _refusal(
+            409,
+            "file_in_use",
+            f"{display} is open in Haute or another program. Try again once it's closed.",
+        ) from None
+    written = target.path.stat()
+    warnings: list[str] = []
+    captured = LedgerCapture(None, False, [])
+    status: FileState | None = None
+    if target.place.name == "pipeline":
+        verb = "Replaced" if replace_revision is not None else "Added"
+        captured = capture_save_in_ledger(
+            project_root, [display], warnings, message=f"{verb} {display}"
+        )
+        status = _state(_git.pipeline_file_states(display, cwd=project_root), display)
     logger.info("project_file_written", path=display, size=written.st_size, sha=captured.git_sha)
     return ProjectFileWriteResponse(
         path=target.relative,
@@ -486,8 +482,9 @@ async def write_project_file(
             raise _refusal(
                 400, "length_mismatch", f"The upload of {display} ended before it was complete."
             )
-        async with save_lock:
-            return await run_in_threadpool(_publish_write, plan, staging, replace_revision)
+        return await project_write(
+            _get_project_root().resolve(), lambda: _publish_write(plan, staging, replace_revision)
+        )
     except OSError as exc:
         if exc.errno == errno.ENOSPC:
             raise _refusal(507, "disk_full", f"There isn't room on disk for {display}.") from None
@@ -521,30 +518,29 @@ def _delete(place: ProjectFilePlace, path: str, revision: str) -> ProjectFileDel
     project_root = _get_project_root().resolve()
     target = _writable_file_target(project_root, place, path)
     display = target.project_relative
-    with repository_mutation(project_root):
-        _target(project_root, target.place.name, target.relative)
-        if not target.path.is_file():
-            raise _refusal(404, "file_missing", f"{display} doesn't exist.")
-        if _revision(target.path.stat()) != revision:
-            raise _refusal(
-                412,
-                "file_changed",
-                f"{display} changed since you chose to delete it. Look again, then retry.",
-            )
-        try:
-            target.path.unlink()
-        except PermissionError:
-            raise _refusal(
-                409,
-                "file_in_use",
-                f"{display} is open in Haute or another program. Try again once it's closed.",
-            ) from None
-        warnings: list[str] = []
-        captured = LedgerCapture(None, False, [])
-        if target.place.name == "pipeline":
-            captured = capture_save_in_ledger(
-                project_root, [display], warnings, message=f"Deleted {display}"
-            )
+    _target(project_root, target.place.name, target.relative)
+    if not target.path.is_file():
+        raise _refusal(404, "file_missing", f"{display} doesn't exist.")
+    if _revision(target.path.stat()) != revision:
+        raise _refusal(
+            412,
+            "file_changed",
+            f"{display} changed since you chose to delete it. Look again, then retry.",
+        )
+    try:
+        target.path.unlink()
+    except PermissionError:
+        raise _refusal(
+            409,
+            "file_in_use",
+            f"{display} is open in Haute or another program. Try again once it's closed.",
+        ) from None
+    warnings: list[str] = []
+    captured = LedgerCapture(None, False, [])
+    if target.place.name == "pipeline":
+        captured = capture_save_in_ledger(
+            project_root, [display], warnings, message=f"Deleted {display}"
+        )
     logger.info("project_file_deleted", path=display, sha=captured.git_sha)
     return ProjectFileDeleteResponse(path=target.relative, warnings=warnings, **captured._asdict())
 
@@ -554,5 +550,6 @@ async def delete_project_file(
     place: ProjectFilePlace, path: str, revision: str
 ) -> ProjectFileDeleteResponse:
     """Delete one file, if it is still the revision the analyst saw."""
-    async with save_lock:
-        return await run_in_threadpool(_delete, place, path, revision)
+    return await project_write(
+        _get_project_root().resolve(), lambda: _delete(place, path, revision)
+    )

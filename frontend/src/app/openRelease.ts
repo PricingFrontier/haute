@@ -4,7 +4,6 @@ import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
-import { canonicalJson } from "../utils/canonicalJson"
 import { newQuoteValues } from "../utils/sheetValues"
 import { columnKey } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, type SampleRow } from "../utils/workbenchForm"
@@ -22,16 +21,7 @@ export const APP_SET_COLUMNS: ReadonlySet<string> = new Set([...QUOTE_DETAILS_MA
  * holding its columns' defaults, the quote of an app without a quote store.
  */
 export function openRelease(form: FormSpec, revision: string, release: string): void {
-  useWorkbenchFormStore.setState({
-    form,
-    revision,
-    status: "ready",
-    loadError: null,
-    savedForm: canonicalJson(form),
-    dirty: false,
-    undoStack: [],
-    redoStack: [],
-  })
+  useWorkbenchFormStore.getState().install(form, revision)
   useWorkbenchViewStore.setState({ underwriterApp: true })
   useWorkbenchViewStore.getState().showSection("preview")
   useWorkbenchPreviewStore.getState().setLocked(APP_SET_COLUMNS)

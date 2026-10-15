@@ -15,7 +15,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from haute._artifact_paths import PathProblem, ordinary_path_problem
+from haute._artifact_paths import PATH_PROBLEMS, ordinary_path_problem
 from haute._workbench_config import WorkbenchError
 from haute._workbench_form import FormSpec
 from haute._workbench_tables import output_tables, port_tables, sample_quote
@@ -68,7 +68,7 @@ def test_quotes_path(project_root: Path, table: object) -> Path:
         return path
     named = relative.as_posix() if problem == "not_ordinary" else _from_root(project_root, path)
     raise WorkbenchTestQuoteError(
-        f"{named} {_PATH_PROBLEMS[problem]}: [test_quotes] dir must be a folder of the "
+        f"{named} {PATH_PROBLEMS[problem]}: [test_quotes] dir must be a folder of the "
         f"project's own, and {TEST_QUOTES_FILE} a file inside it."
     )
 
@@ -88,18 +88,8 @@ def project_gitattributes_path(project_root: Path) -> Path:
     if problem is None:
         return path
     raise WorkbenchTestQuoteError(
-        f".gitattributes {_PATH_PROBLEMS[problem]}: make it a file of the project's own."
+        f".gitattributes {PATH_PROBLEMS[problem]}: make it a file of the project's own."
     )
-
-
-#: Why a path the test quotes write through is refused, after the path it names.
-_PATH_PROBLEMS: dict[PathProblem, str] = {
-    "not_ordinary": "isn't a path inside the project, named from its folder",
-    "link": "is reached through a link or junction",
-    "multiply_linked": "is a hard link to another file, which a write would change too",
-    "not_a_file": "isn't an ordinary file or folder",
-    "outside": "is outside the project",
-}
 
 
 def _from_root(project_root: Path, path: Path) -> str:

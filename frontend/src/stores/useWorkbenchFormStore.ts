@@ -10,8 +10,7 @@
  * form.
  */
 import { create } from "zustand"
-import { ApiError } from "../api/client"
-import { apiErrorMessage } from "../api/errors"
+import { apiErrorMessage, isStaleRevision } from "../api/errors"
 import type { FormSpec, WorkbenchFormSaveResponse } from "../api/types"
 import { fetchWorkbenchForm, saveWorkbenchForm } from "../api/workbench"
 import { canonicalJson } from "../utils/canonicalJson"
@@ -20,6 +19,7 @@ import useDocumentStatusStore from "./useDocumentStatusStore"
 import { appendHistoryEntry } from "./useGraphStore"
 import useToastStore from "./useToastStore"
 import useWorkbenchStore from "./useWorkbenchStore"
+import { serial } from "../utils/serial"
 
 export type FormLoadStatus = "idle" | "loading" | "ready" | "failed"
 
@@ -55,6 +55,13 @@ interface WorkbenchFormState {
   load: () => Promise<void>
   /** Read the form again, dropping edits and history. */
   reload: () => Promise<void>
+  /**
+   * Put in place a form read elsewhere, at `revision`, as the underwriter app puts the
+   * release's sheets or a quote's older ones: as saved, without history, a gesture or a
+   * save's lost answer from the form before. It is no read of the file (`reads`), so the
+   * app's view keeps its zoom as a quote on other sheets opens.
+   */
+  install: (form: FormSpec, revision: string | null) => void
   /**
    * Read the file again after the pipeline's document was adopted anew. A file at the same
    * revision changes nothing; a changed one is adopted, history dropped, while the form has
@@ -103,23 +110,11 @@ interface WorkbenchFormState {
 /** The form as compared for unsaved edits: the server writes its keys in its own order. */
 const serialise = (form: FormSpec): string => canonicalJson(form)
 
-const isStaleRevision = (error: unknown): boolean =>
-  error instanceof ApiError
-  && error.status === 409
-  && typeof error.detail === "string"
-  && error.detail.startsWith("stale_document_revision")
-
 /** The gesture under way: the form as it found it, and what stops it following the pointer. */
 let gesture: { before: FormSpec; stop: () => void } | null = null
 
 /** Saves and syncs take turns, each acting on the form as it is when its turn comes. */
-let turns: Promise<unknown> = Promise.resolve()
-
-const takeTurn = <T>(act: () => Promise<T>): Promise<T> => {
-  const turn = turns.then(act)
-  turns = turn.catch(() => undefined)
-  return turn
-}
+const takeTurn = serial()
 
 const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
   const finishGesture = (): void => {
@@ -191,6 +186,11 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
       if (get().status === "idle") await read()
     },
     reload: read,
+    install: (form, revision) => {
+      dropGesture()
+      unanswered = null
+      set({ form, revision, status: "ready", loadError: null, savedForm: serialise(form), dirty: false, undoStack: [], redoStack: [], stale: false })
+    },
     sync: () =>
       takeTurn(async () => {
         if (get().status !== "ready") return

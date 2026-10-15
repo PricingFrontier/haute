@@ -107,6 +107,7 @@ import AssistantWorkingPill from "./components/AssistantWorkingPill"
 import { withNativeDeletePolicy } from "./utils/submodelDeletionPolicy"
 import { requestSubmodelCreation } from "./utils/submodelCreation"
 import { resolveEditorGraphIdentities } from "./utils/editorIdentities"
+import { serial } from "./utils/serial"
 import { PaletteRevealStrip } from "./haute-ui"
 
 // ---------------------------------------------------------------------------
@@ -1369,12 +1370,8 @@ function FlowEditor() {
   // first fetch's updates of the workbench nodes, and a save waits for every update
   // of the nodes, a superseded one counting as a failure, so both would be refused
   // and the pipeline saved by neither.
-  const projectSaveTurns = useRef<Promise<unknown>>(Promise.resolve())
-  const saveProject = useCallback((): Promise<boolean> => {
-    const turn = projectSaveTurns.current.then(() => saveProjectNowRef.current())
-    projectSaveTurns.current = turn.catch(() => undefined)
-    return turn
-  }, [])
+  const [projectSaveTurn] = useState(serial)
+  const saveProject = useCallback((): Promise<boolean> => projectSaveTurn(() => saveProjectNowRef.current()), [projectSaveTurn])
 
   // Flush the editor through the graph-commit fence before opening the
   // milestone modal, so Commit can never capture an older ledger snapshot.

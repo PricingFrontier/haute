@@ -157,7 +157,7 @@ describe("QuoteView", () => {
 
   it("shows the revision, who saved it and the release that priced it, and saves on Ctrl+S", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(saveAppQuote).mockResolvedValue(answer({ latest: 2, version: 2 }, { number: 2 }))
+    vi.mocked(saveAppQuote).mockResolvedValue(answer({ latest: 2 }, { number: 2 }))
     await opened()
 
     const line = screen.getByTestId("quote-line")
@@ -211,8 +211,8 @@ describe("QuoteView", () => {
   it("marks a priced quote final once asked, and reopens it giving a reason", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     vi.mocked(changeAppQuote)
-      .mockResolvedValueOnce(changed({ stage: "final", final_revision: 2, final_by: "ana@example.com", final_at: "2026-10-12T10:00:00+00:00", latest: 2, version: 2 }))
-      .mockResolvedValueOnce(changed({ latest: 3, version: 3 }))
+      .mockResolvedValueOnce(changed({ stage: "final", final_revision: 2, final_by: "ana@example.com", final_at: "2026-10-12T10:00:00+00:00", latest: 2 }))
+      .mockResolvedValueOnce(changed({ latest: 3 }))
     await opened()
 
     fireEvent.click(screen.getByRole("button", { name: "Mark final" }))
@@ -265,7 +265,7 @@ describe("QuoteView", () => {
 
   it("offers to open the newest or save the values as a new quote when the quote moved on", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(saveAppQuote).mockRejectedValue(new ApiError("HTTP 409", 409, "moved", {}, { message: "Q-000001 has changed since you opened it: jo saved it.", error_code: "stale_quote_revision", quote: appQuote({ latest: 2, version: 3 }) }))
+    vi.mocked(saveAppQuote).mockRejectedValue(new ApiError("HTTP 409", 409, "moved", {}, { message: "Q-000001 has changed since you opened it: jo saved it.", error_code: "stale_quote_revision", quote: appQuote({ latest: 2 }) }))
     vi.mocked(createAppQuote).mockResolvedValue(answer({ id: "q2", reference: "Q-000002" }))
     await opened()
     type("CA")
@@ -420,8 +420,8 @@ describe("QuoteView", () => {
   it("assigns the quote to someone from the people, or to a name typed", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     vi.mocked(changeAppQuote)
-      .mockResolvedValueOnce(changed({ assignee: "jo@example.com", latest: 2, version: 2 }))
-      .mockResolvedValueOnce(changed({ assignee: "sam@example.com", latest: 3, version: 3 }))
+      .mockResolvedValueOnce(changed({ assignee: "jo@example.com", latest: 2 }))
+      .mockResolvedValueOnce(changed({ assignee: "sam@example.com", latest: 3 }))
     await opened()
     await screen.findByRole("option", { name: "jo@example.com" })
 
@@ -437,7 +437,7 @@ describe("QuoteView", () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     const details = { qd_reference: "Q-000001", qd_stage: "priced", qd_assignee: "jo@example.com", qd_archived: false }
     vi.mocked(changeAppQuote).mockResolvedValue({
-      quote: appQuote({ assignee: "jo@example.com", latest: 2, version: 2 }),
+      quote: appQuote({ assignee: "jo@example.com", latest: 2 }),
       revision: answer({}, { number: 2, values: { ...VALUES, quote_details: [details] } }).revision,
     })
     await opened()
@@ -456,7 +456,7 @@ describe("QuoteView", () => {
 
   it("names the quote in its quote_details.quote_name cell, saved with the quote", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(saveAppQuote).mockResolvedValue(answer({ latest: 2, version: 2 }, { number: 2 }))
+    vi.mocked(saveAppQuote).mockResolvedValue(answer({ latest: 2 }, { number: 2 }))
     await opened()
 
     const name = screen.getByLabelText("Quote name")
@@ -486,7 +486,7 @@ describe("QuoteView", () => {
       source: { id: "q0", reference: "Q-000000", relation: "renewal", revision: 3 },
       derived: [{ id: "q3", reference: "Q-000003", relation: "alternative", revision: 2 }],
     })
-    vi.mocked(changeAppQuote).mockResolvedValue({ quote: appQuote({ latest: 2, note: "Call the broker", note_by: "ana@example.com", note_at: "2026-10-12T11:00:00+00:00", version: 2 }), revision: null })
+    vi.mocked(changeAppQuote).mockResolvedValue({ quote: appQuote({ latest: 2, note: "Call the broker", note_by: "ana@example.com", note_at: "2026-10-12T11:00:00+00:00" }), revision: null })
     await opened()
 
     fireEvent.click(screen.getByRole("button", { name: "History" }))

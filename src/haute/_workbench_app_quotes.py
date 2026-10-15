@@ -131,7 +131,6 @@ def quote_model(quote: AppQuote) -> WorkbenchAppQuote:
         source_reference=quote.source_reference,
         source_revision=quote.source_revision,
         relation=quote.relation,
-        version=quote.latest,
     )
 
 

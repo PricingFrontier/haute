@@ -8,6 +8,7 @@ import { fetchAppQuotes, type QuotesQuery } from "../api/app"
 import { apiErrorMessage } from "../api/errors"
 import type { WorkbenchAppQuote } from "../api/types"
 import { canonicalJson } from "../utils/canonicalJson"
+import { latest } from "../utils/latest"
 
 interface QuoteListState {
   /** The list loaded, as its query. */
@@ -25,7 +26,7 @@ interface QuoteListState {
   more: () => Promise<void>
 }
 
-let asked = 0
+const listAsked = latest()
 
 const useQuoteListStore = create<QuoteListState>()((set, get) => ({
   query: null,
@@ -38,15 +39,15 @@ const useQuoteListStore = create<QuoteListState>()((set, get) => ({
   load: async (query, again = false) => {
     const same = get().query !== null && canonicalJson(get().query) === canonicalJson(query)
     if (same && !again && get().status !== "error") return
-    const attempt = ++asked
+    const attempt = listAsked.take()
     // A reload keeps the rows showing; another list shows placeholders while it loads.
     set(same && get().status === "ready" ? { error: null } : { query, status: "loading", error: null, quotes: [], next: null })
     try {
       const page = await fetchAppQuotes(query)
-      if (attempt !== asked) return
+      if (!listAsked.is(attempt)) return
       set({ query, quotes: page.quotes, counts: page.counts, next: page.next_cursor ?? null, status: "ready" })
     } catch (error: unknown) {
-      if (attempt === asked) set({ status: "error", error: apiErrorMessage(error) })
+      if (listAsked.is(attempt)) set({ status: "error", error: apiErrorMessage(error) })
     }
   },
   reload: async () => {
@@ -56,14 +57,14 @@ const useQuoteListStore = create<QuoteListState>()((set, get) => ({
   more: async () => {
     const { query, next, loadingMore } = get()
     if (query === null || next === null || loadingMore) return
-    const attempt = asked
+    const attempt = listAsked.current()
     set({ loadingMore: true })
     try {
       const page = await fetchAppQuotes(query, next)
-      if (attempt !== asked) return
+      if (!listAsked.is(attempt)) return
       set((s) => ({ quotes: [...s.quotes, ...page.quotes], counts: page.counts, next: page.next_cursor ?? null }))
     } catch (error: unknown) {
-      if (attempt === asked) set({ error: apiErrorMessage(error) })
+      if (listAsked.is(attempt)) set({ error: apiErrorMessage(error) })
     } finally {
       set({ loadingMore: false })
     }

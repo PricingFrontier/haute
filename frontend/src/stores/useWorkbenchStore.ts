@@ -11,6 +11,7 @@ import { apiErrorMessage } from "../api/errors"
 import { fetchWorkbenchStatus, fetchWorkbenchTables } from "../api/workbench"
 import type { WorkbenchTables } from "../utils/workbenchTables"
 import useToastStore from "./useToastStore"
+import { latest } from "../utils/latest"
 
 /** The editor's views: the pipeline editor's, and the workbench's while it is enabled. */
 export type EditorView = "pipeline" | "workbench"
@@ -50,7 +51,7 @@ interface WorkbenchState {
 }
 
 // Fetches are numbered across the store's life, so a later one always has a larger number.
-let latestFetch = 0
+const fetches = latest()
 /** The newest fetch's settlement: whether it published. */
 let settling: Promise<boolean> = Promise.resolve(true)
 
@@ -75,11 +76,11 @@ const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
   tables: null,
   refreshTables: () => {
     if (!get().enabled) return null
-    const fetch = ++latestFetch
+    const fetch = fetches.take()
     settling = fetchWorkbenchTables().then(
       (response): boolean | Promise<boolean> => {
         // Superseded: the newer fetch's outcome is the one that counts.
-        if (fetch !== latestFetch) return settling
+        if (!fetches.is(fetch)) return settling
         set({
           tables: {
             tables: response.tables,
@@ -91,7 +92,7 @@ const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
         return true
       },
       (error: unknown): boolean | Promise<boolean> => {
-        if (fetch !== latestFetch) return settling
+        if (!fetches.is(fetch)) return settling
         useToastStore.getState().addToast("error", `Could not fetch the workbench's tables: ${apiErrorMessage(error)}`)
         return false
       },

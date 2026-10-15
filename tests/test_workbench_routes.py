@@ -270,6 +270,36 @@ def test_a_save_against_a_form_that_changed_on_disk_is_refused_writing_nothing(
     assert on_disk["schema"]["tables"][0]["name"] == "policy"
 
 
+def test_a_save_through_a_link_or_junction_on_the_forms_path_is_refused(
+    project: Path,
+) -> None:
+    """The form's path is checked at each save as the other writes' are: a junction at
+    ``forms/``, which stays inside the project and so passes the config's check, is no
+    ordinary file of the project's."""
+    import os
+
+    enable(project)
+    write_form(project, form(POLICY), at="kept/form.json")
+    link = project / "forms"
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(project / "kept"), str(link))
+    else:
+        os.symlink(project / "kept", link, target_is_directory=True)
+    served = client().get("/api/workbench/form").json()
+
+    refused = client().put(
+        "/api/workbench/form", json={"form": served["form"], "base_revision": served["revision"]}
+    )
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == (
+        "forms/form.json is reached through a link or junction: [workbench].form must name a "
+        "file of the project's own."
+    )
+
+
 def test_a_save_whose_file_cannot_be_written_says_so(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -711,8 +741,10 @@ async def test_two_saves_against_one_revision_take_turns_and_the_second_is_refus
     # left it bound to that test's loop, so the second save here would raise "bound to a
     # different event loop" instead of being refused as stale; and contending the shared
     # lock here would bind it for a later test. A fresh lock binds to this client's loop;
-    # serialisation is what the route needs from it.
-    monkeypatch.setattr(route, "save_lock", asyncio.Lock())
+    # serialisation is what the route needs from it, through `project_write`.
+    from haute.routes import _helpers
+
+    monkeypatch.setattr(_helpers, "save_lock", asyncio.Lock())
     transport = httpx.ASGITransport(app=app())
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         served = (await client.get("/api/workbench/form")).json()

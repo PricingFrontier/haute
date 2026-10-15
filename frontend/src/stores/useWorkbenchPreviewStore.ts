@@ -15,6 +15,7 @@ import { withCell, type SampleRow, type SampleValue } from "../utils/workbenchFo
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
 import { pricingLoop } from "./pricingLoop"
 import useWorkbenchPricingStore, { PRICING_DELAY_MS, type SamplePrice } from "./useWorkbenchPricingStore"
+import { latest } from "../utils/latest"
 
 interface WorkbenchPreviewState {
   /** The quote, by table id, rows keyed by column id, as typed. */
@@ -66,7 +67,7 @@ interface WorkbenchPreviewState {
 }
 
 /** The pricing asked for last; an answer to an earlier one is dropped. */
-let asked = 0
+const asked = latest()
 
 const NOTHING_LOCKED: ReadonlySet<string> = new Set()
 
@@ -82,17 +83,17 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => {
     }
     const basis = valuesBasis(form.schema, sheetVisibility(form, quote).hidden, quote)
     if (price !== null && price.basis === basis) return
-    const attempt = ++asked
+    const attempt = asked.take()
     set({ pricing: true, error: null })
     // Another quote opened meanwhile, or the host left: the answer is nobody's.
-    const current = () => attempt === asked && useWorkbenchPricingStore.getState().quotePricer === quotePricer
+    const current = () => asked.is(attempt) && useWorkbenchPricingStore.getState().quotePricer === quotePricer
     try {
       const priced = await quotePricer(form, quote)
       if (current()) set({ price: { basis, ...priced } })
     } catch (error: unknown) {
       if (current()) set({ price: null, error: `Pricing failed: ${apiErrorMessage(error)}` })
     } finally {
-      if (attempt === asked) set({ pricing: false })
+      if (asked.is(attempt)) set({ pricing: false })
     }
   }
   const loop = pricingLoop(priceOnce, PRICING_DELAY_MS)
@@ -116,7 +117,7 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => {
       get().schedule()
     },
     open: (quote, price, readOnly) => {
-      asked += 1
+      asked.bump()
       loop.cancel()
       set({ quote, price, error: null, pricing: false, readOnly })
       if (!readOnly && price === null) get().schedule()

@@ -2880,7 +2880,6 @@ export interface WorkbenchAppQuote {
   source_revision: number | null;
   stage: 'draft' | 'priced' | 'final';
   title: string;
-  version: number;
 }
 /**
  * A quote with one revision. ``form`` is the sheets the revision was keyed into when

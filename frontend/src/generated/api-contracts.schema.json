@@ -15385,10 +15385,6 @@
         "title": {
           "title": "Title",
           "type": "string"
-        },
-        "version": {
-          "title": "Version",
-          "type": "integer"
         }
       },
       "required": [
@@ -15418,8 +15414,7 @@
         "source_quote_id",
         "source_reference",
         "source_revision",
-        "relation",
-        "version"
+        "relation"
       ],
       "title": "WorkbenchAppQuote",
       "type": "object"

@@ -27,7 +27,7 @@ import {
   type PricedTables,
   type SheetQuote,
 } from "../api/workbench"
-import { apiErrorMessage } from "../api/errors"
+import { apiErrorMessage, isStaleRevision } from "../api/errors"
 import type { FormSpec, WorkbenchTestQuoteChange, WorkbenchTestQuoteSummary } from "../api/types"
 import { quoteEligible } from "../utils/sheetVisibility"
 import { withSample } from "../utils/workbenchForm"
@@ -35,6 +35,7 @@ import { reportSaveCapture } from "./saveCapture"
 import useDocumentStatusStore from "./useDocumentStatusStore"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
 import useWorkbenchPricingStore, { contextKey, priceForm, pricingContext, type Pricer, type PricingContext } from "./useWorkbenchPricingStore"
+import { latest } from "../utils/latest"
 
 export type RunStatus = "running" | "unchanged" | "changed" | "failed"
 
@@ -124,14 +125,14 @@ function quoteRefusal(form: FormSpec, quote: SheetQuote): string | null {
 }
 
 /** The run asked for last: an answer for an earlier one is nobody's. */
-let generation = 0
+const runAsked = latest()
 /**
  * The list read and the quote opened last, each its own ticket so neither drops a run's
  * answer: a late answer to an earlier read or open is nobody's, nor is one asked before the
  * pipeline's document was adopted anew (`forget`).
  */
-let listing = 0
-let opening = 0
+const listAsked = latest()
+const openAsked = latest()
 
 const runOf = (patch: Partial<QuoteRun>): QuoteRun => ({
   status: "running",
@@ -161,17 +162,17 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
   // The panel lists the quotes when it opens.
   setOpen: (open) => set({ open }),
   load: async () => {
-    const mine = ++listing
+    const mine = listAsked.take()
     set({ loading: true })
     try {
       const { quotes } = await fetchTestQuotes()
-      if (listing !== mine) return
+      if (!listAsked.is(mine)) return
       const ids = new Set(quotes.map((quote) => quote.id))
       set((s) => ({ quotes, error: null, selected: s.selected.filter((id) => ids.has(id)) }))
     } catch (error: unknown) {
-      if (listing === mine) set({ error: apiErrorMessage(error) })
+      if (listAsked.is(mine)) set({ error: apiErrorMessage(error) })
     } finally {
-      if (listing === mine) set({ loading: false })
+      if (listAsked.is(mine)) set({ loading: false })
     }
   },
   save: async (name) => {
@@ -209,12 +210,12 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
   openQuote: async (id) => {
     const { form } = useWorkbenchFormStore.getState()
     if (form === null) return
-    const mine = ++opening
+    const mine = openAsked.take()
     try {
       const opened = await openTestQuote(id, form)
       // Its values were carried onto the form as it was asked for: on any other they are
       // not the quote's, and a later open, or an adoption, has the sheets now.
-      if (opening !== mine || useWorkbenchFormStore.getState().form !== form) return
+      if (!openAsked.is(mine) || useWorkbenchFormStore.getState().form !== form) return
       // In the sample's place, one undo step.
       useWorkbenchFormStore.getState().change((spec) => withSample(spec, opened.values))
       set({
@@ -224,7 +225,7 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
           : `Opened '${opened.name}'. No place on the sheets for: ${opened.dropped.join(", ")}.`,
       })
     } catch (error: unknown) {
-      if (opening === mine) set({ error: apiErrorMessage(error) })
+      if (openAsked.is(mine)) set({ error: apiErrorMessage(error) })
     }
   },
   toggle: (id) =>
@@ -241,7 +242,7 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
     }
     const { quotes, selected } = get()
     const ids = selected.length > 0 ? selected : quotes.map((quote) => quote.id)
-    const mine = ++generation
+    const mine = runAsked.take()
     set({
       running: true,
       error: null,
@@ -252,9 +253,9 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
     })
     // One quote at a time: each is its own request, as deploy scores them.
     for (const id of ids) {
-      if (generation !== mine) return
+      if (!runAsked.is(mine)) return
       const done = (patch: Partial<QuoteRun>) => {
-        if (generation === mine) set((s) => ({ runs: { ...s.runs, [id]: { ...s.runs[id], ...patch } } }))
+        if (runAsked.is(mine)) set((s) => ({ runs: { ...s.runs, [id]: { ...s.runs[id], ...patch } } }))
       }
       try {
         const opened = await openTestQuote(id, form)
@@ -278,7 +279,7 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
         done({ status: "failed", error: apiErrorMessage(error) })
       }
     }
-    if (generation === mine) set({ running: false })
+    if (runAsked.is(mine)) set({ running: false })
   },
   accept: async (id) => {
     const { runs, runForm, runBasis, running, accepting } = get()
@@ -291,12 +292,12 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
       set({ error: "The pipeline, the data source or the form has changed since this run: run again before accepting." })
       return
     }
-    const mine = generation
+    const mine = runAsked.current()
     set({ accepting: true })
     try {
       reportSaveCapture(await acceptTestQuote(id, number, digest, runForm, values, tables))
       // A run started since, or forgotten since, holds its own result for the quote.
-      if (generation === mine) {
+      if (runAsked.is(mine)) {
         set((s) => ({
           error: null,
           // The accepted revision's digest is the server's to give: the next run reads it.
@@ -307,7 +308,7 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
     } catch (error: unknown) {
       const message = apiErrorMessage(error)
       set({
-        error: message.includes("stale_quote_revision")
+        error: isStaleRevision(error)
           ? "The quote was saved since the run, or differently on this branch: run it again before accepting."
           : `Not accepted: ${message}`,
       })
@@ -329,9 +330,9 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
     }
   },
   forget: () => {
-    generation += 1
-    listing += 1
-    opening += 1
+    runAsked.bump()
+    listAsked.bump()
+    openAsked.bump()
     set({ runs: {}, runForm: null, runBasis: null, running: false })
     if (get().open) void get().load()
   },

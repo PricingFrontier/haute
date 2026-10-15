@@ -79,7 +79,7 @@ describe("the app's quote routes on the wire", () => {
   })
 
   it("saves a quote's next revision over the version it names", async () => {
-    answering(answer({ latest: 3, version: 3 }))
+    answering(answer({ latest: 3 }))
 
     await saveAppQuote("q 1", { ...SAVE, shown: null }, 2)
 
@@ -98,7 +98,7 @@ describe("the app's quote routes on the wire", () => {
     // A note is no revision, so it names none.
     ["note", { note: "Call the broker" }, validateWorkbenchAppQuoteNote, { note: "Call the broker" }],
   ] as const)("sends the %s change the body its route reads", async (change, fields, validate, expected) => {
-    answering(changed({ latest: 5, version: 5 }))
+    answering(changed({ latest: 5 }))
 
     await changeAppQuote("q1", change, 4, fields)
 

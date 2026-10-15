@@ -442,9 +442,6 @@ class WorkbenchAppQuote(BaseModel):
     source_reference: str | None = None
     source_revision: int | None = None
     relation: WorkbenchAppQuoteRelation | None = None
-    #: What a change to the quote names, its newest revision: one made on another is
-    #: refused (409).
-    version: int
 
 
 class WorkbenchAppQuotesResponse(BaseModel):

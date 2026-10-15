@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { ApiError } from "../client"
-import { apiErrorCode, apiErrorMessage, apiErrorStatus } from "../errors"
+import { apiErrorCode, apiErrorMessage, apiErrorStatus, isStaleRevision } from "../errors"
 
 describe("apiErrorCode", () => {
   it("reads the code from a structured detail", () => {
@@ -15,6 +15,17 @@ describe("apiErrorCode", () => {
     expect(apiErrorCode(new ApiError("HTTP 400", 400, "bad", undefined, "bad"))).toBeNull()
     expect(apiErrorCode(new ApiError("HTTP 400", 400, undefined, undefined, { error_code: "" }))).toBeNull()
     expect(apiErrorCode(new Error("boom"))).toBeNull()
+  })
+})
+
+describe("isStaleRevision", () => {
+  it("knows a save refused for a stale document or quote, from a flat detail or a structured one", () => {
+    expect(isStaleRevision(new ApiError("HTTP 409", 409, "stale_document_revision: changed", undefined, "stale_document_revision: changed"))).toBe(true)
+    expect(isStaleRevision(new ApiError("HTTP 409", 409, "stale_quote_revision: saved since", undefined, "stale_quote_revision: saved since"))).toBe(true)
+    expect(isStaleRevision(new ApiError("HTTP 409", 409, undefined, undefined, { error_code: "stale_quote_revision", message: "saved since" }))).toBe(true)
+    expect(isStaleRevision(new ApiError("HTTP 409", 409, "git_unavailable: no git", undefined, "git_unavailable: no git"))).toBe(false)
+    expect(isStaleRevision(new ApiError("HTTP 409", 409, "The release changed", undefined, "The release changed"))).toBe(false)
+    expect(isStaleRevision(new Error("stale_document_revision"))).toBe(false)
   })
 })
 

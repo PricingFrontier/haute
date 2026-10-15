@@ -20,14 +20,14 @@ import {
   type QuoteChangeFields,
   type QuoteRelation,
 } from "../api/app"
-import { apiErrorCode, apiErrorMessage, apiErrorStatus } from "../api/errors"
+import { apiErrorMessage, apiErrorStatus, isStaleRevision } from "../api/errors"
 import type { FormSpec, WorkbenchAppQuote, WorkbenchAppQuoteHistoryResponse, WorkbenchAppQuoteResponse, WorkbenchAppQuoteRevision } from "../api/types"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
-import { canonicalJson } from "../utils/canonicalJson"
 import { newQuoteValues } from "../utils/sheetValues"
 import { quoteEligible } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, type SampleRow } from "../utils/workbenchForm"
+import { latest } from "../utils/latest"
 import { basisOf, cellPlaces, clearDraft, draftKey, lostPlaces, onSheets, operationKey, readDraft, releaseMoved, savedPrice, valuesKey, writeDraft, type Draft, type PendingWrite, type QuoteWrite, type Values } from "./quoteValues"
 import useAppStore from "./useAppStore"
 
@@ -166,8 +166,8 @@ export function openDraftKey(state: Pick<OpenQuoteState, "quote" | "source">): s
 
 /** Put `form` on the sheets, the release's or a quote's older ones. */
 function installSheets(form: FormSpec): void {
-  if (useWorkbenchFormStore.getState().form === form) return
-  useWorkbenchFormStore.setState({ form, savedForm: canonicalJson(form), dirty: false, undoStack: [], redoStack: [] })
+  const forms = useWorkbenchFormStore.getState()
+  if (forms.form !== form) forms.install(form, forms.revision)
 }
 
 /** The quote as a 409 refusal carries it, when it does. */
@@ -219,14 +219,14 @@ function sendWrite(write: QuoteWrite): Promise<WorkbenchAppQuoteResponse> {
  * The open quote's loads, newest wins: a save, a change or a read started under one load
  * answers that load alone, and its answer is dropped once another has started.
  */
-let opening = 0
+const loads = latest()
 /** The history asked for last. */
-let histories = 0
+const historyAsked = latest()
 
 const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
   /** Read what failed into the notice it calls for. */
   const failed = (error: unknown): void => {
-    if (apiErrorCode(error) === "stale_quote_revision") {
+    if (isStaleRevision(error)) {
       set({ conflict: { message: apiErrorMessage(error), latest: conflictQuote(error) } })
     } else if (releaseMoved(error)) {
       useAppStore.getState().noteReleaseChanged()
@@ -360,23 +360,23 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
    * write's quote is adopted; failed, it is held or let go as `writeFailed` says.
    */
   const commit = async (first: () => PendingWrite | null): Promise<WorkbenchAppQuote | null> => {
-    const session = opening
+    const session = loads.current()
     set({ saving: true, error: null, moved: false })
     try {
       // The save keeps the price the values settle on; another quote opened meanwhile is not this save's.
       await useWorkbenchPreviewStore.getState().settle()
-      if (session !== opening) return null
+      if (!loads.is(session)) return null
       let next = first()
       const held = get().pending
       if (next !== null && held !== null && held.basis !== next.basis) {
         try {
           const repeated = await sendWrite(held.write)
-          if (session !== opening) return null
+          if (!loads.is(session)) return null
           adoptQuote(repeated)
           next = nextRevision()
           if (next === null) return repeated.quote
         } catch (error: unknown) {
-          if (session !== opening || !refused(error)) throw error
+          if (!loads.is(session) || !refused(error)) throw error
           // Refused, so it never landed and never will: let go, and the values saved as asked.
           set({ pending: null })
           next = first()
@@ -387,17 +387,17 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       set({ pending: next })
       keepDraft()
       const answer = await sendWrite(next.write)
-      if (session !== opening) {
+      if (!loads.is(session)) {
         forgetSaved(key, next.write.body.values)
         return null
       }
       saved(answer, next.write.body.values)
       return answer.quote
     } catch (error: unknown) {
-      if (session === opening) writeFailed(error)
+      if (loads.is(session)) writeFailed(error)
       return null
     } finally {
-      if (session === opening) set({ saving: false })
+      if (loads.is(session)) set({ saving: false })
     }
   }
 
@@ -457,7 +457,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     ...CLOSED,
 
     openNew: async (from) => {
-      const attempt = ++opening
+      const attempt = loads.take()
       const { form } = useAppStore.getState()
       if (form === null) return
       installSheets(form)
@@ -472,7 +472,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       }
       try {
         const [origin, carried] = await Promise.all([openAppQuote(from.quoteId, from.revision), carryAppQuote(from.quoteId, from.revision)])
-        if (attempt !== opening) return
+        if (!loads.is(attempt)) return
         // The values carried, without the details the app set for the source, are the new
         // quote as it opens: left as they are, it keeps no draft and asks nothing on leaving.
         const carriedValues = carried.values as Values
@@ -486,24 +486,24 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
         })
         offerDraft()
       } catch (error: unknown) {
-        if (attempt === opening) set({ status: "error", loadError: apiErrorMessage(error) })
+        if (loads.is(attempt)) set({ status: "error", loadError: apiErrorMessage(error) })
       }
     },
 
     openQuote: async (id, revision) => {
-      const attempt = ++opening
+      const attempt = loads.take()
       // Until it is read, the sheets hold nothing of the quote before and take no typing.
       useWorkbenchPreviewStore.getState().open({}, null, true)
       set({ ...CLOSED, status: "loading", loadError: null })
       try {
         const answer = await openAppQuote(id, revision)
-        if (attempt !== opening) return
+        if (!loads.is(attempt)) return
         show(answer, revision !== null && revision !== answer.quote.latest)
         set({ status: "ready" })
         if (!get().past) offerDraft()
         if (get().historyOpen) void get().loadHistory()
       } catch (error: unknown) {
-        if (attempt === opening) set({ status: "error", loadError: apiErrorMessage(error) })
+        if (loads.is(attempt)) set({ status: "error", loadError: apiErrorMessage(error) })
       }
     },
 
@@ -537,11 +537,11 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
         set({ error: `${asked.reference} is no longer the quote open, so it was not changed.` })
         return null
       }
-      const session = opening
+      const session = loads.current()
       set({ changing: true, error: null })
       try {
-        const { quote: changed, revision: written } = await changeAppQuote(quote.id, change, base ?? quote.version, fields)
-        if (session !== opening) return changed
+        const { quote: changed, revision: written } = await changeAppQuote(quote.id, change, base ?? quote.latest, fields)
+        if (!loads.is(session)) return changed
         // A save held after a lost answer named the version this revision moved on from: it
         // never landed, or this change would have been refused, and now it never will.
         if (written !== null && written !== undefined && get().pending?.write.kind === "save") set({ pending: null })
@@ -559,10 +559,10 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
         if (get().historyOpen) void get().loadHistory()
         return changed
       } catch (error: unknown) {
-        if (session === opening) failed(error)
+        if (loads.is(session)) failed(error)
         return null
       } finally {
-        if (session === opening) set({ changing: false })
+        if (loads.is(session)) set({ changing: false })
       }
     },
 
@@ -570,7 +570,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
 
     close: () => {
       keepDraft()
-      opening += 1
+      loads.bump()
       set({ ...CLOSED, status: "idle", loadError: null })
     },
 
@@ -578,15 +578,15 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       const { quote, revision, olderSheets } = get()
       const { form } = useAppStore.getState()
       if (quote === null || revision === null || olderSheets === null || form === null) return
-      const session = opening
+      const session = loads.current()
       try {
         const carried = await carryAppQuote(quote.id, revision.number, true)
-        if (session !== opening) return
+        if (!loads.is(session)) return
         installSheets(form)
         set({ olderSheets: null, past: false, dropped: carried.dropped })
         useWorkbenchPreviewStore.getState().open(carried.values as Values, null, readOnlyReason(get()) !== null)
       } catch (error: unknown) {
-        if (session === opening) failed(error)
+        if (loads.is(session)) failed(error)
       }
     },
 
@@ -616,14 +616,14 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     loadHistory: async () => {
       const { quote } = get()
       if (quote === null) return
-      const session = opening
+      const session = loads.current()
       // The history asked for last is the one shown: an earlier answer lacks what came since.
-      const asked = ++histories
+      const asked = historyAsked.take()
       try {
         const history = await fetchAppQuoteHistory(quote.id)
-        if (session === opening && asked === histories && get().quote?.id === quote.id) set({ history })
+        if (loads.is(session) && historyAsked.is(asked) && get().quote?.id === quote.id) set({ history })
       } catch (error: unknown) {
-        if (session === opening) set({ error: `The quote's history could not be read: ${apiErrorMessage(error)}` })
+        if (loads.is(session)) set({ error: `The quote's history could not be read: ${apiErrorMessage(error)}` })
       }
     },
 

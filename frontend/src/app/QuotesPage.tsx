@@ -160,13 +160,13 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
 
   const archive = async (quote: WorkbenchAppQuote) => {
     try {
-      const { quote: archived } = await changeAppQuote(quote.id, "archive", quote.version, {})
+      const { quote: archived } = await changeAppQuote(quote.id, "archive", quote.latest, {})
       void load(query, true)
       addToast("success", `Archived ${quote.reference}`, {
         label: "Undo",
         run: () => {
           // The list shown when Undo is pressed, which may be another than the one archived from.
-          void changeAppQuote(archived.id, "restore", archived.version, {})
+          void changeAppQuote(archived.id, "restore", archived.latest, {})
             .then(() => useQuoteListStore.getState().reload())
             .catch((reason: unknown) => addToast("error", `Could not restore ${quote.reference}: ${apiErrorMessage(reason)}`))
         },
@@ -178,7 +178,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
 
   const restore = async (quote: WorkbenchAppQuote) => {
     try {
-      await changeAppQuote(quote.id, "restore", quote.version, {})
+      await changeAppQuote(quote.id, "restore", quote.latest, {})
       void load(query, true)
       addToast("success", `Restored ${quote.reference}`)
     } catch (reason: unknown) {

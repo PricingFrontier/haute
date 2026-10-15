@@ -123,6 +123,24 @@ describe("useWorkbenchFormStore", () => {
     expect(String(vi.mocked(fetch).mock.calls[0][0])).toContain("/api/workbench/form")
   })
 
+  it("installs a form read elsewhere as saved, without history or a gesture, and counts it no read", async () => {
+    server({ form: blank, revision: "rev-0" })
+    const store = useWorkbenchFormStore.getState
+    await store().load()
+    store().change((form) => ({ ...form, name: "edited" }))
+    const stop = vi.fn()
+    store().beginGesture(store().form!, stop)
+    const reads = store().reads
+
+    store().install(named("release"), "rev-9")
+
+    expect(stop).toHaveBeenCalledTimes(1)
+    expect(store()).toMatchObject({ form: named("release"), revision: "rev-9", status: "ready", dirty: false, undoStack: [], redoStack: [], stale: false, reads })
+    // Saved as installed: an edit since is unsaved.
+    store().change((form) => ({ ...form, name: "typed" }))
+    expect(store().dirty).toBe(true)
+  })
+
   it("keeps a form that could not be read out, saying why", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(json({ detail: "forms/form.json is not JSON: bad" }, 409))
 

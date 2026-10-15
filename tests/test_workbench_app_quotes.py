@@ -116,7 +116,7 @@ class Page:
         return self.client.post("/api/app/quotes", json=self.body(**fields), headers=headers)
 
     def save(self, quote: dict[str, Any], headers: dict[str, str] = ANA, **fields: Any) -> Any:
-        body = self.body(version=quote["version"], **fields)
+        body = self.body(version=quote["latest"], **fields)
         return self.client.post(
             f"/api/app/quotes/{quote['id']}/revisions", json=body, headers=headers
         )
@@ -124,7 +124,7 @@ class Page:
     def change(
         self, quote: dict[str, Any], what: str, headers: dict[str, str] = ANA, **fields: Any
     ) -> Any:
-        body = {"version": quote["version"], **fields}
+        body = {"version": quote["latest"], **fields}
         return self.client.post(f"/api/app/quotes/{quote['id']}/{what}", json=body, headers=headers)
 
 
@@ -240,12 +240,12 @@ def test_a_save_over_a_quote_moved_on_is_refused_with_the_quote_as_it_is(page: P
     detail = refused.json()["detail"]
     assert detail["error_code"] == "stale_quote_revision"
     assert "jo@example.com saved it" in detail["message"]
-    assert (detail["quote"]["latest"], detail["quote"]["version"]) == (2, 2)
+    assert detail["quote"]["latest"] == 2
 
 
 def test_a_save_repeated_with_its_operation_key_writes_one_revision(page: Page) -> None:
     quote = page.create().json()["quote"]
-    body = page.body(version=quote["version"])
+    body = page.body(version=quote["latest"])
 
     for _ in range(2):
         saved = page.client.post(f"/api/app/quotes/{quote['id']}/revisions", json=body, headers=ANA)
@@ -257,7 +257,7 @@ def test_a_save_repeated_after_a_colleague_saved_answers_what_its_key_wrote(
     page: Page, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     quote = page.create().json()["quote"]
-    body = page.body(version=quote["version"])
+    body = page.body(version=quote["latest"])
     first = page.client.post(f"/api/app/quotes/{quote['id']}/revisions", json=body, headers=ANA)
     assert page.save(first.json()["quote"], headers=JO).json()["quote"]["latest"] == 3
 
@@ -274,7 +274,7 @@ def test_a_save_repeated_after_a_colleague_saved_answers_what_its_key_wrote(
     answered = again.json()
     # What the key wrote: revision 2 at version 2, so a save over it is refused as stale
     # rather than writing over Jo's; moved said of the prices that write kept.
-    assert (answered["quote"]["version"], answered["revision"]["number"]) == (2, 2)
+    assert (answered["quote"]["latest"], answered["revision"]["number"]) == (2, 2)
     assert answered["revision"]["saved_by"] == "ana@example.com"
     assert answered["moved"] is True
 
@@ -371,14 +371,10 @@ def test_changes_through_the_routes_name_the_revision_they_were_made_on(page: Pa
     assert made["revision"]["values"]["t1"] == VALUES["t1"]
     assert written["revision"] is None
 
-    assert (assigned["assignee"], assigned["latest"], assigned["version"]) == (
-        "jo@example.com",
-        2,
-        2,
-    )
+    assert (assigned["assignee"], assigned["latest"]) == ("jo@example.com", 2)
     assert (noted["note"], noted["latest"]) == ("Waiting on the broker", 2)
     assert stale.status_code == 409
-    assert stale.json()["detail"]["quote"]["version"] == 2
+    assert stale.json()["detail"]["quote"]["latest"] == 2
     history = page.client.get(f"/api/app/quotes/{quote['id']}/history", headers=ANA).json()
     assert [r["number"] for r in history["revisions"]] == [1, 2]
 

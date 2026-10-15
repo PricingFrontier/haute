@@ -77,7 +77,7 @@ async function undoArchive(archived: WorkbenchAppQuote): Promise<void> {
     return
   }
   try {
-    await changeAppQuote(archived.id, "restore", archived.version, {})
+    await changeAppQuote(archived.id, "restore", archived.latest, {})
   } catch (reason: unknown) {
     useToastStore.getState().addToast("error", `Could not restore ${archived.reference}: ${apiErrorMessage(reason)}`)
   }
@@ -582,7 +582,7 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
           }
         >
           You have changes to this quote from {relativeTime(recovered.keptAt)} that were not saved to the server.
-          {quote !== null && recovered.version !== null && recovered.version !== quote.version && " The quote has been saved since then."}
+          {quote !== null && recovered.version !== null && recovered.version !== quote.latest && " The quote has been saved since then."}
         </Notice>
       )}
       {reason === "past" && quote !== null && revision !== null && (

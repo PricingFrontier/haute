@@ -11,15 +11,17 @@ import threading
 import time
 import weakref
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, NamedTuple, NoReturn
+from typing import Any, NamedTuple, NoReturn, TypeVar
 
 from fastapi import HTTPException, WebSocket
+from starlette.concurrency import run_in_threadpool
 
 from haute._file_ops import atomic_write_text
+from haute._git_lock import repository_mutation
 from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._pipeline_recovery import load_pipeline_editor_document
@@ -211,6 +213,24 @@ _self_write_lock = threading.Lock()
 # Save bodies run in a threadpool while the lock is held. The file lock also
 # serialises other server processes using the same project directory.
 save_lock = ProjectMutationLock()
+
+_T = TypeVar("_T")
+
+
+async def project_write(project_root: Path, work: Callable[[], _T]) -> _T:
+    """*work*, a write into the project at *project_root*: the form's save, a test quote's,
+    or a Files panel's upload or delete. It takes its turn with every other save
+    (``save_lock``, which the pipeline's save takes too) and runs in the thread pool under
+    the repository's lock, which a branch switch holds too (``repository_mutation``), so
+    the write's checks, the write and its capture on the save ledger are never split by
+    another save or a switch."""
+    async with save_lock:
+        return await run_in_threadpool(_under_repository_lock, project_root, work)
+
+
+def _under_repository_lock(project_root: Path, work: Callable[[], _T]) -> _T:
+    with repository_mutation(project_root):
+        return work()
 
 
 def _self_write_key(path: str | Path) -> str:

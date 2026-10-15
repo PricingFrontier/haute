@@ -14,13 +14,12 @@ the app saves quotes to on the server; how underwriters manage their quotes in t
 exports from the app; the test quotes analysts keep and re-price in Preview; and the actions
 that fill the sheets from databases and APIs.
 
-`WB-22` to `WB-26` take on what the [review of 15 October 2026](workbench-review-2026-10-15.md)
-found in what pull requests #303 to #309 built. Each names the review's findings it closes
-(`CX-n`, `FB-n`, `TQ-n`, `SD-n`, `MS-n`), and the review holds their evidence. `WB-22`
-comes first, merging the mechanisms written several times now that the others' behaviour
-is fixed; `WB-23` prices Preview in one run of the pipeline; and `WB-24`, `WB-25` and
-`WB-26` wait on decisions about the form's file, the app's sign-in and renewals, and
-building the sheets without a pointer.
+`WB-23` to `WB-26` take on what is left of the [review of 15 October
+2026](workbench-review-2026-10-15.md) of what pull requests #303 to #309 built. Each names
+the review's findings it closes (`CX-n`, `FB-n`, `TQ-n`, `SD-n`, `MS-n`), and the review
+holds their evidence. `WB-23` prices Preview in one run of the pipeline; and `WB-24`,
+`WB-25` and `WB-26` wait on decisions about the form's file, the app's sign-in and
+renewals, and building the sheets without a pointer.
 
 ## Priorities
 
@@ -33,7 +32,6 @@ building the sheets without a pointer.
 | WB-11 | Decision | P2 | An underwriter exports a saved quote from the app in the formats the project needs, naming the release that priced it. |
 | WB-12 | Planned | P3 | A test quote whose response runs past what Preview shows is saved, run and compared in full, as every other test quote is. |
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, sees which quotes are about to lapse, records how a final quote ended, and archives or reassigns many quotes at once. |
-| WB-22 | Planned | P2 | Each concern has one mechanism: one way to drop a stale answer and take turns, one writer into the project, and the three largest view files split along their jobs. |
 | WB-23 | Planned | P3 | Preview prices every table of the Workbench Output from one run of the pipeline, as the app prices a quote in one scoring call. |
 | WB-24 | Decision | P3 | The editor learns of a change to the form's file on its own, and opens a merged form whose geometry is off so it can be repaired. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind, and the server records a renewal's `is_renewal` itself. |
@@ -376,74 +374,6 @@ refused by name and the rest changed.
 lists, without outcomes or validity); `src/haute/deploy/_validators.py::response_changes` (a
 comparison by place, not by key); `frontend/src/app/QuotesPage.tsx::QuotesPage` (one quote
 changed at a time).
-
-### WB-22 — One mechanism per concern
-**Why:** The [review](workbench-review-2026-10-15.md) found mechanisms written several
-times, each copy slightly different; the review's defects sat where one copy was
-forgotten or scoped to the wrong thing:
-- **Stale answers and turn-taking**, hand-rolled about ten times:
-  - the form store's turns;
-  - the pricing store's run and pricer identity;
-  - the preview store's `asked`;
-  - the test quotes' `generation`;
-  - the open quote's `opening`;
-  - the list store's `asked`;
-  - `refreshTables`' fetch numbers;
-  - `useWorkbenchTables`' generations;
-  - the Files panel's request string;
-  - App's `projectSaveTurns`;
-  - `AllowedField`'s ticket.
-- **Three writers into the project** (the form save, the test-quote writes, project files),
-  with three revision ideas, two locking shapes and two path rules.
-- **The form's save mechanics restate the pipeline's** stale detection, two turn queues,
-  and the panel's floors beside the operations' (FB-25).
-- **Smaller copies:**
-  - the app-set details applied twice on the server;
-  - the form installed into its store by two `setState` calls with different fields;
-  - `version` repeating `latest`;
-  - `_read_quotes` and `_histories` each copying and migrating a file.
-- **The three largest view files each do several jobs:** `WidgetBody.tsx` (five
-  components and a colour resolver), `PropertiesPanel.tsx` (six panels and a dialog) and
-  `SchemaEditor.tsx` (the table block, the column row, the details, the allowed-values
-  reader and the default field).
-
-**Plan:**
-- **Two primitives in `frontend/src/utils`:** `serial()`, a turn queue, and
-  `latest(scope)`, a ticket that stays current while its scope does (the document
-  generation, the quote and its version, the folder, the list query). They are tested once
-  and adopted by every store above, keeping each copy's behaviour as it now is.
-- **One project writer.**
-  - It takes a project-relative path, the revision the caller saw, the bytes or a staged
-    file, and a ledger message.
-  - It holds both locks, applies `ordinary_path_problem`, checks the branch and the
-    revision, writes with one rename, captures, and answers
-    `{revision, git_sha, identity_required, warnings}`.
-  - The form, the test-quote file and project files are its callers, each answering the
-    shared capture fields that the one capture route retries.
-- **Shared helpers.**
-  - The save helpers are shared with the pipeline's save: `isStaleRevision`.
-  - One `installForm`.
-  - The details helpers live in one place on each side.
-  - One helper opens a migrated copy of a test-quote file.
-- **Split view files.** `workbench/sheet/`, `workbench/panel/` and `workbench/schema/`, as
-  the review's target shape lays them out, with behaviour unchanged.
-
-**Acceptance:**
-- No store keeps a ticket or a queue of its own.
-- The three writers share one module and one test of its refusals.
-- The three view files are split with their tests passing unchanged.
-
-Behaviour is unchanged: the affected tests pass before and after.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/stores/useWorkbenchFormStore.ts::takeTurn`;
-`frontend/src/stores/useWorkbenchPricingStore.ts`;
-`frontend/src/stores/useWorkbenchPreviewStore.ts`; `frontend/src/app/useQuoteListStore.ts`;
-`frontend/src/panels/FilesPanel.tsx`; `src/haute/routes/workbench.py::_write_test_quotes`;
-`src/haute/routes/project_files.py::_publish_write`;
-`src/haute/_quote_store/_book.py::QuoteBook`; `frontend/src/app/openRelease.ts`;
-`src/haute/cli/_test_quotes.py::_histories`; `frontend/src/workbench/WidgetBody.tsx`.
 
 ### WB-23 — One preview for a Workbench Output's tables
 **Why:** Preview prices the sample by previewing the Workbench Output once per output table
