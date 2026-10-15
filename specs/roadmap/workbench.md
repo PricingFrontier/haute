@@ -14,12 +14,13 @@ the app saves quotes to on the server; how underwriters manage their quotes in t
 exports from the app; the test quotes analysts keep and re-price in Preview; and the actions
 that fill the sheets from databases and APIs.
 
-`WB-20` to `WB-24` fix what the [review of 15 October 2026](workbench-review-2026-10-15.md)
+`WB-21` to `WB-25` fix what the [review of 15 October 2026](workbench-review-2026-10-15.md)
 found in what pull requests #303 to #309 built. Each names the review's findings it closes
 (`CX-n`, `FB-n`, `TQ-n`, `SD-n`, `MS-n`), and the review holds their evidence. They are
-taken in order, `WB-20` first; `WB-22` merges the mechanisms written several times once
+taken in order, `WB-21` first; `WB-22` merges the mechanisms written several times once
 the others have fixed their behaviour, `WB-23` prices Preview in one run of the
-pipeline, and `WB-24` waits on two decisions about the form's file.
+pipeline, and `WB-24` and `WB-25` wait on decisions about the form's file and the app's
+sign-in and renewals.
 
 ## Priorities
 
@@ -32,11 +33,11 @@ pipeline, and `WB-24` waits on two decisions about the form's file.
 | WB-11 | Decision | P2 | An underwriter exports a saved quote from the app in the formats the project needs, naming the release that priced it. |
 | WB-12 | Planned | P3 | A test quote whose response runs past what Preview shows is saved, run and compared in full, as every other test quote is. |
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, sees which quotes are about to lapse, records how a final quote ended, and archives or reassigns many quotes at once. |
-| WB-20 | Planned | P2 | The underwriter app's quote life is exact: a derived quote opens clean and new, drafts and history follow what is on the sheet, failures say why, and the release id changes with what prices alone. |
 | WB-21 | Planned | P2 | Building the sheets is exact and keyboard-complete: a drag lands where the pointer puts it, a gesture ends when the pointer does, the panels keep the selection, and the sheets read as laid out. |
 | WB-22 | Planned | P2 | Each concern has one mechanism: one way to drop a stale answer and take turns, one writer into the project, and the three largest view files split along their jobs. |
 | WB-23 | Planned | P3 | Preview prices every table of the Workbench Output from one run of the pipeline, as the app prices a quote in one scoring call. |
 | WB-24 | Decision | P3 | The editor learns of a change to the form's file on its own, and opens a merged form whose geometry is off so it can be repaired. |
+| WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind, and the server records a renewal's `is_renewal` itself. |
 
 ## Planned improvements
 
@@ -376,91 +377,6 @@ lists, without outcomes or validity); `src/haute/deploy/_validators.py::response
 comparison by place, not by key); `frontend/src/app/QuotesPage.tsx::QuotesPage` (one quote
 changed at a time).
 
-### WB-20 — The underwriter app's quote life
-**Why:**
-- **Derived quotes.**
-  - A Duplicate, Renew or Create alternative opens "Unsaved": its baseline is the empty
-    quote, not the carried values, so the leave guard asks, a draft is kept, and the next
-    derivation offers the carried values back as unsaved changes (review FB-1).
-  - It also carries its source's reference, stage, assignee and archived flag until its
-    first save, showing them and pricing with them (FB-2).
-- **Drafts.**
-  - A value typed back to the saved one leaves the old draft, which is offered again after
-    a reload (CX-19).
-  - Archive then Restore offers back the values already on the sheet (FB-4).
-  - A restored draft drops cells the sheets no longer have without saying so, and its
-    `formRevision` has no reader (FB-5).
-- **Ordering.**
-  - Two history loads for one quote land in completion order, and an older one removes the
-    newest revision (CX-31).
-  - Undo on an archive reloads the list it was made from, replacing the list now shown
-    (CX-16).
-- **Words.**
-  - Mark final's dialog says revision N is pinned, where the server pins N+1 (FB-8).
-  - A pricing refused because the page is for another release shows as a pricing failure,
-    and the Reload notice comes only after a save (FB-11).
-  - A node failing on the typed quote answers "Internal Server Error", where the container
-    answers the reason (FB-52).
-  - `haute app build`, `serve` and `migrate` print tracebacks for faults their handlers do
-    not catch (FB-53).
-  - A malformed release raises a raw `TypeError`, `ValidationError` or `KeyError` (CX-29).
-- **The release.**
-  - Its id moves with a node's canvas position, so every open page must reload, and it
-    does not move with the pinned runtime (FB-56).
-  - Pricing releases its admission before the response is rendered, then converts the
-    response on the event loop (CX-26).
-- **Tests and decisions.**
-  - The test "a release without a quote store prices without its packages" never prices
-    (TQ-4).
-  - The app trusts the Easy Auth headers because the release names its host (FB-9).
-  - The browser alone ticks `is_renewal` (FB-10).
-
-**Plan:**
-- **Derived quotes.**
-  - A derived quote opens with its baseline at the values opened and without the app-set
-    details (`withAppDetails(values, {})`).
-  - The carry route strips the app-set details unless it carries the same quote onto newer
-    sheets.
-- **Drafts.** A draft is reconciled when the sheet returns to clean, offered only when it
-  differs from the sheet, and its restore names what had no place.
-- **Ordering.** History loads and list reloads go through a ticket scoped to the quote and
-  the list shown.
-- **Words.**
-  - The dialog says what the server does, or the final revision is read from
-    `from_revision`.
-  - The price route's 409 shows the Reload notice.
-  - A pipeline failure is answered with its message.
-  - The CLI handlers catch `HauteError` and SQLAlchemy's errors as `click.ClickException`.
-  - `read_release` checks its files where it reads them.
-- **The release.**
-  - The release id hashes the graph without positions, as `graph_fingerprint` does, plus
-    the pinned dependencies.
-  - Admission is kept through rendering, and the conversion runs in the worker.
-- **Tests and decisions.**
-  - The storeless test sends a priced request.
-  - FB-9 and FB-10 are recorded as decisions with the owner before a slice.
-
-**Acceptance:**
-- A duplicate opens clean, holds no reference until it is saved, and leaves no draft.
-- A draft typed back to its saved values is gone after a reload.
-- History after a save shows that save.
-- Undo on an archive refreshes the list shown.
-- A node failing on a quote shows its reason in the app.
-- Moving a node and building again gives the same release id.
-
-Each has a test that fails today.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/app/useOpenQuoteStore.ts::openNew` (the baseline left at the
-empty quote); `frontend/src/app/useOpenQuoteStore.ts::offerDraft`;
-`frontend/src/app/useOpenQuoteStore.ts::loadHistory`; `frontend/src/app/QuotesPage.tsx`
-(the archive's Undo); `frontend/src/app/quoteValues.ts::onSheets` (cells dropped unsaid);
-`src/haute/_workbench_app_quotes.py::quote_router` (the carry route);
-`src/haute/_workbench_app.py::_release_id`; `src/haute/_workbench_app.py::read_release`;
-`src/haute/cli/_app.py::handle_app_migrate`;
-`tests/test_workbench_app.py::test_a_release_without_a_quote_store_prices_without_its_packages`.
-
 ### WB-21 — Building the sheets
 **Why:**
 - **The 8-pixel creep.** A move is snapped twice: on the sheet, then against its section's
@@ -548,7 +464,7 @@ sheet, then in the section); `frontend/src/utils/sheetGeometry.ts::moveRect`;
 
 ### WB-22 — One mechanism per concern
 **Why:** The [review](workbench-review-2026-10-15.md) found mechanisms written several
-times, each copy slightly different; the defects `WB-20` and `WB-21` fix sit where one copy
+times, each copy slightly different; the defects `WB-21` fixes sit where one copy
 was forgotten or scoped to the wrong thing:
 - **Stale answers and turn-taking**, hand-rolled about ten times:
   - the form store's turns;
@@ -580,7 +496,7 @@ was forgotten or scoped to the wrong thing:
 - **Two primitives in `frontend/src/utils`:** `serial()`, a turn queue, and
   `latest(scope)`, a ticket that stays current while its scope does (the document
   generation, the quote and its version, the folder, the list query). They are tested once
-  and adopted by every store above, after `WB-20` and `WB-21` have fixed each copy's
+  and adopted by every store above, after `WB-21` has fixed each copy's
   behaviour.
 - **One project writer.**
   - It takes a project-relative path, the revision the caller saw, the bytes or a staged
@@ -605,7 +521,7 @@ was forgotten or scoped to the wrong thing:
 
 Behaviour is unchanged: the affected tests pass before and after.
 
-**Dependencies:** `WB-20` and `WB-21` first, so their fixes land before the copies are
+**Dependencies:** `WB-21` first, so its fixes land before the copies are
 merged; `FSH-R04`.
 
 **Evidence:** `frontend/src/stores/useWorkbenchFormStore.ts::takeTurn`;
@@ -668,3 +584,26 @@ owner before a slice:
 **Evidence:** `frontend/src/stores/useWorkbenchFormStore.ts::sync` (run on an adoption
 only); `src/haute/_workbench_form.py::Section` and `src/haute/_workbench_form.py::Page`
 (geometry refused at read).
+
+### WB-25 — The app's sign-in and its renewals
+**Why:** Two choices the [review](workbench-review-2026-10-15.md) found for the owner before
+a slice:
+- The app trusts the Easy Auth headers because `release.json` names the host, so a
+  container reached without Easy Auth in front signs in whoever names themselves, with
+  edit rights when no edit role is set (FB-9).
+- The browser alone ticks `is_renewal` on a renewal; the server records the relation but
+  not the column (FB-10).
+
+**Plan:** Decisions first, recorded here before a slice:
+- FB-9: a startup check that the host's sign-in is in front, or an explicit trust setting
+  the operator sets, refusing the misconfiguration either way.
+- FB-10: whether the server ticks `is_renewal` on a quote created as a renewal, the
+  browser's tick then shown rather than sent.
+
+**Acceptance:** Set by each decision.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_workbench_app.py::create_app` (the principal read from the
+headers when the release names its host); `frontend/src/app/useOpenQuoteStore.ts::openNew`
+(`asRenewal`, the browser's tick).

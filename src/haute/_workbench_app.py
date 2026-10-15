@@ -38,6 +38,7 @@ from haute._execution_admission import ExecutionAdmissionError
 from haute._execution_context import ExecutionMemoryLimitExceededError
 from haute._hashing import content_hash, content_hash_bytes
 from haute._json_safe import to_json_safe
+from haute._logging import get_logger
 from haute._output_assembler import render_output_document
 from haute._sandbox import set_project_root
 from haute._test_quotes import quote_request
@@ -102,6 +103,9 @@ app = create_app(Path(__file__).parent, store_url=quote_store_url())
 _STATIC = Path(__file__).parent / "static" / "app"
 
 
+logger = get_logger(component="workbench.app")
+
+
 class WorkbenchAppError(HauteError):
     """A release cannot be read or served: the message says what to fix."""
 
@@ -144,13 +148,35 @@ def _graphs(graph: dict[str, Any]) -> list[dict[str, Any]]:
     return found
 
 
-def _without_sources(graph: dict[str, Any]) -> dict[str, Any]:
-    """*graph* without the files its pipelines were read from: where a checkout sits on
-    disk prices nothing."""
+def _as_priced(graph: dict[str, Any]) -> dict[str, Any]:
+    """*graph* as what prices a quote, as the execution fingerprint reads a graph: each
+    pipeline's nodes by id, label, type and config, sorted by id, and its edges by their
+    ends, without where a node sits on the canvas, its description, an edge's canvas id or
+    the file the pipeline was read from."""
     copied: dict[str, Any] = copy.deepcopy(graph)
     for each in _graphs(copied):
         each.pop("source_file", None)
+        each["nodes"] = sorted(
+            (
+                {
+                    "id": node["id"],
+                    "label": node["data"]["label"],
+                    "nodeType": node["data"]["nodeType"],
+                    "config": node["data"].get("config"),
+                }
+                for node in each.get("nodes", [])
+            ),
+            key=lambda node: str(node["id"]),
+        )
+        each["edges"] = sorted(
+            ({end: edge.get(end) for end in _EDGE_ENDS} for edge in each.get("edges", [])),
+            key=lambda edge: json.dumps(edge, sort_keys=True),
+        )
     return copied
+
+
+#: An edge as it prices: which node's handle feeds which.
+_EDGE_ENDS = ("source", "sourceHandle", "target", "targetHandle")
 
 
 def _utility_hashes(release_dir: Path) -> dict[str, str]:
@@ -168,19 +194,24 @@ def _utility_hashes(release_dir: Path) -> dict[str, str]:
     }
 
 
-def _release_id(release_dir: Path, shipped: bytes, manifest: dict[str, Any]) -> str:
-    """The form as shipped, what of the manifest prices a quote, each artifact's bytes and
-    the utility code's, so the same project builds the same id wherever it is checked out,
-    and a retrained model or an edited helper under the same name another."""
+def _release_id(
+    release_dir: Path, shipped: bytes, manifest: dict[str, Any], runtime: list[str]
+) -> str:
+    """The form as shipped, what of the manifest prices a quote (the graph as it prices,
+    `_as_priced`), each artifact's bytes, the utility code's and the *runtime* it prices on,
+    so the same project builds the same id wherever it is checked out, however its nodes are
+    laid out and whether or not it ships as an image, and a retrained model, an edited
+    helper or another runtime under the same name another."""
     from haute._cache import canonical_json
 
     pricing = {key: manifest.get(key) for key in _PRICING_KEYS}
-    pricing["pruned_graph"] = _without_sources(manifest["pruned_graph"])
+    pricing["pruned_graph"] = _as_priced(manifest["pruned_graph"])
     pricing["artifacts"] = {
         name: content_hash(release_dir / path)
         for name, path in sorted(manifest["artifacts"].items())
     }
     pricing["utility"] = _utility_hashes(release_dir)
+    pricing["runtime"] = runtime
     return content_hash_bytes(shipped + canonical_json(pricing).encode("utf-8"))[:12]
 
 
@@ -207,16 +238,21 @@ def easy_auth_roles(header: str) -> frozenset[str]:
 
 
 def write_release(
-    release_dir: Path, form: FormSpec, host: str | None, edit_role: str | None = None
+    release_dir: Path,
+    form: FormSpec,
+    host: str | None,
+    edit_role: str | None = None,
+    *,
+    runtime: list[str],
 ) -> Release:
     """Beside the bundle already in *release_dir*: the form without its sample, what the
-    release is and the entry point."""
+    release is, named for the *runtime* it prices on too, and the entry point."""
     shipped = render_form(form.model_copy(update={"sample": {}})).encode("utf-8")
     # Written as rendered, so the file's revision is the one the release records.
     (release_dir / FORM_FILE).write_bytes(shipped)
     manifest = json.loads((release_dir / MANIFEST_FILE).read_text(encoding="utf-8"))
     release = Release(
-        id=_release_id(release_dir, shipped, manifest),
+        id=_release_id(release_dir, shipped, manifest, runtime),
         form_revision=form_revision(shipped),
         pipeline_name=str(manifest.get("pipeline_name") or ""),
         haute_version=str(manifest.get("haute_version") or ""),
@@ -258,7 +294,7 @@ def build_release(
         _validate_base_image_pinning,
         resolve_config,
     )
-    from haute.deploy._container import prepare_build_directory, write_bundle
+    from haute.deploy._container import prepare_build_directory, runtime_versions, write_bundle
     from haute.deploy._validators import validate_deploy
     from haute.errors import DeployError
 
@@ -311,6 +347,12 @@ def build_release(
                     "Test quotes failed:\n"
                     + "\n".join(f"  - {result['file']}: {result['error']}" for result in failed)
                 )
+            try:
+                runtime = runtime_versions(resolved)
+            except DeployError as exc:
+                raise WorkbenchAppError(
+                    f"The runtime the pipeline prices on could not be read: {exc.message}"
+                ) from exc
             if base_image:
                 prepare_build_directory(
                     resolved,
@@ -323,7 +365,9 @@ def build_release(
                 write_bundle(resolved, building)
         finally:
             resolved.close()
-        release = write_release(building, form, config.app_host, config.app_edit_role)
+        release = write_release(
+            building, form, config.app_host, config.app_edit_role, runtime=runtime
+        )
         _swap_in(building, release_dir)
     except BaseException:
         shutil.rmtree(building, ignore_errors=True)
@@ -421,11 +465,45 @@ def _read_json(path: Path) -> Any:
 
 
 def read_release(release_dir: Path) -> tuple[Release, FormSpec, dict[str, Any]]:
-    """The release in *release_dir*: what it is, its form and its bundle's manifest."""
-    release = Release(**_read_json(release_dir / RELEASE_FILE))
-    form = FormSpec.model_validate(_read_json(release_dir / FORM_FILE))
+    """The release in *release_dir*: what it is, its form and its bundle's manifest, each
+    file checked where it is read, so a release that is not one says which file is wrong
+    and how, never a raw error."""
+    described = _read_json(release_dir / RELEASE_FILE)
+    try:
+        if not isinstance(described, dict):
+            raise TypeError("it is not a JSON object")
+        release = Release(**described)
+    except TypeError as exc:
+        raise WorkbenchAppError(f"The release's {RELEASE_FILE} is not a release: {exc}") from exc
+    try:
+        form = FormSpec.model_validate(_read_json(release_dir / FORM_FILE))
+    except ValidationError as exc:
+        [first, *_] = exc.errors()
+        place = ".".join(str(part) for part in first["loc"]) or "the form"
+        raise WorkbenchAppError(
+            f"The release's {FORM_FILE} is not a form: {place}: {first['msg']}"
+        ) from exc
     manifest = _read_json(release_dir / MANIFEST_FILE)
+    missing = (
+        [key for key in _MANIFEST_KEYS if key not in manifest]
+        if isinstance(manifest, dict)
+        else list(_MANIFEST_KEYS)
+    )
+    if missing:
+        raise WorkbenchAppError(
+            f"The release's {MANIFEST_FILE} is not a bundle's manifest: it has no "
+            + ", ".join(missing)
+        )
     return release, form, manifest
+
+
+#: What of a manifest the app reads to price a quote.
+_MANIFEST_KEYS = (
+    "pruned_graph",
+    "input_node_ids",
+    "output_node_id",
+    "artifacts",
+)
 
 
 def quote_store_url() -> str | None:
@@ -592,19 +670,34 @@ def create_app(
         if not request:
             raise HTTPException(422, "Type the quote first")
 
-        def score() -> Any:
+        def score() -> WorkbenchPricedTables:
+            # The admission is held until the answer is the tables sent back: rendering and
+            # converting it are the pricing's too, as the MLflow model keeps its admission
+            # through its conversion.
             context = admit_deploy_execution(operation="workbench_app_price", row_count=1)
-            result = score_graph(
-                graph=graph,
-                input_df=QuoteRequest((request,)),
-                input_node_ids=input_node_ids,
-                output_node_id=output_node_id,
-                artifact_paths=artifact_paths,
-                output_fields=output_fields,
-                execution_context=context,
-            )
-            [document] = render_output_document(result)
-            return document
+            failed = False
+            try:
+                result = score_graph(
+                    graph=graph,
+                    input_df=QuoteRequest((request,)),
+                    input_node_ids=input_node_ids,
+                    output_node_id=output_node_id,
+                    artifact_paths=artifact_paths,
+                    output_fields=output_fields,
+                    execution_context=context,
+                    retain_admission_on_success=True,
+                )
+                [document] = render_output_document(result)
+                answered = to_json_safe(document)
+                return {
+                    name: rows if isinstance(rows, list) else [rows]
+                    for name, rows in answered.items()
+                }
+            except BaseException:
+                failed = True
+                raise
+            finally:
+                context.release_admission(preserve_primary_error=failed)
 
         # An executor's future gives up waiting at the timeout; the pricing left running ends
         # on its own and releases its admission then.
@@ -612,7 +705,7 @@ def create_app(
             None, contextvars.copy_context().run, score
         )
         try:
-            document = await asyncio.wait_for(running, PRICE_TIMEOUT_SECONDS)
+            tables = await asyncio.wait_for(running, PRICE_TIMEOUT_SECONDS)
         except TimeoutError:
             raise HTTPException(504, "Pricing the quote took too long; try again.") from None
         except ExecutionAdmissionError as exc:
@@ -622,13 +715,15 @@ def create_app(
                 507, f"The quote needed more memory than the app has: {exc}"
             ) from None
         except HauteError as exc:
-            if not is_public_contract_error(exc):
-                raise
-            raise HTTPException(422, exc.message or str(exc)) from None
-        answered = to_json_safe(document)
-        tables = {
-            name: rows if isinstance(rows, list) else [rows] for name, rows in answered.items()
-        }
+            if is_public_contract_error(exc):
+                raise HTTPException(422, exc.message or str(exc)) from None
+            logger.exception("workbench_app_price_failed")
+            raise HTTPException(500, f"The pipeline failed on this quote: {exc}") from None
+        except Exception as exc:
+            # A node's own code failing on the values typed, said as the deployed pricing
+            # API says it, so the underwriter can tell the analyst what broke.
+            logger.exception("workbench_app_price_failed")
+            raise HTTPException(500, f"The pipeline failed on this quote: {exc}") from None
         return tables, to_json_safe(request)
 
     @app.post("/api/app/price", response_model=WorkbenchAppPriceResponse)

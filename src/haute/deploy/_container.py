@@ -993,6 +993,23 @@ def _pinned_dockerfile_deps(
     ]
 
 
+def runtime_versions(resolved: ResolvedDeploy) -> list[str]:
+    """The runtime the served pipeline prices on, as installed here: each distribution of
+    the scoring runtime, the graph's and the artifacts' own, ``name==version``, sorted; what a
+    container image pins, but ``haute`` itself, read for any build, so two builds of a
+    project on one runtime agree and another runtime is told apart."""
+    return sorted(
+        {
+            *(
+                _pinned_dockerfile_dependency(distribution_name, distribution_name)
+                for distribution_name, _ in _SCORING_RUNTIME_DEPENDENCIES
+            ),
+            *_pinned_graph_dockerfile_deps(resolved),
+            *_pinned_extra_dockerfile_deps(resolved),
+        }
+    )
+
+
 def _pinned_graph_dockerfile_deps(resolved: ResolvedDeploy) -> list[str]:
     """Pin the runtime the served graph needs beyond the scoring runtime.
 

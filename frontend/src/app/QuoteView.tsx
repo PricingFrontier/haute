@@ -143,8 +143,11 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
   // Values not saved are kept in the browser as they are typed, and at once as the quote is
   // left or the page goes, so the last keys typed are kept too.
   const typing = useRef(false)
+  // Typed back to the saved values, the draft is reconciled too: kept no more.
+  const wasDirty = useRef(false)
   useEffect(() => {
-    if (!dirty) return
+    if (!dirty && !wasDirty.current) return
+    wasDirty.current = dirty
     typing.current = true
     const timer = window.setTimeout(() => {
       typing.current = false
@@ -285,7 +288,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
     if (quote === null || revision === null) return
     const yes = await confirm(
       `Mark ${quote.reference} final?`,
-      `Revision ${revision.number} is pinned as the final quotation. It cannot be saved over until someone reopens it, giving a reason; the final stays in its history.`,
+      `The quote as revision ${revision.number} holds it is pinned as the final quotation, saved as revision ${revision.number + 1}. It cannot be saved over until someone reopens it, giving a reason; the final stays in its history.`,
       "Mark final",
     )
     if (yes && (await change("final", { revision: revision.number }, quote)) !== null) addToast("success", `${quote.reference} is final`)
@@ -508,7 +511,7 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
   const past = useOpenQuoteStore((s) => s.past)
   const olderSheets = useOpenQuoteStore((s) => s.olderSheets)
   const conflict = useOpenQuoteStore((s) => s.conflict)
-  const releaseChanged = useOpenQuoteStore((s) => s.releaseChanged)
+  const releaseChanged = useAppStore((s) => s.releaseChanged)
   const error = useOpenQuoteStore((s) => s.error)
   const moved = useOpenQuoteStore((s) => s.moved)
   const dropped = useOpenQuoteStore((s) => s.dropped)

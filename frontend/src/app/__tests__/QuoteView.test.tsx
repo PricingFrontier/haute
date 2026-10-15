@@ -59,7 +59,7 @@ describe("QuoteView", () => {
   beforeEach(async () => {
     stubLayout()
     const form = sheetForm()
-    useAppStore.setState({ release, form, revision: "rev-9", people: [], question: null })
+    useAppStore.setState({ release, form, revision: "rev-9", people: [], question: null, releaseChanged: false })
     useWorkbenchFormStore.setState({ form, status: "ready" })
     useWorkbenchViewStore.setState({ section: "preview", underwriterApp: true, pageId: null, zoom: 1, fitted: false, viewport: null, sheet: null })
     useWorkbenchPreviewStore.setState({ quote: {}, price: null, error: null, pricing: false, readOnly: false, locked: APP_SET_COLUMNS })
@@ -77,6 +77,22 @@ describe("QuoteView", () => {
     vi.restoreAllMocks()
     setLeaveGuard(null)
     window.localStorage.clear()
+  })
+
+  it("opens a duplicate clean, nothing asked on leaving, and saves it as a quote made from its source", async () => {
+    await navigate("/quotes/new?from=q1&revision=1&as=duplicate", { force: true })
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    vi.mocked(carryAppQuote).mockResolvedValue({ values: { policy: [{ "policy.state": "NY" }] }, dropped: [] })
+    vi.mocked(createAppQuote).mockResolvedValue(answer({ id: "q2", reference: "Q-000002" }))
+    await opened({ page: "new", from: { quoteId: "q1", revision: 1, relation: "duplicate" } })
+
+    expect(screen.queryByTestId("quote-unsaved")).toBeNull()
+    const save = screen.getByTestId("save-quote")
+    expect(save).toBeEnabled()
+    fireEvent.click(save)
+
+    await vi.waitFor(() => expect(createAppQuote).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(createAppQuote).mock.calls[0][1]).toEqual({ quote_id: "q1", revision: 1, relation: "duplicate" })
   })
 
   it("saves a new quote, which takes its own address, once something is typed", async () => {
@@ -177,6 +193,19 @@ describe("QuoteView", () => {
     await vi.waitFor(() => expect(window.localStorage.getItem(draftKey("motor", "ana@example.com", "q1"))).toContain("CA"))
   })
 
+  it("keeps no draft once what was typed is typed back to the saved values", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    await opened()
+    const key = draftKey("motor", "ana@example.com", "q1")
+    const saved = useWorkbenchPreviewStore.getState().quote.policy?.[0]["policy.state"] ?? ""
+    type("CA")
+    await vi.waitFor(() => expect(window.localStorage.getItem(key)).toContain("CA"))
+
+    type(String(saved))
+
+    await vi.waitFor(() => expect(window.localStorage.getItem(key)).toBeNull())
+  })
+
   it("marks a priced quote final once asked, and reopens it giving a reason", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     vi.mocked(changeAppQuote)
@@ -185,6 +214,8 @@ describe("QuoteView", () => {
     await opened()
 
     fireEvent.click(screen.getByRole("button", { name: "Mark final" }))
+    // The server pins the quote as a revision of its own, the next.
+    expect(screen.getByTestId("app-question")).toHaveTextContent("The quote as revision 1 holds it is pinned as the final quotation, saved as revision 2.")
     confirmQuestion("Mark final")
     expect(await screen.findByTestId("notice-final")).toHaveTextContent("Final at revision 2")
     expect(screen.getByTestId("quote-line")).toHaveTextContent("Revision 2")
@@ -376,7 +407,7 @@ describe("QuoteView", () => {
 
   it("offers back values this browser kept", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    writeDraft(draftKey("motor", "ana@example.com", "q1"), { values: { policy: [{ "policy.state": "CA" }] }, version: 0, latest: 1, formRevision: "rev-9", keptAt: new Date().toISOString(), pending: null })
+    writeDraft(draftKey("motor", "ana@example.com", "q1"), { values: { policy: [{ "policy.state": "CA" }] }, version: 0, latest: 1, places: {}, keptAt: new Date().toISOString(), pending: null })
     await opened()
 
     expect(screen.getByTestId("notice-recovered")).toHaveTextContent("not saved to the server. The quote has been saved since then.")

@@ -157,9 +157,14 @@ export async function fetchAppQuoteHistory(id: string): Promise<WorkbenchAppQuot
   return expectGeneratedContract("WorkbenchAppQuoteHistoryResponse", (await workbenchValidators()).validateWorkbenchAppQuoteHistoryResponse, data)
 }
 
-/** Revision `revision` of the quote, its values carried onto the release's sheets. */
-export async function carryAppQuote(id: string, revision: number): Promise<WorkbenchAppCarryResponse> {
-  const data = await request<unknown>(`/api/app/quotes/${encodeURIComponent(id)}/revisions/${revision}/carry`)
+/**
+ * Revision `revision` of the quote, its values carried onto the release's sheets: without
+ * the details the app set for it, for a quote made from it, or with them (`details`) for the
+ * same quote moved onto newer sheets.
+ */
+export async function carryAppQuote(id: string, revision: number, details = false): Promise<WorkbenchAppCarryResponse> {
+  const asked = details ? "?details=true" : ""
+  const data = await request<unknown>(`/api/app/quotes/${encodeURIComponent(id)}/revisions/${revision}/carry${asked}`)
   return expectGeneratedContract("WorkbenchAppCarryResponse", (await workbenchValidators()).validateWorkbenchAppCarryResponse, data)
 }
 

@@ -20,6 +20,8 @@ interface QuoteListState {
   loadingMore: boolean
   /** Load `query`'s first page, unless it is the list already loaded and `again` is not asked. */
   load: (query: QuotesQuery, again?: boolean) => Promise<void>
+  /** Load the list shown again, whichever it is now. */
+  reload: () => Promise<void>
   more: () => Promise<void>
 }
 
@@ -46,6 +48,10 @@ const useQuoteListStore = create<QuoteListState>()((set, get) => ({
     } catch (error: unknown) {
       if (attempt === asked) set({ status: "error", error: apiErrorMessage(error) })
     }
+  },
+  reload: async () => {
+    const { query } = get()
+    if (query !== null) await get().load(query, true)
   },
   more: async () => {
     const { query, next, loadingMore } = get()

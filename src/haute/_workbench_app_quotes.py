@@ -39,7 +39,7 @@ from haute._quote_store import (
 )
 from haute._quote_store._book import MAX_PAGE_SIZE, PAGE_SIZE
 from haute._test_quotes import ACCEPTED_TOLERANCE, quote_request
-from haute._workbench_form import FormSpec
+from haute._workbench_form import QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, FormSpec
 from haute.deploy._request_limits import (
     RequestBodyHeaderError,
     RequestBodyLimitError,
@@ -249,6 +249,19 @@ def _moved(revision: QuoteRevision, shown: WorkbenchPricedTables | None) -> bool
     return bool(response_changes(revision.response, shown, ACCEPTED_TOLERANCE))
 
 
+def _without_app_details(values: dict[str, Any]) -> dict[str, Any]:
+    """*values* without the quote_details columns the app sets (`QUOTE_DETAILS_MANAGED`): a
+    reference, stage, assignee and archived flag belong to the quote that has them."""
+    rows = values.get(QUOTE_DETAILS_ID)
+    if rows is None:
+        return values
+    typed = [
+        {column: value for column, value in row.items() if column not in QUOTE_DETAILS_MANAGED}
+        for row in rows
+    ]
+    return {**values, QUOTE_DETAILS_ID: typed}
+
+
 def quote_router(app: QuoteApp) -> APIRouter:
     """The routes of the app's quotes, under ``/api/app``."""
     book = app.book
@@ -362,12 +375,17 @@ def quote_router(app: QuoteApp) -> APIRouter:
     @router.get(
         "/quotes/{quote_id}/revisions/{number}/carry", response_model=WorkbenchAppCarryResponse
     )
-    async def carry(quote_id: str, number: int) -> WorkbenchAppCarryResponse:
+    async def carry(quote_id: str, number: int, details: bool = False) -> WorkbenchAppCarryResponse:
+        """Revision *number*'s values on this release's sheets: for a quote made from it,
+        without the details the app sets, which are the source's and not the new quote's;
+        with them only when *details* asks, the same quote carried onto newer sheets."""
+
         def read() -> WorkbenchAppCarryResponse:
             revision = book.revision(quote_id, number)
             saved = book.store.form(revision.form_revision)
             carried = carry_values(revision.inputs, saved, app.form)
-            return WorkbenchAppCarryResponse(values=carried.values, dropped=carried.dropped)
+            values = carried.values if details else _without_app_details(carried.values)
+            return WorkbenchAppCarryResponse(values=values, dropped=carried.dropped)
 
         return await _call(app, read)
 

@@ -27,6 +27,9 @@ interface AppState {
   revision: string
   people: string[]
   question: Question | null
+  /** The page was drawn for another release than the one serving it now, as a price or a save found. */
+  releaseChanged: boolean
+  noteReleaseChanged: () => void
   setRelease: (release: WorkbenchAppReleaseResponse, form: FormSpec, revision: string) => void
   loadPeople: () => Promise<void>
   /** Ask `question`; the answer, or null for no. */
@@ -42,6 +45,8 @@ const useAppStore = create<AppState>()((set, get) => ({
   revision: "",
   people: [],
   question: null,
+  releaseChanged: false,
+  noteReleaseChanged: () => set({ releaseChanged: true }),
   setRelease: (release, form, revision) => set({ release, form, revision }),
   loadPeople: async () => {
     try {

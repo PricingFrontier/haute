@@ -821,9 +821,13 @@ Out of scope:
   the project, apart from the builder. `haute app build` writes a release: the pipeline's
   bundle as a deploy builds it (the sample left out), the form without its sample
   (`form.json`), each input column's allowed values from a params file read again from
-  the file as the project holds it, what the release is (`release.json`: an id taken from the form and the
-  bundle, the form's revision, the pipeline's name, the Haute version that built it and
-  when) and an entry point, `app.py`, serving it through the app Haute maintains.
+  the file as the project holds it, what the release is (`release.json`: an id taken from the form, the
+  bundle as it prices (where its nodes sit on the canvas names nothing) and the runtime it
+  prices on, the installed versions an image would pin, the form's revision, the
+  pipeline's name, the Haute version that built it and when) and an entry point,
+  `app.py`, serving it through the app Haute maintains. A release whose files are not
+  one is refused naming the file and what is wrong; a pipeline failing on a quote is
+  answered with its reason.
   The release goes into a folder of its own: one that is or holds the project or the
   working directory, a file, or a folder holding anything but an earlier release is
   refused, and an earlier release is replaced only once the new one has built beside it,
@@ -951,8 +955,10 @@ Out of scope:
   is saved by its first Save,
   which gives it its reference and its own address; one made from another quote's
   revision (Duplicate, Renew, Create alternative) opens with that revision's values
-  carried onto the current sheets and priced afresh, naming what it was made from and any
-  value that no longer fits; a renewal opens with `is_renewal` ticked, which the
+  carried onto the current sheets and priced afresh, without the reference, stage,
+  assignee and archived flag the app set for the source, naming what it was made from
+  and any value that no longer fits, and clean: left as it opened it keeps no draft and
+  asks nothing on leaving; a renewal opens with `is_renewal` ticked, which the
   underwriter can untick, as one not made by Renew can be ticked by hand. The sheets take no typing and are not priced, and Save is
   off, while the quote is final, archived, shown at an earlier revision (at
   `/quotes/{id}/revisions/{n}`, with Open the newest) or saved on earlier sheets (opened

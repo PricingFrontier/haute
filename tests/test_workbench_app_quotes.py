@@ -65,7 +65,9 @@ def _write_release(
         "pruned_graph": shipped_graph(_graph()),
     }
     (directory / "deploy_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    write_release(directory, FormSpec.model_validate(spec), "azure-container-apps", edit_role)
+    write_release(
+        directory, FormSpec.model_validate(spec), "azure-container-apps", edit_role, runtime=[]
+    )
     return directory
 
 
@@ -330,12 +332,23 @@ def test_the_history_lists_revisions_events_and_related_quotes(page: Page) -> No
 
 def test_a_revision_is_carried_onto_the_releases_sheets(page: Page) -> None:
     quote = page.create().json()["quote"]
+    url = f"/api/app/quotes/{quote['id']}/revisions/1/carry"
 
-    carried = page.client.get(
-        f"/api/app/quotes/{quote['id']}/revisions/1/carry", headers=ANA
-    ).json()
+    # The same quote onto newer sheets keeps the details the app set for it.
+    same = page.client.get(url, params={"details": "true"}, headers=ANA).json()
+    # A quote made from it takes none of them: they are the source's.
+    derived = page.client.get(url, headers=ANA).json()
 
-    assert carried == {"values": KEPT, "dropped": []}
+    assert same == {"values": KEPT, "dropped": []}
+    assert derived["dropped"] == []
+    assert derived["values"]["t1"] == KEPT["t1"]
+    [details] = derived["values"]["quote_details"]
+    assert not {"qd_reference", "qd_stage", "qd_assignee", "qd_archived"} & set(details)
+    assert {
+        column: value
+        for column, value in KEPT["quote_details"][0].items()
+        if column not in {"qd_reference", "qd_stage", "qd_assignee", "qd_archived"}
+    } == details
 
 
 # ── Changes ───────────────────────────────────────────────────────────────

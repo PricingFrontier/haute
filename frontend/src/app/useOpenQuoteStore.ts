@@ -28,7 +28,7 @@ import { canonicalJson } from "../utils/canonicalJson"
 import { newQuoteValues } from "../utils/sheetValues"
 import { quoteEligible } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, type SampleRow } from "../utils/workbenchForm"
-import { basisOf, clearDraft, draftKey, onSheets, operationKey, readDraft, savedPrice, valuesKey, writeDraft, type Draft, type PendingWrite, type QuoteWrite, type Values } from "./quoteValues"
+import { basisOf, cellPlaces, clearDraft, draftKey, lostPlaces, onSheets, operationKey, readDraft, releaseMoved, savedPrice, valuesKey, writeDraft, type Draft, type PendingWrite, type QuoteWrite, type Values } from "./quoteValues"
 import useAppStore from "./useAppStore"
 
 /** A new quote's origin: the quote and revision it is made from, and how. */
@@ -78,8 +78,6 @@ interface OpenQuoteState {
   error: string | null
   /** The quote moved on since it was opened: who moved it, and the quote as it is now. */
   conflict: { message: string; latest: WorkbenchAppQuote | null } | null
-  /** The page was drawn for another release. */
-  releaseChanged: boolean
   /** The last save's price, made again on the server, was not the one the sheets showed. */
   moved: boolean
   /** Each value that has no place on the current sheets, `table.column`. */
@@ -135,7 +133,6 @@ const CLOSED: Closed = {
   changing: false,
   error: null,
   conflict: null,
-  releaseChanged: false,
   moved: false,
   dropped: [],
   recovered: null,
@@ -207,9 +204,6 @@ function forgetSaved(key: string | null, sent: Values): void {
   if (key !== null && draft !== null && valuesKey(draft.values) === valuesKey(sent)) clearDraft(key)
 }
 
-/** A page drawn for another release: 409 without a code of the store's. */
-const releaseMoved = (error: unknown): boolean => apiErrorStatus(error) === 409 && apiErrorCode(error) === null
-
 /** The server refused what was sent, a status below 500, so nothing of it was written. */
 const refused = (error: unknown): boolean => {
   const status = apiErrorStatus(error)
@@ -226,6 +220,8 @@ function sendWrite(write: QuoteWrite): Promise<WorkbenchAppQuoteResponse> {
  * answers that load alone, and its answer is dropped once another has started.
  */
 let opening = 0
+/** The history asked for last. */
+let histories = 0
 
 const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
   /** Read what failed into the notice it calls for. */
@@ -233,7 +229,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     if (apiErrorCode(error) === "stale_quote_revision") {
       set({ conflict: { message: apiErrorMessage(error), latest: conflictQuote(error) } })
     } else if (releaseMoved(error)) {
-      set({ releaseChanged: true })
+      useAppStore.getState().noteReleaseChanged()
     } else {
       set({ error: apiErrorMessage(error) })
     }
@@ -275,7 +271,9 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
   const offerDraft = (): void => {
     const key = openDraftKey(get())
     const draft = key === null || readOnlyReason(get()) !== null ? null : readDraft(key)
-    set({ recovered: draft !== null && valuesKey(draft.values) !== get().baseline ? draft : null })
+    // Offered only when it differs from the sheet: values already there are not offered back.
+    const shown = valuesKey(useWorkbenchPreviewStore.getState().quote)
+    set({ recovered: draft !== null && valuesKey(draft.values) !== shown ? draft : null })
   }
 
   const keepDraft = (): boolean => {
@@ -288,11 +286,13 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       if (get().recovered === null) clearDraft(key)
       return true
     }
+    const sheets = useWorkbenchFormStore.getState().form
     return writeDraft(key, {
       values,
       version: get().base,
       latest: get().quote?.latest ?? null,
-      formRevision: useAppStore.getState().revision,
+      // Named on the sheets installed, the ones typed into.
+      places: sheets === null ? {} : cellPlaces(sheets, values),
       keptAt: new Date().toISOString(),
       // A draft offered back and not yet answered keeps the write it held.
       pending: get().pending ?? get().recovered?.pending ?? null,
@@ -473,12 +473,16 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       try {
         const [origin, carried] = await Promise.all([openAppQuote(from.quoteId, from.revision), carryAppQuote(from.quoteId, from.revision)])
         if (attempt !== opening) return
-        const values = carried.values as Values
-        useWorkbenchPreviewStore.getState().open(from.relation === "renewal" ? asRenewal(values) : values, null, !canEdit())
+        // The values carried, without the details the app set for the source, are the new
+        // quote as it opens: left as they are, it keeps no draft and asks nothing on leaving.
+        const carriedValues = carried.values as Values
+        const opened = from.relation === "renewal" ? asRenewal(carriedValues) : carriedValues
+        useWorkbenchPreviewStore.getState().open(opened, null, !canEdit())
         set({
           status: "ready",
           source: { ...from, reference: origin.quote.reference },
           dropped: carried.dropped,
+          baseline: valuesKey(opened),
         })
         offerDraft()
       } catch (error: unknown) {
@@ -576,7 +580,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       if (quote === null || revision === null || olderSheets === null || form === null) return
       const session = opening
       try {
-        const carried = await carryAppQuote(quote.id, revision.number)
+        const carried = await carryAppQuote(quote.id, revision.number, true)
         if (session !== opening) return
         installSheets(form)
         set({ olderSheets: null, past: false, dropped: carried.dropped })
@@ -595,9 +599,12 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       if (readOnlyReason(get()) !== null) return
       // The write a save held when the values were kept comes back with them.
       set({ pending: get().pending ?? recovered.pending })
-      // Kept on these sheets alone, the details the app sets as the quote has them now.
-      const values = withAppDetails(onSheets(form, recovered.values), useWorkbenchPreviewStore.getState().quote)
+      // Kept on these sheets alone, the details the app sets as the quote has them now, and
+      // what has no place on them named.
+      const kept = onSheets(form, recovered.values)
+      const values = withAppDetails(kept, useWorkbenchPreviewStore.getState().quote)
       useWorkbenchPreviewStore.getState().open(values, null, false)
+      set({ dropped: lostPlaces(recovered.values, kept, recovered.places) })
     },
 
     discardDraft: () => {
@@ -610,9 +617,11 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       const { quote } = get()
       if (quote === null) return
       const session = opening
+      // The history asked for last is the one shown: an earlier answer lacks what came since.
+      const asked = ++histories
       try {
         const history = await fetchAppQuoteHistory(quote.id)
-        if (session === opening && get().quote?.id === quote.id) set({ history })
+        if (session === opening && asked === histories && get().quote?.id === quote.id) set({ history })
       } catch (error: unknown) {
         if (session === opening) set({ error: `The quote's history could not be read: ${apiErrorMessage(error)}` })
       }

@@ -165,8 +165,9 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
       addToast("success", `Archived ${quote.reference}`, {
         label: "Undo",
         run: () => {
+          // The list shown when Undo is pressed, which may be another than the one archived from.
           void changeAppQuote(archived.id, "restore", archived.version, {})
-            .then(() => load(query, true))
+            .then(() => useQuoteListStore.getState().reload())
             .catch((reason: unknown) => addToast("error", `Could not restore ${quote.reference}: ${apiErrorMessage(reason)}`))
         },
       })

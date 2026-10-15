@@ -15,7 +15,7 @@ import {
   validateWorkbenchAppQuoteReopen,
   validateWorkbenchAppQuoteReviseRequest,
 } from "../../generated/api-contracts.workbench-app-requests.validators.mjs"
-import { changeAppQuote, createAppQuote, priceAppQuote, saveAppQuote, type QuoteSave } from "../app"
+import { carryAppQuote, changeAppQuote, createAppQuote, priceAppQuote, saveAppQuote, type QuoteSave } from "../app"
 
 const SAVE: QuoteSave = {
   operation: "save-0123456789",
@@ -65,6 +65,17 @@ describe("the app's quote routes on the wire", () => {
     expect([method, url]).toEqual(["POST", "/api/app/quotes"])
     expect(validateWorkbenchAppQuoteCreateRequest(body)).toBe(true)
     expect(body).toEqual({ ...SAVE, source: { quote_id: "q0", revision: 2, relation: "renewal" } })
+  })
+
+  it("carries a revision without the app's details for a quote made from it, and with them for the same quote", async () => {
+    answering({ values: {}, dropped: [] })
+    await carryAppQuote("q 1", 2)
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/app/quotes/q%201/revisions/2/carry")
+
+    fetchMock.mockClear()
+    answering({ values: {}, dropped: [] })
+    await carryAppQuote("q 1", 2, true)
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/app/quotes/q%201/revisions/2/carry?details=true")
   })
 
   it("saves a quote's next revision over the version it names", async () => {

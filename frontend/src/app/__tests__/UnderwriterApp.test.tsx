@@ -17,6 +17,7 @@ vi.mock("../../api/app", () => ({
 }))
 
 import { fetchAppForm, fetchAppPeople, fetchAppQuotes, fetchAppRelease, openAppQuote, priceAppQuote } from "../../api/app"
+import useAppStore from "../useAppStore"
 import { ApiError } from "../../api/client"
 import type { WorkbenchAppReleaseResponse } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
@@ -100,10 +101,14 @@ describe("UnderwriterApp", () => {
   it("says why a quote was not priced, a page drawn for another release among them", async () => {
     const refusal = "This page was drawn for another release of the sheets: reload it to price on this one."
     vi.mocked(priceAppQuote).mockRejectedValue(new ApiError("HTTP 409", 409, refusal))
+    useAppStore.setState({ releaseChanged: false })
     await opened()
     act(() => useWorkbenchPreviewStore.getState().setCell("policy", 0, "policy.state", "NY"))
 
     expect(await screen.findByTestId("app-pricing-error")).toHaveTextContent(`Pricing failed: ${refusal}`)
+    // The page is for another release: the Reload notice asks for it at once, before a save.
+    expect(useAppStore.getState().releaseChanged).toBe(true)
+    useAppStore.setState({ releaseChanged: false })
   })
 
   it("says why the sheets could not be opened, a request the host did not sign in among them", async () => {
