@@ -23,7 +23,6 @@ import {
   ChevronDown,
   ChevronRight,
   GripVertical,
-  Plus,
   Rows3,
   SeparatorHorizontal,
   Sheet,
@@ -34,17 +33,16 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react"
-import { useState, type KeyboardEvent, type ReactNode } from "react"
+import type { KeyboardEvent, ReactNode } from "react"
 import type { FieldRef, FormSpec, HeadingWidget, Page, SchemaTable, Section as SheetSection } from "../api/types"
-import { CommittedTextField, ConfigCheckbox, EditorLabel, ValidatedTextField } from "../components/form"
-import { ModalFormHeader } from "../components/ModalForm"
-import ModalShell from "../components/ModalShell"
+import { CommittedTextField, ConfigCheckbox, EditorLabel, FIELD_CLASS, INPUT_STYLE, LabelledRow, QuietAction, SelectRow, ValidatedTextField, wholeNumber } from "../components/form"
 import ToggleButtonGroup from "../components/ToggleButtonGroup"
 import { SidePanel } from "../haute-ui"
+import useCollapsedSet from "../hooks/useCollapsedSet"
 import useListReorder, { type RowDrag } from "../hooks/useListReorder"
-import useRefocusAfterMove, { type RefocusAfterMove } from "../hooks/useRefocusAfterMove"
-import { INPUT_STYLE } from "../panels/editors/_shared"
+import useRefocusAfterMove, { altArrowMove, type RefocusAfterMove } from "../hooks/useRefocusAfterMove"
 import PreviewPanelTabs, { type PreviewPanelTab } from "../panels/PreviewPanelTabs"
+import { confirmed } from "../stores/useQuestionStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { activePage, type WidgetPane } from "../stores/useWorkbenchViewStore"
 import { leastSectionHeight, leastSheetWidth } from "../utils/sheetGeometry"
@@ -90,9 +88,6 @@ import { COMPONENT_COLOR, WIDGET_KINDS } from "./widgetKinds"
 const MIN_WIDTH = 320
 /** At most half the window, so the sheet stays in view. */
 const maxWidth = () => Math.max(MIN_WIDTH, Math.floor(window.innerWidth / 2))
-const FIELD_CLASS = "focus-ring min-w-0 rounded-md px-1.5 py-1 text-xs"
-/** A dialog's buttons, as Haute's Files panel draws them. */
-const DIALOG_BUTTON = "px-3 py-1.5 text-[12px] font-medium rounded-md transition-colors"
 const DENSITIES: ReadonlyArray<{ value: TableOptions["density"]; label: string }> = [
   { value: "compact", label: "Compact" },
   { value: "comfortable", label: "Comfortable" },
@@ -175,22 +170,23 @@ export default function PropertiesPanel() {
 /**
  * The showing sheet's panel: its title (a blank one kept out), when it shows, its width in
  * whole pixels, never under what its components reach, and at its foot Delete sheet, asking
- * first in `DeleteSheetDialog`, while it is not the only sheet.
+ * first what goes with it and what stays (`confirmed`), while it is not the only sheet.
  */
 function SheetSettings({ form, page }: { form: FormSpec; page: Page }) {
   const change = useWorkbenchFormStore((s) => s.change)
   const showPage = useWorkbenchViewStore((s) => s.showPage)
-  const [asking, setAsking] = useState(false)
   const only = form.pages.length === 1
-  const deleteSheet = () => {
+  const deleteSheet = async () => {
+    const count = pageWidgets(page).length
+    const going = count === 0 ? "Nothing is on it." : count === 1 ? "The component on it goes with it." : `The ${count} components on it go with it.`
+    if (!(await confirmed({ title: `Delete "${page.title}"?`, text: `${going} The schema and the sample stay.`, confirm: "Delete", danger: true }))) return
     const remaining = form.pages.find((sheet) => sheet.id !== page.id)
     if (remaining === undefined) return
     change((spec) => removePage(spec, page.id))
     showPage(remaining.id)
   }
   const least = leastSheetWidth(pageWidgets(page))
-  const width = (text: string) =>
-    /^\d+$/.test(text.trim()) && Number.isSafeInteger(Number(text)) && Number(text) >= least ? null : `Enter a whole number of pixels, ${least} or more.`
+  const width = wholeNumber({ min: least, unit: "pixels" })
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-3 py-3 text-xs">
       <Section title="Title">
@@ -213,10 +209,7 @@ function SheetSettings({ form, page }: { form: FormSpec; page: Page }) {
         />
       </Section>
       <Section title="Layout">
-        <label className="flex items-center gap-2">
-          <span className="w-14" style={{ color: "var(--text-muted)" }}>
-            Width
-          </span>
+        <LabelledRow label="Width">
           <ValidatedTextField
             dataTestId="sheet-width"
             value={String(page.width)}
@@ -226,14 +219,14 @@ function SheetSettings({ form, page }: { form: FormSpec; page: Page }) {
             className={`${FIELD_CLASS} w-full tabular-nums`}
             style={INPUT_STYLE}
           />
-        </label>
+        </LabelledRow>
       </Section>
       <div className="mt-auto pt-3" style={{ borderTop: "1px solid var(--border)" }}>
         <button
           type="button"
           disabled={only}
           title={only ? "The last sheet cannot be deleted" : undefined}
-          onClick={() => setAsking(true)}
+          onClick={() => void deleteSheet()}
           className="focus-ring inline-flex items-center gap-1 rounded px-1 py-0.5 -ml-1 text-[11px] font-medium hover-bg disabled:opacity-50"
           style={{ color: "var(--danger)" }}
         >
@@ -241,33 +234,7 @@ function SheetSettings({ form, page }: { form: FormSpec; page: Page }) {
           Delete sheet
         </button>
       </div>
-      {asking && <DeleteSheetDialog page={page} onCancel={() => setAsking(false)} onDelete={deleteSheet} />}
     </div>
-  )
-}
-
-/** Asks before a sheet is deleted, in the editor rather than the browser: what goes with it, and what stays. */
-function DeleteSheetDialog({ page, onCancel, onDelete }: { page: Page; onCancel: () => void; onDelete: () => void }) {
-  const count = pageWidgets(page).length
-  const going = count === 0 ? "Nothing is on it." : count === 1 ? "The component on it goes with it." : `The ${count} components on it go with it.`
-  return (
-    <ModalShell ariaLabel={`Delete sheet "${page.title}"`} onClose={onCancel} testId="sheet-delete-dialog">
-      <ModalFormHeader title={`Delete "${page.title}"?`}>{going} The schema and the sample stay.</ModalFormHeader>
-      <div className="flex justify-end gap-2 p-4">
-        <button type="button" className={DIALOG_BUTTON} style={{ color: "var(--text-secondary)" }} onClick={onCancel}>
-          Cancel
-        </button>
-        <button
-          type="button"
-          data-testid="sheet-delete-confirm"
-          className={DIALOG_BUTTON}
-          style={{ background: "var(--danger)", color: "var(--text-on-accent)" }}
-          onClick={onDelete}
-        >
-          Delete
-        </button>
-      </div>
-    </ModalShell>
   )
 }
 
@@ -281,8 +248,7 @@ function SectionSettings({ form, page, section, index }: { form: FormSpec; page:
   const change = useWorkbenchFormStore((s) => s.change)
   const selectSection = useWorkbenchViewStore((s) => s.selectSection)
   const least = leastSectionHeight(section.widgets)
-  const height = (text: string) =>
-    /^\d+$/.test(text.trim()) && Number.isSafeInteger(Number(text)) && Number(text) >= least ? null : `Enter a whole number of pixels, ${least} or more.`
+  const height = wholeNumber({ min: least, unit: "pixels" })
   const addBelow = () => {
     const added = createSection(page)
     change((spec) => addSection(spec, page.id, added, index + 1))
@@ -311,10 +277,7 @@ function SectionSettings({ form, page, section, index }: { form: FormSpec; page:
       </Section>
       <Section title="Layout">
         <div className="flex items-start gap-2">
-          <label className="flex items-center gap-2">
-            <span className="w-14" style={{ color: "var(--text-muted)" }}>
-              Height
-            </span>
+          <LabelledRow label="Height">
             <ValidatedTextField
               dataTestId="section-height"
               value={String(section.height)}
@@ -324,7 +287,7 @@ function SectionSettings({ form, page, section, index }: { form: FormSpec; page:
               className={`${FIELD_CLASS} w-full tabular-nums`}
               style={INPUT_STYLE}
             />
-          </label>
+          </LabelledRow>
           <button
             type="button"
             onClick={() => change((spec) => fitSection(spec, section.id))}
@@ -336,15 +299,12 @@ function SectionSettings({ form, page, section, index }: { form: FormSpec; page:
         </div>
       </Section>
       <div className="flex flex-col items-start gap-1">
-        <button type="button" onClick={addBelow} className="quiet-action focus-ring inline-flex items-center gap-1 rounded px-1 py-0.5 -ml-1 text-[11px] font-medium">
-          <Plus size={11} aria-hidden="true" />
-          Add section below
-        </button>
+        <QuietAction onClick={addBelow}>Add section below</QuietAction>
         <button
           type="button"
           disabled={page.sections.length === 1}
           title={page.sections.length === 1 ? "A sheet keeps at least one section" : undefined}
-          onClick={() => deleteSection(page, section)}
+          onClick={() => void deleteSection(page, section)}
           className="focus-ring inline-flex items-center gap-1 rounded px-1 py-0.5 -ml-1 text-[11px] font-medium hover-bg disabled:opacity-50"
           style={{ color: "var(--danger)" }}
         >
@@ -389,10 +349,7 @@ function HeadingSettings({ form, widget }: { form: FormSpec; widget: HeadingWidg
         />
       </Section>
       <Section title="Look">
-        <label className="flex items-center gap-2">
-          <span className="w-14" style={{ color: "var(--text-muted)" }}>
-            Size
-          </span>
+        <LabelledRow label="Size">
           <select
             aria-label="Size"
             value={widget.size}
@@ -406,7 +363,7 @@ function HeadingSettings({ form, widget }: { form: FormSpec; widget: HeadingWidg
               </option>
             ))}
           </select>
-        </label>
+        </LabelledRow>
         <div className="flex items-center gap-2">
           <span className="w-14 shrink-0" style={{ color: "var(--text-muted)" }}>
             Align
@@ -429,33 +386,6 @@ function HeadingSettings({ form, widget }: { form: FormSpec; widget: HeadingWidg
 }
 
 /** A setting chosen from a few: its label, then a select of the choices. */
-function ChoiceRow<T extends string>({
-  label,
-  value,
-  choices,
-  onChange,
-}: {
-  label: string
-  value: T
-  choices: ReadonlyArray<{ value: T; label: string }>
-  onChange: (value: T) => void
-}) {
-  return (
-    <label className="flex items-center gap-2">
-      <span className="w-14" style={{ color: "var(--text-muted)" }}>
-        {label}
-      </span>
-      <select aria-label={label} value={value} onChange={(event) => onChange(event.target.value as T)} className={FIELD_CLASS} style={INPUT_STYLE}>
-        {choices.map((choice) => (
-          <option key={choice.value} value={choice.value}>
-            {choice.label}
-          </option>
-        ))}
-      </select>
-    </label>
-  )
-}
-
 function Section({ title, aside, children }: { title: string; aside?: string; children: ReactNode }) {
   return (
     <section className="flex flex-col gap-1.5" aria-label={title}>
@@ -475,7 +405,7 @@ function Section({ title, aside, children }: { title: string; aside?: string; ch
 function FieldsSettings({ form, widget }: { form: FormSpec; widget: FieldsWidget }) {
   const change = useWorkbenchFormStore((s) => s.change)
   const showSection = useWorkbenchViewStore((s) => s.showSection)
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
+  const { collapsed, toggle: toggleCollapsed } = useCollapsedSet()
   // A Chart plots either kind of table; a Table and a Collection each show one.
   const rows = widget.type === "chart" ? null : rowsShown(widget)
   const tables = rows === null ? form.schema.tables : form.schema.tables.filter((table) => table.rows === rows)
@@ -483,15 +413,6 @@ function FieldsSettings({ form, widget }: { form: FormSpec; widget: FieldsWidget
   // share the grid. A key-less many-row table, for one, lines up with nothing else.
   const first = widget.fields.map((field) => fieldColumn(form, field)).find((shown) => shown?.table.rows === rows)
   const grain = widget.type === "chart" ? chartGrain(form.schema, widget) : first ? tableGrain(first.table) : null
-  const toggleCollapsed = (id: string) =>
-    setCollapsed((current) => {
-      const next = new Set(current)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  const wholeNumber = (min: number, max: number) => (text: string) =>
-    /^\d+$/.test(text.trim()) && Number(text) >= min && Number(text) <= max ? null : `Enter a whole number from ${min} to ${max}.`
 
   const kind = WIDGET_KINDS[widget.type]
   // A Table's and a Collection's settings are in two panes, as Haute's node panel puts an
@@ -543,16 +464,13 @@ function FieldsSettings({ form, widget }: { form: FormSpec; widget: FieldsWidget
         )}
         {shows("display") && widget.type !== "chart" && widget.fields.length > 0 && (
           <Section title="Layout">
-            <label className="flex items-center gap-2">
-              <span className="w-14" style={{ color: "var(--text-muted)" }}>
-                {widget.type === "collection" ? "Columns" : "Rows"}
-              </span>
+            <LabelledRow label={widget.type === "collection" ? "Columns" : "Rows"}>
               {widget.type === "collection" ? (
                 <ValidatedTextField
                   dataTestId="widget-columns"
                   value={String(widget.columns)}
                   onCommit={(text) => change((spec) => updateWidget(spec, widget.id, { columns: Number(text) }))}
-                  validate={wholeNumber(1, COLLECTION_COLUMNS_MAX)}
+                  validate={wholeNumber({ min: 1, max: COLLECTION_COLUMNS_MAX })}
                   containerClassName="w-16"
                   className={`${FIELD_CLASS} w-full tabular-nums`}
                   style={INPUT_STYLE}
@@ -562,16 +480,15 @@ function FieldsSettings({ form, widget }: { form: FormSpec; widget: FieldsWidget
                   dataTestId="widget-rows"
                   value={String(widget.rows)}
                   onCommit={(text) => change((spec) => setTableRows(spec, widget.id, Number(text)))}
-                  validate={wholeNumber(1, TABLE_ROWS_MAX)}
+                  validate={wholeNumber({ min: 1, max: TABLE_ROWS_MAX })}
                   containerClassName="w-16"
                   className={`${FIELD_CLASS} w-full tabular-nums`}
                   style={INPUT_STYLE}
                 />
               )}
-            </label>
+            </LabelledRow>
             {widget.type === "tableInput" && (
-              <div className="flex items-center gap-2">
-                <span className="w-14 shrink-0" aria-hidden="true" />
+              <LabelledRow>
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
                   <ConfigCheckbox
                     label="Fixed rows"
@@ -584,17 +501,16 @@ function FieldsSettings({ form, widget }: { form: FormSpec; widget: FieldsWidget
                     onChange={(transposed) => change((spec) => updateWidget(spec, widget.id, { transposed }))}
                   />
                 </div>
-              </div>
+              </LabelledRow>
             )}
           </Section>
         )}
         {shows("display") && widget.type === "tableInput" && widget.fields.length > 0 && (
           <Section title="Look">
-            <ChoiceRow label="Density" value={widget.density} choices={DENSITIES} onChange={(density) => change((spec) => updateWidget(spec, widget.id, { density }))} />
-            <ChoiceRow label="Gridlines" value={widget.gridlines} choices={GRIDLINES} onChange={(gridlines) => change((spec) => updateWidget(spec, widget.id, { gridlines }))} />
-            <ChoiceRow label="Header" value={widget.header} choices={HEADERS} onChange={(header) => change((spec) => updateWidget(spec, widget.id, { header }))} />
-            <div className="flex items-center gap-2">
-              <span className="w-14 shrink-0" aria-hidden="true" />
+            <SelectRow label="Density" value={widget.density} choices={DENSITIES} onChange={(density) => change((spec) => updateWidget(spec, widget.id, { density }))} />
+            <SelectRow label="Gridlines" value={widget.gridlines} choices={GRIDLINES} onChange={(gridlines) => change((spec) => updateWidget(spec, widget.id, { gridlines }))} />
+            <SelectRow label="Header" value={widget.header} choices={HEADERS} onChange={(header) => change((spec) => updateWidget(spec, widget.id, { header }))} />
+            <LabelledRow>
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
                 <ConfigCheckbox
                   label="Row numbers"
@@ -609,17 +525,16 @@ function FieldsSettings({ form, widget }: { form: FormSpec; widget: FieldsWidget
                 />
                 <ConfigCheckbox label="Frame" checked={widget.frame} onChange={(frame) => change((spec) => updateWidget(spec, widget.id, { frame }))} />
               </div>
-            </div>
+            </LabelledRow>
           </Section>
         )}
         {shows("display") && widget.type === "collection" && widget.fields.length > 0 && (
           <Section title="Look">
-            <ChoiceRow label="Labels" value={widget.labels} choices={LABEL_PLACES} onChange={(labels) => change((spec) => updateWidget(spec, widget.id, { labels }))} />
-            <ChoiceRow label="Density" value={widget.density} choices={DENSITIES} onChange={(density) => change((spec) => updateWidget(spec, widget.id, { density }))} />
-            <div className="flex items-center gap-2">
-              <span className="w-14 shrink-0" aria-hidden="true" />
+            <SelectRow label="Labels" value={widget.labels} choices={LABEL_PLACES} onChange={(labels) => change((spec) => updateWidget(spec, widget.id, { labels }))} />
+            <SelectRow label="Density" value={widget.density} choices={DENSITIES} onChange={(density) => change((spec) => updateWidget(spec, widget.id, { density }))} />
+            <LabelledRow>
               <ConfigCheckbox label="Frame" checked={widget.frame} onChange={(frame) => change((spec) => updateWidget(spec, widget.id, { frame }))} />
-            </div>
+            </LabelledRow>
           </Section>
         )}
         {widget.type === "chart" && widget.fields.length > 0 && (
@@ -692,14 +607,9 @@ function FieldOrder({ form, widget }: { form: FormSpec; widget: FieldsWidget }) 
         {rows}
       </div>
       {widget.type === "collection" && (
-        <button
-          type="button"
-          onClick={() => change((spec) => addSpacer(spec, widget.id))}
-          className="quiet-action focus-ring inline-flex items-center gap-1 self-start rounded px-1 py-0.5 -ml-1 text-[11px] font-medium"
-        >
-          <Plus size={11} aria-hidden="true" />
+        <QuietAction onClick={() => change((spec) => addSpacer(spec, widget.id))} className="self-start">
           Add spacer
-        </button>
+        </QuietAction>
       )}
     </>
   )
@@ -722,10 +632,8 @@ interface OrderPlace {
 function OrderRowFrame({ widget, place, count, drag, rowKey, refocus, label, children }: OrderPlace & { label: string; children: ReactNode }) {
   const change = useWorkbenchFormStore((s) => s.change)
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return
-    event.preventDefault()
-    const to = place + (event.key === "ArrowUp" ? -1 : 1)
-    if (to < 0 || to >= count) return
+    const to = altArrowMove(event, "vertical", place, count)
+    if (to === null) return
     refocus.moved(rowKey)
     change((spec) => moveInOrder(spec, widget.id, place, to))
   }

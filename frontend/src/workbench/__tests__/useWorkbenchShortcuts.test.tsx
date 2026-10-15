@@ -13,6 +13,7 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react"
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
+import { asked } from "../../test-utils/question"
 import { findWidget, updateWidget } from "../../utils/workbenchForm"
 import useWorkbenchShortcuts from "../useWorkbenchShortcuts"
 import { currentForm, loadForm, sectionedForm, widgetsOf } from "./fixtures"
@@ -84,14 +85,13 @@ describe("useWorkbenchShortcuts on the sheets", () => {
 
   it("closes a section's panel on Escape, and deletes nothing on Delete while it is open", () => {
     loadForm(sectionedForm())
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true)
     useWorkbenchViewStore.getState().selectSection("s_flood")
     key({ key: "Delete" })
     key({ key: "Backspace" })
     // A section is deleted from its header or its panel, never by the sheet's keys.
     expect(currentForm().pages[0].sections.map((section) => section.id)).toEqual(["s_policy", "s_flood", "s_notes"])
     expect(widgetsOf(currentForm(), 0, 1).map((widget) => widget.id)).toEqual(["w_grid"])
-    expect(confirm).not.toHaveBeenCalled()
+    expect(asked()).toBeNull()
     expect(useWorkbenchViewStore.getState().sectionId).toBe("s_flood")
 
     // Escape in a field, such as the panel's own, is the field's.

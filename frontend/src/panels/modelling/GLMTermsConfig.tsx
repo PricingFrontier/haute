@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { Plus, Search } from "lucide-react"
 
 import type { OnUpdateConfig } from "../editors/_shared"
+import { confirmed } from "../../stores/useQuestionStore"
 import { configField } from "../../utils/configField"
 import { roleColumnReasons, type ModellingColumn } from "./featureSelection"
 import {
@@ -45,7 +46,7 @@ type Props = {
   columns: ModellingColumn[]
 }
 
-const REMOVE_ALL_CONFIRMATION = "Remove every term and interaction from this model?"
+const REMOVE_ALL_QUESTION = { title: "Remove every term and interaction from this model?", confirm: "Remove all", danger: true }
 
 /** The eligible column an additional term belongs to, for its type options. */
 function additionalColumn(key: string, spec: TermEntry["spec"], context: ColumnContext): ModellingColumn | null {
@@ -231,10 +232,11 @@ export function GLMTermsConfig({ config, onUpdate, columns }: Props) {
           type="button"
           className="rounded-lg px-2.5 py-1 text-[10px] font-medium"
           style={{ background: "var(--danger-soft)", border: "1px solid var(--danger)", color: "var(--danger)" }}
-          onClick={() => {
-            if (!confirm(REMOVE_ALL_CONFIRMATION)) return
-            onUpdate({ terms: {}, interactions: [] })
-          }}
+          onClick={() =>
+            void (async () => {
+              if (await confirmed(REMOVE_ALL_QUESTION)) onUpdate({ terms: {}, interactions: [] })
+            })()
+          }
         >
           Remove all terms
         </button>

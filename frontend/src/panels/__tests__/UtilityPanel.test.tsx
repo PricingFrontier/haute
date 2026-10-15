@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react"
+import { answerQuestion, asked } from "../../test-utils/question"
 import UtilityPanel from "../UtilityPanel"
 
 // Mock the CodeEditor (heavy CodeMirror dependency)
@@ -333,8 +334,6 @@ describe("UtilityPanel auto-save", () => {
   })
 
   it("discards a pending edit when its file is deleted", async () => {
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true)
-    onTestFinished(() => confirmSpy.mockRestore())
     mockDeleteFile.mockResolvedValue({ status: "ok" })
 
     render(<UtilityPanel {...defaultProps} />)
@@ -342,6 +341,8 @@ describe("UtilityPanel auto-save", () => {
 
     fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "x = 6\n" } })
     fireEvent.click(screen.getByTitle("Delete features"))
+    expect(asked()).toMatchObject({ title: "Delete features?", confirm: "Delete", danger: true })
+    await answerQuestion("confirm")
     await waitFor(() => expect(mockDeleteFile).toHaveBeenCalledWith("features"))
 
     await act(async () => { vi.advanceTimersByTime(600) })

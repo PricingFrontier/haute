@@ -15,6 +15,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen, within } from "@te
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { findSection, findWidget, renameSection, withSampleCell } from "../../utils/workbenchForm"
+import { answerQuestion, asked } from "../../test-utils/question"
 import SheetCanvas from "../SheetCanvas"
 import useWorkbenchShortcuts from "../useWorkbenchShortcuts"
 import { currentForm, drag, loadForm, releasePointer, sectionedForm, stubLayout, topOnSheet } from "./fixtures"
@@ -201,20 +202,20 @@ describe("SectionHeaders", () => {
     expect(order()).toEqual(["s_flood", "s_policy", "s_notes"])
   })
 
-  it("deletes the focused bar's section with Delete or Backspace, asking first while components are in it, and never a sheet's last", () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false)
+  it("deletes the focused bar's section with Delete or Backspace, asking first while components are in it, and never a sheet's last", async () => {
     loadForm(emptyNotes())
     render(<SheetCanvas />)
     fireEvent.click(bar("s_flood"))
 
     // Cancelled, it stays.
     fireEvent.keyDown(bar("s_flood"), { key: "Delete" })
-    expect(confirm).toHaveBeenCalledWith('Delete "Flood" and the 1 component in it? The schema and the sample stay.')
+    expect(asked()).toMatchObject({ title: 'Delete "Flood" and the 1 component in it?', text: "The schema and the sample stay.", confirm: "Delete", danger: true })
+    await answerQuestion(null)
     expect(order()).toEqual(SECTIONS)
     expect(undoSteps()).toBe(0)
 
-    confirm.mockReturnValue(true)
     fireEvent.keyDown(bar("s_flood"), { key: "Backspace" })
+    await answerQuestion("confirm")
     expect(order()).toEqual(["s_policy", "s_notes"])
     expect(findWidget(currentForm(), "w_grid")).toBeNull()
     expect(screen.queryByTestId("section-header-s_flood")).not.toBeInTheDocument()
@@ -223,16 +224,15 @@ describe("SectionHeaders", () => {
     expect(undoSteps()).toBe(1)
 
     // An empty one goes without asking.
-    confirm.mockClear()
     fireEvent.keyDown(bar("s_notes"), { key: "Delete" })
-    expect(confirm).not.toHaveBeenCalled()
+    expect(asked()).toBeNull()
     expect(order()).toEqual(["s_policy"])
     expect(bar("s_policy")).toHaveAccessibleName("Section 1, Policy")
 
     // The sheet's last stays, its components or not, without asking.
     fireEvent.keyDown(bar("s_policy"), { key: "Delete" })
     fireEvent.keyDown(bar("s_policy"), { key: "Backspace" })
-    expect(confirm).not.toHaveBeenCalled()
+    expect(asked()).toBeNull()
     expect(order()).toEqual(["s_policy"])
     expect(undoSteps()).toBe(2)
   })
@@ -406,8 +406,7 @@ describe("SectionHeaders", () => {
     expect(undoSteps()).toBe(3)
   })
 
-  it("keeps a bar's own keys from the sheet's shortcuts, which never also act on the selected component", () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true)
+  it("keeps a bar's own keys from the sheet's shortcuts, which never also act on the selected component", async () => {
     render(<SheetCanvas />)
     renderHook(() => useWorkbenchShortcuts(vi.fn()))
     act(() => view().select("w_boxes"))
@@ -423,7 +422,9 @@ describe("SectionHeaders", () => {
     expect(boxes()).toMatchObject({ x: 16, y: 16 })
 
     fireEvent.keyDown(bar("s_notes"), { key: "Delete" })
+    await answerQuestion("confirm")
     fireEvent.keyDown(bar("s_flood"), { key: "Backspace" })
+    await answerQuestion("confirm")
     expect(order()).toEqual(["s_policy"])
     // The last stays, and its Delete is still its own.
     fireEvent.keyDown(bar("s_policy"), { key: "Delete" })

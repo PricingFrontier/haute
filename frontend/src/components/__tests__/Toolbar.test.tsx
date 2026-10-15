@@ -16,6 +16,7 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useUIStore from "../../stores/useUIStore"
 import useGitStore from "../../stores/useGitStore"
+import { answerQuestion, asked } from "../../test-utils/question"
 
 function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
   return {
@@ -164,12 +165,13 @@ describe("Toolbar", () => {
     expect(helpBtn).toHaveAttribute("aria-haspopup", "menu")
     expect(helpBtn).toHaveAttribute("aria-expanded", "false")
 
+    // One of the kit's columns, of its actions: stacked, each as wide as the column.
     const assistantColumn = assistantBtn.parentElement
     expect(assistantColumn).toBeInTheDocument()
-    expect(assistantColumn).toHaveClass("flex-col")
+    expect(assistantColumn).toHaveClass("toolbar-column")
     expect(assistantColumn).toContainElement(helpBtn)
-    expect(assistantBtn).toHaveClass("w-full")
-    expect(helpBtn).toHaveClass("w-full")
+    expect(assistantBtn).toHaveClass("toolbar-action")
+    expect(helpBtn).toHaveClass("toolbar-action")
 
     expect(assistantColumn).not.toBeNull()
     expect(assistantColumn!.compareDocumentPosition(branchIndicator) & 4).toBeTruthy()
@@ -202,10 +204,10 @@ describe("Toolbar", () => {
 
     const centreColumn = centreBtn.parentElement
     expect(centreColumn).toBeInTheDocument()
-    expect(centreColumn).toHaveClass("flex-col")
+    expect(centreColumn).toHaveClass("toolbar-column")
     expect(centreColumn).toContainElement(layoutBtn)
-    expect(centreBtn).toHaveClass("w-full")
-    expect(layoutBtn).toHaveClass("w-full")
+    expect(centreBtn).toHaveClass("toolbar-action", "toolbar-action-compact")
+    expect(layoutBtn).toHaveClass("toolbar-action", "toolbar-action-compact")
 
     expect(centreBtn.compareDocumentPosition(layoutBtn) & 4).toBeTruthy()
 
@@ -247,13 +249,13 @@ describe("Toolbar", () => {
 
     const utilityColumn = utilityBtn.parentElement
     expect(utilityColumn).toBeInTheDocument()
-    expect(utilityColumn).toHaveClass("flex-col")
+    expect(utilityColumn).toHaveClass("toolbar-column")
     expect(utilityColumn).toContainElement(constantsBtn)
 
     expect(utilityBtn).toHaveTextContent(/utility/i)
     expect(constantsBtn).toHaveTextContent(/constants/i)
-    expect(utilityBtn).toHaveClass("w-full")
-    expect(constantsBtn).toHaveClass("w-full")
+    expect(utilityBtn).toHaveClass("toolbar-action")
+    expect(constantsBtn).toHaveClass("toolbar-action")
 
     expect(utilityBtn.compareDocumentPosition(constantsBtn) & 4).toBeTruthy()
 
@@ -271,13 +273,14 @@ describe("Toolbar", () => {
 
     const submodelColumn = submodelBtn.parentElement
     expect(submodelColumn).toBeInTheDocument()
-    expect(submodelColumn).toHaveClass("flex-col")
+    expect(submodelColumn).toHaveClass("toolbar-column")
     expect(submodelColumn).toContainElement(instanceBtn)
 
     expect(submodelBtn).toHaveTextContent(/submodel/i)
     expect(instanceBtn).toHaveTextContent(/instance/i)
+    // Submodel keeps its grid of two stacked labels, as wide as the column.
     expect(submodelBtn).toHaveClass("w-full")
-    expect(instanceBtn).toHaveClass("w-full")
+    expect(instanceBtn).toHaveClass("toolbar-action")
 
     expect(submodelBtn.compareDocumentPosition(instanceBtn) & 4).toBeTruthy()
 
@@ -832,26 +835,26 @@ describe("Toolbar", () => {
     expect(screen.getByText(/Remove "test_scenario"/)).toBeInTheDocument()
   })
 
-  it("asks before removing a source whose values split constants hold, then removes them", () => {
+  it("asks before removing a source whose values split constants hold, then removes them", async () => {
     useSettingsStore.setState({ sources: ["live", "nb_batch"], activeSource: "nb_batch" })
     useGraphStore.getState().resetForTests()
     useGraphStore.getState().setGlobalConstantsRaw([
       { name: "rate", type: "float", split: true, value: "", bySource: { live: "1", nb_batch: "2" } },
     ])
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true)
     render(<Toolbar {...makeProps()} />)
 
     fireEvent.click(screen.getByTitle("Data source"))
     fireEvent.click(screen.getByText(/Remove "nb_batch"/))
-    expect(confirm).toHaveBeenLastCalledWith('Remove source "nb_batch"? Its values for rate will be deleted.')
+    expect(asked()).toMatchObject({ title: 'Remove source "nb_batch"?', text: "Its values for rate will be deleted.", confirm: "Remove", danger: true })
+    await answerQuestion(null)
     expect(useSettingsStore.getState().sources).toEqual(["live", "nb_batch"])
     expect(useGraphStore.getState().globalConstants[0].bySource).toEqual({ live: "1", nb_batch: "2" })
 
     fireEvent.click(screen.getByTitle("Data source"))
     fireEvent.click(screen.getByText(/Remove "nb_batch"/))
+    await answerQuestion("confirm")
     expect(useSettingsStore.getState().sources).toEqual(["live"])
     expect(useGraphStore.getState().globalConstants[0].bySource).toEqual({ live: "1" })
-    confirm.mockRestore()
     useGraphStore.getState().resetForTests()
   })
 

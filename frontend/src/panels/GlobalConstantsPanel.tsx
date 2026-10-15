@@ -4,6 +4,7 @@ import PanelShell from "./PanelShell"
 import { INPUT_STYLE } from "./editors/_shared"
 import { isPlainObject } from "../types/guards"
 import useGraphStore from "../stores/useGraphStore"
+import { confirmed } from "../stores/useQuestionStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import {
   GLOBAL_CONSTANT_TYPES,
@@ -148,7 +149,8 @@ interface ConstantRowProps {
   disabled: boolean
   onChange: (draft: GlobalConstantDraft) => void
   /** False when the analyst declines the rename. */
-  onRename: (name: string) => boolean
+  /** Rename the constant, asking first when it is read; resolves false when it is not renamed. */
+  onRename: (name: string) => Promise<boolean>
   onDelete: () => void
 }
 
@@ -163,9 +165,11 @@ function ConstantRow({ index, draft, issues, sources, readers, disabled, onChang
   }
   const commitName = () => {
     if (name === draft.name) return
-    if (!onRename(name)) setName(draft.name)
+    void onRename(name).then((renamed) => {
+      if (!renamed) setName(draft.name)
+    })
   }
-  const toggleSplit = () => {
+  const toggleSplit = async () => {
     if (!draft.split) {
       onChange(splitBySource(draft, sources))
       return
@@ -173,9 +177,8 @@ function ConstantRow({ index, draft, issues, sources, readers, disabled, onChang
     const entries = Object.entries(valuesDiscardedByJoining(draft))
     if (entries.length > 0) {
       const listed = entries.map(([source, value]) => `${source}: ${value}`).join(", ")
-      if (!window.confirm(`Use one value for ${draft.name}? This keeps the live value and discards ${listed}.`)) {
-        return
-      }
+      const text = `This keeps the live value and discards ${listed}.`
+      if (!(await confirmed({ title: `Use one value for ${draft.name}?`, text, confirm: "Use one value", danger: true }))) return
     }
     onChange(joinSources(draft))
   }
@@ -221,7 +224,7 @@ function ConstantRow({ index, draft, issues, sources, readers, disabled, onChang
             disabled={disabled}
             testId={`constant-split-${index}`}
             label={`Split ${label} by source`}
-            onToggle={toggleSplit}
+            onToggle={() => void toggleSplit()}
           />
         </div>
       </td>
@@ -334,21 +337,20 @@ export default function GlobalConstantsPanel({ onClose, readOnly = false }: Glob
   const replace = (index: number, draft: GlobalConstantDraft) =>
     setDrafts(drafts.map((current, at) => (at === index ? draft : current)))
   const add = () => setDrafts([...drafts, newConstantDraft(drafts)])
-  const rename = (index: number, name: string): boolean => {
+  const rename = async (index: number, name: string): Promise<boolean> => {
     const draft = drafts[index]
     const readBy = readers[index]
-    if (readBy.length > 0 && !window.confirm(
-      `Rename ${draft.name} to ${name}? ${readBy.join(", ")} read ${draft.name}; edit their code to read ${name}.`,
-    )) {
-      return false
+    if (readBy.length > 0) {
+      const text = `${readBy.join(", ")} read ${draft.name}; edit their code to read ${name}.`
+      if (!(await confirmed({ title: `Rename ${draft.name} to ${name}?`, text, confirm: "Rename" }))) return false
     }
     replace(index, { ...draft, name })
     return true
   }
-  const remove = (index: number) => {
+  const remove = async (index: number) => {
     const draft = drafts[index]
     const readBy = readers[index]
-    if (readBy.length > 0 && !window.confirm(`Delete ${draft.name}? ${readBy.join(", ")} read it.`)) return
+    if (readBy.length > 0 && !(await confirmed({ title: `Delete ${draft.name}?`, text: `${readBy.join(", ")} read it.`, confirm: "Delete", danger: true }))) return
     setDrafts(drafts.filter((_, at) => at !== index))
   }
   const removeUnknownSources = () =>
@@ -452,7 +454,7 @@ export default function GlobalConstantsPanel({ onClose, readOnly = false }: Glob
                       disabled={disabled}
                       onChange={(next) => replace(index, next)}
                       onRename={(name) => rename(index, name)}
-                      onDelete={() => remove(index)}
+                      onDelete={() => void remove(index)}
                     />
                   ))}
                 </tbody>

@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom/vitest"
 import { beforeEach } from "vitest"
 
+import useQuestionStore from "./stores/useQuestionStore"
 import useToastStore from "./stores/useToastStore"
 
 // The toast store is a module-level singleton read by nearly every hook and
@@ -12,6 +13,9 @@ import useToastStore from "./stores/useToastStore"
 // deliberate seeding wins.
 beforeEach(async () => {
   useToastStore.setState({ toasts: [], _toastCounter: 0 })
+  // The page's one question likewise: a question a test left open is never answered no
+  // by the next test's first.
+  useQuestionStore.setState({ question: null })
   // Same rationale for the branch-loader single-flight: a test that mocks
   // getWorkingBranches as never-settling would otherwise starve loadBranches()
   // in every later-shuffled test. The loader's settle paths are identity-

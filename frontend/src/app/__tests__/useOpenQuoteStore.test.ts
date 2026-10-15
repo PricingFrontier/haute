@@ -39,7 +39,7 @@ describe("useOpenQuoteStore", () => {
   let form: FormSpec
   beforeEach(() => {
     form = sheetForm()
-    useAppStore.setState({ release, form, revision: "rev-9", people: [], question: null, releaseChanged: false })
+    useAppStore.setState({ release, form, revision: "rev-9", people: [], releaseChanged: false })
     useWorkbenchFormStore.setState({ form, status: "ready" })
     useWorkbenchPreviewStore.setState({ quote: {}, price: null, error: null, pricing: false, readOnly: false })
     useOpenQuoteStore.setState({ status: "idle", quote: null, revision: null, base: null, past: false, olderSheets: null, source: null, pending: null, conflict: null, error: null, historyOpen: false })

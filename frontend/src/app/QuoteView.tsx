@@ -26,6 +26,7 @@ import type { WorkbenchAppQuote } from "../api/types"
 import { CommittedTextField } from "../components/form"
 import { ToolbarButton, ToolbarColumn, ZoomInOut } from "../haute-ui"
 import { hasModifier, inModalDialog, saveCommittingField } from "../hooks/keyboardTargets"
+import useQuestionStore, { confirmed } from "../stores/useQuestionStore"
 import useToastStore from "../stores/useToastStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
@@ -39,7 +40,7 @@ import HistoryPanel from "./HistoryPanel"
 import { basisOf, fullTime, relativeTime, valuesKey } from "./quoteValues"
 import { followLink, navigate, newQuotePath, quotePath, revisionPath, routeOf, setLeaveGuard, type AppRoute } from "./route"
 import { BUTTON, Menu, Notice, StageChip, type MenuItem } from "./ui"
-import useAppStore, { confirm } from "./useAppStore"
+import useAppStore from "./useAppStore"
 import useOpenQuoteStore, { busy, canEdit, readOnlyReason } from "./useOpenQuoteStore"
 
 type QuoteRoute = Extract<AppRoute, { page: "new" } | { page: "quote" }>
@@ -108,7 +109,7 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
   const routeKey = route.page === "new" ? `new:${route.from?.quoteId ?? ""}:${route.from?.revision ?? ""}:${route.from?.relation ?? ""}` : `quote:${route.id}:${route.revision ?? ""}`
   useEffect(() => {
     // A question asked about the quote the page has left is nobody's now.
-    useAppStore.getState().answer(null)
+    useQuestionStore.getState().answer(null)
     const open = useOpenQuoteStore.getState()
     if (route.page === "new") {
       void open.openNew(route.from)
@@ -126,11 +127,11 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
   useEffect(() => {
     if (!dirty) return
     setLeaveGuard(() =>
-      confirm(
-        "Leave without saving?",
-        "Your changes to this quote are not saved. This browser keeps them, offered back when you open the quote again, until you save or discard them.",
-        "Leave",
-      ),
+      confirmed({
+        title: "Leave without saving?",
+        text: "Your changes to this quote are not saved. This browser keeps them, offered back when you open the quote again, until you save or discard them.",
+        confirm: "Leave",
+      }),
     )
     const warn = (event: BeforeUnloadEvent) => event.preventDefault()
     window.addEventListener("beforeunload", warn)
@@ -171,7 +172,7 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
   // Leaving the quote for the Quotes page ends it: an answer still to come opens nothing, and
   // a question asked about it is dropped.
   useEffect(() => () => {
-    useAppStore.getState().answer(null)
+    useQuestionStore.getState().answer(null)
     useOpenQuoteStore.getState().close()
   }, [])
 
@@ -286,17 +287,17 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
 
   const markFinal = async () => {
     if (quote === null || revision === null) return
-    const yes = await confirm(
-      `Mark ${quote.reference} final?`,
-      `The quote as revision ${revision.number} holds it is pinned as the final quotation, saved as revision ${revision.number + 1}. It cannot be saved over until someone reopens it, giving a reason; the final stays in its history.`,
-      "Mark final",
-    )
+    const yes = await confirmed({
+      title: `Mark ${quote.reference} final?`,
+      text: `The quote as revision ${revision.number} holds it is pinned as the final quotation, saved as revision ${revision.number + 1}. It cannot be saved over until someone reopens it, giving a reason; the final stays in its history.`,
+      confirm: "Mark final",
+    })
     if (yes && (await change("final", { revision: revision.number }, quote)) !== null) addToast("success", `${quote.reference} is final`)
   }
 
   const reopen = async () => {
     if (quote === null) return
-    const answer = await useAppStore.getState().ask({
+    const answer = await useQuestionStore.getState().ask({
       title: `Reopen ${quote.reference}?`,
       text: "Its final stays in its history; the next save is an amendment under the same reference.",
       confirm: "Reopen",
@@ -424,7 +425,7 @@ function QuoteLine() {
     if (quote === null) return
     let assignee = to
     if (to === "") {
-      const answer = await useAppStore.getState().ask({
+      const answer = await useQuestionStore.getState().ask({
         title: `Assign ${quote.reference}`,
         text: "Name who the quote is with now, as the app shows who is signed in.",
         confirm: "Assign",

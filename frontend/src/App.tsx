@@ -29,6 +29,7 @@ import OptimiserDataPreview from "./panels/OptimiserDataPreview"
 import { TraceStatePanel } from "./panels/TraceStatePanel"
 import type { ProjectFilePlace } from "./api/types"
 import type { TraceResult } from "./types/trace"
+import QuestionDialog from "./components/QuestionDialog"
 import ToastContainer from "./components/Toast"
 import { ErrorBoundary } from "./components/ErrorBoundary"
 import ContextMenu from "./components/ContextMenu"
@@ -2186,6 +2187,7 @@ function FlowEditor() {
         onNodeSearchSelect={handleNodeSearchSelect}
       />
 
+      <QuestionDialog />
       <ErrorBoundary name="Toast">
         <ToastContainer />
       </ErrorBoundary>

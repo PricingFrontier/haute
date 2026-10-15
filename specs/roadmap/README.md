@@ -23,7 +23,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache identity | `CACHE-S17` |
 | [Engineering quality](engineering-quality.md) | Model-training test cost, order- and load-sensitive tests, compatibility shard balance, dead code, test organisation | `ENGQ-CI03` |
 | [Explore and EDA](explore-eda.md) | Advanced pivot and PivotChart parity | — |
-| [Frontend shared](frontend-shared.md) | Results store; one kit for the confirmations, panel controls and toolbar buttons built several ways | `FSH-R03` |
+| [Frontend shared](frontend-shared.md) | Results store | `FSH-R03` |
 | [Model scoring](model-scoring.md) | Models trained outside Haute | `MSC-06` |
 | [Modelling](modelling.md) | Adaptive low-memory fitting: exact chunked GLM, a low-memory boosted-tree mode (both awaiting a decision) | `MOD-M01` |
 | [Name collisions](name-collisions.md) | Input-binding editors showing their name violations inline | `NAME-09` |

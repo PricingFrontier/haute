@@ -3,14 +3,11 @@
  * it plots many-row tables, where its legend sits, and whether it is stacked, horizontal
  * (neither for a pie) and shows its values as data labels. Each change is one edit.
  */
-import type { ReactNode } from "react"
 import type { ChartWidget, FormSpec } from "../api/types"
-import { ConfigCheckbox } from "../components/form"
-import { INPUT_STYLE } from "../panels/editors/_shared"
+import { ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, LabelledRow } from "../components/form"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import { chartGrain, fieldColumn, labelColumns, readableName, updateWidget, type ChartOptions } from "../utils/workbenchForm"
 
-const FIELD_CLASS = "focus-ring min-w-0 rounded-md px-1.5 py-1 text-xs"
 const TYPES: ReadonlyArray<{ value: ChartOptions["chart_type"]; label: string }> = [
   { value: "column", label: "Column" },
   { value: "line", label: "Line" },
@@ -30,17 +27,6 @@ const ROW_NUMBER = ""
 /** A column's value in the Rows select: its table and column ids. */
 const columnValue = (table: string, column: string): string => JSON.stringify([table, column])
 
-function Labelled({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <label className="flex items-center gap-2">
-      <span className="w-14 shrink-0" style={{ color: "var(--text-muted)" }}>
-        {label}
-      </span>
-      {children}
-    </label>
-  )
-}
-
 export default function ChartSettings({ form, widget }: { form: FormSpec; widget: ChartWidget }) {
   const change = useWorkbenchFormStore((s) => s.change)
   const set = (patch: Partial<ChartOptions>) => change((spec) => updateWidget(spec, widget.id, patch))
@@ -55,7 +41,7 @@ export default function ChartSettings({ form, widget }: { form: FormSpec; widget
 
   return (
     <>
-      <Labelled label="Type">
+      <LabelledRow label="Type">
         <select
           aria-label="Chart type"
           value={widget.chart_type}
@@ -69,9 +55,9 @@ export default function ChartSettings({ form, widget }: { form: FormSpec; widget
             </option>
           ))}
         </select>
-      </Labelled>
+      </LabelledRow>
       {grain !== null && grain !== "one" && (
-        <Labelled label="Rows">
+        <LabelledRow label="Rows">
           <select
             aria-label="Label rows by"
             value={category}
@@ -101,9 +87,9 @@ export default function ChartSettings({ form, widget }: { form: FormSpec; widget
               <option value={category}>{kept === null ? "Missing column" : kept.column.label || readableName(kept.column.name)}</option>
             )}
           </select>
-        </Labelled>
+        </LabelledRow>
       )}
-      <Labelled label="Legend">
+      <LabelledRow label="Legend">
         <select
           aria-label="Legend"
           value={widget.legend}
@@ -117,9 +103,8 @@ export default function ChartSettings({ form, widget }: { form: FormSpec; widget
             </option>
           ))}
         </select>
-      </Labelled>
-      <div className="flex items-center gap-2">
-        <span className="w-14 shrink-0" aria-hidden="true" />
+      </LabelledRow>
+      <LabelledRow>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
           <ConfigCheckbox label="Stacked" checked={widget.stacked} disabled={pie} onChange={(stacked) => set({ stacked })} />
           <ConfigCheckbox
@@ -130,7 +115,7 @@ export default function ChartSettings({ form, widget }: { form: FormSpec; widget
           />
           <ConfigCheckbox label="Data labels" checked={widget.data_labels} onChange={(data_labels) => set({ data_labels })} />
         </div>
-      </div>
+      </LabelledRow>
     </>
   )
 }

@@ -28,6 +28,7 @@ import type { Step } from "../types"
 import type { InputSource } from "../../_shared"
 import useGraphStore, { resetGraphStoreForTests } from "../../../../stores/useGraphStore"
 import { makeNode } from "../../../../test-utils/factories"
+import { answerQuestion, asked } from "../../../../test-utils/question"
 
 const mockRender = vi.mocked(renderPolarsSteps)
 const mockResolve = vi.mocked(resolveFreeCodeColumns)
@@ -334,7 +335,6 @@ describe("PolarsStepsEditor", () => {
     }))
     const spy = vi.fn()
     const onReplace = vi.fn()
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true)
     render(<Harness initial={{ steps: [source] }} inputSources={[quotes]} spy={spy} onReplace={onReplace} />)
     fireEvent.click(screen.getByRole("button", { name: "Add step" }))
     fireEvent.click(screen.getByRole("menuitem", { name: "Free code" }))
@@ -343,8 +343,8 @@ describe("PolarsStepsEditor", () => {
     expect(onReplace).not.toHaveBeenCalled()
     await waitFor(() => expect(screen.getByRole("button", { name: "Switch to code" })).toBeEnabled(), { timeout: 5000 })
     fireEvent.click(screen.getByRole("button", { name: "Switch to code" }))
+    await answerQuestion("confirm")
     expect(onReplace).toHaveBeenCalledWith({ code: "df = quotes\n# prepare\ndf = df.with_columns(\n  pl.col('premium') * 2\n)" })
-    confirm.mockRestore()
   })
 
   it("maps an execution line in a multiline free-code range to its card, then maps the next range to the following card", async () => {
@@ -374,15 +374,22 @@ describe("PolarsStepsEditor", () => {
 
   it("switches to code only after a successful render and asks for confirmation", async () => {
     const onReplace = vi.fn()
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true)
     render(<Harness initial={{ steps: [source, limit], selected_columns: ["premium"] }} inputSources={[quotes]} onReplace={onReplace} />)
     const button = screen.getByRole("button", { name: "Switch to code" })
     expect(button).toBeDisabled()
     await waitFor(() => expect(button).toBeEnabled(), { timeout: 5000 })
     fireEvent.click(button)
-    expect(confirm).toHaveBeenCalledOnce()
+    expect(asked()).toMatchObject({
+      title: "Switch this node to code?",
+      text: "The steps are removed and the generated code becomes editable. This cannot be undone.",
+      confirm: "Switch to code",
+    })
+    // No keeps the steps.
+    await answerQuestion(null)
+    expect(onReplace).not.toHaveBeenCalled()
+    fireEvent.click(button)
+    await answerQuestion("confirm")
     expect(onReplace).toHaveBeenCalledWith({ selected_columns: ["premium"], code: "df = quotes\ndf = df.step_1()" })
-    confirm.mockRestore()
   })
 
   it("shows a malformed persisted step as an invalid card instead of crashing", async () => {
@@ -411,16 +418,15 @@ describe("PolarsStepsEditor", () => {
     await waitFor(() => expect(lastSteps(spy)).toEqual([source, nested, badMembership, limit]), { timeout: 5000 })
   })
 
-  it("lets a new zero-input node switch to empty code without a render", () => {
+  it("lets a new zero-input node switch to empty code without a render", async () => {
     const onReplace = vi.fn()
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true)
     render(<Harness initial={{ steps: [] }} inputSources={[]} onReplace={onReplace} />)
     expect(screen.getByText(/Connect an input to start building steps/)).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Add step" })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Switch to code" }))
+    await answerQuestion("confirm")
     expect(onReplace).toHaveBeenCalledWith({ code: "" })
     expect(mockRender).not.toHaveBeenCalled()
-    confirm.mockRestore()
   })
 
   it.each([null, { kind: "source", input: "quotes" }, { id: "bad", kind: "source", input: {} }])("keeps an invalid first step visible and deletable: %j", (first) => {
@@ -591,15 +597,13 @@ describe("PolarsStepsEditor in frame mode", () => {
     await waitFor(() => expect(lastSteps(spy)).toEqual([limit]), { timeout: 5000 })
   })
 
-  it("switches an empty list to empty code without a render", () => {
+  it("switches an empty list to empty code without a render", async () => {
     const onReplace = vi.fn()
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true)
     render(<Harness initial={{ steps: [], path: "quotes.parquet" }} inputSources={[]} start="frame" onReplace={onReplace} />)
     fireEvent.click(screen.getByRole("button", { name: "Switch to code" }))
-    expect(confirm).toHaveBeenCalledOnce()
+    await answerQuestion("confirm")
     expect(onReplace).toHaveBeenCalledWith({ path: "quotes.parquet", code: "" })
     expect(mockRender).not.toHaveBeenCalled()
-    confirm.mockRestore()
   })
 })
 

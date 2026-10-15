@@ -1,7 +1,7 @@
 import { AlertTriangle, GripHorizontal } from "lucide-react"
 import type { KeyboardEvent } from "react"
 import type { Page, Section } from "../api/types"
-import type { RefocusAfterMove } from "../hooks/useRefocusAfterMove"
+import { altArrowMove, type RefocusAfterMove } from "../hooks/useRefocusAfterMove"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { SECTION_HEADER, type Stacked } from "../utils/sheetGeometry"
@@ -54,15 +54,14 @@ export function SectionBar({
   const line = 1 / zoom
 
   const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
-    if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
-      event.preventDefault()
-      const to = index + (event.key === "ArrowUp" ? -1 : 1)
-      if (to < 0 || to >= page.sections.length) return
+    if (event.altKey) {
+      const to = altArrowMove(event, "vertical", index, page.sections.length)
+      if (to === null) return
       refocus.moved(section.id)
       change((spec) => moveSection(spec, page.id, index, to))
     } else if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault()
-      deleteSection(page, section)
+      void deleteSection(page, section)
     }
   }
 

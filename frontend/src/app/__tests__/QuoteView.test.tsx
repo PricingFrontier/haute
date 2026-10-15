@@ -29,7 +29,8 @@ import { APP_SET_COLUMNS } from "../openRelease"
 import { draftKey, writeDraft } from "../quoteValues"
 import QuoteView from "../QuoteView"
 import { navigate, setLeaveGuard, type AppRoute } from "../route"
-import { QuestionDialog } from "../ui"
+import QuestionDialog from "../../components/QuestionDialog"
+import useQuestionStore from "../../stores/useQuestionStore"
 import useAppStore from "../useAppStore"
 import useOpenQuoteStore from "../useOpenQuoteStore"
 import { answer, appQuote, changed, release, VALUES } from "./fixtures"
@@ -53,13 +54,14 @@ const opened = async (route: QuoteRoute = { page: "quote", id: "q1", revision: n
 }
 
 const type = (value: string) => act(() => useWorkbenchPreviewStore.getState().setCell("policy", 0, "policy.state", value))
-const confirmQuestion = (label: string) => fireEvent.click(within(screen.getByTestId("app-question")).getByRole("button", { name: label }))
+const confirmQuestion = (label: string) => fireEvent.click(within(screen.getByTestId("question")).getByRole("button", { name: label }))
 
 describe("QuoteView", () => {
   beforeEach(async () => {
     stubLayout()
     const form = sheetForm()
-    useAppStore.setState({ release, form, revision: "rev-9", people: [], question: null, releaseChanged: false })
+    useAppStore.setState({ release, form, revision: "rev-9", people: [], releaseChanged: false })
+    useQuestionStore.setState({ question: null })
     useWorkbenchFormStore.setState({ form, status: "ready" })
     useWorkbenchViewStore.setState({ section: "preview", underwriterApp: true, pageId: null, zoom: 1, fitted: false, viewport: null, sheet: null })
     useWorkbenchPreviewStore.setState({ quote: {}, price: null, error: null, pricing: false, readOnly: false, locked: APP_SET_COLUMNS })
@@ -179,7 +181,7 @@ describe("QuoteView", () => {
     act(() => {
       left = navigate("/")
     })
-    expect(await screen.findByTestId("app-question")).toHaveTextContent("Leave without saving?")
+    expect(await screen.findByTestId("question")).toHaveTextContent("Leave without saving?")
     confirmQuestion("Cancel")
     expect(await left).toBe(false)
     expect(window.location.pathname).toBe("/quotes/q1")
@@ -215,14 +217,14 @@ describe("QuoteView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Mark final" }))
     // The server pins the quote as a revision of its own, the next.
-    expect(screen.getByTestId("app-question")).toHaveTextContent("The quote as revision 1 holds it is pinned as the final quotation, saved as revision 2.")
+    expect(screen.getByTestId("question")).toHaveTextContent("The quote as revision 1 holds it is pinned as the final quotation, saved as revision 2.")
     confirmQuestion("Mark final")
     expect(await screen.findByTestId("notice-final")).toHaveTextContent("Final at revision 2")
     expect(screen.getByTestId("quote-line")).toHaveTextContent("Revision 2")
     expect(screen.getByTestId("save-quote")).toBeDisabled()
 
     fireEvent.click(screen.getByRole("button", { name: "Reopen" }))
-    const reopen = within(screen.getByTestId("app-question")).getByRole("button", { name: "Reopen" })
+    const reopen = within(screen.getByTestId("question")).getByRole("button", { name: "Reopen" })
     expect(reopen).toBeDisabled()
     fireEvent.change(screen.getByLabelText("Why it is being reopened"), { target: { value: "Broker asked" } })
     fireEvent.click(reopen)
@@ -235,7 +237,7 @@ describe("QuoteView", () => {
     vi.mocked(openAppQuote).mockResolvedValueOnce(answer()).mockResolvedValueOnce(answer({ id: "q2", reference: "Q-000002" }))
     const view = await opened()
     fireEvent.click(screen.getByRole("button", { name: "Mark final" }))
-    expect(screen.getByTestId("app-question")).toHaveTextContent("Mark Q-000001 final?")
+    expect(screen.getByTestId("question")).toHaveTextContent("Mark Q-000001 final?")
 
     // Back, with the question open: another quote, at the same revision number, opens.
     view.rerender(
@@ -247,7 +249,7 @@ describe("QuoteView", () => {
     )
     await vi.waitFor(() => expect(screen.getByTestId("quote-reference")).toHaveTextContent("Q-000002"))
 
-    expect(screen.queryByTestId("app-question")).toBeNull()
+    expect(screen.queryByTestId("question")).toBeNull()
     expect(changeAppQuote).not.toHaveBeenCalled()
   })
 

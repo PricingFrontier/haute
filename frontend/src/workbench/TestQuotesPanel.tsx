@@ -10,6 +10,7 @@ import { Check, ChevronDown, ChevronRight, FlaskConical, FolderOpen, Play, Save,
 import { useEffect, useState, type FormEvent } from "react"
 import type { WorkbenchTestQuoteChange } from "../api/types"
 import { SidePanel } from "../haute-ui"
+import { confirmed } from "../stores/useQuestionStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import { usePricingContext } from "../stores/useWorkbenchPricingStore"
 import useWorkbenchTestQuotesStore, { runIsStale, type QuoteRun } from "../stores/useWorkbenchTestQuotesStore"
@@ -216,7 +217,9 @@ export default function TestQuotesPanel() {
                     <button
                       type="button"
                       className={ICON_BUTTON}
-                      onClick={() => { if (window.confirm(`Delete the test quote '${quote.name}'?`)) void remove(quote.id) }}
+                      onClick={() => void (async () => {
+                        if (await confirmed({ title: `Delete the test quote '${quote.name}'?`, confirm: "Delete", danger: true })) await remove(quote.id)
+                      })()}
                       title={`Delete ${quote.name}`}
                       aria-label={`Delete ${quote.name}`}
                     >

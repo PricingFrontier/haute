@@ -3,7 +3,7 @@
  *
  * Regression guards for merging:
  *   - frontend/src/panels/PanelShell.tsx     (resizable panel wrapper)
- *   - frontend/src/panels/PanelHeader.tsx    (panel header + close button)
+ *   - frontend/src/haute-ui/SidePanel.tsx    (panel header + close button, `SidePanelHeader`)
  *   - frontend/src/components/ModalShell.tsx (modal shell w/ focus trap)
  *
  * Reviewer direction: merge PanelShell + PanelHeader into one `ResizablePanel`.
@@ -25,7 +25,7 @@
  * Separate test files that already cover sub-parts and MUST continue passing:
  *   - frontend/src/panels/__tests__/PanelShell.test.tsx
  *       → width math, slide-in class, min/max clamp, store persistence.
- *   - frontend/src/panels/__tests__/PanelHeader.test.tsx
+ *   - frontend/src/haute-ui/__tests__/SidePanelHeader.test.tsx
  *       → title/icon/subtitle/actions rendering variants.
  *   - frontend/src/components/__tests__/ModalShell.test.tsx
  *       → backdrop click, aria attrs, extra close keys, width class, unmount.
@@ -40,7 +40,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup } from "@testing-library/react"
 import PanelShell from "../../panels/PanelShell"
-import PanelHeader from "../../panels/PanelHeader"
+import { SidePanelHeader } from "../../haute-ui"
 import ModalShell from "../ModalShell"
 import GlobalConstantsPanel from "../../panels/GlobalConstantsPanel"
 import useUIStore from "../../stores/useUIStore"
@@ -94,7 +94,7 @@ describe("Phase 2D-3 shell merge - panel surface preserved", () => {
     // render the title text verbatim.
     render(
       <PanelShell>
-        <PanelHeader title="Trace" onClose={vi.fn()} />
+        <SidePanelHeader title="Trace" onClose={vi.fn()} />
       </PanelShell>,
     )
     expect(screen.getByText("Trace")).toBeInTheDocument()
@@ -104,7 +104,7 @@ describe("Phase 2D-3 shell merge - panel surface preserved", () => {
     const onClose = vi.fn()
     render(
       <PanelShell>
-        <PanelHeader title="Any" onClose={onClose} />
+        <SidePanelHeader title="Any" onClose={onClose} />
       </PanelShell>,
     )
     fireEvent.click(screen.getByTitle("Close"))

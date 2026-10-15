@@ -5,7 +5,14 @@ import useDataEpochStore from "../../stores/useDataEpochStore"
 import useNodeDataStore from "../../stores/useNodeDataStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useToastStore from "../../stores/useToastStore"
+import { answerQuestion, asked } from "../../test-utils/question"
 import FilesPanel from "../FilesPanel"
+
+/** The question the panel asks, once it has asked it. */
+async function question() {
+  await waitFor(() => expect(asked()).not.toBeNull())
+  return asked()!
+}
 
 const { mockList, mockUpload, mockDelete, mockReport } = vi.hoisted(() => ({
   mockList: vi.fn(),
@@ -127,14 +134,34 @@ describe("FilesPanel", () => {
 
     dropFiles(screen.getByTestId("files-drop-zone"), [csv])
 
-    const dialog = await screen.findByTestId("files-replace-dialog")
-    expect(within(dialog).getByText("Replace rates.csv in rating/files?")).toBeInTheDocument()
-    expect(within(dialog).getByText("The version it replaces stays in version history.")).toBeInTheDocument()
+    expect(await question()).toMatchObject({ title: "Replace rates.csv in rating/files?", text: "The version it replaces stays in version history.", confirm: "Replace" })
+    // Nothing else is dropped, so there is nothing to send alone.
+    expect(asked()?.other).toBeUndefined()
     expect(mockUpload).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByTestId("files-replace-confirm"))
+    await answerQuestion("confirm")
 
     await waitFor(() => expect(mockUpload).toHaveBeenCalledWith("pipeline", "rates.csv", csv, expect.objectContaining({ replaceRevision: "3-rates.csv" })))
     await waitFor(() => expect(useNodeDataStore.getState().epoch).toBe(epoch + 1))
+  })
+
+  it("lists the files a drop would replace, and sends the others alone on Skip these", async () => {
+    mockList.mockResolvedValue(listing("pipeline", "", [file("rates.csv", "rates.csv"), file("bands.csv", "bands.csv")]))
+    mockUpload.mockImplementation((_place: string, path: string) => ({ promise: Promise.resolve(written(path, true)), abort: vi.fn() }))
+    render(<FilesPanel place="pipeline" onClose={vi.fn()} />)
+    await screen.findByText("rates.csv")
+    const fresh = new File(["new"], "zones.csv")
+
+    dropFiles(screen.getByTestId("files-drop-zone"), [new File(["v2"], "rates.csv"), new File(["v2"], "bands.csv"), fresh])
+
+    expect(await question()).toMatchObject({
+      title: "Replace 2 files in rating/files?",
+      text: "The versions they replace stay in version history.",
+      list: ["rates.csv", "bands.csv"],
+      other: "Skip these",
+    })
+    await answerQuestion("other")
+    await waitFor(() => expect(mockUpload).toHaveBeenCalledTimes(1))
+    expect(mockUpload).toHaveBeenCalledWith("pipeline", "zones.csv", fresh, expect.anything())
   })
 
   it("refuses a dropped folder and adds the files beside it", async () => {
@@ -206,13 +233,12 @@ describe("FilesPanel", () => {
     await screen.findByText("copied.csv")
 
     dropFiles(screen.getByTestId("files-drop-zone"), [new File(["v2"], "copied.csv")])
-    const replace = await screen.findByTestId("files-replace-dialog")
-    expect(within(replace).getByText("The version it replaces isn't in version history yet, so it can't be recovered.")).toBeInTheDocument()
-    fireEvent.click(within(replace).getByText("Cancel"))
+    expect((await question()).text).toBe("The version it replaces isn't in version history yet, so it can't be recovered.")
+    await answerQuestion(null)
+    expect(mockUpload).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByLabelText("Delete copied.csv"))
-    const remove = await screen.findByTestId("files-delete-dialog")
-    expect(within(remove).getByText("It isn't in version history yet, so it can't be recovered.")).toBeInTheDocument()
+    expect((await question()).text).toBe("It isn't in version history yet, so it can't be recovered.")
   })
 
   it("marks a file edited since it was committed and says its changes can't be recovered", async () => {
@@ -222,8 +248,7 @@ describe("FilesPanel", () => {
     expect(within(row).getByText("Changed")).toBeInTheDocument()
 
     fireEvent.click(screen.getByLabelText("Delete edited.csv"))
-    const remove = await screen.findByTestId("files-delete-dialog")
-    expect(within(remove).getByText("It has changes that aren't in version history yet, so they can't be recovered.")).toBeInTheDocument()
+    expect((await question()).text).toBe("It has changes that aren't in version history yet, so they can't be recovered.")
   })
 
   it("asks before deleting and deletes the revision shown", async () => {
@@ -236,11 +261,9 @@ describe("FilesPanel", () => {
     fireEvent.click(await screen.findByText("data"))
 
     fireEvent.click(await screen.findByLabelText("Delete old.csv"))
-    const dialog = await screen.findByTestId("files-delete-dialog")
-    // The dialog names the folder as well as the file.
-    expect(within(dialog).getByText("Delete old.csv from rating/files/data?")).toBeInTheDocument()
-    expect(within(dialog).getByText("It stays in version history.")).toBeInTheDocument()
-    fireEvent.click(screen.getByTestId("files-delete-confirm"))
+    // The question names the folder as well as the file.
+    expect(await question()).toMatchObject({ title: "Delete old.csv from rating/files/data?", text: "It stays in version history.", confirm: "Delete", danger: true })
+    await answerQuestion("confirm")
 
     await waitFor(() => expect(mockDelete).toHaveBeenCalledWith("pipeline", "data/old.csv", "3-old.csv"))
     await waitFor(() => expect(mockReport).toHaveBeenCalledWith(expect.objectContaining({ git_sha: "def" })))

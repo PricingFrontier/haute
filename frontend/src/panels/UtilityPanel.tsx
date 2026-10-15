@@ -4,6 +4,7 @@ import { CodeEditor } from "./editors/CodeEditor"
 import PanelShell from "./PanelShell"
 import useClickOutside from "../hooks/useClickOutside"
 import { useDebouncedCallback } from "../hooks/useDebouncedCallback"
+import { confirmed } from "../stores/useQuestionStore"
 import useToastStore from "../stores/useToastStore"
 import {
   ApiError,
@@ -215,7 +216,7 @@ export default function UtilityPanel({
 
   const handleDelete = useCallback(async () => {
     if (!activeModule) return
-    if (!confirm(`Delete ${activeModule}?`)) return
+    if (!(await confirmed({ title: `Delete ${activeModule}?`, confirm: "Delete", danger: true }))) return
     // Discard any pending save — the file is being removed.
     pendingSave.cancel()
     try {

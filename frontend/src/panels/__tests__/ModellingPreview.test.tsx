@@ -8,7 +8,9 @@ import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
 import { ModellingPreview } from "../ModellingPreview"
 import type { ModellingPreviewData } from "../ModellingPreview"
-import { makeTrainResult } from "../../test-utils/factories"
+import useGraphStore from "../../stores/useGraphStore"
+import { makeNode, makeTrainResult, makeTuningReport } from "../../test-utils/factories"
+import { answerQuestion, asked } from "../../test-utils/question"
 
 // Mock stores
 vi.mock("../../stores/useNodeResultsStore", () => {
@@ -41,6 +43,22 @@ function makeData(overrides: Partial<ModellingPreviewData> = {}): ModellingPrevi
 }
 
 describe("ModellingPreview", () => {
+  it("fixes the winning parameters once asked, turning tuning off", async () => {
+    const tuning = makeTuningReport()
+    useGraphStore.getState().setNodes([makeNode("n1", "modelling", { data: { config: { tuning: { trials: 12 }, params: { depth: 6 } } } })])
+    render(<ModellingPreview data={makeData({ result: makeTrainResult({ tuning }) })} nodeId="n1" />)
+    const config = () => (useGraphStore.getState().nodes[0].data as { config: Record<string, unknown> }).config
+
+    fireEvent.click(screen.getByRole("button", { name: "Use best as fixed parameters" }))
+    expect(asked()).toMatchObject({ title: "Use the winning parameters as fixed parameters and disable tuning?" })
+    await answerQuestion(null)
+    expect(config()).toEqual({ tuning: { trials: 12 }, params: { depth: 6 } })
+
+    fireEvent.click(screen.getByRole("button", { name: "Use best as fixed parameters" }))
+    await answerQuestion("confirm")
+    expect(config()).toEqual({ params: tuning.final_params })
+  })
+
   it("renders node label", () => {
     render(<ModellingPreview data={makeData()} nodeId="n1" />)
     expect(screen.getByText("Model Node")).toBeInTheDocument()

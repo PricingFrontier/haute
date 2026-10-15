@@ -7,16 +7,17 @@
  * groups and help, and the rules and defaults of those the underwriter types, are the
  * project's.
  */
-import { ChevronDown, ChevronRight, KeyRound, Lock, Plus, RefreshCw, SlidersHorizontal, Trash2, X, type LucideIcon } from "lucide-react"
-import { useEffect, useId, useMemo, useRef, useState, type ButtonHTMLAttributes, type FocusEvent, type KeyboardEvent, type ReactNode } from "react"
+import { ChevronDown, ChevronRight, KeyRound, Lock, RefreshCw, SlidersHorizontal, Trash2, X, type LucideIcon } from "lucide-react"
+import { useEffect, useId, useMemo, useRef, useState, type ButtonHTMLAttributes, type FocusEvent, type KeyboardEvent } from "react"
 import { apiErrorMessage } from "../api/errors"
 import { listProjectFiles } from "../api/projectFiles"
 import type { FormSpec, SchemaColumn, SchemaTable } from "../api/types"
 import { fetchParamFile } from "../api/workbench"
-import { CommittedTextField, ConfigCheckbox, IconSelect, ValidatedTextField } from "../components/form"
-import useRefocusAfterMove, { type RefocusAfterMove } from "../hooks/useRefocusAfterMove"
-import { INPUT_STYLE } from "../panels/editors/_shared"
+import { COMPACT_FIELD_CLASS, CommittedTextField, ConfigCheckbox, IconSelect, INPUT_STYLE, QuietAction, ValidatedTextField } from "../components/form"
+import useCollapsedSet from "../hooks/useCollapsedSet"
+import useRefocusAfterMove, { altArrowMove, type RefocusAfterMove } from "../hooks/useRefocusAfterMove"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
+import { confirmed } from "../stores/useQuestionStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import {
   addSchemaColumn,
@@ -55,7 +56,6 @@ const ROWS: ReadonlyArray<{ value: SchemaTable["rows"]; label: string; title: st
 
 const DECIMAL_PLACES = Array.from({ length: PIVOT_DECIMAL_PLACES_MAX + 1 }, (_, places) => places)
 
-const FIELD_CLASS = "focus-ring min-w-0 rounded-md px-1.5 py-0.5 text-xs"
 const CHIP_CLASS = "focus-ring shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-semibold"
 const HOVER_ONLY = "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
 
@@ -111,8 +111,8 @@ export default function SchemaEditor() {
   const [added, setAdded] = useState<string | null>(null)
   // The column whose label and rules are showing.
   const [details, setDetails] = useState<string | null>(null)
-  // The tables shown collapsed: a view setting, neither saved nor undone.
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
+  // The tables shown collapsed.
+  const { collapsed, toggle: toggleCollapsed } = useCollapsedSet()
   if (form === null) throw new Error("The schema editor needs the form loaded")
   const problems = schemaProblems(form, reserved)
   const { tables } = form.schema
@@ -122,13 +122,6 @@ export default function SchemaEditor() {
     change((f) => addSchemaTable(f, table))
     setAdded(table.id)
   }
-  const toggleCollapsed = (id: string) =>
-    setCollapsed((current) => {
-      const next = new Set(current)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
 
   return (
     <div className="min-h-0 flex-1 overflow-auto" data-testid="schema-editor">
@@ -152,7 +145,7 @@ export default function SchemaEditor() {
             problems={problems.filter((p) => p.tableId === table.id).map((p) => p.message)}
           />
         ))}
-        <AddButton onClick={addTable}>Add table</AddButton>
+        <QuietAction onClick={addTable} className="justify-self-start">Add table</QuietAction>
       </div>
     </div>
   )
@@ -175,8 +168,12 @@ function TableBlock({ form, table, added, setAdded, details, setDetails, collaps
   const shown = fieldUses(form, table.id).length
   const tested = conditionUses(form, table.id).length
   const uses = shown + tested
-  const [confirming, setConfirming] = useState(false)
-  const remove = () => change((f) => removeSchemaTable(f, table.id))
+  // A table a sheet shows or a condition tests is deleted once the question is answered yes.
+  const remove = async () => {
+    const text = `Its columns are ${usedBy(shown, tested)}; deleting it takes them out of ${uses === 1 ? "it" : "them"} too.`
+    if (uses > 0 && !(await confirmed({ title: `Delete table ${table.name}?`, text, confirm: "Delete", danger: true }))) return
+    change((f) => removeSchemaTable(f, table.id))
+  }
   const refocus = useRefocusAfterMove<HTMLInputElement>()
   const fresh = (id: string): Fresh => ({
     autoFocus: added === id,
@@ -262,25 +259,13 @@ function TableBlock({ form, table, added, setAdded, details, setDetails, collaps
         {!locked && (
           <IconButton
             icon={Trash2}
-            onClick={() => (uses > 0 ? setConfirming(true) : remove())}
+            onClick={() => void remove()}
             aria-label={`Delete table ${table.name}`}
             title="Delete table"
             className={`icon-danger-btn ${HOVER_ONLY}`}
           />
         )}
       </div>
-      {confirming && (
-        <ConfirmBar
-          message={`Its columns are ${usedBy(shown, tested)}; deleting it takes them out of ${uses === 1 ? "it" : "them"} too.`}
-          action="Delete"
-          onConfirm={() => {
-            setConfirming(false)
-            remove()
-          }}
-          onCancel={() => setConfirming(false)}
-          className="mx-1.5 mb-1.5"
-        />
-      )}
       {!collapsed && (
         <div className="flex flex-col gap-1 px-1.5 py-1.5" style={{ borderTop: "1px solid var(--border)" }}>
           {table.columns.map((column, index) => (
@@ -304,7 +289,7 @@ function TableBlock({ form, table, added, setAdded, details, setDetails, collaps
             </p>
           ) : (
             <div className="flex items-center gap-3">
-              <AddButton onClick={() => insertAt(count)}>Add column</AddButton>
+              <QuietAction onClick={() => insertAt(count)} className="justify-self-start">Add column</QuietAction>
               {table.rows === "many" && <IndexControl form={form} table={table} onAdded={setAdded} />}
             </div>
           )}
@@ -339,8 +324,12 @@ function ColumnRow({ form, table, column, index, refocus, fresh, open, onToggleD
   const shown = fieldUses(form, table.id, column.id).length
   const tested = conditionUses(form, table.id, column.id).length
   const uses = shown + tested
-  const [confirming, setConfirming] = useState(false)
-  const remove = () => change((f) => removeSchemaColumn(f, table.id, column.id))
+  // A column a sheet shows or a condition tests is removed once the question is answered yes.
+  const remove = async () => {
+    const text = `${usedBy(shown, tested).replace(/^./, (first) => first.toUpperCase())}; removing it takes it out of ${uses === 1 ? "that" : "them"} too.`
+    if (uses > 0 && !(await confirmed({ title: `Remove column ${column.name}?`, text, confirm: "Remove", danger: true }))) return
+    change((f) => removeSchemaColumn(f, table.id, column.id))
+  }
   const { label, icon: Icon, color } = COLUMN_TYPES[column.type]
   // A column the underwriter app sets takes no rules.
   const managed = locked && QUOTE_DETAILS_MANAGED.has(column.id)
@@ -353,14 +342,13 @@ function ColumnRow({ form, table, column, index, refocus, fresh, open, onToggleD
     if (e.key === "Enter") {
       e.preventDefault()
       onInsertAfter()
-    } else if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
-      e.preventDefault()
-      const to = index + (e.key === "ArrowUp" ? -1 : 1)
-      if (to < 0 || to >= table.columns.length) return
-      // Its name field takes the focus again in its new place.
-      refocus.moved(column.id)
-      change((f) => moveSchemaColumn(f, table.id, column.id, to))
+      return
     }
+    const to = altArrowMove(e, "vertical", index, table.columns.length)
+    if (to === null) return
+    // Its name field takes the focus again in its new place.
+    refocus.moved(column.id)
+    change((f) => moveSchemaColumn(f, table.id, column.id, to))
   }
 
   const markerStyle = { background: "var(--chrome-hover)", border: "1px solid var(--border)" }
@@ -397,7 +385,7 @@ function ColumnRow({ form, table, column, index, refocus, fresh, open, onToggleD
           {...fresh}
           readOnly={locked}
           onKeyDown={onKeyDown}
-          className={`${FIELD_CLASS} flex-1 font-mono`}
+          className={`${COMPACT_FIELD_CLASS} flex-1 font-mono`}
           style={INPUT_STYLE}
         />
         {summary && (
@@ -430,25 +418,13 @@ function ColumnRow({ form, table, column, index, refocus, fresh, open, onToggleD
         ) : (
           <IconButton
             icon={X}
-            onClick={() => (uses > 0 ? setConfirming(true) : remove())}
+            onClick={() => void remove()}
             aria-label={`Remove column ${column.name}`}
             title="Remove column"
             className={`icon-danger-btn self-center ${HOVER_ONLY}`}
           />
         )}
       </div>
-      {confirming && (
-        <ConfirmBar
-          message={`${usedBy(shown, tested).replace(/^./, (first) => first.toUpperCase())}; removing it takes it out of ${uses === 1 ? "that" : "them"} too.`}
-          action="Remove"
-          onConfirm={() => {
-            setConfirming(false)
-            remove()
-          }}
-          onCancel={() => setConfirming(false)}
-          className="mr-12 ml-7"
-        />
-      )}
       {open && <ColumnDetails table={table} column={column} managed={managed} set={set} />}
     </div>
   )
@@ -492,7 +468,7 @@ function ColumnDetails({
         aria-label={`Label of ${column.name}`}
         value={column.label}
         onCommit={(label) => set({ label })}
-        className={`${FIELD_CLASS} w-full`}
+        className={`${COMPACT_FIELD_CLASS} w-full`}
         style={INPUT_STYLE}
       />
       <span style={{ color: "var(--text-muted)" }}>Group</span>
@@ -501,7 +477,7 @@ function ColumnDetails({
         value={column.group}
         list={groupsId}
         onCommit={(group) => set({ group: group.trim() })}
-        className={`${FIELD_CLASS} w-full`}
+        className={`${COMPACT_FIELD_CLASS} w-full`}
         style={INPUT_STYLE}
       />
       <datalist id={groupsId}>
@@ -514,7 +490,7 @@ function ColumnDetails({
         aria-label={`Help of ${column.name}`}
         value={column.help}
         onCommit={(help) => set({ help })}
-        className={`${FIELD_CLASS} w-full`}
+        className={`${COMPACT_FIELD_CLASS} w-full`}
         style={INPUT_STYLE}
       />
       {isNumeric(column.type) && !column.index && (
@@ -525,7 +501,7 @@ function ColumnDetails({
               aria-label={`Format of ${column.name}`}
               value={column.number_format}
               onChange={(e) => set({ number_format: e.target.value as SchemaColumn["number_format"] })}
-              className={FIELD_CLASS}
+              className={COMPACT_FIELD_CLASS}
               style={INPUT_STYLE}
             >
               {PIVOT_NUMBER_FORMATS.map((format) => (
@@ -539,7 +515,7 @@ function ColumnDetails({
               value={column.decimal_places ?? "automatic"}
               onChange={(e) => set({ decimal_places: e.target.value === "automatic" ? null : Number(e.target.value) })}
               title="Decimal places"
-              className={FIELD_CLASS}
+              className={COMPACT_FIELD_CLASS}
               style={INPUT_STYLE}
             >
               <option value="automatic">Auto decimals</option>
@@ -571,7 +547,7 @@ function ColumnDetails({
             aria-label={`Placeholder of ${column.name}`}
             value={column.placeholder}
             onCommit={(placeholder) => set({ placeholder })}
-            className={`${FIELD_CLASS} w-full`}
+            className={`${COMPACT_FIELD_CLASS} w-full`}
             style={INPUT_STYLE}
           />
         </>
@@ -590,7 +566,7 @@ function ColumnDetails({
                   onCommit={(text) => set({ min: bound(text) })}
                   validate={numberOrNothing}
                   containerClassName="w-24"
-                  className={`${FIELD_CLASS} w-full`}
+                  className={`${COMPACT_FIELD_CLASS} w-full`}
                   style={INPUT_STYLE}
                 />
                 <span style={{ color: "var(--text-muted)" }}>to</span>
@@ -600,7 +576,7 @@ function ColumnDetails({
                   onCommit={(text) => set({ max: bound(text) })}
                   validate={numberOrNothing}
                   containerClassName="w-24"
-                  className={`${FIELD_CLASS} w-full`}
+                  className={`${COMPACT_FIELD_CLASS} w-full`}
                   style={INPUT_STYLE}
                 />
               </div>
@@ -750,7 +726,7 @@ function AllowedField({ tableId, column, set }: { tableId: string; column: Schem
           value={typedIn && pendingFile === null ? TYPED_IN : file}
           onChange={(e) => chooseFile(e.target.value)}
           disabled={fileChoices.length === 0 && !typedIn}
-          className={`${FIELD_CLASS} ${file === "" ? "flex-1" : "max-w-[50%]"}`}
+          className={`${COMPACT_FIELD_CLASS} ${file === "" ? "flex-1" : "max-w-[50%]"}`}
           style={INPUT_STYLE}
         >
           <option value="" />
@@ -771,7 +747,7 @@ function AllowedField({ tableId, column, set }: { tableId: string; column: Schem
               aria-label={`Column the allowed values of ${column.name} come from`}
               value={pendingFile === null ? (source?.column ?? "") : ""}
               onChange={(e) => chooseColumn(e.target.value)}
-              className={`${FIELD_CLASS} min-w-0 flex-1`}
+              className={`${COMPACT_FIELD_CLASS} min-w-0 flex-1`}
               style={INPUT_STYLE}
             >
               {pendingFile !== null && <option value="" />}
@@ -840,7 +816,7 @@ function DefaultField({ column, set }: { column: SchemaColumn; set: (patch: Part
         aria-label={label}
         value={text}
         onChange={(e) => set({ default_value: e.target.value })}
-        className={`${FIELD_CLASS} w-full`}
+        className={`${COMPACT_FIELD_CLASS} w-full`}
         style={INPUT_STYLE}
       >
         <option value="" />
@@ -858,7 +834,7 @@ function DefaultField({ column, set }: { column: SchemaColumn; set: (patch: Part
       type={column.type === "date" ? "date" : "text"}
       value={text}
       onCommit={(value) => set({ default_value: value.trim() })}
-      className={`${FIELD_CLASS} w-full`}
+      className={`${COMPACT_FIELD_CLASS} w-full`}
       style={INPUT_STYLE}
     />
   )
@@ -873,9 +849,12 @@ function IndexControl({ form, table, onAdded }: { form: FormSpec; table: SchemaT
   const change = useWorkbenchFormStore((s) => s.change)
   const index = table.columns.find((column) => column.index)
   const uses = index ? fieldUses(form, table.id, index.id).length : 0
-  const [confirming, setConfirming] = useState(false)
-  const remove = () => {
-    if (index) change((f) => removeSchemaColumn(f, table.id, index.id))
+  // An index a sheet shows is removed once the question is answered yes.
+  const remove = async () => {
+    if (index === undefined) return
+    const text = `The index is shown in ${components(uses)}; removing it takes it out of ${uses === 1 ? "that" : "them"} too.`
+    if (uses > 0 && !(await confirmed({ title: `Remove the index of ${table.name}?`, text, confirm: "Remove", danger: true }))) return
+    change((f) => removeSchemaColumn(f, table.id, index.id))
   }
   return (
     <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -887,22 +866,9 @@ function IndexControl({ form, table, onAdded }: { form: FormSpec; table: SchemaT
             const column = createIndexColumn(currentForm(), table.id)
             change((f) => addSchemaColumn(f, table.id, column, 0))
             onAdded(column.id)
-          } else if (uses > 0) setConfirming(true)
-          else remove()
+          } else void remove()
         }}
       />
-      {confirming && (
-        <ConfirmBar
-          message={`The index is shown in ${components(uses)}; removing it takes it out of ${uses === 1 ? "that" : "them"} too.`}
-          action="Remove"
-          onConfirm={() => {
-            setConfirming(false)
-            remove()
-          }}
-          onCancel={() => setConfirming(false)}
-          className="self-start"
-        />
-      )}
     </div>
   )
 }
@@ -921,47 +887,3 @@ function IconButton({
   )
 }
 
-/** Asks before removing what a widget on a sheet shows. */
-function ConfirmBar({
-  message,
-  action,
-  onConfirm,
-  onCancel,
-  className,
-}: {
-  message: string
-  action: string
-  onConfirm: () => void
-  onCancel: () => void
-  className: string
-}) {
-  return (
-    <div
-      role="alert"
-      className={`flex items-center gap-2 rounded-md px-2 py-1 text-[11px] ${className}`}
-      style={{ border: "1px solid var(--warning)", background: "var(--warning-soft)", color: "var(--text-primary)" }}
-    >
-      <span className="min-w-0 flex-1">{message}</span>
-      <button type="button" onClick={onConfirm} className="focus-ring rounded px-1.5 py-0.5 font-semibold" style={{ color: "var(--danger)" }}>
-        {action}
-      </button>
-      <button type="button" onClick={onCancel} className="focus-ring hover-bg rounded px-1.5 py-0.5" style={{ color: "var(--text-secondary)" }}>
-        Cancel
-      </button>
-    </div>
-  )
-}
-
-/** The quiet "+ Add …" text action under a list, as the step editor's. */
-function AddButton({ onClick, children }: { onClick: () => void; children: ReactNode }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="quiet-action focus-ring inline-flex items-center gap-1 justify-self-start rounded px-1 py-0.5 -ml-1 text-[11px] font-medium"
-    >
-      <Plus size={11} aria-hidden="true" />
-      {children}
-    </button>
-  )
-}

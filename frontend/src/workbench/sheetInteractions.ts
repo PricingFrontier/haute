@@ -2,7 +2,7 @@
  * Pointer interactions on a sheet while building (specs/workbench): dragging a new
  * component or a new section out of the palette, moving or resizing a component by its
  * frame or a handle, and setting a section's height by its handle or moving the section by
- * its header; and deleting a section, asking first. Positions on the sheet are in unzoomed
+ * its header; and deleting a section, asking first (`confirmed`). Positions on the sheet are in unzoomed
  * pixels, each section under the bar that names it while building (`SECTION_HEADER`);
  * a gesture follows the pointer on the live sheet, so a scroll while dragging is followed
  * too, and ends at a release, on a release outside the window (a move with no button down)
@@ -13,6 +13,7 @@
  */
 import type { PointerEvent as ReactPointerEvent } from "react"
 import type { Page, Section } from "../api/types"
+import { confirmed } from "../stores/useQuestionStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { activePage } from "../stores/useWorkbenchViewStore"
 import {
@@ -395,17 +396,15 @@ export function startSectionMove(e: ReactPointerEvent, sectionId: string): void 
 }
 
 /**
- * Delete a section with its components, asking first while components are in it; false
- * when the builder says no, and for a sheet's last section, which is never removed. The
- * section's panel closes with it.
+ * Delete a section with its components, asking first while components are in it; a sheet's
+ * last section is never removed. The section's panel closes with it.
  */
-export function deleteSection(page: Page, section: Section): boolean {
-  if (page.sections.length === 1) return false
+export async function deleteSection(page: Page, section: Section): Promise<void> {
+  if (page.sections.length === 1) return
   const count = section.widgets.length
-  const asked = `Delete "${section.title}" and the ${count} ${count === 1 ? "component" : "components"} in it? The schema and the sample stay.`
-  if (count > 0 && !window.confirm(asked)) return false
+  const title = `Delete "${section.title}" and the ${count} ${count === 1 ? "component" : "components"} in it?`
+  if (count > 0 && !(await confirmed({ title, text: "The schema and the sample stay.", confirm: "Delete", danger: true }))) return
   useWorkbenchFormStore.getState().change((spec) => removeSection(spec, section.id))
   const view = useWorkbenchViewStore.getState()
   if (view.sectionId === section.id) view.select(null)
-  return true
 }

@@ -9,7 +9,7 @@
 import { Info } from "lucide-react"
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
-import { ConfigCheckbox } from "../../../components/form"
+import { ConfigCheckbox, QuietAction } from "../../../components/form"
 import { CodeEditor } from "../CodeEditor"
 import { INPUT_STYLE } from "../_shared"
 import type { GlobalConstantType } from "../../../utils/globalConstants"
@@ -43,7 +43,6 @@ import {
   type FunctionArg,
 } from "./catalogue"
 import {
-  AddRow,
   CONTROL_CLASS,
   ColumnListField,
   ColumnPicker,
@@ -960,7 +959,7 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx, boxed, showFilt
           </button>
         </div>
       ) : (
-        <AddRow label="Only rows where…" onClick={() => onChange({ ...entry, where: { match: "all", conditions: [defaultCondition()] } })} />
+        <QuietAction onClick={() => onChange({ ...entry, where: { match: "all", conditions: [defaultCondition()] } })} className="justify-self-start">Only rows where…</QuietAction>
       ))}
     </Wrapper>
   )
@@ -1135,10 +1134,12 @@ function GroupByForm({ step, onChange, ctx }: FormProps<GroupByStep>) {
               <AggregationRow key={index} entry={entry} index={index} ctx={ctx} onChange={(next) => set(index, next)} onRemove={remove} boxed={many} showFilter={filters} />
             )
           })}
-          <AddRow
-            label="Add aggregation"
+          <QuietAction
             onClick={() => onChange({ ...step, aggregations: [...step.aggregations, { column: lastColumn, agg: "sum", name: "" } as ColumnAggregation] })}
-          />
+            className="justify-self-start"
+          >
+            Add aggregation
+          </QuietAction>
         </div>
       </Field>
       <DisclosureButton open={filters} onToggle={() => setFilters((v) => !v)} label="More options" />
@@ -1213,7 +1214,7 @@ function JoinForm({ step, onChange, ctx }: FormProps<JoinStep>) {
                 {pairCount > 1 && <RowRemove label={`Remove join key ${index + 1}`} onClick={() => setPairs(pairs.filter((_, i) => i !== index))} />}
               </div>
             ))}
-            <AddRow label="Add key" onClick={() => setPairs([...pairs, ["", ""]])} />
+            <QuietAction onClick={() => setPairs([...pairs, ["", ""]])} className="justify-self-start">Add key</QuietAction>
           </div>
         </Field>
       )}

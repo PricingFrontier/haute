@@ -435,7 +435,7 @@ forgotten or scoped to the wrong thing:
 
 Behaviour is unchanged: the affected tests pass before and after.
 
-**Dependencies:** `FSH-R04`.
+**Dependencies:** None.
 
 **Evidence:** `frontend/src/stores/useWorkbenchFormStore.ts::takeTurn`;
 `frontend/src/stores/useWorkbenchPricingStore.ts`;

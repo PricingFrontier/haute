@@ -1,9 +1,8 @@
 import { AlertTriangle, Plus, SlidersHorizontal } from "lucide-react"
 import { useMemo, useState, type KeyboardEvent } from "react"
-import { CommittedTextField } from "../components/form"
+import { CommittedTextField, INPUT_STYLE } from "../components/form"
 import useListReorder from "../hooks/useListReorder"
-import useRefocusAfterMove from "../hooks/useRefocusAfterMove"
-import { INPUT_STYLE } from "../panels/editors/_shared"
+import useRefocusAfterMove, { altArrowMove } from "../hooks/useRefocusAfterMove"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { activePage, shownPage } from "../stores/useWorkbenchViewStore"
 import { addPage, createPage, movePage, pageProblems, renamePage, showWhenText } from "../utils/workbenchForm"
@@ -67,10 +66,8 @@ export default function PageTabs({ readOnly = false }: { readOnly?: boolean }) {
   // Alt+Left and Alt+Right move it a place, never past an end.
   const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, sheetId: string, index: number) => {
     if (event.altKey) {
-      if (readOnly || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) return
-      event.preventDefault()
-      const to = index + (event.key === "ArrowLeft" ? -1 : 1)
-      if (to < 0 || to >= form.pages.length) return
+      const to = readOnly ? null : altArrowMove(event, "horizontal", index, form.pages.length)
+      if (to === null) return
       tabs.moved(sheetId)
       moveSheet(index, to)
       return

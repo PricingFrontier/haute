@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef } from "react"
+import { useCallback, useLayoutEffect, useRef, type KeyboardEvent } from "react"
 
 export interface RefocusAfterMove<T extends HTMLElement> {
   /** The ref for the item `key`: its element, kept while it is drawn. */
@@ -45,4 +45,18 @@ export default function useRefocusAfterMove<T extends HTMLElement>(): RefocusAft
   }, [])
   const element = useCallback((key: string) => items.current.get(key), [])
   return { register, moved, element }
+}
+
+/**
+ * Where the item at `index` among `count` goes on Alt+Up and Alt+Down (`vertical`), or
+ * Alt+Left and Alt+Right (`horizontal`): the place before or after it, or null for any other
+ * key and past either end. The key's default is prevented whenever it is the move's key, at
+ * an end too, so the list never scrolls under it.
+ */
+export function altArrowMove(event: KeyboardEvent, axis: "vertical" | "horizontal", index: number, count: number): number | null {
+  const [back, on] = axis === "vertical" ? ["ArrowUp", "ArrowDown"] : ["ArrowLeft", "ArrowRight"]
+  if (!event.altKey || (event.key !== back && event.key !== on)) return null
+  event.preventDefault()
+  const to = index + (event.key === back ? -1 : 1)
+  return to < 0 || to >= count ? null : to
 }

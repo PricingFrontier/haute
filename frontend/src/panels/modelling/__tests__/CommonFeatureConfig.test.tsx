@@ -5,9 +5,10 @@ import {
   screen,
   within,
 } from "@testing-library/react"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { CommonFeatureConfig } from "../CommonFeatureConfig"
+import { asked } from "../../../test-utils/question"
 
 const columns = [
   { name: "target", dtype: "Float64" },
@@ -23,10 +24,6 @@ function featureRow(name: string): HTMLElement {
 }
 
 describe("CommonFeatureConfig", () => {
-  beforeEach(() => {
-    vi.stubGlobal("confirm", vi.fn(() => true))
-  })
-
   afterEach(() => {
     cleanup()
     vi.unstubAllGlobals()
@@ -227,7 +224,6 @@ describe("CommonFeatureConfig", () => {
 
   it("keeps feature settings dormant across confirmation-free exclusion and re-inclusion", () => {
     const onUpdate = vi.fn(() => ({ ok: true as const }))
-    const confirmMock = vi.mocked(confirm)
     const config = {
       target: "target",
       feature_columns: ["age"],
@@ -252,7 +248,7 @@ describe("CommonFeatureConfig", () => {
     expect(screen.getByRole("button", { name: "age: increasing" })).toBeEnabled()
     expect(screen.getByRole("button", { name: "age: increasing" })).toHaveAttribute("aria-pressed", "true")
     fireEvent.click(within(featureRow("age")).getByRole("checkbox", { name: "Include age" }))
-    expect(confirmMock).not.toHaveBeenCalled()
+    expect(asked()).toBeNull()
     expect(onUpdate).toHaveBeenLastCalledWith({ feature_columns: [] })
 
     rerender(
@@ -267,7 +263,7 @@ describe("CommonFeatureConfig", () => {
     expect(dormantUp).toHaveAttribute("aria-pressed", "true")
 
     fireEvent.click(within(featureRow("age")).getByRole("checkbox", { name: "Include age" }))
-    expect(confirmMock).not.toHaveBeenCalled()
+    expect(asked()).toBeNull()
     expect(onUpdate).toHaveBeenLastCalledWith({ feature_columns: ["age"] })
 
     rerender(

@@ -1,26 +1,28 @@
-import type { InputHTMLAttributes, ReactNode } from "react"
+import type { InputHTMLAttributes, ReactNode, Ref } from "react"
 import ConfigCheckbox from "./form/ConfigCheckbox"
 
 // The form blocks the identity, working-branch and divergence modals share,
 // rendered inside a `ModalShell`: a heading with a line of context, a text
 // input, the git identity fields, and the cancel/submit row.
 
-/** A modal's heading: its title and one line of context. */
-export function ModalFormHeader({ title, children }: { title: string; children: ReactNode }) {
+/** A modal's heading: its title and, when it has one, a line of context. */
+export function ModalFormHeader({ title, children }: { title: string; children?: ReactNode }) {
   return (
     <div className="px-4 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
       <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
         {title}
       </h2>
-      <p className="text-[12px] mt-0.5" style={{ color: "var(--text-muted)" }}>
-        {children}
-      </p>
+      {children !== undefined && children !== "" && (
+        <p className="text-[12px] mt-0.5" style={{ color: "var(--text-muted)" }}>
+          {children}
+        </p>
+      )}
     </div>
   )
 }
 
-/** A full-width modal text input. */
-export function ModalTextInput(props: InputHTMLAttributes<HTMLInputElement>) {
+/** A full-width modal text input, its `ref` given to the input. */
+export function ModalTextInput(props: InputHTMLAttributes<HTMLInputElement> & { ref?: Ref<HTMLInputElement> }) {
   return (
     <input
       {...props}

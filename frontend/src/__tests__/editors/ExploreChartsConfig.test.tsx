@@ -23,6 +23,7 @@ vi.mock("../../api/client", async (importOriginal) => ({
   cancelExplorePivot: (...args: unknown[]) => mockCancelExplorePivot(...args),
 }))
 import type { OnUpdateConfig } from "../../panels/editors/_shared"
+import { answerQuestion, asked } from "../../test-utils/question"
 import {
   createExploreChart,
   exploreChartSeriesKey,
@@ -757,22 +758,22 @@ describe("ExploreChartsConfig", () => {
     })
   })
 
-  it("removes a chart only after explicit confirmation", () => {
+  it("removes a chart only after explicit confirmation", async () => {
     const first = chart(null, { id: "chart_1", name: "Chart 1" })
     const second = chart(null, { id: "chart_2", name: "Chart 2" })
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false)
     render(
       <ChartConfigHarness initialConfig={{ charts: [first, second] }} />,
     )
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Chart 1" }))
+    expect(asked()).toMatchObject({ title: "Delete Chart 1?", confirm: "Delete", danger: true })
+    await answerQuestion(null)
     expect(screen.getByRole("button", { name: "Configure Chart 1" })).toBeVisible()
 
-    confirm.mockReturnValueOnce(true)
     fireEvent.click(screen.getByRole("button", { name: "Delete Chart 1" }))
+    await answerQuestion("confirm")
     expect(screen.queryByRole("button", { name: "Configure Chart 1" })).toBeNull()
     expect(screen.getByRole("button", { name: "Configure Chart 2" })).toBeVisible()
-    confirm.mockRestore()
   })
 
   it("guides an empty chart workflow to Pivots without mutating config", () => {
@@ -900,7 +901,7 @@ describe("ExploreChartsConfig", () => {
     ).toHaveValue("inherit")
   })
 
-  it("confirms a populated source reset and commits it as one edit", () => {
+  it("confirms a populated source reset and commits it as one edit", async () => {
     const first = pivot("first")
     const second = pivot("second", {
       values: [
@@ -916,7 +917,6 @@ describe("ExploreChartsConfig", () => {
     })
     const configured = chart(first)
     const onCommittedUpdate = vi.fn()
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false)
     render(
       <ChartConfigHarness
         initialConfig={{ charts: [configured], pivots: [first, second] }}
@@ -929,11 +929,13 @@ describe("ExploreChartsConfig", () => {
     )
     const source = screen.getByRole("combobox", { name: "Source pivot" })
     fireEvent.change(source, { target: { value: second.id } })
+    expect(asked()).toMatchObject({ title: "Change the source Pivot?", text: "Changing the source Pivot resets chart mappings and series overrides." })
+    await answerQuestion(null)
     expect(source).toHaveValue(first.id)
     expect(onCommittedUpdate).not.toHaveBeenCalled()
 
-    confirm.mockReturnValueOnce(true)
     fireEvent.change(source, { target: { value: second.id } })
+    await answerQuestion("confirm")
     expect(onCommittedUpdate).toHaveBeenCalledTimes(1)
     const persisted = JSON.parse(
       screen.getByTestId("persisted-config").textContent ?? "{}",
@@ -945,7 +947,6 @@ describe("ExploreChartsConfig", () => {
         expect.objectContaining({ value_id: "second-average" }),
       ],
     })
-    confirm.mockRestore()
   })
 
   it("composes a column + secondary line via per-field controls and commits axis, legend, and category settings", async () => {
