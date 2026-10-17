@@ -37,6 +37,7 @@ from haute._local_security import (
 )
 from haute._logging import get_logger
 from haute.cli._helpers import _find_frontend_dir, _node_env, _npm, _open_browser
+from haute.cli._polars_startup import POLARS_SETTINGS
 
 logger = get_logger(component="serve")
 
@@ -583,6 +584,7 @@ def handle_serve(config: ServeConfig) -> None:
     """
     _require_loopback_host(config)
     _configure_trusted_hosts(config)
+    logger.info("polars_settings", **POLARS_SETTINGS)
     frontend_dir = _detect_dev_frontend_dir()
     if frontend_dir is not None:
         _abort_if_port_in_use(config)

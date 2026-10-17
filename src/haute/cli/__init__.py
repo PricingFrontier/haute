@@ -1,5 +1,11 @@
 """CLI entrypoint for Haute."""
 
+# Haute's Polars settings must be in the environment before Polars is first
+# imported, so this import stays first.
+import haute.cli._polars_startup  # noqa: F401
+
+# isort: split
+
 import click
 
 from haute._cpu_performance import configure_process_high_qos

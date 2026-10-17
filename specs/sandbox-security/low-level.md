@@ -265,6 +265,11 @@ reaches node code exactly as the preamble made it.
 
 ## Edge cases and invariants
 
+- **Polars spills only into the project's runtime storage.** Every process Haute starts
+  sets Polars' spill directory to the project's `.haute_cache/polars-spill`, with spilling
+  off and a small disk budget (`haute._polars_environment`), so Polars never writes into the
+  system temporary folder from a Haute process, and a worker's folder is removed by its
+  parent when the worker ends.
 - **Containment compares resolved paths.** `contained_path` resolves both sides
   before `Path.is_relative_to`, which compares components (case-insensitively for
   Windows paths), so `..` segments, links and a sibling sharing a name prefix

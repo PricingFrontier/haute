@@ -10,12 +10,13 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as metadata_version
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from haute._git_core import _run_git_ok, git_binary_available
 from haute._logging import get_logger
 from haute._model_flavors import XGBOOST_DISTRIBUTION, family_for_suffix
+from haute._polars_environment import polars_process_environment, polars_spill_root
 from haute._price_contour import DISTRIBUTION as PRICE_CONTOUR_DISTRIBUTION
 from haute._price_contour import PriceContourCompatibilityError, price_contour_install
 from haute._types import NodeType
@@ -936,6 +937,8 @@ def _generate_dockerfile(
     else:
         copy_utility = f"COPY {UTILITY_PACKAGE}.py .\n"
     copy_extra = "".join(f"COPY {name} .\n" for name in extra_files)
+    polars_settings = polars_process_environment(polars_spill_root(PurePosixPath("/app")))
+    polars_env = "".join(f"ENV {name}={value}\n" for name, value in sorted(polars_settings.items()))
 
     return f"""\
 FROM {base_image}
@@ -946,6 +949,9 @@ WORKDIR /app
 # enforcement; the hosting platform owns any outer hard container cap.
 ENV HAUTE_EXECUTION_MEMORY_POLICY=strict_server
 
+# Keep Polars' out-of-core spilling off and inside the container's storage,
+# and load an unknown Arrow extension column as its storage type.
+{polars_env}
 # Install the pinned scoring runtime, then haute itself without its
 # dependencies: they include the editor, assistant, training and tuning
 # stacks, which a scoring container never runs.

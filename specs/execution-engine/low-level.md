@@ -22,6 +22,7 @@
 | `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (the pipeline settings' preview memory / fixed default / explicit env override / adaptive fraction of available RAM above the settings' kept-free memory), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
 | `src/haute/_pipeline_settings.py` | The per-clone pipeline settings file `.haute/pipeline-settings.json`: the `PipelineSettings` keys and their validation, stat-gated reads (`read_pipeline_settings`), locked atomic updates (`update_pipeline_settings`), the current automatic figures (`automatic_pipeline_settings`), the time limits and byte sizes its consumers read, `PipelineSettingsError`, and the server process following the file's chunk rows (`follow_chunk_rows`). See "Pipeline settings" below. |
 | `src/haute/_chunked_writes.py` | Bounded chunked writes: `sliceable` (positive proof on Polars' optimised IR that slicing a frame equals slicing its single Parquet/IPC scan or in-memory input), `write_parts` (a node output as ordered `part-NNNNN.parquet` files: a chunked edge join, one native sink per slice, an input-sliced write, or one native sink), `JoinRecipe`, `WriteRecipe`, `part_paths`/`scan_parts`. |
+| `src/haute/_polars_environment.py` | The Polars settings every process Haute starts runs under (see "Polars process settings" below): `polars_process_environment`, `polars_spill_root`, `apply_polars_process_environment`, `release_polars_spill_dir`, which every worker path calls beside its private-cgroup cleanup once the child has ended, and `reap_polars_spill_dirs`, which removes the folders of ended processes. |
 | `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` selects `auto` or streaming execution and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract. All three preserve checkpoint, collect-count, and typed-error telemetry. `bounded_collect_batches` streams batches from a query run on a dedicated thread, so an engine panic raises instead of ending the stream early. It also owns the Python scans that expose opaque Python steps to Polars pushdown (`row_local_python_scan`, `fanout_python_scan`, `limited_python_scan`, `key_prefix_python_scan`), whose exceptions reach every seam as themselves. |
 | `src/haute/_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion (`expand_scenarios_from_config`, and `expand_scenarios_bounded` for the interactive form a preview row limit reaches through), `optimiserApply` artifact dispatch, and output response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
 | `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`, declaring every type's recompute cost (`recompute_cost=`); owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component, and `pass_through_selected_edge` / `PASS_THROUGH_NODE_TYPES`, which state the incoming edge a pass-through node's built function returns. A node built without an input (an unconnected Rating Step, Banding, Scenario Expander, Model Score or Optimiser Apply, an unsaved Data Input, and the deploy scorer's external and model placeholders) starts from `pl.LazyFrame()`, which has no rows, and so returns none: a constant it adds gives no row either (Polars 1 invented one). It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). A stepped Polars transform's function carries `transform_fn.failed_step_line`, which replays the steps' prefixes on the run's input frames to name the step whose lazy plan failed (`_failed_step_line`). |
@@ -995,6 +996,23 @@ limits. Each spawned process configures itself; inheritance is not relied upon.
 The cross-platform CI smoke job includes CPU-policy unit/startup coverage and
 Windows-only native spawn tests, which first reset the child's execution-speed
 policy to automatic and verify HighQoS from within the actual worker workload.
+
+**Polars process settings (`_polars_environment.py`).** `polars_process_environment(spill_root)`
+turns Polars' out-of-core spilling off with `POLARS_OOC_MEMORY_BUDGET_FRACTION` set to
+1,000,000 and `POLARS_OOC_MEMORY_BUDGET_MB` alongside (the threshold is the smaller of the
+MB value and the fraction times total memory, so the MB value alone does not turn it off,
+and an MB value of 0 spills everything); sets `POLARS_OOC_DISK_BUDGET_MB` to 1,024, so
+anything that does spill aborts its query rather than filling the disk; points
+`POLARS_OOC_SPILL_DIR` at `polars_spill_root(project)`, the project's
+`.haute_cache/polars-spill`, where Polars makes one folder per process id; and sets
+`POLARS_UNKNOWN_EXTENSION_TYPE_BEHAVIOR=load_as_storage`. `apply_polars_process_environment`
+writes them into `os.environ` before Polars is imported, which the extension behaviour
+needs because Polars reads it only at import; applied after, it goes through
+`pl.Config.load`, which reloads the spilling settings only. `haute.cli` imports
+`cli/_polars_startup.py` first, which applies them for the working directory's project and
+reaps that spill root, so the editor server, every command and every worker they spawn run
+under them, and `haute serve` logs them. The scoring container's Dockerfile sets the same
+variables for `/app`. A process Haute does not own keeps its own settings.
 
 **Streaming chunk size (`_polars_utils.py`).** `current_streaming_chunk_size()` reads
 Polars' process value from the variable `pl.Config.set_streaming_chunk_size` writes,
@@ -2787,6 +2805,11 @@ present a structural or schema result as execution evidence.
   carried-column proof's selector rules and its refusal of every program shape it
   cannot name, and cardinality without selector names. `tests/test_polars_selectors.py` pins selector recognition, purity,
   preamble aliases, roots, and expansion parity with Polars.
+- `tests/test_polars_environment.py` — under Polars' defaults a sort told the host is small
+  spills; a fresh process that imports `haute.cli` and a worker it spawns run the same sort
+  without spilling, under the reported settings; a spill forced in a worker lands in the spill
+  root and its folder is gone once the worker ends; reaping removes only ended processes'
+  folders; and a `Pipeline.run` in a user's own process leaves its Polars settings unchanged.
 - `tests/test_polars_utils.py` — `TestRowLocalPythonScan` pins the Python-scan
   contract: limit before predicate, limited transform rows, projection elision and its
   refusal, input-predicate permission, generated-column predicates, typed exceptions with

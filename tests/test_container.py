@@ -969,6 +969,13 @@ class TestGenerateDockerfile:
 
         assert "ENV HAUTE_EXECUTION_MEMORY_POLICY=strict_server" in df
 
+    def test_keeps_polars_spilling_off_and_inside_the_container(self) -> None:
+        df = _generate_dockerfile("python:3.11-slim", 8080, _make_resolved())
+
+        assert "ENV POLARS_OOC_MEMORY_BUDGET_FRACTION=1000000\n" in df
+        assert "ENV POLARS_OOC_SPILL_DIR=/app/.haute_cache/polars-spill\n" in df
+        assert "ENV POLARS_UNKNOWN_EXTENSION_TYPE_BEHAVIOR=load_as_storage\n" in df
+
     def test_default_base_image(self) -> None:
         resolved = _make_resolved()
         df = _generate_dockerfile("python:3.11-slim", 8080, resolved)

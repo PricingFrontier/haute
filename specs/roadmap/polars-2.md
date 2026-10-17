@@ -12,9 +12,10 @@ carries, quantile and rank binning) is deferred.
 
 The packages form two rounds. The first makes Haute correct on Polars 2 with
 CI green: the pin, every seam that breaks or silently changes, Polars'
-out-of-core spilling kept off and contained (the pin turns it on), and six
-packages that change what a user sees or where Haute writes (`PL2-04`,
-`PL2-06`, `PL2-07`, `PL2-12`, `PL2-16`, `PL2-19`). Their designs were decided
+out-of-core spilling kept off and contained (the pin turns it on; the
+execution-engine specification records the settings), and five packages that
+change what a user sees (`PL2-04`, `PL2-06`, `PL2-07`, `PL2-12`, `PL2-19`).
+Their designs, and the spilling settings, were decided
 on 17 October 2026 by one rule: of the robust options, the one that uses least
 memory, then the fastest. Each entry records the measurement behind its
 choice. The second round re-establishes the engine's memory evidence under
@@ -42,7 +43,6 @@ prepared frame's order varies (`PL2-05`).
 | PL2-13 | Planned | P2 | Code Haute generates and teaches runs on Polars 2 without deprecations. |
 | PL2-14 | Planned | P2 | The operation registry and analysers describe Polars 2. |
 | PL2-15 | Planned | P2 | The test suite asserts behaviour rather than Polars 1 accidents. |
-| PL2-16 | Planned | P2 | Out-of-core spilling stays off wherever Haute starts Polars, and anything that spills lands in Haute's storage. |
 | PL2-17 | Reverify | P2 | Every operator memory policy and RAM estimate rests on Polars 2 evidence. |
 | PL2-18 | Reverify | P3 | Worker caps start from a Polars 2 baseline. |
 | PL2-19 | Planned | P2 | A deployed pipeline runs the Polars the editor ran. |
@@ -567,9 +567,10 @@ survives. A map column in a Parquet file Haute scans directly is refused,
 detected from the file's schema before Polars reads it, with a message offering
 the snapshot-backed route. An unknown extension column loads as its storage
 type, which loses nothing and costs nothing, through Polars' documented
-`POLARS_UNKNOWN_EXTENSION_TYPE_BEHAVIOR=load_as_storage`, set with the other
-Polars settings at every entry point Haute owns (`PL2-16`), so direct scans and
-user Data Inputs are covered alike. Both are recorded in the source's schema
+`POLARS_UNKNOWN_EXTENSION_TYPE_BEHAVIOR=load_as_storage`, which every process
+Haute starts already sets with its other Polars settings
+(`src/haute/_polars_environment.py`), so direct scans and user Data Inputs are
+covered alike. Both are recorded in the source's schema
 until `PL2-21` gives `Map` a place in the vocabularies. Adopting Polars 2's
 `Map` was rejected because duplicate keys would collapse to the last value
 without a word; refusing map and extension columns on every path was rejected
@@ -591,7 +592,7 @@ extension column loads as its storage type on each path; the codec's round-trip
 test covers every dtype Polars 2 can produce or its refusal; a
 `Categorical("lexical")` column trains as categorical.
 
-**Dependencies:** PL2-01; `PL2-16` for the entry-point settings.
+**Dependencies:** PL2-01.
 
 **Evidence:** `src/haute/_polars_dtypes.py::contract_dtype_name`;
 `src/haute/_polars_dtypes.py::dtype_to_spec`;
@@ -715,90 +716,6 @@ specifications promise.
 `.github/workflows/performance.yml`; `.github/workflows/container-smoke.yml`;
 `.github/workflows/dependencies.yml`.
 
-### PL2-16 — Out-of-core spilling runs inside Haute's memory and disk budgets, or stays out
-**Why:** Polars 2.0 spills operator state to disk by default (in this review's
-probes a sort, a group-by and a window function spilled; a join did not). It
-starts when its own allocations pass the smaller of
-`POLARS_OOC_MEMORY_BUDGET_MB` and 80% of the machine's memory (a cgroup limit
-where one applies, read once per process), and writes up to 64,000 MB into
-`POLARS_OOC_SPILL_DIR`, by default `%TEMP%\polars-<user>\spill` on Windows and
-`/var/tmp/polars-<user>/spill` on Linux, one directory per process. Probes on
-Polars 2.0.0 show what that means for Haute:
-- A worker capped by a Windows Job Object, a cgroup or `RLIMIT_AS` below 80%
-  of the host never reaches the threshold, so spilling never helps it; Polars
-  counts only its own allocations, not Python's, NumPy's or a model library's.
-- The budget is a soft target for operator state, not a cap, and spilling did
-  not dependably lower resident memory. With forty million rows read from
-  Parquet on disk, a 1 GB or 256 MB budget changed the peak by between -19% and
-  +26% across a sort, a stable sort, a group-by and a window function, at 2.2
-  to 12 times the time, and never brought it near the budget; the join did not
-  spill. With the input held in memory, a 150 MB budget wrote 384 files and
-  845 MB, took 5.7 times as long, and peaked at 2.6 GB against 2.8 GB
-  unspilled. All of it was measured on Windows, where Polars allocates through
-  mimalloc.
-- A process killed mid-spill, as Haute kills a worker on timeout,
-  cancellation or a memory breach, left 768 files and 1.76 GB behind; Polars'
-  source removes a dead process's directory only when a later process spills
-  into the same place.
-- Per Polars' source, passing the disk budget sets a process-wide abort flag,
-  and a spill file that cannot be created or written panics. The second
-  opinion's probes showed the abort surfacing as an untyped
-  `RuntimeError("BindingsError: \"query aborted, raise
-  POLARS_OOC_DISK_BUDGET_MB\"")`, not a Polars error, with Rust panics on
-  stderr, and aborting the next, unrelated, non-spilling query in the same
-  process too: in the editor server, one analyst's spilling preview could fail
-  another's.
-- The switches have traps: the threshold is the smaller of
-  `POLARS_OOC_MEMORY_BUDGET_MB` and the fraction times total memory, so a huge
-  MB value alone does not turn spilling off, `POLARS_OOC_MEMORY_BUDGET_MB=0`
-  spills everything, and only a very large `POLARS_OOC_MEMORY_BUDGET_FRACTION`
-  turns it off (second opinion, probed).
-The spill directory lies outside Haute's runtime storage, its disk-headroom
-checks and its write sandbox, on the system drive of every uncapped process:
-the editor server, the optimiser's thread mode, macOS hosts, Databricks Model
-Serving and the scoring container. 1.44 did not spill at all.
-
-**Plan:** The pin turns spilling on, so this package ships with the first
-round. Decided on 17 October 2026: spilling stays off, as on 1.44, and Haute
-owns its directory; specify in the execution-engine, deploy and
-sandbox-security specifications. By the memory-first rule this is the memory
-answer: on 2.0.0 a budget bought no dependable saving in resident memory and
-cost several times the time (above), a capped worker never reaches Polars'
-default threshold, and the out-of-disk abort is process-wide. Every entry point
-Haute owns sets, before Polars first reads its configuration, a
-`POLARS_OOC_MEMORY_BUDGET_FRACTION` large enough that spilling never starts
-(with the MB value alongside), a spill directory under the runtime storage and
-a small disk budget, so that anything that does spill lands where Haute counts
-and cleans it: the editor server and the CLI commands at start-up, each spawned
-worker through `start_process_with_environment` (its directory removed by the
-parent when the worker ends), the scoring container and the served model's
-environment (`PL2-19`). A pipeline run from a user's own Python process
-(`Pipeline.run`) inherits that process's Polars settings: Haute applies no
-spilling settings in a process it does not own, since Polars holds them
-process-wide and reloading them through `pl.Config.load` would change the
-user's other queries too. The documentation gives the settings that turn
-spilling off or redirect it. Turning spilling on is `PL2-17`'s measured
-decision, by the same rule. Turning it on now was rejected, since there is no
-measured saving to buy with its time and its process-wide abort; so were
-Polars' defaults, which spill outside Haute's storage, sandbox and headroom
-checks and expose the editor server to the abort.
-
-**Acceptance:** a sort that spills under Polars' defaults when the reported
-total memory is small (`POLARS_OVERRIDE_TOTAL_MEMORY_MB`) spills nothing in a
-spawned worker, the server, the CLI, the container and the served model's
-environment, each of which reports the settings it applied; a spill forced in a
-test lands inside the runtime storage and is removed when its worker ends; a
-`Pipeline.run` in a user's process leaves that process's Polars settings as it
-found them; the docs and the specification state the off switch, including
-that `POLARS_OOC_MEMORY_BUDGET_MB=0` spills everything.
-
-**Dependencies:** PL2-01.
-
-**Evidence:** `src/haute/_worker_isolation.py::start_process_with_environment`;
-`src/haute/_json_shred/_runtime_storage.py`;
-`src/haute/_file_ops.py::ensure_disk_headroom`;
-`src/haute/_native_memory_limit.py`.
-
 ### PL2-17 — Every operator memory policy and RAM estimate rests on Polars 2 evidence
 **Why:** The operation registry admits `sort`, `unique`, `join`, `join_asof`,
 `top_k`, `bottom_k`, `reverse`, `shift`, `explode`, `group_by` and `over` as
@@ -825,7 +742,7 @@ by its many-to-many product asks the author to declare such a contract
 (`_MANY_TO_MANY_JOIN_REMEDIATION`).
 
 **Plan:** Re-run the certification lane's operator memory probes on Polars 2
-with spilling off as `PL2-16` sets it, carried into each probe's own
+with spilling off as `src/haute/_polars_environment.py` sets it, carried into each probe's own
 subprocess environment so a spill cannot hide a peak, and record each
 operator's factor and its streaming control in the registry, including the
 operations `PL2-14` registers; change a policy only where the new measurement
@@ -837,7 +754,7 @@ measure the same boundaries in a capped worker with spilling on and its
 threshold set from the worker's admitted envelope (static per spawn, or per
 task through `pl.Config.load`), on Linux as well as Windows, since the
 allocators differ (jemalloc against mimalloc) and the review measured only
-Windows. Decide by the rule `PL2-16` was decided by, memory first: turn
+Windows. Decide by the rule spilling was kept off by, memory first: turn
 spilling on in capped workers if, at the threshold the measurement settles on,
 no boundary operator's peak rises and at least one falls materially or
 completes under a cap it breaches today; the time it costs is accepted and
@@ -845,8 +762,8 @@ recorded beside the decision. Spilling is turned on only in spawned, capped
 workers, never in a shared process (the editor server, the optimiser's thread
 mode, the scoring container, the served model), because the out-of-disk abort
 is process-wide. Turning it on brings the typed storage failure for that abort
-(a match on Polars' message text, pinned by a test) and the cleanup `PL2-16`
-already provides. Re-measure the
+(a match on Polars' message text, pinned by a test) and the spill-folder
+cleanup Haute already performs. Re-measure the
 RAM estimator's overhead multiplier and the calibration seeds against Polars
 2's `estimated_size`. Measure whether `_malloc_trim` returns any memory;
 delete it and its periodic calls if it returns none. Correct the #24206
@@ -861,8 +778,7 @@ contract is estimated as materialising both inputs; the decision whether to
 turn spilling on is recorded in the execution-engine specification with the
 measurement behind it.
 
-**Dependencies:** PL2-16, whose controlled spill settings the measurements
-use.
+**Dependencies:** PL2-01.
 
 **Evidence:** `src/haute/_polars_operations.py::POLARS_OPERATIONS`;
 `tests/performance/_operation_memory_probe.py`;
@@ -882,8 +798,8 @@ failure. The RLIMIT fallback lane already flakes with `can't start new thread`
 on CI's Python 3.11.
 
 **Plan:** Measure a worker's address-space and resident baseline on Polars 2
-under each backend (Job Object, cgroup, `RLIMIT_AS`); with spilling off
-(`PL2-16`) the cleaner thread never starts, so it matters only if `PL2-17`
+under each backend (Job Object, cgroup, `RLIMIT_AS`); with spilling off, as
+every Haute process runs, the cleaner thread never starts, so it matters only if `PL2-17`
 turns spilling on, and then it is started before the cap; rerun the fallback
 lane and classify its flake again.
 
@@ -891,7 +807,7 @@ lane and classify its flake again.
 on every CI platform; if `PL2-17` turns spilling on, a capped worker that
 spills does not fail on a thread start.
 
-**Dependencies:** PL2-16; `PL2-17` for the spilling decision.
+**Dependencies:** `PL2-17` for the spilling decision.
 
 **Evidence:** `src/haute/_native_memory_limit.py::_start_polars_thread_pools`;
 `tests/test_native_memory_limit.py`; `tests/test_worker_isolation.py`.
@@ -909,9 +825,9 @@ default.
 Polars version, as the container already does, and records it, so that its
 `load_context` refuses another version with a message naming both (as the EBM
 engine already does for interpret). The served model then runs with the memory
-behaviour its deploy-time checks measured. The container image and the served
-model's environment carry the Polars settings `PL2-16` chose, and the deploy
-specification records both. The major range `polars>=2.0,<3` was rejected: a
+behaviour its deploy-time checks measured. The served model's environment
+carries Haute's Polars settings (`src/haute/_polars_environment.py`), as the
+container image already does, and the deploy specification records both. The major range `polars>=2.0,<3` was rejected: a
 2.x release could change a deployed model's results and memory behaviour
 without a redeploy.
 
@@ -920,7 +836,7 @@ version, and loading it under another fails with the named message; the
 container's Dockerfile and the served model's environment carry the Polars
 settings.
 
-**Dependencies:** PL2-01, PL2-16.
+**Dependencies:** PL2-01.
 
 **Evidence:** `src/haute/deploy/_mlflow.py::_pip_requirements`;
 `src/haute/deploy/_container.py::_SCORING_RUNTIME_DEPENDENCIES`;

@@ -77,6 +77,22 @@ they return the typed diagnostic, and its remediation says so. A Databricks depl
 scores every request in the serving process, so an operation Haute cannot estimate
 fails the bundle at build time with a correction that points at a container target.
 
+## Spilling to disk
+
+Polars can spill an operation's working data to disk when memory runs short. Haute
+keeps this off in every process it starts: the editor, its workers, the scoring
+container and a model served on Databricks. On Polars 2 it did not reliably lower peak
+memory and made a spilled operation several times slower, while Haute's memory caps and
+estimates already bound a run. Should anything spill, it goes into the project's
+`.haute_cache/polars-spill` folder, which Haute clears when the process that wrote it
+ends.
+
+A pipeline you run from your own Python code with `Pipeline.run` uses your process's
+Polars settings, which spill by default. To turn spilling off there, set the
+environment variable `POLARS_OOC_MEMORY_BUDGET_FRACTION` to a very large number, such
+as `1000000`, before Polars is imported. Setting `POLARS_OOC_MEMORY_BUDGET_MB` to `0`
+does the opposite and spills everything. `POLARS_OOC_SPILL_DIR` chooses the folder.
+
 ## Reading diagnostics
 
 The compact profile identifies the strategy. For a boundary, warning, or rejection, read

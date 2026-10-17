@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+# Haute's Polars settings go into the environment before Polars is imported.
+import tests._polars_settings  # noqa: F401
+
+# isort: split
+
 import functools
 import hashlib
 import os

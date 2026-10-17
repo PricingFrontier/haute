@@ -5,7 +5,8 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/__main__.py` | Package-module entry point; imports and invokes the canonical `haute.cli:cli` group for `python -m haute`. |
-| `src/haute/cli/__init__.py` | Builds the Click command group (`cli`), registers all twelve subcommands, exposes `--version`. |
+| `src/haute/cli/__init__.py` | Builds the Click command group (`cli`), registers all twelve subcommands, exposes `--version`. Its first import is the Polars startup module below, before anything imports Polars. |
+| `src/haute/cli/_polars_startup.py` | Applies Haute's Polars settings (spilling off, its folder in the working directory's `.haute_cache/polars-spill`, unknown extension columns as storage; [execution engine](../execution-engine/low-level.md)) and reaps ended processes' spill folders; `SPILL_ROOT` and `POLARS_SETTINGS`, which `haute serve` logs. |
 | `src/haute/cli/_helpers.py` | Cross-command utilities: `resolve_model_name`, `_open_browser`, `_node_env`, `_npm`, `_find_frontend_dir`, the `TransportInfo`/`resolve_transport` transport-dispatch helper, and the shared `ENDPOINT_SUFFIX_HELP` string. |
 | `src/haute/cli/_init_cmd.py` | `haute init` — project scaffolding: `InitConfig`, `handle_init`, TOML-aware `pyproject.toml` dependency injection, CI-provider file generation/pruning, and the `--workbench` table and form ([workbench](../workbench/low-level.md)). |
 | `src/haute/cli/_run.py` | `haute run` — `RunConfig`, `handle_run`, parses + executes a pipeline and prints per-node results. |

@@ -160,6 +160,19 @@ running heavy work in a child process the parent can kill on timeout or memory l
   never changes results, only memory use and speed, so a change reaches executions
   started afterwards and may reach one in flight at its next collect. Requests carry
   no chunk size, and deployed scoring runs with the default.
+- **Polars' out-of-core spilling stays off, and inside Haute's storage.** Polars 2 spills
+  an operation's state to disk by default. On Polars 2.0 a spill budget did not dependably
+  lower resident memory and cost several times the time, a worker capped below the host
+  never reaches Polars' default threshold, and an out-of-disk abort fails every later
+  query in the process, so every process Haute starts runs with spilling off (decided by
+  memory first, then speed). It also points Polars' spill directory at the project's
+  runtime storage with a small disk budget, so anything that does spill lands where Haute
+  removes it, and loads an Arrow extension column Polars does not know as its storage
+  type. The CLI (and so the editor server and every command) applies these settings
+  before Polars is imported, its workers inherit them, and the scoring container and a
+  served model carry them ([deploy](../deploy/high-level.md)). A pipeline run in a user's
+  own Python process keeps that process's Polars settings. Turning spilling on is a
+  measured decision for capped workers only, never a shared process.
 - **`dataInput` and `dataOutput` are the sole tabular I/O node types.** A file-backed
   Parquet Data Input is scanned directly. Every other data input executes from a
   validated leased snapshot generation. Graph execution may schedule a missing or stale

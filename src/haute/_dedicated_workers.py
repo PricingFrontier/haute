@@ -64,6 +64,7 @@ from haute._native_memory_limit import (
     watch_windows_job_messages,
 )
 from haute._parent_watch import exit_with_parent
+from haute._polars_environment import release_polars_spill_dir
 from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
 from haute._process_memory import process_rss_bytes
 from haute._step_progress import ProgressCell, StepProgress, bind_job_progress
@@ -767,6 +768,7 @@ class DedicatedWorker:
                     _terminate_process(process)
                 process.join(timeout=2.0)
                 cleanup_private_cgroups_for_pid(process.pid)
+                release_polars_spill_dir(process.pid)
         except BaseException as exc:
             logger.warning(
                 "dedicated_worker_cleanup_failed",
