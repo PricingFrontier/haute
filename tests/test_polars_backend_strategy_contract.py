@@ -77,11 +77,7 @@ def test_join_headroom_rejection_mentions_the_validate_contract() -> None:
         headroom_bytes=10,
         estimate_detail=f"join-node:{MANY_TO_MANY_JOIN_DETAIL}",
     )
-    assert rejection.remediation.endswith(
-        "The join has no declared validate= contract, so only the many-to-many row "
-        "product bounds it; declare validate='m:1', '1:m', or '1:1' where a key side "
-        "is unique to get a real estimate."
-    )
+    assert rejection.remediation.endswith(_MANY_TO_MANY_JOIN_REMEDIATION)
     # A rejection with a bounded estimate has no contract to declare.
     bounded = _materialisation_rejection(
         node_id="join-node",
@@ -2718,9 +2714,9 @@ def test_cross_join_is_conservative_under_a_cap_and_rejected_without_one(
 
 
 _MANY_TO_MANY_JOIN_REMEDIATION = (
-    "The join has no declared validate= contract, so only the many-to-many row "
-    "product bounds it; declare validate='m:1', '1:m', or '1:1' where a key side "
-    "is unique to get a real estimate."
+    "A many-to-many product bounds this join: validate='m:1', '1:m' or '1:1' on a "
+    "unique key gives an estimate, but Polars then holds both inputs in memory, up to "
+    "76% more peak."
 )
 
 

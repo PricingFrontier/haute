@@ -351,7 +351,12 @@ running heavy work in a child process the parent can kill on timeout or memory l
   (`join_cardinality_many_to_many`) rather than an over-run, so a capped surface
   runs `full-width-conservative` with status `warned` and an uncapped one is
   refused, both with the remediation to declare `validate='m:1'`, `'1:m'`, or
-  `'1:1'` where a key side is unique. The certification lane measured a
+  `'1:1'` on a unique key and naming what the contract costs: Polars runs a
+  validated join in its in-memory join node, at 39% to 76% more peak memory than an
+  undeclared one, and the estimate counts both inputs held in memory. The execution
+  strategy guide adds that a deployed lookup needs no contract, because a deployment
+  checks the lookup's keys itself ([deploy](../deploy/high-level.md)). The
+  certification lane measured a
   three-times fan-out join above the input-sized figure, which is why input
   sizing is reserved for declared joins. The joined row count is recorded
   separately and carried to the next boundary downstream. `explode` is the one

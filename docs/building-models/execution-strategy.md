@@ -77,6 +77,13 @@ they return the typed diagnostic, and its remediation says so. A Databricks depl
 scores every request in the serving process, so an operation Haute cannot estimate
 fails the bundle at build time with a correction that points at a container target.
 
+A join bounded only by its many-to-many row product has no estimate. Setting its
+`validate` to `1:1`, `1:m` or `m:1` on a key that is unique gives one, at a cost: Polars
+runs a validated join holding both inputs in memory, which took 39% to 76% more peak
+memory than the same join without the contract in Haute's measurements, and the
+estimate counts both inputs. A deployment does not need the contract for a lookup, because
+it checks the lookup's keys itself when the bundle is built.
+
 ## Spilling to disk
 
 Polars can spill an operation's working data to disk when memory runs short. Haute

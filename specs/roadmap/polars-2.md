@@ -95,6 +95,10 @@ specifications promise.
 `.github/workflows/dependencies.yml`.
 
 ### PL2-17 — Every operator memory policy and RAM estimate rests on Polars 2 evidence
+**Status:** since 17 October 2026 the estimate's advice for a many-to-many join names
+the `validate` contract's cost, and the execution strategy guide adds the deployment's own
+key check; a declared join was already estimated holding both inputs. The measurements on
+Polars 2, the spilling decision and the rest of the plan remain.
 **Why:** The operation registry admits `sort`, `unique`, `join`, `join_asof`,
 `top_k`, `bottom_k`, `reverse`, `shift`, `explode`, `group_by` and `over` as
 materialisation boundaries, and keeps `unpivot`, `rolling`,
