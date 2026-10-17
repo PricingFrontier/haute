@@ -544,8 +544,10 @@ describe("WidgetBody", () => {
     // Its header strip in its fill, its labels in its font, at its size and weight, ruled
     // under in its lines' colour and weight, solid whatever the gridlines' style.
     expect(screen.getAllByRole("rowgroup")[0]).toHaveStyle({ background: "#1E293B" })
-    expect(screen.getAllByRole("row")[0]).toHaveStyle({ fontSize: "16px", fontWeight: "400" })
+    expect(screen.getAllByRole("row")[0]).toHaveStyle({ fontSize: "16px" })
     const [, item, valueLabel, premium] = screen.getAllByRole("columnheader")
+    // Each label cell its own weight, as a header cell's own bold would win over its row's.
+    for (const label of [item, valueLabel, premium]) expect(label.style.fontWeight).toBe("400")
     expect(item).toHaveStyle({ color: "#FFFFFF" })
     expect(item.style.boxShadow).toBe("inset 0 -3px 0 #000000")
     // A column's own label fill and font over the Table's, placed as it says, at its width.
@@ -571,6 +573,19 @@ describe("WidgetBody", () => {
     loadForm(setColumnLook(form, "w_grid", { table: "premiums", column: "premiums.premium" }, { cell_color: "#FFFFFF", bold: true }))
     renderBody("w_grid")
     expect(screen.getByTestId("priced-premiums:premiums.premium-1")).toHaveStyle({ background: "#FFFFFF", fontWeight: "600", fontSize: "14px" })
+    cleanup()
+
+    // An index's numbers in its column's own font, which they take over their muted grey;
+    // a group's name in the header's weight, as its labels are.
+    const indexed = sheetForm()
+    indexed.schema.tables[1].columns.unshift(column("equipment.row", "row", { type: "int", index: true }))
+    indexed.schema.tables[1].columns[1].group = "Asset"
+    const index = { table: "equipment", column: "equipment.row" }
+    loadForm(updateWidget(setColumnLook(toggleField(indexed, "w_grid", index), "w_grid", index, { font_color: "#DC2626" }), "w_grid", { groups: true, header_bold: false }))
+    renderBody("w_grid")
+    expect(within(screen.getAllByRole("row")[2]).getAllByRole("cell")[3]).toHaveStyle({ color: "#DC2626" })
+    expect(within(screen.getAllByRole("row")[2]).getAllByRole("cell")[3]).toHaveTextContent("1")
+    expect(screen.getByRole("columnheader", { name: "Asset" }).style.fontWeight).toBe("400")
   })
 
   it("turns a Table's labels as its header says, wraps them, fits the grid to its columns' widths, and draws a column's look along its line transposed", () => {

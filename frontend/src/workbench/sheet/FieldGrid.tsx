@@ -257,7 +257,8 @@ export function FieldGrid({
           ...widthOf(look),
           ...text,
           background: look.cell_color ?? (output ? (colours.output ?? "var(--workbench-output-cell-bg)") : undefined),
-          color: priced === undefined || priced === null ? "var(--text-secondary)" : (look.font_color ?? colours.font ?? "var(--text-primary)"),
+          // The column's own font on anything it shows, an index's numbers and a dash too.
+          color: look.font_color ?? (priced === undefined || priced === null ? "var(--text-secondary)" : (colours.font ?? "var(--text-primary)")),
           opacity: output && stale ? 0.5 : 1,
         }}
       >
@@ -411,7 +412,7 @@ export function FieldGrid({
                     scope="col"
                     colSpan={size}
                     className="h-7 px-1.5 pt-1 text-center align-bottom"
-                    style={{ borderLeft: ruleBefore(fields[start].found, start), color: groupColour }}
+                    style={{ fontWeight: headStyle.fontWeight, borderLeft: ruleBefore(fields[start].found, start), color: groupColour }}
                   >
                     {group !== "" && (
                       <div className="truncate pb-1" style={{ borderBottom: headRule }}>
@@ -441,6 +442,8 @@ export function FieldGrid({
                     title={fieldTitle(found)}
                     className={`h-7 ${look.width === null && turn === null ? "min-w-32" : ""} ${shape}`}
                     style={{
+                      // A header cell's own weight: it does not take its row's.
+                      fontWeight: headStyle.fontWeight,
                       ...widthOf(look),
                       textAlign: across,
                       background: look.header_color ?? undefined,

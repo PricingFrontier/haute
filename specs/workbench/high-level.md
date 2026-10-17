@@ -412,7 +412,8 @@ Out of scope:
   `frame_weight`, the rule under its title in that colour; its header strip in its
   `header_color`, its labels and group names in its `header_font_color`; and each column's
   own look over the Table's: its label's fill and font, its cells' fill, drawn over the
-  stripes and the output shade, their font and weight, where its label and values sit
+  stripes and the output shade, their font, on an index's numbers and a dash too, and
+  weight, where its label and values sit
   across it, as its type puts them while `auto`, and its width, exactly that wide, the
   grid as wide as its columns rather than its frame once every column has one;
   transposed, a column's look is its field's line, its label the line's label, and it
@@ -503,8 +504,9 @@ Out of scope:
   Font, Align, Auto, Left, Centre or Right, its Width, blank for Auto, a whole number of
   pixels from 24 to 1000 otherwise refused at the field, not while transposed, and Bold,
   with Clear while it has a look, a column with one marked in the list; a colour picked
-  as the sheets' colours are, shown as it is picked and one undo step, and a column that
-  stops being shown losing its look), a Collection's look (its labels, Above or Beside, its density and its frame), a
+  as the sheets' colours are, shown as it is picked and one undo step, a pick that an undo
+  or a redo made while its picker has the focus finishes first committing nothing more as
+  the picker is left, and a column that stops being shown losing its look), a Collection's look (its labels, Above or Beside, its density and its frame), a
   Chart's chart (its type, Column, Line,
   Area or Pie; while it plots many-row tables, what labels its rows, "Row number" or a
   column of a table whose rows line up with its fields, other than an index, by table and

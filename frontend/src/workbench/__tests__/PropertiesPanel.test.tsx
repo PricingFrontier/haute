@@ -288,6 +288,41 @@ describe("PropertiesPanel", () => {
     expect(within(frame).queryByRole("button", { name: "Automatic colour for the frame" })).not.toBeInTheDocument()
   })
 
+  it("shows a colour as it is picked, one undo step as the picker is left, and commits nothing again for a pick an undo finished first", () => {
+    select("w_grid")
+    render(<PropertiesPanel />)
+    showPane("Display")
+    const picker = screen.getByLabelText("Custom colour for the header's fill")
+    const store = useWorkbenchFormStore.getState
+
+    // Shown at each step of the pick, and one undo step once the picker is left.
+    fireEvent.change(picker, { target: { value: "#112233" } })
+    fireEvent.change(picker, { target: { value: "#445566" } })
+    expect(grid()).toMatchObject({ header_color: "#445566" })
+    expect(store().undoStack).toHaveLength(0)
+    fireEvent.blur(picker)
+    expect(grid()).toMatchObject({ header_color: "#445566" })
+    expect(store().undoStack).toHaveLength(1)
+
+    // An undo while the picker still has the focus finishes the pick and takes it back;
+    // leaving the picker then commits nothing, and the pick can be redone.
+    fireEvent.change(picker, { target: { value: "#778899" } })
+    act(() => store().undo())
+    expect(grid()).toMatchObject({ header_color: "#445566" })
+    fireEvent.blur(picker)
+    expect(grid()).toMatchObject({ header_color: "#445566" })
+    expect(store().redoStack).toHaveLength(1)
+    act(() => store().redo())
+    expect(grid()).toMatchObject({ header_color: "#778899" })
+
+    // The next pick, and a swatch after it, commit as ever.
+    fireEvent.change(picker, { target: { value: "#AABBCC" } })
+    fireEvent.blur(picker)
+    expect(grid()).toMatchObject({ header_color: "#AABBCC" })
+    fireEvent.click(screen.getByRole("button", { name: "Automatic colour for the header's fill" }))
+    expect(grid()).toMatchObject({ header_color: null })
+  })
+
   it("gives a Table's column a look of its own from its Columns, each one undo step, and clears it", () => {
     select("w_grid")
     const { rerender } = render(<PropertiesPanel />)
