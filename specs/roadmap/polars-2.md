@@ -13,8 +13,8 @@ carries, quantile and rank binning) is deferred.
 The packages form two rounds. The first makes Haute correct on Polars 2 with
 CI green: the pin, every seam that breaks or silently changes, Polars'
 out-of-core spilling kept off and contained (the pin turns it on; the
-execution-engine specification records the settings), and three packages that
-change what a user sees (`PL2-07`, `PL2-12`, `PL2-19`).
+execution-engine specification records the settings), and two packages that
+change what a user sees (`PL2-12`, `PL2-19`).
 Their designs, and the spilling settings, were decided
 on 17 October 2026 by one rule: of the robust options, the one that uses least
 memory, then the fastest. Each entry records the measurement behind its
@@ -35,7 +35,6 @@ with one row, in request order ([deploy](../deploy/high-level.md)).
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | PL2-02 | Planned | P1 | Nothing Polars 1 computed is reused once Polars 2 runs. |
-| PL2-07 | Planned | P1 | CSV inputs read as they did, or fail with a message that says what changed. |
 | PL2-12 | Planned | P2 | New Polars dtypes meet Haute's dtype vocabularies loudly or are normalised where they enter. |
 | PL2-13 | Planned | P2 | Code Haute generates and teaches runs on Polars 2 without deprecations. |
 | PL2-14 | Planned | P2 | The operation registry and analysers describe Polars 2. |
@@ -99,56 +98,6 @@ hit under an unchanged version is unaffected.
 `src/haute/execution.py::dataframe_frame_input_fingerprint`;
 `src/haute/_source_cache.py::SourceCacheIdentity`;
 `src/haute/deploy/_schema.py::deploy_schema_cache_fingerprint`.
-
-### PL2-07 — CSV inputs read as they did, or fail with a message that says what changed
-**Why:** Polars 2.0 changes CSV reading in ways Haute can see. A `schema`
-given to `scan_csv` or `read_csv` is matched by name against the header
-instead of by position: a Data Input config that renamed columns positionally
-through `schema` now raises, and one that listed columns in another order
-than the file was silently mislabelled on 1.44 and now reads the right
-values. Headerless files name their columns `column_0, column_1, …` instead
-of `column_1, column_2, …`, in `read_excel` and `read_ods` as well as the CSV
-readers, so a pipeline that reads a headerless CSV, Excel or ODS file and
-refers to `column_1` silently receives the next column. `raise_if_empty` and
-`truncate_ragged_lines` default to `None`, resolved from other arguments; a
-guard test written for exactly this fails under 2.0 and asks for a decision.
-A multi-file scan infers its schema from the first ten files only, and a
-`schema_overrides` list must cover every column. Haute's own scan
-(`read_source`) passes a dict of overrides, which is unaffected.
-
-**Plan:** Decided on 17 October 2026; specify in the io-layer specification.
-Haute's own CSV scan passes `raise_if_empty=True` and
-`truncate_ragged_lines=False` explicitly, keeping today's loud failures for
-empty and ragged files. A headerless Data Input, through any reader the
-registry admits with `has_header` (CSV, Excel, ODS), must name every one of its
-columns, through a full `schema` (which still binds a headerless file by
-position on 2.0), `new_columns` for CSV (which Polars would accept for only some
-of them), or whichever reader option or config field the package settles on for
-Excel and ODS, and a config without them is refused with a message that says
-why, so no pipeline depends on a generated column name. A CSV `schema` whose
-names are not the file's header is refused with a message pointing at
-`new_columns` and `schema_overrides`, rather than left to Polars' own hint,
-`extra_columns='ignore'`, which would silently drop the mismatched columns.
-By-name matching, the ten-file inference and the full-coverage override list
-are adopted and documented. The checks read only the config and the file's
-header, so they cost no memory or time beyond the scan. Adopting every Polars 2
-default was rejected: a pipeline that refers to `column_1` would silently read
-the next column.
-
-**Acceptance:** the CSV default guard passes against the explicit arguments;
-a headerless CSV, Excel and ODS config without names for every column fails
-validation with a message saying how to name them, a CSV config naming only
-some columns fails the same way, and a headerless CSV with a full `schema`
-reads; a positional-rename `schema` fails with Haute's message; a declared
-schema in another order than the header reads each column by name; the Data
-Input page documents the behaviour.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_io.py::read_source`;
-`src/haute/_polars_io_registry.py`;
-`tests/test_polars_io_interface_contracts.py::TestNoBreakingDriftAcrossTheCap`;
-`docs/building-models/nodes/data-input.md`.
 
 ### PL2-12 — New Polars dtypes meet Haute's dtype vocabularies loudly or are normalised where they enter
 **Why:** Rendered dtype strings are identical across versions for every
@@ -335,7 +284,7 @@ dispatched lanes above are green against the same revision with their run
 links recorded; each gap above has a test; no test sorts away an order the
 specifications promise.
 
-**Dependencies:** PL2-02, PL2-07, PL2-12, PL2-13 and PL2-14.
+**Dependencies:** PL2-02, PL2-12, PL2-13 and PL2-14.
 
 **Evidence:** `tests/test_edge_join.py`; `tests/test_execute_lazy_contracts.py`;
 `tests/test_column_lineage.py`; `tests/test_standalone_nodes.py`;

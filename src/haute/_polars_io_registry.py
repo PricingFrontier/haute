@@ -309,6 +309,35 @@ _SINK_EXECUTION_OWNED: frozenset[str] = frozenset({"lazy", "engine", "optimizati
 
 _DTYPE_MAPPING_ARGUMENTS: frozenset[str] = frozenset({"schema", "schema_overrides", "hive_schema"})
 
+#: Arguments a format's reader takes from Haute rather than from Polars: removed before
+#: the call and applied after it (``_invoke_polars_input``). No spreadsheet engine Polars
+#: uses names a header-less sheet's columns, so Haute names them by position.
+HAUTE_READ_ARGUMENTS: Mapping[str, frozenset[str]] = {
+    "excel": frozenset({"new_columns"}),
+    "ods": frozenset({"new_columns"}),
+}
+#: The formats whose reader reads a header row (``has_header``).
+_HEADED_FORMATS: frozenset[str] = frozenset({"csv", "excel", "ods"})
+#: The CSV arguments that decide where a file's first line is and how it splits, so the
+#: header check reads the line the scan will.
+_CSV_DIALECT_ARGUMENTS: frozenset[str] = frozenset(
+    {
+        "separator",
+        "quote_char",
+        "comment_prefix",
+        "skip_rows",
+        "skip_lines",
+        "eol_char",
+        "encoding",
+        "decimal_comma",
+        "glob",
+    }
+)
+_UNNAMED_COLUMNS_REASON = (
+    "Polars 2 calls unnamed columns column_0, column_1, ... where Polars 1 began at "
+    "column_1, so a pipeline must not rely on those names."
+)
+
 
 def _declares_full_schema(arguments: Mapping[str, Any]) -> bool:
     """Whether validated arguments declare the whole schema, so no type inference runs.
@@ -735,6 +764,8 @@ def allowed_arguments(fmt: IoFormat, owner: str, callable_name: str) -> frozense
     names -= fmt.source_owned_args
     if callable_name.startswith("sink_"):
         names -= _SINK_EXECUTION_OWNED
+    if callable_name == fmt.reader:
+        names |= HAUTE_READ_ARGUMENTS.get(fmt.name, frozenset())
     return frozenset(names)
 
 
@@ -776,7 +807,71 @@ def validate_arguments(
             decoded[name] = parse_schema_mapping(value, argument=name)
         else:
             decoded[name] = value
+    if fmt.name in _HEADED_FORMATS and callable_name in {fmt.reader, fmt.scanner}:
+        _check_column_naming(fmt, decoded)
     return decoded
+
+
+def _check_column_naming(fmt: IoFormat, arguments: Mapping[str, Any]) -> None:
+    """Refuse a header-less input that leaves Polars to name its columns."""
+    names = arguments.get("new_columns")
+    if names is not None and (
+        not isinstance(names, list)
+        or not names
+        or not all(isinstance(name, str) and name for name in names)
+        or len(set(names)) != len(names)
+    ):
+        raise PolarsIoConfigError("new_columns must list each column's name once, in order.")
+    if arguments.get("has_header") is not False or names is not None:
+        return
+    if fmt.name == "csv" and _declares_full_schema(arguments):
+        return
+    how = "with new_columns, or a full schema" if fmt.name == "csv" else "with new_columns"
+    raise PolarsIoConfigError(
+        f"A {fmt.label} file without a header must name every column, in order, {how}: "
+        f"{_UNNAMED_COLUMNS_REASON}"
+    )
+
+
+def _check_csv_header(source: Any, arguments: Mapping[str, Any]) -> None:
+    """Refuse CSV names that do not fit the file's first line, before Polars reads it.
+
+    Reads only that line, with the configuration's dialect: a ``new_columns`` list
+    must name every field, and a headed file's ``schema`` must name exactly its
+    header's columns, which Polars 2 matches by name where Polars 1 renamed by
+    position.
+    """
+    names = arguments.get("new_columns")
+    schema = arguments.get("schema")
+    has_header = arguments.get("has_header", True) is not False
+    if names is None and (schema is None or not has_header):
+        return
+    dialect = {name: value for name, value in arguments.items() if name in _CSV_DIALECT_ARGUMENTS}
+    first_line = (
+        pl.scan_csv(source, has_header=has_header, infer_schema=False, **dialect)
+        .collect_schema()
+        .names()
+    )
+    if names is not None:
+        if len(names) != len(first_line):
+            raise PolarsIoConfigError(
+                f"The file has {len(first_line)} columns and new_columns names {len(names)}: "
+                "name every column, in order."
+            )
+        return
+    if schema is None:
+        return
+    declared = list(schema)
+    if sorted(declared) == sorted(first_line):
+        return
+    unknown = [name for name in declared if name not in first_line]
+    unnamed = [name for name in first_line if name not in declared]
+    raise PolarsIoConfigError(
+        f"The schema names {unknown or 'no column'} the header does not have, and leaves "
+        f"out {unnamed or 'no column'} it does: Polars 2 matches a CSV schema to the header "
+        "by name. To rename columns use new_columns; to set some columns' types use "
+        "schema_overrides."
+    )
 
 
 def missing_engines(engines: tuple[str, ...]) -> list[str]:
@@ -878,15 +973,32 @@ def _invoke_polars_input(
     _require_engines(fmt, fmt.read_engines, operation="read")
 
     source_args = _resolve_input_source(fmt, config)
+    haute_owned = (
+        HAUTE_READ_ARGUMENTS.get(fmt.name, frozenset())
+        if callable_name == fmt.reader
+        else frozenset()
+    )
+    polars_arguments = {name: value for name, value in arguments.items() if name not in haute_owned}
+    if fmt.name == "csv":
+        _check_csv_header(source_args[0], polars_arguments)
     fn = getattr(pl, callable_name)
     try:
-        result = fn(*source_args, **arguments)
+        result = fn(*source_args, **polars_arguments)
     except (ImportError, ModuleNotFoundError) as exc:
         raise PolarsIoConfigError(
             f"Reading format {fmt.name!r} needs an engine package this haute install "
             f"lacks ({exc}). Candidates: {list(fmt.read_engines)}."
         ) from exc
 
+    if isinstance(result, pl.DataFrame) and "new_columns" in haute_owned:
+        names = arguments.get("new_columns")
+        if names is not None:
+            if result.width != len(names):
+                raise PolarsIoConfigError(
+                    f"The {fmt.label} sheet has {result.width} columns and new_columns names "
+                    f"{len(names)}: name every column, in order."
+                )
+            result = result.rename(dict(zip(result.columns, names, strict=True)))
     if isinstance(result, pl.LazyFrame):
         return result
     if isinstance(result, pl.DataFrame):

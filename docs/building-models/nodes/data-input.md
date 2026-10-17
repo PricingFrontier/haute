@@ -66,6 +66,14 @@ Every provider's fields end with **ARGUMENTS**: extra keyword arguments for the 
 
 A **CONFIGURATION ERRORS** box at the top of the fields lists anything in the node's settings that the tab cannot use, such as "Select a valid format for this provider." or "Databricks batch_size must be a positive integer."
 
+#### Column names
+
+A file's columns take their names from its header row, or from **ARGUMENTS**, never from Polars:
+
+- **A file without a header row.** A CSV, Excel or ODS file with `has_header` set to `false` must name every column, in order, with `new_columns`, for example `["policy_id", "region", "premium"]`. A CSV can instead declare a full `schema`, whose names are given to the columns in order. Without either, the node reports "A CSV file without a header must name every column, in order, with new_columns, or a full schema". Polars would otherwise call the columns `column_0`, `column_1` and so on, and a pipeline that relied on those names would read the wrong column after an upgrade. A `new_columns` list must name every column the file has: one naming fewer or more is refused with both counts.
+- **A CSV `schema`.** The names in a `schema` are matched to the CSV's header by name, so you can list the columns in any order. A `schema` must name exactly the header's columns: to rename columns, use `new_columns`; to set the type of some columns, use `schema_overrides`, which may name any of them.
+- **Several files at once.** A path matching several CSV files takes its column types from the first ten files.
+
 ## The TRANSFORM tab
 
 See [Transform](transform.md#building-the-node-from-steps).

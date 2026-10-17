@@ -29,7 +29,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Name collisions](name-collisions.md) | Input-binding editors showing their name violations inline | `NAME-09` |
 | [Optimiser validation](optimiser-validation.md) | Per-point convergence traces from price_contour's frontier sweep; a calibrated solve-memory forecast in the Solve panel; the optimiser result workspace's open robustness and CSV questions | `OPT-PC04` |
 | [Pipeline config](pipeline-config.md) | Project context, typed configs, editor state, node specification | `PCFG-R04` |
-| [Polars 2](polars-2.md) | Moving to Polars 2.0: caches computed under Polars 1, CSV and spreadsheet reading, new dtypes, deploy parity, generated and teaching code, the operation registry and the tests; then the operator memory evidence, worker baselines and the price_contour boundary | `PL2-07` |
+| [Polars 2](polars-2.md) | Moving to Polars 2.0: caches computed under Polars 1, new dtypes, deploy parity, generated and teaching code, the operation registry and the tests; then the operator memory evidence, worker baselines and the price_contour boundary | `PL2-12` |
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
 | [Sandbox security](sandbox-security.md) | Every containment comparison through the one check | `SBX-R01` |
 | [Server API](server-api.md) | Domain errors, generated browser contract | `API-R02` |

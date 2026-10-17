@@ -710,6 +710,18 @@ is no eager dataframe or collect-then-write fallback.
   `haute._io.read_source()` for declared-dtype CSV scans, and the compression argument in
   `src/haute/_polars_utils.py` — carry no such protection and are held instead by
   `tests/test_polars_io_interface_contracts.py`'s `_LITERAL_KEYWORDS` inventory.
+- Header-less inputs and CSV schemas (`_polars_io_registry`). `validate_arguments`
+  refuses an input callable's arguments that set `has_header: false` without naming the
+  columns (`new_columns`, or a non-null `schema` for a CSV), and a `new_columns` that is
+  not a non-empty list of distinct non-empty names. Excel and ODS take `new_columns` as a
+  Haute-owned argument (`HAUTE_READ_ARGUMENTS`), published with the format's arguments:
+  `_invoke_polars_input` removes it before calling Polars and renames the sheet's columns
+  by position, refusing a list whose length is not the sheet's width. For a CSV,
+  `_invoke_polars_input` reads the file's first line with the configuration's dialect
+  arguments (`_CSV_DIALECT_ARGUMENTS`, `infer_schema=False`): a header-less file whose
+  `new_columns` length differs from that line's field count, and a headed file whose
+  `schema` names are not exactly its header's, are refused with `PolarsIoConfigError`
+  before Polars resolves the scan.
 - Argument *defaults* are Polars'. haute forwards what a node config sets and takes the
   installed Polars' behaviour for everything else, so a default that moves inside the
   specifier moves haute's results with it. That is reported by

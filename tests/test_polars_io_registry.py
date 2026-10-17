@@ -669,3 +669,140 @@ class TestSnapshotBuildReads:
             )
             == "admitted_eager"
         )
+
+
+class TestColumnsAreNamedByTheHeaderOrTheConfig:
+    """Polars 2 names unnamed columns column_0, ...; a Haute input never relies on them."""
+
+    @pytest.mark.parametrize(
+        ("config_format", "suffix", "how"),
+        [
+            ("csv", "csv", "with new_columns, or a full schema"),
+            ("excel", "xlsx", "with new_columns"),
+            ("ods", "ods", "with new_columns"),
+        ],
+    )
+    def test_a_headerless_input_without_names_is_refused(
+        self, config_format: str, suffix: str, how: str
+    ) -> None:
+        config = {
+            "inputType": "file",
+            "format": config_format,
+            "path": f"quotes.{suffix}",
+            "arguments": {"has_header": False},
+        }
+
+        with pytest.raises(PolarsIoConfigError, match=f"must name every column, in order, {how}:"):
+            validate_data_input_config(config)
+
+    @pytest.mark.parametrize("names", [[], ["id", "id"], ["id", ""], "id"])
+    def test_new_columns_must_name_each_column_once(self, names: object) -> None:
+        config = {
+            "inputType": "file",
+            "format": "csv",
+            "path": "quotes.csv",
+            "arguments": {"has_header": False, "new_columns": names},
+        }
+
+        with pytest.raises(PolarsIoConfigError, match="each column's name once, in order"):
+            validate_data_input_config(config)
+
+    def test_a_headerless_csv_reads_with_every_column_named(self, haute_scratch) -> None:
+        path = haute_scratch / "headerless.csv"
+        path.write_bytes(b"1,a,10\n2,b,20\n")
+
+        named = read_polars_input(
+            {
+                "format": "csv",
+                "path": str(path),
+                "arguments": {"has_header": False, "new_columns": ["id", "name", "amount"]},
+            }
+        ).collect()
+        typed = read_polars_input(
+            {
+                "format": "csv",
+                "path": str(path),
+                "arguments": {
+                    "has_header": False,
+                    "schema": {"id": "int64", "name": "str", "amount": "int64"},
+                },
+            }
+        ).collect()
+
+        assert named.columns == ["id", "name", "amount"]
+        assert typed.rows() == [(1, "a", 10), (2, "b", 20)]
+
+    def test_new_columns_naming_some_columns_is_refused_with_the_counts(
+        self, haute_scratch
+    ) -> None:
+        path = haute_scratch / "headerless.csv"
+        path.write_bytes(b"1,a,10\n2,b,20\n")
+
+        with pytest.raises(PolarsIoConfigError, match="has 3 columns and new_columns names 2"):
+            read_polars_input(
+                {
+                    "format": "csv",
+                    "path": str(path),
+                    "arguments": {"has_header": False, "new_columns": ["id", "name"]},
+                }
+            )
+
+    def test_a_schema_that_renames_by_position_is_refused(self, haute_scratch) -> None:
+        path = haute_scratch / "header.csv"
+        path.write_bytes(b"id,name,amount\n1,a,10\n")
+
+        with pytest.raises(
+            PolarsIoConfigError,
+            match=r"schema names \['x', 'y', 'z'\] the header does not have.*use new_columns.*"
+            r"use schema_overrides",
+        ):
+            read_polars_input(
+                {
+                    "format": "csv",
+                    "path": str(path),
+                    "arguments": {"schema": {"x": "int64", "y": "str", "z": "int64"}},
+                }
+            )
+
+    def test_a_schema_in_another_order_reads_each_column_by_name(self, haute_scratch) -> None:
+        path = haute_scratch / "header.csv"
+        path.write_bytes(b"id,name,amount\n1,a,10\n")
+
+        out = read_polars_input(
+            {
+                "format": "csv",
+                "path": str(path),
+                "arguments": {"schema": {"amount": "int64", "id": "int64", "name": "str"}},
+            }
+        ).collect()
+
+        assert out.to_dicts() == [{"amount": 10, "id": 1, "name": "a"}]
+
+    def test_haute_names_a_headerless_sheet(self, haute_scratch) -> None:
+        openpyxl = pytest.importorskip("openpyxl")
+        path = haute_scratch / "headerless.xlsx"
+        workbook = openpyxl.Workbook()
+        for row in ([1, "a"], [2, "b"]):
+            workbook.active.append(row)
+        workbook.save(path)
+
+        def read(names: list[str]) -> pl.DataFrame:
+            arguments = {"engine": "openpyxl", "has_header": False, "new_columns": names}
+            config = {"format": "excel", "path": str(path), "arguments": arguments}
+            return read_polars_input(config).collect()
+
+        assert read(["id", "name"]).to_dicts() == [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
+        with pytest.raises(
+            PolarsIoConfigError, match="sheet has 2 columns and new_columns names 3"
+        ):
+            read(["id", "name", "extra"])
+
+    def test_spreadsheets_publish_the_naming_argument(self) -> None:
+        formats = {
+            fmt["name"]: fmt
+            for group in registry_capabilities()["groups"]
+            for fmt in group["formats"]
+        }
+
+        for name in ("excel", "ods"):
+            assert "new_columns" in formats[name]["input"]["arguments"]["read"]
