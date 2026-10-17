@@ -2148,9 +2148,11 @@ function FlowEditor() {
       </div>
       )}
       </div>
+      {/* While the view first loads its cover stands in: React Flow shows its nodes
+          (inline visibility) through the hidden pipeline region. */}
       {!pipelineActive && (
         <ErrorBoundary name="WorkbenchView">
-          <Suspense fallback={null}>
+          <Suspense fallback={<div className="absolute inset-0" style={{ background: "var(--bg-base)" }} />}>
             <WorkbenchView
               onSave={saveProject}
               onSaveShortcut={requestSave}

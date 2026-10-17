@@ -154,7 +154,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // following its file, adding and resizing components by keyboard, Tables of outputs
 // alone, and the previews of several tables in one run) bring it to 1,681.0 KiB; 1,683 KiB
 // restores about 2 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1683
+// A Table's look set as a spreadsheet's (its text, header, lines, frame and each column's
+// own look, the panel's Table look and the form's validators for it, in the lazy workbench
+// chunks) brings it to 1,685.4 KiB; 1,687 KiB restores about 1.6 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1687
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

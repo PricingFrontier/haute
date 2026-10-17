@@ -31,6 +31,9 @@ export const BOX_CLASS = "focus-ring w-full rounded-md px-2.5 text-xs"
 export const GRID_CELL_CLASS =
   "w-full rounded-none border-0 bg-transparent px-2.5 text-xs outline-none hover:bg-[var(--accent-soft-whisper)] focus:bg-[var(--accent-soft-faint)] focus:shadow-[inset_0_0_0_1px_var(--accent-outline)]"
 
+/** How wide a Table's line or frame is at each weight, in pixels. */
+export const LINE_WIDTH: Record<TableOptions["grid_weight"], number> = { thin: 1, medium: 2, thick: 3 }
+
 /** A grid row's or a Collection box's height at each density: Haute's compact ones, or roomier ones. */
 export const ROW_HEIGHT: Record<TableOptions["density"], string> = { compact: "h-7", comfortable: "h-9" }
 

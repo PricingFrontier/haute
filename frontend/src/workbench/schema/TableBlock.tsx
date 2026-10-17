@@ -1,12 +1,15 @@
-/** A schema table's block: its name, role and rows, its problems, and its columns (specs/workbench). */
+/** A schema table's block: its name, role and rows, its problems, and its columns, dragged or moved (specs/workbench). */
 import { ChevronDown, ChevronRight, Lock, Trash2 } from "lucide-react"
+import { useRef, type KeyboardEvent } from "react"
 import type { FormSpec, SchemaTable } from "../../api/types"
 import { CommittedTextField, INPUT_STYLE, QuietAction } from "../../components/form"
-import useRefocusAfterMove from "../../hooks/useRefocusAfterMove"
+import useListReorder, { type RowDrag } from "../../hooks/useListReorder"
+import useRefocusAfterMove, { altArrowMove, type RefocusAfterMove } from "../../hooks/useRefocusAfterMove"
 import { confirmed } from "../../stores/useQuestionStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
-import { addSchemaColumn, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
+import { addSchemaColumn, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
 import { ColumnRow } from "./ColumnRow"
+import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
 import { IndexControl } from "./IndexControl"
 import { CHIP_CLASS, DETAILS_TITLE, type Fresh, HOVER_ONLY, currentForm, selectAll, usedBy } from "./schemaText"
@@ -24,6 +27,12 @@ const ROWS: ReadonlyArray<{ value: SchemaTable["rows"]; label: string; title: st
 interface TableBlockProps {
   form: FormSpec
   table: SchemaTable
+  /** Its place among the schema's tables. */
+  index: number
+  /** The tables' name fields, one focused again after Alt+arrows moves its table. */
+  refocus: RefocusAfterMove<HTMLInputElement>
+  /** Its part in dragging the tables into a new order; none for quote_details, which stays first. */
+  drag: RowDrag | undefined
   added: string | null
   setAdded: (id: string | null) => void
   details: string | null
@@ -33,8 +42,9 @@ interface TableBlockProps {
   problems: string[]
 }
 
-export function TableBlock({ form, table, added, setAdded, details, setDetails, collapsed, onToggleCollapsed, problems }: TableBlockProps) {
+export function TableBlock({ form, table, index, refocus: refocusTable, drag, added, setAdded, details, setDetails, collapsed, onToggleCollapsed, problems }: TableBlockProps) {
   const change = useWorkbenchFormStore((s) => s.change)
+  const block = useRef<HTMLElement>(null)
   const shown = fieldUses(form, table.id).length
   const tested = conditionUses(form, table.id).length
   const uses = shown + tested
@@ -45,6 +55,7 @@ export function TableBlock({ form, table, added, setAdded, details, setDetails, 
     change((f) => removeSchemaTable(f, table.id))
   }
   const refocus = useRefocusAfterMove<HTMLInputElement>()
+  const dragColumn = useListReorder((from, to) => change((f) => moveSchemaColumn(f, table.id, table.columns[from].id, to)))
   const fresh = (id: string): Fresh => ({
     autoFocus: added === id,
     onFocus: added === id ? selectAll : undefined,
@@ -54,20 +65,39 @@ export function TableBlock({ form, table, added, setAdded, details, setDetails, 
   // Haute's quote_details table keeps its structure.
   const locked = isQuoteDetails(table)
 
-  const insertAt = (index: number) => {
+  const insertAt = (at: number) => {
     const column = createSchemaColumn(currentForm(), table.id)
-    change((f) => addSchemaColumn(f, table.id, column, index))
+    change((f) => addSchemaColumn(f, table.id, column, at))
     setAdded(column.id)
+  }
+
+  // Alt+Up and Alt+Down in its name move the table; its name field takes the focus again in its new place.
+  const onNameKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (locked) return
+    const to = altArrowMove(e, "vertical", index, form.schema.tables.length)
+    if (to === null) return
+    refocusTable.moved(table.id)
+    change((f) => moveSchemaTable(f, index, to))
   }
 
   return (
     <section
+      ref={block}
       aria-label={`Table ${table.name}`}
       data-testid={`schema-table-${table.id}`}
+      onDragOver={drag?.onOver}
+      onDrop={drag?.onDrop}
+      data-drop-target={drag?.target ? "true" : undefined}
       className="rounded-md border"
-      style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
+      style={{
+        borderColor: "var(--border)",
+        background: "var(--bg-elevated)",
+        opacity: drag?.dragging ? 0.5 : 1,
+        boxShadow: drag?.target ? "0 -2px 0 0 var(--accent)" : undefined,
+      }}
     >
       <div className="group flex items-center gap-1 px-1 py-1">
+        <DragGrip drag={drag} image={block} />
         <IconButton
           icon={collapsed ? ChevronRight : ChevronDown}
           size={14}
@@ -78,10 +108,13 @@ export function TableBlock({ form, table, added, setAdded, details, setDetails, 
           style={{ color: "var(--text-muted)" }}
         />
         <CommittedTextField
+          ref={refocusTable.register(table.id)}
           aria-label="Table name"
+          aria-keyshortcuts={locked ? undefined : "Alt+ArrowUp Alt+ArrowDown"}
           value={table.name}
           onCommit={(name) => change((f) => updateSchemaTable(f, table.id, { name }))}
           {...fresh(table.id)}
+          onKeyDown={onNameKeyDown}
           readOnly={locked}
           title={locked ? DETAILS_TITLE : undefined}
           className="focus-ring min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1.5 py-0.5 font-mono font-semibold"
@@ -138,19 +171,20 @@ export function TableBlock({ form, table, added, setAdded, details, setDetails, 
       </div>
       {!collapsed && (
         <div className="flex flex-col gap-1 px-1.5 py-1.5" style={{ borderTop: "1px solid var(--border)" }}>
-          {table.columns.map((column, index) => (
+          {table.columns.map((column, at) => (
             <ColumnRow
               key={column.id}
               form={form}
               table={table}
               column={column}
-              index={index}
+              index={at}
               refocus={refocus}
               fresh={fresh(column.id)}
               open={details === column.id}
               onToggleDetails={() => setDetails(details === column.id ? null : column.id)}
-              onInsertAfter={() => insertAt(index + 1)}
+              onInsertAfter={() => insertAt(at + 1)}
               locked={locked}
+              drag={locked || column.index ? undefined : dragColumn(at)}
             />
           ))}
           {locked ? (

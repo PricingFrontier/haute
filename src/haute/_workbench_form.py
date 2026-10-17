@@ -55,6 +55,28 @@ TableGridlines = Literal["rows", "all", "none"]
 #: How a Table's header shows its labels: as written, or in capitals.
 TableHeader = Literal["caps", "plain"]
 
+#: Which way a Table's labels read: level, turned to read upwards or downwards, or their
+#: letters stacked one under another.
+HeaderOrientation = Literal["horizontal", "up", "down", "stacked"]
+
+#: How heavy a Table's lines or its frame are: 1, 2 or 3 pixels.
+LineWeight = Literal["thin", "medium", "thick"]
+
+#: How a Table's gridlines are drawn.
+LineStyle = Literal["solid", "dashed", "dotted"]
+
+#: Where a Table column's values and label sit across it: as its type puts them, numbers on
+#: the right, or as chosen.
+ColumnAlign = Literal["auto", "left", "center", "right"]
+
+#: The sizes a Table's text is in, in pixels.
+FontSize = Literal[10, 11, 12, 13, 14, 16, 18]
+
+#: How narrow and how wide a Table's column can be set, in pixels, as the view's properties
+#: panel takes them (``frontend/src/utils/workbenchForm.ts``).
+COLUMN_WIDTH_MIN = 24
+COLUMN_WIDTH_MAX = 1000
+
 #: Where a Collection's labels sit: above its boxes, or beside them.
 CollectionLabels = Literal["above", "beside"]
 
@@ -158,8 +180,31 @@ class ShowWhen(_Strict):
     conditions: list[Condition] = Field(default_factory=list)
 
 
+class ColumnLook(_Strict):
+    """How one of a Table's columns looks, its field by table and column id: each colour the
+    Table's own while None, its values and label placed as its type puts them while ``auto``,
+    and as wide as the grid makes it while ``width`` is None."""
+
+    table: str
+    column: str
+    #: Its label's fill and text, and its cells' fill and text.
+    header_color: Colour | None = None
+    header_font_color: Colour | None = None
+    cell_color: Colour | None = None
+    font_color: Colour | None = None
+    bold: bool = False
+    align: ColumnAlign = "auto"
+    width: int | None = Field(default=None, ge=COLUMN_WIDTH_MIN, le=COLUMN_WIDTH_MAX)
+
+
+#: A column look that changes nothing, which no Table holds: a column without a look of its
+#: own has none.
+_PLAIN_LOOK = ColumnLook(table="", column="").model_dump(exclude={"table", "column"})
+
+
 class TableInputWidget(_Placed):
-    """A Table: a grid showing columns of many-row schema tables."""
+    """A Table: a grid showing columns of many-row schema tables, each of its columns given
+    a look of its own looking as its ``column_looks`` entry says."""
 
     type: Literal["tableInput"]
     title: str = ""
@@ -180,6 +225,44 @@ class TableInputWidget(_Placed):
     frame: bool = True
     transposed: bool = False
     groups: bool = False
+    # Its text, its header, its lines and its frame, as a spreadsheet's are set: by default
+    # 12px text, its header's the same size, or a pixel smaller in capitals, bold, level and
+    # unwrapped, filled and coloured as the sheets' theme says, thin solid gridlines and a
+    # thin frame, coloured as the theme says.
+    font_size: FontSize = 12
+    header_font_size: FontSize | None = None
+    header_bold: bool = True
+    header_wrap: bool = False
+    header_orientation: HeaderOrientation = "horizontal"
+    header_color: Colour | None = None
+    header_font_color: Colour | None = None
+    grid_color: Colour | None = None
+    grid_weight: LineWeight = "thin"
+    grid_style: LineStyle = "solid"
+    frame_color: Colour | None = None
+    frame_weight: LineWeight = "thin"
+    #: The looks of the columns given one of their own, each a column it shows, in no set
+    #: order.
+    column_looks: list[ColumnLook] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _looks_at_its_columns(self) -> TableInputWidget:
+        shown = {(field.table, field.column) for field in self.fields}
+        seen: set[tuple[str, str]] = set()
+        for look in self.column_looks:
+            at = (look.table, look.column)
+            name = f"{look.table}.{look.column}"
+            if at not in shown:
+                raise ValueError(f"widget {self.id} has a look for {name}, which it does not show")
+            if at in seen:
+                raise ValueError(f"widget {self.id} has two looks for {name}")
+            seen.add(at)
+            if look.model_dump(exclude={"table", "column"}) == _PLAIN_LOOK:
+                raise ValueError(
+                    f"widget {self.id}'s look for {name} changes nothing: a column without a "
+                    "look of its own has none"
+                )
+        return self
 
 
 class CollectionWidget(_Placed):

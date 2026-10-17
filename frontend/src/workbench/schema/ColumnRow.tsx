@@ -1,14 +1,16 @@
-/** A schema column's row: its type, name and summary, moved, removed and opened for its details (specs/workbench). */
+/** A schema column's row: its type, name and summary, dragged or moved, removed and opened for its details (specs/workbench). */
 import { KeyRound, SlidersHorizontal, X } from "lucide-react"
-import { type KeyboardEvent } from "react"
+import { useRef, type KeyboardEvent } from "react"
 import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
 import { COMPACT_FIELD_CLASS, CommittedTextField, IconSelect, INPUT_STYLE } from "../../components/form"
+import type { RowDrag } from "../../hooks/useListReorder"
 import { altArrowMove, type RefocusAfterMove } from "../../hooks/useRefocusAfterMove"
 import { confirmed } from "../../stores/useQuestionStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { changeSchemaColumnType, conditionUses, fieldUses, moveSchemaColumn, QUOTE_DETAILS_MANAGED, removeSchemaColumn, updateSchemaColumn } from "../../utils/workbenchForm"
 import { COLUMN_TYPES, COLUMN_TYPE_OPTIONS } from "../columnTypes"
 import { ColumnDetails } from "./ColumnDetails"
+import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
 import { type Fresh, HOVER_ONLY, rulesSummary, usedBy } from "./schemaText"
 
@@ -25,10 +27,13 @@ interface ColumnRowProps {
   onInsertAfter: () => void
   /** In Haute's quote_details table: the column's name and type are fixed, and it stays. */
   locked: boolean
+  /** Its part in dragging the table's columns into a new order; none for the index or in quote_details, which stay. */
+  drag: RowDrag | undefined
 }
 
-export function ColumnRow({ form, table, column, index, refocus, fresh, open, onToggleDetails, onInsertAfter, locked }: ColumnRowProps) {
+export function ColumnRow({ form, table, column, index, refocus, fresh, open, onToggleDetails, onInsertAfter, locked, drag }: ColumnRowProps) {
   const change = useWorkbenchFormStore((s) => s.change)
+  const row = useRef<HTMLDivElement>(null)
   const shown = fieldUses(form, table.id, column.id).length
   const tested = conditionUses(form, table.id, column.id).length
   const uses = shown + tested
@@ -44,12 +49,13 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
   const summary = table.role === "input" ? rulesSummary(table, column) : ""
   const set = (patch: Partial<SchemaColumn>) => change((f) => updateSchemaColumn(f, table.id, column.id, patch))
 
-  // Enter adds the next column; Alt+Up and Alt+Down move this one.
+  // Enter in the last column's name adds the next column, and in any other only commits it;
+  // Alt+Up and Alt+Down move this one.
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (locked) return
     if (e.key === "Enter") {
       e.preventDefault()
-      onInsertAfter()
+      if (index === table.columns.length - 1) onInsertAfter()
       return
     }
     const to = altArrowMove(e, "vertical", index, table.columns.length)
@@ -61,8 +67,17 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
 
   const markerStyle = { background: "var(--chrome-hover)", border: "1px solid var(--border)" }
   return (
-    <div className="flex flex-col gap-1" data-testid={`schema-column-${column.id}`}>
+    <div
+      ref={row}
+      className="flex flex-col gap-1 rounded"
+      data-testid={`schema-column-${column.id}`}
+      onDragOver={drag?.onOver}
+      onDrop={drag?.onDrop}
+      data-drop-target={drag?.target ? "true" : undefined}
+      style={{ opacity: drag?.dragging ? 0.5 : 1, boxShadow: drag?.target ? "0 -2px 0 0 var(--accent)" : undefined }}
+    >
       <div className="group flex items-stretch gap-1 rounded">
+        <DragGrip drag={drag} image={row} />
         {column.index || locked ? (
           // The index is always an Integer; Haute's columns keep their types.
           <span

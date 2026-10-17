@@ -15,7 +15,7 @@ import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { previewBasis } from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { valuesBasis } from "../../utils/sheetValues"
-import { addSchemaColumn, addSchemaTable, BLANK_THEME, createWidget, shownFields, toggleField, updateSchemaColumn, updateWidget, type WidgetPatch } from "../../utils/workbenchForm"
+import { addSchemaColumn, addSchemaTable, BLANK_THEME, createWidget, setColumnLook, shownFields, toggleField, updateSchemaColumn, updateWidget, type WidgetPatch } from "../../utils/workbenchForm"
 import SheetCanvas from "../SheetCanvas"
 import { SheetValuesContext, useNewQuoteValues, useQuoteValues, useSampleValues } from "../useSheetValues"
 import WidgetBody from "../WidgetBody"
@@ -252,14 +252,15 @@ describe("WidgetBody", () => {
     const framed = renderBody("w_grid").container.firstElementChild as HTMLElement
     const header = () => screen.getAllByRole("row")[0]
     expect(header()).not.toHaveClass("uppercase")
-    expect(header()).toHaveClass("text-xs")
+    expect(header().style.fontSize).toBe("12px")
     expect(framed.style.border).toBe("1px solid var(--border)")
     cleanup()
 
     loadForm(updateWidget(sheetForm(), "w_grid", { header: "caps", frame: false }))
     const { container } = renderBody("w_grid")
     // The labels in capitals.
-    expect(header()).toHaveClass("uppercase", "text-[11px]")
+    expect(header()).toHaveClass("uppercase")
+    expect(header().style.fontSize).toBe("11px")
     // No border or background of its own: the grid sits on the sheet.
     const frame = container.firstElementChild as HTMLElement
     expect(frame.style.border).toBe("")
@@ -504,6 +505,144 @@ describe("WidgetBody", () => {
     expect(screen.getByTestId("priced-premiums:premiums.premium-1").style.background).toBe("var(--workbench-output-cell-bg)")
     expect(screen.getAllByRole("columnheader")[1].style.boxShadow).toBe("inset 0 -1px 0 var(--border-bright)")
     expect(screen.getAllByRole("rowgroup")[0].style.background).toBe("var(--bg-elevated)")
+  })
+
+  it("draws a Table's own look over the sheets' colours, its lines, its header, its text and its frame, and a column's own look over the Table's", () => {
+    const value = { table: "equipment", column: "equipment.value" }
+    let form = toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premiums.premium" })
+    form.sample = { equipment: [{ "equipment.item": "Crane", "equipment.value": "5" }] }
+    form.theme = { ...BLANK_THEME, border_color: "#D97706", font_color: "#2563EB", input_cell_color: "#DC2626" }
+    form = updateWidget(form, "w_grid", {
+      gridlines: "all",
+      grid_color: "#000000",
+      grid_weight: "thick",
+      grid_style: "dashed",
+      frame_color: "#9333EA",
+      frame_weight: "medium",
+      font_size: 14,
+      header_font_size: 16,
+      header_bold: false,
+      header_color: "#1E293B",
+      header_font_color: "#FFFFFF",
+    })
+    form = setColumnLook(form, "w_grid", value, {
+      header_color: "#DC2626",
+      header_font_color: "#000000",
+      cell_color: "#D1D5DB",
+      font_color: "#059669",
+      bold: true,
+      align: "center",
+      width: 120,
+    })
+    loadForm(form)
+    const { container } = renderBody("w_grid")
+
+    // Its frame in its own colour and weight, the rule under its title in its colour.
+    const root = container.firstElementChild as HTMLElement
+    expect(root.style.border).toBe("2px solid rgb(147, 51, 234)")
+    expect(screen.getByText("Equipment").style.borderBottom).toBe("1px solid rgb(147, 51, 234)")
+    // Its header strip in its fill, its labels in its font, at its size and weight, ruled
+    // under in its lines' colour and weight, solid whatever the gridlines' style.
+    expect(screen.getAllByRole("rowgroup")[0]).toHaveStyle({ background: "#1E293B" })
+    expect(screen.getAllByRole("row")[0]).toHaveStyle({ fontSize: "16px" })
+    const [, item, valueLabel, premium] = screen.getAllByRole("columnheader")
+    // Each label cell its own weight, as a header cell's own bold would win over its row's.
+    for (const label of [item, valueLabel, premium]) expect(label.style.fontWeight).toBe("400")
+    expect(item).toHaveStyle({ color: "#FFFFFF" })
+    expect(item.style.boxShadow).toBe("inset 0 -3px 0 #000000")
+    // A column's own label fill and font over the Table's, placed as it says, at its width.
+    expect(valueLabel).toHaveStyle({ background: "#DC2626", color: "#000000", textAlign: "center", width: "120px", minWidth: "120px", maxWidth: "120px" })
+    expect(valueLabel).not.toHaveClass("min-w-32")
+    // Its gridlines in its colour, weight and style; the line before an output solid.
+    const crane = screen.getByRole("textbox", { name: "Item row 1" })
+    expect(crane.closest("tr")?.style.borderBottom).toBe("3px dashed rgb(0, 0, 0)")
+    expect(valueLabel.style.borderLeft).toBe("3px dashed rgb(0, 0, 0)")
+    expect(premium.style.borderLeft).toBe("3px solid rgb(0, 0, 0)")
+    // Its values at its size: a plain column's in the theme's font and fill, the column's
+    // own in its fill, font, weight and place.
+    expect(crane).toHaveStyle({ fontSize: "14px", color: "#2563EB" })
+    expect(crane.closest("td")).toHaveStyle({ background: "#DC2626" })
+    const five = screen.getByRole("textbox", { name: "Value row 1" })
+    expect(five).toHaveStyle({ fontSize: "14px", color: "#059669", fontWeight: "600", textAlign: "center" })
+    expect(five.closest("td")).toHaveStyle({ background: "#D1D5DB", textAlign: "center" })
+    // As wide as its frame while a column takes the width the grid gives it.
+    expect(screen.getByRole("table")).toHaveClass("w-full")
+    cleanup()
+
+    // An output column's own fill over its shade.
+    loadForm(setColumnLook(form, "w_grid", { table: "premiums", column: "premiums.premium" }, { cell_color: "#FFFFFF", bold: true }))
+    renderBody("w_grid")
+    expect(screen.getByTestId("priced-premiums:premiums.premium-1")).toHaveStyle({ background: "#FFFFFF", fontWeight: "600", fontSize: "14px" })
+    cleanup()
+
+    // An index's numbers in its column's own font, which they take over their muted grey;
+    // a group's name in the header's weight, as its labels are.
+    const indexed = sheetForm()
+    indexed.schema.tables[1].columns.unshift(column("equipment.row", "row", { type: "int", index: true }))
+    indexed.schema.tables[1].columns[1].group = "Asset"
+    const index = { table: "equipment", column: "equipment.row" }
+    loadForm(updateWidget(setColumnLook(toggleField(indexed, "w_grid", index), "w_grid", index, { font_color: "#DC2626" }), "w_grid", { groups: true, header_bold: false }))
+    renderBody("w_grid")
+    expect(within(screen.getAllByRole("row")[2]).getAllByRole("cell")[3]).toHaveStyle({ color: "#DC2626" })
+    expect(within(screen.getAllByRole("row")[2]).getAllByRole("cell")[3]).toHaveTextContent("1")
+    expect(screen.getByRole("columnheader", { name: "Asset" }).style.fontWeight).toBe("400")
+  })
+
+  it("turns a Table's labels as its header says, wraps them, fits the grid to its columns' widths, and draws a column's look along its line transposed", () => {
+    const item = { table: "equipment", column: "equipment.item" }
+    const value = { table: "equipment", column: "equipment.value" }
+    const label = () => screen.getAllByRole("columnheader")[1]
+    const turned = () => within(label()).getByText("Item")
+    // Level by default, cut off across its column.
+    renderBody("w_grid")
+    expect(label()).toHaveClass("truncate", "min-w-32")
+    expect(turned()).toBe(label())
+    cleanup()
+
+    // Turned up, it reads upwards from the header's foot, centred across its column, with no least width.
+    loadForm(updateWidget(sheetForm(), "w_grid", { header_orientation: "up" }))
+    renderBody("w_grid")
+    expect(label()).toHaveClass("align-bottom")
+    expect(label()).not.toHaveClass("truncate")
+    expect(label()).not.toHaveClass("min-w-32")
+    expect(label()).toHaveStyle({ textAlign: "center" })
+    expect(turned()).toHaveStyle({ writingMode: "vertical-rl", transform: "rotate(180deg)", whiteSpace: "nowrap" })
+    cleanup()
+    // Down, and stacked, its letters upright one under another; wrapped, it starts a line beside past its length.
+    loadForm(updateWidget(sheetForm(), "w_grid", { header_orientation: "down" }))
+    renderBody("w_grid")
+    expect(turned().style.writingMode).toBe("vertical-rl")
+    expect(turned().style.transform).toBe("")
+    cleanup()
+    loadForm(updateWidget(sheetForm(), "w_grid", { header_orientation: "stacked", header_wrap: true }))
+    renderBody("w_grid")
+    expect(turned()).toHaveStyle({ writingMode: "vertical-rl", textOrientation: "upright", whiteSpace: "normal", maxHeight: "128px" })
+    cleanup()
+    // Level and wrapped, it wraps across its column rather than cutting off.
+    loadForm(updateWidget(sheetForm(), "w_grid", { header_wrap: true }))
+    renderBody("w_grid")
+    expect(label()).not.toHaveClass("truncate")
+    expect(label()).toHaveClass("break-words")
+    cleanup()
+
+    // Every column given a width: the grid is as wide as they are, not its frame.
+    loadForm(setColumnLook(setColumnLook(sheetForm(), "w_grid", item, { width: 80 }), "w_grid", value, { width: 100 }))
+    renderBody("w_grid")
+    expect(screen.getByRole("table")).toHaveClass("w-max")
+    cleanup()
+
+    // Transposed, a column's look is its line's: its label's fill and font, its cells' fill
+    // and place; it has no width, and its label turns as the header says.
+    let form = setColumnLook(sheetForm(), "w_grid", value, { header_color: "#DC2626", header_font_color: "#FFFFFF", cell_color: "#D1D5DB", align: "right", width: 100 })
+    form = updateWidget(form, "w_grid", { transposed: true, header_orientation: "up" })
+    loadForm(form)
+    renderBody("w_grid")
+    const line = screen.getAllByRole("rowheader")[1]
+    expect(line).toHaveStyle({ background: "#DC2626", color: "#FFFFFF", textAlign: "right" })
+    expect(within(line).getByText("Value")).toHaveStyle({ writingMode: "vertical-rl" })
+    const cell = screen.getByRole("textbox", { name: "Value row 1" }).closest("td") as HTMLElement
+    expect(cell).toHaveStyle({ background: "#D1D5DB", textAlign: "right" })
+    expect(cell.style.width).toBe("")
   })
 
   it("gives a checkbox's cell in a grid its row's height at either density", () => {

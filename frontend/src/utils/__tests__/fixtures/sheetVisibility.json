@@ -514,7 +514,20 @@
                   "header": "caps",
                   "frame": true,
                   "transposed": false,
-                  "groups": false
+                  "groups": false,
+                  "font_size": 12,
+                  "header_font_size": null,
+                  "header_bold": true,
+                  "header_wrap": false,
+                  "header_orientation": "horizontal",
+                  "header_color": null,
+                  "header_font_color": null,
+                  "grid_color": null,
+                  "grid_weight": "thin",
+                  "grid_style": "solid",
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": []
                 },
                 {
                   "id": "w_fleet",
@@ -847,7 +860,20 @@
                   "header": "caps",
                   "frame": true,
                   "transposed": false,
-                  "groups": false
+                  "groups": false,
+                  "font_size": 12,
+                  "header_font_size": null,
+                  "header_bold": true,
+                  "header_wrap": false,
+                  "header_orientation": "horizontal",
+                  "header_color": null,
+                  "header_font_color": null,
+                  "grid_color": null,
+                  "grid_weight": "thin",
+                  "grid_style": "solid",
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": []
                 },
                 {
                   "id": "w_out",

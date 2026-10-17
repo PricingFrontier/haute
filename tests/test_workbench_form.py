@@ -196,6 +196,35 @@ FORM: dict[str, Any] = {
                             "frame": False,
                             "transposed": True,
                             "groups": True,
+                            # Its text and its header's larger, its labels plain, wrapped,
+                            # turned upwards and coloured; its lines red, heavy and dashed;
+                            # its frame black and heavier still; and its limit's column
+                            # filled, bold, centred and a set width.
+                            "font_size": 14,
+                            "header_font_size": 16,
+                            "header_bold": False,
+                            "header_wrap": True,
+                            "header_orientation": "up",
+                            "header_color": "#1E293B",
+                            "header_font_color": "#FFFFFF",
+                            "grid_color": "#DC2626",
+                            "grid_weight": "medium",
+                            "grid_style": "dashed",
+                            "frame_color": "#000000",
+                            "frame_weight": "thick",
+                            "column_looks": [
+                                {
+                                    "table": "t_layers",
+                                    "column": "c_limit",
+                                    "header_color": "#2563EB",
+                                    "header_font_color": "#FFFFFF",
+                                    "cell_color": "#DBEAFE",
+                                    "font_color": "#000000",
+                                    "bold": True,
+                                    "align": "center",
+                                    "width": 120,
+                                }
+                            ],
                         },
                         {
                             "id": "w_limits",
@@ -420,6 +449,19 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         "frame",
         "transposed",
         "groups",
+        "font_size",
+        "header_font_size",
+        "header_bold",
+        "header_wrap",
+        "header_orientation",
+        "header_color",
+        "header_font_color",
+        "grid_color",
+        "grid_weight",
+        "grid_style",
+        "frame_color",
+        "frame_weight",
+        "column_looks",
     )
     collection_options = ("labels", "density", "frame", "spacers")
     chart_options = ("category", "chart_type", "orientation", "stacked", "legend", "data_labels")
@@ -466,6 +508,21 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         "frame": True,
         "transposed": False,
         "groups": False,
+        # 12px text, its header the same size, bold, level and unwrapped, in the theme's
+        # colours, as its lines and its frame are, thin and solid, and no column with a look.
+        "font_size": 12,
+        "header_font_size": None,
+        "header_bold": True,
+        "header_wrap": False,
+        "header_orientation": "horizontal",
+        "header_color": None,
+        "header_font_color": None,
+        "grid_color": None,
+        "grid_weight": "thin",
+        "grid_style": "solid",
+        "frame_color": None,
+        "frame_weight": "thin",
+        "column_looks": [],
     }
     # A Collection labelled above its boxes, comfortable and framed, with no spacers.
     boxes = widgets(written)[0]
@@ -526,6 +583,38 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         (lambda f: widgets(f)[0].update(labels="under"), "labels"),
         (lambda f: widgets(f)[0].update(density="roomy"), "density"),
         (lambda f: widgets(f)[1].update(header="bold"), "header"),
+        # A Table's text comes in set sizes, its labels turn three ways, and its lines and
+        # frame come in three weights and its gridlines in three styles.
+        (lambda f: widgets(f)[1].update(font_size=15), "font_size"),
+        (lambda f: widgets(f)[1].update(header_font_size=9), "header_font_size"),
+        (lambda f: widgets(f)[1].update(header_orientation="angled"), "header_orientation"),
+        (lambda f: widgets(f)[1].update(grid_weight="hairline"), "grid_weight"),
+        (lambda f: widgets(f)[1].update(grid_style="double"), "grid_style"),
+        (lambda f: widgets(f)[1].update(frame_weight=2), "frame_weight"),
+        (lambda f: widgets(f)[1].update(grid_color="#dc2626"), "grid_color"),
+        # Only a Table has them.
+        (lambda f: widgets(f)[0].update(grid_color="#DC2626"), "grid_color"),
+        (lambda f: widgets(f)[0].update(column_looks=[]), "column_looks"),
+        # A column's look is for a column the Table shows, one for each, and changes something.
+        (
+            lambda f: widgets(f)[1]["column_looks"][0].update(column="c_state"),
+            "has a look for t_layers.c_state, which it does not show",
+        ),
+        (
+            lambda f: widgets(f)[1]["column_looks"].append(dict(widgets(f)[1]["column_looks"][0])),
+            "has two looks for t_layers.c_limit",
+        ),
+        (
+            lambda f: widgets(f)[1].update(
+                column_looks=[{"table": "t_layers", "column": "c_limit", "align": "auto"}]
+            ),
+            "look for t_layers.c_limit changes nothing",
+        ),
+        (lambda f: widgets(f)[1]["column_looks"][0].update(width=23), "width"),
+        (lambda f: widgets(f)[1]["column_looks"][0].update(width=1001), "width"),
+        (lambda f: widgets(f)[1]["column_looks"][0].update(align="justify"), "align"),
+        (lambda f: widgets(f)[1]["column_looks"][0].update(cell_color="blue"), "cell_color"),
+        (lambda f: widgets(f)[1]["column_looks"][0].update(shadow=True), "shadow"),
         # A Collection's spacers are each the number of its fields before it, in order and
         # none past its last field; only a Collection has them.
         (lambda f: widgets(f)[0].update(spacers=[2, 1]), "w_policy's spacers are out of order"),

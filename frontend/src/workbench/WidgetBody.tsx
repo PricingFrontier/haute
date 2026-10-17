@@ -12,6 +12,7 @@ import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { BLANK_THEME, type ShownField, type Widget } from "../utils/workbenchForm"
 import ChartBody from "./ChartBody"
 import { FieldBoxes } from "./sheet/FieldBoxes"
+import { LINE_WIDTH } from "./sheet/fieldCells"
 import { FieldGrid } from "./sheet/FieldGrid"
 import { HeadingBody } from "./sheet/HeadingBody"
 import { sheetColours } from "./sheet/sheetColours"
@@ -22,13 +23,16 @@ export default function WidgetBody({ widget, fields }: { widget: Widget; fields:
   if (widget.type === "heading") return <HeadingBody widget={widget} colours={colours} />
   // A Table or a Collection without its frame sits on the sheet as its title and fields alone.
   const framed = widget.type === "chart" || widget.frame
+  // A Table's frame, and the rule under its title, in its own colour and weight while it sets them.
+  const frame = widget.type === "tableInput" ? (widget.frame_color ?? colours.frame) : colours.frame
+  const frameWidth = widget.type === "tableInput" ? LINE_WIDTH[widget.frame_weight] : 1
   return (
     <div
       className={`flex h-full flex-col overflow-hidden ${framed ? "rounded-lg" : ""}`}
-      style={framed ? { border: `1px solid ${colours.frame}`, background: colours.background } : undefined}
+      style={framed ? { border: `${frameWidth}px solid ${frame}`, background: colours.background } : undefined}
     >
       {widget.title && (
-        <div className="px-3 py-2 text-xs font-semibold" style={{ borderBottom: `1px solid ${colours.frame}`, color: colours.font ?? "var(--text-primary)" }}>
+        <div className="px-3 py-2 text-xs font-semibold" style={{ borderBottom: `1px solid ${frame}`, color: colours.font ?? "var(--text-primary)" }}>
           {widget.title}
         </div>
       )}
