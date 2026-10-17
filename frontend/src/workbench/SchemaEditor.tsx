@@ -1,7 +1,7 @@
 /**
  * The workbench's schema editor (specs/workbench): the form's tables of named, typed
  * columns, which are the pipeline's tables. Every text field commits on blur or Enter, so
- * an edit is one undo step; Enter in a column's name adds the next column. A table or a
+ * an edit is one undo step; Enter in the last column's name adds the next column. A table or a
  * column is dragged by its grip, or moved by Alt+Up and Alt+Down in its name, as the step
  * editor's cards move. Removing what a sheet shows asks first. Haute's quote_details table,
  * first, keeps its structure and its place: its columns' labels, groups and help, and the

@@ -49,12 +49,13 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
   const summary = table.role === "input" ? rulesSummary(table, column) : ""
   const set = (patch: Partial<SchemaColumn>) => change((f) => updateSchemaColumn(f, table.id, column.id, patch))
 
-  // Enter adds the next column; Alt+Up and Alt+Down move this one.
+  // Enter in the last column's name adds the next column, and in any other only commits it;
+  // Alt+Up and Alt+Down move this one.
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (locked) return
     if (e.key === "Enter") {
       e.preventDefault()
-      onInsertAfter()
+      if (index === table.columns.length - 1) onInsertAfter()
       return
     }
     const to = altArrowMove(e, "vertical", index, table.columns.length)

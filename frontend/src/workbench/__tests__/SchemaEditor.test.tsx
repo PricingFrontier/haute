@@ -251,19 +251,24 @@ describe("SchemaEditor", () => {
     expect(screen.queryByRole("button", { name: "Key: state" })).not.toBeInTheDocument()
   })
 
-  it("adds the next column on Enter in a column's name, and moves one with Alt+Down", () => {
+  it("adds the next column on Enter in the last column's name alone, and moves one with Alt+Up", () => {
     render(<SchemaEditor />)
-    const [state] = within(tableNamed("policy_details")).getAllByRole("textbox", { name: "Column name" })
+    const [state, exposure] = within(tableNamed("policy_details")).getAllByRole("textbox", { name: "Column name" })
 
+    // Enter in a column with others under it commits its name and adds nothing.
+    fireEvent.change(state, { target: { value: "region" } })
     fireEvent.keyDown(state, { key: "Enter" })
-    expect(columnNames("policy_details")).toEqual(["state", "column", "exposure"])
-    const added = within(tableNamed("policy_details")).getAllByRole("textbox", { name: "Column name" })[1]
+    expect(columnNames("policy_details")).toEqual(["region", "exposure"])
+
+    fireEvent.keyDown(exposure, { key: "Enter" })
+    expect(columnNames("policy_details")).toEqual(["region", "exposure", "column"])
+    const added = within(tableNamed("policy_details")).getAllByRole("textbox", { name: "Column name" })[2]
     expect(added).toBe(document.activeElement)
 
-    fireEvent.keyDown(added, { key: "ArrowDown", altKey: true })
-    expect(columnNames("policy_details")).toEqual(["state", "exposure", "column"])
+    fireEvent.keyDown(added, { key: "ArrowUp", altKey: true })
+    expect(columnNames("policy_details")).toEqual(["region", "column", "exposure"])
     // The name field keeps the focus in its new place.
-    expect(within(tableNamed("policy_details")).getAllByRole("textbox", { name: "Column name" })[2]).toBe(document.activeElement)
+    expect(within(tableNamed("policy_details")).getAllByRole("textbox", { name: "Column name" })[1]).toBe(document.activeElement)
   })
 
   it("moves a table with Alt+Up and Alt+Down in its name, keeping the focus, quote_details staying first", () => {

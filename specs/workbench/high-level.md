@@ -310,8 +310,8 @@ Out of scope:
   column's type drops the rules and the format the new type cannot have, and its default
   when it becomes or stops being True/false, or becomes a Date while it is not a day.
   Every text field
-  commits on blur or Enter, so an edit is one undo step; Enter in a column's name adds the
-  next column, a column is dragged by its grip within its table, or moved by Alt+Up and
+  commits on blur or Enter, so an edit is one undo step; Enter in the last column's name
+  adds the next column, and in any other only commits it, a column is dragged by its grip within its table, or moved by Alt+Up and
   Alt+Down in its name, a table likewise by the grip beside its name or Alt+Up and
   Alt+Down in it, and a new table's or column's name takes the focus. A many-row table can have an index: a column first in the table, `row_number`
   until renamed, an Integer whose type cannot change, numbering the rows from 1, which

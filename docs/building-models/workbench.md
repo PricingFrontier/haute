@@ -102,7 +102,8 @@ sample you type in Preview, and a quote made from another quote, keep their own 
 quote holding nothing but its defaults is not priced, marked or saved until something is
 typed, and a value typed equal to its default counts as the default.
 
-- Enter in a column's name adds the next column.
+- Enter in the last column's name adds the next column; in any other column's name it just
+  keeps what you typed.
 - Drag a column by the grip at its left, or press Alt+Up and Alt+Down in its name, to move
   it within its table. Drag a table by the grip beside its name, or press Alt+Up and
   Alt+Down in its name, to move the table. A grip shows while the pointer is over its row.
