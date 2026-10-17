@@ -279,23 +279,31 @@ therefore proves, from the cardinality analysis and the operation registry,
 that every operation between the request input and OUTPUT keeps exactly one row
 per request, in request order: row-local expressions, Haute's row-preserving
 nodes (Rating Step lookups, Model Score), and left joins driven by the request
-side, with a request-side order, whose other side is unique. Uniqueness is
-proven without Polars' `validate`, which on 1.44 and 2.0 alike sends a join
+side, with a request-side order, whose other side is unique. Uniqueness does
+not rest on Polars' `validate`, which on 1.44 and 2.0 alike sends a join
 through the streaming engine's in-memory join node, at 39% to 76% more peak
 memory from 1,000 requests against a ten-million-row lookup to forty million
 rows against 5,000. The other side is unique by construction (a Rating Step
-lookup, a group-by or `unique` on the join keys), or it is an input the
-deployment carries, whose keys Haute checks once, by a streaming duplicate
-check over the immutable generation it bundles, when the deployment is built.
-A `validate` the author declares is accepted as proof too, but the editor never
-adds one. Any other operation is refused with the node and the operation named:
-a filter, an inner, semi or anti join (which drop requests), a join whose other
-side is not proven unique (which can repeat one), a sort or a join with no order
-(which reorder), an explode or unpivot, and free code the analysis cannot
-prove. A count alone is not enough: requests `A, B` inner-joined to a lookup
-holding `A` twice give `A, A`, two rows in order, with B answered by A's row. A
-run-time check that the result has as many rows as the request stays as a
-backstop, failing loudly with both counts; a single-row request needs neither.
+lookup, or a group-by or `unique` on the join keys that the analysis follows
+to the join), or it is computed only from inputs the deployment carries. Then
+Haute evaluates that side's join keys once, when the deployment is built,
+through the pipeline's own code for that branch, a Data Input's post-load code
+included, over exactly the bytes the deployment ships (a snapshot's leased
+generation, or a direct Parquet input's bundled copy), with a streaming
+duplicate check. The check is bound to each artefact's content signature,
+which the build checks again when it copies the artefact, so a file that
+changes in between fails the build. A side derived from the request needs a
+structural proof or a declared `validate` of `"m:1"` or `"1:1"`, whose
+in-memory join the request bounds; `"1:m"` and `"m:m"` prove nothing about the
+other side, and the editor never adds a contract. Any other operation is
+refused with the node and the operation named: a filter, an inner, semi or
+anti join (which drop requests), a join whose other side is not proven unique
+(which can repeat one), a sort or a join with no order (which reorder), an
+explode or unpivot, and free code the analysis cannot prove. A count alone is
+not enough: requests `A, B` inner-joined to a lookup holding `A` twice give
+`A, A`, two rows in order, with B answered by A's row. A run-time check that
+the result has as many rows as the request stays as a backstop, failing loudly
+with both counts; a single-row request needs neither.
 The proof costs nothing per request. It tightens the contract: a pipeline that
 declines a quote by filtering it out is refused for multi-quote requests, so a
 decline becomes a flag column on the answer, stated on the deploy page.
@@ -318,13 +326,16 @@ failed on order pass without sorting; a saved join without `maintainOrder` is
 refused by name; the chunked writer's handling of ordered joins rests on a
 recorded measurement. Separately, a multi-quote deploy request through ordered
 left joins against a bundled lookup with unique keys, with no `validate`, is
-answered in request order; the same lookup with a duplicated key is refused
-when the deployment is built, naming the input and the key; deploy validation
+answered in request order. The deployment build refuses, naming the input and
+the key, the same lookup with a duplicated key, a lookup whose keys become
+duplicated only through its post-load code, and a direct Parquet lookup
+replaced between the check and its copy into the bundle. Deploy validation
 refuses, naming node and operation, a pipeline with a sort, an unordered join,
-a join whose other side is not proven unique, an inner join, a filter or an
+a join whose other side is not proven unique (including one whose only
+contract is `validate="1:m"` or `"m:m"`), an inner join, a filter or an
 unpivot between the request input and OUTPUT, including requests `A, B` against
 a lookup holding `A` twice, where a drop and a repeat leave the count
-unchanged; and a pipeline whose row count changes at run time despite the proof
+unchanged. A pipeline whose row count changes at run time despite the proof
 fails the request with both counts.
 
 **Dependencies:** PL2-01.
@@ -333,6 +344,7 @@ fails the request with both counts.
 `src/haute/_polars_steps.py::_Renderer`;
 `src/haute/pipeline.py::_collect_standalone_output`;
 `src/haute/deploy/_scorer.py::score_graph_lazy`;
+`src/haute/deploy/_bundler.py`;
 `src/haute/_output_assembler.py::render_output_document`;
 `src/haute/_chunked_writes.py::_join_within_memory_budget`;
 `src/haute/_polars_operations.py::POLARS_OPERATIONS`;

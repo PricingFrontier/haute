@@ -215,8 +215,8 @@ Parquet.
 With `POLARS_VERBOSE` set, both versions report the validated join running in
 the streaming engine's in-memory join node; a duplicated key fails with
 `ComputeError: join keys did not fulfill m:1 validation`. `PL2-04` therefore
-proves a deployed lookup unique once, when the deployment is built, rather than
-through `validate`.
+proves a deployed lookup's join keys unique once, when the deployment is built
+and over the bytes it ships, rather than through `validate`.
 
 | Full join, twelve million rows a side | Unordered | `maintain_order="left_right"` |
 |---|---|---|

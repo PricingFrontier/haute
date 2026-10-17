@@ -88,8 +88,8 @@ of the robust options, the one that uses least memory, then the fastest.
   proved to keep one row per request in request order (a filter, an inner
   join, a join whose other side is not proven unique, a sort, an unordered
   join, an unpivot), so a decline becomes a flag column, and a lookup the
-  deployment carries with a duplicated key is refused when the deployment is
-  built.
+  deployment carries whose join keys repeat, after its post-load code, is
+  refused when the deployment is built.
 - `PL2-06`: **Change types** parses text into dates with a required format; a
   numeric **is one of** filter fails naming its step when its column changes
   between integer, float and `Decimal`; and the step editor offers only the
