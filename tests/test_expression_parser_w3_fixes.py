@@ -225,8 +225,13 @@ def test_log_zero_is_negative_infinity() -> None:
 
 
 def test_log_and_sqrt_null_input_stays_null() -> None:
-    assert _eval_node('pl.col("a").log()', {"a": None}) is None
-    assert _eval_node('pl.col("a").sqrt()', {"a": None}) is None
+    """A null in a float column stays null. The trace passes the row in the dtypes the
+    pipeline gave it; Polars 2 refuses ``log`` on a column whose only value is a bare
+    ``None``, which has no numeric dtype."""
+    row = pl.DataFrame({"a": [None]}, schema={"a": pl.Float64})
+    for src in ('pl.col("a").log()', 'pl.col("a").sqrt()'):
+        code = f"df = df.with_columns(r={src})"
+        assert evaluate_expression(code, "r", {"a": None}, row=row).result_value is None
 
 
 # ---------------------------------------------------------------------------
