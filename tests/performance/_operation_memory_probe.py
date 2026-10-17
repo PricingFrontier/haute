@@ -83,10 +83,6 @@ EXPRESSION_PROBES = {
     "pct_change_expr": "pct_change",
 }
 
-#: Registered spellings that are the same operation as another registered name,
-#: so one measurement certifies both.
-ALIASES = {"groupby": "group_by", "melt": "unpivot"}
-
 #: Operations whose plan is two columns wide, and whose streaming ceiling is
 #: therefore a narrow control rather than the full-width passthrough.
 NARROW_OPERATIONS = ("interpolate",)

@@ -339,7 +339,6 @@ _LINEAGE_FRAME_METHODS = frozenset(
         "fill_null",
         "filter",
         "group_by",
-        "groupby",
         "head",
         "join",
         "limit",
@@ -372,22 +371,18 @@ _ROW_BOUND_SAFE_POLARS_CALLS = frozenset(
         "concat_arr",
         "concat_list",
         "concat_str",
-        "cum_fold",
-        "cum_reduce",
         "date",
         "date_ranges",
         "datetime",
         "datetime_ranges",
         "duration",
         "element",
-        "fold",
         "format",
         "from_epoch",
         "int_ranges",
         "len",
         "linear_spaces",
         "lit",
-        "reduce",
         "struct",
         "time",
         "time_ranges",
@@ -1053,7 +1048,7 @@ def _substitute_selectors(node: ast.AST, targets: Sequence[ast.AST]) -> ast.AST:
     return rebuild(node)
 
 
-_NAME_CHANGING_METHOD_NAMES = frozenset({"alias", "pipe"})
+_NAME_CHANGING_METHOD_NAMES = frozenset({"alias", "pipe", "pipe_with_dtype"})
 _NAME_CHANGING_NAMESPACE_NAMES = frozenset({"name", "struct"})
 
 
@@ -1984,7 +1979,7 @@ def _parse_call_sequence(
         # attribute calls.
         assert isinstance(func, ast.Attribute)
         method = func.attr
-        if method in {"group_by", "groupby"}:
+        if method == "group_by":
             if index + 1 >= len(calls):
                 return [], _ParseFailure("incomplete_group_by", method)
             aggregate = calls[index + 1]
@@ -3230,8 +3225,9 @@ def _is_polars_call(node: ast.AST, name: str) -> bool:
 
 
 # Expression methods and namespaces whose output name is not the receiver's:
-# ``pipe`` may alias, ``.name`` renames, and ``.struct`` emits field columns.
-_NAME_CHANGING_EXPRESSION_METHODS = frozenset({"pipe"})
+# ``pipe`` and ``pipe_with_dtype`` may alias, ``.name`` renames, and ``.struct``
+# emits field columns.
+_NAME_CHANGING_EXPRESSION_METHODS = frozenset({"pipe", "pipe_with_dtype"})
 _NAME_CHANGING_NAMESPACES = frozenset({"name", "struct"})
 
 

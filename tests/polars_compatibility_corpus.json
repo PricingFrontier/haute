@@ -1180,6 +1180,56 @@
       }
     },
     {
+      "cardinality": "row_expansion_unbounded",
+      "chunk": {
+        "blocking_operator": "list.eval",
+        "eligible": false,
+        "reason": "unsupported_namespace_method"
+      },
+      "class": "row_local",
+      "code": "df = df.with_columns(pl.col('l').list.eval(pl.struct(key=pl.element().cast(pl.String), value=pl.element())).cast(pl.Map(pl.String, pl.Int64)).map.len().alias('entries'))",
+      "expansion": "none",
+      "id": "map_len",
+      "lineage": "dynamic_with_columns",
+      "namespace": "map",
+      "operation": "len",
+      "policy": "row_local",
+      "receiver": "namespace",
+      "strategy": {
+        "rejected": "materialisation_estimate_unavailable"
+      },
+      "strategy_under_cap": {
+        "reason_code": "materialisation_estimate_unavailable_conservative",
+        "status": "warned",
+        "strategy": "full-width-conservative"
+      }
+    },
+    {
+      "cardinality": "row_expansion_unbounded",
+      "chunk": {
+        "blocking_operator": "ext.to",
+        "eligible": false,
+        "reason": "unsupported_namespace_method"
+      },
+      "class": "row_local",
+      "code": "df = df.with_columns(pl.col('extra').ext.to(pl.Extension('haute.corpus', pl.Int64)).ext.storage().alias('stored'))",
+      "expansion": "none",
+      "id": "ext_storage",
+      "lineage": "dynamic_with_columns",
+      "namespace": "ext",
+      "operation": "storage",
+      "policy": "row_local",
+      "receiver": "namespace",
+      "strategy": {
+        "rejected": "materialisation_estimate_unavailable"
+      },
+      "strategy_under_cap": {
+        "reason_code": "materialisation_estimate_unavailable_conservative",
+        "status": "warned",
+        "strategy": "full-width-conservative"
+      }
+    },
+    {
       "cardinality": "cardinality_proven",
       "chunk": {
         "eligible": true,

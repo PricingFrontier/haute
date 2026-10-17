@@ -1792,7 +1792,6 @@ def test_global_operation_memory_policies_match_the_registry(
     """
     from haute._polars_operations import measured_operation_names
     from tests.performance._operation_memory_probe import (
-        ALIASES,
         CONTROLS,
         OPERATIONS,
         WITNESS_PROBES,
@@ -1806,7 +1805,7 @@ def test_global_operation_memory_policies_match_the_registry(
         _registry_key(name)
         for name in OPERATIONS
         if name not in CONTROLS and name not in WITNESS_PROBES
-    } | {(OperationReceiver.FRAME, alias) for alias in ALIASES}
+    }
     measured_names = {
         (receiver, name)
         for receiver in (OperationReceiver.FRAME, OperationReceiver.EXPR)

@@ -38,14 +38,15 @@ node snapshots and the deploy schema cache sign the installed Polars version, an
 snapshot carried across versions is re-described from its own parts, or re-encoded when
 they hold a physical map column, never fetched again ([caching](../caching/low-level.md)).
 A served model pins the editor's exact Polars, refuses to load under another and runs
-under Haute's Polars settings ([deploy](../deploy/low-level.md)).
+under Haute's Polars settings ([deploy](../deploy/low-level.md)). The operation registry
+describes Polars 2, and a test compares it with the installed Polars, so the next upgrade
+reports its drift ([execution engine](../execution-engine/low-level.md)).
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | PL2-13 | Planned | P2 | Code Haute generates and teaches runs on Polars 2 without deprecations. |
-| PL2-14 | Planned | P2 | The operation registry and analysers describe Polars 2. |
 | PL2-15 | Planned | P2 | The test suite asserts behaviour rather than Polars 1 accidents. |
 | PL2-17 | Reverify | P2 | Every operator memory policy and RAM estimate rests on Polars 2 evidence. |
 | PL2-18 | Reverify | P3 | Worker caps start from a Polars 2 baseline. |
@@ -89,50 +90,6 @@ their golden outputs are unchanged.
 `src/haute/assistant/_data_check.py`;
 `src/haute/assistant/assets/authoring_guide.md`.
 
-### PL2-14 — The operation registry and analysers describe Polars 2
-**Why:** The registry classifies every Polars operation the analysers
-recognise, and Polars 2.0 changed that surface. It still lists operations 2.0
-removed (`melt`, `fetch`, `with_context`, `flatten`, `from_json`,
-`register_plugin`, `str.concat`), harmless because the registry classifies
-source text, but stale. New operations are unregistered and fail closed
-(`bin_intervals`, `bin_quantiles`, `bin_ranks`, `erf`, `erfc`,
-`approx_quantile`, `struct.eval`, `list.to_map`, the `map` namespace,
-`cs.map()`), except one: `pipe_with_dtype(fn)` is reported `cardinality_proven`
-although its callback can expand rows (probed: two rows became five), where
-`pipe(fn)` is correctly unbounded, so a materialisation estimate can be
-admitted on a row bound that does not hold. The `map` and `ext` namespaces are
-not in the namespace set, so `pl.col(m).map.len()` is read as the frame-level
-`len`. No test compares the registry with the installed Polars.
-
-**Plan:** Register `pipe_with_dtype`, as an expression method and a `pl`
-function, as `pipe` is (opaque, unbounded expansion, name-changing); add `map`
-and `ext` to the namespace set with their methods as row-local namespace
-entries without a chunk proof; register `bin_intervals`, `erf` and `erfc` as
-row-local and `bin_quantiles`, `bin_ranks` and `approx_quantile` as fan-in;
-remove the entries 2.0 removed with their test pins; and add a test that every
-registered operation exists on the installed Polars, with a reviewed list of
-public names deliberately left unregistered, so the next upgrade reports its
-drift. Polars 2's `Expr.meta.is_row_separable()` and `is_length_preserving()`
-discriminate as the registry does (`cum_sum`, `shift`, `rank`, `over` and a
-format-less `str.to_date` preserve length but are not row-separable;
-`explode` is the reverse), so the same test asserts that every entry the
-registry calls row-local builds an expression Polars calls row-separable, and
-no fan-in or window entry does: an oracle for drift in Polars' own semantics,
-not a replacement for classifying source text. Measurement-backed policies for
-the new entries come from `PL2-17`.
-
-**Acceptance:** a `pipe_with_dtype` whose callback explodes reports its
-cardinality unavailable; `map.len()` is classified in its namespace; the
-live-surface test passes on Polars 2 and fails when an entry names a missing
-operation.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_polars_operations.py::POLARS_OPERATIONS`;
-`src/haute/_polars_operations.py::EXPRESSION_NAMESPACE_NAMES`;
-`src/haute/_column_lineage.py::_expression_has_unbounded_row_effect`;
-`tests/test_polars_operations.py`.
-
 ### PL2-15 — The test suite asserts behaviour rather than Polars 1 accidents
 **Why:** Most of the bounded runs' failures are the packages above, but some
 tests encode an accident of 1.44 rather than a promise: an order no contract
@@ -161,7 +118,7 @@ dispatched lanes above are green against the same revision with their run
 links recorded; each gap above has a test; no test sorts away an order the
 specifications promise.
 
-**Dependencies:** PL2-13 and PL2-14.
+**Dependencies:** PL2-13.
 
 **Evidence:** `tests/test_edge_join.py`; `tests/test_execute_lazy_contracts.py`;
 `tests/test_column_lineage.py`; `tests/test_standalone_nodes.py`;
@@ -198,7 +155,7 @@ by its many-to-many product asks the author to declare such a contract
 with spilling off as `src/haute/_polars_environment.py` sets it, carried into each probe's own
 subprocess environment so a spill cannot hide a peak, and record each
 operator's factor and its streaming control in the registry, including the
-operations `PL2-14` registers; change a policy only where the new measurement
+operations registered for Polars 2 (`bin_quantiles`, `bin_ranks`, `approx_quantile`); change a policy only where the new measurement
 crosses its rule, both ways. Measure a join with a `validate` contract the same
 way, charge it in the RAM estimate as the materialisation of both inputs it
 is, and make the estimate's advice name that cost beside Haute's own
