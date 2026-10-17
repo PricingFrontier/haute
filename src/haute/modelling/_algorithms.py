@@ -14,6 +14,7 @@ import polars as pl
 
 from haute._host_memory import available_ram_bytes
 from haute._logging import get_logger
+from haute._polars_dtypes import is_string_or_categorical
 from haute._polars_utils import _malloc_trim
 from haute._process_memory import current_process_rss_bytes
 from haute.errors import HauteValidationError
@@ -653,9 +654,7 @@ class CatBoostAlgorithm(BaseAlgorithm):
         from haute._mlflow_io import _prepare_predict_frame
 
         selected = df.select(features)
-        cat_cols = frozenset(
-            c for c in features if selected[c].dtype in (pl.Utf8, pl.Categorical, pl.String)
-        )
+        cat_cols = frozenset(c for c in features if is_string_or_categorical(selected[c].dtype))
         x_data: Any = _prepare_predict_frame(
             selected,
             features,

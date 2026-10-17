@@ -100,6 +100,19 @@ hit under an unchanged version is unaffected.
 `src/haute/deploy/_schema.py::deploy_schema_cache_fingerprint`.
 
 ### PL2-12 — New Polars dtypes meet Haute's dtype vocabularies loudly or are normalised where they enter
+**Status:** part 1 of 2 delivered on 17 October 2026: category pools are read,
+written and detected by base type (a `Categorical("lexical")` feature trains as
+categorical, and a rating descriptor of any pool is `{"kind": "Categorical"}`);
+the codec round-trips every dtype class Polars 2 exports or refuses it (`Map`,
+`Extension`), tested over all of them; a column holding a 128-bit integer is
+refused with the cast message by the training job and the train route (before
+anything is written, because pyarrow cannot open a Parquet file that holds
+one), by the predict frame, by a deploy's signature and by deploy scoring's
+contract check; the `Decimal` widening is stated in the io-layer specification.
+Part 2, map columns on every path, remains. Found while delivering part 1, and
+left for a decision: a bounded Parquet write and the pyarrow metadata reads (the
+files route, the optimiser's solver input, RAM estimates, the source cache) fail
+on a 128-bit integer column with pyarrow's own error rather than Haute's.
 **Why:** Rendered dtype strings are identical across versions for every
 dtype 1.44 produced, so recorded contracts and schemas still compare. What
 changes is which dtype a pipeline produces:

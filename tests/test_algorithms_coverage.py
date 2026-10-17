@@ -1071,12 +1071,15 @@ class TestDeriveFeaturesCoverage:
                 "y": [1],
                 "str_col": pl.Series(["a"], dtype=pl.String),
                 "cat_col": pl.Series(["b"]).cast(pl.Categorical),
+                # Polars 2 makes 1.x's ordering spelling a named category pool.
+                "lexical_col": pl.Series(["c"]).cast(pl.Categorical("lexical")),
                 "num_col": [1.0],
             }
         )
         features, cat_features = job._derive_features(df)
         assert "str_col" in cat_features
         assert "cat_col" in cat_features
+        assert "lexical_col" in cat_features
         assert "num_col" not in cat_features
 
 
@@ -2306,3 +2309,87 @@ class TestGLMEmptyFeaturesAfterNarrowing:
         )
         with pytest.raises(ValueError, match="not found in training data"):
             job.run()
+
+
+# ---------------------------------------------------------------------------
+# Polars 2 dtypes at the training boundary
+# ---------------------------------------------------------------------------
+
+
+class TestPolars2DtypesInTraining:
+    @staticmethod
+    def _frame() -> pl.DataFrame:
+        rng = np.random.RandomState(7)
+        n = 60
+        return pl.DataFrame(
+            {
+                "region": rng.choice(["north", "south", "east"], n).tolist(),
+                "age": rng.randint(18, 80, n),
+                "y": rng.randn(n),
+            }
+        ).with_columns(pl.col("region").cast(pl.Categorical("lexical")))
+
+    def test_a_pooled_categorical_feature_trains_as_categorical(self, tmp_path, monkeypatch):
+        """``Categorical("lexical")`` is a named pool under Polars 2: it trains
+        as a categorical feature and its contract name is String."""
+        from haute.modelling._training_job import TrainingJob
+
+        monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
+        data_path = tmp_path / "lexical.parquet"
+        self._frame().write_parquet(data_path)
+        assert pl.read_parquet_schema(data_path)["region"] == pl.Categorical("lexical")
+
+        prepared = TrainingJob(name="lexical", data=str(data_path), target="y")._prepare_data(
+            lambda _msg, _frac: None
+        )
+        assert prepared.cat_features == ["region"]
+        assert prepared.feature_dtypes["region"] == "String"
+
+        job = TrainingJob(
+            name="lexical",
+            data=self._frame(),
+            target="y",
+            algorithm="catboost",
+            params=_fast_training_params(),
+            output_dir=str(tmp_path / "out"),
+        )
+        result = job.run()
+        assert result.train_rows > 0
+
+    @pytest.mark.parametrize("source", ["frame", "lazy", "parquet"])
+    def test_a_128_bit_column_is_refused_before_anything_is_written(self, tmp_path, source):
+        """pyarrow cannot open a Parquet file that holds a 128-bit integer and
+        ``to_numpy`` panics on one, so the job names the column first, whatever
+        its role: here an excluded one."""
+        from haute.modelling._training_job import TrainingJob
+
+        frame = self._frame().with_columns(
+            policy_key=pl.col("age").cast(pl.Int64) + pl.lit(1, dtype=pl.UInt64)
+        )
+        assert frame.schema["policy_key"] == pl.Int128
+        data: object = frame
+        if source == "lazy":
+            data = frame.lazy()
+        elif source == "parquet":
+            data_path = tmp_path / "wide.parquet"
+            frame.write_parquet(data_path)
+            data = str(data_path)
+        written_before = set(tmp_path.iterdir())
+
+        job = TrainingJob(
+            name="wide", data=data, target="y", exclude=["policy_key"], output_dir=str(tmp_path)
+        )
+        with pytest.raises(ValueError, match="Column 'policy_key' is Int128") as exc_info:
+            job._prepare_data(lambda _msg, _frac: None)
+
+        assert "cast it upstream to Int64" in str(exc_info.value)
+        assert set(tmp_path.iterdir()) == written_before
+
+    def test_a_nested_128_bit_column_is_refused(self):
+        from haute.modelling._training_job import TrainingJob
+
+        frame = self._frame().with_columns(keys=pl.concat_list(pl.lit(1, dtype=pl.Int128)))
+        job = TrainingJob(name="wide", data=frame, target="y")
+
+        with pytest.raises(ValueError, match="Column 'keys' is List\\(Int128\\), which holds"):
+            job._prepare_data(lambda _msg, _frac: None)

@@ -28,6 +28,7 @@ from haute._data_points import (
 )
 from haute._execution_context import ExecutionCancellationToken, ExecutionContext
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
+from haute._polars_dtypes import is_string_or_categorical
 from haute._polars_utils import cancellable_streaming_collect
 from haute._rating import _rating_key_expr
 from haute.routes._node_data_service import NodeDataService, node_data_project_root
@@ -74,7 +75,7 @@ def _is_string_like(dtype: pl.DataType) -> bool:
     The same kinds the preview path offers today: plain strings, and the two
     dictionary-backed forms of them.
     """
-    return dtype == pl.String or dtype == pl.Categorical or isinstance(dtype, pl.Enum)
+    return is_string_or_categorical(dtype) or isinstance(dtype, pl.Enum)
 
 
 def _requested_columns(columns: list[str]) -> tuple[str, ...]:

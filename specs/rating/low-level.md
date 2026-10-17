@@ -48,7 +48,9 @@
   `Categorical`, `Enum`, `Decimal`, `Date`, `Datetime`, `Time`, `Duration`,
   or `Null`. Datetime also stores `timeUnit` and nullable `timeZone`;
   Duration stores `timeUnit`; Decimal stores nullable `precision` and integer
-  `scale`; Enum stores its ordered string `categories`.
+  `scale`; Enum stores its ordered string `categories`. A factor is looked up
+  by its text, so a categorical of any category pool is `{"kind": "Categorical"}`;
+  a `Map` or `Extension` dtype is an unsupported factor dtype.
   Optimiser artifacts store `factor_dtypes[table]` as an ordered list of
   `{"column": name, "dtype": descriptor}` records.
 - Rating sidecar invariant: canonical row arrays survive JSON encode/decode and

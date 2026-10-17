@@ -19,7 +19,12 @@ import polars as pl
 
 from haute._execution_context import ExecutionCancelledError, ExecutionContext
 from haute._logging import get_logger
-from haute._polars_dtypes import contract_dtype_name
+from haute._polars_dtypes import (
+    contract_dtype_name,
+    is_string_or_categorical,
+    wide_integer_column,
+    wide_integer_message,
+)
 from haute._polars_utils import bounded_collect_batches, streaming_collect
 from haute.errors import HauteError, HauteValidationError
 from haute.modelling._algorithms import (
@@ -138,6 +143,17 @@ def tuning_artifact_filenames(model_name: str) -> dict[str, str]:
         "trials": f"{model_name}.tuning-trials.json",
         "report": f"{model_name}.tuning-report.json",
     }
+
+
+def _refuse_wide_integers(schema: Mapping[str, pl.DataType]) -> None:
+    """Refuse a column holding a 128-bit integer before the job writes or converts it.
+
+    pyarrow cannot open a Parquet file that holds one and ``to_numpy`` panics on
+    one, so the job reads its input's schema first and names the column.
+    """
+    wide = wide_integer_column(schema)
+    if wide is not None:
+        raise HauteValidationError(wide_integer_message(*wide))
 
 
 def _remove_temp_parquet(path: str | None, *, context: str) -> bool:
@@ -2096,6 +2112,7 @@ class TrainingJob:
             # Route already sunk the LazyFrame to disk -- no collect needed
             data_path = self._data
             self._data = None
+            _refuse_wide_integers(pl.scan_parquet(data_path).collect_schema())
             _mem_checkpoint(f"using on-disk parquet: {data_path}")
         else:
             # DataFrame or LazyFrame: collect, write to temp parquet, free
@@ -2244,18 +2261,20 @@ class TrainingJob:
             features, cat_features = self._derive_features(schema_df)
             # Snapshot dtypes before we drop the schema frame — downstream
             # consumers (MLflow signature, feature contract) need them.
-            feature_dtypes = {f: contract_dtype_name(schema_df[f].dtype) for f in features}
+            feature_dtypes = {
+                f: contract_dtype_name(schema_df[f].dtype, column=f) for f in features
+            }
             categorical_levels = self._categorical_levels_for_contract(
                 features,
                 cat_features,
             )
             target_dtype = (
-                contract_dtype_name(schema_df[self.target].dtype)
+                contract_dtype_name(schema_df[self.target].dtype, column=self.target)
                 if self.target in schema_df.columns
                 else ""
             )
             offset_dtype = (
-                contract_dtype_name(schema_df[self.offset].dtype)
+                contract_dtype_name(schema_df[self.offset].dtype, column=self.offset)
                 if self.offset and self.offset in schema_df.columns
                 else ""
             )
@@ -3100,8 +3119,10 @@ class TrainingJob:
     ) -> pl.DataFrame:
         """Load data from path or use directly if already a DataFrame."""
         if isinstance(self._data, pl.DataFrame):
+            _refuse_wide_integers(self._data.schema)
             return self._data
         if isinstance(self._data, pl.LazyFrame):
+            _refuse_wide_integers(self._data.collect_schema())
             return _training_streaming_collect(
                 self._data,
                 stage_name="training_input_materialise",
@@ -3114,8 +3135,10 @@ class TrainingJob:
         path = Path(self._data)
         if not path.exists():
             raise FileNotFoundError(f"Data file not found: {path}")
+        source = read_source(str(path))
+        _refuse_wide_integers(source.collect_schema())
         return _training_streaming_collect(
-            read_source(str(path)),
+            source,
             stage_name="training_source_materialise",
             execution_context=execution_context,
         )
@@ -3162,9 +3185,7 @@ class TrainingJob:
                 )
             features = list(self.feature_columns)
             cat_features = [
-                column
-                for column in features
-                if df[column].dtype in (pl.Utf8, pl.Categorical, pl.String)
+                column for column in features if is_string_or_categorical(df[column].dtype)
             ]
             return features, cat_features
 
@@ -3192,8 +3213,7 @@ class TrainingJob:
         # Detect categorical features from Polars dtype
         cat_features = []
         for col in features:
-            dtype = df[col].dtype
-            if dtype in (pl.Utf8, pl.Categorical, pl.String):
+            if is_string_or_categorical(df[col].dtype):
                 cat_features.append(col)
 
         return features, cat_features

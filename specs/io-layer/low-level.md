@@ -14,7 +14,7 @@
 | `src/haute/_node_snapshots.py` | Node-output snapshots in the shared store: slot and signature identity, class mappings, slot index, column sets and dependencies, cross-process publication and lease locks, lease markers, retention, clear, and pin; also the per-owner inventory (`inventory`, `CacheInventory`, `CacheOwnerUsage`) the cache endpoints serve. |
 | `src/haute/_polars_io_schema.py` | Cached index over the committed Polars callable schema, live introspection of the installed Polars, and the intersection of the two. |
 | `src/haute/_polars_io_arguments.json` | Generated Polars callable signature data checked against the pinned Polars version. |
-| `src/haute/_polars_dtypes.py` | The one dtype vocabulary. `parse_dtype`/`dtype_to_spec` are the struct-capable JSON codec used by registry schema arguments, declared API-input source dtypes and, with renamed keys, rating descriptors; a name it does not define is rejected, never looked up as an arbitrary Polars attribute. Named coarser views serve the consumers that need one: `contract_dtype_name` (a model's feature contract, shared by training and deploy scoring), `contract_mlflow_type_name` (that contract's MLflow projection) and `rendered_dtype_mlflow_type_name` (the MLflow type of a rendered Polars dtype, as a deploy manifest records it). `parse_rendered_dtype` rebuilds a dtype from polars' own rendering (`str(dtype)`, as a preview reports a column's type) by reading it as a Python expression tree whose names must be Polars dtypes and whose arguments are literals, lists, tuples, dicts or nested dtypes; it never evaluates the text. |
+| `src/haute/_polars_dtypes.py` | The one dtype vocabulary. `parse_dtype`/`dtype_to_spec` are the struct-capable JSON codec used by registry schema arguments, declared API-input source dtypes and, with renamed keys, rating descriptors; a name it does not define is rejected, never looked up as an arbitrary Polars attribute. Named coarser views serve the consumers that need one: `contract_dtype_name` (a model's feature contract, shared by training and deploy scoring), `contract_mlflow_type_name` (that contract's MLflow projection) and `rendered_dtype_mlflow_type_name` (the MLflow type of a rendered Polars dtype, as a deploy manifest records it). `parse_rendered_dtype` rebuilds a dtype from polars' own rendering (`str(dtype)`, as a preview reports a column's type) by reading it as a Python expression tree whose names must be Polars dtypes and whose arguments are literals, lists, tuples, dicts or nested dtypes; it never evaluates the text. `is_string_or_categorical` tests for text by base type, and `WIDE_INTEGER_DTYPES`, `holds_wide_integer`, `wide_integer_column` and `wide_integer_message` find and refuse a 128-bit integer; *Polars 2 dtypes* under Edge cases and invariants gives the rules. |
 | `src/haute/_polars_utils.py` | Shared context-aware automatic/streaming collection, bounded/atomic sink, Parquet metadata, chunk-size scope, and allocator trim helpers. |
 | `src/haute/_file_ops.py` | The one atomic-write primitive (`atomic_path`) and the byte/text writers built on it, used for pointer and metadata publication and, through `_polars_utils.atomic_write`, for every Parquet/CSV write-then-rename; `publish_staged_file` publishes a caller's staging file, replacing the target or only while none exists. |
 | `src/haute/_path_resolution.py` | Shared runtime path containment/resolution owned by [sandbox-security](../sandbox-security/low-level.md) and consumed by I/O. |
@@ -729,6 +729,34 @@ is no eager dataframe or collect-then-write fallback.
   not set would be a promise of result-stability across the specifier that haute has never
   made.
 
+### Polars 2 dtypes
+
+- Polars 2 names a categorical's category pool in its dtype: `Categorical("lexical")`,
+  1.x's ordering spelling, makes a pool called `lexical`, and a pooled categorical is not
+  equal to `pl.Categorical`. The codec writes the default pool as
+  `{"type": "Categorical"}` and any other as
+  `{"type": "Categorical", "categories": {"name": ..., "namespace": ..., "physical": ...}}`;
+  `parse_rendered_dtype` reads the `Categorical(Categories(...))` rendering; and every
+  check for a categorical tests the base type, so a pooled categorical is text wherever a
+  categorical is.
+- A `Map` or `Extension` column has no spec, and `dtype_to_spec` refuses one: Haute reads
+  a map as a list of key-value structs and an unknown extension as its storage type before
+  a pipeline sees it.
+- `Int128` and `UInt128`, which Polars 2 produces from `Int64` or `Int32` combined with
+  `UInt64`, have no model, MLflow or Arrow form: `to_numpy` panics on one (a
+  `BaseException` that escapes `except Exception`), and pyarrow cannot open a Parquet file
+  that holds one. The consumers that convert one refuse it by name with
+  `wide_integer_message`, which gives the cast that fixes it (`Int64`, or `Float64` if the
+  values can exceed it): the feature contract (`contract_dtype_name` refuses one rather
+  than recording it as `Int64`), the training job and the train route before they write or
+  convert anything, the predict frame and a deploy's MLflow signature. Elsewhere the column
+  stays a Polars column: a preview, a CSV or IPC write and a Parquet write by Polars keep
+  it, while a path that writes or reads Parquet through pyarrow (a bounded Parquet write, a
+  file's metadata) fails on it with pyarrow's own error.
+- Under Polars 2, `round`, `floor`, `ceil` and `sign` widen a `Decimal`'s precision by
+  one, so the recorded dtype of such a column differs from the one Polars 1 recorded for
+  the same pipeline.
+
 ## Error handling
 
 `PolarsIoConfigError`, `DatabaseConfigError`, and `UnsupportedSourceFormatError` identify
@@ -805,7 +833,7 @@ failure sections above are the maintained answers.
 - `tests/test_external_file_nested_relative_path.py` verifies project-root relative external-file loading, absolute passthrough, and project-escape rejection.
 - `tests/test_pipeline_runtime_path_validation.py` verifies runtime path/graph validation, HTTP status mapping, sidecar/codegen case-collision and reserved-name protections, and safe rename/delete semantics.
 - `tests/test_read_user_text.py` verifies robust text/config/pipeline decoding across encodings and malformed inputs.
-- `tests/test_polars_dtypes.py` pins the one dtype vocabulary: a Polars attribute that is not a dtype is rejected with the column and name, a rating descriptor is the shared codec's spec under rating's key names (and rejects dtypes the codec knows but rating does not support), and the feature-contract view, its MLflow projection and the rendered-dtype MLflow view map representative dtypes exactly, `parse_rendered_dtype` rebuilds scalar, parametric and nested dtypes from their rendering and rejects a name that is not a dtype or an expression that is not a literal; `tests/test_io.py` pins that declared API-input source dtypes accept the same vocabulary and reject anything else.
+- `tests/test_polars_dtypes.py` pins the one dtype vocabulary: a Polars attribute that is not a dtype is rejected with the column and name, a rating descriptor is the shared codec's spec under rating's key names (and rejects dtypes the codec knows but rating does not support), and the feature-contract view, its MLflow projection and the rendered-dtype MLflow view map representative dtypes exactly, `parse_rendered_dtype` rebuilds scalar, parametric and nested dtypes from their rendering and rejects a name that is not a dtype or an expression that is not a literal; every dtype class Polars exports is covered by one sample at least, each of which round-trips exactly through the spec codec and its rendering, or (`Map`, `Extension`) is refused by `dtype_to_spec`, so a dtype a later Polars adds fails the test until the codec handles it; a categorical in a named pool round-trips with its pool, trains as categorical and is the rating descriptor `{"kind": "Categorical"}`; `tests/test_io.py` pins that declared API-input source dtypes accept the same vocabulary and reject anything else.
 - `tests/test_sink.py` verifies sink execution errors, parquet/CSV output, directory creation, scenario handling, compute failures, and response metadata.
 - `tests/test_data_output_seeding.py` drives writes through the write-output route with the sink worker in process: a second write seeds the producer the first captured and builds nothing; a write after a batch training run builds its producer, because a training capture holds only the columns training reads and a write reads them all, and captures it in full, which the next training run seeds; an in-process `write_data_output` seeds and captures too; no `haute_sink_` directory is written; a worker stopped, timed out, or killed at its cap leaves no capture staging and publishes nothing; the worker stages under the parent's token; the response metrics keep the parent's input preparation; a superseded capture is read from the run's own staging through the write, with the plan held until the write completes under the process chunk size; preparation that ends past the sink timeout — returning or failing — is a 504 that starts no worker, and otherwise the worker gets the remainder; a request cancelled during preparation stops it, and one cancelled while preparation still succeeds starts no worker; and a parent plan-opening failure (contract, corrupt cache, admission) starts no worker.
 

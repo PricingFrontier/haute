@@ -521,7 +521,8 @@ builds the manifest, writes it under `<pipeline_dir>/.haute_build/`, builds an M
 `ModelSignature` from the resolved schemas (`Categorical` and parameterised `Enum` map to
 MLflow string; a workbench pipeline's struct and list columns to a `Map` of `AnyType` and an
 `Array` of them; genuinely unrepresentable Polars types, a `Decimal` among them, fail
-loudly), and selects or creates
+loudly, and a column holding a 128-bit integer fails with the cast that fixes it,
+`wide_integer_message`), and selects or creates
 the experiment (suffix-isolated for staging) on that client through
 `ensure_experiment`, so a new experiment's missing Databricks workspace folder is created
 first (see [modelling](../modelling/low-level.md)). The client creates the

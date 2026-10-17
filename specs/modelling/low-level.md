@@ -179,7 +179,19 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   maps a contract name to MLflow through `_polars_dtypes.contract_mlflow_type_name`,
   so both temporal families become MLflow `DataType.datetime`; it recognises
   `Decimal(...)` separately and raises the actionable unsupported-type error
-  rather than falling through to an unknown type or `double`.
+  rather than falling through to an unknown type or `double`. A categorical of
+  any category pool is named `String`, and a feature is categorical when its
+  dtype is `String` or a `Categorical` of any pool (`is_string_or_categorical`),
+  so a `Categorical("lexical")` column, which Polars 2 makes a pooled
+  categorical, trains as one. A 128-bit integer (`Int128`, `UInt128`) has no
+  contract name: no model takes one, `to_numpy` panics on one and pyarrow cannot
+  open a Parquet file that holds one. The training job therefore reads its
+  input's schema before it materialises, writes or converts anything and
+  refuses a column holding one, at any depth and whatever its role, with
+  `wide_integer_message` (cast it upstream to `Int64`, or `Float64` if its
+  values can exceed `Int64`); the train route refuses the same before it writes
+  the prepared file (422), and `_mlflow_io._prepare_predict_frame` refuses a
+  feature holding one before any model library converts it.
 - **`TrainingJob`** (`_training_job.py`) — the orchestrator. Public-node construction
   stores
   `name`, `data` (path/DataFrame/LazyFrame), `target`, `weight`, `exclude`,

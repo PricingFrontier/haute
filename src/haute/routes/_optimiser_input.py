@@ -33,6 +33,7 @@ from haute._graph_utils import (
     select_edge_source_output,
 )
 from haute._logging import get_logger
+from haute._polars_dtypes import is_string_or_categorical
 from haute._polars_utils import (
     bounded_sink,
     current_streaming_chunk_size,
@@ -89,7 +90,7 @@ def _invalid_quote_id_dtype_detail(schema: Any, qid_col: str) -> str | None:
     import polars as pl
 
     qid_dtype = schema[qid_col]
-    if qid_dtype == pl.String or qid_dtype == pl.Categorical or isinstance(qid_dtype, pl.Enum):
+    if is_string_or_categorical(qid_dtype) or isinstance(qid_dtype, pl.Enum):
         return None
     return (
         f"{qid_col} must be Utf8 (String), Categorical, or Enum, got {qid_dtype}. "
@@ -1289,9 +1290,7 @@ def _estimate_quote_id_column_or_raise(source_lf: Any, config: dict[str, Any]) -
         )
 
     qid_dtype = schema[qid_col]
-    if not (
-        qid_dtype == pl.String or qid_dtype == pl.Categorical or isinstance(qid_dtype, pl.Enum)
-    ):
+    if not (is_string_or_categorical(qid_dtype) or isinstance(qid_dtype, pl.Enum)):
         raise HTTPException(
             status_code=400,
             detail=(

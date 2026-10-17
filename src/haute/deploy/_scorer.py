@@ -575,7 +575,7 @@ def _assert_runtime_contract_matches(
             # placeholder so the diff names the missing column.
             feature_types[name] = "MISSING"
             continue
-        canonical = contract_dtype_name(dtype)
+        canonical = contract_dtype_name(dtype, column=name)
         feature_types[name] = canonical
     for name in runtime_features:
         if feature_types.get(name) == "String":

@@ -18,8 +18,14 @@ Spec grammar (each ``<spec>`` is a string or an object)::
     {"type": "Datetime", "time_unit": "us", "time_zone": null}
     {"type": "Duration", "time_unit": "us"}
     {"type": "Enum", "categories": ["a", "b"]}
-    {"type": "Categorical"}
+    {"type": "Categorical"}                        the default category pool
+    {"type": "Categorical", "categories": {"name": "p", "namespace": "", "physical": "UInt32"}}
     {"type": "Int64"}                              object form of any scalar
+
+A ``Map`` or ``Extension`` column has no spec: Haute reads a map as a list of
+key-value structs and an unknown extension as its storage type before a pipeline
+sees it, so a spec for either is refused rather than written in a form
+``parse_dtype`` could not read.
 
 ``parse_dtype`` and ``dtype_to_spec`` are exact inverses over the supported
 lattice (round-trip tested), so editors can display what configs persist. A
@@ -204,8 +210,27 @@ def parse_dtype(spec: Any, *, column: str | None = None) -> pl.DataType | type[p
             )
         return pl.Enum(categories)
     if kind == "Categorical":
-        _check_keys(spec, {"type"}, column=column)
-        return pl.Categorical()
+        _check_keys(spec, {"type", "categories"}, column=column)
+        pool = spec.get("categories")
+        if pool is None:
+            return pl.Categorical()
+        if not isinstance(pool, Mapping) or set(pool) != {"name", "namespace", "physical"}:
+            raise SchemaMismatchError(
+                "Categorical dtype spec 'categories' needs 'name', 'namespace' and 'physical'.",
+                column=column,
+                dtype=str(dict(spec)),
+            )
+        physical = parse_dtype(pool["physical"], column=column)
+        try:
+            return pl.Categorical(pl.Categories(pool["name"], pool["namespace"], physical))
+        except TypeError as exc:
+            # A name or namespace that is not text, or a physical type other than
+            # UInt8, UInt16 or UInt32.
+            raise SchemaMismatchError(
+                f"Categorical dtype spec 'categories' is not a category pool: {exc}",
+                column=column,
+                dtype=str(dict(spec)),
+            ) from exc
 
     # Object form of a scalar name: {"type": "Int64"}.
     _check_keys(spec, {"type"}, column=column)
@@ -239,7 +264,23 @@ def dtype_to_spec(dtype: Any) -> Any:
     if isinstance(dtype, pl.Enum):
         return {"type": "Enum", "categories": list(dtype.categories)}
     if isinstance(dtype, pl.Categorical):
-        return {"type": "Categorical"}
+        pool = dtype.categories
+        if pool == pl.Categorical().categories:
+            return {"type": "Categorical"}
+        return {
+            "type": "Categorical",
+            "categories": {
+                "name": pool.name(),
+                "namespace": pool.namespace(),
+                "physical": dtype_to_spec(pool.physical()),
+            },
+        }
+    if isinstance(dtype, pl.Map | pl.BaseExtension):
+        raise SchemaMismatchError(
+            f"A {dtype.base_type()} column has no dtype spec: Haute reads a map as a list "
+            "of key-value structs and an unknown extension as its storage type.",
+            dtype=str(dtype),
+        )
     return str(dtype)
 
 
@@ -271,6 +312,11 @@ def parse_rendered_dtype(rendered: str, *, column: str | None = None) -> pl.Data
             return {value(key): value(item) for key, item in zip(keys, node.values, strict=True)}
         if isinstance(node, ast.Name):
             return dtype_class(node.id)
+        # A pool's physical type renders qualified: ``physical=pl.UInt8``.
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            if node.value.id != "pl":
+                raise unsupported()
+            return dtype_class(node.attr)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             args = [value(arg) for arg in node.args]
             kwargs = {kw.arg: value(kw.value) for kw in node.keywords if kw.arg is not None}
@@ -282,10 +328,13 @@ def parse_rendered_dtype(rendered: str, *, column: str | None = None) -> pl.Data
                 raise unsupported() from exc
         raise unsupported()
 
-    def dtype_class(name: str) -> type[pl.DataType]:
+    def dtype_class(name: str) -> Any:
         candidate = getattr(pl, name, None)
         if isinstance(candidate, type) and issubclass(candidate, pl.DataType):
             return candidate
+        # A categorical's pool, as ``Categorical(Categories("pool"))`` renders it.
+        if name == "Categories":
+            return pl.Categories
         raise unsupported()
 
     try:
@@ -342,20 +391,69 @@ _CONTRACT_DATETIME = re.compile(
 _CONTRACT_DECIMAL = re.compile(r"Decimal(?:\(precision=(?:\d+|None), scale=(?:\d+|None)\))?\Z")
 
 
-def contract_dtype_name(dtype: Any) -> str:
+def is_string_or_categorical(dtype: Any) -> bool:
+    """Whether *dtype* is ``String`` or a ``Categorical`` of any category pool.
+
+    Polars 2 names a categorical's pool in its dtype (``Categorical("lexical")``
+    makes a pool called ``lexical``), and a pooled categorical is not equal to
+    ``pl.Categorical``, so the test is by base type (of a dtype or its class).
+    """
+    return dtype.base_type() in (pl.String, pl.Categorical)
+
+
+#: The 128-bit integers Polars 2 produces (``Int64`` or ``Int32`` with ``UInt64``):
+#: no model library, MLflow type or Arrow reader takes them. ``to_numpy`` panics
+#: on one, and pyarrow cannot open a Parquet file that holds one.
+WIDE_INTEGER_DTYPES: tuple[type[pl.DataType], ...] = (pl.Int128, pl.UInt128)
+
+
+def holds_wide_integer(dtype: Any) -> bool:
+    """Whether *dtype* is a 128-bit integer or nests one in a list, array or struct."""
+    if dtype in WIDE_INTEGER_DTYPES:
+        return True
+    if isinstance(dtype, pl.List | pl.Array):
+        return holds_wide_integer(dtype.inner)
+    if isinstance(dtype, pl.Struct):
+        return any(holds_wide_integer(field.dtype) for field in dtype.fields)
+    return False
+
+
+def wide_integer_column(schema: Mapping[str, Any]) -> tuple[str, Any] | None:
+    """The first column of *schema* that holds a 128-bit integer, with its dtype."""
+    for column, dtype in schema.items():
+        if holds_wide_integer(dtype):
+            return column, dtype
+    return None
+
+
+def wide_integer_message(column: str, dtype: Any) -> str:
+    """The refusal of a column holding a 128-bit integer, with the cast that fixes it."""
+    what = "a 128-bit integer" if dtype in WIDE_INTEGER_DTYPES else "which holds a 128-bit integer"
+    return (
+        f"Column {column!r} is {dtype}, {what} that no model, MLflow signature or Arrow "
+        "reader takes: cast it upstream to Int64, or to Float64 if its values can exceed "
+        "Int64. Polars 2 produces it from Int64 or Int32 combined with UInt64."
+    )
+
+
+def contract_dtype_name(dtype: Any, *, column: str = "") -> str:
     """The feature-contract name of *dtype*.
 
     Collapses polars' integer and float widths to ``Int64``/``Float64`` and the
-    string family (``String``, ``Categorical``) to ``String`` — the scalar
-    names an MLflow signature understands. Every other dtype keeps polars' own
-    full rendering (``Date``, a parameterised
+    string family (``String``, a ``Categorical`` of any category pool) to
+    ``String`` — the scalar names an MLflow signature understands. Every other
+    dtype keeps polars' own full rendering (``Date``, a parameterised
     ``Datetime(time_unit=..., time_zone=...)``, ``Decimal(...)``) so the place
-    that consumes the contract can validate it deliberately.
+    that consumes the contract can validate it deliberately. A 128-bit integer is
+    refused with the cast that fixes it: recorded as ``Int64`` it would be
+    converted where no conversion takes it.
     """
     if dtype == pl.Boolean:
         return "Boolean"
-    if dtype in (pl.String, pl.Categorical):
+    if is_string_or_categorical(dtype):
         return "String"
+    if dtype in WIDE_INTEGER_DTYPES:
+        raise SchemaMismatchError(wide_integer_message(column, dtype), column=column)
     if dtype.is_integer():
         return "Int64"
     if dtype.is_float():

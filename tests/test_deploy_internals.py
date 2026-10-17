@@ -4954,7 +4954,10 @@ class TestBuildSignature:
         type_map = self._input_type_map(sig)
         assert type_map["ts"] == DataType.datetime, "Parameterized Datetime must map to datetime"
 
-    @pytest.mark.parametrize("dtype", ["Categorical", "Enum(categories=['a', 'b'])"])
+    @pytest.mark.parametrize(
+        "dtype",
+        ["Categorical", 'Categorical(Categories("lexical"))', "Enum(categories=['a', 'b'])"],
+    )
     def test_categorical_types_map_to_string(self, dtype):
         from mlflow.types import DataType
 
@@ -4984,6 +4987,24 @@ class TestBuildSignature:
             _build_signature(resolved)
 
         assert dtype in str(exc_info.value)
+
+    @pytest.mark.parametrize("schema", ["input_schema", "output_schema"])
+    @pytest.mark.parametrize(
+        "dtype", ["Int128", "UInt128", "List(Int128)", "Struct({'a': UInt128})"]
+    )
+    def test_a_column_holding_a_128_bit_integer_fails_with_the_cast(self, schema, dtype):
+        """No MLflow type or Arrow conversion takes a 128-bit integer, at any depth."""
+        from haute.deploy._mlflow import _build_signature
+        from haute.errors import DeployError
+
+        schemas = {"input_schema": {"x": "Float64"}, "output_schema": {"val": "Float64"}}
+        schemas[schema] = {"policy_key": dtype}
+        resolved = _make_resolved(**schemas)
+
+        with pytest.raises(DeployError, match="Column 'policy_key' is ") as exc_info:
+            _build_signature(resolved)
+
+        assert "cast it upstream to Int64" in str(exc_info.value)
 
     def test_a_workbench_pipelines_tables_are_maps_and_arrays_of_them(self):
         """A one-row table is a map of anything and a many-row table an array of them, a

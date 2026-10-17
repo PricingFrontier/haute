@@ -646,6 +646,67 @@ class TestPreparationWithExecutionContext:
         assert executions[0]["prepare_inputs"] is False
         assert "checkpoint_dir" not in executions[0]
 
+    @pytest.mark.parametrize("projected", [False, True])
+    def test_a_written_column_holding_a_128_bit_integer_is_refused_by_name(
+        self, tmp_path, projected
+    ):
+        """No model takes a 128-bit integer and pyarrow cannot open a Parquet
+        file holding one, so a column the preparation would write is refused
+        (422, with the cast) before the write; one the projection drops is not."""
+        body = _source_only_request()
+        parquet_path = tmp_path / "prepared.parquet"
+        lf = pl.LazyFrame(
+            {
+                "y": [1.0, 2.0],
+                "x1": [0.1, 0.2],
+                "a": [1, 2],
+                "b": pl.Series([3, 4], dtype=pl.UInt64),
+            }
+        ).with_columns(policy_key=pl.col("a") + pl.col("b"))
+        sunk_frames: list[pl.LazyFrame] = []
+
+        def fake_write_file(destination, frame, **_kwargs):
+            sunk_frames.append(frame)
+            frame.collect().write_parquet(destination)
+            return ChunkedWrite(strategy="native", parts=(), chunks=1, staged_inputs=0)
+
+        def lazy_returns_target(*args, **kwargs):
+            return ({"n": lf}, [], {}, {})
+
+        overrides = (
+            {"project_to_keep_columns": True, "keep_columns": ["y", "x1"]} if projected else {}
+        )
+        p1, p2, p3, p4, p5 = _patch_execute_env()
+        with (
+            patch(
+                "haute.routes._training_preparation.execute_lazy_graph",
+                side_effect=lazy_returns_target,
+            ),
+            patch("haute._chunked_writes.write_file", side_effect=fake_write_file),
+            patch("haute._polars_utils._malloc_trim"),
+            p1,
+            p2,
+            p3,
+            p4,
+            p5,
+        ):
+            outcome = _prepare(
+                _preparation_request(body, parquet_path, **overrides),
+                context=_training_execution_context(),
+            )
+
+        if projected:
+            assert outcome.failure is None
+            assert sunk_frames[0].collect_schema().names() == ["y", "x1"]
+            return
+        failure = outcome.failure
+        assert failure is not None
+        assert failure.http_status_code == 422
+        assert "Column 'policy_key' is Int128" in str(failure.http_detail)
+        assert "cast it upstream to Int64" in str(failure.http_detail)
+        assert sunk_frames == []
+        assert not parquet_path.exists()
+
     def test_all_except_demand_columns_required_and_missing_raises_422(self, tmp_path):
         """An AllExcept node demand contributes its required_columns to the
         training-input contract; a missing one trips the 422 contract failure

@@ -20,7 +20,12 @@ from haute._mlflow_utils import (
     search_versions,
     set_tracking_uri_preserving_env,
 )
-from haute._polars_dtypes import parse_rendered_dtype, rendered_dtype_mlflow_type_name
+from haute._polars_dtypes import (
+    holds_wide_integer,
+    parse_rendered_dtype,
+    rendered_dtype_mlflow_type_name,
+    wide_integer_message,
+)
 from haute.deploy._config import ResolvedDeploy
 from haute.deploy._request_rows import copy_verified
 from haute.deploy._utils import build_manifest, model_source_line
@@ -336,6 +341,10 @@ def _build_signature(resolved: ResolvedDeploy) -> object:
                 dtype = parse_rendered_dtype(dtype_str, column=col_name)
             except SchemaMismatchError as exc:
                 raise unsupported(col_name, dtype_str) from exc
+            if holds_wide_integer(dtype):
+                raise DeployError(
+                    wide_integer_message(col_name, dtype), column=col_name, dtype=dtype_str
+                )
             kind = mlflow_type(dtype, col_name=col_name, dtype_str=dtype_str)
             table = isinstance(dtype, pl.Struct | pl.List)
             specs.append(ColSpec(type=kind, name=col_name, required=not table))
