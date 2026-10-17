@@ -160,6 +160,7 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "name-collisions",
     "optimiser-validation",
     "pipeline-config",
+    "polars-2",
     "polars-node-clarity",
     "sandbox-security",
     "server-api",
@@ -170,6 +171,7 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
 _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
     "codebase-review-2026-09-23.md",
     "delivery-plan.md",
+    "polars-2-review-2026-10-17.md",
     "t-boost-improvements.md",
     "workbench-review-2026-10-15.md",
 )

@@ -29,6 +29,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Name collisions](name-collisions.md) | Input-binding editors showing their name violations inline | `NAME-09` |
 | [Optimiser validation](optimiser-validation.md) | Per-point convergence traces from price_contour's frontier sweep; a calibrated solve-memory forecast in the Solve panel; the optimiser result workspace's open robustness and CSV questions | `OPT-PC04` |
 | [Pipeline config](pipeline-config.md) | Project context, typed configs, editor state, node specification | `PCFG-R04` |
+| [Polars 2](polars-2.md) | Moving to Polars 2.0: the pin and version snapshots, caches computed under Polars 1, errors raised in Python scans, row order and deployed answers (awaiting a decision), training reproducibility, the step editor's casts and filters (awaiting a decision), CSV and spreadsheet reading (awaiting a decision), the Chunk rows setting, sliced writes, explicit engines, zero-width frames, new dtypes (awaiting a decision), out-of-core spilling (awaiting a decision), deploy parity (awaiting a decision), generated and teaching code, the operation registry and the tests; then the operator memory evidence, worker baselines and the price_contour boundary | `PL2-01` |
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
 | [Sandbox security](sandbox-security.md) | Every containment comparison through the one check | `SBX-R01` |
 | [Server API](server-api.md) | Domain errors, generated browser contract | `API-R02` |
@@ -62,6 +63,15 @@ It records its method, limits and evidence, and maps every finding to the packag
 made for it: `WB-14` to `WB-22`, `BUG-32` to `BUG-36` and `FSH-R04`. It is a
 dated supporting report and owns no work; the packages in the component
 roadmaps above carry the plans.
+
+## Polars 2 review — 17 October 2026
+
+The [Polars 2 review](polars-2-review-2026-10-17.md) records what moving Haute
+from Polars 1.44.2 to Polars 2.0 breaks, changes silently, makes redundant and
+makes possible, made at `5c184d8d`: its sources, side-by-side probes of both
+versions, bounded test runs under Polars 2.0.0, a row-order audit and an
+API-surface audit. It is a dated supporting report and owns no work; the
+[Polars 2 roadmap](polars-2.md) carries the packages.
 
 ## t-boost improvements — 4 October 2026
 
