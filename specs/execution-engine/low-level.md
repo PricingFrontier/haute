@@ -24,7 +24,7 @@
 | `src/haute/_chunked_writes.py` | Bounded chunked writes: `sliceable` (positive proof on Polars' optimised IR that slicing a frame equals slicing its single Parquet/IPC scan or in-memory input), `write_parts` (a node output as ordered `part-NNNNN.parquet` files: a chunked edge join, one native sink per slice, an input-sliced write, or one native sink), `JoinRecipe`, `WriteRecipe`, `part_paths`/`scan_parts`. |
 | `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` selects `auto` or streaming execution and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract. All three preserve checkpoint, collect-count, and typed-error telemetry. `bounded_collect_batches` streams batches from a query run on a dedicated thread, so an engine panic raises instead of ending the stream early. It also owns the Python scans that expose opaque Python steps to Polars pushdown (`row_local_python_scan`, `fanout_python_scan`, `limited_python_scan`, `key_prefix_python_scan`), whose exceptions reach every seam as themselves. |
 | `src/haute/_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion (`expand_scenarios_from_config`, and `expand_scenarios_bounded` for the interactive form a preview row limit reaches through), `optimiserApply` artifact dispatch, and output response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
-| `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`, declaring every type's recompute cost (`recompute_cost=`); owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component, and `pass_through_selected_edge` / `PASS_THROUGH_NODE_TYPES`, which state the incoming edge a pass-through node's built function returns. It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). A stepped Polars transform's function carries `transform_fn.failed_step_line`, which replays the steps' prefixes on the run's input frames to name the step whose lazy plan failed (`_failed_step_line`). |
+| `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`, declaring every type's recompute cost (`recompute_cost=`); owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component, and `pass_through_selected_edge` / `PASS_THROUGH_NODE_TYPES`, which state the incoming edge a pass-through node's built function returns. A node built without an input (an unconnected Rating Step, Banding, Scenario Expander, Model Score or Optimiser Apply, an unsaved Data Input, and the deploy scorer's external and model placeholders) starts from `pl.LazyFrame()`, which has no rows, and so returns none: a constant it adds gives no row either (Polars 1 invented one). It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). A stepped Polars transform's function carries `transform_fn.failed_step_line`, which replays the steps' prefixes on the run's input frames to name the step whose lazy plan failed (`_failed_step_line`). |
 | `src/haute/_node_builder.py` | `NodeBuildHooks` and `wrap_builder`, the interception seam used by deploy scoring while preserving the canonical runtime builders. |
 | `src/haute/_topo.py` | Strict `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), explicit `topo_sort_ids_filtered` (opt-in subset traversal returning both the order and every dropped edge/endpoint), `canonical_topological_order` (the same graphlib sorter driven lexically: the smallest ready node id always comes next, so it is independent of input order; projection diagnostics rank nodes by it), and `ancestors` (a node and its ancestors over reversed edges, walked by `upstream_node_ids`). The default sorter never silently ignores an unknown endpoint. It is the one topological sort; `_find_cycle_nodes` peels in-degrees only to report every node in a cycle. |
 | `src/haute/graph_utils.py` | Canonical outward re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. Low-level engine modules import canonical graph models from `_types.py` and pure helpers from `_graph_utils.py` directly; importing back through this heavyweight facade would re-enter `_execute_lazy.py` and create an execution/RAM-estimation cycle. |
@@ -737,9 +737,10 @@ through the proof's `source_revision_unavailable` warning. The strategy planner 
 runtime loader read the published table generations, never the source.
 
 An exact empty edge demand means that the consumer needs row cardinality but no
-user column (for example `select(pl.len())`). Polars cannot preserve non-zero row
-cardinality in a zero-column frame, so source, edge, and capture projection
-retain exactly one deterministic schema-ordered carrier column. The carrier is a
+user column (for example `select(pl.len())`). A projection is a `select`, and a
+`select` with no column has no rows (Polars 2 keeps the height only of a frame a
+`drop` leaves with no column), so source, edge, and capture projection retain
+exactly one deterministic schema-ordered carrier column. The carrier is a
 physical execution detail, not a logical demand: it is removed naturally by the
 consumer and must never broaden to the whole source or collapse the row count.
 
@@ -1592,7 +1593,8 @@ present a structural or schema result as execution evidence.
   code consumes — a `filter` predicate column, for example, even under a rows-only demand.
   The source builder supplies the opened scan's schema to that rule, and a scan under
   projection-opaque code is narrowed only with it: the known schema lets lineage add a row
-  carrier when the code drops every demanded column (so the frame keeps its height), and lets
+  carrier when the code's select, aggregation or unpivot would be left with no column (a
+  `drop` of every demanded column keeps the frame's height and needs none), and lets
   the rule prove the full pre-shaping output. When the configured selection and renames would
   collide on that output, the scan stays full width, so the rename error is raised in bounded
   profiles exactly as in preview, with or without code. Planning and runtime join refinement
@@ -2484,26 +2486,28 @@ present a structural or schema result as execution evidence.
   rather than looking like a deceptively narrow complete total. They never include cache paths,
   source identities, column names, graph ids, or exception messages.
 
-- **The projected root frame is never empty where the full frame is not.** The input whose
-  rows form the output must carry at least one column at every step: a zero-column frame is
-  an empty frame, so a demand that names only generated columns (`select(pl.len())`, a
-  `with_row_index` column, a literal projection) or only columns the program later drops
-  (`drop_nulls(['a']).drop('a')...with_row_index()`) would otherwise lose every row in
-  silence. `analyze_polars_lineage` re-evaluates the program over the projected root schema
-  (`_ensure_root_carrier`) and, at the first step where the full frame still has columns but
-  the projected frame has none, adds the first root column present in the full frame at that
-  step, in sorted order, repeating until no step is empty; a projected program that cannot be
-  evaluated at all is reported unsupported (`carrier_unresolvable`). Demanding an extra
-  column never changes a result, so the rule only widens. Without the root input's schema no
-  carrier can be chosen, so the analyser evaluates the program over the demanded root columns
-  alone and reports `row_carrier_schema_unknown` when a step would leave that frame with no
-  columns while the full frame is not provably empty — a `drop` of every demanded column,
-  typically. An empty demand is carried by the one column the edge or scan keeps for it, but
-  that column's name is unknown, so it counts only until the first `drop` (strict or not,
-  even of a column the code overwrote) or the first `select`, aggregate, or `unpivot`. A Polars node whose parent schema is unknown,
+- **The projected root frame never loses rows the full frame keeps.** Polars 2 keeps a
+  frame's height when `drop` removes its last column, but a `select`, an aggregation or an
+  `unpivot` left with no output column has no rows, and so does the projection itself, which
+  is a `select`. A demand that names only generated columns (`select(pl.len())`, a
+  `with_row_index` column, a literal projection) therefore needs a carrier column at the
+  root, and so does a projected program whose `select`, aggregate or `unpivot` would be left
+  with no column where the full one has some; a program that only drops the demanded columns
+  (`drop_nulls(['a']).drop('a')...with_row_index()`) keeps its rows without one.
+  `analyze_polars_lineage` re-evaluates the program over the projected root schema
+  (`_ensure_root_carrier`) and, at the first such row-emptying step where the full frame still
+  has columns but the projected frame has none, adds the first root column present in the
+  full frame at that step, in sorted order, repeating until no row-emptying step is empty; a
+  projected program that cannot be evaluated at all is reported unsupported
+  (`carrier_unresolvable`). Demanding an extra column never changes a result, so the rule
+  only widens. Without the root input's schema no carrier can be chosen, and none is needed:
+  an empty demand is carried into the program by the one column the edge or scan keeps for
+  it, a `drop` of every column, whichever it names, keeps the frame's height, and a
+  row-emptying step names the same outputs narrowed or not, since a selector over an unknown
+  schema has already failed the analysis. A Polars node whose parent schema is unknown,
   builder post-code (always analysed without a schema), External File code, and Data Input
-  post-load code (planned without its scan's schema) therefore keep a full-width boundary for
-  such code rather than losing rows in bounded profiles. Other inputs keep an exact empty
+  post-load code (planned without its scan's schema) are therefore narrowed like any other
+  code. Other inputs keep an exact empty
   demand: an unused port has no rows to carry, and the runtime join path (`_execute_lazy.py`)
   keeps its own carrier for an empty-demand edge. Pinned by `tests/test_column_lineage.py`
   (including the drop-everything program the property test falsified) and the

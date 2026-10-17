@@ -38,7 +38,6 @@ prepared frame's order varies (`PL2-05`).
 | PL2-06 | Planned | P2 | The step editor renders only code Polars 2 runs, and **Change types** turns text into dates. |
 | PL2-07 | Planned | P1 | CSV inputs read as they did, or fail with a message that says what changed. |
 | PL2-10 | Planned | P2 | Every Haute collect names its engine. |
-| PL2-11 | Planned | P2 | Lineage and input-less nodes follow Polars 2's zero-width frames. |
 | PL2-12 | Planned | P2 | New Polars dtypes meet Haute's dtype vocabularies loudly or are normalised where they enter. |
 | PL2-13 | Planned | P2 | Code Haute generates and teaches runs on Polars 2 without deprecations. |
 | PL2-14 | Planned | P2 | The operation registry and analysers describe Polars 2. |
@@ -523,43 +522,6 @@ contract.
 `src/haute/_polars_utils.py::_cancellable_collect`;
 `src/haute/_polars_utils.py::bounded_collect_batches`;
 `src/haute/routes/_optimiser_outcomes.py`.
-
-### PL2-11 — Lineage and input-less nodes follow Polars 2's zero-width frames
-**Why:** Polars 2.0 keeps a frame's height through operations that leave it
-with no columns, and gives `pl.DataFrame()` and `pl.LazyFrame()` a fixed height
-of 0. Two Haute behaviours rest on the old semantics. Lineage keeps a carrier
-column on the root input because "a zero-column frame is an empty frame", and
-fails closed on a program, read without a root schema, that can drop its last
-column; on 2.0 a lazy `drop` of every column keeps its rows (then
-`select(pl.len())` gives 3 where 1.44 gave 0), while `select([])` still yields
-an empty frame, and three lineage tests that assert the 1.44 result fail.
-And input-less nodes (an unconnected Rating Step, Banding or Scenario
-Expander, an unsaved Data Input, an input-less Optimiser Apply, the deploy
-scorer's placeholders) start from `pl.LazyFrame()`: `with_columns(pl.lit(1))`
-on it now gives no rows where 1.44 gave one, and adding a column of two values
-raises.
-
-**Plan:** Re-derive the carrier and fail-closed rules from Polars 2's
-semantics: a dropped-to-zero frame keeps its rows, a zero-column `select`
-still empties. Keep `projected_or_carrier_columns`, which projects through
-`select`. Relax the fail-closed rule only where `drop` provably keeps height,
-and retarget its tests at the programs that still empty a frame. Decide for
-each input-less placeholder whether the node means "no rows" (keep
-`pl.LazyFrame()`) or "one row of constants" (`pl.LazyFrame(height=1)`), and
-specify it beside the node.
-
-**Acceptance:** the lineage module passes on Polars 2 with each rule restated
-in the execution-engine specification; projected and full execution agree on
-row counts for `drop`-to-zero and `select([])` programs; each input-less node
-returns the row count its specification states.
-
-**Dependencies:** PL2-01.
-
-**Evidence:** `src/haute/_column_lineage.py::_ensure_root_carrier`;
-`src/haute/_column_lineage.py::_step_emptying_an_unknown_root`;
-`src/haute/_polars_utils.py::projected_or_carrier_columns`;
-`src/haute/_builders.py::_passthrough_fn`;
-`tests/test_column_lineage.py::test_without_a_root_schema_a_program_that_can_drop_its_last_column_fails_closed`.
 
 ### PL2-12 — New Polars dtypes meet Haute's dtype vocabularies loudly or are normalised where they enter
 **Why:** Rendered dtype strings are identical across versions for every

@@ -2472,15 +2472,17 @@ def _ensure_root_carrier(
     root_demand: set[str],
     input_dtypes: Mapping[str, Mapping[str, pl.DataType]] | None = None,
 ) -> bool:
-    """Widen the root demand until the projected frame is never empty.
+    """Widen the root demand until the projected frame never loses its rows.
 
     The program is re-evaluated over the projected root schema (the demand) and
-    compared step by step with the full evaluation. At the first step where the
-    full frame still has columns but the projected frame has none, the first
-    root column present in the full frame at that step, in sorted order, joins
-    the demand; a root column that has already left the frame cannot carry
-    rows there. Demanding an extra column never changes a result, so the loop
-    only ever widens. Returns ``False`` when the projected program cannot be
+    compared step by step with the full evaluation. At the first row-emptying
+    step (``_ROW_EMPTYING_KINDS``) where the full frame still has columns but the
+    projected frame has none, the first root column present in the full frame
+    at that step, in sorted order, joins the demand; a root column that has
+    already left the frame cannot carry rows there. A ``drop`` that leaves the
+    projected frame with no column needs no carrier: Polars keeps the frame's
+    height. Demanding an extra column never changes a result, so the loop only
+    ever widens. Returns ``False`` when the projected program cannot be
     evaluated at all, which the caller reports as unsupported.
     """
     candidates = sorted(root_schema - root_demand)
@@ -2498,7 +2500,10 @@ def _ensure_root_carrier(
             (
                 index
                 for index, (full, narrow) in enumerate(zip(evaluated, projected[0], strict=True))
-                if full.after_schema and narrow.after_schema is not None and not narrow.after_schema
+                if narrow.operation.kind in _ROW_EMPTYING_KINDS
+                and full.after_schema
+                and narrow.after_schema is not None
+                and not narrow.after_schema
             ),
             None,
         )
@@ -2511,56 +2516,17 @@ def _ensure_root_carrier(
         root_demand.add(carrier)
 
 
-ROW_CARRIER_SCHEMA_UNKNOWN_REASON = "row_carrier_schema_unknown"
-# Operations after which a carrier column of unknown name may be gone: any
-# ``drop`` can name it (strictly or not, even after the code overwrote it), and
-# the others replace every column with named outputs.
-_CARRIER_REMOVING_KINDS = frozenset(
+# Operations that build every output column from named outputs, so an output
+# with no column has no rows. Polars 2 keeps a frame's height when ``drop``
+# removes its last column, so a ``drop`` never empties a frame, whichever
+# columns it names.
+_ROW_EMPTYING_KINDS = frozenset(
     {
-        LineageOperationKind.DROP,
         LineageOperationKind.SELECT,
         LineageOperationKind.GROUP_BY_AGG,
         LineageOperationKind.UNPIVOT,
     }
 )
-
-
-def _step_emptying_an_unknown_root(
-    program: LinearFrameProgram,
-    evaluated: Sequence[_EvaluatedOperation],
-    input_schemas: Mapping[str, frozenset[str] | None],
-    root_demand: frozenset[str],
-    input_dtypes: Mapping[str, Mapping[str, pl.DataType]] | None,
-) -> tuple[str, str] | None:
-    """Return the unsupported reason when a schema-less root can lose its rows.
-
-    Without the root schema no carrier column can be chosen, so the program is
-    re-evaluated over the demanded root columns alone. An empty demand is
-    carried by the one column the edge or scan keeps for it, whose name is
-    unknown, so that carrier only counts until the first operation that could
-    remove it. At the first step where the narrowed frame can have no columns
-    while the full frame is not provably empty, the narrowed run would lose
-    every row.
-    """
-    projected = _evaluate_program(
-        program,
-        {**input_schemas, program.root_input: root_demand},
-        input_dtypes,
-    )
-    if isinstance(projected, _ParseFailure):
-        return "carrier_unresolvable", program.operations[-1].method
-    carrier_kept = not root_demand
-    for full, narrow in zip(evaluated, projected[0], strict=True):
-        if narrow.operation.kind in _CARRIER_REMOVING_KINDS:
-            carrier_kept = False
-        if (
-            not carrier_kept
-            and narrow.after_schema is not None
-            and not narrow.after_schema
-            and full.after_schema != frozenset()
-        ):
-            return ROW_CARRIER_SCHEMA_UNKNOWN_REASON, full.operation.method
-    return None
 
 
 _DtypeMap = dict[str, "pl.DataType | None"]
@@ -3049,26 +3015,20 @@ def analyze_polars_lineage(
             return _unsupported("unsupported_operation", operation.method)
 
     demands_by_input[program.root_input].update(demand)
-    # The root input's rows form the output, so the projected frame must carry
-    # at least one column wherever the full frame does: a zero-column frame is
-    # an empty frame, so a demand that names only generated columns (a row
-    # index, a bare row count), or only columns the program later drops, would
-    # otherwise lose every row in silence. Other inputs keep an exact empty
-    # demand (an unused port has no rows to carry; a joined port always demands
-    # its keys).
+    # The root input's rows form the output, so the projected frame must keep
+    # them. Haute projects an input through ``select``, and a ``select`` with no
+    # column is an empty frame, so a demand that names only generated columns
+    # (a row index, a bare row count) needs a carrier column, as does a later
+    # select, aggregation or unpivot left with no column. A ``drop`` of the last
+    # column keeps the frame's height, so it needs none. Without the root
+    # schema the edge or scan keeps one carrier for an empty demand, and a
+    # row-emptying step names the same outputs narrowed or not (a selector over
+    # an unknown schema has already failed), so no step can lose the rows.
+    # Other inputs keep an exact empty demand (an unused port has no rows to
+    # carry; a joined port always demands its keys).
     root_demand = demands_by_input[program.root_input]
     root_schema = normalised_inputs.get(program.root_input)
-    if root_schema is None:
-        emptying = _step_emptying_an_unknown_root(
-            program,
-            evaluated,
-            normalised_inputs,
-            frozenset(root_demand),
-            input_dtypes,
-        )
-        if emptying is not None:
-            return _unsupported(*emptying)
-    elif root_schema and not _ensure_root_carrier(
+    if root_schema and not _ensure_root_carrier(
         program,
         evaluated,
         normalised_inputs,

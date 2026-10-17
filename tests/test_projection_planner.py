@@ -3440,8 +3440,8 @@ _SCANNED_SOURCE_COLUMNS = ("quote_id", "segment", "unused")
         pytest.param(
             "df = df.drop('quote_id').with_columns(SaleFlag=pl.lit(1))",
             {"SaleFlag"},
-            {"quote_id", "segment"},
-            id="dropping-every-demanded-column-keeps-a-row-carrier",
+            {"quote_id"},
+            id="dropping-every-demanded-column-keeps-its-rows",
         ),
         pytest.param("df = helper(df)", {"quote_id"}, None, id="outside-lineage-model"),
     ],
