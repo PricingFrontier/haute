@@ -341,7 +341,8 @@ as "Int64 (whole number)"); secondary actions are quiet text buttons ("+ Add con
 and options the simple case never needs sit behind a "More options" disclosure that opens
 by itself when the saved step uses one (the type-wide selection on select and drop, the
 per-aggregation row filters, and a join's key check, row order and suffix, where "used"
-means differing from a new step's value, so a suffix other than `_right`). Column pickers
+means differing from a new step's value, so a suffix other than `_right` or a row order other
+than the join kind's own). Column pickers
 offer the start input's columns (for an edge from a multi-output producer such as a
 submodel, the columns of that output handle as recorded by the last preview; in `frame`
 mode, the pane's code columns) plus columns derived by earlier steps, never another
@@ -380,7 +381,13 @@ left joins drop the right keys, a right join drops this frame's keys, full and c
 keep both, semi and anti joins add nothing, and any other clashing name takes the suffix);
 with one input connected a new join's input starts unset with the note "Connect the table
 to join on the canvas"; and it offers an optional key-cardinality check on inner, left
-and full joins (cleared when the kind changes to any other) and an output row order.
+and full joins (cleared when the kind changes to any other) and a required output row order.
+A new join keeps its inputs' order (`left_right` for inner, left, full and cross joins,
+`right_left` for a right join and `left` for semi and anti joins, the renderer's
+`DEFAULT_JOIN_ORDER`, which the editor's `DEFAULT_JOIN_ORDER` mirrors under a parity test), and
+changing the kind moves a default order to the new kind's while keeping one the analyst chose;
+"any order" (`none`) stays an explicit choice. A sort is rendered stable (`maintain_order=True`):
+tied rows keep the order they arrived in.
 Unique can drop every duplicate. The forms accept the renderer's own shorthand for a
 persisted step (a null literal without a value, a columnless window aggregate without
 a column, an order key without a direction, a text join without a separator) and
@@ -457,7 +464,8 @@ aggregation's row filter offers no nested expressions. The Combine group also of
 one row per output column pairing a typed value with a name the value suggests, all
 rows sharing the first row's type) and "Unpivot to rows" (stacked columns, index
 chips that exclude them, name and value column fields, and a note that row order is
-not guaranteed). Select and drop take column types beside named columns, and an
+not guaranteed: ordering an unpivot's rows costs three times its time and memory, so a sort
+step after it orders them where that matters). Select and drop take column types beside named columns, and an
 aggregation row can target every column of a type through an `every <type> column` entry
 after the names in its column box, which turns the row into `*<suffix> = <function> of
 every <type> column` with the suffix `_<function>` to start (row count and row filters are
@@ -644,8 +652,8 @@ to the parent node and never a normal-looking entry. WebSocket-synchronised grap
 null-handle API-input edge so the user can repair the source file without silently losing
 topology. Such an edge is displayed with the explicit `<unresolved>` marker and warning state;
 it never crashes the panel or aliases the API input's sole emitted table.
-An Edge Join with missing/ambiguous role edges, an unknown join mode, or invalid key shape remains
-visibly invalid and blocks save; the editor never infers a role or silently substitutes join
+An Edge Join with missing/ambiguous role edges, an unknown join mode, a missing or unknown row
+order, or invalid key shape remains visibly invalid and blocks save; the editor never infers a role or silently substitutes join
 keys. Edge Join diagnostics use the danger/error treatment rather than warning colours. Empty or
 otherwise invalid visible join-key controls expose `aria-invalid` and a red border; when a
 non-cross join has no keys, this applies to the required control or controls in the active key

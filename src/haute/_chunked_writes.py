@@ -28,7 +28,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import IO, Any, Literal, cast
+from typing import Any, Literal
 
 import polars as pl
 import pyarrow.parquet as pq
@@ -36,7 +36,6 @@ import pyarrow.parquet as pq
 from haute._edge_join import build_edge_join_kwargs
 from haute._execution_context import ExecutionContext, current_execution_context
 from haute._file_ops import ensure_disk_headroom
-from haute._hashing import HashingWriter
 from haute._logging import get_logger
 from haute._polars_utils import (
     atomic_write,
@@ -273,8 +272,6 @@ def _join_shape(recipe: JoinRecipe) -> tuple[_JoinShape | None, str | None]:
         base_keys = _keys(kwargs.get("left_on"))
         join_keys = _keys(kwargs.get("right_on"))
     base_drives = how != "right" and not (how == "cross" and order in {"right", "right_left"})
-    if how == "full" and order is not None:
-        return None, "full_join_ordered"
     if order is not None:
         driving_order = {"left", "left_right"} if base_drives else {"right", "right_left"}
         if order not in driving_order:
@@ -358,47 +355,9 @@ class _Parts:
         if self.execution_context is not None:
             self.execution_context.record_chunk()
 
-    def collect_and_write(self, lf: pl.LazyFrame) -> None:
-        """Compute a bounded part in memory and write it.
-
-        Used for ordered joins: the in-memory engine is the reference for a
-        join's documented ``maintain_order``, and a part is bounded by
-        construction. Unordered parts are sunk natively, which is faster.
-        """
-        frame = execution_collect(
-            lf.select(
-                [pl.col(name).cast(dtype, strict=True) for name, dtype in self.schema.items()]
-            ),
-            execution_context=self.execution_context,
-            engine="in-memory",
-        )
-        if self.execution_context is not None:
-            self.execution_context.checkpoint(label="chunked_write", node_id=self.node_id)
-        name = part_name(len(self.names))
-        path = self.directory / name
-        ensure_disk_headroom(self.directory, int(frame.estimated_size()))
-        with atomic_write(path) as tmp:
-            with HashingWriter(open(tmp, "wb")) as writer:
-                frame.write_parquet(
-                    cast("IO[bytes]", writer),
-                    compression="lz4" if self.fast_checkpoint else "zstd",
-                )
-            digest = writer.hexdigest()
-        self.names.append(name)
-        self.digests[name] = digest
-        if self.execution_context is not None:
-            self.execution_context.record_bytes_written(path.stat().st_size)
-            self.execution_context.record_chunk()
-
-    def write_join_part(self, lf: pl.LazyFrame, *, ordered: bool) -> None:
-        if ordered:
-            self.collect_and_write(lf)
-        else:
-            self.sink(lf)
-
     def ensure_one(self) -> None:
         if not self.names:
-            self.collect_and_write(pl.DataFrame(schema=self.schema).lazy())
+            self.sink(pl.DataFrame(schema=self.schema).lazy())
 
 
 def _chunk_rows(chunk_rows: int | None) -> int:
@@ -500,7 +459,6 @@ def _join_within_memory_budget(
         not isinstance(execution_context, ExecutionContext)
         or recipe.finish is not _identity
         or shape.how == "cross"
-        or shape.kwargs.get("maintain_order") not in (None, "none")
         or not sliceable(recipe.base)
         or not sliceable(recipe.join)
     ):
@@ -984,9 +942,7 @@ def _write_chunked_join(
                     )
                 )
                 left, right = (chunk, lookup_chunk) if shape.base_drives else (lookup_chunk, chunk)
-                parts.write_join_part(
-                    finish(left.lazy().join(right.lazy(), **kwargs)), ordered=keep_lookup_order
-                )
+                parts.sink(finish(left.lazy().join(right.lazy(), **kwargs)))
         return counter[0]
 
     driving, lookup = (base, join) if shape.base_drives else (join, base)
@@ -1013,8 +969,9 @@ def _write_chunked_join(
         )
 
     if shape.how == "full":
-        # Lookup rows no driving row matched, once each: the full join of an
-        # empty base with them has exactly the full join's shape for them.
+        # Lookup rows no driving row matched, once each and in the lookup's
+        # order, after every driving row, as an ordered full join places them:
+        # the full join of an empty base with them has exactly its shape.
         empty_base = pl.DataFrame(schema=base.collect_schema()).lazy()
         lookup_total = row_count(join, execution_context=execution_context)
         for offset in range(0, lookup_total, rows):
@@ -1034,6 +991,7 @@ def _write_chunked_join(
                 left_on=shape.join_keys,
                 right_on=shape.base_keys,
                 how="anti",
+                maintain_order="left" if keep_lookup_order else "none",
             )
             parts.sink(finish(empty_base.join(unmatched, **kwargs)))
     return counter[0]
@@ -1099,7 +1057,7 @@ class _ChunkJoin:
             joined = frame.lazy().join(matched, **self.shape.kwargs)
         else:
             joined = matched.join(frame.lazy(), **self.shape.kwargs)
-        self.parts.write_join_part(self.finish(joined), ordered=self.keep_lookup_order)
+        self.parts.sink(self.finish(joined))
 
     def write(self, chunk: pl.DataFrame) -> None:
         if self.shape.how in {"semi", "anti"}:

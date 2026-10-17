@@ -249,10 +249,11 @@ describe("EdgeJoinEditor", () => {
       how: "left",
       on: ["policy_id"],
       suffix: "_lookup",
+      maintainOrder: "left_right",
     })
 
     fireEvent.change(screen.getByLabelText("Join Type"), { target: { value: "inner" } })
-    expect(onUpdate).toHaveBeenCalledWith("how", "inner")
+    expect(onUpdate).toHaveBeenCalledWith({ how: "inner", maintainOrder: "left_right" })
 
     fireEvent.change(screen.getByLabelText("Same-name key 1"), { target: { value: "state" } })
     expect(onUpdate).toHaveBeenCalledWith({ on: ["state"], leftOn: [], rightOn: [] })
@@ -281,16 +282,29 @@ describe("EdgeJoinEditor", () => {
       how: "left",
       leftOn: ["policy_id"],
       rightOn: ["lookup_policy_id"],
+      maintainOrder: "left_right",
     })
 
     fireEvent.change(screen.getByLabelText("Join Type"), { target: { value: "cross" } })
 
     expect(onUpdate).toHaveBeenCalledWith({
       how: "cross",
+      maintainOrder: "left_right",
       on: [],
       leftOn: [],
       rightOn: [],
     })
+  })
+
+  it("moves a default row order with the join type and keeps a chosen one", () => {
+    const { onUpdate } = renderEditor({ how: "left", on: ["policy_id"], maintainOrder: "left_right" })
+    fireEvent.change(screen.getByLabelText("Join Type"), { target: { value: "right" } })
+    expect(onUpdate).toHaveBeenLastCalledWith({ how: "right", maintainOrder: "right_left" })
+
+    const chosen = renderEditor({ how: "left", on: ["policy_id"], maintainOrder: "none" })
+    fireEvent.change(within(chosen.container).getByLabelText("Join Type"), { target: { value: "anti" } })
+    expect(chosen.onUpdate).toHaveBeenLastCalledWith({ how: "anti", maintainOrder: "none" })
+    expect(within(within(chosen.container).getByLabelText("Maintain Order")).queryByRole("option", { name: "Not set" })).not.toBeInTheDocument()
   })
 
   it("switches between same-name and paired key modes without leaving conflicting config", () => {

@@ -1038,7 +1038,8 @@ def test_dynamic_operations_and_control_flow_fail_closed(code: str) -> None:
         ),
         (
             (
-                "df = left.join(middle, on='id').join(right, on='id')"
+                "df = left.join(middle, on='id', maintain_order='left_right')"
+                ".join(right, on='id', maintain_order='left_right')"
                 ".select(['left_value', 'middle_value', 'right_value'])"
             ),
             {

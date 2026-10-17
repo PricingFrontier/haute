@@ -642,10 +642,18 @@ hands over its write's digests the same way:
   raises `RuntimeError` naming the expected and written counts if they disagree, so a short or
   over-long read fails loudly instead of publishing a wrong part.
   A `semi`/`anti` join reads only the lookup's distinct keys. A `full` join adds the lookup
-  rows no driving row matched, once each, as the full join of an empty base with them.
-  `maintain_order` naming the driving side keeps Polars' order (ordered parts are collected
-  with the in-memory engine, the reference for join order); a `full` join with an order, or
-  an order led by the lookup side, is written natively (`native_reason`).
+  rows no driving row matched, once each and in the lookup's order, after every driving
+  row, as the full join of an empty base with them: where an ordered full join places them.
+  Every join states its order (`maintainOrder` is required). An order naming the driving
+  side keeps Polars' order: each part is sunk on the streaming engine, which keeps a
+  `maintain_order` join's order on Polars 2, its matches read in the lookup's order, so the
+  parts read back as the native join row for row and in order; an order led by the lookup
+  side is written natively (`native_reason="ordered_by_lookup_side"`). Measured on Polars
+  2.0 with 500,000-row parts: sinking an ordered part instead of collecting it in memory
+  peaked 13% to 21% lower at the same time (four million rows against 1.2 million), and
+  chunking an ordered full join peaked 29% to 36% lower than one native sink at 2.2 to 2.6
+  times the time (five and twenty million rows against 2.4 million), the trade this
+  writer makes. The whole-join native path below applies to ordered joins too.
 - **Sliced**: a sliceable frame is written one `slice(offset, chunk_rows)` per part.
 - **Input-sliced** (`recipe=WriteRecipe(input, fn, finish, reason, blocking_operator)`): when the frame itself is not sliceable, but the node is proven chunk-local, the recipe applies its builder function and post-shaping to each `slice(offset, chunk_rows)` of `recipe.input`. Before writing, equivalence between `recipe.native()` and `frame` is verified by schema and `explain(optimized=False)` (two in-memory frames of equal schema being indistinguishable this way). If `recipe.input` is not sliceable, the write falls back to native with `input_not_sliceable`. A rejected recipe (no function) falls back to native carrying the decision's reason and blocking operator.
 - **Native**: anything else is one native sink into `part-00000.parquet`.
@@ -3119,7 +3127,8 @@ conservative estimate fits that working allowance. Initially admit only joins
 whose output cardinality is bounded by the native validation contract (`1:1`,
 `m:1`, `1:m`) or semi/anti semantics. Bound left/right/full unmatched rows too;
 unknown many-to-many multiplicity continues through the current chunked path.
-Keep custom finish recipes on that path until their expansion is established.
+Keep custom finish recipes on that path until their expansion is established. A
+join's stated order does not keep it off this path: Polars 2's sink keeps it.
 Estimate three times the sum of decoded inputs and maximum decoded output, with a
 64 MiB allowance for native reader/hash/allocator setup; this deliberately
 exceeds the observed fixed-width test peaks. No context/budget means no such

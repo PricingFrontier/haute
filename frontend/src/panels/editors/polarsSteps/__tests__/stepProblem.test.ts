@@ -18,7 +18,7 @@ describe("stepProblem", () => {
       { id: "w", kind: "with_column", name: "n", expr: { type: "function", fn: "round", operand: col("a"), args: [{ kind: "literal", type: "number", value: 2 }] } },
       { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", match: "any", conditions: [{ column: "a", operator: "is_null" }], then: col("a"), otherwise: col("b") } },
       { id: "g", kind: "group_by", keys: ["k"], aggregations: [{ column: "a", agg: "sum", name: "s" }] },
-      { id: "j", kind: "join", input: "rates", how: "left", leftOn: ["k"], rightOn: ["k"], suffix: "_r" },
+      { id: "j", kind: "join", input: "rates", how: "left", leftOn: ["k"], rightOn: ["k"], suffix: "_r", maintainOrder: "left_right" },
       { id: "fn", kind: "fill_null", columns: [], fill: { kind: "strategy", strategy: "forward" } },
       { id: "v", kind: "variable", name: "x", value: { kind: "literal", type: "number", value: 1 } },
       {
@@ -156,7 +156,7 @@ describe("stepProblem", () => {
     expect(
       summarizeStep({ id: "g", kind: "group_by", keys: [], aggregations: [{ column: "a", agg: "sum", name: "s", where: { match: "all", conditions: [] } }, { column: "", agg: "len", name: "n" }] }),
     ).toBe("whole frame: s = sum of a where …, n = row count")
-    expect(summarizeStep({ id: "j", kind: "join", input: "rates", how: "left", leftOn: ["k"], rightOn: ["k"], suffix: "_r", validate: "m:1" })).toBe("left join rates on k (m:1)")
+    expect(summarizeStep({ id: "j", kind: "join", input: "rates", how: "left", leftOn: ["k"], rightOn: ["k"], suffix: "_r", validate: "m:1", maintainOrder: "left_right" })).toBe("left join rates on k (m:1)")
   })
 
   it.each([
@@ -186,7 +186,9 @@ describe("stepProblem", () => {
     ["concat with a malformed part", { id: "w", kind: "with_column", name: "n", expr: { type: "concat", parts: [col("a"), "b"], separator: "" } }, /part 2 is missing its value/],
     ["null literal carrying a value", { id: "w", kind: "with_column", name: "n", expr: { type: "operand", operand: { kind: "literal", type: "null", value: 0 } } }, /malformed value/],
     ["aggregation with a malformed row filter", { id: "g", kind: "group_by", keys: [], aggregations: [{ column: "a", agg: "sum", name: "s", where: { match: "all" } }] }, /filter is missing its conditions/],
-    ["join with a malformed validation", { id: "j", kind: "join", input: "r", how: "left", leftOn: [], rightOn: [], suffix: "", validate: 1 }, /malformed validation/],
+    ["join with a malformed validation", { id: "j", kind: "join", input: "r", how: "left", leftOn: [], rightOn: [], suffix: "", maintainOrder: "left_right", validate: 1 }, /malformed validation/],
+    ["join without a row order", { id: "j", kind: "join", input: "r", how: "left", leftOn: [], rightOn: [], suffix: "" }, /maintainOrder/],
+    ["join with an unknown row order", { id: "j", kind: "join", input: "r", how: "left", leftOn: [], rightOn: [], suffix: "", maintainOrder: "sideways" }, /unknown row order/],
     ["unknown kind", { id: "x", kind: "explode" }, /Unknown step kind/],
     ["prototype kind", { id: "x", kind: "constructor" }, /Unknown step kind/],
     ["prototype kind toString", { id: "x", kind: "toString" }, /Unknown step kind/],

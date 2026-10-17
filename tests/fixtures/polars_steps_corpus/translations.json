@@ -1948,6 +1948,7 @@
         "kind": "join",
         "input": "accepted_policies",
         "how": "anti",
+        "maintainOrder": "left",
         "leftOn": [
           "policy_id"
         ],
@@ -2016,6 +2017,7 @@
         "kind": "join",
         "input": "large_open_claims",
         "how": "semi",
+        "maintainOrder": "left",
         "leftOn": [
           "policy_id"
         ],
@@ -2096,6 +2098,7 @@
         "kind": "join",
         "input": "benchmarks",
         "how": "inner",
+        "maintainOrder": "left_right",
         "leftOn": [
           "region",
           "channel"
@@ -2177,6 +2180,7 @@
         "kind": "join",
         "input": "scenarios",
         "how": "cross",
+        "maintainOrder": "left_right",
         "leftOn": [],
         "rightOn": [],
         "suffix": "_right"
@@ -2896,6 +2900,7 @@
         "kind": "join",
         "input": "claims",
         "how": "inner",
+        "maintainOrder": "left_right",
         "leftOn": [
           "policy_id",
           "claim_id"
@@ -3065,6 +3070,7 @@
         "kind": "join",
         "input": "rates",
         "how": "inner",
+        "maintainOrder": "left_right",
         "leftOn": [
           "region"
         ],
@@ -3332,6 +3338,7 @@
           "kind": "join",
           "input": "accepted_claims",
           "how": "inner",
+          "maintainOrder": "left_right",
           "leftOn": [
             "policy_id"
           ],
@@ -3420,6 +3427,7 @@
         "kind": "join",
         "input": "history",
         "how": "left",
+        "maintainOrder": "left_right",
         "leftOn": [
           "quote_id"
         ],

@@ -1008,6 +1008,7 @@ def test_strategy_diagnostic_reports_edge_join_keys_as_join_key_provenance() -> 
                         "nodeType": "edgeJoin",
                         "config": {
                             "how": "left",
+                            "maintainOrder": "left_right",
                             "leftOn": ["base_key"],
                             "rightOn": ["lookup_key"],
                             "contract": "opaque",
@@ -1072,7 +1073,12 @@ def _joined_then_code_parts(code: str, suffix: str = ""):
             "data": {
                 "label": joined,
                 "nodeType": "edgeJoin",
-                "config": {"how": "left", "leftOn": ["quote_id"], "rightOn": ["quote_id"]},
+                "config": {
+                    "how": "left",
+                    "maintainOrder": "left_right",
+                    "leftOn": ["quote_id"],
+                    "rightOn": ["quote_id"],
+                },
             },
         },
         {

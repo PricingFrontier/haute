@@ -30,6 +30,8 @@ from haute._polars_io_registry import (
     validate_data_output_config,
 )
 from haute._polars_steps import (
+    DEFAULT_JOIN_ORDER,
+    JOIN_MAINTAIN_ORDER,
     PolarsStepError,
     is_stepped_config,
     render_polars_steps,
@@ -439,6 +441,14 @@ def _validator_issues(
     ) as exc:
         return [_issue("", "invalid_group", str(exc))]
     issues: list[RecoveryIssue] = []
+    if node_type is NodeType.EDGE_JOIN and config.get("maintainOrder") not in JOIN_MAINTAIN_ORDER:
+        issues.append(
+            _issue(
+                "maintainOrder",
+                "required" if config.get("maintainOrder") is None else "invalid_value",
+                "Choose the joined rows' order: none, left, right, left_right or right_left.",
+            )
+        )
     if node_type is NodeType.LIVE_SWITCH:
         mapping = config.get("input_scenario_map")
         if not isinstance(mapping, dict):
@@ -751,13 +761,16 @@ def reconcile_config(
         for key, default in defaults.items():
             if key in source or key == "steps":
                 continue
+            reason = "Missing from the saved configuration; the palette default was used."
+            if node_type is NodeType.EDGE_JOIN and key == "maintainOrder":
+                # The order a new join of this type gets, as the editor writes it.
+                default = DEFAULT_JOIN_ORDER.get(str(candidate.get("how")), default)
+                reason = (
+                    "Missing from the saved configuration; the order for this join type was used."
+                )
             candidate[key] = default
             changes.append(
-                RecoveryFieldChange(
-                    path=_pointer("", key),
-                    outcome="defaulted",
-                    reason="Missing from the saved configuration; the palette default was used.",
-                )
+                RecoveryFieldChange(path=_pointer("", key), outcome="defaulted", reason=reason)
             )
     issues.extend(validate_recovery_config(node_type, candidate))
     return ConfigRecoveryResult(candidate, changes, issues)

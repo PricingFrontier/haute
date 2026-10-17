@@ -52,6 +52,7 @@ __all__ = [
     "stepped_surface_allows_input_references",
     "stepped_surface_for",
     "AGGREGATIONS",
+    "DEFAULT_JOIN_ORDER",
     "JOIN_MAINTAIN_ORDER",
     "JOIN_VALIDATE",
     "JOIN_VALIDATED_HOW",
@@ -68,6 +69,7 @@ __all__ = [
     "OPERATORS",
     "STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE",
     "STEP_KINDS",
+    "STEP_SPELLINGS",
     "PolarsStepError",
     "RenderedSteps",
     "ResolvedFreeCode",
@@ -320,6 +322,21 @@ JOIN_VALIDATE: tuple[str, ...] = ("1:1", "m:1", "1:m", "m:m")
 #: Join kinds Polars can validate; semi, anti, right and cross joins refuse ``validate``.
 JOIN_VALIDATED_HOW: tuple[str, ...] = ("inner", "left", "full")
 JOIN_MAINTAIN_ORDER: tuple[str, ...] = ("none", "left", "right", "left_right", "right_left")
+#: The row order the editor gives a new join of each kind: both inputs' order
+#: where the join returns rows of both (``left`` alone would leave the order of
+#: one row's matches open), the right input's first for a right join, and the
+#: left input's for a semi or anti join, which returns left rows only. On Polars
+#: 2's streaming engine an ordered join costs memory only where something reads
+#: the order.
+DEFAULT_JOIN_ORDER: dict[str, str] = {
+    "inner": "left_right",
+    "left": "left_right",
+    "full": "left_right",
+    "cross": "left_right",
+    "right": "right_left",
+    "semi": "left",
+    "anti": "left",
+}
 CAST_DTYPES: tuple[str, ...] = (
     "Int8",
     "Int16",
@@ -412,7 +429,7 @@ _STEP_KEYS: dict[str, frozenset[str]] = {
 
 #: Keys a step may omit; every other key in ``_STEP_KEYS`` is required.
 _OPTIONAL_STEP_KEYS: dict[str, frozenset[str]] = {
-    "join": frozenset({"validate", "maintainOrder"}),
+    "join": frozenset({"validate"}),
     "select": frozenset({"dtypes"}),
     "drop": frozenset({"dtypes"}),
 }
@@ -437,11 +454,15 @@ def validate_polars_steps(steps: object) -> list[dict[str, Any]]:
     return _Renderer(steps, None, "input").steps
 
 
-#: How the renderer spells its calls: ``current``, or ``earlier`` for the
+#: How the renderer spells its calls: ``current``; ``earlier`` for the
 #: spelling it used before (lists for keys, aggregations and columns, and
-#: Polars' sort and unique defaults spelled out), which only serves to
-#: recognise a body saved by it.
-StepSpelling = Literal["current", "earlier"]
+#: Polars' sort and unique defaults spelled out); and ``unordered_sort``, the
+#: current spelling as it was before a sort kept its ties' order. The last two
+#: only serve to recognise a body saved by them, whose steps are kept and
+#: rendered in the current spelling at the next save.
+StepSpelling = Literal["current", "earlier", "unordered_sort"]
+#: Every spelling a saved body may be in, current first.
+STEP_SPELLINGS: tuple[StepSpelling, ...] = ("current", "earlier", "unordered_sort")
 
 
 def render_polars_steps(
@@ -458,7 +479,7 @@ def render_polars_steps(
     comes from: ``input`` requires a leading ``source`` step (and refuses an
     empty list); ``frame`` refuses a ``source`` step anywhere and renders an
     empty list to empty code. ``spelling`` chooses the call spelling (see
-    :data:`StepSpelling`); the program is the same either way.
+    :data:`StepSpelling`); only the current one is ever executed or saved.
     """
     if start not in STEP_STARTS:
         raise ValueError(f"Unknown step start {start!r}; expected one of {STEP_STARTS!r}.")
@@ -686,6 +707,7 @@ class _Renderer:
         self.input_names = None if input_names is None else frozenset(input_names)
         self.start = start
         self.earlier = spelling == "earlier"
+        self.stable_sort = spelling == "current"
         self.variables: set[str] = set()
         self.constant_references: list[ConstantReference] = []
         self.index = 0
@@ -1334,12 +1356,16 @@ class _Renderer:
             return (
                 f"df = df.sort({columns!r}, descending={descending!r}, nulls_last={nulls_last!r})"
             )
-        # Polars' defaults (ascending, nulls first) are left unsaid.
+        # Polars' defaults (ascending, nulls first) are left unsaid. A stable
+        # sort keeps tied rows in the order they arrive, so the same input
+        # always gives the same rows in the same order.
         options = ""
         if any(descending):
             options += f", descending={descending[0] if len(descending) == 1 else descending!r}"
         if nulls_last:
             options += ", nulls_last=True"
+        if self.stable_sort:
+            options += ", maintain_order=True"
         return f"df = df.sort({', '.join(repr(c) for c in columns)}{options})"
 
     def _render_unique(self, step: Mapping[str, Any]) -> str:
@@ -1483,9 +1509,8 @@ class _Renderer:
             if how not in JOIN_VALIDATED_HOW:
                 raise self.fail("Only inner, left and full joins can validate their keys.")
             extra += f", validate={validate!r}"
-        if "maintainOrder" in step:
-            order = self._choice(step["maintainOrder"], JOIN_MAINTAIN_ORDER, "Join order")
-            extra += f", maintain_order={order!r}"
+        order = self._choice(step["maintainOrder"], JOIN_MAINTAIN_ORDER, "Join order")
+        extra += f", maintain_order={order!r}"
         if how == "cross":
             if left_on or right_on:
                 raise self.fail("A cross join takes no key columns.")

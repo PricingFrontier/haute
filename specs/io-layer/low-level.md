@@ -382,19 +382,21 @@ generations to their owners when readable. Inventory takes no lock and mutates n
   error under each. A projected read is the full read restricted to those columns, dtypes
   included.
 
-  Row order, however, belongs to the *seam*, not to the profile. When this was measured a
-  generation was what `bounded_sink` wrote, and the same join sank in the same order on
-  every run; a generation is now what `write_parts` wrote, whose chunked join keeps only its
-  driving chunks' order. Neither of the other two materialisation seams promised it either. Concatenating
-  `bounded_collect_batches(..., maintain_order=True)` for a 20,000-row `1:1` join produced
-  a frame beginning at `q1820` on one run and `q0` on the next — the seam the chunked,
-  deploy-container and optimiser-apply paths consume — and the interactive preview reordered
-  a five-row join from run to run. Both carry the same rows and the same schema.
+  Row order, however, belongs to the *query*, not to the profile or the seam. A query that
+  defines its order keeps it through every seam: on Polars 2 a join states its order
+  (`maintainOrder` is required on the Join step and the Edge Join) and a Sort rows step is
+  stable, and a collect, `bounded_sink`, `bounded_collect_batches` and `write_parts`' chunked
+  join (whose parts read back as the native join row for row) all return such a query's rows
+  in its order. A query that leaves its order undefined (a join stated `none`, an unpivot, a
+  join in user code without `maintain_order`) has none: Polars 2's streaming engine returns
+  its rows in an order that can change from run to run, as Polars 1 already did for
+  unordered joins (a 20,000-row `1:1` join read through `bounded_collect_batches` began at
+  `q1820` on one run and `q0` on the next).
 
-  That is the measurement. The policy over it is that row order is not part of the snapshot
-  contract: rows carry the meaning here and their order does not, so a preview's captures
-  are admitted to the `bounded` class and a run may seed from them, with nothing gated on
-  which execution wrote a generation.
+  The policy over that is that row order is not part of the snapshot contract: rows carry
+  the meaning here and their order does not, so a preview's captures are admitted to the
+  `bounded` class and a run may seed from them, with nothing gated on which execution wrote
+  a generation.
 
   A capture must still be *sunk* rather than published from collected batches, whatever
   profile performed it, so that a generation's contents are the ones its writer computed.

@@ -34,12 +34,13 @@ function edge(
   return { id, source, target, targetHandle, sourceHandle }
 }
 
+/** An Edge Join node; its row order is the default unless the test states one. */
 function edgeJoin(config: Record<string, unknown>): Node {
   return node("join", {
     data: {
       label: "Edge Join",
       nodeType: "edgeJoin",
-      config,
+      config: { maintainOrder: "left_right", ...config },
     },
   })
 }
@@ -142,6 +143,16 @@ describe("edgeJoinValidation", () => {
     )
   })
 
+  it("flags an edgeJoin whose row order is missing or unknown", () => {
+    for (const maintainOrder of [undefined, "", "sideways"]) {
+      const nodes = [node("base"), node("lookup"), edgeJoin({ how: "left", on: ["policy_id"], maintainOrder })]
+
+      const issue = findFirstInvalidEdgeJoin(nodes, connectedEdges)
+
+      expect(issue?.analysis.diagnostics).toContain("Choose the joined rows' order under Maintain Order.")
+    }
+  })
+
   it("flags cross edgeJoin configs that still carry join keys", () => {
     const nodes = [
       node("base"),
@@ -191,7 +202,7 @@ describe("edgeJoinValidation", () => {
   // the caller vouches for may be quoted back as "the current upstream
   // columns" — a save gate that blocks on a stale one blocks a valid save.
   describe("column diagnostics only speak for a vouched-for stash", () => {
-    const missingKeyConfig = { how: "left", on: ["policy_id"] }
+    const missingKeyConfig = { how: "left", on: ["policy_id"], maintainOrder: "left_right" }
     const MISSING = "Same-name key policy_id is not in the current upstream columns."
 
     it("reports a missing key when both stashes match the fence", () => {

@@ -1810,6 +1810,7 @@ def _renamed_edge_join(project: Path, selected: list[str] | None) -> PipelineGra
     pl.DataFrame({"_id": [1, 2]}).write_parquet(project / "keys.parquet")
     config: dict[str, Any] = {
         "how": "left",
+        "maintainOrder": "left_right",
         "on": ["_id"],
         "column_renames": {"_id": "identifier", "segment": "region"},
     }
@@ -1947,6 +1948,7 @@ def test_preview_join_capture_is_chunked_into_parts_and_downstream_reads_them(
 
     join_config: dict[str, Any] = {
         "how": "left",
+        "maintainOrder": "left_right",
         "on": ["_id"],
         "selected_columns": ["_id", "premium", "segment"],
         "column_renames": {"_id": "identifier", "segment": "region"},

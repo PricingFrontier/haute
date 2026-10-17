@@ -22,6 +22,7 @@ import {
   BINARY_OPERATORS,
   CAST_DTYPES,
   COLUMNLESS_AGGREGATIONS,
+  DEFAULT_JOIN_ORDER,
   DTYPE_OPTIONS,
   FILL_STRATEGY_OPTIONS,
   FUNCTIONS,
@@ -38,6 +39,7 @@ import {
   defaultExpr,
   defaultLiteral,
   exprProblem,
+  joinOrderAfterHowChange,
   literal,
   suggestedAggregationName,
   type FunctionArg,
@@ -1163,7 +1165,7 @@ function JoinForm({ step, onChange, ctx }: FormProps<JoinStep>) {
   const setPairs = (next: Array<[string, string]>) => onChange({ ...step, leftOn: next.map((p) => p[0]), rightOn: next.map((p) => p[1]) })
   const setPair = (index: number, pair: [string, string]) => setPairs(pairs.map((p, i) => (i === index ? pair : p)))
   const nothingToJoin = step.input === "" && ctx.inputNames.length <= 1
-  const used = step.validate !== undefined || step.maintainOrder !== undefined || step.suffix !== "_right"
+  const used = step.validate !== undefined || step.maintainOrder !== DEFAULT_JOIN_ORDER[step.how] || step.suffix !== "_right"
   return (
     <>
       <Sentence>
@@ -1173,7 +1175,9 @@ function JoinForm({ step, onChange, ctx }: FormProps<JoinStep>) {
             value={step.how}
             options={JOIN_HOW_OPTIONS}
             onChange={(how) => {
-              const next = JOIN_VALIDATED_HOW.has(how) ? { ...step, how } : omitKeys({ ...step, how }, ["validate"])
+              const maintainOrder = joinOrderAfterHowChange(step.maintainOrder, step.how, how)
+              const reordered = { ...step, how, maintainOrder }
+              const next = JOIN_VALIDATED_HOW.has(how) ? reordered : omitKeys(reordered, ["validate"])
               onChange(how === "cross" ? { ...next, leftOn: [], rightOn: [] } : next)
             }}
             ariaLabel="Join type"
@@ -1231,9 +1235,9 @@ function JoinForm({ step, onChange, ctx }: FormProps<JoinStep>) {
         )}
         <Field label="Output row order">
           <SelectField
-            value={step.maintainOrder ?? OFF}
-            options={[{ value: OFF, label: "engine default" }, ...JOIN_MAINTAIN_ORDER]}
-            onChange={(order) => onChange(order === OFF ? omitKeys(step, ["maintainOrder"]) : { ...step, maintainOrder: order as JoinMaintainOrder })}
+            value={step.maintainOrder}
+            options={JOIN_MAINTAIN_ORDER}
+            onChange={(order) => onChange({ ...step, maintainOrder: order as JoinMaintainOrder })}
             ariaLabel="Join row order"
           />
         </Field>

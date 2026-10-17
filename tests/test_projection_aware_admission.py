@@ -326,6 +326,7 @@ def _joined_group_by_graph(tmp_path, *, validate: str = "m:m"):
                         "nodeType": "edgeJoin",
                         "config": {
                             "how": "inner",
+                            "maintainOrder": "left_right",
                             "on": ["id"],
                             "validate": validate,
                         },

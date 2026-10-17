@@ -105,6 +105,14 @@ def test_expression_depth_cap_agrees() -> None:
     assert int(match.group(1)) == steps.MAX_EXPR_DEPTH
 
 
+def test_default_join_order_agrees() -> None:
+    """A new join's row order, and the order a join type change moves to, match the renderer."""
+    editor = dict(re.findall(r'^\s+(\w+): "(\w+)",?$', declaration("DEFAULT_JOIN_ORDER"), re.M))
+    assert editor == steps.DEFAULT_JOIN_ORDER
+    assert set(editor) == set(steps.JOIN_HOW)
+    assert set(editor.values()) <= set(steps.JOIN_MAINTAIN_ORDER)
+
+
 STEP_INPUTS = CATALOGUE.parents[3] / "utils" / "polarsStepInputs.ts"
 
 
@@ -149,6 +157,7 @@ def test_join_output_fixture_matches_polars(case: dict[str, object]) -> None:
         "leftOn": case["leftOn"],
         "rightOn": case["rightOn"],
         "suffix": fixture["suffix"],
+        "maintainOrder": steps.DEFAULT_JOIN_ORDER[str(case["how"])],
     }
     code = steps.render_polars_steps(
         [{"id": "s", "kind": "source", "input": "quotes"}, join],

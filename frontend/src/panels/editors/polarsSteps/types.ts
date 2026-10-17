@@ -135,8 +135,8 @@ export type JoinStep = StepBase & {
   suffix: string
   /** Key cardinality Polars checks at run time; absent means unchecked. */
   validate?: JoinValidate
-  /** Output row order; absent means the engine default. */
-  maintainOrder?: JoinMaintainOrder
+  /** Output row order, always stated: Polars 2 keeps a join's order only when told to. */
+  maintainOrder: JoinMaintainOrder
 }
 export type ConcatStep = StepBase & { kind: "concat"; inputs: string[]; how: "vertical" | "diagonal" }
 export type FillNullStep = StepBase & {

@@ -107,7 +107,7 @@ def _column_config_graph(tmp_path: Path, node_type: NodeType, selected: bool) ->
             edges.append(
                 GraphEdge(id="join", source="lookup", target="subject", targetHandle="join")
             )
-            config.update({"on": ["_id"], "how": "left"})
+            config.update({"on": ["_id"], "how": "left", "maintainOrder": "left_right"})
     nodes.append(
         GraphNode(id="subject", data=NodeData(label="subject", nodeType=node_type, config=config))
     )

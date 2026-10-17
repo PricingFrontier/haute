@@ -290,7 +290,7 @@ def test_multi_frame_api_input_run_matches_executor_by_each_frame_label(
             },
         ],
         code=(
-            "df = quotes.join(drivers, on='policy_id', how='inner')"
+            "df = quotes.join(drivers, on='policy_id', how='inner', maintain_order='left_right')"
             ".select('policy_id', 'driver_id')"
         ),
         ports=["quotes", "drivers"],
@@ -514,7 +514,12 @@ def test_edge_join_run_matches_executor_batch(tmp_path):
     regions = _const(
         "r", "regions", [{"name": "key", "value": 1}, {"name": "region", "value": "north"}]
     )
-    join = _node("j", "join_regions", NodeType.EDGE_JOIN, {"how": "left", "on": ["key"]})
+    join = _node(
+        "j",
+        "join_regions",
+        NodeType.EDGE_JOIN,
+        {"how": "left", "maintainOrder": "left_right", "on": ["key"]},
+    )
     graph = PipelineGraph(
         nodes=[policies, regions, join],
         edges=[_edge("p", "j", target_port="base"), _edge("r", "j", target_port="join")],

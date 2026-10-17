@@ -490,6 +490,7 @@ def _edge_join_graph(*, keys: dict[str, object], base_outputs, join_outputs):
     """Build a base/join edge-join graph with concrete-contract parents."""
     join_config: dict[str, object] = {
         "how": "left",
+        "maintainOrder": "left_right",
         "contract": "opaque",
         **keys,
     }
@@ -729,6 +730,7 @@ def test_edge_join_projection_keeps_full_width_when_a_parent_is_opaque():
                                 "nodeType": "edgeJoin",
                                 "config": {
                                     "how": "left",
+                                    "maintainOrder": "left_right",
                                     "on": ["quote_id"],
                                     "contract": "opaque",
                                 },
@@ -791,6 +793,7 @@ def test_edge_join_projection_keeps_parallel_frames_from_one_source_distinct():
                         "nodeType": "edgeJoin",
                         "config": {
                             "how": "left",
+                            "maintainOrder": "left_right",
                             "on": ["quote_id"],
                             "contract": "opaque",
                         },

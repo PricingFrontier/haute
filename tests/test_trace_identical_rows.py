@@ -249,7 +249,12 @@ def test_a_multi_frame_parent_keeps_the_winning_frames_identical_row_count() -> 
             data=NodeData(
                 label="edge",
                 nodeType=NodeType.EDGE_JOIN,
-                config={"how": "inner", "on": ["policy_id"], "suffix": "_right"},
+                config={
+                    "how": "inner",
+                    "maintainOrder": "left_right",
+                    "on": ["policy_id"],
+                    "suffix": "_right",
+                },
             ),
         ),
     }

@@ -317,7 +317,7 @@ class EdgeJoinConfig(TypedDict, total=False):
     suffix: str
     coalesce: bool
     validate: str
-    maintainOrder: str
+    maintainOrder: Required[str]
     selected_columns: list[str]
     column_renames: dict[str, str]
     categorical_levels: dict[str, list[str | None]]

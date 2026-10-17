@@ -174,6 +174,23 @@ export const JOIN_MAINTAIN_ORDER: Array<{ value: JoinMaintainOrder; label: strin
   { value: "left_right", label: "left, then right" },
   { value: "right_left", label: "right, then left" },
 ]
+const JOIN_MAINTAIN_ORDER_VALUES: ReadonlySet<string> = new Set(JOIN_MAINTAIN_ORDER.map((o) => o.value))
+/** The row order a new join of each kind gets (the renderer's `DEFAULT_JOIN_ORDER`). */
+export const DEFAULT_JOIN_ORDER: Record<JoinHow, JoinMaintainOrder> = {
+  inner: "left_right",
+  left: "left_right",
+  full: "left_right",
+  cross: "left_right",
+  right: "right_left",
+  semi: "left",
+  anti: "left",
+}
+/** A join's row order after its kind changes: a default follows the kind; a choice stays. */
+export function joinOrderAfterHowChange(order: string, from: string, to: JoinHow): JoinMaintainOrder {
+  const previousDefault = DEFAULT_JOIN_ORDER[from as JoinHow]
+  if (order === previousDefault || !JOIN_MAINTAIN_ORDER_VALUES.has(order)) return DEFAULT_JOIN_ORDER[to]
+  return order as JoinMaintainOrder
+}
 export const FILL_STRATEGIES: FillStrategy[] = ["forward", "backward", "min", "max", "mean", "zero", "one"]
 /** Fill strategies in plain words, each with its Polars name where it has one. */
 export const FILL_STRATEGY_OPTIONS: Array<{ value: FillStrategy; label: string }> = [
@@ -320,7 +337,7 @@ export function createStep(kind: Exclude<StepKind, "source">, id: string): Step 
     case "group_by":
       return { id, kind, keys: [], aggregations: [{ column: "", agg: "sum", name: "" }] }
     case "join":
-      return { id, kind, input: "", how: "left", leftOn: [], rightOn: [], suffix: "_right" }
+      return { id, kind, input: "", how: "left", leftOn: [], rightOn: [], suffix: "_right", maintainOrder: DEFAULT_JOIN_ORDER.left }
     case "concat":
       return { id, kind, inputs: [], how: "vertical" }
     case "fill_null":
@@ -510,7 +527,7 @@ const REQUIRED_FIELDS: Record<StepKind, Array<[string, Shape]>> = {
   sort: [["keys", "array"], ["nullsLast", "boolean"]],
   unique: [["columns", "array"], ["keep", "string"]],
   group_by: [["keys", "array"], ["aggregations", "array"]],
-  join: [["input", "string"], ["how", "string"], ["leftOn", "array"], ["rightOn", "array"], ["suffix", "string"]],
+  join: [["input", "string"], ["how", "string"], ["leftOn", "array"], ["rightOn", "array"], ["suffix", "string"], ["maintainOrder", "string"]],
   concat: [["inputs", "array"], ["how", "string"]],
   fill_null: [["columns", "array"], ["fill", "object"]],
   limit: [["n", "number"]],
@@ -579,7 +596,7 @@ export function stepProblem(step: unknown): string | null {
       return stringListProblem(record.on, `${where} columns`) ?? stringListProblem(record.index, `${where} index`)
     case "join":
       if (record.validate !== undefined && typeof record.validate !== "string") return `${where} has a malformed validation.`
-      if (record.maintainOrder !== undefined && typeof record.maintainOrder !== "string") return `${where} has a malformed row order.`
+      if (!JOIN_MAINTAIN_ORDER_VALUES.has(record.maintainOrder as string)) return `${where} has an unknown row order.`
       return stringListProblem(record.leftOn, `${where} left keys`) ?? stringListProblem(record.rightOn, `${where} right keys`)
     case "concat":
       return stringListProblem(record.inputs, `${where} inputs`)

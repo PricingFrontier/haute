@@ -1465,6 +1465,7 @@ def test_explicit_build_of_a_join_is_chunked_and_equals_native(
                         "nodeType": "edgeJoin",
                         "config": {
                             "how": "left",
+                            "maintainOrder": "left_right",
                             "on": "policy_id",
                             "selected_columns": ["policy_id", "premium", "claim_amount"],
                             "column_renames": {"claim_amount": "loss"},
@@ -1597,6 +1598,7 @@ def _captured_join_graph(project: Path, claims_path: Path) -> dict[str, Any]:
                         "nodeType": "edgeJoin",
                         "config": {
                             "how": "left",
+                            "maintainOrder": "left_right",
                             "on": "policy_id",
                             "selected_columns": ["policy_id", "premium", "claim_amount"],
                             "column_renames": {"claim_amount": "loss"},

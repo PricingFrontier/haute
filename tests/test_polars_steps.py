@@ -146,6 +146,7 @@ GOLDEN_STEPS: list[dict[str, Any]] = [
         "join",
         input="rates",
         how="left",
+        maintainOrder="left_right",
         leftOn=["region"],
         rightOn=["region"],
         suffix="_rate",
@@ -181,6 +182,7 @@ GOLDEN_CODE = "\n".join(
         '    right_on=["region"],',
         '    how="left",',
         '    suffix="_rate",',
+        '    maintain_order="left_right",',
         ")",
         'df = df.group_by("band", maintain_order=True).agg(',
         '    pl.col("gross").sum().alias("gross_total"),',
@@ -191,7 +193,7 @@ GOLDEN_CODE = "\n".join(
 #: Each golden step's inclusive line range: a statement that would pass 88
 #: columns in the node body (84 at column 0) is laid out over several lines,
 #: as ``ruff format`` lays it out there.
-GOLDEN_STEP_LINES = ((1, 1), (2, 2), (3, 5), (6, 6), (7, 12), (13, 19), (20, 23))
+GOLDEN_STEP_LINES = ((1, 1), (2, 2), (3, 5), (6, 6), (7, 12), (13, 20), (21, 24))
 
 
 def step_text(rendered: RenderedSteps, index: int) -> str:
@@ -254,6 +256,7 @@ LONG_STEPS: list[dict[str, Any]] = [
         "join",
         input="rates",
         how="left",
+        maintainOrder="left_right",
         leftOn=["region"],
         rightOn=["region"],
         suffix="_rates",
@@ -284,6 +287,7 @@ LONG_CODE = "\n".join(
         '    right_on=["region"],',
         '    how="left",',
         '    suffix="_rates",',
+        '    maintain_order="left_right",',
         ")",
         "df = df.head(5)",
     ]
@@ -293,7 +297,7 @@ LONG_CODE = "\n".join(
 def test_long_statements_break_one_argument_per_line() -> None:
     rendered = render_polars_steps(LONG_STEPS, ["quotes", "rates"], start="input")
     assert rendered.code == LONG_CODE
-    assert rendered.step_lines == ((1, 1), (2, 11), (12, 15), (16, 22), (23, 23))
+    assert rendered.step_lines == ((1, 1), (2, 11), (12, 15), (16, 23), (24, 24))
     # The node body holds 88 columns four columns in: 84 at column 0 still fits,
     # 85 breaks.
     fits = f'df = df.filter(pl.col("{"a" * 54}") > 1)'
@@ -464,7 +468,7 @@ def test_free_code_validation_never_executes_the_snippet(tmp_path: Path) -> None
         ),
         (
             step("x", "sort", keys=[{"column": "a", "descending": True}], nullsLast=True),
-            'df = df.sort("a", descending=True, nulls_last=True)',
+            'df = df.sort("a", descending=True, nulls_last=True, maintain_order=True)',
         ),
         (
             step("x", "unique", columns=[], keep="any"),
@@ -475,8 +479,17 @@ def test_free_code_validation_never_executes_the_snippet(tmp_path: Path) -> None
             'df = df.unique(subset=["a"], keep="last", maintain_order=True)',
         ),
         (
-            step("x", "join", input="rates", how="cross", leftOn=[], rightOn=[], suffix="_r"),
-            'df = df.join(rates, how="cross", suffix="_r")',
+            step(
+                "x",
+                "join",
+                input="rates",
+                how="cross",
+                maintainOrder="left_right",
+                leftOn=[],
+                rightOn=[],
+                suffix="_r",
+            ),
+            'df = df.join(rates, how="cross", suffix="_r", maintain_order="left_right")',
         ),
         (
             step("x", "concat", inputs=["rates"], how="diagonal"),
@@ -738,7 +751,16 @@ INVALID_PAYLOADS: list[tuple[str, list[Any] | object, int | None, str]] = [
         "cross join with keys",
         [
             source(),
-            step("j", "join", input="rates", how="cross", leftOn=["a"], rightOn=[], suffix="_r"),
+            step(
+                "j",
+                "join",
+                input="rates",
+                how="cross",
+                maintainOrder="left_right",
+                leftOn=["a"],
+                rightOn=[],
+                suffix="_r",
+            ),
         ],
         1,
         "no key columns",
@@ -747,7 +769,16 @@ INVALID_PAYLOADS: list[tuple[str, list[Any] | object, int | None, str]] = [
         "unequal keys",
         [
             source(),
-            step("j", "join", input="rates", how="left", leftOn=["a"], rightOn=[], suffix="_r"),
+            step(
+                "j",
+                "join",
+                input="rates",
+                how="left",
+                maintainOrder="left_right",
+                leftOn=["a"],
+                rightOn=[],
+                suffix="_r",
+            ),
         ],
         1,
         "same length",
@@ -842,7 +873,16 @@ def test_validate_polars_steps_skips_input_name_checks() -> None:
 def test_rename_step_inputs_rewrites_every_reference_and_rejects_collisions() -> None:
     steps = [
         source("a"),
-        step("j", "join", input="b", how="left", leftOn=["k"], rightOn=["k"], suffix="_b"),
+        step(
+            "j",
+            "join",
+            input="b",
+            how="left",
+            maintainOrder="left_right",
+            leftOn=["k"],
+            rightOn=["k"],
+            suffix="_b",
+        ),
         step("c", "concat", inputs=["b", "d"], how="vertical"),
     ]
     renamed = rename_step_inputs(steps, {"a": "A", "b": "B"})
@@ -1248,6 +1288,7 @@ def test_window_quantile_renders() -> None:
                 "join",
                 input="rates",
                 how="cross",
+                maintainOrder="left_right",
                 leftOn=[],
                 rightOn=[],
                 suffix="_r",
@@ -1262,6 +1303,7 @@ def test_window_quantile_renders() -> None:
                 "join",
                 input="rates",
                 how="left",
+                maintainOrder="left_right",
                 leftOn=["r"],
                 rightOn=["r"],
                 suffix="_r",
@@ -1311,6 +1353,7 @@ def test_window_quantile_renders() -> None:
                 "join",
                 input="rates",
                 how="semi",
+                maintainOrder="left",
                 leftOn=["region"],
                 rightOn=["region"],
                 suffix="_r",
@@ -1325,6 +1368,7 @@ def test_window_quantile_renders() -> None:
                 "join",
                 input="rates",
                 how="cross",
+                maintainOrder="left_right",
                 leftOn=[],
                 rightOn=[],
                 suffix="_r",
@@ -2659,6 +2703,7 @@ def test_join_validation_fails_loudly_on_duplicate_keys(tmp_path: Path) -> None:
                 "join",
                 input="dup",
                 how="left",
+                maintainOrder="left_right",
                 leftOn=["region"],
                 rightOn=["region"],
                 suffix="_r",
@@ -3334,7 +3379,8 @@ EARLIER_GOLDEN_CODE = "\n".join(
         "df = df.with_columns((pl.col('premium') * ipt_rate).alias('gross'))",
         "df = df.with_columns((pl.when((pl.col('gross') >= 500)).then(pl.lit('high'))"
         ".otherwise(pl.lit('low'))).alias('band'))",
-        "df = df.join(rates, left_on=['region'], right_on=['region'], how='left', suffix='_rate')",
+        "df = df.join(rates, left_on=['region'], right_on=['region'], how='left', suffix='_rate', "
+        "maintain_order='left_right')",
         "df = df.group_by(['band'], maintain_order=True).agg([pl.col('gross').sum()"
         ".alias('gross_total'), pl.len().alias('rows')])",
     ]
@@ -3358,6 +3404,30 @@ def test_parse_keeps_steps_saved_by_an_earlier_renderer(tmp_path: Path) -> None:
     assert node.data.config["steps"] == GOLDEN_STEPS
     assert "_steps_discarded" not in node.data.config
     assert node.data.config["code"] == GOLDEN_CODE
+
+
+def test_parse_keeps_a_sort_saved_before_sorts_kept_their_ties_order(tmp_path: Path) -> None:
+    """A body whose sort predates the stable sort keeps its steps and runs the stable one."""
+    quotes, rates = _frames(tmp_path)
+    steps = [
+        source(),
+        step("o", "sort", keys=[{"column": "premium", "descending": True}], nullsLast=False),
+    ]
+    graph = PipelineGraph(
+        nodes=[quotes, rates, _stepped("t", steps)],
+        edges=[make_edge("quotes", "t"), make_edge("rates", "t")],
+    )
+    code = graph_to_code(graph, pipeline_name="main")
+    _write_sidecars(tmp_path, graph)
+    stable = 'df = df.sort("premium", descending=True, maintain_order=True)'
+    assert stable in code
+    unordered = code.replace(stable, 'df = df.sort("premium", descending=True)')
+
+    parsed = parse_pipeline_source(unordered, _base_dir=tmp_path)
+    node = next(n for n in parsed.nodes if n.id == "t")
+    assert node.data.config["steps"] == steps
+    assert "_steps_discarded" not in node.data.config
+    assert stable in node.data.config["code"]
 
 
 @pytest.mark.parametrize(
@@ -4169,7 +4239,14 @@ def test_frame_start_renders_without_a_source_step() -> None:
     assert refused.value.message == "This node starts from df; remove the start step."
 
     join = step(
-        "j", "join", input="rates", how="inner", leftOn=["region"], rightOn=["region"], suffix="_r"
+        "j",
+        "join",
+        input="rates",
+        how="inner",
+        maintainOrder="left_right",
+        leftOn=["region"],
+        rightOn=["region"],
+        suffix="_r",
     )
     with pytest.raises(PolarsStepError, match="Unknown input 'rates'; connected inputs: none"):
         render_polars_steps([join], [], start="frame")
@@ -4225,7 +4302,14 @@ def test_node_data_materialises_data_input_steps() -> None:
     # A Data Input has no eligible input names, so a reference to one is an
     # error at materialisation, not only at build time.
     join = step(
-        "j", "join", input="rates", how="inner", leftOn=["region"], rightOn=["region"], suffix="_r"
+        "j",
+        "join",
+        input="rates",
+        how="inner",
+        maintainOrder="left_right",
+        leftOn=["region"],
+        rightOn=["region"],
+        suffix="_r",
     )
     joined = node([join])
     assert joined.data.config["code"] == ""
@@ -4301,7 +4385,14 @@ def test_data_input_steps_execute_and_round_trip(tmp_path: Path) -> None:
 def test_data_input_incomplete_steps_fail_on_every_path(tmp_path: Path) -> None:
     quotes, _rates = _frames(tmp_path)
     join = step(
-        "j", "join", input="rates", how="inner", leftOn=["region"], rightOn=["region"], suffix="_r"
+        "j",
+        "join",
+        input="rates",
+        how="inner",
+        maintainOrder="left_right",
+        leftOn=["region"],
+        rightOn=["region"],
+        suffix="_r",
     )
     unknown = _stepped_input(quotes, [join])
     # Materialisation already refuses the reference (no eligible inputs).
@@ -4663,7 +4754,14 @@ def _reparsed(tmp_path: Path, graph: PipelineGraph, node_id: str) -> tuple[str, 
 def test_external_file_steps_reach_the_other_inputs_and_obj(tmp_path: Path) -> None:
     quotes, rates = _frames(tmp_path)
     join = step(
-        "j", "join", input="rates", how="inner", leftOn=["region"], rightOn=["region"], suffix="_r"
+        "j",
+        "join",
+        input="rates",
+        how="inner",
+        maintainOrder="left_right",
+        leftOn=["region"],
+        rightOn=["region"],
+        suffix="_r",
     )
     steps = [join, step("l", "limit", n=2)]
     graph = PipelineGraph(
@@ -4707,6 +4805,7 @@ def test_external_file_unknown_input_and_input_mapping_fail_loudly(tmp_path: Pat
         "join",
         input="policies",
         how="inner",
+        maintainOrder="left_right",
         leftOn=["region"],
         rightOn=["region"],
         suffix="_r",
@@ -4740,7 +4839,14 @@ def test_instance_of_stepped_external_file_executes_with_mapping(tmp_path: Path)
     pl.DataFrame({"premium": [100.0], "region": ["north"]}).write_parquet(alt_q)
     pl.DataFrame({"region": ["north"], "rate": [5.0]}).write_parquet(alt_r)
     join = step(
-        "j", "join", input="rates", how="inner", leftOn=["region"], rightOn=["region"], suffix="_r"
+        "j",
+        "join",
+        input="rates",
+        how="inner",
+        maintainOrder="left_right",
+        leftOn=["region"],
+        rightOn=["region"],
+        suffix="_r",
     )
     original = _external_file(tmp_path, [join, step("l", "limit", n=1)])
     instance = GraphNode(
@@ -4802,7 +4908,16 @@ def test_flatten_rewrites_a_stepped_external_file_input() -> None:
             config={"definitionId": "definition_scoring", "alias": "score"},
         ),
     )
-    join = step("j", "join", input="results", how="inner", leftOn=["k"], rightOn=["k"], suffix="_r")
+    join = step(
+        "j",
+        "join",
+        input="results",
+        how="inner",
+        maintainOrder="left_right",
+        leftOn=["k"],
+        rightOn=["k"],
+        suffix="_r",
+    )
     consumer = GraphNode(
         id="consumer",
         data=NodeData(

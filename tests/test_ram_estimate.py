@@ -449,6 +449,7 @@ def test_json_api_input_ports_resolve_when_their_consumer_is_an_edge_join() -> N
     joined = _make_edge_join_node(
         config={
             "how": "left",
+            "maintainOrder": "left_right",
             "on": ["quote_id"],
             "coalesce": False,
         }
@@ -792,6 +793,7 @@ class TestEstimateSafeTrainingRows:
             label="joined",
             config={
                 "how": "left",
+                "maintainOrder": "left_right",
                 "on": ["quote_id"],
                 "validate": "1:1",
                 "selected_columns": ["quote_id", "premium", "claim_count"],
@@ -842,6 +844,7 @@ class TestEstimateSafeTrainingRows:
             node_id="joined",
             config={
                 "how": "left",
+                "maintainOrder": "left_right",
                 "on": ["id"],
                 "validate": "m:m",
             },
@@ -874,7 +877,7 @@ class TestEstimateSafeTrainingRows:
         right_path = tmp_path / "right.parquet"
         pl.DataFrame({"id": range(20), "left_value": range(20)}).write_parquet(left_path)
         pl.DataFrame({"id": range(20), "right_value": range(20)}).write_parquet(right_path)
-        config: dict[str, object] = {"how": "left", "on": ["id"]}
+        config: dict[str, object] = {"how": "left", "maintainOrder": "left_right", "on": ["id"]}
         if validate is not None:
             config["validate"] = validate
         joined = _make_transform_node(node_id="joined", config=config)
@@ -1019,6 +1022,7 @@ class TestEstimateSafeTrainingRows:
             label="joined",
             config={
                 "how": "left",
+                "maintainOrder": "left_right",
                 "on": ["quote_id"],
                 "validate": "1:1",
             },
@@ -1080,6 +1084,7 @@ class TestEstimateSafeTrainingRows:
             label="joined",
             config={
                 "how": "left",
+                "maintainOrder": "left_right",
                 "on": ["quote_id"],
                 "validate": "1:1",
                 "coalesce": False,
@@ -1145,6 +1150,7 @@ class TestEstimateSafeTrainingRows:
             label="joined",
             config={
                 "how": "left",
+                "maintainOrder": "left_right",
                 "on": ["quote_id"],
                 "validate": "1:1",
                 "coalesce": False,
@@ -1210,6 +1216,7 @@ class TestEstimateSafeTrainingRows:
             label="joined",
             config={
                 "how": "left",
+                "maintainOrder": "left_right",
                 "leftOn": ["id"],
                 "rightOn": ["jid"],
                 "validate": "1:1",
@@ -1269,6 +1276,7 @@ class TestEstimateSafeTrainingRows:
             label="joined",
             config={
                 "how": "left",
+                "maintainOrder": "left_right",
                 "leftOn": ["id"],
                 "rightOn": ["jid"],
                 "validate": "1:1",
@@ -1327,6 +1335,7 @@ class TestEstimateSafeTrainingRows:
             label="joined",
             config={
                 "how": "left",
+                "maintainOrder": "left_right",
                 "on": ["quote_id"],
                 "validate": "1:1",
             },
@@ -1493,6 +1502,7 @@ class TestDetailedEdgeJoinColumnResolution:
         joined = _make_edge_join_node(
             config={
                 "how": "left",
+                "maintainOrder": "left_right",
                 "on": ["quote_id"],
                 "selected_columns": ["premium", "premium"],
             },
@@ -1517,6 +1527,7 @@ class TestDetailedEdgeJoinColumnResolution:
         joined = _make_edge_join_node(
             config={
                 "how": "right",
+                "maintainOrder": "right_left",
                 "on": ["quote_id"],
             },
         )
@@ -1548,6 +1559,7 @@ class TestDetailedEdgeJoinColumnResolution:
         joined = _make_edge_join_node(
             config={
                 "how": "left",
+                "maintainOrder": "left_right",
                 "on": ["quote_id"],
             },
         )
@@ -1592,6 +1604,7 @@ class TestEdgeJoinKeyColumnsOnPath:
         joined = _make_edge_join_node(
             config={
                 "how": "left",
+                "maintainOrder": "left_right",
                 "leftOn": ["quote_id"],
                 "rightOn": ["external_quote_id"],
             },
@@ -1626,6 +1639,7 @@ class TestEdgeJoinKeyColumnsOnPath:
         joined = _make_edge_join_node(
             config={
                 "how": "left",
+                "maintainOrder": "left_right",
                 "leftOn": ["quote_id"],
                 "rightOn": ["external_quote_id"],
             },
@@ -3744,7 +3758,7 @@ def test_edge_join_contract_decides_the_many_to_many_flag(
         node_type="dataInput",
         config=_ready_file_input_config(right_path),
     )
-    config: dict[str, object] = {"how": "inner", "on": ["segment"]}
+    config: dict[str, object] = {"how": "inner", "maintainOrder": "left_right", "on": ["segment"]}
     if validate is not None:
         config["validate"] = validate
     joined = _make_edge_join_node(node_id="joined", label="joined", config=config)

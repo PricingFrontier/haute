@@ -32,6 +32,7 @@ from haute._polars_selectors import (
     literal_selector,
     selector_root,
 )
+from haute._polars_steps import JOIN_MAINTAIN_ORDER
 
 
 class LineageOperationKind(StrEnum):
@@ -104,6 +105,8 @@ class LineageOperation:
     how: str | None = None
     validate: str | None = None
     suffix: str | None = None
+    maintain_order: str = "none"
+    """A join's stated row order (Polars' ``maintain_order``); ``none`` when unsaid."""
     subset_columns: frozenset[str] | None = frozenset()
     strict: bool = True
     produced_columns: tuple[str, ...] = ()
@@ -1506,6 +1509,7 @@ def _parse_join(
     how = "inner"
     validate = "m:m"
     suffix = "_right"
+    maintain_order = "none"
     on_node: ast.AST | None = None
     left_on_node: ast.AST | None = None
     right_on_node: ast.AST | None = None
@@ -1522,6 +1526,14 @@ def _parse_join(
                 return _ParseFailure("unsupported_join_semantics", "join")
         elif keyword.arg == "suffix":
             suffix = _literal_string(keyword.value) or ""
+        elif keyword.arg == "maintain_order":
+            # The order changes neither the columns nor the row count.
+            literal_order = _literal_string(keyword.value)
+            if literal_order is None:
+                return _ParseFailure("dynamic_join_order", "join")
+            if literal_order not in JOIN_MAINTAIN_ORDER:
+                return _ParseFailure("unsupported_join_semantics", "join")
+            maintain_order = literal_order
         elif keyword.arg == "on":
             on_node = keyword.value
         elif keyword.arg == "left_on":
@@ -1543,6 +1555,7 @@ def _parse_join(
             how=how,
             validate=validate,
             suffix=suffix,
+            maintain_order=maintain_order,
         )
     if on_node is not None and (left_on_node is not None or right_on_node is not None):
         return _ParseFailure("ambiguous_join_keys", "join")
@@ -1582,6 +1595,7 @@ def _parse_join(
         how=how,
         validate=validate,
         suffix=suffix,
+        maintain_order=maintain_order,
     )
 
 

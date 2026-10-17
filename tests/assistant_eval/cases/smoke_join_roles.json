@@ -41,6 +41,7 @@
         "node_configs": {
           "quote_with_competitor": {
             "how": "left",
+            "maintainOrder": "left_right",
             "leftOn": [
               "quote_id"
             ],

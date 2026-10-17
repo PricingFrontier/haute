@@ -281,10 +281,11 @@ describe("step forms only build schema-valid payloads", () => {
     expect(latest.aggregations[0]).toEqual({ column: "premium", agg: "sum", name: "total" })
   })
 
-  it("join validation and row order are optional and cleared for a cross join", () => {
+  it("join validation is optional and cleared for a cross join; the row order is always stated", () => {
     const spy = vi.fn()
-    const step: Step = { id: "j", kind: "join", input: "rates", how: "left", leftOn: ["region"], rightOn: ["region"], suffix: "_r" }
+    const step: Step = { id: "j", kind: "join", input: "rates", how: "left", leftOn: ["region"], rightOn: ["region"], suffix: "_r", maintainOrder: "left_right" }
     render(<Stateful initial={step} spy={spy} />)
+    expect(within(screen.getByLabelText("Join row order")).queryByRole("option", { name: /engine default/ })).not.toBeInTheDocument()
     fireEvent.change(screen.getByLabelText("Join validation"), { target: { value: "m:1" } })
     fireEvent.change(screen.getByLabelText("Join row order"), { target: { value: "left" } })
     let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "join" }>
@@ -293,16 +294,29 @@ describe("step forms only build schema-valid payloads", () => {
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "join" }>
     expect(latest).toEqual({ ...step, maintainOrder: "left" })
     fireEvent.change(screen.getByLabelText("Join validation"), { target: { value: "1:1" } })
-    fireEvent.change(screen.getByLabelText("Join type"), { target: { value: "semi" } })
+    fireEvent.change(screen.getByLabelText("Join type"), { target: { value: "inner" } })
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "join" }>
-    expect(latest).toEqual({ ...step, how: "semi", maintainOrder: "left" })
-    expect(screen.queryByLabelText("Join validation")).not.toBeInTheDocument()
-    fireEvent.change(screen.getByLabelText("Join type"), { target: { value: "full" } })
-    fireEvent.change(screen.getByLabelText("Join validation"), { target: { value: "1:1" } })
+    expect(latest).toEqual({ ...step, how: "inner", validate: "1:1", maintainOrder: "left" })
     fireEvent.change(screen.getByLabelText("Join type"), { target: { value: "cross" } })
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "join" }>
     expect(latest).toEqual({ ...step, how: "cross", leftOn: [], rightOn: [], maintainOrder: "left" })
     expect(screen.queryByLabelText("Join validation")).not.toBeInTheDocument()
+  })
+
+  it("a join's default row order follows its type, and a chosen order stays", () => {
+    const spy = vi.fn()
+    const step: Step = { id: "j", kind: "join", input: "rates", how: "left", leftOn: ["region"], rightOn: ["region"], suffix: "_r", maintainOrder: "left_right" }
+    render(<Stateful initial={step} spy={spy} />)
+    fireEvent.change(screen.getByLabelText("Join type"), { target: { value: "right" } })
+    let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "join" }>
+    expect(latest.maintainOrder).toBe("right_left")
+    fireEvent.change(screen.getByLabelText("Join type"), { target: { value: "semi" } })
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "join" }>
+    expect(latest.maintainOrder).toBe("left")
+    fireEvent.change(screen.getByLabelText("Join row order"), { target: { value: "none" } })
+    fireEvent.change(screen.getByLabelText("Join type"), { target: { value: "full" } })
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "join" }>
+    expect(latest.maintainOrder).toBe("none")
   })
 
   it("an operand can become a nested expression with its own editor", () => {
@@ -1053,7 +1067,7 @@ describe("a join", () => {
     inputNames: ["quotes", "rates"],
     inputColumns: { quotes: [{ name: "premium", dtype: "Float64" }, { name: "region", dtype: "String" }], rates: [{ name: "region", dtype: "String" }, { name: "factor", dtype: "Float64" }] },
   }
-  const fresh: Step = { id: "j", kind: "join", input: "rates", how: "left", leftOn: [], rightOn: [], suffix: "_right" }
+  const fresh: Step = { id: "j", kind: "join", input: "rates", how: "left", leftOn: [], rightOn: [], suffix: "_right", maintainOrder: "left_right" }
 
   it("completes right keys from the joined input, and pairs a key with the same name there", () => {
     const spy = vi.fn()

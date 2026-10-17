@@ -125,8 +125,8 @@ _API_INPUT = {
 }
 _EDGE_JOIN = {
     "how": "left",
-    "leftOn": ["policy_id"],
-    "rightOn": ["policy_id"],
+    "maintainOrder": "left_right",
+    "on": ["policy_id"],
     "suffix": "_claim",
 }
 _LIVE_SWITCH = {
@@ -727,7 +727,7 @@ BROKEN_CALLS = {
     ),
     "decorator, keywords on an indented line": (
         "@pipeline.edge_join(\n"
-        '    how="left", left_on=["policy_id"], right_on=["policy_id"], suffix="_claim"\n'
+        '    how="left", on=["policy_id"], suffix="_claim", maintain_order="left_right"\n'
         ")\n"
         "def Policy_Claims(Policies, Claims_Extract): ...\n"
     ),

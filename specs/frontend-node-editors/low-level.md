@@ -218,6 +218,10 @@
    `on`/`leftOn`/`rightOn`; selecting another mode exposes either same-name rows (`on`) or paired
    rows (`leftOn`/`rightOn`) and each key-mode switch clears the inactive representation. The
    join type list is exactly `inner`, `left`, `right`, `full`, `semi`, `anti`, `cross`.
+   **Maintain Order** is required and offers no unset value; a new Edge Join takes the
+   palette's `left_right` (`node_defaults.json`), and changing the join type moves a default
+   order to the new type's (`joinOrderAfterHowChange`) in the same update as `how`, keeping an
+   order the analyst chose. `edgeJoinValidation` reports a missing or unknown order.
    Once both role edges are connected, a non-cross join with no configured
    keys seeds the first known common column exactly once per mounted node;
    existing keys, unknown common columns, and a deliberate user clear never
@@ -744,8 +748,9 @@ case mounts the real `ExplorePivotsConfig` consumer and proves that a cold cache
 renders the report's post-code fields as field-palette actions without waiting for preview rows.
 `frontend/src/__tests__/editors/EdgeJoinEditor.test.tsx` pins fixed role displays and swap
 availability, all seven join options, same-name/asymmetric mode transitions, automatic key
-clearing for `cross`, advanced Polars options, and visible diagnostics for invalid role-edge/key
-state, including danger styling and field-level invalid-key borders.
+clearing for `cross`, advanced Polars options, the required row order moving with the join type
+unless chosen, and visible diagnostics for invalid role-edge/key state, including danger styling
+and field-level invalid-key borders.
 
 The input-identity work is pinned by `frontend/src/panels/__tests__/NodePanel.test.tsx`
 (`name` derivation for API-frame edges — sole frame included — ordinary sources, and submodel

@@ -42,16 +42,18 @@ The names are the ones the node's code uses for its inputs: a Quote Input table'
 
 | Field | What it does |
 |---|---|
-| **JOIN TYPE** | How rows are matched: **Left** (the default), **Inner**, **Full**, **Right**, **Semi**, **Anti** or **Cross**. Choosing **Cross** clears the join keys, because a cross join pairs every row with every row. |
+| **JOIN TYPE** | How rows are matched: **Left** (the default), **Inner**, **Full**, **Right**, **Semi**, **Anti** or **Cross**. Choosing **Cross** clears the join keys, because a cross join pairs every row with every row. Changing the type also changes **MAINTAIN ORDER** to the new type's order, unless you chose a different one. |
 | Key mode | **Same-name keys** when both dataframes use the same key names, or **Paired base/join keys** when they differ. Hidden for **Cross**. Switching mode carries your keys across where they fit. |
 | **SAME-NAME KEY 1**, 2, … | The key columns, chosen from the columns both inputs share. **Add same-name key** adds another; the bin removes one. When both inputs are first connected, the first shared column is filled in for you. |
 | **BASE KEY 1** and **JOIN KEY 1**, … | Paired keys: a column of the dominant input and the column of the joining input it must equal. **Add key pair** adds another pair. |
 | **SUFFIX** | Added to a joining-input column whose name clashes with a dominant-input column. Defaults to `_right`. |
 | **COALESCE** | Polars' option for combining the key columns where the join type supports it: **Not set**, **True** or **False**. |
 | **VALIDATE** | Polars' cardinality check: **Not set**, **1:1**, **1:m**, **m:1** or **m:m**. The run fails when the data breaks it. |
-| **MAINTAIN ORDER** | Polars' option for keeping the input order where supported: **Not set**, **None**, **Left**, **Right**, **Left then right** or **Right then left**. |
+| **MAINTAIN ORDER** | The order of the joined rows: **None**, **Left**, **Right**, **Left then right** or **Right then left**. A new join keeps both inputs' order: **Left then right** for Left, Inner, Full and Cross joins, **Right then left** for a Right join and **Left** for Semi and Anti joins. |
 
 Supported join types are `inner`, `left`, `right`, `full`, `semi`, `anti`, and `cross`.
+
+With **Left then right**, the joined rows follow the dominant input's order, and one row's matches follow the joining input's order, so the same inputs always give the same rows in the same order. A Full join puts the joining input's unmatched rows last, in their own order. **Left** keeps the dominant input's order but not the order of one row's matches. **None** leaves the order to Polars, which can change from run to run: choose it only when nothing after the join depends on row order, such as a group-and-aggregate.
 
 A key box lists columns once the inputs have been previewed, and is a text box before that. A key that is empty, or no longer among the input's columns ("Missing column (…)"), is outlined in red.
 
@@ -81,7 +83,7 @@ If the scores table calls the key `id` instead, choose **Paired base/join keys**
     An Edge Join has no JSON sidecar. Its settings are arguments of the `@pipeline.edge_join` decorator in the pipeline's `.py` file, on a one-line declaration, and its inputs are ordinary `pipeline.connect(...)` calls whose `target_port` gives each input's role. The decorator performs the join when the file runs on its own:
 
     ```python
-    @pipeline.edge_join(how="left", on=["quote_id"], suffix="_right")
+    @pipeline.edge_join(how="left", on=["quote_id"], suffix="_right", maintain_order="left_right")
     def join_scores(policies, competitor_scores): ...
 
 
@@ -100,7 +102,7 @@ If the scores table calls the key `id` instead, choose **Paired base/join keys**
     | **SUFFIX** | `suffix` (defaults to `"_right"`) |
     | **COALESCE** | `coalesce`: `true` or `false` (absent when not set) |
     | **VALIDATE** | `validate`: `"1:1"`, `"1:m"`, `"m:1"` or `"m:m"` (absent when not set) |
-    | **MAINTAIN ORDER** | `maintainOrder`, written `maintain_order` in the decorator: `"none"`, `"left"`, `"right"`, `"left_right"` or `"right_left"` |
+    | **MAINTAIN ORDER** | `maintainOrder`, written `maintain_order` in the decorator: `"none"`, `"left"`, `"right"`, `"left_right"` or `"right_left"`. Required: a pipeline file that leaves it out is refused, and **Recover** offers the order for the join type |
     | **COLUMNS** tab | `selected_columns` |
 
     In the node's settings, same-name keys look like this:
@@ -108,6 +110,7 @@ If the scores table calls the key `id` instead, choose **Paired base/join keys**
     ```json
     {
       "how": "left",
+      "maintainOrder": "left_right",
       "on": ["quote_id"]
     }
     ```
@@ -117,6 +120,7 @@ If the scores table calls the key `id` instead, choose **Paired base/join keys**
     ```json
     {
       "how": "left",
+      "maintainOrder": "left_right",
       "leftOn": ["quote_id"],
       "rightOn": ["id"]
     }
