@@ -127,6 +127,7 @@ class TestHauteModelLoadContext:
 
         # Write a valid manifest
         manifest = {
+            "polars_version": pl.__version__,
             "pruned_graph": {"nodes": [], "edges": []},
             "input_node_ids": ["api_src"],
             "output_node_id": "out",
@@ -165,6 +166,7 @@ class TestHauteModelLoadContext:
         from haute.deploy._model_code import HauteModel
 
         manifest = {
+            "polars_version": pl.__version__,
             "pruned_graph": {"nodes": [], "edges": []},
             "input_node_ids": ["src"],
             "output_node_id": "out",
@@ -191,6 +193,7 @@ class TestHauteModelLoadContext:
         from haute.deploy._model_code import HauteModel
 
         manifest = {
+            "polars_version": pl.__version__,
             "pruned_graph": {"nodes": [], "edges": []},
             "input_node_ids": ["src"],
             "output_node_id": "out",
@@ -210,6 +213,24 @@ class TestHauteModelLoadContext:
 
         with pytest.raises(RuntimeError, match="missing.pkl"):
             model.load_context(ctx)
+
+    def test_load_context_refuses_a_polars_other_than_the_deployed_one(self, tmp_path):
+        """A Polars release can change a pipeline's results, so the model refuses to load."""
+        from haute.deploy._model_code import HauteModel
+
+        manifest_path = tmp_path / "deploy_manifest.json"
+        manifest_path.write_text(json.dumps({"polars_version": "1.44.2"}))
+        ctx = MagicMock()
+        ctx.artifacts = {"deploy_manifest": str(manifest_path)}
+
+        with pytest.raises(RuntimeError) as exc_info:
+            HauteModel().load_context(ctx)
+
+        message = str(exc_info.value)
+        assert f"deployed with Polars 1.44.2 and is loading under Polars {pl.__version__}" in (
+            message
+        )
+        assert "polars==1.44.2" in message
 
 
 class TestHauteModelPredict:

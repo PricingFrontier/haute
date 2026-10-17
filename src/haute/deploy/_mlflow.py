@@ -9,7 +9,7 @@ import tempfile
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from haute._logging import get_logger
@@ -26,6 +26,7 @@ from haute._polars_dtypes import (
     rendered_dtype_mlflow_type_name,
     wide_integer_message,
 )
+from haute._polars_environment import polars_process_environment, polars_spill_root
 from haute.deploy._config import ResolvedDeploy
 from haute.deploy._request_rows import copy_verified
 from haute.deploy._utils import build_manifest, model_source_line
@@ -396,6 +397,19 @@ def _conda_env() -> dict:
     }
 
 
+# Where a served model's Polars would spill. Spilling stays off, as in every process
+# Haute starts, and Model Serving's /tmp is writable.
+_SERVED_PROJECT_ROOT = PurePosixPath("/tmp/haute")
+
+
+def _served_polars_environment() -> dict[str, str]:
+    """The Polars settings a served model runs under: those of every process Haute starts.
+
+    Set on the endpoint, so they apply before the model's process imports Polars.
+    """
+    return polars_process_environment(polars_spill_root(_SERVED_PROJECT_ROOT))
+
+
 def _create_or_update_serving_endpoint(
     config: DeployConfig,
     uc_model_name: str,
@@ -442,6 +456,7 @@ def _create_or_update_serving_endpoint(
         entity_version=str(model_version),
         workload_size=config.databricks.serving_workload_size,
         scale_to_zero_enabled=config.databricks.serving_scale_to_zero,
+        environment_vars=_served_polars_environment(),
     )
 
     try:

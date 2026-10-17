@@ -114,7 +114,8 @@
   (top-level result: row counts, `column_stats`, `segments`, `is_first_deploy` flag).
 - **Deploy manifest** (`_utils.py::build_manifest`) — the canonical JSON schema shared by
   every target and the generated runtime code (`_container.py`'s `app.py` template,
-  `_model_code.py`'s `HauteModel.load_context`): `haute_version`, `pipeline_name`,
+  `_model_code.py`'s `HauteModel.load_context`): `haute_version`, `polars_version`
+  (the editor's installed Polars), `pipeline_name`,
   `pipeline_file`, `target`, `created_at`, `created_by`, `input_node_ids`,
   `output_node_id`, `output_fields`, `input_schema`, `output_schema`, `execution_policy`,
   `artifacts` (name → posix path), `snapshot_provenance` (node id → `provider` plus
@@ -535,13 +536,20 @@ resolution fails the deploy before MLflow copies it), the bundled `utility` pack
 `code_paths` entry (MLflow copies it under the model's `code/` directory and puts that on
 `sys.path` when the model loads), a `conda_env` with Python 3.11.11 and both Haute and
 Polars pinned to the editor's installed versions (`_pip_requirements`; the pinned Haute
-brings its own model engines, CatBoost among them), and
+brings its own model engines, CatBoost among them, and a Polars release can change a
+pipeline's results and memory behaviour, so a major range would let a 2.x release change a
+deployed model without a redeploy), and
 `registered_model_name` set to the UC
 three-level name. The client marks the run `FINISHED`, or `FAILED` when logging
 raised. Fetches the newly registered version through the client, then creates or updates the
 Databricks Model Serving endpoint (`_create_or_update_serving_endpoint`) if
-`effective_endpoint_name` is set. Any exception during this whole block removes the build
-directory before re-raising.
+`effective_endpoint_name` is set. The served entity carries Haute's Polars settings as
+`environment_vars` (`_served_polars_environment`: spilling off, its directory under
+`/tmp/haute`, an unknown Arrow extension loaded as its storage type), as the container
+image's `ENV` lines do, so they apply before the served process imports Polars. When the
+model loads, `HauteModel.load_context` compares the manifest's `polars_version` with the
+installed Polars and refuses another, naming both, before anything is scored. Any exception
+during this whole block removes the build directory before re-raising.
 
 **Databricks credentials.** Deploy uses two credential spaces. Its MLflow calls —
 experiment setup, model logging, Unity Catalog registration and the version lookup in

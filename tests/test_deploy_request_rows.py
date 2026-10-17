@@ -243,6 +243,7 @@ def test_the_databricks_model_answers_in_request_order_and_refuses_when_uncovere
 
     def load(rows: RequestRows) -> HauteModel:
         manifest = {
+            "polars_version": pl.__version__,
             "pruned_graph": graph.model_dump(mode="json"),
             "input_node_ids": ["quotes"],
             "output_node_id": "out",
@@ -723,6 +724,7 @@ def test_a_refused_deployment_answers_one_quote_and_refuses_several(remap):
 
 def _load_app(tmp_path: Path, rows: RequestRows) -> Any:
     manifest = {
+        "polars_version": pl.__version__,
         "pruned_graph": PipelineGraph().model_dump(mode="json"),
         "input_node_ids": ["quotes"],
         "output_node_id": "quotes",

@@ -1773,6 +1773,8 @@ class TestServingEndpoint:
 
             mock_ws.serving_endpoints.create.assert_called_once()
             assert url == "https://myhost/serving-endpoints/my-endpoint/invocations"
+            created = mock_ws.serving_endpoints.create.call_args.kwargs["config"]
+            assert created.served_entities[0].environment_vars == _served_polars_settings()
 
     def test_endpoint_updates_existing_endpoint(self) -> None:
         """When endpoint already exists, it should update the config."""
@@ -1813,6 +1815,19 @@ class TestServingEndpoint:
             mock_ws.serving_endpoints.update_config.assert_called_once()
             mock_ws.serving_endpoints.create.assert_not_called()
             assert url == "https://myhost/serving-endpoints/my-endpoint/invocations"
+            updated = mock_ws.serving_endpoints.update_config.call_args.kwargs
+            assert updated["served_entities"][0].environment_vars == _served_polars_settings()
+
+
+def _served_polars_settings() -> dict[str, str]:
+    """Haute's Polars settings, as every process it starts runs under them."""
+    return {
+        "POLARS_OOC_MEMORY_BUDGET_FRACTION": "1000000",
+        "POLARS_OOC_MEMORY_BUDGET_MB": "1000000000",
+        "POLARS_OOC_DISK_BUDGET_MB": "1024",
+        "POLARS_OOC_SPILL_DIR": "/tmp/haute/.haute_cache/polars-spill",
+        "POLARS_UNKNOWN_EXTENSION_TYPE_BEHAVIOR": "load_as_storage",
+    }
 
 
 class TestModelsFromCode:

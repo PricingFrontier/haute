@@ -377,6 +377,7 @@ class TestHauteModelEdgeCases:
         from haute.deploy._model_code import HauteModel
 
         manifest = {
+            "polars_version": pl.__version__,
             "pruned_graph": {"nodes": [], "edges": []},
             "input_node_ids": ["src"],
             "output_node_id": "out",
@@ -416,6 +417,7 @@ class TestHauteModelEdgeCases:
         from haute.deploy._model_code import HauteModel
 
         manifest = {
+            "polars_version": pl.__version__,
             "pruned_graph": {"nodes": [], "edges": []},
             "input_node_ids": ["src"],
             "output_node_id": "out",

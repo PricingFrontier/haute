@@ -13,8 +13,7 @@ carries, quantile and rank binning) is deferred.
 The packages form two rounds. The first makes Haute correct on Polars 2 with
 CI green: the pin, every seam that breaks or silently changes, Polars'
 out-of-core spilling kept off and contained (the pin turns it on; the
-execution-engine specification records the settings), and a package that
-changes what a user sees (`PL2-19`).
+execution-engine specification records the settings).
 Their designs, and the spilling settings, were decided
 on 17 October 2026 by one rule: of the robust options, the one that uses least
 memory, then the fastest. Each entry records the measurement behind its
@@ -38,6 +37,8 @@ direct scan of a Parquet file holding one is refused
 node snapshots and the deploy schema cache sign the installed Polars version, and an input
 snapshot carried across versions is re-described from its own parts, or re-encoded when
 they hold a physical map column, never fetched again ([caching](../caching/low-level.md)).
+A served model pins the editor's exact Polars, refuses to load under another and runs
+under Haute's Polars settings ([deploy](../deploy/low-level.md)).
 
 ## Priorities
 
@@ -48,7 +49,6 @@ they hold a physical map column, never fetched again ([caching](../caching/low-l
 | PL2-15 | Planned | P2 | The test suite asserts behaviour rather than Polars 1 accidents. |
 | PL2-17 | Reverify | P2 | Every operator memory policy and RAM estimate rests on Polars 2 evidence. |
 | PL2-18 | Reverify | P3 | Worker caps start from a Polars 2 baseline. |
-| PL2-19 | Planned | P2 | A deployed pipeline runs the Polars the editor ran. |
 | PL2-20 | Planned | P3 | The `price_contour` binary boundary is guarded against Polars' private API. |
 | PL2-21 | Deferred | P3 | Structured inputs and Data Inputs can carry a JSON object as a `Map` column. |
 | PL2-22 | Deferred | P3 | Banding and the step editor offer quantile and rank binning. |
@@ -265,36 +265,6 @@ spills does not fail on a thread start.
 
 **Evidence:** `src/haute/_native_memory_limit.py::_start_polars_thread_pools`;
 `tests/test_native_memory_limit.py`; `tests/test_worker_isolation.py`.
-
-### PL2-19 — A deployed pipeline runs the Polars the editor ran
-**Why:** A served MLflow model asks for `haute==<version>` and
-`polars>=1.44.2`, so its environment resolves whatever Polars the range
-admits, while the scoring container pins the editor's installed versions. A
-Polars release can change engine behaviour that decides results (row order, as
-2.0 did) and resource behaviour (spilling). The scoring container and
-Databricks Model Serving would also spill into their writable layer by
-default.
-
-**Plan:** Decided on 17 October 2026: a served model pins the editor's exact
-Polars version, as the container already does, and records it, so that its
-`load_context` refuses another version with a message naming both (as the EBM
-engine already does for interpret). The served model then runs with the memory
-behaviour its deploy-time checks measured. The served model's environment
-carries Haute's Polars settings (`src/haute/_polars_environment.py`), as the
-container image already does, and the deploy specification records both. The major range `polars>=2.0,<3` was rejected: a
-2.x release could change a deployed model's results and memory behaviour
-without a redeploy.
-
-**Acceptance:** a logged model's requirements name the editor's exact Polars
-version, and loading it under another fails with the named message; the
-container's Dockerfile and the served model's environment carry the Polars
-settings.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/deploy/_mlflow.py::_pip_requirements`;
-`src/haute/deploy/_container.py::_SCORING_RUNTIME_DEPENDENCIES`;
-`src/haute/modelling/_ebm.py::EBMModel`.
 
 ### PL2-20 — The price_contour binary boundary is guarded against Polars' private API
 **Why:** price-contour 0.6.0's native module embeds pyo3-polars 0.25 with the

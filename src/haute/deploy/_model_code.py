@@ -52,6 +52,24 @@ def _request(
     return pl.from_pandas(model_input)
 
 
+def _require_deployed_polars(deployed: str) -> None:
+    """Refuse to serve under a Polars other than the one the pipeline was deployed with.
+
+    A Polars release can change what a pipeline computes and the memory it takes,
+    and the deploy's checks measured this one. The logged requirements pin it, so
+    another means the serving environment did not install them.
+    """
+    import polars
+
+    if polars.__version__ != deployed:
+        raise RuntimeError(
+            f"This model was deployed with Polars {deployed} and is loading under Polars "
+            f"{polars.__version__}. A Polars release can change a pipeline's results, so the "
+            f"model serves only under the Polars it was deployed with: serve it where "
+            f"polars=={deployed} is installed, or deploy it again from this environment."
+        )
+
+
 class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
     """MLflow PythonModel wrapper for a deployed haute pipeline."""
 
@@ -59,6 +77,7 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
         """Called once when the model is loaded for serving."""
         manifest_path = Path(context.artifacts["deploy_manifest"])
         self._manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        _require_deployed_polars(self._manifest["polars_version"])
         self._graph = PipelineGraph.model_validate(self._manifest["pruned_graph"])
         self._input_node_ids = self._manifest["input_node_ids"]
         self._output_node_id = self._manifest["output_node_id"]

@@ -548,6 +548,7 @@ class TestEditorAndPackagedScoringAgree:
 
         # 3. Packaged model path: HauteModel.predict over bundled manifest
         manifest = {
+            "polars_version": pl.__version__,
             "pruned_graph": pruned.model_dump(),
             "input_node_ids": ["src"],
             "output_node_id": out_id,
