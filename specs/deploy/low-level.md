@@ -532,8 +532,8 @@ model-from-code with the manifest + every bundled artefact attached (each staged
 `copy_verified` into a temporary directory removed after logging, so a file changed since
 resolution fails the deploy before MLflow copies it), the bundled `utility` package as its only MLflow
 `code_paths` entry (MLflow copies it under the model's `code/` directory and puts that on
-`sys.path` when the model loads), a `conda_env` with Python 3.11.11 and Haute exactly
-pinned but `polars>=1.44.2` (Haute's own Polars floor) as a lower bound (the pinned Haute
+`sys.path` when the model loads), a `conda_env` with Python 3.11.11 and both Haute and
+Polars pinned to the editor's installed versions (`_pip_requirements`; the pinned Haute
 brings its own model engines, CatBoost among them), and
 `registered_model_name` set to the UC
 three-level name. The client marks the run `FINISHED`, or `FAILED` when logging

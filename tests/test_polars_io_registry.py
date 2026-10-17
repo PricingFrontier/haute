@@ -398,6 +398,25 @@ class TestReadPolarsInput:
         with pytest.raises(PolarsIoConfigError, match="Supported formats"):
             read_polars_input({"format": "sas", "path": "x"})
 
+    @pytest.mark.parametrize(
+        ("config_format", "argument"),
+        [("csv", "rechunk"), ("csv", "n_threads"), ("parquet", "allow_missing_columns")],
+    )
+    def test_an_argument_polars_2_removed_is_refused_by_name(
+        self, haute_scratch, config_format: str, argument: str
+    ) -> None:
+        path = haute_scratch / f"t.{config_format}"
+        frame = pl.DataFrame({"id": [1, 2]})
+        if config_format == "csv":
+            frame.write_csv(path)
+        else:
+            frame.write_parquet(path)
+
+        with pytest.raises(PolarsIoConfigError, match=rf"Unknown or unsupported .*'{argument}'"):
+            read_polars_input(
+                {"format": config_format, "path": str(path), "arguments": {argument: True}}
+            )
+
     def test_unknown_argument_names_polars_function(self, haute_scratch) -> None:
         with pytest.raises(PolarsIoConfigError, match="scan_csv"):
             read_polars_input(

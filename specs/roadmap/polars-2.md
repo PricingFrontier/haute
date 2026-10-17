@@ -34,7 +34,6 @@ with one row, in request order ([deploy](../deploy/high-level.md)).
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| PL2-01 | Planned | P1 | Haute requires Polars 2, and its version-pinned snapshots describe it. |
 | PL2-02 | Planned | P1 | Nothing Polars 1 computed is reused once Polars 2 runs. |
 | PL2-06 | Planned | P2 | The step editor renders only code Polars 2 runs, and **Change types** turns text into dates. |
 | PL2-07 | Planned | P1 | CSV inputs read as they did, or fail with a message that says what changed. |
@@ -50,47 +49,6 @@ with one row, in request order ([deploy](../deploy/high-level.md)).
 | PL2-22 | Deferred | P3 | Banding and the step editor offer quantile and rank binning. |
 
 ## Planned improvements
-
-### PL2-01 — Haute requires Polars 2
-**Why:** `pyproject.toml` admits `polars>=1.44.2,<2` and `uv.lock` holds
-1.44.2. Three version-pinned artefacts describe 1.44.2 and fail under 2.0:
-the I/O argument catalogue (`src/haute/_polars_io_arguments.json`, generated
-by `scripts/extract_polars_io.py`), which decides what the Data Input and
-Data Output nodes may pass to a reader or writer; the compatibility corpus
-(`tests/polars_compatibility_corpus.json`), which records how the analysers
-classify a representative shape of every registered operation; and the
-served model's pip requirements, which ask for `polars>=1.44.2`. Polars 2.0
-removes reader and writer arguments (`rechunk`, `memory_map`, `n_threads`,
-`batch_size`, `sample_size`, `allow_missing_columns`, `file_cache_ttl`,
-`retries` and others) and adds some (`extra_columns`, `missing_columns`,
-`infer_schema_files`, `with_column_names`). The registry's own exclusion sets
-still name `retries`, `file_cache_ttl` and `dtypes`.
-
-**Plan:** Move the floor and cap to `polars>=2.0,<3` at the newest 2.0 patch
-when the round starts, and relock `polars` with `polars-runtime-32`.
-Regenerate the catalogue, review its diff argument by argument, tidy the
-registry's exclusion sets, and give a saved config that still names a removed
-argument the canonical-only treatment: it is refused by name, never dropped.
-Regenerate the corpus with `python -m tests.test_polars_compatibility_corpus`
-and review each changed classification against the registry before committing
-it; the analyser-derived fields showed no drift under 2.0, so any change is in
-the planner's strategy fields and is a finding for `PL2-17`, not a fixture to
-accept. Move the served model's requirement to the exact pin `PL2-19` decided,
-and the example pin in `docs/COMMIT_STANDARDS.md`. The pin lands with the rest
-of the first round on one branch.
-
-**Acceptance:** `uv lock --check` passes on Polars 2; the interface-contract,
-compatibility-corpus, dependency-contract and pin-lint modules pass; a Data
-Input config naming `rechunk` fails validation with a message naming it; CI's
-floors lane resolves Polars 2.0.0 and the unlocked lane the newest 2.x.
-
-**Dependencies:** None. It ships with the first round's other packages.
-
-**Evidence:** `pyproject.toml`; `uv.lock`; `src/haute/_polars_io_arguments.json`;
-`scripts/extract_polars_io.py`;
-`tests/test_polars_io_interface_contracts.py::TestCommittedSnapshotMatchesPinnedPolars`;
-`tests/test_polars_compatibility_corpus.py::test_corpus_pins_the_installed_polars_version`;
-`src/haute/deploy/_mlflow.py::_pip_requirements`; `docs/COMMIT_STANDARDS.md`.
 
 ### PL2-02 — Nothing Polars 1 computed is reused once Polars 2 runs
 **Why:** A node snapshot's identity signs the lineage, the runtime inputs and
@@ -135,7 +93,7 @@ Arrow-written snapshot with a map column holding a duplicated key, opened under
 the new version, keeps every entry without fetching from its provider; a cache
 hit under an unchanged version is unaffected.
 
-**Dependencies:** PL2-01; `PL2-12` for map-bearing generations.
+**Dependencies:** `PL2-12` for map-bearing generations.
 
 **Evidence:** `src/haute/_node_snapshots.py::NODE_SNAPSHOT_EXECUTION_SEMANTICS_VERSION`;
 `src/haute/execution.py::PREVIEW_EXECUTION_SEMANTICS_VERSION`;
@@ -214,7 +172,7 @@ fails naming the step; the catalogue parity test covers the new options and
 functions; golden render tests gain a numeric "is one of" on a float column and
 on a `Decimal` column.
 
-**Dependencies:** PL2-01.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_polars_steps.py::_Renderer`;
 `src/haute/_polars_steps.py::CAST_DTYPES`;
@@ -264,7 +222,7 @@ reads; a positional-rename `schema` fails with Haute's message; a declared
 schema in another order than the header reads each column by name; the Data
 Input page documents the behaviour.
 
-**Dependencies:** PL2-01.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_io.py::read_source`;
 `src/haute/_polars_io_registry.py`;
@@ -340,7 +298,7 @@ extension column loads as its storage type on each path; the codec's round-trip
 test covers every dtype Polars 2 can produce or its refusal; a
 `Categorical("lexical")` column trains as categorical.
 
-**Dependencies:** PL2-01.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_polars_dtypes.py::contract_dtype_name`;
 `src/haute/_polars_dtypes.py::dtype_to_spec`;
@@ -376,7 +334,7 @@ banding statistics tests run on Polars 2 with no Polars deprecation warning
 (enforced by an error filter for Polars deprecations in those modules), and
 their golden outputs are unchanged.
 
-**Dependencies:** PL2-01.
+**Dependencies:** None.
 
 **Evidence:** `examples/reference/main.py`;
 `src/haute/assistant/assets/examples/linear_pricing/pipeline.py`;
@@ -421,7 +379,7 @@ cardinality unavailable; `map.len()` is classified in its namespace; the
 live-surface test passes on Polars 2 and fails when an entry names a missing
 operation.
 
-**Dependencies:** PL2-01.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_polars_operations.py::POLARS_OPERATIONS`;
 `src/haute/_polars_operations.py::EXPRESSION_NAMESPACE_NAMES`;
@@ -456,7 +414,7 @@ dispatched lanes above are green against the same revision with their run
 links recorded; each gap above has a test; no test sorts away an order the
 specifications promise.
 
-**Dependencies:** PL2-01 to PL2-14.
+**Dependencies:** PL2-02, PL2-06, PL2-07, PL2-12, PL2-13 and PL2-14.
 
 **Evidence:** `tests/test_edge_join.py`; `tests/test_execute_lazy_contracts.py`;
 `tests/test_column_lineage.py`; `tests/test_standalone_nodes.py`;
@@ -527,7 +485,7 @@ contract is estimated as materialising both inputs; the decision whether to
 turn spilling on is recorded in the execution-engine specification with the
 measurement behind it.
 
-**Dependencies:** PL2-01.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_polars_operations.py::POLARS_OPERATIONS`;
 `tests/performance/_operation_memory_probe.py`;
@@ -585,7 +543,7 @@ version, and loading it under another fails with the named message; the
 container's Dockerfile and the served model's environment carry the Polars
 settings.
 
-**Dependencies:** PL2-01.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/deploy/_mlflow.py::_pip_requirements`;
 `src/haute/deploy/_container.py::_SCORING_RUNTIME_DEPENDENCIES`;
@@ -608,7 +566,7 @@ for a release built on a pyo3-polars line for Polars 2.
 **Acceptance:** a test that removes `_import_arrow_from_c` from the installed
 Polars fails the guard with its message, not a solve.
 
-**Dependencies:** PL2-01.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_price_contour.py::price_contour`;
 `tests/test_price_contour_guard.py`;

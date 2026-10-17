@@ -71,23 +71,19 @@ def test_pandas_floor_and_cap_cover_the_pyfunc_conversion_boundary() -> None:
     assert _cap(requirement) <= Version("3"), "pandas cap must exclude pandas 3"
 
 
-def test_polars_floor_supports_ordered_and_sliced_streaming_joins() -> None:
-    """Rating-table streaming joins rely on LazyFrame.join(maintain_order=...),
-    and previews limited at the previewed node rely on a sliced left join
-    streaming its probe side instead of buffering it (fixed by 1.43)."""
+def test_polars_requirement_is_polars_2() -> None:
+    """Haute is built for Polars 2: every collect names its engine, every join it
+    builds states its row order, and the I/O catalogue, the compatibility corpus and
+    the memory evidence describe 2.0. Polars 1 runs none of that as specified, and a
+    3.x release is a reviewed upgrade, as 2.0 was."""
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     dependencies = project["project"]["dependencies"]
     polars_requirement = next(
         Requirement(dep) for dep in dependencies if Requirement(dep).name == "polars"
     )
-    lower_bounds = [
-        Version(spec.version)
-        for spec in polars_requirement.specifier
-        if spec.operator in {">=", "=="}
-    ]
 
-    assert lower_bounds
-    assert max(lower_bounds) >= Version("1.44.2")
+    assert _floor(polars_requirement) >= Version("2.0")
+    assert _cap(polars_requirement) <= Version("3")
 
 
 def test_openai_floor_constructs_a_client_with_current_httpx() -> None:

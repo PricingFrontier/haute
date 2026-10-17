@@ -355,7 +355,8 @@ def main() -> None:
     out_path = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_OUTPUT
 
     payload = extract_schema()
-    out_path.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n", encoding="utf-8")
+    # Bytes, so the file keeps the repository's LF endings on Windows too.
+    out_path.write_bytes((json.dumps(payload, indent=2, sort_keys=False) + "\n").encode("utf-8"))
 
     functions = payload["functions"]
     n_undoc = sum(1 for f in functions for a in f["arguments"] if a["undocumented"])

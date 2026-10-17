@@ -88,7 +88,13 @@ def _read(
             ) from None
     try:
         frame = pl.read_csv(
-            io.BytesIO(text.encode("utf-8")), infer_schema=False, columns=columns, n_rows=n_rows
+            io.BytesIO(text.encode("utf-8")),
+            infer_schema=False,
+            columns=columns,
+            n_rows=n_rows,
+            # An empty file and a ragged row fail loudly, whatever Polars' unset defaults say.
+            raise_if_empty=True,
+            truncate_ragged_lines=False,
         )
     except pl.exceptions.NoDataError:
         raise ParamFileError(f"{name} is empty.", path=name) from None

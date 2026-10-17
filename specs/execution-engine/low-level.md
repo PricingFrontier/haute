@@ -525,7 +525,7 @@ projection planning").
 A target-only preview therefore limits only the target with SQL `LIMIT` semantics — Polars
 pushes the slice upstream only where the result is unchanged — a full materialisation
 gives every node its own limited output, and trace passes its head-frame prefixes.
-The Polars floor (`polars>=1.44.2`) is part of this contract: earlier releases (measured on
+The Polars floor (`polars>=2.0`) keeps this contract: releases before 1.43 (measured on
 1.39.3) buffer a left join's entire probe side before a downstream slice stops it, so a
 100-row preview below a join on a 10-million-row input held about 8 GB, where 1.43.2 and
 later stream it in under 1 GB.
@@ -579,8 +579,8 @@ predicate, then the projection.
   pushed limit `n` reads only the key column to pick the first `n` keys and applies to those
   keys' rows (sum-constraint online optimiser apply).
 - `_register_python_scan` runs every source in the caller's copied context variables on
-  engine threads and hands it the pushed predicate unchanged. The `polars>=1.44.2` floor
-  guarantees that predicate is evaluable: earlier releases also pushed a sort-limit's
+  engine threads and hands it the pushed predicate unchanged. The `polars>=2.0` floor
+  guarantees that predicate is evaluable: releases before 1.44.2 also pushed a sort-limit's
   engine-only `dynamic_pred` bound into IO sources, which panicked when evaluated.
 - An exception raised while producing a batch propagates as itself. Polars hands a source's
   own exception, class and attributes intact (a `BaseException` such as a cancellation, or a

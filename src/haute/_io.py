@@ -398,6 +398,12 @@ def read_user_text(path: str | Path) -> str:
 _OBJECT_CACHE_MAX_SIZE = 32
 
 
+#: The strictness Haute's CSV reads pass explicitly: an empty file and a row with more
+#: fields than the header fail loudly. Polars 2 leaves both arguments unset by default and
+#: resolves them from the other arguments, so they are never left to it.
+CSV_STRICTNESS: dict[str, Any] = {"raise_if_empty": True, "truncate_ragged_lines": False}
+
+
 def read_source(
     path: str | Path,
     *,
@@ -436,9 +442,12 @@ def read_source(
             columns=projection_columns,
         )
         if source_schema_overrides is None:
-            lf = pl.scan_csv(path_string)
+            lf = pl.scan_csv(path_string, **CSV_STRICTNESS)
         else:
-            scan_kwargs: dict[str, Any] = {"schema_overrides": source_schema_overrides}
+            scan_kwargs: dict[str, Any] = {
+                "schema_overrides": source_schema_overrides,
+                **CSV_STRICTNESS,
+            }
             if _is_bounded_csv_profile(normalised_profile):
                 scan_kwargs["infer_schema"] = False
             lf = pl.scan_csv(path_string, **scan_kwargs)

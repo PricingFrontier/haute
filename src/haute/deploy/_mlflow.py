@@ -349,13 +349,17 @@ def _build_signature(resolved: ResolvedDeploy) -> object:
 def _pip_requirements() -> list[str]:
     """Build pip requirements for the deployed model.
 
-    The pinned Haute brings its own model engines, so no node adds one.
+    Haute and Polars are pinned to the editor's own versions: a Polars release can
+    change the results a pipeline gives and the memory it takes. The pinned Haute
+    brings its own model engines, so no node adds one.
     """
+    import polars
+
     import haute
 
     return [
         f"haute=={haute.__version__}",
-        "polars>=1.44.2",
+        f"polars=={polars.__version__}",
     ]
 
 

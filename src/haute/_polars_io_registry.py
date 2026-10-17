@@ -296,23 +296,18 @@ FORMATS_BY_NAME: dict[str, IoFormat] = {fmt.name: fmt for fmt in FORMATS}
 # Argument-name classes excluded from node configs: remote-IO arguments ride
 # the retained local-path posture; execution-owned sink arguments belong to
 # haute's execution discipline, not per-node config.
-REMOTE_IO_ARGUMENTS: frozenset[str] = frozenset(
-    {"storage_options", "credential_provider", "retries", "file_cache_ttl"}
-)
+REMOTE_IO_ARGUMENTS: frozenset[str] = frozenset({"storage_options", "credential_provider"})
 _OBJECT_VALUED_ARGUMENTS: frozenset[str] = frozenset(
     {
         "with_column_names",
         "delta_merge_options",
         "pyarrow_options",
-        "credentials",
         "sinked_paths_callback",
     }
 )
 _SINK_EXECUTION_OWNED: frozenset[str] = frozenset({"lazy", "engine", "optimizations"})
 
-_DTYPE_MAPPING_ARGUMENTS: frozenset[str] = frozenset(
-    {"schema", "schema_overrides", "hive_schema", "dtypes"}
-)
+_DTYPE_MAPPING_ARGUMENTS: frozenset[str] = frozenset({"schema", "schema_overrides", "hive_schema"})
 
 
 def _declares_full_schema(arguments: Mapping[str, Any]) -> bool:

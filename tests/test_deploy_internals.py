@@ -5200,13 +5200,16 @@ class TestBuildSignature:
 class TestCondaEnvAndPipRequirements:
     """Tests for _conda_env() and _pip_requirements()."""
 
-    def test_pip_requirements_includes_haute_and_polars(self):
+    def test_pip_requirements_pin_the_editors_haute_and_polars(self):
+        import polars
+
+        import haute
         from haute.deploy._mlflow import _pip_requirements
 
         reqs = _pip_requirements()
 
-        assert any("haute==" in r for r in reqs)
-        assert "polars>=1.44.2" in reqs
+        assert f"haute=={haute.__version__}" in reqs
+        assert f"polars=={polars.__version__}" in reqs
 
     def test_pip_requirements_add_no_model_engine(self):
         """The pinned Haute brings its own engines; no node adds one."""
