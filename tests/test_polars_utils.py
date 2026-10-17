@@ -114,7 +114,7 @@ def test_streaming_collect_uses_polars_streaming_engine() -> None:
 
 
 def test_execution_collect_rejects_unknown_engine() -> None:
-    with pytest.raises(ValueError, match="engine must be 'auto', 'streaming' or 'in-memory'"):
+    with pytest.raises(ValueError, match="engine must be 'streaming' or 'in-memory'"):
         execution_collect(pl.LazyFrame({"x": [1]}), engine="gpu")  # type: ignore[arg-type]
 
 
@@ -1602,7 +1602,7 @@ class TestRowLocalPythonScan:
         seams = [
             lambda: streaming_collect(scan()),
             lambda: execution_collect(scan(), engine="in-memory"),
-            lambda: execution_collect(scan(), execution_context=context),
+            lambda: execution_collect(scan(), execution_context=context, engine="streaming"),
             lambda: list(bounded_collect_batches(scan(), chunk_size=10)),
             lambda: bounded_sink(scan(), tmp_path / "out.parquet"),
             lambda: scan().collect(engine="in-memory"),
@@ -1645,7 +1645,7 @@ class TestRowLocalPythonScan:
         )
 
         with pytest.raises(ExecutionCancelledError) as caught:
-            execution_collect(scan, execution_context=context)
+            execution_collect(scan, execution_context=context, engine="streaming")
         assert caught.value.job_id == "job-1"
         assert _is_execution_control(caught.value)
 

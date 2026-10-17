@@ -125,7 +125,7 @@ def read_param_file(project_root: Path, file: str, column: str | None = None) ->
         .filter(pl.col(column).is_not_null() & (pl.col(column) != ""))
         .unique(maintain_order=True)
         .head(PARAM_VALUES_LIMIT + 1)
-        .collect()
+        .collect(engine="streaming")
         .to_series()
         .to_list()
     )

@@ -379,7 +379,7 @@ class ExploreRelationshipsService:
             grouped.lazy()
             .filter(pl.col("W") > 0)
             .select((pl.col("S") ** 2 / pl.col("W")).sum().alias("between"))
-            .collect()
+            .collect(engine="streaming")
             .item(0, "between")
         )
         return float(value or 0.0)

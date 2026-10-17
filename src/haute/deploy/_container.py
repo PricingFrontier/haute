@@ -587,7 +587,7 @@ def _quote_ndjson_chunks(spool):
 def _batch_response_content(result):
     row_count = result.row_count
     returned_rows = min(row_count, _QUOTE_RESPONSE_ROW_LIMIT)
-    frame = pl.scan_parquet(result.result_path).head(returned_rows).collect()
+    frame = pl.scan_parquet(result.result_path).head(returned_rows).collect(engine="streaming")
     return {{
         "rows": render_output_document(frame),
         "row_count": row_count,

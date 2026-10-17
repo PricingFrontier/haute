@@ -627,8 +627,13 @@ worker starts, so an automatic snapshot build happens in the parent, within the 
 
 ### Streaming collection
 
-`execution_collect()` is the one context-aware collection seam. With no active context it
-performs one native collect using the requested automatic or streaming engine. With an
+`execution_collect()` is the one context-aware collection seam. Its engine, `streaming` or
+`in-memory`, is a required argument: Polars' `auto` engine resolves to streaming for a lazy
+query on 2.0 and follows `POLARS_ENGINE_AFFINITY`, so a collect that left it to Polars
+would change engine with the version or the host. Every collect in `src/haute/`, direct or
+through the seam, names its engine (`streaming` for a bounded or run-sized
+materialisation, which is every site today), held by `tests/test_collect_engines.py`. With
+no active context it performs one native collect on that engine. With an
 active context it starts one native background query, polls `InProcessQuery.fetch()` at a
 validated positive interval, and checkpoints between polls. A checkpoint failure cancels
 the native query before propagating; query `fetch()` failures propagate unchanged, and a

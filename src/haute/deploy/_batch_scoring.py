@@ -135,7 +135,7 @@ class BatchScoreResult:
 
 def _parquet_row_count(path: str | Path) -> int:
     """Return the row count of a sunk parquet without materialising its rows."""
-    return int(pl.scan_parquet(path).select(pl.len()).collect().item())
+    return int(pl.scan_parquet(path).select(pl.len()).collect(engine="streaming").item())
 
 
 def _remove_batch_temp_dir(temp_dir: str, *, primary_error: BaseException | None) -> None:

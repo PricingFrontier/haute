@@ -38,7 +38,6 @@ proves it answers each quote of a request with one row, in request order
 | PL2-05 | Planned | P2 | Training, Workbench tables and Haute's tied cuts give the same result on every run. |
 | PL2-06 | Planned | P2 | The step editor renders only code Polars 2 runs, and **Change types** turns text into dates. |
 | PL2-07 | Planned | P1 | CSV inputs read as they did, or fail with a message that says what changed. |
-| PL2-10 | Planned | P2 | Every Haute collect names its engine. |
 | PL2-12 | Planned | P2 | New Polars dtypes meet Haute's dtype vocabularies loudly or are normalised where they enter. |
 | PL2-13 | Planned | P2 | Code Haute generates and teaches runs on Polars 2 without deprecations. |
 | PL2-14 | Planned | P2 | The operation registry and analysers describe Polars 2. |
@@ -332,36 +331,6 @@ Input page documents the behaviour.
 `src/haute/_polars_io_registry.py`;
 `tests/test_polars_io_interface_contracts.py::TestNoBreakingDriftAcrossTheCap`;
 `docs/building-models/nodes/data-input.md`.
-
-### PL2-10 — Every Haute collect names its engine
-**Why:** `execution_collect` defaults to `engine="auto"`, and 20 of its 25
-callers pass no engine; nor do the direct `LazyFrame.collect()` calls in
-deploy batch scoring, the scoring container, the RAM estimate's probe,
-Workbench parameters, Explore's relationships, the native pyfunc and the
-optimiser's routes. Polars 2.0 resolves `auto` to the streaming engine for a
-lazy query, so each of those calls changed engine with the upgrade, and each
-would change again if a user or host set `POLARS_ENGINE_AFFINITY`. The engine
-decides memory behaviour and which operations stream; on 2.0 it no longer
-decides join order, which only `maintain_order` or a sort fixes.
-
-**Plan:** Make the engine a required argument of `execution_collect` and the
-background collect, and give every direct collect in `src/haute/` an explicit
-engine: `streaming` wherever the call is a bounded or run-sized
-materialisation, `in-memory` only for a small frame that is materialised in
-memory anyway. No site relies on an engine for row order. Add a lint test that
-rejects an engine-less collect in `src/haute/`.
-
-**Acceptance:** no `collect()` in `src/haute/` relies on Polars' default
-engine, held by the lint test; setting `POLARS_ENGINE_AFFINITY=in-memory`
-changes no test result.
-
-**Dependencies:** None; every join Haute builds states its order, so the engine
-chosen at each site serves the order contract.
-
-**Evidence:** `src/haute/_polars_utils.py::execution_collect`;
-`src/haute/_polars_utils.py::_cancellable_collect`;
-`src/haute/_polars_utils.py::bounded_collect_batches`;
-`src/haute/routes/_optimiser_outcomes.py`.
 
 ### PL2-12 — New Polars dtypes meet Haute's dtype vocabularies loudly or are normalised where they enter
 **Why:** Rendered dtype strings are identical across versions for every

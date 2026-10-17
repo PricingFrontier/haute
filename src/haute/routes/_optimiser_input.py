@@ -272,7 +272,7 @@ def forecast_resident_grid_bytes(
     row_count = int(read_parquet_metadata(path)["row_count"])
     sample_lf = pl.scan_parquet(path).select(list(dict.fromkeys(columns))).head(512)
     sample = (
-        sample_lf.collect()
+        sample_lf.collect(engine="streaming")
         if execution_context is None
         else cancellable_streaming_collect(sample_lf, execution_context=execution_context)
     )
@@ -346,7 +346,7 @@ def scenario_step_count(
 
     max_lf = pl.scan_parquet(path).select(pl.col(scenario_index).max())
     frame = (
-        max_lf.collect()
+        max_lf.collect(engine="streaming")
         if execution_context is None
         else cancellable_streaming_collect(max_lf, execution_context=execution_context)
     )

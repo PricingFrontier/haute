@@ -644,7 +644,12 @@ def _probe_expanded_variable_widths(
     ]
     if not variable_columns:
         return MappingProxyType({})
-    probe = pl.scan_parquet(path).select(variable_columns).head(min(row_count, max_rows)).collect()
+    probe = (
+        pl.scan_parquet(path)
+        .select(variable_columns)
+        .head(min(row_count, max_rows))
+        .collect(engine="streaming")
+    )
     if probe.height == 0:
         return MappingProxyType({})
     return MappingProxyType(
@@ -719,7 +724,7 @@ def _workbench_input_port_metadata(node: GraphNode, port: str) -> _DetailedSourc
     if port not in labels:
         return None
     frame = workbench_table_frames(config, port_columns={port: None})[port]
-    return _detailed_dataframe_metadata(frame.collect(), node.id)
+    return _detailed_dataframe_metadata(frame.collect(engine="streaming"), node.id)
 
 
 def _json_api_input_port_metadata(node: GraphNode, port: str) -> _DetailedSourceMetadata | None:

@@ -655,12 +655,12 @@ def histogram_of_frame(frame: pl.LazyFrame, spec: ChoiceFrameSpec) -> ChoiceQuer
     import polars as pl
 
     choice = _choice_frame(frame, spec)
-    row_count = int(choice.select(pl.len()).collect().item())
+    row_count = int(choice.select(pl.len()).collect(engine="streaming").item())
     frames = ChoiceFrames(
         choice=choice,
         analysis=None,
         analysis_key=CHOICE_QUOTE_ID,
-        collect=lambda plan: plan.collect(),
+        collect=lambda plan: plan.collect(engine="streaming"),
     )
     return ScenarioHistogram().run(frames, spec, row_count)
 
@@ -862,7 +862,7 @@ def lease_apply_frame(
 
 def _sample_width(frame: pl.LazyFrame) -> float:
     """The decoded width of one row, from a bounded sample of the first rows."""
-    return decoded_frame_row_width_bytes(frame.head(_SAMPLE_ROWS).collect())
+    return decoded_frame_row_width_bytes(frame.head(_SAMPLE_ROWS).collect(engine="streaming"))
 
 
 def _choice_frame(apply: pl.LazyFrame, spec: ChoiceFrameSpec) -> pl.LazyFrame:
@@ -998,7 +998,7 @@ class ChoiceQueryService:
                     )
                 )
                 choice = _choice_frame(apply, spec)
-                row_count = int(choice.select(pl.len()).collect().item())
+                row_count = int(choice.select(pl.len()).collect(engine="streaming").item())
                 analysis: pl.LazyFrame | None = None
                 factors: pl.LazyFrame | None = None
                 side_widths: list[float] = []

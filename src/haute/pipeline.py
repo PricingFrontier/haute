@@ -569,7 +569,7 @@ def _collect_standalone_output(result: Any) -> pl.DataFrame:
     if isinstance(result, pl.LazyFrame):
         from haute._polars_utils import execution_collect
 
-        return execution_collect(result)
+        return execution_collect(result, engine="streaming")
     return cast(pl.DataFrame, result)
 
 

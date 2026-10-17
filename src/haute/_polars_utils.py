@@ -33,6 +33,9 @@ from haute._pipeline_settings import (
 
 logger = get_logger(component="polars_utils")
 
+#: The engines a Haute collect names; Polars' ``auto`` is never left to choose.
+CollectEngine = Literal["streaming", "in-memory"]
+
 BOUNDED_MEMORY_EXEMPT_PROFILES = frozenset(
     {
         ExecutionProfile.PREVIEW_EAGER,
@@ -89,7 +92,7 @@ def _cancellable_collect(
     lf: pl.LazyFrame,
     *,
     execution_context: ExecutionContext,
-    engine: Literal["auto", "streaming", "in-memory"],
+    engine: CollectEngine,
     poll_seconds: float = 0.01,
 ) -> pl.DataFrame:
     """Collect in the background while propagating request cancellation."""
@@ -103,9 +106,11 @@ def _cancellable_collect(
         raise ValueError("poll_seconds must be a positive finite number")
 
     checkpoint_label = (
-        "streaming_collect_before_native" if engine == "streaming" else "auto_collect_before_native"
+        "streaming_collect_before_native"
+        if engine == "streaming"
+        else "in_memory_collect_before_native"
     )
-    poll_label = "streaming_collect_poll" if engine == "streaming" else "auto_collect_poll"
+    poll_label = "streaming_collect_poll" if engine == "streaming" else "in_memory_collect_poll"
     execution_context.checkpoint(label=checkpoint_label)
     execution_context.record_collect()
     query = lf.collect(engine=engine, background=True)
@@ -146,13 +151,17 @@ def cancellable_streaming_collect(
 def execution_collect(
     lf: pl.LazyFrame,
     *,
+    engine: CollectEngine,
     execution_context: ExecutionContext | None = None,
-    engine: Literal["auto", "streaming", "in-memory"] = "auto",
     poll_seconds: float = 0.01,
 ) -> pl.DataFrame:
-    """Collect with native cancellation whenever an execution context is active."""
-    if engine not in {"auto", "streaming", "in-memory"}:
-        raise ValueError("engine must be 'auto', 'streaming' or 'in-memory'")
+    """Collect on *engine* with native cancellation whenever an execution context is active.
+
+    The engine is the caller's to name: Polars' ``auto`` resolves differently by version
+    and by ``POLARS_ENGINE_AFFINITY`` (specs/io-layer).
+    """
+    if engine not in {"streaming", "in-memory"}:
+        raise ValueError("engine must be 'streaming' or 'in-memory'")
     context = execution_context or current_execution_context()
     if context is None:
         return lf.collect(engine=engine)
@@ -228,16 +237,20 @@ def bounded_collect_batches(
             execution_context=metrics_context,
         )
         total = int(
-            execution_collect(source.select(pl.len()), execution_context=metrics_context).item()
+            execution_collect(
+                source.select(pl.len()), execution_context=metrics_context, engine="streaming"
+            ).item()
         )
         for offset in range(0, total, chunk_size):
             if metrics_context is not None:
                 with metrics_context.stage(stage_name, node_id=node_id):
                     batch = execution_collect(
-                        source.slice(offset, chunk_size), execution_context=metrics_context
+                        source.slice(offset, chunk_size),
+                        execution_context=metrics_context,
+                        engine="streaming",
                     )
             else:
-                batch = execution_collect(source.slice(offset, chunk_size))
+                batch = execution_collect(source.slice(offset, chunk_size), engine="streaming")
             if metrics_context is not None:
                 metrics_context.checkpoint(label="after_collect_batch", node_id=node_id)
             yield batch

@@ -274,7 +274,7 @@ def execute_edge_join(
         join_lf = join.lazy()
     result = base_lf.join(join_lf, **build_edge_join_kwargs(config))
     if collect_eager and not base_is_lazy and not join_is_lazy:
-        return execution_collect(result)
+        return execution_collect(result, engine="streaming")
     return result
 
 

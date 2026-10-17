@@ -82,7 +82,7 @@ class NativePyfuncModel:
             categorical_levels=self._categorical_levels or None,
             offset_column=self._scoring.offset_column,
             offset_link=self._scoring.offset_link,
-        ).collect()
+        ).collect(engine="streaming")
         if self._task == "classification":
             return pl.DataFrame(
                 {

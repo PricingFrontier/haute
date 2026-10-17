@@ -1187,8 +1187,8 @@ class OptimiserFrontierService:
             _APPLY_RESULT_HANDLE_KEY,
             unavailable_detail=APPLY_RESULT_UNAVAILABLE_DETAIL,
         ) as as_solved:
-            row_count = int(as_solved.select(pl.len()).collect().item())
-            sample = as_solved.head(512).collect()
+            row_count = int(as_solved.select(pl.len()).collect(engine="streaming").item())
+            sample = as_solved.head(512).collect(engine="streaming")
         return estimate_point_apply_peak_bytes(
             row_count=row_count, row_width_bytes=decoded_frame_row_width_bytes(sample)
         )

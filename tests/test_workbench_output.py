@@ -198,7 +198,9 @@ def _response(graph: PipelineGraph) -> list[Any]:
 
 def _collected(frame: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame:
     # Collected as Haute collects, so a failure inside a table's scan is raised as itself.
-    return execution_collect(frame) if isinstance(frame, pl.LazyFrame) else frame
+    return (
+        execution_collect(frame, engine="streaming") if isinstance(frame, pl.LazyFrame) else frame
+    )
 
 
 def test_a_workbench_output_fills_its_tables_from_their_frames(project: Path) -> None:
@@ -760,7 +762,7 @@ def test_a_workbench_outputs_tables_are_read_lazily() -> None:
     assert list(tables["pricing"].collect_schema()) == ["premium", "limit", "referral"]
     assert list(as_response(tables).collect_schema()) == ["pricing", "item_prices"]
     with pytest.raises(WorkbenchOutputError, match="has 2 rows"):
-        execution_collect(tables["pricing"])
+        execution_collect(tables["pricing"], engine="streaming")
     with pytest.raises(WorkbenchOutputError, match="runs only where its connections are known"):
         assemble_workbench_output_from_config(
             pricing, items, config={"tables": copy.deepcopy(_RESPONSE_TABLES)}
