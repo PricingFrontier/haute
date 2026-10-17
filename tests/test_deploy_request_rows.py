@@ -486,32 +486,32 @@ REJOIN = {"how": "left", "on": "quote_id", "suffix": "_r", "maintainOrder": "lef
 RIGHT_ROW_LOCAL = "df = quotes.select('quote_id', (pl.col('age') * 3).alias('a3'))"
 
 
-def test_a_request_side_not_proven_unique_is_refused():
-    assert _refusals(_branches(REJOIN, right_code=RIGHT_ROW_LOCAL)) == [
-        RowRefusal("joined", "joined", "join (how='left', maintain_order='left_right')", "repeats")
+def test_a_join_of_two_parts_of_the_request_is_refused_whatever_it_declares():
+    """Unique keys on both sides do not tie a row to its own quote."""
+    refused = [
+        RowRefusal("joined", "joined", "join (how='left', maintain_order='left_right')", "mixes")
     ]
-
-
-def test_a_request_side_declared_many_to_one_answers_in_request_order():
-    graph = _branches({**REJOIN, "validate": "m:1"}, right_code=RIGHT_ROW_LOCAL)
-    rows = request_rows(graph, ["quotes"], "out", {})
-
-    assert rows.multi_quote == "in_request_order"
-    answer = _score(graph, {}, rows, QUOTES)
-    assert answer["quote_id"].to_list() == QUOTES["quote_id"].to_list()
-    assert answer["a3"].to_list() == [age * 3 for age in QUOTES["age"]]
-
-
-def test_a_group_by_on_the_join_key_proves_the_side_unique():
-    """The group-by itself mixes quotes; the join it feeds adds no refusal of its own."""
+    for join in (REJOIN, {**REJOIN, "validate": "m:1"}, {**REJOIN, "validate": "1:1"}):
+        assert _refusals(_branches(join, right_code=RIGHT_ROW_LOCAL)) == refused
     grouped = "df = quotes.group_by('quote_id').agg((pl.col('age') * 3).max().alias('a3'))"
-    filtered = "df = quotes.filter(pl.col('age') > 0).select('quote_id', pl.col('age').alias('a3'))"
-
-    assert [r.effect for r in _refusals(_branches(REJOIN, right_code=grouped))] == ["mixes"]
-    assert [r.effect for r in _refusals(_branches(REJOIN, right_code=filtered))] == [
-        "drops",
-        "repeats",
+    assert [r.effect for r in _refusals(_branches(REJOIN, right_code=grouped))] == [
+        "mixes",
+        "mixes",
     ]
+
+    # Why: a branch that shifts the quote's key passes Polars' ``m:1`` check and, scored
+    # unchecked, answers quote 2 with quote 1's row.
+    shifted = (
+        "df = quotes.select((pl.col('quote_id') + 1).alias('quote_id'), "
+        "(pl.col('age') * 3).alias('a3'))"
+    )
+    answer = score_graph(
+        graph=_branches({**REJOIN, "validate": "m:1"}, right_code=shifted),
+        input_df=pl.DataFrame({"quote_id": [1, 2], "region": ["N", "S"], "age": [30, 40]}),
+        input_node_ids=["quotes"],
+        output_node_id="out",
+    )
+    assert answer["a3"].to_list() == [None, 90]
 
 
 def test_every_refusal_is_collected(remap):
@@ -984,14 +984,24 @@ def test_an_optimiser_apply_in_ratebook_mode_keeps_the_input_it_rates(tmp_path):
     )
 
 
-def test_an_optimiser_read_from_mlflow_cannot_be_a_checked_lookup(remap):
+@pytest.mark.parametrize(
+    ("join", "operation"),
+    [
+        (ORDERED_LEFT, "join (how='left', maintain_order='left_right')"),
+        (
+            {"how": "cross", "suffix": "_s", "maintainOrder": "left"},
+            "join (how='cross', maintain_order='left')",
+        ),
+    ],
+)
+def test_an_optimiser_read_from_mlflow_cannot_be_a_checked_lookup(join, operation, remap):
     graph = PipelineGraph.model_validate(
         {
             "nodes": [
                 _node("quotes", "apiInput", {"path": ""}),
                 _lookup("rates", remap["rates__rates.parquet"]),
                 _node("served", "optimiserApply", {"sourceType": "run", "run_id": "abc"}),
-                _node("priced", "edgeJoin", ORDERED_LEFT),
+                _node("priced", "edgeJoin", join),
                 _node("out", "output", _output(["quote_id"], "priced")),
             ],
             "edges": [
@@ -1005,11 +1015,7 @@ def test_an_optimiser_read_from_mlflow_cannot_be_a_checked_lookup(remap):
 
     assert _verdict(graph, remap) == (
         "refused",
-        [
-            RowRefusal(
-                "priced", "priced", "join (how='left', maintain_order='left_right')", "unproven"
-            )
-        ],
+        [RowRefusal("priced", "priced", operation, "unproven")],
     )
 
 
@@ -1204,54 +1210,6 @@ def test_a_carried_branch_the_parser_cannot_read_is_still_checked(remap):
     assert [check.side_node_id for check in checks] == ["shaped"]
 
 
-@pytest.mark.parametrize(
-    ("right_code", "join", "effects"),
-    [
-        # A rename carries the key the group-by made unique.
-        (
-            "df = quotes.group_by('quote_id').agg(pl.col('age').max().alias('a3'))"
-            ".rename({'quote_id': 'qid'})",
-            {**REJOIN, "on": None, "leftOn": "quote_id", "rightOn": "qid"},
-            ["mixes"],
-        ),
-        # A column computed beside the key keeps it unique; one written over it does not.
-        (
-            "df = quotes.group_by('quote_id').agg(pl.col('age').max().alias('a3'))"
-            ".with_columns((pl.col('a3') * 2).alias('a3'))",
-            REJOIN,
-            ["mixes"],
-        ),
-        (
-            "df = quotes.group_by('quote_id').agg(pl.col('age').max().alias('a3'))"
-            ".with_columns(pl.col('quote_id') + 1)",
-            REJOIN,
-            ["mixes", "repeats"],
-        ),
-        # A duplicate removal on the key proves it too.
-        ("df = quotes.unique(subset=['quote_id'])", REJOIN, ["drops"]),
-        # Keys the group-by computes are not literal columns: nothing is proved.
-        (
-            "df = quotes.group_by(pl.col('quote_id') + 0).agg(pl.col('age').max().alias('a3'))",
-            REJOIN,
-            ["mixes", "repeats"],
-        ),
-        (
-            "df = quotes.group_by('quote_id', maintain_order=True).agg(pl.len().alias('a3'))",
-            REJOIN,
-            ["mixes"],
-        ),
-        (
-            "df = quotes.group_by('quote_id', bogus=1).agg(pl.len().alias('a3'))",
-            REJOIN,
-            ["mixes", "repeats"],
-        ),
-    ],
-)
-def test_uniqueness_follows_the_key_through_the_code(right_code, join, effects):
-    join = {key: value for key, value in join.items() if value is not None}
-    assert [r.effect for r in _refusals(_branches(join, right_code=right_code))] == effects
-
-
 def test_a_graph_with_a_cycle_is_refused():
     graph = PipelineGraph.model_validate(
         {
@@ -1417,7 +1375,7 @@ def test_a_disabled_mapping_entry_is_not_read(remap):
     assert _verdict(_response_graph(mapping, remap), remap) == ("in_request_order", [])
 
 
-def test_a_cross_join_with_a_request_branch_can_repeat_a_quote():
+def test_a_cross_join_with_a_request_branch_is_refused():
     graph = PipelineGraph.model_validate(
         {
             "nodes": [
@@ -1439,7 +1397,7 @@ def test_a_cross_join_with_a_request_branch_can_repeat_a_quote():
 
     assert _verdict(graph) == (
         "refused",
-        [RowRefusal("joined", "joined", "join (how='cross', maintain_order='left')", "repeats")],
+        [RowRefusal("joined", "joined", "join (how='cross', maintain_order='left')", "mixes")],
     )
 
 
@@ -1490,18 +1448,6 @@ def test_a_carried_branch_through_any_node_is_still_a_lookup(remap):
     verdict, refusals, checks = prove_request_rows(graph, ["quotes"], "out", remap)
     assert (verdict, refusals) == ("in_request_order", ())
     assert [(check.side_node_id, check.keys) for check in checks] == [("expanded", ("region",))]
-
-
-def test_a_with_columns_the_proof_cannot_name_loses_the_key_s_uniqueness():
-    right_code = (
-        "df = quotes.group_by('quote_id').agg(pl.col('age').max().alias('a3'))"
-        ".with_columns(pl.all())"
-    )
-
-    assert [r.effect for r in _refusals(_branches(REJOIN, right_code=right_code))] == [
-        "mixes",
-        "repeats",
-    ]
 
 
 def test_a_response_that_is_not_the_request_s_rows_is_refused(remap):

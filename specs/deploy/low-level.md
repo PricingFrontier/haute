@@ -64,8 +64,7 @@
 - **`_FrameFacts`** (`_request_rows.py`, frozen dataclass) — what the proof knows about one
   edge's frame: `rows` (`request`: one row per quote, in request order, each from its own
   quote; `one`: exactly one row; `other`), `from_request`, `carried` (built only from
-  bundled artefacts, Constants and the preamble, so the build can read it), and
-  `unique_on` (key sets a `group_by` or `unique` proved it unique on).
+  bundled artefacts, Constants and the preamble, so the build can read it).
 - **`DeployResult`** (`_mlflow.py`) — returned by every backend: `model_name`,
   `model_version`, `model_uri`, `endpoint_url` (`None` if no endpoint configured/created),
   `manifest_path`.
@@ -292,19 +291,16 @@
      `group_by`, `shift`, `with_row_index`, `interpolate` and `join_asof` mix; an
      expression the classifier rejects mixes when the registry knows its operation reads
      other rows, and is `unproven` otherwise (a helper's call, a `**` unpacking). A join keeps
-     the rows under the join rule below; a frame that is not `request` stays as it is. A
-     `group_by(K).agg` or `unique(subset=S)` with literal keys gives `unique_on` that set,
-     kept through `filter`, `sort`, `reverse`, `head`, `tail`, `limit`, `slice`, `top_k`,
-     `bottom_k` and `drop_nulls`, carried through a `rename` of a key and a
-     `with_columns` whose named outputs leave the keys alone, and lost to anything else.
+     the rows under the join rule below; a frame that is not `request` stays as it is.
    - The join rule, for an Edge Join (base is the left side; with the request on the join
      side only a right join ordered `right` or `right_left` is driven by it) and a code
      box's join alike: the request side must drive it; `how` must be `left` or `cross`
      (`inner`, `semi` and `anti` drop, `full` repeats, `right` replaces), and
-     `maintain_order` `left` or `left_right` (else `reorders`). A left join's other side
-     passes when it is `one`, when it comes from the request and is `unique_on` a subset of
-     its join keys or the join declares `validate` `m:1` or `1:1`, or when it is `carried`
-     and the join declares no `1:m` or `m:m`; otherwise it `repeats`. Every `left`,
+     `maintain_order` `left` or `left_right` (else `reorders`). An other side from the
+     request `mixes`, whatever the join declares: two parts of the request can pair one
+     quote with another's row with both sides' keys unique, so neither a `group_by` on the
+     keys nor `validate` proves the join. A left join's other side passes when it is `one`,
+     or `carried` and the join declares no `1:m` or `m:m`; otherwise it `repeats`. Every `left`,
      `inner` or `full` join the request drives against a `carried` side that declares no
      `1:m` or `m:m` adds a keyed `LookupCheck`, whether or not the join keeps the rows. A
      cross join's other side passes when it is `one`, or `carried` with a one-row
@@ -875,8 +871,9 @@ what they cover:
   join, a filter, an unpivot, a non-row-local expression, a Scenario Expander, an online or
   MLflow-sourced Optimiser Apply, a submodel placeholder and a multi-table Quote Input,
   collecting every refusal; requests `A, B` against a lookup holding `A` twice are refused
-  at build though the count would match; a request-derived side passes through a
-  `group_by` on the join key or a declared `m:1`, and a Constant through a cross join; a
+  at build though the count would match; a join of two parts of the request is refused
+  whatever it declares, where a key-shifting branch answers quote 2 with quote 1's row
+  through a passing `m:1`; a Constant passes through a cross join; a
   refused deployment answers one quote and refuses two with the 422 payload, scores its
   test quotes one request each, and records the refusals in the manifest and on
   `/health`; a covered deployment whose answer has another row count fails the request

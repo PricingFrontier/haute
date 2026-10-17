@@ -28,7 +28,6 @@ from haute._column_lineage import (
     LineageOperation,
     LineageOperationKind,
     _frame_chain_calls,
-    _literal_columns,
     _parse_program,
     _ParseFailure,
 )
@@ -249,8 +248,6 @@ class _FrameFacts:
     from_request: bool
     carried: bool
     """Built only from bundled artefacts, Constants and the preamble, so the build can read it."""
-    unique_on: frozenset[frozenset[str]] = frozenset()
-    """Key sets a ``group_by`` or ``unique`` proved the frame unique on."""
 
 
 _REQUEST_FACTS = _FrameFacts(_Rows.REQUEST, from_request=True, carried=False)
@@ -280,21 +277,6 @@ _EFFECT_BY_METHOD: Mapping[str, RowEffect] = {
     "interpolate": "mixes",
     "join_asof": "mixes",
 }
-# Row filters and reorderings keep a frame unique on whatever it was unique on.
-_KEEPS_UNIQUENESS = frozenset(
-    {
-        "filter",
-        "drop_nulls",
-        "head",
-        "tail",
-        "limit",
-        "slice",
-        "top_k",
-        "bottom_k",
-        "sort",
-        "reverse",
-    }
-)
 # A fill strategy that reads no other row.
 _ROW_LOCAL_FILL_STRATEGIES = frozenset({"zero", "one"})
 _JOIN_EFFECT_BY_HOW: Mapping[str, RowEffect] = {
@@ -363,13 +345,12 @@ class _Walk:
                 self.named_input(node, edges, inputs, node.data.config.get("data_input")) or first
             )
         if node_type is NodeType.BANDING:
-            return replace(first, unique_on=frozenset())
+            return first
         if node_type in {NodeType.RATING_STEP, NodeType.EXPLORE}:
             # A Rating Step's lookups are deduplicated and joined ``maintain_order="left"``;
             # its code, and an Explore's, see the frame as ``df`` alone.
-            kept = replace(first, unique_on=frozenset())
             code = _code(node)
-            return self.code_box(node, code, {"df": (kept, edges[0])}) if code else kept
+            return self.code_box(node, code, {"df": (first, edges[0])}) if code else first
         if node_type is NodeType.MODEL_SCORE:
             return self.model_score(node, edges, inputs)
         if node_type is NodeType.EXTERNAL_FILE:
@@ -455,7 +436,7 @@ class _Walk:
         self, node: GraphNode, edges: Sequence[GraphEdge], inputs: Sequence[_FrameFacts]
     ) -> _FrameFacts:
         # Scoring attaches predictions to the frame it scored, its first input.
-        scored = replace(inputs[0], unique_on=frozenset())
+        scored = inputs[0]
         code = _code(node)
         if not code:
             return scored
@@ -482,7 +463,7 @@ class _Walk:
                     else _lost_like(inputs)
                 )
             # Factor-table lookups, deduplicated and joined ``maintain_order="left"``.
-            return replace(selected, unique_on=frozenset())
+            return selected
         if mode == "online":
             # One row per quote id, in the id's text order (``key_prefix_python_scan``).
             return (
@@ -643,24 +624,23 @@ class _Walk:
             return self.refuse(node, operation, "reorders")
         if other.rows is _Rows.ONE:
             return _REQUEST_FACTS
-        if how == "cross":
-            if lookup:
-                # Exactly one row answers each quote once; another count only repeats
-                # (or drops) them, which a single quote may mean, so it is refused, not failed.
-                assert other_edge is not None
-                self.check(node, other_edge, ())
-                return _REQUEST_FACTS
-            return self.refuse(node, operation, "repeats")
         if other.from_request:
-            keys = frozenset(other_keys)
-            if declared in other_unique or any(unique <= keys for unique in other.unique_on):
-                return _REQUEST_FACTS
-            return self.refuse(node, operation, "repeats")
-        if lookup:
-            if declared_many:
-                return self.refuse(node, f"{operation}, validate={validate!r}", "repeats")
+            # Two parts of the request joined can pair one quote with another's rows even
+            # when both sides' keys are unique (a branch that shifts the quote's key), so
+            # no declaration proves it.
+            return self.refuse(node, operation, "mixes")
+        if not lookup:
+            # Read when a request is scored (an Optimiser Apply from MLflow, say).
+            return self.refuse(node, operation, "unproven")
+        if how == "cross":
+            # Exactly one row answers each quote once; another count only repeats (or
+            # drops) them, which a single quote may mean, so it is refused, not failed.
+            assert other_edge is not None
+            self.check(node, other_edge, ())
             return _REQUEST_FACTS
-        return self.refuse(node, operation, "unproven")
+        if declared_many:
+            return self.refuse(node, f"{operation}, validate={validate!r}", "repeats")
+        return _REQUEST_FACTS
 
     # -- code boxes ----------------------------------------------------------
 
@@ -759,19 +739,14 @@ class _Walk:
                 driver_is_left=True,
             )
         if current.rows is _Rows.OTHER:
-            return replace(current, unique_on=_unique_after(operation, calls, current.unique_on))
+            return current
         refusal = self.row_effect(operation, calls[0])
         if refusal is None:
-            return replace(current, unique_on=frozenset())
+            return current
         described, effect = refusal
         if current.rows is _Rows.REQUEST:
             self.refuse(node, described, effect)
-        return _FrameFacts(
-            _Rows.OTHER,
-            current.from_request,
-            current.carried,
-            unique_on=_unique_after(operation, calls, frozenset()),
-        )
+        return _FrameFacts(_Rows.OTHER, current.from_request, current.carried)
 
     def row_effect(
         self, operation: LineageOperation, call: ast.Call
@@ -890,48 +865,6 @@ def _program_steps(
         steps.append((operation, chunk))
         index += width
     return steps if index == len(calls) else None
-
-
-def _unique_after(
-    operation: LineageOperation,
-    calls: tuple[ast.Call, ...],
-    prior: frozenset[frozenset[str]],
-) -> frozenset[frozenset[str]]:
-    """The key sets a frame is unique on after *operation*."""
-    method = operation.method
-    if method == "group_by.agg":
-        keys = _group_keys(calls[0])
-        return frozenset({keys}) if keys else frozenset()
-    if method == "unique":
-        subset = operation.subset_columns
-        return frozenset({subset}) if subset else frozenset()
-    if method in _KEEPS_UNIQUENESS:
-        return prior
-    if method == "rename":
-        renamed = dict(operation.renamed_columns)
-        return frozenset(
-            frozenset(renamed.get(column, column) for column in keys) for keys in prior
-        )
-    if method == "with_columns":
-        outputs = {name for name, _inputs in operation.output_to_inputs}
-        call = calls[0]
-        if operation.selector_items or (not outputs and (call.args or call.keywords)):
-            return frozenset()
-        return frozenset(keys for keys in prior if not keys & outputs)
-    return frozenset()
-
-
-def _group_keys(call: ast.Call) -> frozenset[str] | None:
-    """The literal columns a ``group_by`` groups on, or None when they are not literal."""
-    if any(keyword.arg != "maintain_order" for keyword in call.keywords):
-        return None
-    keys: set[str] = set()
-    for argument in call.args:
-        columns = _literal_columns(argument)
-        if columns is None:
-            return None
-        keys.update(columns)
-    return frozenset(keys) or None
 
 
 def prove_request_rows(

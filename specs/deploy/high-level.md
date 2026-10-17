@@ -173,12 +173,11 @@ read from the bundle, a Data Output, a collapsed Live Switch and the training no
 passthrough, each node's own code proved in the same way. A join keeps them when the
 request side drives it, as a left or cross join ordered `left` or `left_right`, and its
 other side cannot repeat a quote: a side built only from what the deployment carries is
-checked when the deployment is built (below), a Constant is one row, and a side derived
-from the request needs a `group_by` or `unique` on part of the join keys with nothing after
-it that could change those keys (row filters, sorts, a rename of a key and columns computed
-beside them keep it), or a declared `validate` of `"m:1"` or `"1:1"`, which Polars
-checks when the request is scored. The response's top level must come from the request
-side.
+checked when the deployment is built (below), and a Constant is one row. A side derived
+from the request is never proved, whatever the join declares: two parts of the request
+joined back together can pair one quote with another's row even when both sides' keys are
+unique (a branch that shifts the quote's key passes Polars' `validate`). The response's
+top level must come from the request side.
 
 Any other operation stops the proof, named by its node and operation and what it does to
 the quotes: a filter, a row limit, a duplicate removal or an inner, semi or anti join can
@@ -187,7 +186,7 @@ a full join, a join whose other side may hold a key twice or a Scenario Expander
 one; a join driven by another input answers with that input's rows; a group-by, an
 expression that reads other rows (an aggregate, a window, a shift, a rank) or an online
 Optimiser Apply (which answers in quote-id order) makes one quote's answer depend on the
-others; and code the proof cannot follow, an Optimiser Apply that loads its result from
+others, and so can a join with another part of the request; and code the proof cannot follow, an Optimiser Apply that loads its result from
 MLflow when served, a submodel occurrence the deployed graph still holds (BUG-18) and a
 Quote Input with more than its root table (whose tables a deployed request is not yet split
 into, BUG-31) cannot be proved. A pipeline the proof does not cover still deploys and

@@ -224,7 +224,7 @@ When you deploy, Haute checks every node between the Quote Input and the Quote R
 A join keeps each quote's row when it starts from the quotes, is a left join (or a cross join with a single-row [Constant](../building-models/nodes/constant.md)), and keeps the quotes' order: **left input order** or **left, then right** in a **Join another input** step, **Left** or **Left then right** in an [Edge Join](../building-models/nodes/edge-join.md). The table it joins must also hold each key once:
 
 - **A lookup the deployment carries** (a [Data Input](../building-models/nodes/data-input.md)) is checked when you deploy, after its post-load code runs. If a key appears twice, the deploy fails naming the lookup, the join and the key: remove the repeated rows. If a quote is meant to match several rows, set the join's validation to **many to many** (**m:m** in an Edge Join); the deployment then answers one quote per request.
-- **A table built from the quote itself**, such as a quote's drivers, must be grouped by the join key before the join, or the join's validation set to **many to one (unique right keys)** or **one to one** (**m:1** or **1:1** in an Edge Join).
+- **A table built from the quotes themselves**, such as a node's result joined back to the quotes it came from, or a quote's drivers, can pair one quote with another's rows, so the deployment answers one quote per request. Add columns along one chain of nodes instead of splitting the quotes and joining them back.
 
 To decline a quote, keep its row and add a column saying so, for example `declined` set to true, instead of filtering the quote out.
 
