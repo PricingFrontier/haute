@@ -529,7 +529,7 @@ these as arguments and never recompute them.
   carries it as String and the constraints as Float32 (`_frontier_range_batch_columns`).
   `_estimate_scenario_frontier_ranges` reads the frame through `bounded_collect_batches` in
   batches of `current_streaming_chunk_size()` rows (the Pipeline Settings streaming chunk size; a
-  worker inherits it through `POLARS_STREAMING_CHUNK_SIZE`, and optimiser config has no auto-range
+  worker inherits it through `POLARS_IDEAL_MORSEL_SIZE`, and optimiser config has no auto-range
   size key), with `maintain_order=True` so the frame's quote order (the expander emits a quote's
   scenarios together and captures keep order) reaches `_reduce_frontier_range_batches`, which
   reduces every batch into `_ScenarioFrontierRangeAccumulator` and calls `finish()`. The

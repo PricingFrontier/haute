@@ -635,13 +635,16 @@ def _write_atomically_if_possible(path: Path, writer: Callable[[Path], _T]) -> _
 _streaming_chunk_lock = threading.Lock()
 _streaming_chunk_setting: int | None = None
 _streaming_chunk_caps: dict[object, int] = {}
+# The variable ``pl.Config.set_streaming_chunk_size`` writes and a spawned
+# worker inherits: Polars 2 calls its streaming chunk the ideal morsel size.
+STREAMING_CHUNK_SIZE_ENV = "POLARS_IDEAL_MORSEL_SIZE"
 # A worker spawned while a cap is active reads its setting from here rather
-# than from ``POLARS_STREAMING_CHUNK_SIZE``, which holds the parent's cap.
+# than from ``STREAMING_CHUNK_SIZE_ENV``, which holds the parent's cap.
 SPAWN_STREAMING_CHUNK_SIZE_ENV = "HAUTE_SPAWN_STREAMING_CHUNK_SIZE"
 
 
 def _configured_streaming_chunk_size() -> int | None:
-    raw = pl.Config.state(if_set=True).get("POLARS_STREAMING_CHUNK_SIZE")
+    raw = pl.Config.state(if_set=True).get(STREAMING_CHUNK_SIZE_ENV)
     try:
         value = int(raw) if raw else 0
     except (TypeError, ValueError):
@@ -662,7 +665,7 @@ def set_streaming_chunk_size(chunk_size: int) -> None:
     """Set the editor's streaming chunk size for this process.
 
     Polars keeps the value as process-wide configuration: it writes the
-    ``POLARS_STREAMING_CHUNK_SIZE`` environment variable, which a worker
+    :data:`STREAMING_CHUNK_SIZE_ENV` environment variable, which a worker
     spawned afterwards inherits. The value changes memory use and speed, never
     results. An active :func:`streaming_chunk_size_cap` keeps applying below it.
     """
@@ -695,7 +698,7 @@ def streaming_chunk_size_for_spawn() -> Iterator[dict[str, str]]:
     """Hold the chunk size steady while a child spawns; yield what it must inherit.
 
     While a cap is active the child inherits the parent's capped
-    ``POLARS_STREAMING_CHUNK_SIZE``, which this process keeps using, so the
+    :data:`STREAMING_CHUNK_SIZE_ENV`, which this process keeps using, so the
     setting travels under :data:`SPAWN_STREAMING_CHUNK_SIZE_ENV` instead (the
     default when none was ever configured) and the child applies it with
     :func:`apply_spawned_streaming_chunk_size`. With no cap there is nothing to

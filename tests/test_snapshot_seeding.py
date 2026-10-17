@@ -23,6 +23,7 @@ from haute._execution_schemas import ExecutionMetricsPayload
 from haute._graph_walker import CollectPolicy, walk_graph
 from haute._hashing import content_hash
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
+from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
 from haute._seed_plans import SeedPlan, SeedPlanRequest, open_seed_plan
 from haute._source_cache import SourceCacheIdentity
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
@@ -1642,7 +1643,7 @@ def test_lazy_run_join_capture_is_chunked_into_parts(
 ) -> None:
     from haute._polars_utils import set_streaming_chunk_size
 
-    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
     graph = _graph(
         project,
         [
@@ -1789,7 +1790,7 @@ def test_captured_chunk_local_node_reports_input_sliced_across_slices(
 ) -> None:
     from haute._polars_utils import set_streaming_chunk_size
 
-    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
     graph = _graph(
         project,
         [
@@ -1831,7 +1832,7 @@ def test_captured_rejected_node_reports_native_with_reason_and_blocking_operator
 ) -> None:
     from haute._polars_utils import set_streaming_chunk_size
 
-    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
     graph = _join_graph(
         project,
         a_code="df = src.filter(pl.col('a') >= 0).head(50)",
@@ -1912,7 +1913,7 @@ def test_captured_instance_node_referencing_original_source_names_is_input_slice
 ) -> None:
     from haute._polars_utils import set_streaming_chunk_size
 
-    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
     graph = _graph(
         project,
         [

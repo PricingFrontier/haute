@@ -31,6 +31,7 @@ from haute._chunked_writes import (
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._hashing import content_hash
 from haute._polars_utils import (
+    STREAMING_CHUNK_SIZE_ENV,
     bounded_sink,
     current_streaming_chunk_size,
     set_streaming_chunk_size,
@@ -1398,7 +1399,7 @@ def test_a_heavy_row_that_loses_a_match_is_refused(
 def test_a_write_reports_the_rows_per_part_it_chunked_at(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
     ambient = 1234
     assert ambient != current_streaming_chunk_size()
     set_streaming_chunk_size(ambient)

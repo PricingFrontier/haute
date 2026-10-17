@@ -990,10 +990,12 @@ Windows-only native spawn tests, which first reset the child's execution-speed
 policy to automatic and verify HighQoS from within the actual worker workload.
 
 **Streaming chunk size (`_polars_utils.py`).** `current_streaming_chunk_size()` reads
-Polars' process value (`POLARS_STREAMING_CHUNK_SIZE`), falling back to
+Polars' process value from the variable `pl.Config.set_streaming_chunk_size` writes,
+`POLARS_IDEAL_MORSEL_SIZE` on Polars 2 (named once, as `STREAMING_CHUNK_SIZE_ENV`, and
+pinned by a test that sets it through Polars' own setter), falling back to
 `DEFAULT_STREAMING_CHUNK_SIZE` (500,000). The server process sets that value from the
-pipeline settings' `chunk_rows` (see Pipeline settings below); a `POLARS_STREAMING_CHUNK_SIZE`
-already in the environment is not a setting and is replaced. `set_streaming_chunk_size(n)` validates `n`
+pipeline settings' `chunk_rows` (see Pipeline settings below); a value already in the
+environment is not a setting and is replaced. `set_streaming_chunk_size(n)` validates `n`
 (an integer from 1 to 10,000,000; a bool is refused) and sets it with
 `pl.Config.set_streaming_chunk_size`, which writes the environment variable a spawned
 child inherits. `streaming_chunk_size_cap(rows)` lowers the value Polars sees while its
@@ -1006,7 +1008,7 @@ low-level spec); the configuration is process-wide, so a query another thread st
 meanwhile runs with the smaller chunk, which changes its memory and speed, never its
 result. `start_process_with_environment` holds the chunk-size lock while a child spawns
 (`streaming_chunk_size_for_spawn`), so no cap starts or ends mid-spawn, and never touches
-this process's `POLARS_STREAMING_CHUNK_SIZE`, so a sink already running under a cap keeps
+this process's `POLARS_IDEAL_MORSEL_SIZE`, so a sink already running under a cap keeps
 it. Under an active cap the child inherits the capped variable but is also handed the
 setting as `HAUTE_SPAWN_STREAMING_CHUNK_SIZE`, which the isolated-worker and worker-protocol
 entry points apply first (`apply_spawned_streaming_chunk_size`); warm interactive and

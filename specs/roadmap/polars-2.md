@@ -37,7 +37,6 @@ prepared frame's order varies (`PL2-05`).
 | PL2-05 | Planned | P2 | Training, Workbench tables and Haute's tied cuts give the same result on every run. |
 | PL2-06 | Planned | P2 | The step editor renders only code Polars 2 runs, and **Change types** turns text into dates. |
 | PL2-07 | Planned | P1 | CSV inputs read as they did, or fail with a message that says what changed. |
-| PL2-08 | Planned | P2 | The **Chunk rows** setting reaches Polars 2. |
 | PL2-09 | Planned | P2 | Sliced writes and the optimiser's input reuse recognise Polars 2 plans. |
 | PL2-10 | Planned | P2 | Every Haute collect names its engine. |
 | PL2-11 | Planned | P2 | Lineage and input-less nodes follow Polars 2's zero-width frames. |
@@ -496,44 +495,6 @@ Input page documents the behaviour.
 `tests/test_polars_io_interface_contracts.py::TestNoBreakingDriftAcrossTheCap`;
 `docs/building-models/nodes/data-input.md`.
 
-### PL2-08 — The Chunk rows setting reaches Polars 2
-**Why:** Polars 2.0 removes `POLARS_STREAMING_CHUNK_SIZE`, which it now
-ignores silently; `pl.Config.set_streaming_chunk_size` still works and writes
-`POLARS_IDEAL_MORSEL_SIZE`. Haute reads its process value back by the old name
-(`_configured_streaming_chunk_size`), so on 2.0 the **Chunk rows** setting is
-applied but reported as unset: `current_streaming_chunk_size()` returns the
-500,000-row default, chunked writes slice at the default, and the cap a batch
-Model Score under scenario expanders applies is computed from the default
-(probed; 14 of the bounded runs' failures). The fixture that restores the
-value between tests reads the old name too, as do 14 test modules, and the
-execution-engine and optimiser specifications name the old variable. The
-streaming engine hands a registered Python source the morsel size as its
-`batch_size` (the in-memory engine hands it none), so with streaming now the
-default the setting also sizes Haute's Python scans on paths that used to run
-in memory.
-
-**Plan:** Read the value by its Polars 2 name, keep the spawn hand-over and
-the cap logic (the configuration is still process-wide), and rename the
-variable in the restore fixture, the tests and the two specifications. Add a
-test that sets a value through the public setter and reads it back through
-Haute, so the key the setter writes and the key Haute reads cannot drift
-apart again.
-
-**Acceptance:** a set value reads back through `current_streaming_chunk_size()`
-on Polars 2; a spawned worker and a warm interactive worker run with a changed
-value; the scenario fan-out cap tests pass; no `POLARS_STREAMING_CHUNK_SIZE`
-remains in `src/`, `tests/` or the component specifications (dated review
-reports keep their wording).
-
-**Dependencies:** PL2-01.
-
-**Evidence:** `src/haute/_polars_utils.py::_configured_streaming_chunk_size`;
-`src/haute/_polars_utils.py::streaming_chunk_size_for_spawn`;
-`tests/conftest.py::_restore_streaming_chunk_size`;
-`tests/test_streaming_chunk_size_setting.py`;
-`tests/test_scenario_fanout_sink.py::test_a_cap_lowers_the_polars_chunk_but_not_the_setting_and_restores_it`;
-`tests/test_chunked_writes.py::test_a_write_reports_the_rows_per_part_it_chunked_at`.
-
 ### PL2-09 — Sliced writes and the optimiser's input reuse recognise Polars 2 plans
 **Why:** `sliceable` decides whether a bounded write can slice its input by
 walking Polars' optimised plan through the private visitor
@@ -546,7 +507,8 @@ stops borrowing a single-file Parquet input. All of it fails safe — slower,
 never wrong — which is why only a few tests noticed. With the major set to 15
 the node shapes both functions read are present (a scan's `n_rows` is now an
 `(offset, length)` pair), the classification of 21 probe plans matches 1.44,
-and 112 of the chunked-write module's 113 tests pass; the other is `PL2-08`'s.
+and 112 of the chunked-write module's 113 tests passed with the chunk-size key
+read under Polars 1's name; the other read that name.
 
 **Plan:** Raise the supported major to 15 after confirming each attribute both
 functions read on 2.0's IR, including the optimiser's scan-option checks; give

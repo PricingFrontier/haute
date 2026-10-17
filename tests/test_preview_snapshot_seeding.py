@@ -18,6 +18,7 @@ from haute._data_points import DataPointResolver
 from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
 from haute._graph_walker import CollectPolicy, WalkResult, walk_graph
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
+from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
 from haute._seed_plans import SeedPlan, SeedPlanRequest, open_seed_plan
 from haute._source_cache import SourceCacheIdentity
 from haute._step_progress import StepProgress
@@ -1975,7 +1976,7 @@ def test_preview_join_capture_is_chunked_into_parts_and_downstream_reads_them(
 
     from haute._polars_utils import set_streaming_chunk_size
 
-    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
     set_streaming_chunk_size(2)
     first_body = _post_preview(api, graph, "banding")
 

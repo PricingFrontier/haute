@@ -31,6 +31,7 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
+from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
 from haute.deploy._bundler import collect_artifacts
 from haute.deploy._config import ContainerConfig, DeployConfig
 from haute.deploy._utils import build_manifest
@@ -601,7 +602,7 @@ class TestSnapshotGenerationLease:
         )
         from haute._polars_utils import set_streaming_chunk_size
 
-        monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+        monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
         store = SourceCacheStore(tmp_path)
         # One row per part: the snapshot is built at the process chunk size.
         set_streaming_chunk_size(1)

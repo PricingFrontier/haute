@@ -145,7 +145,7 @@ running heavy work in a child process the parent can kill on timeout or memory l
   result DataFrame before writing; it still refuses Polars' non-streaming broad-collect
   fallback for bounded profiles.
 - **The streaming chunk size is one editor setting.** Polars keeps its streaming chunk
-  size as process-wide configuration (`POLARS_STREAMING_CHUNK_SIZE`). The editor server
+  size as process-wide configuration (`POLARS_IDEAL_MORSEL_SIZE`). The editor server
   holds one value, the pipeline settings' `chunk_rows` (500,000 when unset), applies it at
   start-up, applies a new value at once when the pipeline settings pane changes it
   (`PATCH /api/pipeline-settings`), and applies a hand edit of the settings file at the

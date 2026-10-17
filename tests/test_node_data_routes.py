@@ -21,7 +21,11 @@ from haute._node_snapshots import (
     NodeSnapshotColumns,
     NodeSnapshotStore,
 )
-from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
+from haute._polars_utils import (
+    STREAMING_CHUNK_SIZE_ENV,
+    current_streaming_chunk_size,
+    set_streaming_chunk_size,
+)
 from haute.routes import _node_data_service as service_mod
 from tests.conftest import make_edge, make_graph
 
@@ -1487,7 +1491,7 @@ def test_explicit_build_of_a_join_is_chunked_and_equals_native(
     ).model_dump()
 
     # 100 rows in chunks of 40: three parts, without a query per two rows.
-    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
     set_streaming_chunk_size(40)
     job = _cache(client, graph, "explore")
     assert job["status"] == "completed"
@@ -1658,7 +1662,7 @@ def test_an_explicit_build_and_its_captures_share_the_editor_chunk_size(
     monkeypatch.setattr(haute._execute_lazy, "write_parts", _recording_write_parts)
     monkeypatch.setattr(haute._chunked_writes, "write_parts", _recording_write_parts)
 
-    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
     editor_size = 200
     set_streaming_chunk_size(editor_size)
 
@@ -1755,7 +1759,7 @@ def test_explicit_build_of_a_chunk_local_filter_is_input_sliced_and_equals_nativ
         }
     ).model_dump()
 
-    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
     set_streaming_chunk_size(200)
     job = _cache(client, graph, "explore")
     assert job["status"] == "completed"

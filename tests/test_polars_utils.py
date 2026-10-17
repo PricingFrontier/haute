@@ -23,6 +23,7 @@ from haute._hashing import content_hash
 from haute._polars_utils import (
     BOUNDED_MEMORY_EXEMPT_PROFILES,
     DEFAULT_STREAMING_CHUNK_SIZE,
+    STREAMING_CHUNK_SIZE_ENV,
     _malloc_trim,
     _streaming_sink_to_path,
     atomic_write,
@@ -67,7 +68,7 @@ def test_current_streaming_chunk_size_uses_default_for_invalid_truthy_config(raw
     with patch.object(
         pl.Config,
         "state",
-        return_value={"POLARS_STREAMING_CHUNK_SIZE": raw},
+        return_value={STREAMING_CHUNK_SIZE_ENV: raw},
     ):
         assert current_streaming_chunk_size() == DEFAULT_STREAMING_CHUNK_SIZE
 
@@ -132,17 +133,23 @@ def test_streaming_sink_requires_polars_to_return_a_lazy_plan(tmp_path: Path) ->
 
 
 def test_set_streaming_chunk_size_is_applied_and_read_back(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
     set_streaming_chunk_size(12_345)
     assert current_streaming_chunk_size() == 12_345
-    assert pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE") == "12345"
+    assert pl.Config.state().get(STREAMING_CHUNK_SIZE_ENV) == "12345"
+
+
+def test_a_chunk_size_set_through_polars_own_setter_reads_back_through_haute() -> None:
+    """The key Polars' setter writes and the key Haute reads cannot drift apart."""
+    pl.Config.set_streaming_chunk_size(23_456)
+    assert current_streaming_chunk_size() == 23_456
 
 
 @pytest.mark.parametrize("invalid", [0, -1, 10_000_001, True, 1.5])
 def test_set_streaming_chunk_size_rejects_invalid_values(
     invalid: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
     with pytest.raises(ValueError):
         set_streaming_chunk_size(invalid)  # type: ignore[arg-type]
 
@@ -150,7 +157,7 @@ def test_set_streaming_chunk_size_rejects_invalid_values(
 def test_current_streaming_chunk_size_falls_back_to_default_when_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
     assert current_streaming_chunk_size() == DEFAULT_STREAMING_CHUNK_SIZE
 
 
