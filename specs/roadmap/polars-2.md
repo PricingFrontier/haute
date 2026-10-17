@@ -12,12 +12,15 @@ carries, quantile and rank binning) is deferred.
 
 The packages form two rounds. The first makes Haute correct on Polars 2 with
 CI green: the pin, every seam that breaks or silently changes, Polars'
-out-of-core spilling kept off and contained (the pin turns it on), and the six
-decisions that change what a user sees or where Haute writes (`PL2-04`,
-`PL2-06`, `PL2-07`, `PL2-12`, `PL2-16`, `PL2-19`), all taken before it starts.
-The second re-establishes the engine's memory evidence under Polars 2 and, on
-that evidence, decides whether to turn spilling on. The pin moves only with the
-whole first round, so `main` never runs Polars 2 with a seam built for 1.44.
+out-of-core spilling kept off and contained (the pin turns it on), and six
+packages that change what a user sees or where Haute writes (`PL2-04`,
+`PL2-06`, `PL2-07`, `PL2-12`, `PL2-16`, `PL2-19`). Their designs were decided
+on 17 October 2026 by one rule: of the robust options, the one that uses least
+memory, then the fastest. Each entry records the measurement behind its
+choice. The second round re-establishes the engine's memory evidence under
+Polars 2 and, on that evidence and by the same rule, decides where to turn
+spilling on. The pin moves only with the whole first round, so `main` never
+runs Polars 2 with a seam built for 1.44.
 The plan was reviewed by Codex and by a second opinion whose own measurements
 it cites as such. Two defects that predate Polars 2 are fixed on the way: a multi-quote
 deploy request through an unordered join can be answered against the wrong
@@ -31,22 +34,22 @@ prepared frame's order varies (`PL2-05`).
 | PL2-01 | Planned | P1 | Haute requires Polars 2, and its version-pinned snapshots describe it. |
 | PL2-02 | Planned | P1 | Nothing Polars 1 computed is reused once Polars 2 runs. |
 | PL2-03 | Planned | P2 | An error raised inside a Haute Python scan reaches its caller as itself. |
-| PL2-04 | Decision | P1 | Row order is defined wherever Haute builds the query, and deployed answers stay with their quotes. |
+| PL2-04 | Planned | P1 | Row order is defined wherever Haute builds the query, and deployed answers stay with their quotes. |
 | PL2-05 | Planned | P2 | Training, Workbench tables and Haute's tied cuts give the same result on every run. |
-| PL2-06 | Decision | P2 | The step editor renders only code Polars 2 runs, and **Change types** turns text into dates. |
-| PL2-07 | Decision | P1 | CSV inputs read as they did, or fail with a message that says what changed. |
+| PL2-06 | Planned | P2 | The step editor renders only code Polars 2 runs, and **Change types** turns text into dates. |
+| PL2-07 | Planned | P1 | CSV inputs read as they did, or fail with a message that says what changed. |
 | PL2-08 | Planned | P2 | The **Chunk rows** setting reaches Polars 2. |
 | PL2-09 | Planned | P2 | Sliced writes and the optimiser's input reuse recognise Polars 2 plans. |
 | PL2-10 | Planned | P2 | Every Haute collect names its engine. |
 | PL2-11 | Planned | P2 | Lineage and input-less nodes follow Polars 2's zero-width frames. |
-| PL2-12 | Decision | P2 | New Polars dtypes meet Haute's dtype vocabularies loudly or are normalised where they enter. |
+| PL2-12 | Planned | P2 | New Polars dtypes meet Haute's dtype vocabularies loudly or are normalised where they enter. |
 | PL2-13 | Planned | P2 | Code Haute generates and teaches runs on Polars 2 without deprecations. |
 | PL2-14 | Planned | P2 | The operation registry and analysers describe Polars 2. |
 | PL2-15 | Planned | P2 | The test suite asserts behaviour rather than Polars 1 accidents. |
-| PL2-16 | Decision | P2 | Out-of-core spilling runs inside Haute's memory and disk budgets, or stays out. |
+| PL2-16 | Planned | P2 | Out-of-core spilling stays off wherever Haute starts Polars, and anything that spills lands in Haute's storage. |
 | PL2-17 | Reverify | P2 | Every operator memory policy and RAM estimate rests on Polars 2 evidence. |
 | PL2-18 | Reverify | P3 | Worker caps start from a Polars 2 baseline. |
-| PL2-19 | Decision | P2 | A deployed pipeline runs the Polars the editor ran. |
+| PL2-19 | Planned | P2 | A deployed pipeline runs the Polars the editor ran. |
 | PL2-20 | Planned | P3 | The `price_contour` binary boundary is guarded against Polars' private API. |
 | PL2-21 | Deferred | P3 | Structured inputs and Data Inputs can carry a JSON object as a `Map` column. |
 | PL2-22 | Deferred | P3 | Banding and the step editor offer quantile and rank binning. |
@@ -77,10 +80,9 @@ Regenerate the corpus with `python -m tests.test_polars_compatibility_corpus`
 and review each changed classification against the registry before committing
 it; the analyser-derived fields showed no drift under 2.0, so any change is in
 the planner's strategy fields and is a finding for `PL2-17`, not a fixture to
-accept. Move the served model's requirement to the form `PL2-19` decides
-(decided before the round starts), and the example pin in
-`docs/COMMIT_STANDARDS.md`. The pin lands with the rest of the first round on
-one branch.
+accept. Move the served model's requirement to the exact pin `PL2-19` decided,
+and the example pin in `docs/COMMIT_STANDARDS.md`. The pin lands with the rest
+of the first round on one branch.
 
 **Acceptance:** `uv lock --check` passes on Polars 2; the interface-contract,
 compatibility-corpus, dependency-contract and pin-lint modules pass; a Data
@@ -125,19 +127,18 @@ descriptions from a fresh scan and rewrite the metadata, reporting the
 generation as re-described, never corrupt. A generation whose parts hold a
 physical Parquet map column (a Databricks snapshot keeps the source's Arrow
 schema when it writes its parts) is the exception: a Polars 2 scan would
-collapse its duplicate keys while the digests still matched, so it follows
-`PL2-12`'s lossless policy when it is opened, re-encoded from its own local
-parts through pyarrow into a new generation, with no provider fetch, or
-refused before Polars reads it.
+collapse its duplicate keys while the digests still matched, so it is
+re-encoded when it is opened, as `PL2-12` decided: from its own local parts
+through pyarrow into a new generation, one row group at a time, with no
+provider fetch.
 
 **Acceptance:** a node-snapshot store and a preview cache populated under one
 Polars version seed and serve nothing under another (simulated by patching the
 reported version); an input snapshot carried across versions is re-described,
 keeps its data and part digests, and is never reported corrupt; an
 Arrow-written snapshot with a map column holding a duplicated key, opened under
-the new version, keeps every entry (or is refused before reading, as `PL2-12`
-decides) without fetching from its provider; a cache hit under an unchanged
-version is unaffected.
+the new version, keeps every entry without fetching from its provider; a cache
+hit under an unchanged version is unaffected.
 
 **Dependencies:** PL2-01; `PL2-12` for map-bearing generations.
 
@@ -228,8 +229,9 @@ cost nothing measurable on Polars 2's streaming engine at pricing shapes: ten
 million quotes against a 5,000-row lookup (this review), and in the second
 opinion's measurements five million against 5,000, two million against 50,000
 keys with fan-out four, and three million against three million, where the
-worst case, an ordered full join, took 23% longer at 16% more peak memory. A
-stable sort measured as fast as an unstable one. An ordered unpivot did not:
+worst case, a full join ordered `"left"`, took 23% longer at 16% more peak
+memory, and one ordered `"left_right"` 18% longer at 7% more. A stable sort
+measured as fast as an unstable one. An ordered unpivot did not:
 defining its order through a row index and a sort took three times the time
 and memory of a plain unpivot. Polars 2's streaming sink keeps a
 `maintain_order` join's order, so the chunked writer's special treatment of
@@ -239,74 +241,91 @@ in memory instead of sinking them, and refuses to chunk an ordered full join
 (`full_join_ordered`), which under an ordered default would send every full
 Edge Join through one native sink.
 
-**Plan:** Decide, then specify in the execution-engine, frontend-node-editors
-and deploy specifications, restating the io-layer policy (a query that
-defines its order keeps it through every seam; an unordered one has none):
-- (a) **Recommended.** Haute's own query builders define order where it costs
-  nothing. `maintainOrder` becomes a required field of the Join step and the
-  Edge Join (canonical-only: a saved join without it is refused by name, and
-  Recover offers the value); the editor writes `"left_right"` for a new inner,
-  left, full or cross join, `"right_left"` for a right join and `"left"` for a
-  semi or anti join (`"left"` alone leaves the order of one row's matches open
-  in a one-to-many join, which varied between runs), and **None** remains the
-  explicit choice. **Sort rows** renders a stable sort. **Unpivot to rows**
-  keeps an undefined order, said on its node page, with a following sort where
-  order matters. The chunked writer drops its in-memory ordered parts and its
-  unordered-only native path, and chunks ordered full joins, on a measurement
-  of a large chunked Edge Join.
-- (b) Leave order undefined and document it on the node pages.
-- (c) Collect on the in-memory engine. Rejected: it no longer keeps a scan's
-  join order on 2.0, does nothing for sort ties, and would take the bounded
-  paths off the streaming engine.
+**Plan:** Decided on 17 October 2026; specify in the execution-engine,
+frontend-node-editors and deploy specifications, restating the io-layer policy
+(a query that defines its order keeps it through every seam; an unordered one
+has none). Haute's own query builders define order wherever it costs little
+or nothing:
+- `maintainOrder` becomes a required field of the Join step and the Edge Join
+  (canonical-only: a saved join without it is refused by name, and Recover
+  offers the value). The editor writes `"left_right"` for a new inner, left,
+  full or cross join, `"right_left"` for a right join and `"left"` for a semi
+  or anti join (`"left"` alone leaves the order of one row's matches open in a
+  one-to-many join, which varied between runs), and **None** remains the
+  explicit choice. The order costs memory only where something reads it: a
+  full join of twelve million rows a side ordered `"left_right"` peaked 6%
+  higher than an unordered one when it was sunk as it was, and 1% higher when
+  an unordered group-by followed it; at lookup and one-to-many shapes the cost
+  was within noise.
+- **Sort rows** renders a stable sort, which on forty million rows took 1.9
+  seconds against 1.8 and peaked 2% higher than an unstable one.
+- **Unpivot to rows** keeps an undefined order, said on its node page, with a
+  following sort where order matters: defining its order cost three times the
+  time and memory.
+- The chunked writer drops its in-memory ordered parts, which hold a whole part
+  in memory where a sink now streams it in order, and its unordered-only native
+  path, and chunks ordered full joins, on a measurement of a large chunked Edge
+  Join.
 
-Under any choice, a defined order is not enough for deployed answers: a sort
-the author adds reorders a request's rows, an inner join or a filter drops one,
-a one-to-many join or an unpivot repeats one, and **None** stays available.
-Decide with this package how a deployed answer is tied to its request:
-- (i) **Recommended.** A deploy-time proof that every operation between the
-  request input and OUTPUT keeps exactly one row per request, in request order,
-  built from the cardinality analysis and the operation registry: row-local
-  expressions, Haute's row-preserving nodes (Rating Step lookups, Model Score),
-  and left joins driven by the request side whose other side is unique
-  (`validate` `"m:1"` or `"1:1"`) with a request-side order. Any other
-  operation is refused with the node and the operation named: a filter, an
-  inner, semi or anti join (which drop requests), a join without a uniqueness
-  contract (which can repeat one), a sort or a join with no order (which
-  reorder), an explode or unpivot, and free code the analysis cannot prove. A
-  count alone is not enough: requests `A, B` inner-joined to a lookup holding
-  `A` twice give `A, A`, two rows in order, with B answered by A's row. A
-  run-time check that the result has as many rows as the request stays as a
-  backstop, failing loudly with both counts. A single-row request needs
-  neither. This tightens the contract: a pipeline that declines a quote by
-  filtering it out is refused for multi-quote requests, so a decline becomes a
-  flag column on the answer, stated on the deploy page.
-- (ii) Carry a private request-row identity from the request input to OUTPUT
-  and realign by it, failing on a missing or repeated identity. Exact, but it
-  needs the projection machinery to carry a hidden column through every node,
-  and fails every pipeline whose code selects named columns or aggregates
-  request rows.
-- (iii) The run-time count check alone, with the positional contract
-  documented. Not recommended: it misses a drop and a repeat that cancel out.
+Leaving order undefined is cheaper still and was rejected: `first`, `cum_sum`,
+a row index, a positional answer and a written file would change from run to
+run. Collecting on the in-memory engine was rejected: it uses more memory, and
+on 2.0 it neither keeps a scan's join order nor settles sort ties.
+
+A defined order is not enough for deployed answers: a sort the author adds
+reorders a request's rows, an inner join or a filter drops one, a one-to-many
+join or an unpivot repeats one, and **None** stays available. Deploy validation
+therefore proves, from the cardinality analysis and the operation registry,
+that every operation between the request input and OUTPUT keeps exactly one row
+per request, in request order: row-local expressions, Haute's row-preserving
+nodes (Rating Step lookups, Model Score), and left joins driven by the request
+side, with a request-side order, whose other side is unique. Uniqueness is
+proven without Polars' `validate`, which on 1.44 and 2.0 alike sends a join
+through the streaming engine's in-memory join node, at 39% to 76% more peak
+memory from 1,000 requests against a ten-million-row lookup to forty million
+rows against 5,000. The other side is unique by construction (a Rating Step
+lookup, a group-by or `unique` on the join keys), or it is an input the
+deployment carries, whose keys Haute checks once, by a streaming duplicate
+check over the immutable generation it bundles, when the deployment is built.
+A `validate` the author declares is accepted as proof too, but the editor never
+adds one. Any other operation is refused with the node and the operation named:
+a filter, an inner, semi or anti join (which drop requests), a join whose other
+side is not proven unique (which can repeat one), a sort or a join with no order
+(which reorder), an explode or unpivot, and free code the analysis cannot
+prove. A count alone is not enough: requests `A, B` inner-joined to a lookup
+holding `A` twice give `A, A`, two rows in order, with B answered by A's row. A
+run-time check that the result has as many rows as the request stays as a
+backstop, failing loudly with both counts; a single-row request needs neither.
+The proof costs nothing per request. It tightens the contract: a pipeline that
+declines a quote by filtering it out is refused for multi-quote requests, so a
+decline becomes a flag column on the answer, stated on the deploy page.
+
+Carrying a private request identity to OUTPUT and realigning by it was
+rejected: it carries an extra column through every operation and realigns at
+the end, and it fails every pipeline whose code selects named columns or
+aggregates request rows. The count check alone was rejected: it misses a drop
+and a repeat that cancel out.
 
 The Edge Join, Join, Sort and Unpivot node pages state the result.
 
-**Acceptance:** execution parity and deployed answers are tested apart. Under
-(a), the frame a pipeline with an Edge Join, a Join step and a sort with ties
-produces is identical, rows and order, across 20 runs of a preview,
-`Pipeline.run`, `Pipeline.score`, a Data Output write and the deploy scorer
-before OUTPUT assembly, and an unpivot's frame is identical as a set; the
-edge-join, lazy join-projection, lineage, standalone-node and
-codegen-equivalence tests that failed on order pass without sorting; a saved
-join without `maintainOrder` is refused by name; the chunked writer's handling
-of ordered joins rests on a recorded measurement. Separately, under (i), a
-multi-quote deploy request through ordered, uniqueness-validated left joins is
-answered in request order; deploy validation refuses, naming node and
-operation, a pipeline with a sort, an unordered join, a join without a
-uniqueness contract, an inner join, a filter or an unpivot between the request
-input and OUTPUT, including requests `A, B` against a lookup holding `A`
-twice, where a drop and a repeat leave the count unchanged; and a pipeline
-whose row count changes at run time despite the proof fails the request with
-both counts.
+**Acceptance:** execution parity and deployed answers are tested apart. The
+frame a pipeline with an Edge Join, a Join step and a sort with ties produces is
+identical, rows and order, across 20 runs of a preview, `Pipeline.run`,
+`Pipeline.score`, a Data Output write and the deploy scorer before OUTPUT
+assembly, and an unpivot's frame is identical as a set; the edge-join, lazy
+join-projection, lineage, standalone-node and codegen-equivalence tests that
+failed on order pass without sorting; a saved join without `maintainOrder` is
+refused by name; the chunked writer's handling of ordered joins rests on a
+recorded measurement. Separately, a multi-quote deploy request through ordered
+left joins against a bundled lookup with unique keys, with no `validate`, is
+answered in request order; the same lookup with a duplicated key is refused
+when the deployment is built, naming the input and the key; deploy validation
+refuses, naming node and operation, a pipeline with a sort, an unordered join,
+a join whose other side is not proven unique, an inner join, a filter or an
+unpivot between the request input and OUTPUT, including requests `A, B` against
+a lookup holding `A` twice, where a drop and a repeat leave the count
+unchanged; and a pipeline whose row count changes at run time despite the proof
+fails the request with both counts.
 
 **Dependencies:** PL2-01.
 
@@ -392,11 +411,11 @@ found these steps failing on 2.0 where 1.44 ran them:
   the same cast. Polars 2.0 refuses a cast from text to a date, datetime or
   time, even with `strict=False`, so `try_cast` raises where it returned nulls.
   Text columns of dates are what a CSV or JSON source usually delivers.
-- A **Filter rows** condition "is one of" with whole numbers on a decimal
+- A **Filter rows** condition "is one of" with whole numbers on a float
   column renders `is_in([100, 300])`, which 2.0 refuses as a lossy comparison
   (`'is_in' cannot check for Float64 values in List(Int64) data`); JSON cannot
-  tell `100` from `100.0`. Integer columns with fractional members and decimal
-  columns with float members fail the same way.
+  tell `100` from `100.0`. Integer columns with fractional members and
+  `Decimal` columns with float members fail the same way.
 - A cast from a categorical column to an integer raises (1.44 returned the
   category codes, which was never what an analyst meant).
 - `std` and `var` aggregations raise on a duration column, and `log` and
@@ -411,35 +430,48 @@ so schema resolution does not catch it at edit time. `str.to_date` without a
 format infers it from the column, so Polars does not call it row-separable and
 Haute's chunking admits it only with a literal format.
 
-**Plan:** Decide the parsing design, then specify in the frontend-node-editors
-and execution-engine specifications:
-- (a) **Recommended.** The saved step says what it does. **Date** and
-  **Datetime** stay the targets; for a text column the editor records in the
-  step that the cast parses text and asks for a format, and the step renders
-  `str.to_date(format)` or `str.to_datetime(format)` (`strict=False` for
-  `try_cast`); the formula language gains `to_date` and `to_datetime` with a
-  format. The renderer stays schema-free, the same step renders the same code
-  whatever arrives, and a column that stops being text fails loudly. Leaving
-  the format optional would keep such a step out of chunked writes.
-- (b) New targets **Date from text** and **Datetime from text** beside the
-  existing ones; equivalent, with a longer type list.
-- (c) Pass the input schema to the renderer and choose the parsing call
-  silently. Rejected: the same step would render different code for different
-  upstream data, and the code shown to the user would change without an edit.
-Independently of that choice: render numeric "is one of" as a comparison per
-member (`pl.any_horizontal(pl.col(c) == v, …)`), which compares by value for
-every numeric column type with integer or decimal members; offer integer
-casts, `std`/`var`, `log` and `exp` only for column types they accept, from the
-dtype the editor shows; render date members with `implode()`. A saved step
-Polars 2 refuses is caught where the editor knows the column type, and
-otherwise fails at run time with the step's name and the replacement.
+**Plan:** Decided on 17 October 2026; specify in the frontend-node-editors and
+execution-engine specifications. The saved step says what it does. **Date** and
+**Datetime** stay the targets; for a text column the editor records in the step
+that the cast parses text, with a required format, and the step renders
+`str.to_date(format)` or `str.to_datetime(format)` (`strict=False` for
+`try_cast`); the formula language gains `to_date` and `to_datetime` with a
+required format. The format is what makes the parse cheap: with it Polars calls
+the parse row-separable, so chunked writes admit the step and its memory stays
+bounded, and ten million dates parsed in 0.01 seconds where inferring the
+format took 1.04. The renderer stays schema-free, the same step renders the
+same code whatever arrives, and a column that stops being text fails loudly.
+Separate **Date from text** and **Datetime from text** targets were rejected as
+equivalent with a longer type list, and passing the input schema to the
+renderer to choose the parse silently was rejected because the same step would
+render different code for different upstream data, and the code shown to the
+user would change without an edit.
+
+Independently: a numeric "is one of" renders `is_in` over its members typed
+to the column's numeric kind, which the step records from the dtype the editor
+shows: whole numbers for an integer column (a fractional member, which can
+never match, is refused in the editor), floats for a float column, and for a
+`Decimal` column decimals at the column's scale, parsed from text so they stay
+exact; the list is passed with `implode()`. Typed membership costs the same
+whatever the member count, where a comparison per member
+(`pl.any_horizontal(pl.col(c) == v, …)`) matched it up to 30 members but took
+0.57 seconds and 311 MB more on forty million rows at 1,000 members. A column
+whose numeric kind changes upstream fails loudly with the step's name; a change
+of width within a kind keeps working. Offer integer casts, `std`/`var`, `log`
+and `exp` only for column types they accept, from the dtype the editor shows;
+render date members with `implode()`. A saved step Polars 2 refuses is caught
+where the editor knows the column type, and otherwise fails at run time with
+the step's name and the replacement.
 
 **Acceptance:** each case above, rendered by Haute's renderer and run on
 Polars 2 on its own column type, returns the rows 1.44 returned, or is refused
 in the editor, or fails at run time naming the step; a text-to-date step's
-generated code shows the parsing call with its format; the catalogue parity
-test covers the new options and functions; golden render tests gain a numeric
-"is one of" on a decimal column.
+generated code shows the parsing call with its format, and one without a format
+is refused; a numeric "is one of" matches by value on integer, float and
+`Decimal` columns of every width, and one whose column changes numeric kind
+fails naming the step; the catalogue parity test covers the new options and
+functions; golden render tests gain a numeric "is one of" on a float column and
+on a `Decimal` column.
 
 **Dependencies:** PL2-01.
 
@@ -464,22 +496,24 @@ A multi-file scan infers its schema from the first ten files only, and a
 `schema_overrides` list must cover every column. Haute's own scan
 (`read_source`) passes a dict of overrides, which is unaffected.
 
-**Plan:** Decide, then specify in the io-layer specification:
-- (a) **Recommended.** Haute's own CSV scan passes `raise_if_empty=True` and
-  `truncate_ragged_lines=False` explicitly, keeping today's loud failures for
-  empty and ragged files; a headerless Data Input, through any reader the
-  registry admits with `has_header` (CSV, Excel, ODS), must name every one of
-  its columns, through a full `schema` (which still binds a headerless file by
-  position on 2.0), `new_columns` for CSV (which Polars would accept for only
-  some of them), or whichever reader option or config field the package settles
-  on for Excel and ODS, and a config without them is refused with a message
-  that says why, so no pipeline depends on a generated column name; a CSV
-  `schema` whose names are not the file's header is refused with a message
-  pointing at `new_columns` and `schema_overrides`, rather than left to Polars'
-  own hint, `extra_columns='ignore'`, which would silently drop the mismatched
-  columns; by-name matching, the ten-file inference and the full-coverage
-  override list are adopted and documented.
-- (b) Adopt every Polars 2 default and document the headerless renaming.
+**Plan:** Decided on 17 October 2026; specify in the io-layer specification.
+Haute's own CSV scan passes `raise_if_empty=True` and
+`truncate_ragged_lines=False` explicitly, keeping today's loud failures for
+empty and ragged files. A headerless Data Input, through any reader the
+registry admits with `has_header` (CSV, Excel, ODS), must name every one of its
+columns, through a full `schema` (which still binds a headerless file by
+position on 2.0), `new_columns` for CSV (which Polars would accept for only some
+of them), or whichever reader option or config field the package settles on for
+Excel and ODS, and a config without them is refused with a message that says
+why, so no pipeline depends on a generated column name. A CSV `schema` whose
+names are not the file's header is refused with a message pointing at
+`new_columns` and `schema_overrides`, rather than left to Polars' own hint,
+`extra_columns='ignore'`, which would silently drop the mismatched columns.
+By-name matching, the ten-file inference and the full-coverage override list
+are adopted and documented. The checks read only the config and the file's
+header, so they cost no memory or time beyond the scan. Adopting every Polars 2
+default was rejected: a pipeline that refers to `column_1` would silently read
+the next column.
 
 **Acceptance:** the CSV default guard passes against the explicit arguments;
 a headerless CSV, Excel and ODS config without names for every column fails
@@ -660,33 +694,33 @@ changes is which dtype a pipeline produces:
 - `round`, `floor`, `ceil` and `sign` widen a `Decimal`'s precision by one, so
   recorded dtype strings change for the same pipeline.
 
-**Plan:** Decide how map and extension columns enter, then specify in the
-io-layer, modelling and deploy specifications. One policy covers every path a
-source takes into a pipeline: a direct Parquet scan (which bypasses snapshots),
-an input-snapshot build and schema-only resolution.
-Polars 2 repairs duplicate keys while it reads a Parquet map (the last value
-wins), and it does so even when the scan asks for the 1.44 shape with a
-`List(Struct({key, value}))` schema, the workaround the upgrade guide offers
-(probed: a row holding `a: 1, a: 2, b: 3` came back as `a: 2, b: 3` either
-way, where 1.44 kept all three). pyarrow keeps them, and its cast from a map to
-a list of key-value structs loses nothing.
-- (a) **Recommended.** Convert a map column to a list of key-value structs at
-  the Arrow level, where Haute holds the data before Polars reads it (a
-  Databricks fetch, an input-snapshot build, and an existing generation whose
-  parts still hold a physical map column, re-encoded from its local parts as
-  `PL2-02` describes), so every entry survives; refuse a
-  map column in a Parquet file Haute scans directly, detected from the file's
-  schema before Polars reads it, with a message offering the snapshot-backed
-  route. Load an unknown extension column as its storage type, which loses
-  nothing, by setting Polars' documented
-  `POLARS_UNKNOWN_EXTENSION_TYPE_BEHAVIOR=load_as_storage` with the other
-  Polars settings at every entry point Haute owns (`PL2-16`), so direct scans
-  and user Data Inputs are covered alike. Record both in the source's schema
-  until `PL2-21` gives `Map` a place in the vocabularies.
-- (b) Adopt Polars 2's `Map`, with duplicate keys collapsing to the last value,
-  and bring `PL2-21` forward so the vocabularies carry it.
-- (c) Refuse map and extension columns on every path before reading, with a
-  message naming the column and the type.
+**Plan:** Decided on 17 October 2026; specify in the io-layer, modelling and
+deploy specifications. One policy covers every path a source takes into a
+pipeline: a direct Parquet scan (which bypasses snapshots), an input-snapshot
+build and schema-only resolution. Polars 2 repairs duplicate keys while it
+reads a Parquet map (the last value wins), and it does so even when the scan
+asks for the 1.44 shape with a `List(Struct({key, value}))` schema, the
+workaround the upgrade guide offers (probed: a row holding `a: 1, a: 2, b: 3`
+came back as `a: 2, b: 3` either way, where 1.44 kept all three). pyarrow keeps
+them, and its cast from a map to a list of key-value structs loses nothing and
+copies nothing (probed: the cast shared the map's buffers and allocated no
+memory). A map column is therefore converted to a list of key-value structs at
+the Arrow level, where Haute holds the data before Polars reads it: a Databricks
+fetch, an input-snapshot build, and an existing generation whose parts still
+hold a physical map column, re-encoded from its local parts one row group at a
+time as `PL2-02` describes, so its memory stays at one row group. Every entry
+survives. A map column in a Parquet file Haute scans directly is refused,
+detected from the file's schema before Polars reads it, with a message offering
+the snapshot-backed route. An unknown extension column loads as its storage
+type, which loses nothing and costs nothing, through Polars' documented
+`POLARS_UNKNOWN_EXTENSION_TYPE_BEHAVIOR=load_as_storage`, set with the other
+Polars settings at every entry point Haute owns (`PL2-16`), so direct scans and
+user Data Inputs are covered alike. Both are recorded in the source's schema
+until `PL2-21` gives `Map` a place in the vocabularies. Adopting Polars 2's
+`Map` was rejected because duplicate keys would collapse to the last value
+without a word; refusing map and extension columns on every path was rejected
+because it saves nothing (the cast copies nothing) and would refuse Databricks
+tables with map columns that Haute reads today.
 Independently: refuse `Int128` and `UInt128` in feature contracts and served
 signatures with a message to cast upstream, as `Decimal` is refused, and
 convert them explicitly at the conversion sites; make the codec round-trip or
@@ -694,13 +728,13 @@ refuse every dtype Polars 2 can produce; read and detect categorical pools by
 base type; and state the `Decimal` widening.
 
 **Acceptance:** a pipeline producing `Int128` fails at training or deploy with
-the cast message instead of a panic; under (a), a map column with a
-duplicated key keeps every entry and value through a Databricks fetch, a
-snapshot build, an existing Arrow-written generation opened under Polars 2 and
-schema-only resolution, and a direct scan of such a file is refused before
-Polars reads it; an unknown extension column loads as the
-decision states on each path; the codec's
-round-trip test covers every dtype Polars 2 can produce or its refusal; a
+the cast message instead of a panic; a map column with a duplicated key keeps
+every entry and value through a Databricks fetch, a snapshot build, an existing
+Arrow-written generation opened under Polars 2 and schema-only resolution, and
+a direct scan of such a file is refused before Polars reads it; the re-encode of
+an existing generation holds no more than one row group in memory; an unknown
+extension column loads as its storage type on each path; the codec's round-trip
+test covers every dtype Polars 2 can produce or its refusal; a
 `Categorical("lexical")` column trains as categorical.
 
 **Dependencies:** PL2-01; `PL2-16` for the entry-point settings.
@@ -828,8 +862,8 @@ specifications promise.
 `.github/workflows/dependencies.yml`.
 
 ### PL2-16 — Out-of-core spilling runs inside Haute's memory and disk budgets, or stays out
-**Why:** Polars 2.0 spills operator state to disk by default (sort, window
-functions and many expressions so far; joins and group-bys are planned). It
+**Why:** Polars 2.0 spills operator state to disk by default (in this review's
+probes a sort, a group-by and a window function spilled; a join did not). It
 starts when its own allocations pass the smaller of
 `POLARS_OOC_MEMORY_BUDGET_MB` and 80% of the machine's memory (a cgroup limit
 where one applies, read once per process), and writes up to 64,000 MB into
@@ -839,10 +873,15 @@ Polars 2.0.0 show what that means for Haute:
 - A worker capped by a Windows Job Object, a cgroup or `RLIMIT_AS` below 80%
   of the host never reaches the threshold, so spilling never helps it; Polars
   counts only its own allocations, not Python's, NumPy's or a model library's.
-- A run that spilled (a 40-million-row sort with a 150 MB budget) wrote 384
-  files and 845 MB, took 5.7 times as long, and still peaked at 2.6 GB resident
-  against 2.8 GB unspilled: the budget is a soft target for operator state,
-  not a cap.
+- The budget is a soft target for operator state, not a cap, and spilling did
+  not dependably lower resident memory. With forty million rows read from
+  Parquet on disk, a 1 GB or 256 MB budget changed the peak by between -19% and
+  +26% across a sort, a stable sort, a group-by and a window function, at 2.2
+  to 12 times the time, and never brought it near the budget; the join did not
+  spill. With the input held in memory, a 150 MB budget wrote 384 files and
+  845 MB, took 5.7 times as long, and peaked at 2.6 GB against 2.8 GB
+  unspilled. All of it was measured on Windows, where Polars allocates through
+  mimalloc.
 - A process killed mid-spill, as Haute kills a worker on timeout,
   cancellation or a memory breach, left 768 files and 1.76 GB behind; Polars'
   source removes a dead process's directory only when a later process spills
@@ -866,35 +905,37 @@ the editor server, the optimiser's thread mode, macOS hosts, Databricks Model
 Serving and the scoring container. 1.44 did not spill at all.
 
 **Plan:** The pin turns spilling on, so this package ships with the first
-round. Decide, then specify in the execution-engine, deploy and
-sandbox-security specifications:
-- (a) **Recommended.** Keep spilling off, as on 1.44, and own its directory.
-  Every entry point Haute owns sets, before Polars first reads its
-  configuration, a `POLARS_OOC_MEMORY_BUDGET_FRACTION` large enough that
-  spilling never starts (with the MB value alongside), a spill directory under
-  the runtime storage and a small disk budget, so that anything that does
-  spill lands where Haute counts and cleans it: the editor server and the CLI
-  commands at start-up, each spawned worker through
-  `start_process_with_environment` (its directory removed by the parent when
-  the worker ends), the scoring container and the served model's environment
-  (`PL2-19`). A pipeline run from a user's own Python process
-  (`Pipeline.run`) either applies the same settings through `pl.Config.load`,
-  which reloads Polars' environment, or documents that it inherits the
-  process's, decided with this package. Turning spilling on is `PL2-17`'s
-  measured decision, together with the typed storage failure it would then
-  need.
-- (b) Turn spilling on inside Haute's budgets now: the same directory and
-  ownership, a disk budget carved from the runtime storage budget, Polars'
-  default threshold, and the out-of-disk abort mapped to a typed storage
-  failure (a match on Polars' message text, pinned by a test).
-- (c) Polars' defaults. Rejected for the reasons above.
+round. Decided on 17 October 2026: spilling stays off, as on 1.44, and Haute
+owns its directory; specify in the execution-engine, deploy and
+sandbox-security specifications. By the memory-first rule this is the memory
+answer: on 2.0.0 a budget bought no dependable saving in resident memory and
+cost several times the time (above), a capped worker never reaches Polars'
+default threshold, and the out-of-disk abort is process-wide. Every entry point
+Haute owns sets, before Polars first reads its configuration, a
+`POLARS_OOC_MEMORY_BUDGET_FRACTION` large enough that spilling never starts
+(with the MB value alongside), a spill directory under the runtime storage and
+a small disk budget, so that anything that does spill lands where Haute counts
+and cleans it: the editor server and the CLI commands at start-up, each spawned
+worker through `start_process_with_environment` (its directory removed by the
+parent when the worker ends), the scoring container and the served model's
+environment (`PL2-19`). A pipeline run from a user's own Python process
+(`Pipeline.run`) inherits that process's Polars settings: Haute applies no
+spilling settings in a process it does not own, since Polars holds them
+process-wide and reloading them through `pl.Config.load` would change the
+user's other queries too. The documentation gives the settings that turn
+spilling off or redirect it. Turning spilling on is `PL2-17`'s measured
+decision, by the same rule. Turning it on now was rejected, since there is no
+measured saving to buy with its time and its process-wide abort; so were
+Polars' defaults, which spill outside Haute's storage, sandbox and headroom
+checks and expose the editor server to the abort.
 
-**Acceptance:** under (a), a sort that spills under Polars' defaults when the
-reported total memory is small (`POLARS_OVERRIDE_TOTAL_MEMORY_MB`) spills
-nothing in a spawned worker, the server, the CLI, the container and the served
-model's environment, each of which reports the settings it applied; a spill
-forced in a test lands inside the runtime storage and is removed when its
-worker ends; the docs and the specification state the off switch, including
+**Acceptance:** a sort that spills under Polars' defaults when the reported
+total memory is small (`POLARS_OVERRIDE_TOTAL_MEMORY_MB`) spills nothing in a
+spawned worker, the server, the CLI, the container and the served model's
+environment, each of which reports the settings it applied; a spill forced in a
+test lands inside the runtime storage and is removed when its worker ends; a
+`Pipeline.run` in a user's process leaves that process's Polars settings as it
+found them; the docs and the specification state the off switch, including
 that `POLARS_OOC_MEMORY_BUDGET_MB=0` spills everything.
 
 **Dependencies:** PL2-01.
@@ -922,20 +963,36 @@ description of pola-rs/polars#24206, still open at 2.0, as plan duplication. A
 third still holds: `collect_batches` still runs ahead of a slow consumer on
 2.0 (the second opinion measured 1.9 GB held while the consumer slept, against
 2.0 GB for a whole collect), so `bounded_collect_batches` keeps issuing one
-query per batch.
+query per batch. One operator the registry does not model: a join with a
+`validate` contract other than `"m:m"` runs through the streaming engine's
+in-memory join node, on 1.44 and 2.0 alike, at 39% to 76% more peak memory in
+this review's probes, while the RAM estimate's advice for a join bounded only
+by its many-to-many product asks the author to declare such a contract
+(`_MANY_TO_MANY_JOIN_REMEDIATION`).
 
 **Plan:** Re-run the certification lane's operator memory probes on Polars 2
 with spilling off as `PL2-16` sets it, carried into each probe's own
 subprocess environment so a spill cannot hide a peak, and record each
 operator's factor and its streaming control in the registry, including the
 operations `PL2-14` registers; change a policy only where the new measurement
-crosses its rule, both ways. Then measure the same boundaries in a capped
-worker with spilling on and its threshold set from the worker's admitted
-envelope (static per spawn, or per task through `pl.Config.load`), and turn
-spilling on only if boundary operators then complete under caps they breach
-today, at a cost recorded beside the decision; turning it on brings the typed
-storage failure for the out-of-disk abort (a match on Polars' message text,
-pinned by a test) and the cleanup `PL2-16` already provides. Re-measure the
+crosses its rule, both ways. Measure a join with a `validate` contract the same
+way, charge it in the RAM estimate as the materialisation of both inputs it
+is, and make the estimate's advice name that cost beside Haute's own
+uniqueness proofs (`PL2-04`) instead of recommending the contract alone. Then
+measure the same boundaries in a capped worker with spilling on and its
+threshold set from the worker's admitted envelope (static per spawn, or per
+task through `pl.Config.load`), on Linux as well as Windows, since the
+allocators differ (jemalloc against mimalloc) and the review measured only
+Windows. Decide by the rule `PL2-16` was decided by, memory first: turn
+spilling on in capped workers if, at the threshold the measurement settles on,
+no boundary operator's peak rises and at least one falls materially or
+completes under a cap it breaches today; the time it costs is accepted and
+recorded beside the decision. Spilling is turned on only in spawned, capped
+workers, never in a shared process (the editor server, the optimiser's thread
+mode, the scoring container, the served model), because the out-of-disk abort
+is process-wide. Turning it on brings the typed storage failure for that abort
+(a match on Polars' message text, pinned by a test) and the cleanup `PL2-16`
+already provides. Re-measure the
 RAM estimator's overhead multiplier and the calibration seeds against Polars
 2's `estimated_size`. Measure whether `_malloc_trim` returns any memory;
 delete it and its periodic calls if it returns none. Correct the #24206
@@ -945,8 +1002,9 @@ version.
 **Acceptance:** every boundary and streaming witness in the registry carries a
 Polars 2 measurement and the version it was taken on; the certification lanes
 pass at their scales on Polars 2; the estimator's figures are re-derived and
-its tests updated from the measurements, not by hand; the decision whether
-to turn spilling on is recorded in the execution-engine specification with the
+its tests updated from the measurements, not by hand; a join with a `validate`
+contract is estimated as materialising both inputs; the decision whether to
+turn spilling on is recorded in the execution-engine specification with the
 measurement behind it.
 
 **Dependencies:** PL2-16, whose controlled spill settings the measurements
@@ -956,6 +1014,7 @@ use.
 `tests/performance/_operation_memory_probe.py`;
 `tests/performance/test_execution_engine_certification.py`;
 `src/haute/_ram_estimate.py`; `src/haute/_polars_utils.py::_malloc_trim`;
+`src/haute/execution.py::_MANY_TO_MANY_JOIN_REMEDIATION`;
 `specs/execution-engine/high-level.md`.
 
 ### PL2-18 — Worker caps start from a Polars 2 baseline
@@ -992,19 +1051,20 @@ Polars release can change engine behaviour that decides results (row order, as
 Databricks Model Serving would also spill into their writable layer by
 default.
 
-**Plan:** Decide before the first round, since `PL2-01` writes the served
-model's requirement: (a) **recommended**, a served model pins the editor's
-exact Polars version, as the container already does, and records it, so that
-its `load_context` refuses another version with a message naming both (as the
-EBM engine already does for interpret); (b) the major range
-`polars>=2.0,<3`. Under either, the container image and the served model's
-environment carry the Polars settings `PL2-16` chooses, and the deploy
-specification records both.
+**Plan:** Decided on 17 October 2026: a served model pins the editor's exact
+Polars version, as the container already does, and records it, so that its
+`load_context` refuses another version with a message naming both (as the EBM
+engine already does for interpret). The served model then runs with the memory
+behaviour its deploy-time checks measured. The container image and the served
+model's environment carry the Polars settings `PL2-16` chose, and the deploy
+specification records both. The major range `polars>=2.0,<3` was rejected: a
+2.x release could change a deployed model's results and memory behaviour
+without a redeploy.
 
-**Acceptance:** a logged model's requirements name the editor's Polars as
-decided, and under (a) loading it under another Polars version fails with the
-named message; the container's Dockerfile and the served model's environment
-carry the Polars settings.
+**Acceptance:** a logged model's requirements name the editor's exact Polars
+version, and loading it under another fails with the named message; the
+container's Dockerfile and the served model's environment carry the Polars
+settings.
 
 **Dependencies:** PL2-01, PL2-16.
 

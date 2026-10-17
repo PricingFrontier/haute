@@ -55,7 +55,7 @@ merges, remove its rounds from the table.
 | F | 18 | Test organisation | `ENGQ-R05` | 17 | L | Last, so the suite is reorganised once, under the risk-based coverage rule. Several PRs, by component. |
 | H | 20 | Model files in Model Scoring | `MSC-03`, `MSC-04` | — | L | The file source reads the parsed Model Scoring source (`src/haute/_model_source.py`, shaped as the Model Scoring slice of `PCFG-R07` and absorbed by it in round 13) and the model family registry (`src/haute/_model_flavors.py`); CatBoost leaves Load File once Model Scoring scores files. If round 9 has not merged, the model path resolves through the current pipeline-directory resolver and `PCFG-R04` migrates it with the others. |
 | I | 21 | Models trained outside Haute | `MSC-06`, then `MSC-05` | 20 | L | External XGBoost and LightGBM files first, as decided; pyfunc files after, on the same file source. |
-| J | 22 | Polars 2 | `PL2-01`, `PL2-03`, `PL2-08`, `PL2-09`, `PL2-11`, `PL2-16`, `PL2-04`, `PL2-10`, `PL2-05`, `PL2-06`, `PL2-07`, `PL2-12`, `PL2-02`, `PL2-19`, `PL2-14`, `PL2-13`, `PL2-15` | — | L | Independent of every other phase. The pin moves with every seam it breaks and turns spilling on, so the round is one branch and one PR with spilling contained, and its six decisions (`PL2-04`, `PL2-06`, `PL2-07`, `PL2-12`, `PL2-16`, `PL2-19`) are taken before it starts. Work delivered on Polars 1 afterwards would be revisited for Polars 2, so it goes next. |
+| J | 22 | Polars 2 | `PL2-01`, `PL2-03`, `PL2-08`, `PL2-09`, `PL2-11`, `PL2-16`, `PL2-04`, `PL2-10`, `PL2-05`, `PL2-06`, `PL2-07`, `PL2-12`, `PL2-02`, `PL2-19`, `PL2-14`, `PL2-13`, `PL2-15` | — | L | Independent of every other phase. The pin moves with every seam it breaks and turns spilling on, so the round is one branch and one PR with spilling contained; its six decisions (`PL2-04`, `PL2-06`, `PL2-07`, `PL2-12`, `PL2-16`, `PL2-19`) were taken on 17 October 2026. Work delivered on Polars 1 afterwards would be revisited for Polars 2, so it goes next. |
 | J | 23 | Polars 2 evidence | `PL2-17`, `PL2-18`, `PL2-20` | 22 | L | Measurements on Polars 2 decide the operator memory policies, whether spilling is turned on and the worker baselines. Two or more PRs: the measurements, then the policy changes they justify. |
 
 Sizes are rough: M is a day or so, L several days or more than one PR.
@@ -79,25 +79,29 @@ date its entry records; raise an objection before its round starts.
   trust of their content digest. Inspection does not execute package code;
   changed contents require a new trust decision.
 
-The Polars 2 rounds would change these under their recommended options; each
-is decided before round 22 starts, and a different choice changes its line:
+The Polars 2 round changes these, as decided on 17 October 2026 by one rule:
+of the robust options, the one that uses least memory, then the fastest.
 
 - `PL2-04`: a Join step or Edge Join carries a required **Maintain order**
   (new joins keep their inputs' order) and **Sort rows** is stable; for
   multi-quote requests, deploy validation refuses a pipeline that cannot be
-  proved to keep one row per request in request order (a filter, an inner or
-  unvalidated join, a sort, an unordered join, an unpivot), so a decline
-  becomes a flag column.
-- `PL2-06`: **Change types** parses text into dates through explicit choices,
-  and the step editor offers only the casts, aggregations and functions a
-  column's type accepts.
+  proved to keep one row per request in request order (a filter, an inner
+  join, a join whose other side is not proven unique, a sort, an unordered
+  join, an unpivot), so a decline becomes a flag column, and a lookup the
+  deployment carries with a duplicated key is refused when the deployment is
+  built.
+- `PL2-06`: **Change types** parses text into dates with a required format; a
+  numeric **is one of** filter fails naming its step when its column changes
+  between integer, float and `Decimal`; and the step editor offers only the
+  casts, aggregations and functions a column's type accepts.
 - `PL2-07`: a headerless CSV, Excel or ODS Data Input must name every column,
   and a CSV `schema` is matched by name.
 - `PL2-12`: map columns are converted losslessly where Haute holds the data
   and refused in a directly scanned Parquet file, extension columns load as
   their storage type, and an `Int128` feature is refused with a cast hint.
 - `PL2-16`: Polars' spilling stays off, as on 1.44, with its directory inside
-  Haute's runtime storage.
+  Haute's runtime storage; a pipeline run in a user's own Python process keeps
+  that process's Polars settings.
 - `PL2-19`: a served model pins the editor's Polars version and refuses to
   load under another.
 

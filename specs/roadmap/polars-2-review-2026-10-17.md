@@ -50,6 +50,14 @@ report and owns no work: every finding maps to a package in the
    on the judgement calls ran its own probes (joins at three more shapes,
    ordered unpivot, the spilling switches and abort, `collect_batches`,
    `Expr.meta`); its numbers are cited below as the second opinion's.
+5. **Decision measurements.** The same day the six decisions were taken by
+   one rule: of the robust options, the one that uses least memory, then the
+   fastest. The probes behind them ran under 2.0.0, one fresh process per
+   case, reading the operating system's peak working set: spilling with its
+   input on disk, a join's `validate` contract (under 1.44.2 as well), ordered
+   full joins, a stable sort, typed membership against a comparison per
+   member, a date parse with and without its format, and pyarrow's map cast.
+   They are in *Measurements behind the decisions*.
 
 Not run: the full backend suite, the frontend unit tests, the Playwright
 suites, the mutation, performance and dependency-floor lanes, a deployed
@@ -110,6 +118,7 @@ inputs, tracing, previews, Explore and the golden outputs passed.
 | `cut(...)` | silent | deprecation warning; `bin_intervals(..., labels, right_closed=True)` reproduces it, dtype included |
 | `str()` of every dtype 1.44 produced | — | unchanged; `Map(String, Int64)` is new |
 | Parquet map column holding `a: 1, a: 2, b: 3` | `List(Struct)`, all three entries | `Map` with `a: 2, b: 3`; scanning with a `List(Struct)` schema also returns two entries; pyarrow's map-to-list cast keeps all three |
+| Left join with `validate="m:1"`, streaming engine | runs in the in-memory join node; 69% more peak | the same; 39% to 76% more peak |
 | Categorical sort order | lexical | lexical |
 
 The background-collect handle (`fetch`, `fetch_blocking`, `cancel`), the
@@ -144,6 +153,24 @@ turn spilling off, `POLARS_OOC_MEMORY_BUDGET_MB=0` spills everything, and only
 a very large `POLARS_OOC_MEMORY_BUDGET_FRACTION` turns it off; and a spill did
 not lower peak resident memory in its runs either.
 
+Both of those probes held their input in memory, which could hide a saving,
+so a third read forty million rows (five numeric columns) from Parquet on disk
+and sank each result to Parquet, one fresh process per case:
+
+| Workload | Spilling off | 1 GB budget | 256 MB budget |
+|---|---|---|---|
+| Sort | 1.8 s, 3,341 MB | 13.5 s, 3,090 MB | 11.0 s, 3,970 MB |
+| Stable sort | 1.9 s, 3,421 MB | 13.8 s, 2,969 MB | 10.8 s, 4,309 MB |
+| Group-by into ten million groups | 0.8 s, 1,825 MB | 9.4 s, 1,603 MB | 9.9 s, 1,675 MB |
+| Left join against ten million unique keys | 1.6 s, 2,423 MB | 1.6 s, 2,474 MB, no spill | 1.6 s, 2,486 MB, no spill |
+| Window sum over a million keys | 1.3 s, 2,346 MB | 3.0 s, 2,172 MB | 2.9 s, 1,898 MB |
+
+The figures are the process's peak working set; spill files peaked at 0.6 to
+1.5 GB on disk. A budget moved the peak by between -19% and +26% and never
+brought it near the budget, at 2.2 to 12 times the time, and the join did not
+spill. Every spilling run here was on Windows, where Polars allocates through
+mimalloc; Linux, with jemalloc, is `PL2-17`'s to measure.
+
 ## Row order
 
 Haute's own internal queries are order-safe on 2.0: internal joins that feed an
@@ -171,6 +198,60 @@ the worst case at 23% more time and 16% more peak memory, a stable sort as fast
 as an unstable one, and the streaming sink keeping a `maintain_order` join's
 order. Defining an unpivot's order through a row index and a sort cost three
 times its time and memory.
+
+## Measurements behind the decisions
+
+Polars 2.0.0, one fresh process per case, peak working set; the joins read
+the Parquet files of the spilling probe above and sank their result to
+Parquet.
+
+| Left join, `maintain_order="left"` | `validate="m:m"` | `validate="m:1"` |
+|---|---|---|
+| 1,000 requests against a ten-million-row unique lookup | 0.15 s, 661 MB | 0.16 s, 921 MB |
+| Forty million rows against a 5,000-row lookup | 1.27 s, 2,107 MB | 1.28 s, 3,637 MB |
+| The same under Polars 1.44.2 | 1.23 s, 2,144 MB | 1.26 s, 3,619 MB |
+| Forty million rows against ten million unique keys | 1.60 s, 2,422 MB | 1.99 s, 4,251 MB |
+
+With `POLARS_VERBOSE` set, both versions report the validated join running in
+the streaming engine's in-memory join node; a duplicated key fails with
+`ComputeError: join keys did not fulfill m:1 validation`. `PL2-04` therefore
+proves a deployed lookup unique once, when the deployment is built, rather than
+through `validate`.
+
+| Full join, twelve million rows a side | Unordered | `maintain_order="left_right"` |
+|---|---|---|
+| Sunk to Parquet as it is | 0.55 s, 1,323 MB | 0.56 s, 1,400 MB |
+| Followed by an unordered group-by | 0.73 s, 1,360 MB | 0.74 s, 1,372 MB |
+
+A stable sort of forty million rows took 1.9 s and 3,421 MB against an
+unstable sort's 1.8 s and 3,341 MB (the spilling table's first column).
+
+| "Is one of" on a Float64 column, rows | Members | Typed `is_in` | A comparison per member |
+|---|---:|---|---|
+| Ten million | 30 | 0.00 s, +6 MB | 0.01 s, +9 MB |
+| Ten million | 300 | 0.00 s, +6 MB | 0.05 s, +106 MB |
+| Ten million | 1,000 | 0.00 s, +6 MB | 0.20 s, +359 MB |
+| Forty million | 30 | 0.01 s, +7 MB | 0.02 s, +9 MB |
+| Forty million | 300 | 0.01 s, +6 MB | 0.17 s, +28 MB |
+| Forty million | 1,000 | 0.01 s, +6 MB | 0.57 s, +311 MB |
+
+Memory is the peak above the frame itself. Typed membership needs only the
+column's numeric kind: `Int64` members matched `Int8`, `Int32` and `UInt16`
+columns, `Float64` members matched `Float32` and `Float64` columns, and
+decimals parsed from text at the column's scale matched `Decimal(38, 2)` and
+`Decimal(10, 4)` columns, each list passed with `implode()`. A typed list
+without `implode()` raises a deprecation warning, and a list of another kind
+(`Int64` members on a float column, `Float64` members on a `Decimal` column)
+is refused.
+
+`str.to_date` over ten million rows took 0.01 s with the format
+`"%Y-%m-%d"` and 1.04 s inferring it, at the same peak (413 and 409 MB);
+`Expr.meta.is_row_separable()` is true with the format and false without it.
+pyarrow 23.0.1 cast a two-million-row map column (six million entries, 92 MB)
+to a list of key-value structs in half a millisecond, allocating nothing and
+sharing all three of its child buffers, with every entry equal; re-encoding a
+36 MB Parquet file of ten row groups one row group at a time took 0.88 s and
+grew resident memory by 51 MB.
 
 ## The API surface
 
@@ -210,7 +291,7 @@ removes, and Haute passes it NumPy arrays.
 | `_malloc_trim` (process-heap compaction, glibc trim) | Possibly dead on any Polars version: Polars allocates through mimalloc on Windows and jemalloc on Linux; measured | `PL2-17` |
 | Lineage's fail-closed rule for a program that can drop its last column | Narrower: `drop` keeps a frame's height, `select([])` still empties it | `PL2-11` |
 | Carrier columns for an empty projection (`projected_or_carrier_columns`) | Still needed: a zero-column `select` still yields no rows | — |
-| Hard-capped workers and the static admission estimate | Still needed: spilling is a soft target that counts only Polars' own allocations, did not lower peak resident memory when it ran, does not cover joins or group-bys yet, and never triggers below a worker's cap unless Haute sets its budget | `PL2-16`, `PL2-17` |
+| Hard-capped workers and the static admission estimate | Still needed: spilling is a soft target that counts only Polars' own allocations, did not dependably lower peak resident memory when it ran, did not spill a join, and never triggers below a worker's cap unless Haute sets its budget | `PL2-16`, `PL2-17` |
 | A hand-maintained operation registry | Still needed, since Haute classifies source text and free code; Polars 2's `Expr.meta.is_row_separable()` and `is_length_preserving()` give it a test oracle | `PL2-14` |
 | Capture points and shared snapshots | Still needed: pola-rs/polars#24206 (multi-join streaming memory) is open at 2.0 | `PL2-17` (wording) |
 | Chunked writes and the explode chunk cap | Still needed: the streaming chunk is still process-wide and still multiplied by an `explode` | `PL2-08` |
