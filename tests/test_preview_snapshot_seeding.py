@@ -1173,6 +1173,22 @@ def test_stale_join_is_not_seeded_and_is_recaptured(project: Path, api: Any) -> 
     assert _rows(body)["band"].to_list() == [10, 12]
 
 
+def test_results_another_polars_computed_are_neither_seeded_nor_served(
+    project: Path, api: Any, builds: Counter[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After an upgrade (simulated), a run recomputes rather than mix in old results."""
+    graph = _join_graph(project)
+    first = _post_preview(api, graph, "banding")["seed_plan"][0]
+    builds.clear()
+    monkeypatch.setattr(pl, "__version__", "9.9.9")
+
+    body = _post_preview(api, graph, "banding")
+
+    assert _plan_of(body) == [("join", "captured")]
+    assert body["seed_plan"][0]["identity_digest"] != first["identity_digest"]
+    assert {"policies", "claims", "join", "banding"} <= set(builds)
+
+
 def test_capture_then_clear_never_serves_the_cached_response(
     project: Path, api: Any, store: NodeSnapshotStore, builds: Counter[str]
 ) -> None:

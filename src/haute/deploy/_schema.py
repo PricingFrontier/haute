@@ -14,6 +14,7 @@ from haute._cache import (
     GraphFingerprintMemo,
     checked_cache_inputs,
     graph_fingerprint,
+    polars_version,
 )
 from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
@@ -135,6 +136,7 @@ def deploy_schema_cache_fingerprint(
             "source": "live",
             "row_limit": 1,
             "execution_policy": _DEPLOY_SCHEMA_EXECUTION_POLICY,
+            "polars_version": polars_version(),
         },
     )
     return f"deploy-schema:v{inputs.contract.version}:{content_hash_bytes(inputs.canonical_bytes)}"

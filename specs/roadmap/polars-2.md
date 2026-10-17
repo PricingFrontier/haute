@@ -34,13 +34,15 @@ categorical everywhere, a column holding a 128-bit integer is refused with the c
 fixes it before a model, a feature contract or a deploy signature meets it, and a map
 column reaches a pipeline as a list of key-value structs holding every entry, while a
 direct scan of a Parquet file holding one is refused
-([io-layer](../io-layer/low-level.md)).
+([io-layer](../io-layer/low-level.md)). Nothing Polars 1 computed is reused: previews,
+node snapshots and the deploy schema cache sign the installed Polars version, and an input
+snapshot carried across versions is re-described from its own parts, or re-encoded when
+they hold a physical map column, never fetched again ([caching](../caching/low-level.md)).
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| PL2-02 | Planned | P1 | Nothing Polars 1 computed is reused once Polars 2 runs. |
 | PL2-13 | Planned | P2 | Code Haute generates and teaches runs on Polars 2 without deprecations. |
 | PL2-14 | Planned | P2 | The operation registry and analysers describe Polars 2. |
 | PL2-15 | Planned | P2 | The test suite asserts behaviour rather than Polars 1 accidents. |
@@ -52,58 +54,6 @@ direct scan of a Parquet file holding one is refused
 | PL2-22 | Deferred | P3 | Banding and the step editor offer quantile and rank binning. |
 
 ## Planned improvements
-
-### PL2-02 — Nothing Polars 1 computed is reused once Polars 2 runs
-**Why:** A node snapshot's identity signs the lineage, the runtime inputs and
-a fixed execution-semantics version (`node-snapshot:v1`), and the preview
-response cache and the deploy schema cache sign theirs the same way; none of
-them includes the Polars version. After the upgrade a fresh snapshot written
-by 1.44 seeds a 2.0 run, so one execution can mix 1.44 results upstream
-(an empty list exploded to a null row, `Int64 + UInt64` summed as `Float64`,
-a horizontal concat padded with nulls, 1.44's row order) with 2.0 results
-downstream, and the answer differs from a cold run. Input snapshots go the
-other way: their re-validation compares the recorded dtype string with a
-fresh scan, so a column that 2.0 reads as `Map`, `Extension` or (from a
-Parquet `ENUM`) `String` reports a healthy generation as corrupt. The request
-fingerprint built from `hash_rows` already over-invalidates on a hash change,
-by design.
-
-**Plan:** Specify one rule in the caching specification: the installed Polars
-version (the full version, since a 2.x release can change engine results too)
-goes into the identity of everything whose contents Polars computed, and into
-the metadata of copies Polars only described. Node snapshots, preview seeds
-and responses, and the deploy schema cache take it in their identities, so an
-upgrade cold-starts them. Input snapshots and structured-input table caches
-are copies of a source whose bytes their part digests prove; keying them on
-the version would rebuild every Databricks and lakehouse snapshot from the live
-table at each Polars release, silently changing the data a pipeline runs on,
-which today only the user's refresh does. They record the version in their
-generation metadata instead, and on a mismatch re-derive the recorded column
-descriptions from a fresh scan and rewrite the metadata, reporting the
-generation as re-described, never corrupt. A generation whose parts hold a
-physical Parquet map column (a Databricks snapshot keeps the source's Arrow
-schema when it writes its parts) is the exception: a Polars 2 scan would
-collapse its duplicate keys while the digests still matched, so it is
-re-encoded when it is opened, as the io-layer specification's map policy requires: from
-its own local parts
-through pyarrow into a new generation, one row group at a time, with no
-provider fetch.
-
-**Acceptance:** a node-snapshot store and a preview cache populated under one
-Polars version seed and serve nothing under another (simulated by patching the
-reported version); an input snapshot carried across versions is re-described,
-keeps its data and part digests, and is never reported corrupt; an
-Arrow-written snapshot with a map column holding a duplicated key, opened under
-the new version, keeps every entry without fetching from its provider; a cache
-hit under an unchanged version is unaffected.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_node_snapshots.py::NODE_SNAPSHOT_EXECUTION_SEMANTICS_VERSION`;
-`src/haute/execution.py::PREVIEW_EXECUTION_SEMANTICS_VERSION`;
-`src/haute/execution.py::dataframe_frame_input_fingerprint`;
-`src/haute/_source_cache.py::SourceCacheIdentity`;
-`src/haute/deploy/_schema.py::deploy_schema_cache_fingerprint`.
 
 ### PL2-13 — Code Haute generates and teaches runs on Polars 2 without deprecations
 **Why:** The runnable reference pipeline (`examples/reference/main.py`) and
@@ -211,7 +161,7 @@ dispatched lanes above are green against the same revision with their run
 links recorded; each gap above has a test; no test sorts away an order the
 specifications promise.
 
-**Dependencies:** PL2-02, PL2-13 and PL2-14.
+**Dependencies:** PL2-13 and PL2-14.
 
 **Evidence:** `tests/test_edge_join.py`; `tests/test_execute_lazy_contracts.py`;
 `tests/test_column_lineage.py`; `tests/test_standalone_nodes.py`;

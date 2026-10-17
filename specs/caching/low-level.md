@@ -60,12 +60,12 @@ missing and unknown names before hashing:
 |---|---:|---|
 | `graph_structure` | 2 | `nodes`, `edges` |
 | `graph_execution` | 9 | `base_fingerprint`, `preamble_fingerprint`, `global_constants`, `source_file`, `extra_keys` |
-| `preview_trace` | 4 | `preamble`, `global_constants`, `source_file`, `nodes`, `edges`, `target_node_id`, `source`, `requested_columns`, `initial_column_limit`, `row_limit`, `port_label`, `contract_fingerprint`, `selected_live_switch_path`, `runtime_input_fingerprint`, `execution_semantics_version` |
+| `preview_trace` | 5 | `preamble`, `global_constants`, `source_file`, `nodes`, `edges`, `target_node_id`, `source`, `requested_columns`, `initial_column_limit`, `row_limit`, `port_label`, `contract_fingerprint`, `selected_live_switch_path`, `runtime_input_fingerprint`, `execution_semantics_version`, `polars_version` |
 | `runtime_graph_input` | 4 | `source`, `sources`, `preamble_fingerprint`, `extra` |
-| `deploy_schema` | 2 | `graph_fingerprint`, `runtime_input_fingerprint`, `artifact_fingerprint`, `output_node_id`, `input_node_ids`, `source`, `row_limit`, `execution_policy` |
+| `deploy_schema` | 3 | `graph_fingerprint`, `runtime_input_fingerprint`, `artifact_fingerprint`, `output_node_id`, `input_node_ids`, `source`, `row_limit`, `execution_policy`, `polars_version` |
 | `model_contract` | 1 | `feature_names`, `categorical_features`, `offset_column` |
 | `input_snapshot` | 1 | `schema_version`, `provider`, `descriptor` |
-| `node_snapshot_signature` | 2 | `lineage_fingerprint`, `runtime_input_fingerprint`, `source`, `semantics_class`, `enforce_contracts`, `preamble_supplied`, `execution_semantics_version` |
+| `node_snapshot_signature` | 3 | `lineage_fingerprint`, `runtime_input_fingerprint`, `source`, `semantics_class`, `enforce_contracts`, `preamble_supplied`, `execution_semantics_version`, `polars_version` |
 
 The repeated records inside those payloads are separately closed and versioned:
 `graph_node` v1 is `id`, `label`, `nodeType`, `config`; `graph_edge` v1 is
@@ -77,12 +77,38 @@ is `node_id`, `node_type`, `config`, `files`;
 `name`, `type`, `value`, `state` (a read constant resolved for one source, with `state` `set`,
 `missing` or `undefined`).
 
-Each consumer also classifies all eleven logical input classes — node config,
+Each consumer also classifies all twelve logical input classes — node config,
 upstream lineage, edge wiring, user code, source selection, row limit,
-runtime files, artifacts, request shape, execution policy, and global constants — as either
-consumed by named payload fields or deliberately excluded with a non-empty
-rationale. A payload field that is not assigned to a class, or an input class
+runtime files, artifacts, request shape, execution policy, global constants, and engine
+version — as either consumed by named payload fields or deliberately excluded with a
+non-empty rationale. A payload field that is not assigned to a class, or an input class
 that is neither consumed nor explained, makes contract construction fail.
+
+**The Polars version.** A Polars release can change what the same pipeline computes,
+its row order and its dtypes, so the installed Polars version (`polars_version()`, the
+full version, read on each call) goes into the identity of everything whose contents
+Polars computed: `preview_trace`, `deploy_schema` and `node_snapshot_signature` consume
+it as `polars_version`, so an upgrade cold-starts previews, preview seeds, node
+snapshots and the deploy schema cache. The structural identities (`graph_structure`,
+`graph_execution`) exclude it because the result identities built on them sign it;
+`runtime_graph_input` and `input_snapshot` exclude it because they name source bytes,
+and `model_contract` because a model's contract is fixed when it is trained. An input
+snapshot (or structured-input table) is a copy of its source whose part digests prove
+its bytes: keying it on the version would fetch every Databricks and lakehouse table
+again at each release, changing the data a pipeline runs on, which only the user's
+refresh does. Its generation metadata records `polars_version` instead. Opened or
+leased under another version (or with no version recorded, as before it was recorded),
+it is re-described once its digests verify: the column descriptions are re-derived
+from a fresh scan and `meta.json` is rewritten, logged as
+`source_cache_generation_redescribed`, never reported corrupt. A generation whose parts
+hold a physical Parquet map column, which a Databricks snapshot wrote before map
+columns became lists of key-value structs, is the exception: Polars 2's Parquet reader
+would keep only a repeated key's last value while the digests still matched, so it is
+re-encoded from its own parts through pyarrow, one row group at a time, into a new
+current generation (`source_cache_generation_reencoded`), with no provider fetch; a
+lease of exactly the old generation then reports it missing, so its holder resolves the
+identity again. A node-output generation is never re-described: its identity names the
+Polars that computed it.
 
 ## Control flow
 
@@ -510,7 +536,8 @@ upstream of it after the executor's own live-switch pruning (`prepare_graph` →
 `prune_live_switch_edges`) for the signature's source. The lineage fingerprint is
 `graph_fingerprint` of that graph, the runtime-input fingerprint is
 `dataframe_graph_input_fingerprint` of the same graph targeted at the node, and the
-execution semantics version is `node-snapshot:v1`. A branch into a live switch that the
+execution semantics version is `node-snapshot:v1`, beside the installed Polars version.
+A branch into a live switch that the
 source does not read is therefore not signed: editing its code or rewriting its input
 files leaves the signature, and every capture keyed by it, unchanged, and its files are
 never hashed. The switch node itself stays in the lineage with its config, so remapping

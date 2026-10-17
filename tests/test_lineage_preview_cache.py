@@ -460,3 +460,14 @@ def test_lineage_key_tells_a_missing_source_value_from_a_set_one() -> None:
     assert lineage_cache_key(_request(split, source="nb_batch")) != lineage_cache_key(
         _request(filled, source="nb_batch")
     )
+
+
+def test_lineage_key_signs_the_polars_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    import polars
+
+    request = _request()
+    current = lineage_cache_key(request)
+
+    monkeypatch.setattr(polars, "__version__", "9.9.9")
+
+    assert lineage_cache_key(request) != current

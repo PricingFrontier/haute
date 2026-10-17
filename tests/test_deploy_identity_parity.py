@@ -241,6 +241,23 @@ class TestOutputSchemaCacheFoldsArtifactIdentity:
 
         assert second != first
 
+    def test_cache_identity_changes_with_the_polars_version(self, tmp_path, monkeypatch):
+        from haute.deploy._schema import deploy_schema_cache_fingerprint
+
+        pq = tmp_path / "data.parquet"
+        pl.DataFrame({"x": [1.0]}).write_parquet(pq)
+        graph = _passthrough_schema_graph(pq)
+
+        def fingerprint() -> str:
+            return deploy_schema_cache_fingerprint(
+                graph, output_node_id="out", input_node_ids=["src"], artifact_paths={}
+            )
+
+        current = fingerprint()
+        monkeypatch.setattr(pl, "__version__", "9.9.9")
+
+        assert fingerprint() != current
+
     def test_cache_identity_is_stable_for_input_node_order(self, tmp_path):
         from haute.deploy._schema import deploy_schema_cache_fingerprint
 

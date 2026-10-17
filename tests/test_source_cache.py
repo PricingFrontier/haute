@@ -1307,3 +1307,129 @@ def test_the_published_generation_probe_reads_metadata_and_never_a_part(
     )
     with pytest.raises(FileNotFoundError):
         store.published_generation_id(identity)
+
+
+# ---------------------------------------------------------------------------
+# A snapshot carried across Polars versions
+# ---------------------------------------------------------------------------
+
+
+def _recorded(generation_dir: Path) -> dict[str, object]:
+    return json.loads((generation_dir / "meta.json").read_text(encoding="utf-8"))
+
+
+def _as_described_by_polars_1(generation_dir: Path, **columns: str) -> None:
+    """Rewrite a generation's metadata as a Haute that recorded no Polars version wrote it."""
+    raw = _recorded(generation_dir)
+    del raw["polars_version"]
+    raw["columns"] = {**raw["columns"], **columns}
+    (generation_dir / "meta.json").write_text(json.dumps(raw), encoding="utf-8")
+
+
+def test_a_snapshot_records_the_polars_that_described_it(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path)
+    generation = store.build(
+        _identity(path="a.csv"), _LazyBuilder(pl.LazyFrame({"id": [1]})), context=_context()
+    )
+
+    assert generation.metadata.polars_version == pl.__version__
+    assert _recorded(generation.directory)["polars_version"] == pl.__version__
+
+
+def test_another_polars_redescribes_a_snapshot_and_keeps_its_data(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="a.csv")
+    frame = pl.LazyFrame({"id": [1, 2], "region": ["north", "south"]})
+    built = store.build(identity, _LazyBuilder(frame), context=_context())
+    _as_described_by_polars_1(built.directory, region="Utf8")
+    parts_before = _recorded(built.directory)["parts"]
+
+    status = SourceCacheStore(tmp_path).status(identity)
+
+    assert status.state == "ready"
+    assert status.generation is not None
+    assert status.generation.generation_id == built.generation_id
+    recorded = _recorded(built.directory)
+    assert recorded["polars_version"] == pl.__version__
+    assert recorded["columns"] == {"id": "Int64", "region": "String"}
+    assert recorded["parts"] == parts_before
+    assert_frame_equal(status.generation.lazy_frame.collect(), frame.collect())
+
+
+def test_an_unchanged_polars_reads_a_snapshot_as_it_was_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="a.csv")
+    built = store.build(identity, _LazyBuilder(pl.LazyFrame({"id": [1]})), context=_context())
+    written = (built.directory / "meta.json").read_bytes()
+
+    def unexpected(*_args: object) -> None:
+        raise AssertionError("an unchanged Polars re-described or re-encoded the snapshot")
+
+    monkeypatch.setattr(SourceCacheStore, "_redescribed", staticmethod(unexpected))
+    monkeypatch.setattr(SourceCacheStore, "_reencoded", unexpected)
+
+    for opener in (SourceCacheStore(tmp_path), store):
+        assert opener.open_generation(identity).generation_id == built.generation_id
+        with opener.lease(identity) as leased:
+            assert leased.generation_id == built.generation_id
+    assert (built.directory / "meta.json").read_bytes() == written
+
+
+def _arrow_written_map_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[SourceCacheIdentity, _BatchBuilder, str]:
+    """A Databricks snapshot as Haute wrote one before map columns became entries."""
+    import haute._source_cache as module
+
+    maps = pa.array(
+        [[("a", 1), ("a", 2), ("b", 3)], [("c", 4)]], type=pa.map_(pa.string(), pa.int64())
+    )
+    builder = _BatchBuilder([pa.table({"id": [1, 2], "m": maps})])
+    identity = SourceCacheIdentity(provider="databricks", descriptor={"table": "c.s.policies"})
+    with monkeypatch.context() as patched:
+        patched.setattr(module, "map_entries_table", lambda table: table)
+        built = SourceCacheStore(tmp_path).build(identity, builder, context=_context())
+    _as_described_by_polars_1(built.directory, m="List(Struct({'key': String, 'value': Int64}))")
+    return identity, builder, built.generation_id
+
+
+_ENTRIES = [
+    [{"key": "a", "value": 1}, {"key": "a", "value": 2}, {"key": "b", "value": 3}],
+    [{"key": "c", "value": 4}],
+]
+
+
+def test_another_polars_reencodes_a_snapshot_whose_parts_hold_a_map(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Polars 2 would read the part's map keeping a repeated key's last value."""
+    identity, builder, old_id = _arrow_written_map_generation(tmp_path, monkeypatch)
+    store = SourceCacheStore(tmp_path)
+
+    generation = store.open_generation(identity)
+
+    assert generation.generation_id != old_id
+    assert generation.metadata.polars_version == pl.__version__
+    frame = generation.lazy_frame.collect()
+    assert frame.schema["m"] == pl.List(pl.Struct({"key": pl.String, "value": pl.Int64}))
+    assert frame["m"].to_list() == _ENTRIES
+    assert builder.calls == 1, "the provider was fetched again"
+    # The copy is current; the old generation retires like any superseded one.
+    assert store.published_generation_id(identity) == generation.generation_id
+
+
+def test_a_lease_under_another_polars_leases_the_reencoded_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity, builder, old_id = _arrow_written_map_generation(tmp_path, monkeypatch)
+    store = SourceCacheStore(tmp_path)
+
+    with pytest.raises(SourceCacheGenerationMissingError):
+        with store.lease_generation(identity, old_id):
+            pass
+    with store.lease(identity) as leased:
+        assert leased.generation_id != old_id
+        assert leased.lazy_frame.collect()["m"].to_list() == _ENTRIES
+    assert builder.calls == 1

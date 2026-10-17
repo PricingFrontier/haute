@@ -473,7 +473,7 @@ def test_a_second_identity_under_the_same_path_is_still_accounted_for(
     read_config = _csv_config(csv_path)
     _build_input_via_route(client, read_config)
 
-    stale_config = _csv_config(csv_path, has_header=False)
+    stale_config = _csv_config(csv_path, has_header=False, new_columns=["premium"])
     store = NodeSnapshotStore(project)
     identity = source_cache_identity(stale_config, base_dir=project)
     context = SourceCacheBuildContext(profile=ExecutionProfile.LAZY_SINK, build_class="bounded")

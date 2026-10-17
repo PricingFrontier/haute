@@ -39,7 +39,11 @@ runtime graph input, deploy schema, model contract, input snapshot, and
 node-snapshot signature — each declare one complete versioned field set.
 The node-snapshot signature identifies the data at a pipeline point independently of
 any consumer: upstream lineage, runtime inputs, source, execution semantics class,
-contract enforcement, preamble presence, and execution semantics version. Every logical
+contract enforcement, preamble presence, execution semantics version, and the Polars
+version. Everything whose contents Polars computed signs the installed Polars version,
+so an upgrade never mixes one release's results into another's run; an input snapshot,
+a copy of its source, records the version instead and is re-described, not fetched
+again, under another. Every logical
 input class is either mapped to named fields or excluded with a rationale;
 missing, unknown, or unclassified fields fail before a key is produced. The
 low-level inventory is the reviewable source for those exact sets and their

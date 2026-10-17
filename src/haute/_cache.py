@@ -85,6 +85,9 @@ class CacheInputClass(StrEnum):
     REQUEST_SHAPE = "request_shape"
     EXECUTION_POLICY = "execution_policy"
     GLOBAL_CONSTANTS = "global_constants"
+    # The engine that computed a cached result: a Polars release can change what
+    # the same pipeline computes, its row order or its dtypes.
+    ENGINE_VERSION = "engine_version"
 
 
 class CacheConsumer(StrEnum):
@@ -302,6 +305,10 @@ _NO_GRAPH_INPUT = "This cache is independent of pipeline graph execution."
 _CONSTANT_VALUES_ARE_EXECUTION_INPUTS = (
     "Constant values are execution inputs; a structured reference to a constant is node config."
 )
+_ENGINE_SIGNED_BY_RESULTS = (
+    "Structure does not depend on the engine; the result identities built on it sign the "
+    "Polars version."
+)
 _REQUIRES_STRUCTURAL_IDENTITY = (
     "This external-state component must be paired with the caller's checked structural "
     "graph or lineage identity."
@@ -327,6 +334,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                 CacheInputClass.ARTIFACTS: _NO_RUNTIME_STATE,
                 CacheInputClass.EXECUTION_POLICY: "Execution policy is supplied by each consumer.",
                 CacheInputClass.GLOBAL_CONSTANTS: _CONSTANT_VALUES_ARE_EXECUTION_INPUTS,
+                CacheInputClass.ENGINE_VERSION: _ENGINE_SIGNED_BY_RESULTS,
             },
         ),
         CacheConsumer.GRAPH_EXECUTION: _consumer_contract(
@@ -357,11 +365,12 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                 CacheInputClass.RUNTIME_FILES: _NO_RUNTIME_STATE,
                 CacheInputClass.ARTIFACTS: _NO_RUNTIME_STATE,
                 CacheInputClass.EXECUTION_POLICY: "A caller keys policy in its own contract.",
+                CacheInputClass.ENGINE_VERSION: _ENGINE_SIGNED_BY_RESULTS,
             },
         ),
         CacheConsumer.PREVIEW_TRACE: _consumer_contract(
             CacheConsumer.PREVIEW_TRACE,
-            version=4,
+            version=5,
             fields=(
                 "preamble",
                 "global_constants",
@@ -378,6 +387,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                 "selected_live_switch_path",
                 "runtime_input_fingerprint",
                 "execution_semantics_version",
+                "polars_version",
             ),
             consumed={
                 CacheInputClass.NODE_CONFIG: ("nodes",),
@@ -403,6 +413,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                     "execution_semantics_version",
                 ),
                 CacheInputClass.GLOBAL_CONSTANTS: ("global_constants",),
+                CacheInputClass.ENGINE_VERSION: ("polars_version",),
             },
             excluded={},
         ),
@@ -431,11 +442,15 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                     "Execution policy is keyed by the frame consumer."
                 ),
                 CacheInputClass.GLOBAL_CONSTANTS: _REQUIRES_STRUCTURAL_IDENTITY,
+                CacheInputClass.ENGINE_VERSION: (
+                    "External input identity names source bytes, not what Polars computes "
+                    "from them."
+                ),
             },
         ),
         CacheConsumer.DEPLOY_SCHEMA: _consumer_contract(
             CacheConsumer.DEPLOY_SCHEMA,
-            version=2,
+            version=3,
             fields=(
                 "graph_fingerprint",
                 "runtime_input_fingerprint",
@@ -445,6 +460,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                 "source",
                 "row_limit",
                 "execution_policy",
+                "polars_version",
             ),
             consumed={
                 CacheInputClass.NODE_CONFIG: ("graph_fingerprint",),
@@ -461,6 +477,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                 CacheInputClass.REQUEST_SHAPE: ("output_node_id", "input_node_ids"),
                 CacheInputClass.EXECUTION_POLICY: ("execution_policy",),
                 CacheInputClass.GLOBAL_CONSTANTS: ("graph_fingerprint",),
+                CacheInputClass.ENGINE_VERSION: ("polars_version",),
             },
             excluded={},
         ),
@@ -494,6 +511,9 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                     "Feature/schema compatibility is policy-independent."
                 ),
                 CacheInputClass.GLOBAL_CONSTANTS: _NO_GRAPH_INPUT,
+                CacheInputClass.ENGINE_VERSION: (
+                    "A model's feature contract is fixed when it is trained."
+                ),
             },
         ),
         CacheConsumer.INPUT_SNAPSHOT: _consumer_contract(
@@ -524,11 +544,16 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                 CacheInputClass.GLOBAL_CONSTANTS: (
                     "Post-read code changes execution, not external source bytes."
                 ),
+                CacheInputClass.ENGINE_VERSION: (
+                    "A snapshot copies its source, whose bytes its part digests prove; its "
+                    "metadata records the Polars version that described it, and another "
+                    "version re-describes it rather than fetching the source again."
+                ),
             },
         ),
         CacheConsumer.NODE_SNAPSHOT_SIGNATURE: _consumer_contract(
             CacheConsumer.NODE_SNAPSHOT_SIGNATURE,
-            version=2,
+            version=3,
             fields=(
                 "lineage_fingerprint",
                 "runtime_input_fingerprint",
@@ -537,6 +562,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                 "enforce_contracts",
                 "preamble_supplied",
                 "execution_semantics_version",
+                "polars_version",
             ),
             consumed={
                 CacheInputClass.NODE_CONFIG: ("lineage_fingerprint",),
@@ -556,6 +582,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                     "execution_semantics_version",
                 ),
                 CacheInputClass.GLOBAL_CONSTANTS: ("lineage_fingerprint",),
+                CacheInputClass.ENGINE_VERSION: ("polars_version",),
             },
             excluded={
                 CacheInputClass.ROW_LIMIT: _FULL_FRAME_NO_ROW_LIMIT,
@@ -567,6 +594,17 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
         ),
     }
 )
+
+
+def polars_version() -> str:
+    """The installed Polars version, which every identity of Polars-computed contents signs.
+
+    The full version, since a release can change what the same pipeline
+    computes; read on each call.
+    """
+    import polars
+
+    return polars.__version__
 
 
 @dataclass(frozen=True, slots=True)
@@ -1373,6 +1411,7 @@ def lineage_cache_key(request: LineageCacheKeyRequest) -> str:
         ),
         "runtime_input_fingerprint": request.runtime_input_fingerprint,
         "execution_semantics_version": request.execution_semantics_version,
+        "polars_version": polars_version(),
     }
     inputs = checked_cache_inputs(CacheConsumer.PREVIEW_TRACE, payload)
     return f"lineage-preview:v{LINEAGE_CACHE_KEY_VERSION}:" + content_hash_bytes(
