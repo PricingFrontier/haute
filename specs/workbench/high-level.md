@@ -144,7 +144,19 @@ Out of scope:
   least `rows` rows showing columns of many-row tables, with its look, whether its rows
   are fixed and whether it is transposed: `row_numbers`, `density` (`compact` or
   `comfortable`), `gridlines` (`rows`, `all` or `none`), `striped`, `fixed_rows`,
-  `transposed` and `groups`), a Collection (`collection`, boxes
+  `transposed` and `groups`, and its look set as a spreadsheet's is: `font_size` (10, 11,
+  12, 13, 14, 16 or 18), its header's `header_font_size` (one of those, or null for its
+  text's size, a pixel smaller in capitals), `header_bold`, `header_wrap`,
+  `header_orientation` (`horizontal`, `up`, `down` or `stacked`), `header_color` and
+  `header_font_color`, its lines' `grid_color`, `grid_weight` (`thin`, `medium` or
+  `thick`, 1, 2 or 3px) and `grid_style` (`solid`, `dashed` or `dotted`), its frame's
+  `frame_color` and `frame_weight`, each colour `#RRGGBB` in capitals or null for the
+  theme's, and `column_looks`, the looks of the columns given one of their own, each the
+  column it shows by `table` and `column`, its label's `header_color` and
+  `header_font_color`, its cells' `cell_color` and `font_color`, `bold`, `align` (`auto`,
+  `left`, `center` or `right`) and `width` (24 to 1000 pixels, or null), one for each
+  column at most, none for a column it does not show and none that changes nothing), a
+  Collection (`collection`, boxes
   showing columns of one-row tables, `columns` across, and its `spacers`, the gaps among
   them, each the number of fields before it, in order and none past the last), a Chart (`chart`, plotting number
   columns, with what labels the rows of its many-row tables, `category`, a schema column
@@ -388,7 +400,23 @@ Out of scope:
   by one cell naming it, a row of them over the labels with each name ruled under
   inside its cell, so groups side by side stay apart, and a blank cell over a field in
   none, the numbers and the deletes, or, transposed, a column of them before the
-  labels, which stay in view beside it; a Collection as boxes, its columns across, their labels above
+  labels, which stay in view beside it; and its look as a spreadsheet's is set: its values
+  at its `font_size`; its labels at their size, bold unless `header_bold` is off, wrapping
+  across their column with whole words kept rather than cut off while `header_wrap`, and
+  turned as `header_orientation` says, reading upwards, downwards or their letters stacked
+  one under another, at the header's foot, centred across their column and setting it no
+  least width, a turned label that wraps starting a line beside it past 128px, the group
+  names staying level; its lines, the gridlines, the rule under its header, the line
+  before an output and a group's rule, in its `grid_color` and `grid_weight`, the
+  gridlines in its `grid_style`, the rules solid; its frame in its `frame_color` and
+  `frame_weight`, the rule under its title in that colour; its header strip in its
+  `header_color`, its labels and group names in its `header_font_color`; and each column's
+  own look over the Table's: its label's fill and font, its cells' fill, drawn over the
+  stripes and the output shade, their font and weight, where its label and values sit
+  across it, as its type puts them while `auto`, and its width, exactly that wide, the
+  grid as wide as its columns rather than its frame once every column has one;
+  transposed, a column's look is its field's line, its label the line's label, and it
+  has no width; a Collection as boxes, its columns across, their labels above
   them or, while `labels` is `beside`, beside them, a tick box in a box as the other fields
   are, the boxes compact (28px) or comfortable (36px) as its `density` says, and each
   spacer a gap across its whole width where it sits among the fields, the fields after it
@@ -465,9 +493,18 @@ Out of scope:
   they are closed: the component's kind and its title; its Show when (below); once it shows a field, its layout,
   the rows a Table's grid starts with (1 to 50), whether they are fixed and whether it is
   transposed, or a Collection's columns across (1
-  to 12), a value outside the range refused at the field, a Table's look (its density, its
-  gridlines, its header, Capitals or As written, its row numbers, its groups, its
-  stripes and its frame), a Collection's look (its labels, Above or Beside, its density and its frame), a
+  to 12), a value outside the range refused at the field, a Table's look (its density,
+  its text size, its row numbers, its groups and its stripes; its header's Case,
+  Capitals or As written, its Size, Auto or one of the sizes, its Direction, Horizontal,
+  Rotated up, Rotated down or Stacked, its Fill and Font, and whether it is Bold and
+  wraps; its Lines, the Gridlines, their Style, Weight, Thin, Medium or Thick, and Colour;
+  its Frame and, while framed, the frame's Weight and Colour; and its Columns, each in its
+  order opened in turn to its own look, its header's Fill and Font, its cells' Fill and
+  Font, Align, Auto, Left, Centre or Right, its Width, blank for Auto, a whole number of
+  pixels from 24 to 1000 otherwise refused at the field, not while transposed, and Bold,
+  with Clear while it has a look, a column with one marked in the list; a colour picked
+  as the sheets' colours are, shown as it is picked and one undo step, and a column that
+  stops being shown losing its look), a Collection's look (its labels, Above or Beside, its density and its frame), a
   Chart's chart (its type, Column, Line,
   Area or Pie; while it plots many-row tables, what labels its rows, "Row number" or a
   column of a table whose rows line up with its fields, other than an index, by table and
@@ -573,7 +610,8 @@ Out of scope:
   Chart's text stays the chart's own; the fill of input cells and boxes; and that of output
   cells and boxes, in place of their shade. A Table's header strip takes the components'
   background while one is set, or the sheet's while the Table is unframed, else keeps its
-  own; its stripes, a light shade, show whatever is under them.
+  own; its stripes, a light shade, show whatever is under them. A Table's own colours, its
+  lines', its frame's, its header's and its columns', are drawn over the theme's.
 - **A new quote while building.** While building, the sheets are drawn as an underwriter's
   new quote opens: every input cell empty but those a column's default fills, every output
   a dash, every Chart with nothing but defaults to chart, each grid showing the rows it

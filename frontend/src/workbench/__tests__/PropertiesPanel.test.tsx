@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { findSection, findWidget } from "../../utils/workbenchForm"
+import { findSection, findWidget, updateWidget } from "../../utils/workbenchForm"
 import { answerQuestion, asked } from "../../test-utils/question"
 import PropertiesPanel from "../PropertiesPanel"
 import type { FieldRef, FormSpec, Section } from "../../api/types"
@@ -27,6 +27,8 @@ const openSection = (id: string) => act(() => useWorkbenchViewStore.getState().s
 /** Show a Table's or a Collection's pane, as pressing its tab does. */
 const showPane = (name: "Config" | "Display") => fireEvent.click(screen.getByRole("tab", { name }))
 const sectionIds = () => currentForm().pages[0].sections.map((candidate) => candidate.id)
+/** A select's choices, each its value and its label. */
+const choices = (select: HTMLElement) => [...select.querySelectorAll("option")].map((option) => [option.value, option.textContent])
 
 /** The form's section `id`, as it is now. */
 function sectionOf(id: string): Section {
@@ -113,9 +115,10 @@ describe("PropertiesPanel", () => {
     expect(config).toHaveStyle({ color: COMPONENT_COLOR })
     expect(pane()).toHaveAttribute("aria-labelledby", "component-config-tab")
     expect(regions()).toEqual(["Order", "Fields"])
-    // Display: its title, when it shows, its layout and its look.
+    // Display: its title, when it shows, its layout and its look: its header, its lines,
+    // its frame and its columns' own looks.
     showPane("Display")
-    expect(regions()).toEqual(["Title", "Show when", "Layout", "Look"])
+    expect(regions()).toEqual(["Title", "Show when", "Layout", "Look", "Header", "Lines", "Frame", "Columns"])
 
     // Each component keeps its own: a Collection opens on Config.
     select("w_boxes")
@@ -166,9 +169,9 @@ describe("PropertiesPanel", () => {
     fireEvent.click(within(screen.getByRole("region", { name: "Layout" })).getByRole("checkbox", { name: "Transposed" }))
     const look = screen.getByRole("region", { name: "Look" })
     fireEvent.change(within(look).getByRole("combobox", { name: "Density" }), { target: { value: "comfortable" } })
-    fireEvent.change(within(look).getByRole("combobox", { name: "Gridlines" }), { target: { value: "none" } })
-    const header = within(look).getByRole("combobox", { name: "Header" })
-    expect([...header.querySelectorAll("option")].map((option) => [option.value, option.textContent])).toEqual([
+    fireEvent.change(within(screen.getByRole("region", { name: "Lines" })).getByRole("combobox", { name: "Gridlines" }), { target: { value: "none" } })
+    const header = within(screen.getByRole("region", { name: "Header" })).getByRole("combobox", { name: "Case" })
+    expect(choices(header)).toEqual([
       ["plain", "As written"],
       ["caps", "Capitals"],
     ])
@@ -176,7 +179,7 @@ describe("PropertiesPanel", () => {
     fireEvent.click(within(look).getByRole("checkbox", { name: "Row numbers" }))
     fireEvent.click(within(look).getByRole("checkbox", { name: "Groups" }))
     fireEvent.click(within(look).getByRole("checkbox", { name: "Striped rows" }))
-    fireEvent.click(within(look).getByRole("checkbox", { name: "Frame" }))
+    fireEvent.click(within(screen.getByRole("region", { name: "Frame" })).getByRole("checkbox", { name: "Frame" }))
     expect(grid()).toMatchObject({
       fixed_rows: true,
       transposed: true,
@@ -199,7 +202,9 @@ describe("PropertiesPanel", () => {
     expect(screen.queryByRole("checkbox", { name: "Transposed" })).not.toBeInTheDocument()
     const boxesLook = screen.getByRole("region", { name: "Look" })
     expect(within(boxesLook).queryByRole("combobox", { name: "Gridlines" })).not.toBeInTheDocument()
-    expect(within(boxesLook).queryByRole("combobox", { name: "Header" })).not.toBeInTheDocument()
+    expect(within(boxesLook).queryByRole("combobox", { name: "Case" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("region", { name: "Header" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("region", { name: "Columns" })).not.toBeInTheDocument()
     expect(within(boxesLook).queryByRole("checkbox", { name: "Groups" })).not.toBeInTheDocument()
     const labels = within(boxesLook).getByRole("combobox", { name: "Labels" })
     expect([...labels.querySelectorAll("option")].map((option) => [option.value, option.textContent])).toEqual([
@@ -213,6 +218,144 @@ describe("PropertiesPanel", () => {
     fireEvent.click(within(boxesLook).getByRole("checkbox", { name: "Frame" }))
     expect(fieldsWidget(currentForm(), "w_boxes")).toMatchObject({ labels: "beside", density: "compact", frame: false })
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(12)
+  })
+
+  it("sets a Table's text, its header, its lines and its frame as a spreadsheet's are set, each one undo step", () => {
+    select("w_grid")
+    render(<PropertiesPanel />)
+    showPane("Display")
+    const region = (name: string) => screen.getByRole("region", { name })
+
+    const size = within(region("Look")).getByRole("combobox", { name: "Text size" })
+    expect(choices(size).map(([value]) => value)).toEqual(["10", "11", "12", "13", "14", "16", "18"])
+    expect(size).toHaveValue("12")
+    fireEvent.change(size, { target: { value: "14" } })
+
+    // The header's size is its text's until one is chosen; its labels turn three ways.
+    const header = region("Header")
+    const headerSize = within(header).getByRole("combobox", { name: "Size" })
+    expect(headerSize).toHaveValue("auto")
+    fireEvent.change(headerSize, { target: { value: "16" } })
+    const direction = within(header).getByRole("combobox", { name: "Direction" })
+    expect(choices(direction)).toEqual([
+      ["horizontal", "Horizontal"],
+      ["up", "Rotated up"],
+      ["down", "Rotated down"],
+      ["stacked", "Stacked"],
+    ])
+    fireEvent.change(direction, { target: { value: "up" } })
+    fireEvent.click(within(header).getByRole("button", { name: "Colour #4B5563 for the header's fill" }))
+    fireEvent.click(within(header).getByRole("button", { name: "Colour #FFFFFF for the header's font" }))
+    fireEvent.click(within(header).getByRole("checkbox", { name: "Bold" }))
+    fireEvent.click(within(header).getByRole("checkbox", { name: "Wrap" }))
+
+    const lines = region("Lines")
+    expect(choices(within(lines).getByRole("combobox", { name: "Style" }))).toEqual([
+      ["solid", "Solid"],
+      ["dashed", "Dashed"],
+      ["dotted", "Dotted"],
+    ])
+    fireEvent.change(within(lines).getByRole("combobox", { name: "Style" }), { target: { value: "dashed" } })
+    fireEvent.change(within(lines).getByRole("combobox", { name: "Weight" }), { target: { value: "medium" } })
+    fireEvent.click(within(lines).getByRole("button", { name: "Colour #000000 for the lines" }))
+
+    // The frame's weight and colour while it is framed.
+    const frame = region("Frame")
+    fireEvent.change(within(frame).getByRole("combobox", { name: "Weight" }), { target: { value: "thick" } })
+    fireEvent.click(within(frame).getByRole("button", { name: "Colour #000000 for the frame" }))
+    expect(grid()).toMatchObject({
+      font_size: 14,
+      header_font_size: 16,
+      header_orientation: "up",
+      header_color: "#4B5563",
+      header_font_color: "#FFFFFF",
+      header_bold: false,
+      header_wrap: true,
+      grid_style: "dashed",
+      grid_weight: "medium",
+      grid_color: "#000000",
+      frame_weight: "thick",
+      frame_color: "#000000",
+    })
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(12)
+
+    fireEvent.change(headerSize, { target: { value: "auto" } })
+    expect(grid()).toMatchObject({ header_font_size: null })
+    fireEvent.click(within(lines).getByRole("button", { name: "Automatic colour for the lines" }))
+    expect(grid()).toMatchObject({ grid_color: null })
+    fireEvent.click(within(frame).getByRole("checkbox", { name: "Frame" }))
+    expect(within(frame).queryByRole("combobox", { name: "Weight" })).not.toBeInTheDocument()
+    expect(within(frame).queryByRole("button", { name: "Automatic colour for the frame" })).not.toBeInTheDocument()
+  })
+
+  it("gives a Table's column a look of its own from its Columns, each one undo step, and clears it", () => {
+    select("w_grid")
+    const { rerender } = render(<PropertiesPanel />)
+    showPane("Display")
+    const columns = screen.getByRole("region", { name: "Columns" })
+    const columnButton = (name: string | RegExp) => within(columns).getByRole("button", { name })
+    const looks = () => (grid() as Extract<ReturnType<typeof grid>, { type: "tableInput" }>).column_looks
+
+    // Its columns in its order, each closed.
+    expect(within(columns).getAllByRole("button", { expanded: false }).map((button) => button.textContent)).toEqual(["Item", "Value"])
+    fireEvent.click(columnButton("Item"))
+    const item = within(columns).getByRole("group", { name: "Item's look" })
+    expect(columnButton("Item")).toHaveAttribute("aria-expanded", "true")
+    expect(within(item).queryByRole("button", { name: "Clear" })).not.toBeInTheDocument()
+
+    fireEvent.click(within(item).getByRole("button", { name: "Colour #2563EB for Item's header fill" }))
+    fireEvent.click(within(item).getByRole("button", { name: "Colour #FFFFFF for Item's header font" }))
+    fireEvent.click(within(item).getByRole("button", { name: "Colour #D1D5DB for Item's fill" }))
+    fireEvent.click(within(item).getByRole("button", { name: "Colour #000000 for Item's font" }))
+    const align = within(item).getByRole("combobox", { name: "Align" })
+    expect(choices(align)).toEqual([
+      ["auto", "Auto"],
+      ["left", "Left"],
+      ["center", "Centre"],
+      ["right", "Right"],
+    ])
+    fireEvent.change(align, { target: { value: "center" } })
+    fireEvent.click(within(item).getByRole("checkbox", { name: "Bold" }))
+
+    // A width is a whole number of pixels from 24 to 1000, blank for as wide as the grid makes it.
+    const width = screen.getByTestId("column-width-equipment:equipment.item")
+    expect(width).toHaveAttribute("placeholder", "Auto")
+    fireEvent.change(width, { target: { value: "10" } })
+    fireEvent.blur(width)
+    expect(screen.getByTestId("column-width-equipment:equipment.item-error")).toHaveTextContent("Enter a whole number from 24 to 1000.")
+    fireEvent.change(width, { target: { value: "120" } })
+    fireEvent.blur(width)
+    expect(looks()).toEqual([
+      {
+        table: "equipment",
+        column: "equipment.item",
+        header_color: "#2563EB",
+        header_font_color: "#FFFFFF",
+        cell_color: "#D1D5DB",
+        font_color: "#000000",
+        bold: true,
+        align: "center",
+        width: 120,
+      },
+    ])
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(7)
+    // Marked in the list as having a look of its own.
+    expect(columnButton("Item, has a look of its own")).toBeInTheDocument()
+    expect(columnButton("Value")).toBeInTheDocument()
+
+    fireEvent.change(width, { target: { value: "" } })
+    fireEvent.blur(width)
+    expect(looks()[0].width).toBeNull()
+
+    // Transposed, a column has no width.
+    act(() => useWorkbenchFormStore.getState().change((spec) => updateWidget(spec, "w_grid", { transposed: true })))
+    rerender(<PropertiesPanel />)
+    expect(screen.queryByTestId("column-width-equipment:equipment.item")).not.toBeInTheDocument()
+
+    fireEvent.click(within(item).getByRole("button", { name: "Clear" }))
+    expect(looks()).toEqual([])
+    expect(columnButton("Item")).toBeInTheDocument()
+    expect(within(item).queryByRole("button", { name: "Clear" })).not.toBeInTheDocument()
   })
 
   it("sets a Chart's type, what labels its rows, its legend, stacked, horizontal and data labels, each one undo step", () => {

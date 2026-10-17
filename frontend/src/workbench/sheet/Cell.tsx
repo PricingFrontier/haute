@@ -1,6 +1,6 @@
 /** An input cell on a sheet, the control its column's type calls for, and a field's label (specs/workbench). */
 import { Info } from "lucide-react"
-import { useState } from "react"
+import { type CSSProperties, useState } from "react"
 import { CommittedTextField, INPUT_STYLE } from "../../components/form"
 import { formattedNumber } from "../../utils/sheetValues"
 import { type SampleValue } from "../../utils/workbenchForm"
@@ -37,6 +37,7 @@ export function Cell({
   height,
   boxed,
   colours,
+  textStyle,
   problem,
   disabled,
 }: {
@@ -50,6 +51,8 @@ export function Cell({
   boxed: boolean
   /** The sheets' colours: its text's and, in a box, the box's fill and border; a grid's cell takes the fill of the cell it is in. */
   colours: SheetColours
+  /** How its value's text is set, in a Table: its size, its weight and where it sits across the cell. */
+  textStyle?: CSSProperties
   /** What breaks the column's rules in the value, or null. */
   problem: string | null
   /** The value shows but takes no typing: the quote is read only. */
@@ -63,6 +66,7 @@ export function Cell({
     ...(boxed ? { ...INPUT_STYLE, border: `1px solid ${colours.frame}` } : {}),
     ...(boxed && colours.input !== null ? { background: colours.input } : {}),
     ...(colours.font === null ? {} : { color: colours.font }),
+    ...textStyle,
     ...(problem === null ? {} : PROBLEM_STYLE),
   }
   // A required column's cell says so to a screen reader, as its label's mark does on the

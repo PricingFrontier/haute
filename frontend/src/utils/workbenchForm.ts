@@ -5,7 +5,7 @@
  * pipeline's tables or a sheet, a section or a component showing what it should. Each
  * operation returns a new form and leaves its input untouched.
  */
-import type { ChartWidget, Condition, FieldRef, FormSchema, FormSpec, HeadingWidget, Page, SchemaColumn, SchemaTable, Section, ShowWhen, Theme } from "../api/types"
+import type { ChartWidget, ColumnLook, Condition, FieldRef, FormSchema, FormSpec, HeadingWidget, Page, SchemaColumn, SchemaTable, Section, ShowWhen, Theme } from "../api/types"
 import { ASCII_IDENTIFIER_RE, apiInputLabelIssue, apiInputLabelIssueMessage } from "./apiInputPorts"
 import { PYTHON_KEYWORDS } from "./globalConstants"
 import {
@@ -33,13 +33,37 @@ export type FieldsWidget = Exclude<Widget, HeadingWidget>
 export type ColumnType = SchemaColumn["type"]
 /**
  * How a Table's grid looks, whether its rows are fixed: no Add row and no delete, whether it
- * is transposed: its fields down its side, its rows across, and whether its fields' schema
- * groups head their labels.
+ * is transposed: its fields down its side, its rows across, whether its fields' schema
+ * groups head their labels, its text, its header, its lines and its frame, and its columns'
+ * own looks.
  */
 export type TableOptions = Pick<
   Extract<Widget, { type: "tableInput" }>,
-  "row_numbers" | "density" | "gridlines" | "striped" | "fixed_rows" | "header" | "frame" | "transposed" | "groups"
+  | "row_numbers"
+  | "density"
+  | "gridlines"
+  | "striped"
+  | "fixed_rows"
+  | "header"
+  | "frame"
+  | "transposed"
+  | "groups"
+  | "font_size"
+  | "header_font_size"
+  | "header_bold"
+  | "header_wrap"
+  | "header_orientation"
+  | "header_color"
+  | "header_font_color"
+  | "grid_color"
+  | "grid_weight"
+  | "grid_style"
+  | "frame_color"
+  | "frame_weight"
+  | "column_looks"
 >
+/** How one of a Table's columns looks: a `ColumnLook` without the field it is for. */
+export type ColumnLookOptions = Omit<ColumnLook, "table" | "column">
 /** How a Collection's boxes look, and the gaps among them. */
 export type CollectionOptions = Pick<Extract<Widget, { type: "collection" }>, "labels" | "density" | "frame" | "spacers">
 /** A place in a component's order: one of its fields, or one of a Collection's spacers. */
@@ -590,7 +614,12 @@ function fieldsWidgetOf(spec: FormSpec, id: string): FieldsWidget {
   return widget
 }
 
-/** A new Table's options: numbered, compact, lined between rows, striped, not fixed, its header as written, framed, not transposed and without groups. */
+/**
+ * A new Table's options: numbered, compact, lined between rows, striped, not fixed, its
+ * header as written, framed, not transposed and without groups; 12px text, its header's
+ * the same size, bold, level, unwrapped and in the theme's colours, thin solid gridlines and
+ * a thin frame in the theme's colours, and no column with a look of its own.
+ */
 export const TABLE_OPTIONS: Readonly<TableOptions> = {
   row_numbers: true,
   density: "compact",
@@ -601,7 +630,73 @@ export const TABLE_OPTIONS: Readonly<TableOptions> = {
   frame: true,
   transposed: false,
   groups: false,
+  font_size: 12,
+  header_font_size: null,
+  header_bold: true,
+  header_wrap: false,
+  header_orientation: "horizontal",
+  header_color: null,
+  header_font_color: null,
+  grid_color: null,
+  grid_weight: "thin",
+  grid_style: "solid",
+  frame_color: null,
+  frame_weight: "thin",
+  column_looks: [],
 }
+
+/** A Table column's look before any is given: the Table's own colours, bold off, placed as its type puts it and as wide as the grid makes it. */
+export const PLAIN_COLUMN_LOOK: Readonly<ColumnLookOptions> = {
+  header_color: null,
+  header_font_color: null,
+  cell_color: null,
+  font_color: null,
+  bold: false,
+  align: "auto",
+  width: null,
+}
+
+/**
+ * How narrow and how wide a Table's column can be set, in pixels, as the server's form
+ * takes them (`COLUMN_WIDTH_MIN` and `COLUMN_WIDTH_MAX` in `src/haute/_workbench_form.py`).
+ */
+export const COLUMN_WIDTH_MIN = 24
+export const COLUMN_WIDTH_MAX = 1000
+
+/** The look of a Table's column, its field's: its own, or the plain one while it has none. */
+export const columnLook = (widget: Pick<TableOptions, "column_looks">, field: FieldRef): ColumnLookOptions => {
+  const look = widget.column_looks.find((at) => at.table === field.table && at.column === field.column)
+  if (look === undefined) return PLAIN_COLUMN_LOOK
+  const { table: _table, column: _column, ...options } = look
+  return options
+}
+
+/** Whether a column look changes nothing, so no Table holds it. */
+const plainLook = (look: ColumnLookOptions): boolean =>
+  (Object.keys(PLAIN_COLUMN_LOOK) as (keyof ColumnLookOptions)[]).every((key) => look[key] === PLAIN_COLUMN_LOOK[key])
+
+/**
+ * The form with a Table's column, one it shows, looking as `patch` says over its look as it
+ * was; a look that comes to change nothing is taken away, as `clear` takes it away whatever
+ * it holds. A new look goes after the others, in the file's order.
+ */
+export const setColumnLook = (spec: FormSpec, widgetId: string, field: FieldRef, patch: Partial<ColumnLookOptions> | "clear"): FormSpec =>
+  edit(spec, (draft) => {
+    const widget = widgetOf(draft, widgetId)
+    if (widget.type !== "tableInput") throw new Error("Only a Table has column looks")
+    if (!widget.fields.some((shown) => shown.table === field.table && shown.column === field.column)) {
+      throw new Error(`The Table does not show ${field.table}.${field.column}`)
+    }
+    const at = widget.column_looks.findIndex((look) => look.table === field.table && look.column === field.column)
+    const next = patch === "clear" ? PLAIN_COLUMN_LOOK : { ...columnLook(widget, field), ...patch }
+    if (plainLook(next)) {
+      if (at >= 0) widget.column_looks.splice(at, 1)
+      return
+    }
+    const look: ColumnLook = { table: field.table, column: field.column, ...next }
+    if (at >= 0) widget.column_looks[at] = look
+    else widget.column_looks.push(look)
+  })
 
 /** A new Collection's options: its labels above its boxes, comfortable, framed and with no spacers among them. */
 export const COLLECTION_OPTIONS: Readonly<CollectionOptions> = { labels: "above", density: "comfortable", frame: true, spacers: [] }
@@ -633,7 +728,8 @@ export function createWidget(type: WidgetType, rect: Rect): Widget {
     case "chart":
       return { ...placed, type, ...showing, ...CHART_OPTIONS }
     case "tableInput":
-      return { ...placed, type, ...showing, rows: 3, ...TABLE_OPTIONS }
+      // Column looks of its own, not the options' one list.
+      return { ...placed, type, ...showing, rows: 3, ...TABLE_OPTIONS, column_looks: [] }
     case "heading":
       return { ...placed, type, text: "", description: "", show_when: alwaysShown(), ...HEADING_OPTIONS }
   }
@@ -921,6 +1017,10 @@ function setOrder(widget: FieldsWidget, items: readonly OrderItem[]): void {
   }
   widget.fields = fields
   if (widget.type === "collection") widget.spacers = fields.length === 0 ? [] : spacers
+  // A column the Table stops showing loses its look.
+  if (widget.type === "tableInput") {
+    widget.column_looks = widget.column_looks.filter((look) => fields.some((field) => field.table === look.table && field.column === look.column))
+  }
 }
 
 /** The Collection with `id`: only a Collection has spacers. */

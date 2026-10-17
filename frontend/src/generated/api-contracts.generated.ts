@@ -2562,17 +2562,31 @@ export interface Condition {
   values: string[];
 }
 /**
- * A Table: a grid showing columns of many-row schema tables.
+ * A Table: a grid showing columns of many-row schema tables, each of its columns given
+ * a look of its own looking as its ``column_looks`` entry says.
  */
 export interface TableInputWidget {
+  column_looks: ColumnLook[];
   density: 'compact' | 'comfortable';
   fields: FieldRef[];
   fixed_rows: boolean;
+  font_size: 10 | 11 | 12 | 13 | 14 | 16 | 18;
   frame: boolean;
+  frame_color: string | null;
+  frame_weight: 'thin' | 'medium' | 'thick';
+  grid_color: string | null;
+  grid_style: 'solid' | 'dashed' | 'dotted';
+  grid_weight: 'thin' | 'medium' | 'thick';
   gridlines: 'rows' | 'all' | 'none';
   groups: boolean;
   h: number;
   header: 'caps' | 'plain';
+  header_bold: boolean;
+  header_color: string | null;
+  header_font_color: string | null;
+  header_font_size: 10 | 11 | 12 | 13 | 14 | 16 | 18 | null;
+  header_orientation: 'horizontal' | 'up' | 'down' | 'stacked';
+  header_wrap: boolean;
   id: string;
   row_numbers: boolean;
   rows: number;
@@ -2584,6 +2598,22 @@ export interface TableInputWidget {
   w: number;
   x: number;
   y: number;
+}
+/**
+ * How one of a Table's columns looks, its field by table and column id: each colour the
+ * Table's own while None, its values and label placed as its type puts them while ``auto``,
+ * and as wide as the grid makes it while ``width`` is None.
+ */
+export interface ColumnLook {
+  align: 'auto' | 'left' | 'center' | 'right';
+  bold: boolean;
+  cell_color: string | null;
+  column: string;
+  font_color: string | null;
+  header_color: string | null;
+  header_font_color: string | null;
+  table: string;
+  width: number | null;
 }
 /**
  * A schema column a widget shows, by table and column id, so a rename keeps it.

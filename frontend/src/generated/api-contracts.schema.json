@@ -854,6 +854,115 @@
       "title": "ColumnInfo",
       "type": "object"
     },
+    "ColumnLook": {
+      "additionalProperties": false,
+      "description": "How one of a Table's columns looks, its field by table and column id: each colour the\nTable's own while None, its values and label placed as its type puts them while ``auto``,\nand as wide as the grid makes it while ``width`` is None.",
+      "properties": {
+        "align": {
+          "default": "auto",
+          "enum": [
+            "auto",
+            "left",
+            "center",
+            "right"
+          ],
+          "title": "Align",
+          "type": "string"
+        },
+        "bold": {
+          "default": false,
+          "title": "Bold",
+          "type": "boolean"
+        },
+        "cell_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cell Color"
+        },
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "font_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Font Color"
+        },
+        "header_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Header Color"
+        },
+        "header_font_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Header Font Color"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        },
+        "width": {
+          "anyOf": [
+            {
+              "maximum": 1000,
+              "minimum": 24,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Width"
+        }
+      },
+      "required": [
+        "table",
+        "column",
+        "header_color",
+        "header_font_color",
+        "cell_color",
+        "font_color",
+        "bold",
+        "align",
+        "width"
+      ],
+      "title": "ColumnLook",
+      "type": "object"
+    },
     "Condition": {
       "additionalProperties": false,
       "description": "A test of a schema column's value, the column by table and column id.\n\nThe shape is all the file holds a condition to. Whether its column, test and values\nfit one another is ``haute._workbench_visibility.condition_fits``'s question, asked\nwhere conditions are tested: retyping a column can unfit a condition the form holds.",
@@ -13021,8 +13130,15 @@
     },
     "TableInputWidget": {
       "additionalProperties": false,
-      "description": "A Table: a grid showing columns of many-row schema tables.",
+      "description": "A Table: a grid showing columns of many-row schema tables, each of its columns given\na look of its own looking as its ``column_looks`` entry says.",
       "properties": {
+        "column_looks": {
+          "items": {
+            "$ref": "#/$defs/ColumnLook"
+          },
+          "title": "Column Looks",
+          "type": "array"
+        },
         "density": {
           "default": "compact",
           "enum": [
@@ -13044,10 +13160,80 @@
           "title": "Fixed Rows",
           "type": "boolean"
         },
+        "font_size": {
+          "default": 12,
+          "enum": [
+            10,
+            11,
+            12,
+            13,
+            14,
+            16,
+            18
+          ],
+          "title": "Font Size",
+          "type": "integer"
+        },
         "frame": {
           "default": true,
           "title": "Frame",
           "type": "boolean"
+        },
+        "frame_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Frame Color"
+        },
+        "frame_weight": {
+          "default": "thin",
+          "enum": [
+            "thin",
+            "medium",
+            "thick"
+          ],
+          "title": "Frame Weight",
+          "type": "string"
+        },
+        "grid_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grid Color"
+        },
+        "grid_style": {
+          "default": "solid",
+          "enum": [
+            "solid",
+            "dashed",
+            "dotted"
+          ],
+          "title": "Grid Style",
+          "type": "string"
+        },
+        "grid_weight": {
+          "default": "thin",
+          "enum": [
+            "thin",
+            "medium",
+            "thick"
+          ],
+          "title": "Grid Weight",
+          "type": "string"
         },
         "gridlines": {
           "default": "rows",
@@ -13077,6 +13263,74 @@
           ],
           "title": "Header",
           "type": "string"
+        },
+        "header_bold": {
+          "default": true,
+          "title": "Header Bold",
+          "type": "boolean"
+        },
+        "header_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Header Color"
+        },
+        "header_font_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Header Font Color"
+        },
+        "header_font_size": {
+          "anyOf": [
+            {
+              "enum": [
+                10,
+                11,
+                12,
+                13,
+                14,
+                16,
+                18
+              ],
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Header Font Size"
+        },
+        "header_orientation": {
+          "default": "horizontal",
+          "enum": [
+            "horizontal",
+            "up",
+            "down",
+            "stacked"
+          ],
+          "title": "Header Orientation",
+          "type": "string"
+        },
+        "header_wrap": {
+          "default": false,
+          "title": "Header Wrap",
+          "type": "boolean"
         },
         "id": {
           "title": "Id",
@@ -13152,7 +13406,20 @@
         "header",
         "frame",
         "transposed",
-        "groups"
+        "groups",
+        "font_size",
+        "header_font_size",
+        "header_bold",
+        "header_wrap",
+        "header_orientation",
+        "header_color",
+        "header_font_color",
+        "grid_color",
+        "grid_weight",
+        "grid_style",
+        "frame_color",
+        "frame_weight",
+        "column_looks"
       ],
       "title": "TableInputWidget",
       "type": "object"

@@ -5,29 +5,15 @@ import useCollapsedSet from "../../hooks/useCollapsedSet"
 import PreviewPanelTabs, { type PreviewPanelTab } from "../../panels/PreviewPanelTabs"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { type WidgetPane } from "../../stores/useWorkbenchViewStore"
-import { chartGrain, COLLECTION_COLUMNS_MAX, fieldColumn, rowsShown, setTableRows, TABLE_ROWS_MAX, tableGrain, updateWidget, type CollectionOptions, type FieldsWidget, type TableOptions } from "../../utils/workbenchForm"
+import { chartGrain, COLLECTION_COLUMNS_MAX, fieldColumn, rowsShown, setTableRows, TABLE_ROWS_MAX, tableGrain, updateWidget, type CollectionOptions, type FieldsWidget } from "../../utils/workbenchForm"
 import ChartSettings from "../ChartSettings"
 import { ShowWhenEditor } from "../ShowWhenEditor"
 import { WIDGET_KINDS } from "../widgetKinds"
 import { FieldOrder } from "./FieldOrder"
 import { Section } from "./Section"
 import { TableFields } from "./TableFields"
-
-const DENSITIES: ReadonlyArray<{ value: TableOptions["density"]; label: string }> = [
-  { value: "compact", label: "Compact" },
-  { value: "comfortable", label: "Comfortable" },
-]
-
-const GRIDLINES: ReadonlyArray<{ value: TableOptions["gridlines"]; label: string }> = [
-  { value: "rows", label: "Between rows" },
-  { value: "all", label: "Full grid" },
-  { value: "none", label: "None" },
-]
-
-const HEADERS: ReadonlyArray<{ value: TableOptions["header"]; label: string }> = [
-  { value: "plain", label: "As written" },
-  { value: "caps", label: "Capitals" },
-]
+import { DENSITIES } from "./lookChoices"
+import { TableLook } from "./TableLook"
 
 const LABEL_PLACES: ReadonlyArray<{ value: CollectionOptions["labels"]; label: string }> = [
   { value: "above", label: "Above" },
@@ -143,29 +129,7 @@ export function FieldsSettings({ form, widget }: { form: FormSpec; widget: Field
             )}
           </Section>
         )}
-        {shows("display") && widget.type === "tableInput" && widget.fields.length > 0 && (
-          <Section title="Look">
-            <SelectRow label="Density" value={widget.density} choices={DENSITIES} onChange={(density) => change((spec) => updateWidget(spec, widget.id, { density }))} />
-            <SelectRow label="Gridlines" value={widget.gridlines} choices={GRIDLINES} onChange={(gridlines) => change((spec) => updateWidget(spec, widget.id, { gridlines }))} />
-            <SelectRow label="Header" value={widget.header} choices={HEADERS} onChange={(header) => change((spec) => updateWidget(spec, widget.id, { header }))} />
-            <LabelledRow>
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                <ConfigCheckbox
-                  label="Row numbers"
-                  checked={widget.row_numbers}
-                  onChange={(row_numbers) => change((spec) => updateWidget(spec, widget.id, { row_numbers }))}
-                />
-                <ConfigCheckbox label="Groups" checked={widget.groups} onChange={(groups) => change((spec) => updateWidget(spec, widget.id, { groups }))} />
-                <ConfigCheckbox
-                  label="Striped rows"
-                  checked={widget.striped}
-                  onChange={(striped) => change((spec) => updateWidget(spec, widget.id, { striped }))}
-                />
-                <ConfigCheckbox label="Frame" checked={widget.frame} onChange={(frame) => change((spec) => updateWidget(spec, widget.id, { frame }))} />
-              </div>
-            </LabelledRow>
-          </Section>
-        )}
+        {shows("display") && widget.type === "tableInput" && widget.fields.length > 0 && <TableLook form={form} widget={widget} />}
         {shows("display") && widget.type === "collection" && widget.fields.length > 0 && (
           <Section title="Look">
             <SelectRow label="Labels" value={widget.labels} choices={LABEL_PLACES} onChange={(labels) => change((spec) => updateWidget(spec, widget.id, { labels }))} />

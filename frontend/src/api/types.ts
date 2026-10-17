@@ -536,6 +536,7 @@ export type {
 export type {
   ChartWidget,
   CollectionWidget,
+  ColumnLook,
   Condition,
   FieldRef,
   FormSchema,

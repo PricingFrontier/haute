@@ -1,17 +1,38 @@
-/** A Table on a sheet: its fields as a grid of rows, or on its side, with its groups (specs/workbench). */
+/** A Table on a sheet: its fields as a grid of rows, or on its side, with its groups, drawn as its look says (specs/workbench). */
 import { Plus, Trash2 } from "lucide-react"
 import { type CSSProperties } from "react"
 import { cellKey, formattedNumber, presetColumn } from "../../utils/sheetValues"
 import { columnKey } from "../../utils/sheetVisibility"
-import { answeredOutputs, gridInputTables, linedUpOutputs, padRows, withCell, type SampleValue, type ShownField, type TableOptions } from "../../utils/workbenchForm"
+import {
+  PLAIN_COLUMN_LOOK,
+  answeredOutputs,
+  gridInputTables,
+  linedUpOutputs,
+  padRows,
+  withCell,
+  type ColumnLookOptions,
+  type SampleValue,
+  type ShownField,
+  type TableOptions,
+} from "../../utils/workbenchForm"
 import { isNumeric } from "../columnTypes"
 import { useSheetValues } from "../useSheetValues"
 import { Cell, FieldLabel } from "./Cell"
-import { type Fillable, type Found, ROW_HEIGHT, fieldLabel, fieldTitle, fillable, labelColor, shown, typeHere } from "./fieldCells"
+import { type Fillable, type Found, LINE_WIDTH, ROW_HEIGHT, fieldLabel, fieldTitle, fillable, labelColor, shown, typeHere } from "./fieldCells"
 import { type SheetColours } from "./sheetColours"
 
 /** How wide a transposed grid's column of groups is, so its labels stay in view beside it. */
 const GROUP_COLUMN_WIDTH = 96
+
+/** How a turned label's letters run: up the column, down it, or upright one under another. */
+const TURNS: Record<Exclude<TableOptions["header_orientation"], "horizontal">, CSSProperties> = {
+  up: { writingMode: "vertical-rl", transform: "rotate(180deg)" },
+  down: { writingMode: "vertical-rl" },
+  stacked: { writingMode: "vertical-rl", textOrientation: "upright" },
+}
+
+/** How long a turned label that wraps runs before it starts another line beside it. */
+const TURNED_WRAP_LENGTH = 128
 
 /** A grid's fields under their schema groups, in order: each run of fields side by side in one group, and each field in none alone. */
 function groupRuns(fields: ShownField[]): { group: string; start: number; size: number }[] {
@@ -50,6 +71,16 @@ function groupRuns(fields: ShownField[]): { group: string; start: number; size: 
  * groups, while a field it shows is in one, each run of fields side by side in a schema
  * group is headed by one cell naming it, over their labels, or beside them when
  * transposed (`groupRuns`).
+ *
+ * Its look, as a spreadsheet's is set: its text's size; its labels' size, weight, fill,
+ * colour, wrapping and turn, the turned ones read upwards, downwards or stacked and sitting
+ * at the foot of the header; its lines' colour and weight, which its gridlines, the rule
+ * under its header, the line before an output and a group's rule all take, and its
+ * gridlines' style, the rules staying solid; and each column's own look, its label's fill
+ * and colour, its cells' fill, colour and weight, where its label and values sit across it
+ * and, unless transposed, its width. A colour it sets is drawn over the theme's, and a
+ * column's over the Table's; a column's fill hides the stripes and the output shade in its
+ * cells. Transposed, a column's look is its field's line, its label the line's label.
  */
 export function FieldGrid({
   fields,
@@ -103,33 +134,79 @@ export function FieldGrid({
   // Rows are not added or deleted in a grid of fixed rows, of rows a column gives or of no input table, or while the values are read only.
   const fixed = options.fixed_rows || given || readOnly || inputTables.length === 0
   const height = ROW_HEIGHT[options.density]
+  // Its lines, in its own colour while it sets one, else the theme's, else each line's own:
+  // the gridlines in their style, the rules solid.
+  const weight = LINE_WIDTH[options.grid_weight]
+  const gridColour = options.grid_color ?? colours.gridline
+  const ruleColour = options.grid_color ?? colours.headRule
+  const gridLine = `${weight}px ${options.grid_style} ${gridColour}`
+  const outputLine = `${weight}px solid ${options.grid_color ?? colours.frame}`
   // The line before a field's column: an output's, and every column's in a full grid; none
   // without gridlines, or at the grid's left edge.
   const ruleBefore = (found: Found, position: number): string | undefined => {
     if (gridlines === "none" || (position === 0 && !numbered)) return undefined
-    if (found?.table.role === "output") return `1px solid ${colours.frame}`
-    return gridlines === "all" ? `1px solid ${colours.gridline}` : undefined
+    if (found?.table.role === "output") return outputLine
+    return gridlines === "all" ? gridLine : undefined
   }
   // Transposed, the line above a field's line: an output's, but for the first, under the
   // header or at the grid's top edge; the lines between fields are the rows' as drawn.
   const ruleAbove = (found: Found, position: number): string | undefined =>
-    gridlines === "none" || position === 0 || found?.table.role !== "output" ? undefined : `1px solid ${colours.frame}`
+    gridlines === "none" || position === 0 || found?.table.role !== "output" ? undefined : outputLine
   // Transposed, the line before a row's column in a full grid, but for the first, after the labels.
-  const columnLine = (row: number): string | undefined => (gridlines === "all" && row > 0 ? `1px solid ${colours.gridline}` : undefined)
-  const rowLine = gridlines === "none" ? undefined : `1px solid ${colours.gridline}`
+  const columnLine = (row: number): string | undefined => (gridlines === "all" && row > 0 ? gridLine : undefined)
+  const rowLine = gridlines === "none" ? undefined : gridLine
   const rowClass = `transition-colors ${striped ? "even:bg-[var(--chip-rest)] " : ""}hover:bg-[var(--bg-hover)]`
-  const headRule = `1px solid ${colours.headRule}`
-  const headFill = (options.frame ? colours.componentFill : colours.sheetFill) ?? "var(--bg-elevated)"
-  const headText = options.header === "caps" ? "text-[11px] tracking-wider uppercase" : "text-xs"
+  const headRule = `${weight}px solid ${ruleColour}`
+  const headFill = options.header_color ?? (options.frame ? colours.componentFill : colours.sheetFill) ?? "var(--bg-elevated)"
+  // Its labels: as large as its text, or a pixel smaller in capitals, unless it sets their size.
+  const caps = options.header === "caps"
+  const headText = caps ? "tracking-wider uppercase" : ""
+  const headStyle: CSSProperties = {
+    fontSize: options.header_font_size ?? (caps ? options.font_size - 1 : options.font_size),
+    fontWeight: options.header_bold ? 600 : 400,
+  }
+  const wrap = options.header_wrap
+  const turn = options.header_orientation === "horizontal" ? null : TURNS[options.header_orientation]
   // A rule along the inner edge of a header that stays in view is its cells' shadow: a table's
   // own border there stays behind as the grid scrolls under it.
-  const ruleUnder = `inset 0 -1px 0 ${colours.headRule}`
+  const ruleUnder = `inset 0 -${weight}px 0 ${ruleColour}`
   // The fields under their groups, while it shows them and a field it shows is in one.
   const runs = options.groups && fields.some(({ found }) => (found?.column.group ?? "") !== "") ? groupRuns(fields) : null
-  const groupColour = colours.font ?? "var(--text-secondary)"
+  const groupColour = options.header_font_color ?? colours.font ?? "var(--text-secondary)"
+  // Each column's own look, by its field's key, or the plain one.
+  const looks = new Map(options.column_looks.map((look) => [`${look.table}:${look.column}`, look]))
+  const lookOf = (key: string): ColumnLookOptions => looks.get(key) ?? PLAIN_COLUMN_LOOK
+  // Every column set to a width: the grid is as wide as they are, not its frame.
+  const sized = !transposed && fields.length > 0 && fields.every(({ key }) => lookOf(key).width !== null)
+  // A column of a set width, unless transposed: exactly that wide.
+  const widthOf = (look: ColumnLookOptions): CSSProperties =>
+    transposed || look.width === null ? {} : { width: look.width, minWidth: look.width, maxWidth: look.width }
+  // A field's label colour: the column's, else the Table's, else the theme's or its role's; amber while it is gone.
+  const labelColour = (found: Found, look: ColumnLookOptions): string =>
+    found === null ? labelColor(found, null) : (look.header_font_color ?? options.header_font_color ?? labelColor(found, colours.font))
+  // A field's label, turned as the header says: a turned label wraps only past a set length.
+  const labelText = (found: Found) =>
+    turn === null ? (
+      <FieldLabel found={found} />
+    ) : (
+      <span
+        className="inline-block text-left"
+        style={{ ...turn, whiteSpace: wrap ? "normal" : "nowrap", maxHeight: wrap ? TURNED_WRAP_LENGTH : undefined }}
+      >
+        <FieldLabel found={found} />
+      </span>
+    )
+  // How a value sits in its cell: the column's weight and place across it, and the Table's size.
+  const valueText = (look: ColumnLookOptions): CSSProperties => ({
+    fontSize: options.font_size,
+    ...(look.bold ? { fontWeight: 600 } : {}),
+    ...(look.align === "auto" ? {} : { textAlign: look.align }),
+  })
 
   /** A field's cell in one of the grid's rows, ruled as `rules` say: one in its line when transposed. */
   const valueCell = ({ key, found }: ShownField, row: number, rules: CSSProperties) => {
+    const look = lookOf(key)
+    const text = valueText(look)
     if (found !== null && presetColumn(found.table)?.id === found.column.id) {
       // The column giving its table's rows shows each row's value, and takes no typing.
       const value = held[found.table.id]?.[row]?.[found.column.id]
@@ -137,7 +214,7 @@ export function FieldGrid({
         <td
           key={transposed ? row : key}
           className={`${height} px-2.5 ${isNumeric(found.column.type) ? "text-right tabular-nums" : ""}`}
-          style={{ ...rules, color: colours.font ?? "var(--text-primary)" }}
+          style={{ ...rules, ...widthOf(look), ...text, background: look.cell_color ?? undefined, color: look.font_color ?? colours.font ?? "var(--text-primary)" }}
         >
           {typeof value === "string" ? (formattedNumber(found.column, value) ?? value) : null}
         </td>
@@ -149,7 +226,7 @@ export function FieldGrid({
         <td
           key={transposed ? row : key}
           className={`pointer-events-auto p-0 ${found.column.type === "bool" ? `${height} text-center` : ""}`}
-          style={{ ...rules, background: colours.input ?? undefined }}
+          style={{ ...rules, ...widthOf(look), ...(look.align === "auto" ? {} : { textAlign: look.align }), background: look.cell_color ?? colours.input ?? undefined }}
           onPointerDown={typeHere}
         >
           <Cell
@@ -159,7 +236,8 @@ export function FieldGrid({
             label={`${fieldLabel(found)} row ${row + 1}`}
             height={height}
             boxed={false}
-            colours={colours}
+            colours={look.font_color === null ? colours : { ...colours, font: look.font_color }}
+            textStyle={text}
             problem={problems[cellKey(found.table.id, at, found.column.id)] ?? null}
             disabled={readOnly || locked.has(columnKey(found.table.id, found.column.id))}
           />
@@ -176,8 +254,10 @@ export function FieldGrid({
         className={`${height} px-2.5 text-right tabular-nums transition-opacity`}
         style={{
           ...rules,
-          background: output ? (colours.output ?? "var(--workbench-output-cell-bg)") : undefined,
-          color: priced === undefined || priced === null ? "var(--text-secondary)" : (colours.font ?? "var(--text-primary)"),
+          ...widthOf(look),
+          ...text,
+          background: look.cell_color ?? (output ? (colours.output ?? "var(--workbench-output-cell-bg)") : undefined),
+          color: priced === undefined || priced === null ? "var(--text-secondary)" : (look.font_color ?? colours.font ?? "var(--text-primary)"),
           opacity: output && stale ? 0.5 : 1,
         }}
       >
@@ -205,12 +285,12 @@ export function FieldGrid({
   if (transposed) {
     // The labels stay in view as the rows scroll across, and the numbers as the fields scroll
     // down, the corner over both and all of them under the component's marks.
-    const ruleRight = `inset -1px 0 0 ${colours.headRule}`
-    const ruleLeft = `inset 1px 0 0 ${colours.headRule}`
+    const ruleRight = `inset -${weight}px 0 0 ${ruleColour}`
+    const ruleLeft = `inset ${weight}px 0 0 ${ruleColour}`
     return (
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="min-h-0 flex-1 overflow-auto">
-          <table className="w-full border-collapse text-xs">
+          <table className="w-full border-collapse" style={{ fontSize: options.font_size }}>
             {(numbered || !fixed) && (
               <thead>
                 <tr>
@@ -259,14 +339,16 @@ export function FieldGrid({
                 // A label in a group is ruled off from it on its own edge, so the label can
                 // overlap the group's column by a pixel and leave no seam as the rows scroll under.
                 const grouped = runs !== null && (field.found?.column.group ?? "") !== ""
+                const look = lookOf(field.key)
                 return (
                   <tr key={field.key} className={rowClass} style={{ borderBottom: rowLine }}>
                     {run !== undefined && (
                       <th
                         scope="row"
                         rowSpan={run.size}
-                        className={`sticky left-0 z-[1] px-2.5 text-left font-semibold [overflow-wrap:anywhere] ${headText}`}
+                        className={`sticky left-0 z-[1] px-2.5 text-left [overflow-wrap:anywhere] ${headText}`}
                         style={{
+                          ...headStyle,
                           // Its least width too, or a grid wider than its frame squeezes it.
                           width: GROUP_COLUMN_WIDTH,
                           minWidth: GROUP_COLUMN_WIDTH,
@@ -281,16 +363,25 @@ export function FieldGrid({
                     <th
                       scope="row"
                       title={fieldTitle(field.found)}
-                      className={`sticky z-[1] w-px px-2.5 text-left font-semibold whitespace-nowrap ${headText}`}
+                      className={`sticky z-[1] w-px px-2.5 ${turn === null ? (wrap ? "" : "whitespace-nowrap") : "py-1.5"} ${headText}`}
                       style={{
+                        ...headStyle,
                         left: runs === null ? 0 : GROUP_COLUMN_WIDTH - 1,
-                        background: headFill,
+                        textAlign: look.align === "auto" ? (turn === null ? "left" : "center") : look.align,
+                        background: look.header_color ?? headFill,
                         boxShadow: grouped ? `${ruleLeft}, ${ruleRight}` : ruleRight,
                         borderTop: above,
-                        color: labelColor(field.found, colours.font),
+                        color: labelColour(field.found, look),
                       }}
                     >
-                      <FieldLabel found={field.found} />
+                      {turn === null && wrap ? (
+                        // A level label that wraps does so past a set width, as the line's labels are as wide as the widest.
+                        <span className="block max-w-40 min-w-24 break-words">
+                          <FieldLabel found={field.found} />
+                        </span>
+                      ) : (
+                        labelText(field.found)
+                      )}
                     </th>
                     {Array.from({ length: count }, (_, row) => valueCell(field, row, { borderTop: above, borderLeft: columnLine(row) }))}
                     {!fixed && <td style={{ borderTop: above }} />}
@@ -307,12 +398,12 @@ export function FieldGrid({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-auto">
-        <table className="w-full border-collapse text-xs">
+        <table className={`border-collapse ${sized ? "w-max" : "w-full"}`} style={{ fontSize: options.font_size }}>
           <thead className="sticky top-0 z-10" style={{ background: headFill }}>
             {runs !== null && (
               // A group's name over its fields, ruled under it inside the cell's edges so
               // groups side by side stay apart whatever the gridlines.
-              <tr className={`font-semibold ${headText}`}>
+              <tr className={headText} style={headStyle}>
                 {numbered && <th />}
                 {runs.map(({ group, start, size }) => (
                   <th
@@ -332,23 +423,36 @@ export function FieldGrid({
                 {!fixed && <th />}
               </tr>
             )}
-            <tr className={`text-left font-semibold ${headText}`}>
+            <tr className={`text-left ${headText}`} style={headStyle}>
               {numbered && (
                 <th scope="col" className="h-7 w-8 px-2 text-center font-semibold" style={{ boxShadow: ruleUnder, color: "var(--text-disabled)" }}>
                   #
                 </th>
               )}
-              {fields.map(({ key, found }, position) => (
-                <th
-                  key={key}
-                  scope="col"
-                  title={fieldTitle(found)}
-                  className={`h-7 min-w-32 truncate px-2.5 ${found !== null && isNumeric(found.column.type) ? "text-right" : ""}`}
-                  style={{ boxShadow: ruleUnder, color: labelColor(found, colours.font), borderLeft: ruleBefore(found, position) }}
-                >
-                  <FieldLabel found={found} />
-                </th>
-              ))}
+              {fields.map(({ key, found }, position) => {
+                const look = lookOf(key)
+                // Level, it cuts off or wraps across its column; turned, it sits at the header's foot.
+                const shape = turn !== null ? "px-1.5 py-1.5 align-bottom" : wrap ? "px-2.5 py-1 break-words" : "truncate px-2.5"
+                const across = look.align !== "auto" ? look.align : turn !== null ? "center" : found !== null && isNumeric(found.column.type) ? "right" : undefined
+                return (
+                  <th
+                    key={key}
+                    scope="col"
+                    title={fieldTitle(found)}
+                    className={`h-7 ${look.width === null && turn === null ? "min-w-32" : ""} ${shape}`}
+                    style={{
+                      ...widthOf(look),
+                      textAlign: across,
+                      background: look.header_color ?? undefined,
+                      boxShadow: ruleUnder,
+                      color: labelColour(found, look),
+                      borderLeft: ruleBefore(found, position),
+                    }}
+                  >
+                    {labelText(found)}
+                  </th>
+                )
+              })}
               {!fixed && <th className="w-8" style={{ boxShadow: ruleUnder }} />}
             </tr>
           </thead>

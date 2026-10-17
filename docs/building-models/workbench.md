@@ -189,9 +189,8 @@ sheets show, Preview and the underwriter app included.
 Select a component to open its properties on the right: its title, when it shows (see
 [Showing sheets, sections and components conditionally](#showing-sheets-sections-and-components-conditionally)), its layout (the rows a
 Table starts with, whether they are **fixed**, with no Add row or delete, and whether it is
-**transposed**, or a Collection's columns across), a Table's **look** (compact or comfortable rows; gridlines between the rows, a full
-grid or none; a header as written or in capitals; row numbers; **groups**; striped rows;
-a frame or none), a Collection's **look** (labels above or beside the boxes; compact or comfortable
+**transposed**, or a Collection's columns across), a Table's **look** (see
+[A Table's look](#a-tables-look)), a Collection's **look** (labels above or beside the boxes; compact or comfortable
 boxes; a frame or none), the **order** of the fields it shows (drag, or
 Alt+Up and Alt+Down), and its **fields**, ticked from the schema tables of its kind. A
 Chart's settings are its **Type** (Column, Line, Area or Pie), **Rows** (what labels the
@@ -260,6 +259,39 @@ settings mark on the showing tab opens the sheet's own panel (its title, when it
 and its width). **Delete sheet** at the foot of that panel deletes the sheet once you
 confirm it in the box that opens, which says how many components go with it; the schema
 and the sample stay, and Ctrl+Z brings the sheet back. The last sheet cannot be deleted.
+
+### A Table's look
+
+A Table's **Display** pane sets its look much as you would format a range in Excel. Any
+colour you leave on **Automatic** follows the sheets' colours from **Display** in the
+toolbar; a colour you set on a Table, or on one of its columns, is drawn over them.
+
+- **Look**: compact or comfortable rows, the **Text size** of its values, and row
+  numbers, **groups** and striped rows.
+- **Header**: labels **As written** or in **Capitals**, their **Size** (**Auto** is the
+  values' size, a pixel smaller in capitals), their **Direction**, a **Fill** and **Font**
+  colour for the whole header, **Bold**, and **Wrap**. **Rotated up** and **Rotated down**
+  turn the labels to run up or down their column, and **Stacked** puts their letters one
+  under another; turned labels sit at the foot of the header, so set narrow column widths
+  to fit more columns across. Wrapped labels break between words onto more lines rather
+  than being cut off; a turned label that wraps starts a new line beside itself. Group
+  names stay level.
+- **Lines**: which **Gridlines** to draw (between rows, a full grid or none), their
+  **Style** (solid, dashed or dotted), **Weight** (thin, medium or thick) and **Colour**.
+  The weight and colour also apply to the rule under the header and the line before the
+  output columns, which stay solid.
+- **Frame**: whether it is framed and, if so, the frame's **Weight** and **Colour** (the
+  rule under its title takes the colour too).
+- **Columns**: click a column to open its own look: its header's **Fill** and **Font**, its
+  cells' **Fill** and **Font**, **Align** (Auto puts numbers on the right), **Width** in
+  pixels (blank for Auto, from 24 to 1000) and **Bold**. **Clear** takes the column's look
+  away; a dot marks a column that has one. A column's fill covers the stripes and the
+  output shade in its cells. Once every column has a width, the grid is as wide as its
+  columns rather than its frame. When you stop showing a column, its look goes with it.
+
+On a transposed Table, a column's look applies along its field's line: its header colours
+on the line's label and its cell colours across the line. Widths don't apply to a
+transposed Table, so **Width** is hidden there.
 
 ## Showing sheets, sections and components conditionally
 

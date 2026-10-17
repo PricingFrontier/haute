@@ -15,6 +15,7 @@ import {
   BLANK_THEME,
   changeSchemaColumnType,
   CHART_OPTIONS,
+  columnLook,
   chartGrain,
   COLLECTION_OPTIONS,
   conditionText,
@@ -44,6 +45,7 @@ import {
   moveWidget,
   orderItems,
   pageProblems,
+  PLAIN_COLUMN_LOOK,
   pasteWidget,
   addWidgetInFreePlace,
   placeWidget,
@@ -62,6 +64,7 @@ import {
   schemaProblems,
   sectionName,
   sectionProblems,
+  setColumnLook,
   setPageShowWhen,
   setPageWidth,
   setRowPerValue,
@@ -571,7 +574,42 @@ describe("what the sheets show", () => {
     expect(grid).not.toHaveProperty("columns")
     expect(boxes).not.toHaveProperty("gridlines")
     // In the file's order, so a component the view made compares equal to it saved.
-    expect(Object.keys(grid)).toEqual(["id", "x", "y", "w", "h", "type", "title", "fields", "show_when", "rows", "row_numbers", "density", "gridlines", "striped", "fixed_rows", "header", "frame", "transposed", "groups"])
+    expect(Object.keys(grid)).toEqual([
+      "id",
+      "x",
+      "y",
+      "w",
+      "h",
+      "type",
+      "title",
+      "fields",
+      "show_when",
+      "rows",
+      "row_numbers",
+      "density",
+      "gridlines",
+      "striped",
+      "fixed_rows",
+      "header",
+      "frame",
+      "transposed",
+      "groups",
+      "font_size",
+      "header_font_size",
+      "header_bold",
+      "header_wrap",
+      "header_orientation",
+      "header_color",
+      "header_font_color",
+      "grid_color",
+      "grid_weight",
+      "grid_style",
+      "frame_color",
+      "frame_weight",
+      "column_looks",
+    ])
+    // Column looks of its own, not the options' one list.
+    expect(grid.column_looks).not.toBe(TABLE_OPTIONS.column_looks)
     expect(Object.keys(boxes)).toEqual(["id", "x", "y", "w", "h", "type", "title", "fields", "show_when", "columns", "labels", "density", "frame", "spacers"])
 
     spec = addWidget(addWidget(spec, "s", grid), "s", boxes)
@@ -590,6 +628,8 @@ describe("what the sheets show", () => {
     expect(() => updateWidget(spec, boxes.id, { header: "caps" })).toThrow("Only a Table has header")
     expect(() => updateWidget(spec, boxes.id, { transposed: true })).toThrow("Only a Table has transposed")
     expect(() => updateWidget(spec, boxes.id, { groups: true })).toThrow("Only a Table has groups")
+    expect(() => updateWidget(spec, boxes.id, { grid_color: "#2563EB" })).toThrow("Only a Table has grid_color")
+    expect(() => updateWidget(spec, boxes.id, { column_looks: [] })).toThrow("Only a Table has column_looks")
     expect(() => updateWidget(spec, grid.id, { labels: "beside" })).toThrow("Only a Collection has labels")
     expect(() => updateWidget(spec, "missing", { title: "x" })).toThrow("No sheet has a component missing")
 
@@ -692,6 +732,40 @@ describe("what the sheets show", () => {
     ])
   })
 
+  it("gives a Table's column a look of its own, takes away one that changes nothing, and drops it as the column goes", () => {
+    const value = { table: "equipment", column: "equipment.value" }
+    const item = { table: "equipment", column: "equipment.item" }
+    const grid = (form: FormSpec) => widgetsOf(form)[1] as Extract<Widget, { type: "tableInput" }>
+    let spec = setColumnLook(sheet(), "w_grid", value, { cell_color: "#2563EB", width: 120 })
+    expect(grid(spec).column_looks).toEqual([{ table: "equipment", column: "equipment.value", ...PLAIN_COLUMN_LOOK, cell_color: "#2563EB", width: 120 }])
+    expect(columnLook(grid(spec), value)).toEqual({ ...PLAIN_COLUMN_LOOK, cell_color: "#2563EB", width: 120 })
+    expect(columnLook(grid(spec), item)).toBe(PLAIN_COLUMN_LOOK)
+
+    // A change keeps the rest of its look, and a new look goes after the others.
+    spec = setColumnLook(setColumnLook(spec, "w_grid", value, { bold: true }), "w_grid", item, { align: "center" })
+    expect(grid(spec).column_looks.map((look) => [look.column, look.bold, look.cell_color, look.align])).toEqual([
+      ["equipment.value", true, "#2563EB", "auto"],
+      ["equipment.item", false, null, "center"],
+    ])
+
+    // Set back to the Table's own, it is no look at all; cleared, it goes whatever it held.
+    expect(grid(setColumnLook(spec, "w_grid", item, { align: "auto" })).column_looks.map((look) => look.column)).toEqual(["equipment.value"])
+    expect(grid(setColumnLook(spec, "w_grid", value, "clear")).column_looks.map((look) => look.column)).toEqual(["equipment.item"])
+
+    // A column the Table stops showing, unticked or gone from the schema, takes its look with it;
+    // shown again, it starts plain. Moving it keeps it.
+    expect(grid(moveInOrder(spec, "w_grid", 1, 0)).column_looks).toEqual(grid(spec).column_looks)
+    const unticked = toggleField(spec, "w_grid", value)
+    expect(grid(unticked).column_looks.map((look) => look.column)).toEqual(["equipment.item"])
+    expect(columnLook(grid(toggleField(unticked, "w_grid", value)), value)).toBe(PLAIN_COLUMN_LOOK)
+    expect(grid(removeSchemaColumn(spec, "equipment", "equipment.item")).column_looks.map((look) => look.column)).toEqual(["equipment.value"])
+    expect(grid(removeSchemaTable(spec, "equipment")).column_looks).toEqual([])
+
+    // Only a Table's columns have looks, and only those it shows.
+    expect(() => setColumnLook(spec, "w_boxes", { table: "policy", column: "policy.state" }, { bold: true })).toThrow("Only a Table has column looks")
+    expect(() => setColumnLook(unticked, "w_grid", value, { bold: true })).toThrow("The Table does not show equipment.equipment.value")
+  })
+
   it("puts spacers among a Collection's fields, moves and removes them, and keeps their places as fields come and go", () => {
     // The policy's boxes showing its state, year and region.
     let spec = addSchemaColumn(addSchemaColumn(sheet(), "policy", column("policy.year", "year", { type: "int" })), "policy", column("policy.region", "region"))
@@ -759,6 +833,12 @@ describe("what the sheets show", () => {
     // The whole table removed: no fields, so no spacers, and no conditions.
     const emptied = pasteWidget(removeSchemaTable(spec, "policy"), copied, "s")
     expect(findWidget(emptied.spec, emptied.id)?.widget).toMatchObject({ fields: [], spacers: [], show_when: { match: "all", conditions: [] } })
+
+    // A Table's look for a column lost since goes with it; the others' stay.
+    const looked = setColumnLook(setColumnLook(sheet(), "w_grid", { table: "equipment", column: "equipment.item" }, { bold: true }), "w_grid", { table: "equipment", column: "equipment.value" }, { bold: true })
+    const grid = findWidget(looked, "w_grid")!.widget
+    const pastedGrid = pasteWidget(removeSchemaColumn(looked, "equipment", "equipment.value"), grid, "s")
+    expect(findWidget(pastedGrid.spec, pastedGrid.id)?.widget).toMatchObject({ column_looks: [{ table: "equipment", column: "equipment.item", bold: true }] })
   })
 
   it("sets one of the sheets' colours, leaving the others the editor's own, and the editor's own again", () => {
