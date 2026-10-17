@@ -1535,7 +1535,8 @@ class _DataCheckQueries:
             plan.refused = exc
             plan.factors, plan.tables, plan.join = [], [], None
             return counted
-        return pl.concat([counted, *parts], how="horizontal", strict=True)
+        # A horizontal concat already refuses inputs of unequal heights.
+        return pl.concat([counted, *parts], how="horizontal")
 
     def _structured_parts(self, node: GraphNode, measured: MeasuredInput) -> list[pl.LazyFrame]:
         node_type = node.data.nodeType

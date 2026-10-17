@@ -97,6 +97,18 @@ refused; there is no implicit passthrough.  Make joins explicit about their keys
 and join type, and name derived columns so downstream steps can refer to them
 without guessing.
 
+Haute runs Polars 2, so write its idioms.  Parse text into a date with
+`pl.col("start").str.to_date("%Y-%m-%d")`: a cast from text to `pl.Date` is
+refused.  Give `is_in` members of the column's own kind (integers for an integer
+column, floats for a float column, dates for a date column), and pass a list or
+series held as one value with `.implode()`.  Band a number with
+`pl.col("age").bin_intervals([25, 40, 65], labels=["<=25", "26-40", "41-65", ">65"], right_closed=True)`;
+`cut` is deprecated, and `bin_intervals` is closed on the left unless you pass
+`right_closed=True`.  Exploding an empty list produces no row.  `pl.datetime(...)`
+takes the name of its first input and `pl.repeat(...)` is called `literal`, so
+alias both.  A join keeps the order of its rows only when asked, with
+`maintain_order="left"` (or `"left_right"`).
+
 A modelling node's `algorithm` (`catboost`, `xgboost`, `lightgbm`, `ebm`, or
 `glm`) is fixed when the node is created: to try another family, add a new
 node rather than editing `algorithm`.  For the tree and EBM families, put the

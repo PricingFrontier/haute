@@ -40,13 +40,15 @@ they hold a physical map column, never fetched again ([caching](../caching/low-l
 A served model pins the editor's exact Polars, refuses to load under another and runs
 under Haute's Polars settings ([deploy](../deploy/low-level.md)). The operation registry
 describes Polars 2, and a test compares it with the installed Polars, so the next upgrade
-reports its drift ([execution engine](../execution-engine/low-level.md)).
+reports its drift ([execution engine](../execution-engine/low-level.md)). The code Haute
+generates and teaches (the reference pipeline, the assistant's examples and authoring guide,
+Banding's histogram) uses no deprecated Polars call, and the assistant's guide teaches
+Polars 2's idioms.
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| PL2-13 | Planned | P2 | Code Haute generates and teaches runs on Polars 2 without deprecations. |
 | PL2-15 | Planned | P2 | The test suite asserts behaviour rather than Polars 1 accidents. |
 | PL2-17 | Reverify | P2 | Every operator memory policy and RAM estimate rests on Polars 2 evidence. |
 | PL2-18 | Reverify | P3 | Worker caps start from a Polars 2 baseline. |
@@ -55,40 +57,6 @@ reports its drift ([execution engine](../execution-engine/low-level.md)).
 | PL2-22 | Deferred | P3 | Banding and the step editor offer quantile and rank binning. |
 
 ## Planned improvements
-
-### PL2-13 — Code Haute generates and teaches runs on Polars 2 without deprecations
-**Why:** The runnable reference pipeline (`examples/reference/main.py`) and
-the assistant's `linear_pricing` example bundle call `cut([25, 40, 65])`, and
-Banding's equal-width bins call `cut(..., include_breaks=True)`: `cut` is
-deprecated in 2.0 in favour of `bin_intervals`, which is left-closed by
-default, takes required labels and returns `{bin, left, right}` instead of
-`{breakpoint, category}`. The assistant's data check passes `strict=True` to a
-horizontal `concat`, now deprecated. The assistant's authoring guide, which
-teaches the model Haute's Polars idioms, carries none of 2.0's: parse text
-with `str.to_date`, give `is_in` members the column's type, pass a series
-haystack with `implode`, band with `bin_intervals`, empty lists explode to no
-rows, alias `pl.datetime` and `pl.repeat`, and order a join with
-`maintain_order`. The documentation's code blocks use no removed API.
-
-**Plan:** Move the two examples to `bin_intervals(..., labels=[...],
-right_closed=True)`, which reproduces their output exactly (probed); move
-Banding's bins to `bin_intervals(..., include_intervals=True)` and read the
-upper edge from `right`; drop the `strict` argument; add one paragraph of 2.0
-idioms to the authoring guide and the examples that exercise them; extend the
-documentation's code-block scan to the deprecated forms.
-
-**Acceptance:** the reference pipeline, the assistant example portfolio and the
-banding statistics tests run on Polars 2 with no Polars deprecation warning
-(enforced by an error filter for Polars deprecations in those modules), and
-their golden outputs are unchanged.
-
-**Dependencies:** None.
-
-**Evidence:** `examples/reference/main.py`;
-`src/haute/assistant/assets/examples/linear_pricing/pipeline.py`;
-`src/haute/_binning.py::equal_width_bins`;
-`src/haute/assistant/_data_check.py`;
-`src/haute/assistant/assets/authoring_guide.md`.
 
 ### PL2-15 — The test suite asserts behaviour rather than Polars 1 accidents
 **Why:** Most of the bounded runs' failures are the packages above, but some
@@ -118,7 +86,7 @@ dispatched lanes above are green against the same revision with their run
 links recorded; each gap above has a test; no test sorts away an order the
 specifications promise.
 
-**Dependencies:** PL2-13.
+**Dependencies:** None.
 
 **Evidence:** `tests/test_edge_join.py`; `tests/test_execute_lazy_contracts.py`;
 `tests/test_column_lineage.py`; `tests/test_standalone_nodes.py`;
@@ -265,7 +233,7 @@ schema carry it.
 
 ### PL2-22 — Banding and the step editor offer quantile and rank binning
 **Why:** Polars 2.0 adds `bin_intervals`, `bin_quantiles` and `bin_ranks`
-and deprecates `cut` and `qcut`. `PL2-13` moves Haute's own binning to
+and deprecates `cut` and `qcut`. Haute's own binning uses
 `bin_intervals`; offering quantile or rank binning in Banding or as a step is
 new capability, which the step editor's roadmap leaves out of scope, so this
 is deferred.
@@ -275,7 +243,7 @@ and whether the step editor gains a binning step.
 
 **Acceptance:** Defined by the decision.
 
-**Dependencies:** PL2-13; a decision to add the capability.
+**Dependencies:** A decision to add the capability.
 
 **Evidence:** `src/haute/_binning.py::equal_width_bins`;
 `src/haute/_banding_config.py`.

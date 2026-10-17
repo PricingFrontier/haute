@@ -2692,3 +2692,52 @@ def test_docs_guard_rejects_remaining_work_pointer_to_empty_roadmap(
         tmp_path / "specs",
         repo_files=_fixture_repo_files(tmp_path),
     )
+
+
+# Polars spellings that Polars 2 removed or deprecated, with what replaces each. A
+# documentation code block, the assistant's teaching assets and the runnable examples
+# must use none of them, so what Haute shows and teaches runs on Polars 2 as written.
+_RETIRED_POLARS_FORMS = {
+    r"\.cut\(": "deprecated: band with bin_intervals",
+    r"\.qcut\(": "deprecated: band with bin_quantiles or bin_ranks",
+    r"\.melt\(": "removed: unpivot",
+    r"\.groupby\(": "removed: group_by",
+    r"\.with_context\(": "removed",
+    r"\.fetch\(": "removed: head(...).collect()",
+    r"\.str\.concat\(": "removed: str.join",
+    r"\.with_row_count\(": "removed: with_row_index",
+    r"\.map_dict\(": "removed: replace",
+}
+
+
+def _shown_or_taught_polars_code() -> dict[str, str]:
+    """Documentation code blocks, and every teaching asset and example in full."""
+    texts: dict[str, str] = {}
+    for document in sorted((ROOT / "docs").rglob("*.md")):
+        blocks = re.findall(r"```.*?```", document.read_text(encoding="utf-8"), flags=re.DOTALL)
+        texts[document.relative_to(ROOT).as_posix()] = "\n".join(blocks)
+    assets = ROOT / "src" / "haute" / "assistant" / "assets"
+    for path in sorted(
+        [*assets.rglob("*.md"), *assets.rglob("*.py"), *(ROOT / "examples").rglob("*.py")]
+    ):
+        texts[path.relative_to(ROOT).as_posix()] = path.read_text(encoding="utf-8")
+    return texts
+
+
+def test_shown_and_taught_code_uses_no_retired_polars_form() -> None:
+    found = [
+        f"{path}: {match.group(0)} ({reason})"
+        for path, text in _shown_or_taught_polars_code().items()
+        for pattern, reason in _RETIRED_POLARS_FORMS.items()
+        for match in re.finditer(pattern, text)
+    ]
+
+    assert found == []
+
+
+def test_the_retired_form_scan_finds_a_deprecated_call() -> None:
+    text = 'df = df.with_columns(band=pl.col("age").cut([25, 40]))'
+
+    assert [
+        reason for pattern, reason in _RETIRED_POLARS_FORMS.items() if re.search(pattern, text)
+    ] == ["deprecated: band with bin_intervals"]

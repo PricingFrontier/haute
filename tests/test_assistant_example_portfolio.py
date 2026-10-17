@@ -26,6 +26,10 @@ if TYPE_CHECKING:
 
     from haute._types import PipelineGraph
 
+# A deprecation raised from Haute's code or the user code it runs (a step, an
+# example pipeline) fails these tests; Polars attributes its warnings to the caller.
+pytestmark = pytest.mark.filterwarnings("error::DeprecationWarning:haute")
+
 _TERMINAL_JOB_STATUSES = {
     "cancelled",
     "completed",

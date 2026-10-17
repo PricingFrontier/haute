@@ -20,6 +20,10 @@ from haute.parser import parse_pipeline_file
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# A deprecation raised from Haute's code or the user code it runs (a step, an
+# example pipeline) fails these tests; Polars attributes its warnings to the caller.
+pytestmark = pytest.mark.filterwarnings("error::DeprecationWarning:haute")
+
 
 def _tracked(prefix: str) -> list[str]:
     listed = subprocess.run(

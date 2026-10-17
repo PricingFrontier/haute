@@ -23,6 +23,10 @@ from tests.conftest import make_edge, make_graph
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
+# A deprecation raised from Haute's code or the user code it runs (a step, an
+# example pipeline) fails these tests; Polars attributes its warnings to the caller.
+pytestmark = pytest.mark.filterwarnings("error::DeprecationWarning:haute")
+
 _TERMINAL = {"completed", "error", "cancelled", "superseded", "timed_out", "memory_limited"}
 
 

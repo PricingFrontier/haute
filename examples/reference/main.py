@@ -18,7 +18,13 @@ def features(quotes: pl.LazyFrame) -> pl.LazyFrame:
     """Derive the rating features."""
     df = quotes.with_columns(
         vehicle_age=2026 - pl.col("vehicle_year"),
-        driver_band=pl.col("driver_age").cut([25, 40, 65]).cast(pl.String),
+        driver_band=pl.col("driver_age")
+        .bin_intervals(
+            [25, 40, 65],
+            labels=["(-inf, 25]", "(25, 40]", "(40, 65]", "(65, inf]"],
+            right_closed=True,
+        )
+        .cast(pl.String),
     )
     return df
 
