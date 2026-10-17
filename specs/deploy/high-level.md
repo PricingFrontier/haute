@@ -94,7 +94,15 @@ were sent, one quote per request, each consumer sized by the memory estimate fro
 that feeds it; its test quotes are not pre-checked for columns, and their expected outputs
 are compared into the response's tables; a Databricks deployment's signature holds each
 table as a map of any values or an array of them, the reader holding the request to the
-tables' columns ([workbench](../workbench/high-level.md)). For a graph with no request input,
+tables' columns ([workbench](../workbench/high-level.md)). A Quote Input whose sample is
+JSON, JSONL or XML reads a served request as the editor reads its sample: the quotes, as they
+were sent, are shredded in memory through its tables by the shared shredder, each port
+receiving its own table's rows in its declared types, and its dry run reads its sample's
+first quote the same way. Where a build counts a skipped row, a served request is refused
+instead, naming the table (HTTP 422 from a container): a quote that is not an object, an
+array element whose shape does not fit its table, or a value that does not fit its column's
+type would otherwise be answered without it ([JSON shredding](../json-shredding/high-level.md)).
+Any other Quote Input reads the request as one frame. For a graph with no request input,
 exactly one source may be promoted only when it is a `dataInput`, whose configured data
 provides schema/sample information before live requests replace it. A `constant` or any
 other source type is never promoted accidentally; deployment fails with a correction that
@@ -165,8 +173,9 @@ golden validation, and served response therefore describe one output contract.
 quote *i* with row *i* (`render_output_document`). Resolution proves that from the pruned
 graph without running it: every node from the request input to the response keeps
 exactly one row per quote, in request order, each row computed from its own quote alone.
-A Quote Input whose one table is its root (`$[:]`) starts the proof, and a promoted Data
-Input's post-load code is its first step. Row-local expressions (the operation registry's
+A Quote Input's root table (`$[:]`), one row per quote, starts the proof, and a promoted
+Data Input's post-load code is its first step; a Quote Input's other tables hold a quote's
+array rows and are derived from the request, free to fill the response's nested parts. Row-local expressions (the operation registry's
 row-local class), renames, drops and casts keep the rows, and so do Banding, Rating Step
 lookups (deduplicated and ordered by construction), Model Score, a ratebook Optimiser Apply
 read from the bundle, a Data Output, a collapsed Live Switch and the training nodes'
@@ -187,9 +196,8 @@ one; a join driven by another input answers with that input's rows; a group-by, 
 expression that reads other rows (an aggregate, a window, a shift, a rank) or an online
 Optimiser Apply (which answers in quote-id order) makes one quote's answer depend on the
 others, and so can a join with another part of the request; and code the proof cannot follow, an Optimiser Apply that loads its result from
-MLflow when served, a submodel occurrence the deployed graph still holds (BUG-18) and a
-Quote Input with more than its root table (whose tables a deployed request is not yet split
-into, BUG-31) cannot be proved. A pipeline the proof does not cover still deploys and
+MLflow when served and a submodel occurrence the deployed graph still holds (BUG-18) cannot
+be proved. A pipeline the proof does not cover still deploys and
 answers one quote per request: a request of several quotes is refused before anything is
 scored, naming every node and operation that stopped the proof, so a declined quote is a
 flag column on its answer rather than a filtered-out row. A Workbench Input reads one quote

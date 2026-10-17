@@ -59,7 +59,7 @@ from __future__ import annotations
 
 import keyword
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal, TypedDict
 
 from haute._graph_utils import _sanitize_identifier_characters, is_frame_label
@@ -178,6 +178,11 @@ def is_json_api_input_path(path: str) -> bool:
     otherwise; every other extension is read directly as a flat file.
     """
     return path.lower().endswith(_STRUCTURED_API_INPUT_SUFFIXES)
+
+
+def quote_input_reads_tables(config: Mapping[str, Any]) -> bool:
+    """Whether a Quote Input reads its quotes into tables: its sample is structured."""
+    return is_json_api_input_path(str(config.get("path") or ""))
 
 
 # ---------------------------------------------------------------------------

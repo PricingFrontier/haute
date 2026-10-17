@@ -414,7 +414,7 @@ from haute.deploy._request_rows import RequestRows
 from haute.deploy._scorer import (
     QuoteRequest,
     admit_deploy_execution,
-    reads_one_quote_per_request,
+    reads_records,
     score_graph,
     score_graph_lazy,
 )
@@ -427,9 +427,9 @@ _manifest = json.loads(_MANIFEST_PATH.read_text())
 
 _pruned_graph = PipelineGraph.model_validate(_manifest["pruned_graph"])
 _input_node_ids = _manifest["input_node_ids"]
-# A Workbench Input reads its quote from the records as sent, typing each value itself;
-# any other request input takes the rows as a frame.
-_reads_quotes = reads_one_quote_per_request(_pruned_graph, _input_node_ids)
+# A Workbench Input, and a Quote Input with tables, read the quotes from the records as
+# sent, typing each value themselves; any other request input takes the rows as a frame.
+_reads_quotes = reads_records(_pruned_graph, _input_node_ids)
 _output_node_id = _manifest["output_node_id"]
 # Whether a request of several quotes is answered in request order, or refused.
 _request_rows = RequestRows.from_manifest(_manifest["request_rows"])

@@ -30,7 +30,13 @@ from haute._workbench_tables import (
     table_disagreements,
 )
 from haute.deploy._config import ResolvedDeploy
-from haute.deploy._scorer import QuoteRequest, reads_one_quote_per_request, score_graph
+from haute.deploy._scorer import (
+    DeployInput,
+    QuoteRequest,
+    reads_one_quote_per_request,
+    reads_records,
+    score_graph,
+)
 
 logger = get_logger(component="deploy.validators")
 
@@ -852,6 +858,11 @@ def _reads_one_quote_per_request(resolved: ResolvedDeploy) -> bool:
     return reads_one_quote_per_request(resolved.pruned_graph, resolved.input_node_ids)
 
 
+def _request(inputs: list[dict[str, Any]], as_records: bool) -> DeployInput:
+    """Test quotes as one request, their records or a frame as the request input reads it."""
+    return QuoteRequest(tuple(inputs)) if as_records else pl.DataFrame(inputs)
+
+
 def score_test_quotes(
     resolved: ResolvedDeploy,
     test_quotes_dir: Path | None = None,
@@ -888,6 +899,8 @@ def score_test_quotes(
 
     results: list[TestQuoteResult] = []
     one_quote_per_request = _reads_one_quote_per_request(resolved)
+    # A Quote Input with tables reads its quotes as their records, as served.
+    as_records = reads_records(resolved.pruned_graph, resolved.input_node_ids)
     # A deployment that answers one quote per request is checked as it will be served.
     case_per_request = resolved.request_rows.multi_quote != "in_request_order"
 
@@ -916,11 +929,11 @@ def score_test_quotes(
                 _validate_expected_outputs_per_case(cases=cases, outputs=outputs)
                 rows = sum(output.height for output in outputs if output is not None)
             elif case_per_request:
-                answers = [score(pl.DataFrame([case.input])) for case in cases]
+                answers = [score(_request([case.input], as_records)) for case in cases]
                 _validate_expected_outputs_per_case(cases=cases, outputs=list(answers))
                 rows = sum(answer.height for answer in answers)
             else:
-                output = score(pl.DataFrame([case.input for case in cases]))
+                output = score(_request([case.input for case in cases], as_records))
                 _validate_expected_outputs(cases=cases, output=output)
                 rows = output.height
 

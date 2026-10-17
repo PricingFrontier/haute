@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json as _json
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import polars as pl
 
@@ -24,6 +24,9 @@ from haute._worker_isolation import IsolatedWorkerError, run_isolated_worker
 from haute.errors import ConfigError
 from haute.execution import dataframe_graph_input_fingerprint
 from haute.graph_utils import GraphNode, NodeType, PipelineGraph, read_data_source, read_source
+
+if TYPE_CHECKING:
+    from haute.deploy._scorer import DeployInput
 
 logger = get_logger(component="deploy.schema")
 
@@ -147,12 +150,16 @@ def _workbench_tables(node: GraphNode) -> tuple[WorkbenchTable, ...]:
         ) from exc
 
 
-def _read_sample_row(graph: PipelineGraph, input_node_ids: list[str]) -> pl.DataFrame:
-    """Read the one-row sample both the schema dry-run and policy planning use.
+def _read_sample_row(graph: PipelineGraph, input_node_ids: list[str]) -> DeployInput:
+    """Read the one-quote sample both the schema dry-run and policy planning use.
 
     A Workbench Input reads no file, so its sample is one quote with nothing filled in,
-    one row of nulls per table, in the schema its tables give (specs/workbench).
+    one row of nulls per table, in the schema its tables give (specs/workbench). A Quote
+    Input with tables reads its sample file's first quote as the record it is, which the
+    scorer shreds into its tables as it shreds a served request.
     """
+    from haute.deploy._scorer import QuoteRequest, quote_input_with_tables
+
     if not input_node_ids:
         raise ValueError("No API input nodes found in the graph")
     node = _find_node(graph, input_node_ids[0])
@@ -169,11 +176,34 @@ def _read_sample_row(graph: PipelineGraph, input_node_ids: list[str]) -> pl.Data
 
     try:
         resolved_path = _resolve_pipeline_path(graph, path) if path else ""
+        if quote_input_with_tables(node):
+            from haute._json_shred._records import _iter_records
+
+            first = next(iter(_iter_records(Path(resolved_path))), None)
+            if first is None:
+                raise ValueError("the sample holds no quote")
+            return QuoteRequest((first,))
         from haute._polars_utils import streaming_collect
 
         return streaming_collect(_read_input_source(graph, node, resolved_path).head(1))
     except Exception as exc:
         raise ValueError(f"Failed to read sample from '{path}': {exc}") from exc
+
+
+def _planning_frames(
+    graph: PipelineGraph, input_node_ids: list[str], sample: DeployInput
+) -> dict[str, pl.DataFrame | dict[str, pl.DataFrame]]:
+    """The request input's frames for planning: a Quote Input's sample quote in its tables."""
+    from haute.deploy._scorer import QuoteRequest
+
+    if not isinstance(sample, QuoteRequest):
+        return dict.fromkeys(input_node_ids, sample)
+    from haute._json_shred._shred import shred_request
+
+    return {
+        node_id: shred_request(sample.records, _find_node(graph, node_id).data.config)
+        for node_id in input_node_ids
+    }
 
 
 def infer_deploy_execution_policy(
@@ -232,7 +262,7 @@ def infer_deploy_execution_policy(
                 source="live",
             ),
             execution_context=context,
-            runtime_source_frames_by_node=dict.fromkeys(input_node_ids, sample),
+            runtime_source_frames_by_node=_planning_frames(graph, input_node_ids, sample),
         )
     except GroupByExecutionUnsupportedError as exc:
         if exc.reason_code != "materialisation_estimate_unavailable":
@@ -306,7 +336,7 @@ def infer_deploy_execution_policy(
 
 def _dry_run_output_schema(
     graph: PipelineGraph,
-    sample: pl.DataFrame,
+    sample: DeployInput,
     *,
     output_node_id: str,
     input_node_ids: list[str],
@@ -327,7 +357,7 @@ def _dry_run_output_schema(
 
 def _capped_worker_output_schema(
     graph: PipelineGraph,
-    sample: pl.DataFrame,
+    sample: DeployInput,
     *,
     output_node_id: str,
     input_node_ids: list[str],
@@ -353,17 +383,25 @@ def _capped_worker_output_schema(
         prepare_batch_scoring,
         score_batch_worker,
     )
+    from haute.deploy._scorer import QuoteRequest
 
+    # The rows travel as JSON; a frame's schema keeps their types, nulls included, and
+    # records are read as sent.
+    if isinstance(sample, QuoteRequest):
+        rows = [dict(record) for record in sample.records]
+        input_schema = None
+    else:
+        rows = sample.to_dicts()
+        input_schema = sample.schema
     plan = prepare_batch_scoring(
-        sample.to_dicts(),
+        rows,
         graph=graph,
         input_node_ids=input_node_ids,
         output_node_id=output_node_id,
         artifact_paths=artifact_paths or {},
         output_fields=None,
         operation="deploy_bundle_schema",
-        # The rows travel as JSON; the schema keeps their types, nulls included.
-        input_schema=sample.schema,
+        input_schema=input_schema,
     )
     primary_error: BaseException | None = None
     try:

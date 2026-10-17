@@ -592,7 +592,7 @@ def test_node_types_that_cannot_answer_in_order_are_refused(tmp_path):
         assert list(refusals) == [RowRefusal(node_id, node_id, operation, effect)]
 
 
-def test_a_quote_input_with_more_than_its_root_table_is_refused():
+def test_a_quote_input_s_root_table_is_the_request_and_its_others_are_not():
     column = {"name": "x", "path": "$[:].x", "type": "int", "status": "Confirmed", "selected": True}
     tables = [
         {"path": "$[:]", "label": "quote", "emit": True, "columns": [column]},
@@ -613,7 +613,13 @@ def test_a_quote_input_with_more_than_its_root_table_is_refused():
         }
     )
 
-    assert _refusals(graph) == [RowRefusal("quotes", "quotes", "Quote Input tables", "unproven")]
+    assert _refusals(graph) == []
+    drivers_first = graph.model_dump()
+    drivers_first["edges"] = [_edge("quotes", "out", sourceHandle="drivers")]
+    drivers_first["nodes"][1]["data"]["config"] = _output(["age"], "drivers")
+    assert _refusals(PipelineGraph.model_validate(drivers_first)) == [
+        RowRefusal("out", "out", "response", "replaces")
+    ]
 
 
 def test_a_constant_cross_join_keeps_each_quote():

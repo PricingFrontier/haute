@@ -190,14 +190,15 @@ def score_batch_scoring_request(
     execution_context: ExecutionContext,
 ) -> BatchScoreOutcome:
     """Score one batch under an already-constructed worker-local context."""
-    from haute.deploy._scorer import QuoteRequest, reads_one_quote_per_request, score_graph_lazy
+    from haute.deploy._scorer import QuoteRequest, reads_records, score_graph_lazy
 
     execution_context.checkpoint(label="before_deploy_batch_dataframe")
     rows = json.loads(Path(request.input_path).read_text(encoding="utf-8"))
-    # A Workbench Input reads its quote from the records as sent, typing each value itself.
+    # A Workbench Input, and a Quote Input with tables, read the quotes from the records
+    # as sent, typing each value themselves.
     input_df = (
         QuoteRequest(tuple(rows))
-        if reads_one_quote_per_request(request.graph, request.input_node_ids)
+        if reads_records(request.graph, request.input_node_ids)
         else pl.DataFrame(rows, schema=request.input_schema)
     )
     execution_context.checkpoint(label="after_deploy_batch_dataframe")

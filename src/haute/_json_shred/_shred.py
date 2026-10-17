@@ -584,6 +584,45 @@ def _assert_root_conservation(
             )
 
 
+def shred_request(
+    records: Sequence[Mapping[str, Any]], v2_config: dict[str, Any]
+) -> dict[str, pl.DataFrame]:
+    """A served request's quotes, shredded in memory into a frame per emitting table.
+
+    The same walk and typed frames as a build, keyed by table label in schema order.
+    Strict where a build counts a skip: a quote that is not an object, or an array
+    element whose shape does not fit its table, refuses the request naming the table,
+    since an answer must not silently lose a quote's rows (specs/deploy).
+    """
+    for index, record in enumerate(records):
+        if not isinstance(record, Mapping):
+            raise ApiInputSchemaError(
+                f"The request does not fit this Quote Input's tables: quote {index} is not "
+                "an object.",
+                quote=index,
+            )
+    table_specs = _emitting_table_specs(v2_config)
+    rows: dict[str, list[_Row]] = {spec.label: [] for spec in table_specs}
+    stats = ShredSkipStats()
+    shred_to_buffers(
+        (dict(record) for record in records),
+        v2_config,
+        stats=stats,
+        _table_specs=table_specs,
+        _row_sink=lambda label, row: rows[label].append(row),
+    )
+    if stats.skipped_rows_by_table:
+        skipped = ", ".join(
+            f"{count} in {label!r}" for label, count in sorted(stats.skipped_rows_by_table.items())
+        )
+        raise ApiInputSchemaError(
+            "The request does not fit this Quote Input's tables: array elements whose "
+            f"shape does not fit their table ({skipped}).",
+            skipped_rows=dict(stats.skipped_rows_by_table),
+        )
+    return {spec.label: _rows_to_frame(rows[spec.label], spec.leaf_specs) for spec in table_specs}
+
+
 # Values are Polars DataType *classes*, not instances. Polars's Schema /
 # DataFrame constructors accept either; we keep the classes here so the
 # table is constant-folded and cheap to look up.

@@ -23,6 +23,7 @@ from typing import Any, Literal, cast, get_args
 
 import polars as pl
 
+from haute._api_input_schema import quote_input_reads_tables
 from haute._cardinality import normalise_join_validation
 from haute._column_lineage import (
     LineageOperation,
@@ -34,6 +35,7 @@ from haute._column_lineage import (
 from haute._edge_join import build_edge_join_kwargs, resolve_edge_join_role_indices
 from haute._graph_utils import code_input_bindings, edge_input_name
 from haute._hashing import HashingWriter, content_hash
+from haute._json_shred._shred import table_is_emitting
 from haute._logging import get_logger
 from haute._node_builder import node_fn_name
 from haute._polars_operations import POLARS_OPERATIONS, OperationClass
@@ -296,6 +298,8 @@ class _Walk:
     edges_by_target: dict[str, list[GraphEdge]]
     selector_aliases: frozenset[str]
     facts: dict[str, _FrameFacts] = field(default_factory=dict)
+    port_facts: dict[str, dict[str, _FrameFacts]] = field(default_factory=dict)
+    """A Quote Input's facts per table, where its ports differ."""
     refusals: list[RowRefusal] = field(default_factory=list)
     checks: list[LookupCheck] = field(default_factory=list)
 
@@ -315,9 +319,15 @@ class _Walk:
 
     # -- nodes ---------------------------------------------------------------
 
+    def edge_facts(self, edge: GraphEdge) -> _FrameFacts:
+        ports = self.port_facts.get(edge.source, {})
+        if edge.sourceHandle is not None and edge.sourceHandle in ports:
+            return ports[edge.sourceHandle]
+        return self.facts[edge.source]
+
     def node(self, node: GraphNode) -> _FrameFacts:
         edges = self.edges_by_target.get(node.id, [])
-        inputs = [self.facts[edge.source] for edge in edges]
+        inputs = [self.edge_facts(edge) for edge in edges]
         node_type = node.data.nodeType
         if node.id in self.input_node_ids:
             return self.request_input(node)
@@ -397,20 +407,17 @@ class _Walk:
             if not code:
                 return _REQUEST_FACTS
             return self.code_box(node, code, {"df": (_REQUEST_FACTS, None)})
-        tables = [
-            table
+        if not quote_input_reads_tables(config):
+            return _REQUEST_FACTS
+        # The request is shredded into the tables: the root table holds one row per
+        # quote, in request order; another table holds a quote's array rows.
+        ports = {
+            str(table["label"]): _REQUEST_FACTS if table.get("path") == "$[:]" else _LOST
             for table in config.get("tables") or []
-            if isinstance(table, Mapping)
-            and table.get("emit")
-            and any(
-                isinstance(c, Mapping) and c.get("selected") for c in table.get("columns") or []
-            )
-        ]
-        if tables and (len(tables) != 1 or tables[0].get("path") != "$[:]"):
-            # A deployed request is not split into its tables yet (BUG-31): every port
-            # holds the request. The walk goes on as if each were the request.
-            self.refuse(node, "Quote Input tables", "unproven")
-        return _REQUEST_FACTS
+            if table_is_emitting(table)
+        }
+        self.port_facts[node.id] = ports
+        return _REQUEST_FACTS if _REQUEST_FACTS in ports.values() else _LOST
 
     def named_input(
         self,
