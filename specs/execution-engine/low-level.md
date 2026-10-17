@@ -607,8 +607,14 @@ and handed to the capture's artifact before publication; a prewritten scored cap
 digests, one per part, come from its `ScoreOutputDestination`; an explicit node-data build
 hands over its write's digests the same way:
 
-- **`sliceable(lf)`** walks Polars' optimised IR of `lf.slice(1, 1)` (`LazyFrame._ldf.visit()`,
-  IR major version 14; another version answers False). It is True only for one chain of
+- **`sliceable(lf)`** walks Polars' optimised IR of `lf.slice(1, 1)` through Polars' private
+  plan visitor (`LazyFrame._ldf.visit()`), at the IR major version `_SUPPORTED_IR_MAJOR` names
+  (15, Polars 2's); another version answers False, so an unread plan costs a staging write but
+  never a wrong row. It reads each node's kind, a `MapFunction`'s function name, a `Scan`'s
+  `scan_type` and `file_options.n_rows` (an `(offset, length)` pair once the slice reaches
+  it); the optimiser's projected-parquet borrow reads the same visitor, gated on the same
+  major. A test pins the gate to the installed Polars' IR major, so a Polars release that
+  moves it fails that test instead of silently staging every write. It is True only for one chain of
   `HStack`, `Select`, `SimpleProjection`, or `rename`/`unnest` map nodes down to one leaf that
   received the slice — a Parquet/IPC `Scan` whose `n_rows` is set, or a `DataFrameScan`. Polars
   pushes a slice through a projection only when its expressions are row-local and otherwise

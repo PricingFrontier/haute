@@ -52,7 +52,11 @@ logger = get_logger(component="chunked_writes")
 PART_PREFIX = "part-"
 PART_SUFFIX = ".parquet"
 SINGLE_FILE_ROW_GROUP_SIZE = 100_000
-_SUPPORTED_IR_MAJOR = 14
+# The optimiser IR major whose node attributes ``sliceable`` and the optimiser's
+# projected-parquet borrow read through Polars' private plan visitor; checked
+# attribute by attribute on Polars 2.0's IR (15, 2) and pinned to the installed
+# Polars by a test, so a release that moves it fails loudly there.
+_SUPPORTED_IR_MAJOR = 15
 _SLICEABLE_SCAN_TYPES = frozenset({"parquet", "ipc"})
 # Row-count-preserving plan nodes a slice passes through unchanged. Anything
 # else — notably Distinct, GroupBy and Sort, which absorb a slice into their

@@ -164,6 +164,18 @@ def test_sliceable_is_decided_by_polars_slice_pushdown(
     assert sliceable(mem_lf) is expected, f"In-memory lazyframe failed for {case_name}"
 
 
+def test_the_ir_gate_names_the_installed_polars_major() -> None:
+    """``sliceable`` reads Polars' private plan visitor only at a checked IR major.
+
+    A Polars release that moves the major must fail here, after its node
+    attributes are rechecked, rather than silently stage every write.
+    """
+    from haute._chunked_writes import _SUPPORTED_IR_MAJOR
+
+    installed_major = pl.LazyFrame({"a": [1]})._ldf.visit().version()[0]
+    assert installed_major == _SUPPORTED_IR_MAJOR
+
+
 def test_sliced_iteration_of_an_absorbing_operator_is_never_used(tmp_path: Path) -> None:
     df = _sample_df()
     parquet_path = tmp_path / "base.parquet"
