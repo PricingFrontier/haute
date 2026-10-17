@@ -679,7 +679,7 @@ def test_staged_batches_remove_staging_on_close_and_exhaustion(
     assert not staged[1].exists()
 
 
-def test_bounded_collect_batches_restores_a_parked_python_scan_failure() -> None:
+def test_bounded_collect_batches_raises_a_python_scan_failure_as_itself() -> None:
     class TransformFailedError(RuntimeError):
         pass
 
@@ -1559,11 +1559,21 @@ class TestRowLocalPythonScan:
         assert result["x"].to_list() == [2, 3]
         assert sum(batch.height for batch in seen) == 3
 
-    def test_original_exception_survives_every_haute_collect_seam(self, tmp_path: Path) -> None:
-        from haute.errors import ConfigError
+    @pytest.mark.parametrize("base", [Exception, BaseException], ids=["exception", "base"])
+    def test_original_exception_reaches_every_collect_seam_as_itself(
+        self, base: type[BaseException], tmp_path: Path
+    ) -> None:
+        class ScanFailedError(base):  # type: ignore[misc, valid-type]
+            def __init__(self, message: str, *, node_id: str) -> None:
+                super().__init__(message)
+                self.node_id = node_id
+
+        raised: list[BaseException] = []
 
         def failing(batch: pl.DataFrame) -> pl.DataFrame:
-            raise ConfigError("scan transform failed", node_id="scorer")
+            error = ScanFailedError("scan transform failed", node_id="scorer")
+            raised.append(error)
+            raise error
 
         def scan() -> pl.LazyFrame:
             frame = pl.LazyFrame({"x": [1, 2]})
@@ -1584,16 +1594,53 @@ class TestRowLocalPythonScan:
         )
         seams = [
             lambda: streaming_collect(scan()),
-            lambda: execution_collect(scan()),
+            lambda: execution_collect(scan(), engine="in-memory"),
             lambda: execution_collect(scan(), execution_context=context),
             lambda: list(bounded_collect_batches(scan(), chunk_size=10)),
             lambda: bounded_sink(scan(), tmp_path / "out.parquet"),
+            lambda: scan().collect(engine="in-memory"),
+            lambda: scan().collect(engine="streaming"),
+            lambda: scan().sink_parquet(tmp_path / "direct.parquet"),
         ]
         for seam in seams:
-            with pytest.raises(ConfigError, match="scan transform failed"):
+            with pytest.raises(ScanFailedError, match="scan transform failed") as caught:
                 seam()
-        with pytest.raises(pl.exceptions.ComputeError, match="ConfigError"):
-            scan().collect()
+            assert caught.value is raised[-1]
+            assert caught.value.node_id == "scorer"
+
+    def test_a_cancellation_raised_inside_a_scan_ends_the_run_as_cancelled(self) -> None:
+        from haute._execution_context import ExecutionCancellationToken
+        from haute._graph_walker import _is_execution_control
+
+        token = ExecutionCancellationToken()
+        context = ExecutionContext(
+            operation="preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            job_id="job-1",
+            cancellation_token=token,
+            memory_sampler=lambda: 1,
+        )
+
+        def cancelled_mid_batch(batch: pl.DataFrame) -> pl.DataFrame:
+            token.cancel()
+            context.checkpoint(label="inside-scan", node_id="scorer")
+            return batch
+
+        frame = pl.LazyFrame({"x": [1, 2]})
+        scan = row_local_python_scan(
+            frame,
+            cancelled_mid_batch,
+            schema=frame.collect_schema(),
+            generated_columns=(),
+            required_input_columns=None,
+            input_predicates_allowed=False,
+            elide_transform_when_unused=False,
+        )
+
+        with pytest.raises(ExecutionCancelledError) as caught:
+            execution_collect(scan, execution_context=context)
+        assert caught.value.job_id == "job-1"
+        assert _is_execution_control(caught.value)
 
     def test_caller_context_variables_reach_streaming_engine_threads(self) -> None:
         import contextvars
@@ -1756,18 +1803,6 @@ class TestRowLocalPythonScan:
 
         assert_frame_equal(scan.head(1).collect(), pl.DataFrame(schema=schema))
         assert applied == []
-
-    def test_the_parked_failure_registry_evicts_its_oldest_failure(self) -> None:
-        from haute import _polars_utils
-
-        oldest = _polars_utils._park_python_scan_failure(ValueError("oldest"))
-        newest = oldest
-        for index in range(_polars_utils._PYTHON_SCAN_FAILURE_LIMIT):
-            newest = _polars_utils._park_python_scan_failure(ValueError(f"failure {index}"))
-
-        _polars_utils._reraise_python_scan_failure(pl.exceptions.ComputeError(oldest))
-        with pytest.raises(ValueError, match="failure 63"):
-            _polars_utils._reraise_python_scan_failure(pl.exceptions.ComputeError(newest))
 
 
 # ---------------------------------------------------------------------------

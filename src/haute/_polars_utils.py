@@ -8,7 +8,6 @@ import shutil
 import tempfile
 import threading
 import time
-import uuid
 from collections.abc import Callable, Collection, Generator, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -25,7 +24,6 @@ from haute._execution_context import (
 from haute._file_ops import atomic_path, ensure_disk_headroom
 from haute._hashing import HashingWriter
 from haute._logging import get_logger
-from haute._lru_cache import LRUCache
 from haute._pipeline_settings import (
     DEFAULT_STREAMING_CHUNK_SIZE as DEFAULT_STREAMING_CHUNK_SIZE,
 )
@@ -112,11 +110,7 @@ def _cancellable_collect(
     execution_context.record_collect()
     query = lf.collect(engine=engine, background=True)
     while True:
-        try:
-            result = query.fetch()
-        except pl.exceptions.ComputeError as exc:
-            _reraise_python_scan_failure(exc)
-            raise
+        result = query.fetch()
         if result is not None:
             return result
         try:
@@ -161,11 +155,7 @@ def execution_collect(
         raise ValueError("engine must be 'auto', 'streaming' or 'in-memory'")
     context = execution_context or current_execution_context()
     if context is None:
-        try:
-            return lf.collect(engine=engine)
-        except pl.exceptions.ComputeError as exc:
-            _reraise_python_scan_failure(exc)
-            raise
+        return lf.collect(engine=engine)
     return _cancellable_collect(
         lf,
         execution_context=context,
@@ -254,35 +244,6 @@ def bounded_collect_batches(
     finally:
         if staging is not None:
             shutil.rmtree(staging, ignore_errors=True)
-
-
-# Polars reports an exception raised inside a Python scan source as a
-# ``ComputeError`` carrying only its text, which would turn a typed Haute error
-# (feature mismatch, cancellation, memory limit) into an anonymous engine error.
-# The source parks the original under a token named in the message, and every
-# collect helper above hands the original back to its caller.
-_PYTHON_SCAN_FAILURE_MARKER = "haute-python-scan-failure:"
-_PYTHON_SCAN_FAILURE_LIMIT = 64
-_python_scan_failures: LRUCache[str, BaseException] = LRUCache(max_size=_PYTHON_SCAN_FAILURE_LIMIT)
-
-
-def _park_python_scan_failure(exc: BaseException) -> str:
-    token = uuid.uuid4().hex
-    _python_scan_failures.put(token, exc)
-    return f"{_PYTHON_SCAN_FAILURE_MARKER}{token}"
-
-
-def _reraise_python_scan_failure(exc: pl.exceptions.ComputeError) -> None:
-    """Re-raise the original exception a Python scan source parked, if any."""
-    message = str(exc)
-    start = message.find(_PYTHON_SCAN_FAILURE_MARKER)
-    if start < 0:
-        return
-    token_start = start + len(_PYTHON_SCAN_FAILURE_MARKER)
-    token = message[token_start : token_start + 32]
-    original = _python_scan_failures.pop(token)
-    if original is not None:
-        raise original
 
 
 def row_local_python_scan(
@@ -518,7 +479,11 @@ def _register_python_scan(
     schema: pl.Schema,
     caller_context: contextvars.Context,
 ) -> pl.LazyFrame:
-    """Register *frames* as a Polars IO source run in the caller's context."""
+    """Register *frames* as a Polars IO source run in the caller's context.
+
+    An exception the source raises reaches the caller as itself: Polars hands
+    it to every collect, batch and sink seam unchanged.
+    """
 
     def io_source(
         with_columns: list[str] | None,
@@ -535,10 +500,6 @@ def _register_python_scan(
                 frame = run_context.run(next, iterator)
             except StopIteration:
                 return
-            except BaseException as exc:
-                raise RuntimeError(
-                    f"{_park_python_scan_failure(exc)} {type(exc).__name__}: {exc}"
-                ) from exc
             yield frame
 
     return register_io_source(io_source, schema=schema)

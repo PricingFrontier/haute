@@ -130,9 +130,9 @@ running heavy work in a child process the parent can kill on timeout or memory l
   sources stored in different key orders previews the rows the full run joins. Opaque
   row-local Python steps — eager model scoring, the rating miss guard, sum-constraint online
   optimiser apply, and OUTPUT assembly — run as Python scans that honour the limit,
-  projection, and predicate Polars pushes into them, and their exceptions keep their types at
-  every Haute collect, batch-collect, and sink seam (a direct Polars `.collect()` receives a
-  `ComputeError` naming the original). Native Polars node plans are never wrapped. A
+  projection, and predicate Polars pushes into them, and their exceptions reach the caller as
+  themselves, class and attributes intact, at every Haute collect, batch-collect, and sink
+  seam and at a direct Polars `.collect()` alike. Native Polars node plans are never wrapped. A
   preview's row count is the height of the limited target output, and trace follows the
   limited preview. Deploy live scoring, batched parquet scoring, sink/batch execution, and
   user-authored Python UDFs keep their execution; Explore reports, training, and optimiser

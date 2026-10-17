@@ -22,7 +22,7 @@
 | `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (the pipeline settings' preview memory / fixed default / explicit env override / adaptive fraction of available RAM above the settings' kept-free memory), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
 | `src/haute/_pipeline_settings.py` | The per-clone pipeline settings file `.haute/pipeline-settings.json`: the `PipelineSettings` keys and their validation, stat-gated reads (`read_pipeline_settings`), locked atomic updates (`update_pipeline_settings`), the current automatic figures (`automatic_pipeline_settings`), the time limits and byte sizes its consumers read, `PipelineSettingsError`, and the server process following the file's chunk rows (`follow_chunk_rows`). See "Pipeline settings" below. |
 | `src/haute/_chunked_writes.py` | Bounded chunked writes: `sliceable` (positive proof on Polars' optimised IR that slicing a frame equals slicing its single Parquet/IPC scan or in-memory input), `write_parts` (a node output as ordered `part-NNNNN.parquet` files: a chunked edge join, one native sink per slice, an input-sliced write, or one native sink), `JoinRecipe`, `WriteRecipe`, `part_paths`/`scan_parts`. |
-| `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` selects `auto` or streaming execution and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract. All three preserve checkpoint, collect-count, and typed-error telemetry. `bounded_collect_batches` streams batches from a query run on a dedicated thread, so an engine panic raises instead of ending the stream early. It also owns the Python scans that expose opaque Python steps to Polars pushdown (`row_local_python_scan`, `fanout_python_scan`, `limited_python_scan`, `key_prefix_python_scan`) and the parked scan-failure registry every collect seam re-raises from. |
+| `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` selects `auto` or streaming execution and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract. All three preserve checkpoint, collect-count, and typed-error telemetry. `bounded_collect_batches` streams batches from a query run on a dedicated thread, so an engine panic raises instead of ending the stream early. It also owns the Python scans that expose opaque Python steps to Polars pushdown (`row_local_python_scan`, `fanout_python_scan`, `limited_python_scan`, `key_prefix_python_scan`), whose exceptions reach every seam as themselves. |
 | `src/haute/_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion (`expand_scenarios_from_config`, and `expand_scenarios_bounded` for the interactive form a preview row limit reaches through), `optimiserApply` artifact dispatch, and output response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
 | `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`, declaring every type's recompute cost (`recompute_cost=`); owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component, and `pass_through_selected_edge` / `PASS_THROUGH_NODE_TYPES`, which state the incoming edge a pass-through node's built function returns. It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). A stepped Polars transform's function carries `transform_fn.failed_step_line`, which replays the steps' prefixes on the run's input frames to name the step whose lazy plan failed (`_failed_step_line`). |
 | `src/haute/_node_builder.py` | `NodeBuildHooks` and `wrap_builder`, the interception seam used by deploy scoring while preserving the canonical runtime builders. |
@@ -581,14 +581,12 @@ predicate, then the projection.
   engine threads and hands it the pushed predicate unchanged. The `polars>=1.44.2` floor
   guarantees that predicate is evaluable: earlier releases also pushed a sort-limit's
   engine-only `dynamic_pred` bound into IO sources, which panicked when evaluated.
-- An exception raised while producing a batch is parked under a token in a bounded process
-  registry (64 entries, oldest evicted) and re-raised as `RuntimeError` carrying the token,
-  the original type name, and message. `execution_collect`, the background cancellable
-  collect, `bounded_collect_batches`, and every sink routed through them re-raise the
-  parked original for a `ComputeError` naming a live token, so typed errors (including
-  cancellation and memory-limit signals raised by nested checkpoints) keep their types; an
-  evicted or foreign token leaves the `ComputeError` unchanged, and a direct Polars
-  `.collect()` receives a `ComputeError` naming the original type and message.
+- An exception raised while producing a batch propagates as itself. Polars hands a source's
+  own exception, class and attributes intact (a `BaseException` such as a cancellation, or a
+  `MemoryError` subclass, included), to `execution_collect`, the background cancellable
+  collect, `bounded_collect_batches`, every sink, and a direct `.collect()`, under every
+  engine, so typed errors (including cancellation and memory-limit signals raised by nested
+  checkpoints) keep their types with no translation by Haute.
 
 **Chunked writes (`_chunked_writes.py`).** Polars' streaming engine does not bound the
 memory of one long query over a large input: a single native sink's peak grows with the
@@ -700,8 +698,8 @@ caller's thread and context, under one strategy fixed before the first batch:
   is removed on exhaustion, close, or failure.
 
 Batches follow the frame's order under every strategy (`maintain_order` is always
-honoured). An engine failure is never a short result: it raises, with a parked Python-scan
-original restored as above. Each batch query of a sliced or staged frame runs inside the
+honoured). An engine failure is never a short result: it raises, a Python-scan exception
+as itself. Each batch query of a sliced or staged frame runs inside the
 execution stage `stage_name`; checkpoints run before the first batch and after each one.
 
 Before `_build_funcs()` constructs a JSON `apiInput`, eager and lazy execution
@@ -2779,11 +2777,11 @@ present a structural or schema result as execution evidence.
   preamble aliases, roots, and expansion parity with Polars.
 - `tests/test_polars_utils.py` — `TestRowLocalPythonScan` pins the Python-scan
   contract: limit before predicate, limited transform rows, projection elision and its
-  refusal, input-predicate permission, generated-column predicates, typed exceptions
-  through every collect seam, context variables on engine threads, construction-time
-  declaration checks, and sort-limits matching native Polars. It also pins the limited
-  and key-prefix scans applying a pushed limit, predicate, and projection, and the
-  parked-failure registry evicting its oldest failure.
+  refusal, input-predicate permission, generated-column predicates, typed exceptions with
+  their attributes through every collect seam and a direct `.collect()` on both engines,
+  context variables on engine threads, construction-time declaration checks, and
+  sort-limits matching native Polars. It also pins the limited and key-prefix scans
+  applying a pushed limit, predicate, and projection.
 - `tests/test_cardinality.py` — overflow-safe join-cardinality formulas, uniqueness
   contracts, evidence payloads, invalid bounds, and row-cardinality lineage analysis.
 - `tests/test_column_lineage_properties.py` — Hypothesis differential properties for the closed Polars column-lineage model, including projected-versus-full execution equivalence and row-count bounds that hold over empty, null-heavy, and NaN-heavy frames.

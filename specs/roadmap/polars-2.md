@@ -33,7 +33,6 @@ prepared frame's order varies (`PL2-05`).
 |---|---|---:|---|
 | PL2-01 | Planned | P1 | Haute requires Polars 2, and its version-pinned snapshots describe it. |
 | PL2-02 | Planned | P1 | Nothing Polars 1 computed is reused once Polars 2 runs. |
-| PL2-03 | Planned | P2 | An error raised inside a Haute Python scan reaches its caller as itself. |
 | PL2-04 | Planned | P1 | Row order is defined wherever Haute builds the query, and deployed answers stay with their quotes. |
 | PL2-05 | Planned | P2 | Training, Workbench tables and Haute's tied cuts give the same result on every run. |
 | PL2-06 | Planned | P2 | The step editor renders only code Polars 2 runs, and **Change types** turns text into dates. |
@@ -147,51 +146,6 @@ hit under an unchanged version is unaffected.
 `src/haute/execution.py::dataframe_frame_input_fingerprint`;
 `src/haute/_source_cache.py::SourceCacheIdentity`;
 `src/haute/deploy/_schema.py::deploy_schema_cache_fingerprint`.
-
-### PL2-03 — An error raised inside a Haute Python scan reaches its caller as itself
-**Why:** Haute hands row-local Python work (eager Model Score, the rating
-miss guard, sum-constraint online optimiser apply, OUTPUT and Workbench Output
-assembly) to Polars as registered IO sources. Polars 1.44 turned an exception
-raised inside a source into a `ComputeError` carrying only its text, so
-`_register_python_scan` parks the original under a token and raises a
-`RuntimeError` naming it, and the collect seams re-raise the original from the
-`ComputeError` (`_reraise_python_scan_failure`). Polars 2.0 propagates the
-source's own exception, its class and attributes intact, a `BaseException` or
-`MemoryError` subclass included, under every engine, in a background collect
-and through a sink (probed). The wrapper now defeats it: callers receive
-`RuntimeError: haute-python-scan-failure:<token> RatingTableMissError: …`,
-nested twice where scans stack, and the re-raise never runs because nothing is
-a `ComputeError`. A rating miss, a feature-contract mismatch, a Workbench
-Output that cannot fill its tables, a cancellation and a memory-limit breach
-raised inside a scan all lose their types, so a cancelled preview reports a
-failure, a memory breach is not classified as one, and a route answers 500
-for an error it maps to a typed response. 35 of the bounded runs' failures are
-this.
-
-**Plan:** Delete the mechanism: the marker, the bounded registry,
-`_park_python_scan_failure`, `_reraise_python_scan_failure` and its calls, and
-the wrapping in `_register_python_scan`, which keeps running the source in the
-caller's context variables. Update the execution-engine specifications, which
-state that a direct Polars collect receives a `ComputeError` naming the
-original. Keep the seam tests and make them assert the original class and
-attributes at a direct `.collect()`, `execution_collect`,
-`bounded_collect_batches` and a sink; delete the test of the parked-failure
-registry.
-
-**Acceptance:** the rating, rating-miss, Workbench Output, Model Score,
-assistant data-check, pipeline and Polars-utilities modules pass on Polars 2
-with the mechanism deleted; a custom exception class with an attribute raised
-inside a row-local scan arrives with its class and attribute at all four
-seams; an `ExecutionCancelledError` raised inside a scan during a preview ends
-that preview as cancelled.
-
-**Dependencies:** PL2-01.
-
-**Evidence:** `src/haute/_polars_utils.py::_reraise_python_scan_failure`;
-`src/haute/_polars_utils.py::_register_python_scan`;
-`tests/test_polars_utils.py::TestRowLocalPythonScan`;
-`tests/test_rating_miss_fail_loud.py::TestMissFailsLoudByDefault`;
-`specs/execution-engine/low-level.md`.
 
 ### PL2-04 — Row order is defined wherever Haute builds the query
 **Why:** On Polars 2.0 a `collect()` with the default engine runs the
