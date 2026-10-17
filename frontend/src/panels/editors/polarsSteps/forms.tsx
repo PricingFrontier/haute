@@ -22,6 +22,7 @@ import {
   BINARY_OPERATORS,
   CAST_DTYPES,
   COLUMNLESS_AGGREGATIONS,
+  DATE_FORMAT_DEFAULTS,
   DEFAULT_JOIN_ORDER,
   DTYPE_OPTIONS,
   FILL_STRATEGY_OPTIONS,
@@ -33,17 +34,23 @@ import {
   MAX_EXPR_DEPTH,
   PIVOT_AGGREGATIONS,
   WINDOW_AGGREGATIONS,
+  aggregationTakes,
   canonicalStep,
+  castTargetsFor,
   defaultArgFor,
   defaultCondition,
   defaultExpr,
   defaultLiteral,
   exprProblem,
+  exprTypeProblem,
+  functionTakes,
   joinOrderAfterHowChange,
   literal,
+  parsesText,
   suggestedAggregationName,
   type FunctionArg,
 } from "./catalogue"
+import { castFamily } from "../../../utils/polarsDtypes"
 import {
   CONTROL_CLASS,
   ColumnListField,
@@ -76,6 +83,7 @@ import { useCompletionList, type Completion } from "./useCompletionList"
 import type {
   AggregationSpec,
   CastDtype,
+  CastEntry,
   CastStep,
   ColumnAggregation,
   DropStep,
@@ -143,6 +151,7 @@ const ARG_CONSTANT_TYPES: Record<FunctionArg, readonly GlobalConstantType[]> = {
   int: ["integer"],
   number: ["integer", "float"],
   text: ["text"],
+  format: ["text"],
   scalar: ["integer", "float", "text", "boolean"],
   dtype: [],
 }
@@ -306,6 +315,10 @@ const ARG_LABELS: Record<string, string[]> = {
   split_part: ["Split on", "Part (0 = first)"],
   extract: ["Pattern (regex)", "Group (1 = first)"],
   offset_by: ["Offset (e.g. 1y, 3mo, 7d)"],
+  to_date: ["Format"],
+  to_datetime: ["Format"],
+  try_to_date: ["Format"],
+  try_to_datetime: ["Format"],
 }
 
 /** The line under the formula box while the caret is inside a call: `round(value, **decimal places**)`. */
@@ -345,7 +358,8 @@ function FormulaField({ text, onCommit, variables, constants, columns, depth }: 
   const problemId = useId()
   const [draft, setDraft] = useState(text)
   const [caret, setCaret] = useState(text.length)
-  const [problem, setProblem] = useState<{ message: string; position: number | null; text: string } | null>(null)
+  // `refused` marks a formula that was read but does something Polars 2 refuses.
+  const [problem, setProblem] = useState<{ message: string; position: number | null; text: string; refused?: boolean } | null>(null)
   const [seenText, setSeenText] = useState(text)
   if (text !== seenText) {
     setSeenText(text)
@@ -385,6 +399,11 @@ function FormulaField({ text, onCommit, variables, constants, columns, depth }: 
       const expr = parseFormula(value, variables, bare)
       const invalid = exprProblem(expr, "The formula", depth)
       if (invalid) throw new FormulaError(`${invalid} Compute part of it in an earlier step.`)
+      const refused = exprTypeProblem(expr, schema.typeOf)
+      if (refused) {
+        setProblem({ message: refused, position: null, text: value, refused: true })
+        return
+      }
       onCommit(expr)
       setProblem(null)
     } catch (error) {
@@ -472,7 +491,7 @@ function FormulaField({ text, onCommit, variables, constants, columns, depth }: 
       {call && completion.matches.length === 0 && <ArgumentTip fn={call.fn} arg={call.arg} />}
       {problem && (
         <div id={problemId} role="alert" className="mt-1 grid gap-0.5">
-          <p className="m-0 text-[11px]" style={{ color: "var(--warning)" }}>{`Not understood: ${problem.message}`}</p>
+          <p className="m-0 text-[11px]" style={{ color: "var(--warning)" }}>{problem.refused ? problem.message : `Not understood: ${problem.message}`}</p>
           {problem.position !== null && (
             <code data-testid="formula-problem-position" className="block truncate font-mono text-[11px]" style={{ color: "var(--text-muted)" }}>
               {problem.text.slice(Math.max(0, problem.position - 40), problem.position)}
@@ -511,6 +530,7 @@ function StructuredFormula({ expr, onChange, ctx, depth }: { expr: Extract<Expr,
 }
 
 function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "function" }>; onChange: (next: Expr) => void; ctx: StepFormContext }) {
+  const schema = useStepSchema()
   const spec = FUNCTIONS.find((f) => f.value === expr.fn)
   if (!spec || spec.args.length === 0) return null
   const labels = ARG_LABELS[expr.fn] ?? spec.args.map((_, i) => `Argument ${i + 1}`)
@@ -525,9 +545,26 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
         }
         const label = labels[index] ?? `Argument ${index + 1}`
         if (arg === "dtype") {
+          const receiverType = expr.operand.kind === "column" ? schema.typeOf(expr.operand.name) : null
+          const targets = castTargetsFor(receiverType).filter((target) => castFamily(receiverType) !== "text" || !parsesText(target))
+          const options = DTYPE_OPTIONS.filter((option) => targets.includes(option.value) || option.value === plain.value)
           return (
             <Field key={index} label={label}>
-              <SelectField value={String(plain.value) as CastDtype} options={DTYPE_OPTIONS} onChange={(dtype) => set(literal("text", dtype))} ariaLabel={label} />
+              <SelectField value={String(plain.value) as CastDtype} options={options} onChange={(dtype) => set(literal("text", dtype))} ariaLabel={label} />
+            </Field>
+          )
+        }
+        if (arg === "format") {
+          return (
+            <Field key={index} label={label}>
+              <ArgumentField value={value} onChange={set} constantTypes={ARG_CONSTANT_TYPES.format} plainValue={defaultArgFor("format")} plainLabel="text" ariaLabel={label}>
+                <TextField
+                  value={plain.type === "text" ? String(plain.value) : ""}
+                  onCommit={(format) => format.includes("%") && set(literal("text", format))}
+                  ariaLabel={label}
+                  mono
+                />
+              </ArgumentField>
             </Field>
           )
         }
@@ -574,6 +611,7 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
 }
 
 function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: (next: Expr) => void; ctx: StepFormContext; depth?: number }) {
+  const schema = useStepSchema()
   const typedText = typedAsFormula(expr) ? displayFormula(expr, ctx.variables, bareConstants(ctx.constants ?? [], ctx.columns)) : null
   if (typedText !== null) return <FormulaField text={typedText} onCommit={onChange} variables={ctx.variables} constants={ctx.constants ?? []} columns={ctx.columns} depth={depth} />
   const operandProps = anyOperand(ctx, depth + 1)
@@ -592,7 +630,7 @@ function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: 
           <Field label="Function">
             <SelectField
               value={expr.fn}
-              options={FUNCTIONS.map((f) => ({ value: f.value, label: f.label }))}
+              options={FUNCTIONS.filter((f) => f.value === expr.fn || expr.operand.kind !== "column" || functionTakes(f.value, schema.typeOf(expr.operand.name))).map((f) => ({ value: f.value, label: f.label }))}
               onChange={(fn) => {
                 const spec = FUNCTIONS.find((f) => f.value === fn)
                 onChange({ ...expr, fn, args: (spec?.args ?? []).map(defaultArgFor) })
@@ -635,6 +673,7 @@ function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: 
 }
 
 function WindowEditor({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "window" }>; onChange: (next: Expr) => void; ctx: StepFormContext }) {
+  const schema = useStepSchema()
   const isRank = expr.agg === "rank" || expr.agg === "dense_rank"
   const orderBy = expr.orderBy ?? []
   const setOrder = (next: typeof orderBy) => onChange(next.length ? { ...expr, orderBy: next } : omitKeys(expr, ["orderBy"]))
@@ -644,7 +683,7 @@ function WindowEditor({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "wi
         <span className="flex-1 basis-32 min-w-0">
           <SelectField
             value={expr.agg}
-            options={WINDOW_AGGREGATIONS}
+            options={WINDOW_AGGREGATIONS.filter((a) => a.value === expr.agg || aggregationTakes(a.value, expr.column ? schema.typeOf(expr.column) : null))}
             onChange={(agg) => {
               const next = omitKeys(withAggregate(expr, agg), ["descending"])
               onChange(agg === "rank" || agg === "dense_rank" ? { ...next, descending: false } : next)
@@ -802,26 +841,79 @@ function RenameForm({ step, onChange, ctx }: FormProps<RenameStep>) {
   )
 }
 
+/**
+ * A cast entry as its column's type says: a text column becoming a Date or
+ * Datetime records the text's format (starting from the ISO one), any other
+ * known type drops one, and an unknown type keeps whatever was chosen.
+ */
+function castEntryFor(entry: CastEntry, dtype: string | null): CastEntry {
+  const family = castFamily(dtype)
+  if (family === "text" && parsesText(entry.dtype)) {
+    return entry.format ? entry : { ...entry, format: DATE_FORMAT_DEFAULTS[entry.dtype] }
+  }
+  if (family === null && parsesText(entry.dtype)) return entry
+  return omitKeys(entry, ["format"])
+}
+
 function CastForm({ step, onChange, ctx }: FormProps<CastStep>) {
+  const schema = useStepSchema()
   return (
     <RowList
       rows={step.casts}
       onChange={(casts) => onChange({ ...step, casts })}
       label="Cast"
       addLabel="Add column"
-      create={(): CastStep["casts"][number] => ({ column: "", dtype: "Float64" })}
-      renderRow={(entry, set, index) => (
-        <>
-          <Words>{index === 0 ? "Change" : "and"}</Words>
-          <div className="flex-1 basis-28 min-w-0">
-            <ColumnPicker id={index === 0 ? ctx.firstFieldId : undefined} value={entry.column} onCommit={(column) => set({ ...entry, column })} suggestions={ctx.columns} ariaLabel={`Cast ${index + 1} column`} />
-          </div>
-          <Words>to</Words>
-          <div className="flex-1 basis-28 min-w-0">
-            <SelectField value={entry.dtype} options={DTYPE_OPTIONS} onChange={(dtype) => set({ ...entry, dtype })} ariaLabel={`Cast ${index + 1} type`} />
-          </div>
-        </>
-      )}
+      create={(): CastEntry => ({ column: "", dtype: "Float64" })}
+      renderRow={(entry, set, index) => {
+        const dtype = entry.column ? schema.typeOf(entry.column) : null
+        const targets = castTargetsFor(dtype)
+        const options = DTYPE_OPTIONS.filter((option) => targets.includes(option.value) || option.value === entry.dtype)
+        const parsing = parsesText(entry.dtype) && (castFamily(dtype) === "text" || (castFamily(dtype) === null && entry.format !== undefined))
+        const refused = castFamily(dtype) !== null && !targets.includes(entry.dtype)
+        return (
+          <>
+            <Words>{index === 0 ? "Change" : "and"}</Words>
+            <div className="flex-1 basis-28 min-w-0">
+              <ColumnPicker
+                id={index === 0 ? ctx.firstFieldId : undefined}
+                value={entry.column}
+                onCommit={(column) => set(castEntryFor({ ...entry, column }, schema.typeOf(column)))}
+                suggestions={ctx.columns}
+                ariaLabel={`Cast ${index + 1} column`}
+              />
+            </div>
+            <Words>to</Words>
+            <div className="flex-1 basis-28 min-w-0">
+              <SelectField value={entry.dtype} options={options} onChange={(next) => set(castEntryFor({ ...entry, dtype: next }, dtype))} ariaLabel={`Cast ${index + 1} type`} />
+            </div>
+            {parsing && (
+              <>
+                <Words>with format</Words>
+                <div className="flex-1 basis-28 min-w-0">
+                  <TextField
+                    value={entry.format ?? ""}
+                    // A text column needs its format: clearing it keeps the last one.
+                    onCommit={(format) => {
+                      if (format) set({ ...entry, format })
+                      else if (castFamily(dtype) !== "text") set(omitKeys(entry, ["format"]))
+                    }}
+                    ariaLabel={`Cast ${index + 1} format`}
+                    placeholder={parsesText(entry.dtype) ? DATE_FORMAT_DEFAULTS[entry.dtype] : undefined}
+                    mono
+                  />
+                </div>
+              </>
+            )}
+            {refused && (
+              <p role="alert" className="m-0 basis-full text-[11px]" style={{ color: "var(--warning)" }}>
+                {castFamily(dtype) === "category"
+                  ? `${entry.column} is a category, which Polars 2 casts only to text: change it to String first.`
+                  : `Polars 2 does not cast ${entry.column} from ${dtype} to ${entry.dtype}.`}
+              </p>
+            )}
+          </>
+        )
+      }}
     />
   )
 }
@@ -903,6 +995,7 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx, boxed, showFilt
   showFilter: boolean
   firstId?: string
 }) {
+  const schema = useStepSchema()
   const label = `Aggregation ${index + 1}`
   const Wrapper = boxed ? RowGroup : PlainRow
   return (
@@ -916,7 +1009,12 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx, boxed, showFilt
         </span>
         <span className="flex flex-[2] basis-48 min-w-0 items-center gap-1.5">
           <span className="flex-1 min-w-0">
-            <SelectField value={entry.agg} options={AGGREGATION_OPTIONS} onChange={(agg) => onChange(renamed(entry, withAggregate(entry, agg)))} ariaLabel={`${label} function`} />
+            <SelectField
+              value={entry.agg}
+              options={AGGREGATION_OPTIONS.filter((a) => a.value === entry.agg || aggregationTakes(a.value, entry.column ? schema.typeOf(entry.column) : null))}
+              onChange={(agg) => onChange(renamed(entry, withAggregate(entry, agg)))}
+              ariaLabel={`${label} function`}
+            />
           </span>
           {entry.agg !== "len" && (
             <>

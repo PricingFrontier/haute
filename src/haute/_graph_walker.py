@@ -51,7 +51,7 @@ from haute._execute_lazy import (
     _edge_join_recipe,
     _extract_error_line,
     _is_plain_model_score,
-    _located_step_line,
+    _located_step,
     _pick_source_frame,
     _PlannedCaptures,
     _prepare_execution,
@@ -383,6 +383,14 @@ class _NodeFrame:
     """A display walk's output column names, after the node's own shaping."""
     scored: NodeSnapshotArtifact | None = None
     scored_write: tuple[bool, Mapping[str, str]] = (False, {})
+    inputs: list[_Frame] | None = None
+    """The frames a stepped transform was given, kept until it collects: a step Polars 2
+    refuses only on rows fails there, and its locator replays their schemas."""
+
+
+def _locates_steps(fn: Callable[..., Any]) -> bool:
+    """Whether a node's function can name the step its failed run came from."""
+    return getattr(fn, "failed_step", None) is not None
 
 
 class _UpstreamFailedError(Exception):
@@ -1100,7 +1108,12 @@ class _Walk:
         if isinstance(frame, dict):
             self._finish_bundle(node_id, built)
         elif self.display:
-            self._collect(node_id, built, frame)
+            try:
+                self._collect(node_id, built, frame)
+            except Exception:
+                if built.inputs is not None:
+                    self.failed_inputs[node_id] = built.inputs
+                raise
         else:
             self.frames[node_id] = frame
             if captured or built.pass_through:
@@ -1207,6 +1220,8 @@ class _Walk:
                     node=boundary.node,
                     ordering_cache=self.output_order,
                 )
+            if inputs and self.policy.record_failures and _locates_steps(self.funcs[node_id][0]):
+                built.inputs = inputs
             return built
 
     def _check_parents(self, boundary: NodeBoundary) -> None:
@@ -1907,7 +1922,12 @@ class _Walk:
         inputs = self.failed_inputs.pop(node_id, None)
         if error_line is None and inputs is not None:
             # A lazy plan fails after its code ran, so no line came with it.
-            error_line = _located_step_line(self.funcs[node_id][0], inputs, exc)
+            located = _located_step(self.funcs[node_id][0], inputs, exc)
+            if located is not None:
+                error_line = located.line
+                if located.remedy is not None:
+                    # What to change comes first: the card's badge shows the first line.
+                    self.errors[node_id] = f"{located.remedy}\n{exc}"
         if error_line is not None:
             self.error_lines[node_id] = error_line
 

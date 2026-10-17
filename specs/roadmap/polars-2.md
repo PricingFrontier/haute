@@ -13,8 +13,8 @@ carries, quantile and rank binning) is deferred.
 The packages form two rounds. The first makes Haute correct on Polars 2 with
 CI green: the pin, every seam that breaks or silently changes, Polars'
 out-of-core spilling kept off and contained (the pin turns it on; the
-execution-engine specification records the settings), and four packages that
-change what a user sees (`PL2-06`, `PL2-07`, `PL2-12`, `PL2-19`).
+execution-engine specification records the settings), and three packages that
+change what a user sees (`PL2-07`, `PL2-12`, `PL2-19`).
 Their designs, and the spilling settings, were decided
 on 17 October 2026 by one rule: of the robust options, the one that uses least
 memory, then the fastest. Each entry records the measurement behind its
@@ -35,7 +35,6 @@ with one row, in request order ([deploy](../deploy/high-level.md)).
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | PL2-02 | Planned | P1 | Nothing Polars 1 computed is reused once Polars 2 runs. |
-| PL2-06 | Planned | P2 | The step editor renders only code Polars 2 runs, and **Change types** turns text into dates. |
 | PL2-07 | Planned | P1 | CSV inputs read as they did, or fail with a message that says what changed. |
 | PL2-12 | Planned | P2 | New Polars dtypes meet Haute's dtype vocabularies loudly or are normalised where they enter. |
 | PL2-13 | Planned | P2 | Code Haute generates and teaches runs on Polars 2 without deprecations. |
@@ -100,84 +99,6 @@ hit under an unchanged version is unaffected.
 `src/haute/execution.py::dataframe_frame_input_fingerprint`;
 `src/haute/_source_cache.py::SourceCacheIdentity`;
 `src/haute/deploy/_schema.py::deploy_schema_cache_fingerprint`.
-
-### PL2-06 — The step editor renders only code Polars 2 runs, and Change types turns text into dates
-**Why:** Rendering every step template against 17 column dtypes on both
-versions, and running the failures through Haute's renderer and executor,
-found these steps failing on 2.0 where 1.44 ran them:
-- **Change types** renders `pl.col(c).cast(pl.Date)` (and `Datetime`)
-  whatever the column's type, and the formula's `cast` and `try_cast` render
-  the same cast. Polars 2.0 refuses a cast from text to a date, datetime or
-  time, even with `strict=False`, so `try_cast` raises where it returned nulls.
-  Text columns of dates are what a CSV or JSON source usually delivers.
-- A **Filter rows** condition "is one of" with whole numbers on a float
-  column renders `is_in([100, 300])`, which 2.0 refuses as a lossy comparison
-  (`'is_in' cannot check for Float64 values in List(Int64) data`); JSON cannot
-  tell `100` from `100.0`. Integer columns with fractional members and
-  `Decimal` columns with float members fail the same way.
-- A cast from a categorical column to an integer raises (1.44 returned the
-  category codes, which was never what an analyst meant).
-- `std` and `var` aggregations raise on a duration column, and `log` and
-  `exp` raise on non-numeric input (1.44 returned nulls, nonsense, or panicked
-  on a categorical).
-- Date members of "is one of" render a same-dtype `Series`, which Polars warns
-  is ambiguous and asks to `implode`.
-The renderer turns steps into code without the input's schema, so it cannot
-choose a method from the column's type; the editor knows the column types. The
-refused cast also passes `collect_schema()` and fails only when rows are read,
-so schema resolution does not catch it at edit time. `str.to_date` without a
-format infers it from the column, so Polars does not call it row-separable and
-Haute's chunking admits it only with a literal format.
-
-**Plan:** Decided on 17 October 2026; specify in the frontend-node-editors and
-execution-engine specifications. The saved step says what it does. **Date** and
-**Datetime** stay the targets; for a text column the editor records in the step
-that the cast parses text, with a required format, and the step renders
-`str.to_date(format)` or `str.to_datetime(format)` (`strict=False` for
-`try_cast`); the formula language gains `to_date` and `to_datetime` with a
-required format. The format is what makes the parse cheap: with it Polars calls
-the parse row-separable, so chunked writes admit the step and its memory stays
-bounded, and ten million dates parsed in 0.01 seconds where inferring the
-format took 1.04. The renderer stays schema-free, the same step renders the
-same code whatever arrives, and a column that stops being text fails loudly.
-Separate **Date from text** and **Datetime from text** targets were rejected as
-equivalent with a longer type list, and passing the input schema to the
-renderer to choose the parse silently was rejected because the same step would
-render different code for different upstream data, and the code shown to the
-user would change without an edit.
-
-Independently: a numeric "is one of" renders `is_in` over its members typed
-to the column's numeric kind, which the step records from the dtype the editor
-shows: whole numbers for an integer column (a fractional member, which can
-never match, is refused in the editor), floats for a float column, and for a
-`Decimal` column decimals at the column's scale, parsed from text so they stay
-exact; the list is passed with `implode()`. Typed membership costs the same
-whatever the member count, where a comparison per member
-(`pl.any_horizontal(pl.col(c) == v, …)`) matched it up to 30 members but took
-0.57 seconds and 311 MB more on forty million rows at 1,000 members. A column
-whose numeric kind changes upstream fails loudly with the step's name; a change
-of width within a kind keeps working. Offer integer casts, `std`/`var`, `log`
-and `exp` only for column types they accept, from the dtype the editor shows;
-render date members with `implode()`. A saved step Polars 2 refuses is caught
-where the editor knows the column type, and otherwise fails at run time with
-the step's name and the replacement.
-
-**Acceptance:** each case above, rendered by Haute's renderer and run on
-Polars 2 on its own column type, returns the rows 1.44 returned, or is refused
-in the editor, or fails at run time naming the step; a text-to-date step's
-generated code shows the parsing call with its format, and one without a format
-is refused; a numeric "is one of" matches by value on integer, float and
-`Decimal` columns of every width, and one whose column changes numeric kind
-fails naming the step; the catalogue parity test covers the new options and
-functions; golden render tests gain a numeric "is one of" on a float column and
-on a `Decimal` column.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_polars_steps.py::_Renderer`;
-`src/haute/_polars_steps.py::CAST_DTYPES`;
-`frontend/src/panels/editors/polarsSteps/catalogue.ts`;
-`tests/test_polars_steps.py`; `tests/test_polars_steps_catalogue.py`.
 
 ### PL2-07 — CSV inputs read as they did, or fail with a message that says what changed
 **Why:** Polars 2.0 changes CSV reading in ways Haute can see. A `schema`
@@ -414,7 +335,7 @@ dispatched lanes above are green against the same revision with their run
 links recorded; each gap above has a test; no test sorts away an order the
 specifications promise.
 
-**Dependencies:** PL2-02, PL2-06, PL2-07, PL2-12, PL2-13 and PL2-14.
+**Dependencies:** PL2-02, PL2-07, PL2-12, PL2-13 and PL2-14.
 
 **Evidence:** `tests/test_edge_join.py`; `tests/test_execute_lazy_contracts.py`;
 `tests/test_column_lineage.py`; `tests/test_standalone_nodes.py`;

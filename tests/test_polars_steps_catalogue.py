@@ -90,6 +90,43 @@ def test_plain_lists_match_the_renderer(name: str, expected: tuple[str, ...]) ->
     assert strings(name) == list(expected)
 
 
+def test_cast_families_and_number_types_agree() -> None:
+    assert strings("CAST_FAMILIES") == list(steps.CAST_FAMILIES)
+    assert entries("NUMBER_TYPES") == list(steps.NUMBER_TYPES)
+
+
+def test_the_cast_table_agrees() -> None:
+    """The targets Change types withholds per column type are the renderer's refusals."""
+    editor = {
+        family: frozenset(re.findall(r'"(\w+)"', targets))
+        for family, targets in re.findall(
+            r"^\s+(\w+): \[(.*)\],?$", declaration("CAST_REFUSALS"), re.M
+        )
+    }
+    assert editor == steps.CAST_REFUSALS
+
+
+def test_date_format_defaults_are_formats_the_renderer_takes() -> None:
+    defaults = dict(
+        re.findall(r'^\s+(\w+): "([^"]+)",?$', declaration("DATE_FORMAT_DEFAULTS"), re.M)
+    )
+    assert set(defaults) == set(steps.DATE_PARSE_TARGETS)
+    for dtype, date_format in defaults.items():
+        rendered = steps.render_polars_steps(
+            [
+                {"id": "s", "kind": "source", "input": "quotes"},
+                {
+                    "id": "c",
+                    "kind": "cast",
+                    "casts": [{"column": "a", "dtype": dtype, "format": date_format}],
+                },
+            ],
+            ["quotes"],
+            start="input",
+        )
+        assert date_format in rendered.code
+
+
 def test_functions_and_their_argument_shapes_agree() -> None:
     declared = re.findall(
         r'\{ value: "(\w+)", label: "[^"]*", args: \[([^\]]*)\] \}', declaration("FUNCTIONS")

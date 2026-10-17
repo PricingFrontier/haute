@@ -499,7 +499,11 @@ execution-error line. A run that failed on a step's lines names that step the sa
 its card's badge giving the first line of the run's own error message in the warning
 tone. A Polars transform's lazy-plan failure (a missing column, a type mismatch) also
 arrives with an error line: the run reports the first line of the step whose plan failed,
-so that card is badged even though Polars raised the error after the code ran. A data-only
+so that card is badged even though Polars raised the error after the code ran. A step
+Polars 2 refuses only once rows arrive (a cast it does not make, such as text to a date
+without a format or a category to a number, or std or var of a duration) is found from
+the column types before each step, without reading a row, and the run's message starts
+with what to change before Polars' own words. A data-only
 error (a strict cast meeting a bad value), a transform with a Free code step, and the steps
 of a frame-mode surface still arrive without a line. Renders are tagged with
 the steps revision they were requested for, a response for an older revision never
@@ -536,6 +540,32 @@ Numeric controls parse the complete value, including scientific notation (`1e3`
 commits as 1000). Integer controls reject fractional values instead of truncating;
 empty, non-finite and below-minimum values never replace the committed value and
 report a visible validation error.
+
+A step says what it does, so the same step runs the same way whatever arrives upstream,
+and the editor offers only what Polars 2 runs on the column types it knows. Polars 2
+casts text to neither a date nor a date and time: where Change types turns a text
+column into a `Date` or `Datetime` it records the text's format (a required "Format"
+field, starting at `%Y-%m-%d`, or `%Y-%m-%d %H:%M:%S` for a date and time) and the step
+parses with it (`str.to_date(format)`, `str.to_datetime(format)`); left empty where the
+column's type is unknown, the entry is a plain cast. Formulas parse text with
+`to_date`, `to_datetime`, `try_to_date` and `try_to_datetime`, each taking a required
+format, the `try_` forms giving null where a value does not parse. Change types offers
+each column only the types Polars 2 casts it to (a category becomes text or a
+category, a duration a number, binary data text, text anything but true/false, and no
+number or date becomes a category directly), the same table the renderer holds
+(`CAST_REFUSALS`, checked against Polars by a test); a formula casting a known text
+column to a date, or a category to anything but text, is refused with the function to
+use instead; std and var are not offered for a duration, and log and exp only for
+numbers and true/false. A numeric "is one of" records the kind of number its column
+holds, from the column's type: `integer` renders its values as whole numbers
+(`[100, 300]`), `float` as floats (`[100.0, 300.0]`), and `decimal` as exact decimals
+parsed from their text, so a list of whole numbers matches a float column and `0.1`
+stays exact for a `Decimal` one. The editor refuses a fraction for a whole-number
+column and a value with more decimal places than a `Decimal` column's scale, neither of
+which can match; where the column's type is unknown the list offers the kind as a
+"Number type" select. Date values in a list are passed to Polars as one list
+(`implode()`). Where the editor does not know a column's type it offers everything, and
+a step Polars refuses fails the run on that step (see the error line below).
 
 The Add step chooser also offers **Free code** in a Code section. Its card embeds
 the shared Python code editor, starts empty, and has no explanatory text below

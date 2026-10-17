@@ -69,8 +69,10 @@ from haute._polars_steps import (
     STEPPED_NODE_TYPES,
     STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
     PolarsStepError,
+    RenderedSteps,
     render_polars_steps,
     step_input_names,
+    step_refusal,
 )
 from haute._price_contour import price_contour
 from haute._ratebook_collar import COMBINED_FACTOR_BOUNDS_KEY, parse_combined_factor_bounds
@@ -1394,10 +1396,10 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         if isinstance(steps, list) and not any(s["kind"] == "free_code" for s in steps):
             # Free code can replace the frame, and replaying it would run
             # authored code twice, so only closed-vocabulary steps are located.
-            def failed_step_line(*dfs: _Frame) -> int | None:
-                return _failed_step_line(steps, lambda program: run(program, dfs))
+            def failed_step(*dfs: _Frame) -> StepFailure | None:
+                return _failed_step(steps, lambda program: run(program, dfs))
 
-            transform_fn.failed_step_line = failed_step_line  # type: ignore[attr-defined]
+            transform_fn.failed_step = failed_step  # type: ignore[attr-defined]
 
         # A polars node with self-contained code and no upstream wiring
         # is effectively a source: there is no dataframe to receive, so
@@ -1415,34 +1417,69 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, _incomplete_transform(INCOMPLETE_TRANSFORM_MESSAGE), incoming_count == 0
 
 
-def _failed_step_line(steps: list[dict[str, Any]], run: Callable[[str], _Frame]) -> int | None:
-    """The first line of the step whose lazy plan first fails to resolve, or None.
+@dataclass(frozen=True)
+class StepFailure:
+    """The step a stepped transform's failed run came from, and what to change if known."""
 
-    A stepped transform's plan errors (a missing column, a type mismatch)
-    surface when its schema is resolved, after its code ran, so no line comes
-    with them. *run* executes a program exactly as the transform ran its code,
-    on the input frames the run built. The node's full plan is resolved first:
-    when it resolves, the failure was not the steps' plan (a strict cast
-    meeting a bad value fails only on data) and no step is named. Otherwise
-    each prefix of the steps is rendered and its schema resolved, which reads
-    no rows; the first prefix that fails names its last step.
+    line: int
+    """The first line of the step's range in the node's code."""
+    remedy: str | None = None
+    """What to change, when the step does something Polars 2 refuses (``step_refusal``)."""
+
+
+def _failed_step(steps: list[dict[str, Any]], run: Callable[[str], _Frame]) -> StepFailure | None:
+    """The step a failed run came from, or None when its rows, not its steps, failed it.
+
+    *run* executes a program exactly as the transform ran its code, on the input
+    frames the run built; nothing here reads a row. The node's full plan is
+    resolved first. When it does not resolve (a missing column, a type mismatch),
+    each prefix of the steps is rendered and its schema resolved, and the first
+    that fails names its last step. When it resolves, the failure came once rows
+    arrived: each step is checked against the schema before it for something
+    Polars 2 refuses only on rows (``step_refusal``: a cast it does not make, std
+    or var of a duration), and otherwise the failure was the data's (a strict cast
+    meeting a bad value) and no step is named.
     """
     rendered = render_polars_steps(steps, start="input")
-    if _plan_resolves(run(rendered.code)):
+
+    def schema_after(count: int) -> pl.Schema | None:
+        return _resolved_schema(run(render_polars_steps(steps[:count], start="input").code))
+
+    if _resolved_schema(run(rendered.code)) is not None:
+        for index in range(1, len(steps)):
+            schema = schema_after(index)
+            if schema is None:
+                return None
+            remedy = step_refusal(steps[index], schema)
+            if remedy is not None:
+                return StepFailure(rendered.step_lines[index][0], remedy)
         return None
+    before: pl.Schema | None = None
     for count in range(1, len(steps)):
-        if not _plan_resolves(run(render_polars_steps(steps[:count], start="input").code)):
-            return rendered.step_lines[count - 1][0]
+        after = schema_after(count)
+        if after is None:
+            return _step_failure(steps, rendered, count - 1, before)
+        before = after
     # Every shorter prefix resolves, and the whole program does not.
-    return rendered.step_lines[-1][0]
+    return _step_failure(steps, rendered, len(steps) - 1, before)
 
 
-def _plan_resolves(frame: _Frame) -> bool:
+def _step_failure(
+    steps: list[dict[str, Any]],
+    rendered: RenderedSteps,
+    index: int,
+    before: pl.Schema | None,
+) -> StepFailure:
+    """The failure at step *index*, with what to change when the schema before it says."""
+    remedy = step_refusal(steps[index], before) if before is not None else None
+    return StepFailure(rendered.step_lines[index][0], remedy)
+
+
+def _resolved_schema(frame: _Frame) -> pl.Schema | None:
     try:
-        frame.collect_schema()
+        return frame.collect_schema()
     except pl.exceptions.PolarsError:
-        return False
-    return True
+        return None
 
 
 def stepped_code_problem(

@@ -30,6 +30,7 @@ import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from types import MappingProxyType
 from typing import Any, Literal
 
@@ -60,6 +61,10 @@ __all__ = [
     "WINDOW_ONLY_AGGREGATIONS",
     "BINARY_OPERATORS",
     "CAST_DTYPES",
+    "CAST_FAMILIES",
+    "CAST_REFUSALS",
+    "DATE_PARSE_TARGETS",
+    "NUMBER_TYPES",
     "FILL_STRATEGIES",
     "FUNCTIONS",
     "JOIN_HOW",
@@ -79,7 +84,9 @@ __all__ = [
     "step_input_references",
     "render_node_steps",
     "render_polars_steps",
+    "cast_family",
     "step_fields",
+    "step_refusal",
     "validate_polars_steps",
 ]
 
@@ -354,6 +361,47 @@ CAST_DTYPES: tuple[str, ...] = (
     "Datetime",
     "Categorical",
 )
+#: The cast targets a text column reaches by parsing with a format: Polars 2 casts
+#: text to neither, so a Change types entry for them records the text's format.
+DATE_PARSE_TARGETS: dict[str, str] = {"Date": "to_date", "Datetime": "to_datetime"}
+#: The source column types the cast table tells apart (``cast_family``).
+CAST_FAMILIES: tuple[str, ...] = (
+    "integer",
+    "float",
+    "decimal",
+    "boolean",
+    "text",
+    "category",
+    "date",
+    "datetime",
+    "duration",
+    "time",
+    "binary",
+    "null",
+)
+_NUMBER_TARGETS: frozenset[str] = frozenset(
+    {"Int8", "Int16", "Int32", "Int64", "UInt8", "UInt16", "UInt32", "UInt64", "Float32", "Float64"}
+)
+#: The Change types targets Polars 2 refuses for each source column type, even with
+#: ``strict=False``: what the editor withholds and what a failed run is checked
+#: against (``step_refusal``). ``tests/test_polars_steps.py`` holds it equal to the
+#: installed Polars, and the catalogue test to the editor's copy.
+CAST_REFUSALS: dict[str, frozenset[str]] = {
+    "integer": frozenset({"Categorical"}),
+    "float": frozenset({"Categorical"}),
+    "decimal": frozenset({"Date", "Datetime", "Categorical"}),
+    "boolean": frozenset({"Categorical"}),
+    "text": frozenset({"Boolean", "Date", "Datetime"}),
+    "category": _NUMBER_TARGETS | {"Boolean", "Date", "Datetime"},
+    "date": frozenset({"Boolean", "Categorical"}),
+    "datetime": frozenset({"Boolean", "Categorical"}),
+    "duration": frozenset({"String", "Boolean", "Date", "Datetime", "Categorical"}),
+    "time": frozenset({"Boolean", "Date", "Datetime", "Categorical"}),
+    "binary": _NUMBER_TARGETS | {"Boolean", "Date", "Datetime", "Categorical"},
+    "null": frozenset(),
+}
+#: The kinds of number a membership list holds, recorded from its column's type.
+NUMBER_TYPES: tuple[str, ...] = ("integer", "float", "decimal")
 LITERAL_TYPES: tuple[str, ...] = ("number", "text", "boolean", "date", "null")
 #: What an operand may be: a column, a literal, a nested expression, a step
 #: variable or a pipeline global constant.
@@ -366,6 +414,7 @@ _ARGUMENT_CONSTANT_TYPES: dict[str, tuple[str, ...]] = {
     "int": ("integer",),
     "number": ("integer", "float"),
     "text": ("text",),
+    "format": ("text",),
     "scalar": ("integer", "float", "text", "boolean"),
     "dtype": (),
 }
@@ -404,6 +453,10 @@ FUNCTIONS: dict[str, tuple[tuple[str, ...], str]] = {
     "split_part": (("text", "integer"), "{r}.str.split({0}).list.get({1}, null_on_oob=True)"),
     "extract": (("text", "integer"), "{r}.str.extract({0}, {1})"),
     "try_cast": (("dtype",), "{r}.cast(pl.{0}, strict=False)"),
+    "to_date": (("format",), "{r}.str.to_date({0})"),
+    "to_datetime": (("format",), "{r}.str.to_datetime({0})"),
+    "try_to_date": (("format",), "{r}.str.to_date({0}, strict=False)"),
+    "try_to_datetime": (("format",), "{r}.str.to_datetime({0}, strict=False)"),
 }
 
 _STEP_KEYS: dict[str, frozenset[str]] = {
@@ -643,6 +696,147 @@ def resolve_free_code_columns(
         columns = tuple((name, str(dtype)) for name, dtype in schema.items())
         resolved.append(ResolvedFreeCode(index, columns, ""))
     return resolved
+
+
+def _finite_number(value: object) -> int | float:
+    """A membership number, already checked finite by ``_literal``."""
+    assert isinstance(value, int | float) and not isinstance(value, bool)
+    return value
+
+
+def _decimal_text(number: int | float) -> str:
+    """The exact decimal a number was written as: ``0.1`` stays ``0.1``, never exponent form."""
+    text = format(Decimal(repr(number)), "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def cast_family(dtype: pl.DataType) -> str | None:
+    """The cast table's name for a column type, or None for a type it does not cover."""
+    if dtype.is_integer():
+        return "integer"
+    if dtype.is_float():
+        return "float"
+    if isinstance(dtype, pl.Decimal):
+        return "decimal"
+    if isinstance(dtype, pl.Categorical | pl.Enum):
+        return "category"
+    if isinstance(dtype, pl.Datetime):
+        return "datetime"
+    if isinstance(dtype, pl.Duration):
+        return "duration"
+    return {
+        pl.Boolean: "boolean",
+        pl.String: "text",
+        pl.Date: "date",
+        pl.Time: "time",
+        pl.Binary: "binary",
+        pl.Null: "null",
+    }.get(type(dtype))
+
+
+def _cast_remedy(column: str, dtype: pl.DataType, target: str, *, formula: str | None) -> str:
+    """What to change when Polars 2 refuses to cast *column* of *dtype* to *target*."""
+    family = cast_family(dtype)
+    if family == "text" and target in DATE_PARSE_TARGETS:
+        if formula is not None:
+            parse = DATE_PARSE_TARGETS[target]
+            prefix = "try_" if formula == "try_cast" else ""
+            return (
+                f"{column!r} is text, which Polars 2 does not cast to {target}: parse it with "
+                f"{prefix}{parse}({column}, '%Y-%m-%d'), giving the format its dates are "
+                "written in."
+            )
+        return (
+            f"{column!r} is text, which Polars 2 does not cast to {target}: give the "
+            "Change types entry the Format its dates are written in."
+        )
+    if family == "category":
+        return (
+            f"{column!r} is a category, which Polars 2 casts only to text: change it to "
+            f"String first, then to {target}."
+        )
+    return f"Polars 2 does not cast {column!r} from {dtype} to {target}."
+
+
+def _refused_cast(
+    operand: object, target: object, schema: pl.Schema, *, formula: str | None
+) -> str | None:
+    """A remedy when a direct column operand cast to *target* is one Polars 2 refuses."""
+    if not isinstance(operand, Mapping) or operand.get("kind") != "column":
+        return None
+    column = operand.get("name")
+    if not isinstance(column, str) or column not in schema or not isinstance(target, str):
+        return None
+    family = cast_family(schema[column])
+    if family is None or target not in CAST_REFUSALS[family]:
+        return None
+    return _cast_remedy(column, schema[column], target, formula=formula)
+
+
+def _duration_spread(column: object, agg: object, schema: pl.Schema) -> str | None:
+    """A remedy for std or var of a duration column, which Polars 2 refuses."""
+    if agg not in ("std", "var") or not isinstance(column, str) or column not in schema:
+        return None
+    if not isinstance(schema[column], pl.Duration):
+        return None
+    return (
+        f"{agg} takes numbers, and {column!r} is a duration, which Polars 2 refuses: "
+        f"turn it into days first, as total_days({column})."
+    )
+
+
+def _expression_refusal(node: object, schema: pl.Schema) -> str | None:
+    """The first refused cast or duration spread anywhere inside a step's JSON."""
+    if isinstance(node, Mapping):
+        if node.get("type") == "function" and node.get("fn") in ("cast", "try_cast"):
+            args = node.get("args")
+            if isinstance(args, list) and args and isinstance(args[0], Mapping):
+                remedy = _refused_cast(
+                    node.get("operand"), args[0].get("value"), schema, formula=str(node.get("fn"))
+                )
+                if remedy is not None:
+                    return remedy
+        if "agg" in node:
+            remedy = _duration_spread(node.get("column"), node.get("agg"), schema)
+            if remedy is not None:
+                return remedy
+        children: Sequence[object] = list(node.values())
+    elif isinstance(node, list):
+        children = node
+    else:
+        return None
+    for child in children:
+        remedy = _expression_refusal(child, schema)
+        if remedy is not None:
+            return remedy
+    return None
+
+
+def step_refusal(step: Mapping[str, Any], schema: pl.Schema) -> str | None:
+    """What to change when *step*, over a frame of *schema*, does something Polars 2 refuses.
+
+    Read from the column types alone: a cast Polars 2 does not make (text to a date
+    without a format, a category to a number), and std or var of a duration. These
+    pass schema resolution and fail only once rows arrive, so a failed run checks each
+    step against the schema before it to name the step.
+    """
+    if step.get("kind") == "cast":
+        for entry in step.get("casts") or ():
+            if not isinstance(entry, Mapping):
+                continue
+            column, target = entry.get("column"), entry.get("dtype")
+            if "format" in entry:
+                if isinstance(column, str) and column in schema and schema[column] != pl.String:
+                    return (
+                        f"Change types parses {column!r} as text with a format, but "
+                        f"{column!r} is {schema[column]}: remove the format to cast it."
+                    )
+                continue
+            remedy = _refused_cast({"kind": "column", "name": column}, target, schema, formula=None)
+            if remedy is not None:
+                return remedy
+        return None
+    return _expression_refusal(step, schema)
 
 
 def _empty_frame(columns: ColumnList, owner: str) -> pl.LazyFrame:
@@ -984,11 +1178,13 @@ class _Renderer:
 
     def _condition(self, value: object, label: str) -> str:
         condition = self._object(value, label)
-        self._keys(condition, ("column", "operator", "value", "values"), label)
+        self._keys(condition, ("column", "operator", "value", "values", "numberType"), label)
         column = self._column(condition.get("column"), f"{label} column")
         operator = self._choice(condition.get("operator"), OPERATORS, f"{label} operator")
         has_value = "value" in condition
         has_values = "values" in condition
+        if "numberType" in condition and operator not in _MEMBERSHIP_OPERATORS:
+            raise self.fail(f"{label} operator {operator!r} takes no number type.")
         if operator in _COMPARISON_OPERATORS or operator in _STRING_OPERATORS:
             if not has_value or has_values:
                 raise self.fail(f"{label} operator {operator!r} needs a single value.")
@@ -1019,16 +1215,22 @@ class _Renderer:
             return f"{column}.{_NO_VALUE_OPERATORS[operator]}()"
         if has_value or not has_values:
             raise self.fail(f"{label} operator {operator!r} needs a list of values.")
-        members = self._members(condition["values"], f"{label} values")
+        members = self._members(condition["values"], f"{label} values", condition.get("numberType"))
         rendered = f"{column}.is_in({members})"
         return rendered if operator == "is_in" else f"~{rendered}"
 
-    def _members(self, value: object, label: str) -> str:
+    def _members(self, value: object, label: str, number_type: object) -> str:
+        """A membership list, its values typed as the column they are compared with.
+
+        Polars 2 compares a column only with values of its own kind: numbers are
+        written as the condition's ``numberType`` says (whole numbers, floats, or
+        decimals parsed from their exact text), and dates as one list of dates.
+        """
         if not isinstance(value, list) or not value:
             raise self.fail(f"{label} must list at least one value.")
         rendered: list[str] = []
         types: set[str] = set()
-        raw_dates: list[str] = []
+        raw: list[object] = []
         for item in value:
             operand = self._object(item, label)
             if operand.get("kind") != "literal":
@@ -1038,13 +1240,26 @@ class _Renderer:
                 raise self.fail(f"{label} cannot include null.")
             types.add(literal_type)
             rendered.append(text)
-            if literal_type == "date":
-                raw_dates.append(str(operand["value"]))
+            raw.append(operand["value"])
         if len(types) != 1:
             raise self.fail(f"{label} must all be the same type.")
-        if types == {"date"}:
-            return f"pl.Series({raw_dates!r}).str.to_date()"
-        return f"[{', '.join(rendered)}]"
+        if types != {"number"}:
+            if number_type is not None:
+                raise self.fail(f"{label} are not numbers, so they take no number type.")
+            if types == {"date"}:
+                return f"pl.Series({[str(v) for v in raw]!r}).str.to_date().implode()"
+            return f"[{', '.join(rendered)}]"
+        kind = self._choice(number_type, NUMBER_TYPES, f"{label} number type")
+        numbers = [_finite_number(v) for v in raw]
+        if kind == "integer":
+            if any(not float(n).is_integer() for n in numbers):
+                raise self.fail(f"{label} must be whole numbers to match a whole-number column.")
+            return f"[{', '.join(str(int(n)) for n in numbers)}]"
+        if kind == "float":
+            return f"[{', '.join(repr(float(n)) for n in numbers)}]"
+        texts = [_decimal_text(n) for n in numbers]
+        scale = max(len(t.partition(".")[2]) for t in texts)
+        return f"pl.Series({texts!r}).str.to_decimal(scale={scale}).implode()"
 
     def _conditions(self, step: Mapping[str, Any], label: str) -> str:
         match = self._choice(step.get("match"), ("all", "any"), f"{label} match")
@@ -1250,6 +1465,10 @@ class _Renderer:
             if literal_type != "text":
                 raise self.fail(f"{label} must be text.")
             return rendered
+        if expected == "format":
+            if literal_type != "text":
+                raise self.fail(f"{label} must be a date format such as '%Y-%m-%d'.")
+            return self._date_format(operand.get("value"), label)
         if expected == "scalar":
             if literal_type in ("date", "null"):
                 raise self.fail(f"{label} must be a number, text or true/false.")
@@ -1332,11 +1551,25 @@ class _Renderer:
         rendered: list[str] = []
         for i, entry in enumerate(casts):
             entry = self._object(entry, f"Cast {i + 1}")
-            self._keys(entry, ("column", "dtype"), f"Cast {i + 1}")
+            self._keys(entry, ("column", "dtype", "format"), f"Cast {i + 1}")
             column = self._column(entry.get("column"), f"Cast {i + 1} column")
             dtype = self._choice(entry.get("dtype"), CAST_DTYPES, f"Cast {i + 1} type")
-            rendered.append(f"{column}.cast(pl.{dtype})")
+            if "format" not in entry:
+                rendered.append(f"{column}.cast(pl.{dtype})")
+                continue
+            if dtype not in DATE_PARSE_TARGETS:
+                raise self.fail(
+                    f"Cast {i + 1} has a format, which only a Date or Datetime cast parses with."
+                )
+            date_format = self._date_format(entry.get("format"), f"Cast {i + 1} format")
+            rendered.append(f"{column}.str.{DATE_PARSE_TARGETS[dtype]}({date_format})")
         return f"df = df.with_columns({', '.join(rendered)})"
+
+    def _date_format(self, value: object, label: str) -> str:
+        """A Polars date format, rendered: text with at least one ``%`` directive."""
+        if not isinstance(value, str) or "%" not in value:
+            raise self.fail(f"{label} must be a date format such as '%Y-%m-%d'.")
+        return repr(value)
 
     def _render_sort(self, step: Mapping[str, Any]) -> str:
         keys = step["keys"]

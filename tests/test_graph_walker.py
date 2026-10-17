@@ -113,6 +113,7 @@ def test_a_sink_walk_hands_back_the_recipes_a_full_write_is_chunked_by(
                 NodeType.EDGE_JOIN,
                 how="left",
                 on=["k"],
+                maintainOrder="left_right",
             ),
             _node(
                 "shaped",

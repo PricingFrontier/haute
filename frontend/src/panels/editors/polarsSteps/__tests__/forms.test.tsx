@@ -1171,3 +1171,152 @@ describe("a new Add column step", () => {
     })
   })
 })
+
+
+describe("steps offer only what Polars 2 runs on the column types the editor knows", () => {
+  afterEach(cleanup)
+
+  const typed = (columns: Array<[string, string]>) =>
+    schemaFor({ columns: columns.map(([name, dtype]) => ({ name, dtype, made: false })), complete: true, exact: true })
+  const contextFor = (columns: Array<[string, string]>): StepFormContext => ({
+    ...ctx,
+    columns: columns.map(([name]) => name),
+    schema: typed(columns),
+  })
+
+  it("Change types parses a text column into a date with its format", () => {
+    const spy = vi.fn()
+    const context = contextFor([["start", "String"]])
+    render(<StatefulIn initial={{ id: "c", kind: "cast", casts: [{ column: "start", dtype: "Float64" }] }} spy={spy} context={context} />)
+
+    expect(optionValues(screen.getByLabelText("Cast 1 type"))).not.toContain("Boolean")
+    fireEvent.change(screen.getByLabelText("Cast 1 type"), { target: { value: "Date" } })
+    expect(spy).toHaveBeenLastCalledWith({ id: "c", kind: "cast", casts: [{ column: "start", dtype: "Date", format: "%Y-%m-%d" }] })
+
+    const format = screen.getByLabelText("Cast 1 format")
+    fireEvent.change(format, { target: { value: "%d/%m/%Y" } })
+    fireEvent.blur(format)
+    expect(spy).toHaveBeenLastCalledWith({ id: "c", kind: "cast", casts: [{ column: "start", dtype: "Date", format: "%d/%m/%Y" }] })
+    expect(summarizeStep(spy.mock.calls.at(-1)?.[0] as Step)).toBe("start → Date from '%d/%m/%Y'")
+    // A text column keeps its format: clearing the box does not turn the parse into a cast.
+    const calls = spy.mock.calls.length
+    fireEvent.change(format, { target: { value: "" } })
+    fireEvent.blur(format)
+    expect(spy.mock.calls.length).toBe(calls)
+
+    fireEvent.change(screen.getByLabelText("Cast 1 type"), { target: { value: "String" } })
+    expect(spy).toHaveBeenLastCalledWith({ id: "c", kind: "cast", casts: [{ column: "start", dtype: "String" }] })
+    expect(screen.queryByLabelText("Cast 1 format")).not.toBeInTheDocument()
+  })
+
+  it("Change types offers a category only text, and says why a saved number cast fails", () => {
+    const context = contextFor([["band", "Categorical"]])
+    render(<StatefulIn initial={{ id: "c", kind: "cast", casts: [{ column: "band", dtype: "Int64" }] }} spy={vi.fn()} context={context} />)
+
+    expect(optionValues(screen.getByLabelText("Cast 1 type"))).toEqual(["Int64", "String", "Categorical"])
+    expect(screen.getByRole("alert")).toHaveTextContent("band is a category, which Polars 2 casts only to text: change it to String first.")
+  })
+
+  it("Change types offers every type, and no format, while the column's type is unknown", () => {
+    render(<StatefulIn initial={{ id: "c", kind: "cast", casts: [{ column: "start", dtype: "Date" }] }} spy={vi.fn()} context={ctx} />)
+
+    expect(optionValues(screen.getByLabelText("Cast 1 type"))).toHaveLength(15)
+    expect(screen.queryByLabelText("Cast 1 format")).not.toBeInTheDocument()
+  })
+
+  it("a membership list records the kind of number its column holds", () => {
+    const spy = vi.fn()
+    const context = contextFor([["claims", "Int64"]])
+    const step: Step = { id: "f", kind: "filter", match: "all", conditions: [{ column: "claims", operator: "is_in", values: [] }] }
+    render(<StatefulIn initial={step} spy={spy} context={context} />)
+
+    fireEvent.change(screen.getByLabelText("Filter condition 1 values type"), { target: { value: "number" } })
+    expect(screen.queryByLabelText("Filter condition 1 values number type")).not.toBeInTheDocument()
+    const value = screen.getByLabelText("Filter condition 1 values new value")
+    fireEvent.change(value, { target: { value: "2" } })
+    fireEvent.blur(value)
+    fireEvent.click(screen.getByRole("button", { name: "Filter condition 1 values: add value" }))
+
+    const next = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>
+    expect(next.conditions[0]).toEqual({ column: "claims", operator: "is_in", values: [{ kind: "literal", type: "number", value: 2 }], numberType: "integer" })
+  })
+
+  it("a membership list refuses a value a Decimal column can never match", () => {
+    const spy = vi.fn()
+    const context = contextFor([["premium", "Decimal(precision=10, scale=2)"]])
+    const step: Step = { id: "f", kind: "filter", match: "all", conditions: [{ column: "premium", operator: "is_in", values: [] }] }
+    render(<StatefulIn initial={step} spy={spy} context={context} />)
+
+    fireEvent.change(screen.getByLabelText("Filter condition 1 values type"), { target: { value: "number" } })
+    const value = screen.getByLabelText("Filter condition 1 values new value")
+    fireEvent.change(value, { target: { value: "2.505" } })
+    fireEvent.blur(value)
+    fireEvent.click(screen.getByRole("button", { name: "Filter condition 1 values: add value" }))
+
+    expect(screen.getByRole("alert")).toHaveTextContent("2.505 has more decimal places than the column's 2, so it can never match.")
+    expect(spy.mock.calls.some(([next]) => (next as Extract<Step, { kind: "filter" }>).conditions[0].values?.length)).toBe(false)
+  })
+
+  it("a membership list asks for the number type while its column's type is unknown", () => {
+    const spy = vi.fn()
+    const step: Step = { id: "f", kind: "filter", match: "all", conditions: [{ column: "premium", operator: "is_in", values: [{ kind: "literal", type: "number", value: 100 }], numberType: "float" }] }
+    render(<StatefulIn initial={step} spy={spy} context={ctx} />)
+
+    fireEvent.change(screen.getByLabelText("Filter condition 1 values number type"), { target: { value: "decimal" } })
+    const next = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>
+    expect(next.conditions[0].numberType).toBe("decimal")
+  })
+
+  it("a formula refuses a cast Polars 2 does not make, naming the parse to use", () => {
+    const spy = vi.fn()
+    const context = contextFor([["start", "String"], ["region", "String"]])
+    const step: Step = { id: "w", kind: "with_column", name: "d", expr: parseFormula("start") }
+    render(<StatefulIn initial={step} spy={spy} context={context} />)
+    const box = screen.getByLabelText("Formula")
+
+    fireEvent.change(box, { target: { value: "try_cast(start, Date)" } })
+    fireEvent.blur(box)
+    expect(screen.getByText("start is text, which Polars 2 does not cast to Date: parse it with try_to_date(start, '%Y-%m-%d').")).toBeInTheDocument()
+
+    fireEvent.change(box, { target: { value: "log(region)" } })
+    fireEvent.blur(box)
+    expect(screen.getByText("log() takes numbers, and region is String.")).toBeInTheDocument()
+
+    fireEvent.change(box, { target: { value: "try_to_date(start, '%Y-%m-%d')" } })
+    fireEvent.blur(box)
+    expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>).expr).toMatchObject({
+      type: "function",
+      fn: "try_to_date",
+      args: [{ kind: "literal", type: "text", value: "%Y-%m-%d" }],
+    })
+  })
+
+  it("std and var are not offered for a duration", () => {
+    const context = contextFor([["wait", "Duration(time_unit='us')"], ["premium", "Float64"]])
+    const step: Step = { id: "g", kind: "group_by", keys: [], aggregations: [{ column: "wait", agg: "mean", name: "wait_mean" }] }
+    render(<StatefulIn initial={step} spy={vi.fn()} context={context} />)
+
+    const functions = optionValues(screen.getByLabelText("Aggregation 1 function"))
+    expect(functions).toContain("mean")
+    expect(functions).not.toContain("std")
+    expect(functions).not.toContain("var")
+  })
+})
+
+describe("column type families", () => {
+  it("name every type Polars prints, and a Decimal's scale", async () => {
+    const { castFamily, decimalScale } = await import("../../../../utils/polarsDtypes")
+    expect(castFamily("UInt16")).toBe("integer")
+    expect(castFamily("Float32")).toBe("float")
+    expect(castFamily("Decimal(precision=10, scale=2)")).toBe("decimal")
+    expect(castFamily("Categorical")).toBe("category")
+    expect(castFamily("Enum(categories=['a'])")).toBe("category")
+    expect(castFamily("Datetime(time_unit='us', time_zone=None)")).toBe("datetime")
+    expect(castFamily("Duration(time_unit='us')")).toBe("duration")
+    expect(castFamily("String")).toBe("text")
+    expect(castFamily("List(Int64)")).toBeNull()
+    expect(castFamily(null)).toBeNull()
+    expect(decimalScale("Decimal(precision=10, scale=2)")).toBe(2)
+    expect(decimalScale("Float64")).toBeNull()
+  })
+})
