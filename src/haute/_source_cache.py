@@ -34,6 +34,7 @@ from haute._file_lock import (
 from haute._file_ops import atomic_write_text, ensure_disk_headroom
 from haute._hashing import content_hash
 from haute._logging import get_logger
+from haute._map_columns import map_entries_frame, map_entries_table
 
 if TYPE_CHECKING:
     from haute._execution_context import ExecutionContext
@@ -815,8 +816,10 @@ class SourceCacheStore:
         context: SourceCacheBuildContext,
     ) -> Mapping[str, str]:
         if isinstance(output, pl.LazyFrame):
-            # Sliced a chunk at a time where the source can be sliced.
-            written = write_parts(directory, output, fast_checkpoint=True)
+            # Sliced a chunk at a time where the source can be sliced. A map
+            # column becomes a list of key-value structs with the entries Polars
+            # read (see haute._map_columns).
+            written = write_parts(directory, map_entries_frame(output), fast_checkpoint=True)
             return written.digests
         path = directory / part_name(0)
         if isinstance(output, pl.DataFrame) or not isinstance(output, Iterable):
@@ -836,6 +839,9 @@ class SourceCacheStore:
                     raise SourceCacheBuildError(
                         "builder iterator must yield Arrow RecordBatch or Table"
                     )
+                # Every map entry survives as a list of key-value structs; Polars'
+                # Parquet reader would keep only a repeated key's last value.
+                table = map_entries_table(table)
                 if writer is None:
                     writer = pq.ParquetWriter(path, table.schema)
                 ensure_disk_headroom(directory, table.nbytes)

@@ -33,17 +33,25 @@ arguments decode via the struct-capable codec in ``_polars_dtypes``.
 from __future__ import annotations
 
 import importlib.util
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
 if TYPE_CHECKING:
+    import pyarrow as pa
+
     from haute._chunked_writes import WriteRecipe
     from haute._execution_context import ExecutionContext
 
 import polars as pl
 
 from haute._execution_context import ExecutionProfile
+from haute._map_columns import (
+    iter_parquet_map_entries,
+    map_column_names,
+    parquet_map_column_names,
+)
 from haute._polars_dtypes import parse_schema_mapping
 from haute._polars_io_schema import (
     installed_provides_callable,
@@ -1077,6 +1085,106 @@ def read_polars_input_for_snapshot(
     if fmt.needs_schema_when_bounded and not _declares_full_schema(arguments):
         arguments["infer_schema_length"] = None
     return _invoke_polars_input(fmt, callable_name, config, arguments), warning_code
+
+
+def refuse_direct_map_columns(path: str, frame: pl.LazyFrame) -> pl.LazyFrame:
+    """*frame*, a direct Parquet scan of *path*, unless the file holds a map column.
+
+    Polars' Parquet reader keeps only the last value of a key a map repeats, so
+    a direct scan would change the data without a word. The scan's schema comes
+    from the file's footer, so no row is read before the refusal; a snapshot
+    build reads such a file through pyarrow instead (``haute._map_columns``).
+    """
+    maps = map_column_names(frame.collect_schema())
+    if maps:
+        raise PolarsIoConfigError(
+            f"The Parquet file {path!r} has map column(s) {maps}, which a direct scan would "
+            "read keeping only the last value of a repeated key. Give the Data Input mode "
+            '"read" in the pipeline file: Haute then copies the file into a snapshot through '
+            "pyarrow, which keeps every entry, each map a list of key-value structs."
+        )
+    return frame
+
+
+# A Parquet file with a map column is snapshotted through pyarrow, which applies
+# these arguments itself.
+_PARQUET_MAP_READ_ARGUMENTS = frozenset({"columns", "n_rows"})
+# Arguments that change only how fast Polars reads one file, not what it returns.
+_PARQUET_MAP_READ_NEUTRAL_ARGUMENTS = frozenset(
+    {"cache", "glob", "low_memory", "memory_map", "parallel", "use_pyarrow", "use_statistics"}
+)
+
+
+def _parquet_map_read_columns(path: Path, requested: Any) -> list[str] | None:
+    """The configured ``columns`` as the file's column names, in the order given."""
+    if requested is None:
+        return None
+    if isinstance(requested, str) or not isinstance(requested, list | tuple):
+        raise PolarsIoConfigError("columns must list column names or positions.")
+    names = list(pl.read_parquet_schema(path))
+    resolved: list[str] = []
+    for item in requested:
+        if isinstance(item, int) and not isinstance(item, bool):
+            if not 0 <= item < len(names):
+                raise PolarsIoConfigError(
+                    f"columns position {item} is outside the file's {len(names)} columns."
+                )
+            resolved.append(names[item])
+        elif isinstance(item, str):
+            if item not in names:
+                raise PolarsIoConfigError(f"columns names {item!r}, which the file does not have.")
+            resolved.append(item)
+        else:
+            raise PolarsIoConfigError("columns must list column names or positions.")
+    if len(set(resolved)) != len(resolved):
+        raise PolarsIoConfigError("columns names a column more than once.")
+    return resolved
+
+
+def read_parquet_map_entries_for_snapshot(
+    config: Mapping[str, Any],
+) -> Iterator[pa.Table] | None:
+    """A Parquet file input's rows through pyarrow when the file holds a map column.
+
+    Returns ``None`` for any other input, which a snapshot build reads with
+    :func:`read_polars_input_for_snapshot`. pyarrow keeps every entry of a map
+    that repeats a key, where Polars' Parquet reader keeps the last, and reads
+    one row group at a time (``haute._map_columns``). It applies ``columns`` and
+    ``n_rows`` itself; any other argument that changes the rows is refused by
+    name, since this read cannot apply it.
+    """
+    fmt = format_for_config(config)
+    if fmt.name != "parquet":
+        return None
+    path = Path(_resolve_input_source(fmt, config)[0])
+    if not path.is_file() or not parquet_map_column_names(path):
+        return None
+    mode, _build_class, _warning_code = snapshot_input_plan(fmt, config)
+    owner, callable_name = input_callable_key(fmt, mode)
+    arguments = validate_arguments(fmt, owner, callable_name, config.get("arguments") or {})
+    refused = sorted(
+        name
+        for name, value in arguments.items()
+        if name not in _PARQUET_MAP_READ_ARGUMENTS | _PARQUET_MAP_READ_NEUTRAL_ARGUMENTS
+        and value is not None
+        and value is not False
+    )
+    if refused:
+        raise PolarsIoConfigError(
+            f"The Parquet file {config['path']!r} has a map column, so Haute reads it through "
+            "pyarrow to keep every entry, and that read applies only columns and n_rows: "
+            f"remove {refused}, or do their work in a later node."
+        )
+    n_rows = arguments.get("n_rows")
+    if n_rows is not None and (
+        not isinstance(n_rows, int) or isinstance(n_rows, bool) or n_rows < 0
+    ):
+        raise PolarsIoConfigError("n_rows must be a whole number of rows, 0 or more.")
+    return iter_parquet_map_entries(
+        path,
+        columns=_parquet_map_read_columns(path, arguments.get("columns")),
+        n_rows=n_rows,
+    )
 
 
 # Rows a schema-only resolution reads to infer column types when an input has

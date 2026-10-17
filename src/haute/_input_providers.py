@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
@@ -26,13 +26,16 @@ from haute._execution_context import (
 )
 from haute._hashing import content_hash_bytes
 from haute._json_shred._source_proof import file_signature
+from haute._map_columns import map_entries_frame
 from haute._polars_io_registry import (
     PolarsIoConfigError,
     anchor_config_source_path,
     data_input_is_direct,
     format_for_config,
+    read_parquet_map_entries_for_snapshot,
     read_polars_input,
     read_polars_input_for_snapshot,
+    refuse_direct_map_columns,
     resolve_input_mode,
     scan_polars_input_for_schema,
     scanner_rejected_arguments,
@@ -46,6 +49,9 @@ from haute._source_cache import (
     SourceCacheIdentity,
     SourceCacheStore,
 )
+
+if TYPE_CHECKING:
+    import pyarrow as pa
 
 
 class InputSnapshotMissingError(PolarsIoConfigError):
@@ -242,8 +248,11 @@ class _PolarsSnapshotBuilder:
     build_class: BuildClass
     warning_code: str | None = None
 
-    def build(self, context: SourceCacheBuildContext) -> pl.LazyFrame:
+    def build(self, context: SourceCacheBuildContext) -> pl.LazyFrame | Iterator[pa.Table]:
         context.checkpoint()
+        tables = read_parquet_map_entries_for_snapshot(self.config)
+        if tables is not None:
+            return tables
         frame, _warning_code = read_polars_input_for_snapshot(self.config)
         return frame
 
@@ -390,7 +399,9 @@ def resolve_data_input(
     validated = validate_data_input_config(config)
     if data_input_is_direct(validated):
         anchored = _resolved_config_path(validated, base_dir)
-        return read_polars_input(anchored, profile=profile)
+        return refuse_direct_map_columns(
+            validated["path"], read_polars_input(anchored, profile=profile)
+        )
 
     cache_store = store or SourceCacheStore(_cache_root())
     try:
@@ -439,7 +450,10 @@ def _infer_input_schema(
     if not Path(str(anchored["path"])).is_file():
         raise PolarsIoConfigError(f"Data Input file {config['path']!r} does not exist.")
     frame, inference_rows = scan_polars_input_for_schema(anchored)
-    return frame, InferredInputSchema(format=fmt.name, inference_rows=inference_rows)
+    # The schema the snapshot will hold: its build turns every map into entries.
+    return map_entries_frame(frame), InferredInputSchema(
+        format=fmt.name, inference_rows=inference_rows
+    )
 
 
 def lease_input_generation(

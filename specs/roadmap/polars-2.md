@@ -13,8 +13,8 @@ carries, quantile and rank binning) is deferred.
 The packages form two rounds. The first makes Haute correct on Polars 2 with
 CI green: the pin, every seam that breaks or silently changes, Polars'
 out-of-core spilling kept off and contained (the pin turns it on; the
-execution-engine specification records the settings), and two packages that
-change what a user sees (`PL2-12`, `PL2-19`).
+execution-engine specification records the settings), and a package that
+changes what a user sees (`PL2-19`).
 Their designs, and the spilling settings, were decided
 on 17 October 2026 by one rule: of the robust options, the one that uses least
 memory, then the fastest. Each entry records the measurement behind its
@@ -28,14 +28,19 @@ run's seed selects the same rows, and its charts the same samples and cuts, what
 order the prepared rows arrive in; a row limit's sample alone still follows the
 pipeline's order ([modelling](../modelling/high-level.md)). Every join Haute builds
 now states its row order, and a deployment proves it answers each quote of a request
-with one row, in request order ([deploy](../deploy/high-level.md)).
+with one row, in request order ([deploy](../deploy/high-level.md)). Polars 2's new
+dtypes meet Haute's vocabularies loudly: a categorical in a named category pool is a
+categorical everywhere, a column holding a 128-bit integer is refused with the cast that
+fixes it before a model, a feature contract or a deploy signature meets it, and a map
+column reaches a pipeline as a list of key-value structs holding every entry, while a
+direct scan of a Parquet file holding one is refused
+([io-layer](../io-layer/low-level.md)).
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | PL2-02 | Planned | P1 | Nothing Polars 1 computed is reused once Polars 2 runs. |
-| PL2-12 | Planned | P2 | New Polars dtypes meet Haute's dtype vocabularies loudly or are normalised where they enter. |
 | PL2-13 | Planned | P2 | Code Haute generates and teaches runs on Polars 2 without deprecations. |
 | PL2-14 | Planned | P2 | The operation registry and analysers describe Polars 2. |
 | PL2-15 | Planned | P2 | The test suite asserts behaviour rather than Polars 1 accidents. |
@@ -79,7 +84,8 @@ generation as re-described, never corrupt. A generation whose parts hold a
 physical Parquet map column (a Databricks snapshot keeps the source's Arrow
 schema when it writes its parts) is the exception: a Polars 2 scan would
 collapse its duplicate keys while the digests still matched, so it is
-re-encoded when it is opened, as `PL2-12` decided: from its own local parts
+re-encoded when it is opened, as the io-layer specification's map policy requires: from
+its own local parts
 through pyarrow into a new generation, one row group at a time, with no
 provider fetch.
 
@@ -91,105 +97,13 @@ Arrow-written snapshot with a map column holding a duplicated key, opened under
 the new version, keeps every entry without fetching from its provider; a cache
 hit under an unchanged version is unaffected.
 
-**Dependencies:** `PL2-12` for map-bearing generations.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_node_snapshots.py::NODE_SNAPSHOT_EXECUTION_SEMANTICS_VERSION`;
 `src/haute/execution.py::PREVIEW_EXECUTION_SEMANTICS_VERSION`;
 `src/haute/execution.py::dataframe_frame_input_fingerprint`;
 `src/haute/_source_cache.py::SourceCacheIdentity`;
 `src/haute/deploy/_schema.py::deploy_schema_cache_fingerprint`.
-
-### PL2-12 — New Polars dtypes meet Haute's dtype vocabularies loudly or are normalised where they enter
-**Status:** part 1 of 2 delivered on 17 October 2026: category pools are read,
-written and detected by base type (a `Categorical("lexical")` feature trains as
-categorical, and a rating descriptor of any pool is `{"kind": "Categorical"}`);
-the codec round-trips every dtype class Polars 2 exports or refuses it (`Map`,
-`Extension`), tested over all of them; a column holding a 128-bit integer is
-refused with the cast message by the training job and the train route (before
-anything is written, because pyarrow cannot open a Parquet file that holds
-one), by the predict frame, by a deploy's signature and by deploy scoring's
-contract check; the `Decimal` widening is stated in the io-layer specification.
-Part 2, map columns on every path, remains. Found while delivering part 1, and
-left for a decision: a bounded Parquet write and the pyarrow metadata reads (the
-files route, the optimiser's solver input, RAM estimates, the source cache) fail
-on a 128-bit integer column with pyarrow's own error rather than Haute's.
-**Why:** Rendered dtype strings are identical across versions for every
-dtype 1.44 produced, so recorded contracts and schemas still compare. What
-changes is which dtype a pipeline produces:
-- `Int64` or `Int32` combined with `UInt64` now gives `Int128` (1.44 gave
-  `Float64`). The feature contract records an `Int128` column as `Int64`
-  (`contract_dtype_name`) and MLflow `long`; `to_arrow()` and `to_pandas()`
-  raise `ArrowInvalid` on it and `to_numpy()` raises a `PanicException`, a
-  `BaseException` that escapes `except Exception`, at the training, metrics,
-  SHAP, pyfunc and served-model conversion sites; deploy has no MLflow type for
-  it.
-- Arrow, Parquet and Iceberg map columns load as `Map` (1.44: a list of
-  key-value structs) and unknown Arrow extension types as `Extension` (1.44:
-  their storage type). Haute's dtype codec cannot round-trip either
-  (`dtype_to_spec` falls back to the rendered string, which `parse_dtype`
-  refuses), deploy has no MLflow type for them, and arithmetic, a cast to text
-  and a CSV write all fail on them. A Databricks table fetched as Arrow or a
-  Parquet file with a map column reaches a Data Input this way.
-- `pl.Categorical("lexical")`, 1.x's ordering spelling, now makes a named
-  category pool, which `parse_rendered_dtype` cannot read back and which the
-  training job's `dtype in (pl.Utf8, pl.Categorical, pl.String)` check does not
-  recognise as categorical.
-- `round`, `floor`, `ceil` and `sign` widen a `Decimal`'s precision by one, so
-  recorded dtype strings change for the same pipeline.
-
-**Plan:** Decided on 17 October 2026; specify in the io-layer, modelling and
-deploy specifications. One policy covers every path a source takes into a
-pipeline: a direct Parquet scan (which bypasses snapshots), an input-snapshot
-build and schema-only resolution. Polars 2 repairs duplicate keys while it
-reads a Parquet map (the last value wins), and it does so even when the scan
-asks for the 1.44 shape with a `List(Struct({key, value}))` schema, the
-workaround the upgrade guide offers (probed: a row holding `a: 1, a: 2, b: 3`
-came back as `a: 2, b: 3` either way, where 1.44 kept all three). pyarrow keeps
-them, and its cast from a map to a list of key-value structs loses nothing and
-copies nothing (probed: the cast shared the map's buffers and allocated no
-memory). A map column is therefore converted to a list of key-value structs at
-the Arrow level, where Haute holds the data before Polars reads it: a Databricks
-fetch, an input-snapshot build, and an existing generation whose parts still
-hold a physical map column, re-encoded from its local parts one row group at a
-time as `PL2-02` describes, so its memory stays at one row group. Every entry
-survives. A map column in a Parquet file Haute scans directly is refused,
-detected from the file's schema before Polars reads it, with a message offering
-the snapshot-backed route. An unknown extension column loads as its storage
-type, which loses nothing and costs nothing, through Polars' documented
-`POLARS_UNKNOWN_EXTENSION_TYPE_BEHAVIOR=load_as_storage`, which every process
-Haute starts already sets with its other Polars settings
-(`src/haute/_polars_environment.py`), so direct scans and user Data Inputs are
-covered alike. Both are recorded in the source's schema
-until `PL2-21` gives `Map` a place in the vocabularies. Adopting Polars 2's
-`Map` was rejected because duplicate keys would collapse to the last value
-without a word; refusing map and extension columns on every path was rejected
-because it saves nothing (the cast copies nothing) and would refuse Databricks
-tables with map columns that Haute reads today.
-Independently: refuse `Int128` and `UInt128` in feature contracts and served
-signatures with a message to cast upstream, as `Decimal` is refused, and
-convert them explicitly at the conversion sites; make the codec round-trip or
-refuse every dtype Polars 2 can produce; read and detect categorical pools by
-base type; and state the `Decimal` widening.
-
-**Acceptance:** a pipeline producing `Int128` fails at training or deploy with
-the cast message instead of a panic; a map column with a duplicated key keeps
-every entry and value through a Databricks fetch, a snapshot build, an existing
-Arrow-written generation opened under Polars 2 and schema-only resolution, and
-a direct scan of such a file is refused before Polars reads it; the re-encode of
-an existing generation holds no more than one row group in memory; an unknown
-extension column loads as its storage type on each path; the codec's round-trip
-test covers every dtype Polars 2 can produce or its refusal; a
-`Categorical("lexical")` column trains as categorical.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_polars_dtypes.py::contract_dtype_name`;
-`src/haute/_polars_dtypes.py::dtype_to_spec`;
-`src/haute/_polars_dtypes.py::parse_rendered_dtype`;
-`src/haute/_polars_dtypes.py::rendered_dtype_mlflow_type_name`;
-`src/haute/deploy/_mlflow.py`; `src/haute/modelling/_training_job.py`;
-`src/haute/_source_cache.py`; `src/haute/_databricks_io.py`;
-`src/haute/_input_providers.py`.
 
 ### PL2-13 — Code Haute generates and teaches runs on Polars 2 without deprecations
 **Why:** The runnable reference pipeline (`examples/reference/main.py`) and
@@ -297,7 +211,7 @@ dispatched lanes above are green against the same revision with their run
 links recorded; each gap above has a test; no test sorts away an order the
 specifications promise.
 
-**Dependencies:** PL2-02, PL2-12, PL2-13 and PL2-14.
+**Dependencies:** PL2-02, PL2-13 and PL2-14.
 
 **Evidence:** `tests/test_edge_join.py`; `tests/test_execute_lazy_contracts.py`;
 `tests/test_column_lineage.py`; `tests/test_standalone_nodes.py`;
@@ -459,8 +373,8 @@ Polars fails the guard with its message, not a solve.
 **Why:** Polars 2.0 adds a `Map` dtype and reads Arrow, Parquet and Iceberg
 maps as `Map` with `dict` values. A source whose object keys are data rather
 than schema (claims by peril, factors by name) is flattened or normalised
-today. The package is deferred because it adds capability; until it is taken,
-`PL2-12` decides how a map column enters.
+today. The package is deferred because it adds capability; until it is taken, a map
+column enters as a list of key-value structs (io-layer specification, *Map columns*).
 
 **Plan:** If reopened, decide where a `Map` may appear (API Input tables, Data
 Input from Parquet or Databricks) and how the editor, contracts and the deploy
@@ -468,7 +382,7 @@ schema carry it.
 
 **Acceptance:** Defined by the decision.
 
-**Dependencies:** PL2-12; a source that needs it.
+**Dependencies:** A source that needs it.
 
 **Evidence:** `src/haute/_json_shred/_shred.py`; `src/haute/_polars_dtypes.py`.
 
