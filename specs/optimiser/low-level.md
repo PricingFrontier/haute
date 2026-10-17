@@ -179,7 +179,14 @@ its native extension `price_contour._price_contour` and collects **every** probl
   (`REQUIRED_PARAMETERS`, checked with `inspect.signature`, including `cancel` on
   `apply_from_grid` and `RatebookOptimiser.evaluate`; PyO3 classes are covered by the symbol
   check only);
-- a failed import, chained as the error's cause.
+- a failed import, chained as the error's cause;
+- when nothing above failed, a one-row frame that does not pass through the native module
+  and back (`ApplyOptimiser.apply` on one quote with one scenario). The native module moves
+  frames through Polars' private Python methods (`Series._import_arrow_from_c` among them),
+  which no public API pins, so a Polars that renames one is refused here, by name, rather
+  than ending a solve in a Rust panic (a `BaseException`, caught as one; an interrupt still
+  propagates). A test removes that method in a fresh process, since the native module keeps
+  the method once it has used it.
 
 The message names the installed version, the required specifier, the module path, the install
 source (`editable checkout <path>` or `direct URL <url>` from PEP 610 `direct_url.json`, else

@@ -196,6 +196,10 @@ spills does not fail on a thread start.
 `tests/test_native_memory_limit.py`; `tests/test_worker_isolation.py`.
 
 ### PL2-20 — The price_contour binary boundary is guarded against Polars' private API
+**Status:** since 17 October 2026 the guard passes a one-row frame through the native
+module when it first verifies the install, and a Polars without `Series._import_arrow_from_c`
+fails it by name (the acceptance below). Asking the price-contour project for a release
+built on a pyo3-polars line for Polars 2 remains.
 **Why:** price-contour 0.6.0's native module embeds pyo3-polars 0.25 with the
 Polars 0.52 Rust crates and moves frames through Polars' private Python methods
 (`Series._import_arrow_from_c`, `_newest_compat_level`) and

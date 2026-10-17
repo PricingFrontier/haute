@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import importlib
 import json
+import subprocess
+import sys
 import types
 from collections.abc import Iterator
 from importlib import metadata
@@ -446,3 +448,27 @@ def test_an_incompatible_install_refuses_to_deploy_with_the_guard_diagnosis(
 
     assert isinstance(caught.value.__cause__, PriceContourCompatibilityError)
     assert "version 0.2.7 does not satisfy >=0.6.0,<0.7" in str(caught.value)
+
+
+def test_a_polars_without_the_private_method_price_contour_uses_fails_the_guard() -> None:
+    """The native module imports frames through ``Series._import_arrow_from_c``. A Polars
+    without it fails the guard by name, where a solve would otherwise end in a Rust panic.
+    It runs in a fresh process, since the native module keeps the method once it has used it.
+    """
+    script = (
+        "import polars as pl\n"
+        "del pl.Series._import_arrow_from_c\n"
+        "from haute._price_contour import PriceContourCompatibilityError, price_contour\n"
+        "try:\n"
+        "    price_contour()\n"
+        "except PriceContourCompatibilityError as exc:\n"
+        "    print(exc)\n"
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=True
+    )
+
+    assert "a one-row frame round trip through the native module failed" in completed.stdout
+    assert "PanicException" in completed.stdout
+    assert "needs a build for this Polars" in completed.stdout
