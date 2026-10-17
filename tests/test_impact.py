@@ -214,6 +214,23 @@ class TestSegmentBreakdown:
         segs = _segment_breakdown(stg_df, prd_df, input_df, "price")
         assert segs == {} or all(len(rows) == 0 for rows in segs.values())
 
+    def test_equal_changes_keep_the_first_segments_by_value_in_any_order(self) -> None:
+        # Twelve segments of ten rows, every one changed by +10%: which ten are kept is
+        # decided by the segment value alone.
+        regions = [f"r{index:02d}" for index in reversed(range(12))]
+        input_df = pl.DataFrame({"region": [region for region in regions for _ in range(10)]})
+        stg_df = pl.DataFrame({"price": [110.0] * input_df.height})
+        prd_df = pl.DataFrame({"price": [100.0] * input_df.height})
+        permutation = list(reversed(range(input_df.height)))
+
+        kept = _segment_breakdown(stg_df, prd_df, input_df, "price")["region"]
+        reordered = _segment_breakdown(
+            stg_df[permutation], prd_df[permutation], input_df[permutation], "price"
+        )["region"]
+
+        assert [row.value for row in kept] == [f"r{index:02d}" for index in range(10)]
+        assert kept == reordered
+
     def test_zero_baseline_segment_change_fails_loudly(self) -> None:
         stg_df = pl.DataFrame({"price": [1.0] * 20})
         prd_df = pl.DataFrame({"price": [0.0] * 20})

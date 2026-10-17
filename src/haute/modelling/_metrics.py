@@ -8,6 +8,7 @@ import numpy as np
 import polars as pl
 
 from haute.errors import HauteValidationError
+from haute.modelling._row_order import frame_row_order
 
 # Reserved key added to the ``compute_metrics`` payload whenever non-finite
 # rows were filtered out before computing metrics (CODE_REVIEW 4b.11).  It
@@ -415,8 +416,9 @@ def compute_double_lift(
     n = len(y_true)
     w = weight if weight is not None else np.ones(n)
 
-    # Sort by predicted value
-    order = np.argsort(y_pred)
+    # Sort by predicted value; tied predictions by actual value then weight, so the
+    # deciles hold the same rows whatever order they arrive in (as the Lorenz curve).
+    order = np.lexsort((w, y_true, y_pred))
     y_true_sorted = y_true[order]
     y_pred_sorted = y_pred[order]
     w_sorted = w[order]
@@ -604,7 +606,8 @@ def _ave_categorical_bins(
             pl.col("wa").sum().alias("sum_actual"),
             pl.col("wp").sum().alias("sum_predicted"),
         )
-        .sort("exposure", descending=True)
+        # Equal exposure ordered by level, so the cut is the same on every run.
+        .sort(["exposure", "cat"], descending=[True, False])
     )
 
     top = grouped.head(max_categories)
@@ -734,6 +737,9 @@ def compute_actual_vs_predicted(
     )
     n = len(y_true)
     w = weight if weight is not None else np.ones(n)
+    # Points are listed, and sampled, over the rows ordered by prediction, actual and
+    # weight: the same points whatever order the rows arrive in.
+    canonical = np.lexsort((w, y_true, y_pred))
 
     if n <= max_points:
         return [
@@ -742,7 +748,7 @@ def compute_actual_vs_predicted(
                 "predicted": round(float(y_pred[i]), 6),
                 "weight": round(float(w[i]), 6),
             }
-            for i in range(n)
+            for i in canonical
         ]
 
     rng = np.random.RandomState(42)
@@ -760,7 +766,7 @@ def compute_actual_vs_predicted(
         else:
             # Last decile includes the right edge
             mask = (y_pred >= lo) & (y_pred <= hi)
-        indices = np.where(mask)[0]
+        indices = canonical[mask[canonical]]
         if len(indices) == 0:
             continue
         sample_size = min(per_decile, len(indices))
@@ -872,6 +878,7 @@ def compute_pdp(
     n_grid: int = 50,
     max_sample: int = 500,
     offset: str | None = None,
+    row_order: np.ndarray | None = None,
 ) -> list[dict[str, Any]]:
     """Compute partial dependence plots for all features.
 
@@ -900,12 +907,14 @@ def compute_pdp(
     if df.is_empty() or len(features) == 0:
         return []
 
-    # Subsample rows if needed
+    # Subsample rows if needed, over the rows' canonical order (*row_order*, or the
+    # frame's own), so the sample is the same rows whatever order *df* holds them in.
     n_rows = df.height
     if n_rows > max_sample:
+        order = frame_row_order(df) if row_order is None else row_order
         rng = np.random.RandomState(42)
-        idx = rng.choice(n_rows, size=max_sample, replace=False)
-        sample_df = df[idx.tolist()]
+        idx = order[rng.choice(n_rows, size=max_sample, replace=False)]
+        sample_df = df[idx]
     else:
         sample_df = df
 
@@ -929,16 +938,19 @@ def compute_pdp(
                     sample_df.select(pl.col(feat).cast(pl.Utf8))
                     .group_by(feat)
                     .len()
-                    .sort("len", descending=True)
+                    # Equal counts ordered by level, so the cut is the same on every run.
+                    .sort(["len", feat], descending=[True, False], nulls_last=True)
                 )
                 grid_values = val_counts[feat].to_list()[:30]
             else:
                 # Numeric: percentile-spaced grid
                 col_vals = sample_df[feat].drop_nulls().to_numpy().astype(float)
+                # NaN is missing too: one NaN would make every percentile, so the grid, NaN.
+                col_vals = col_vals[~np.isnan(col_vals)]
                 if len(col_vals) == 0:
                     raise _PdpFeatureError(
                         "empty_column",
-                        f"feature {feat!r} has no non-null values to build a PDP grid from",
+                        f"feature {feat!r} holds only null and NaN values, so it has no PDP grid",
                     )
                 percentiles = np.linspace(0, 100, n_grid)
                 raw_grid = np.percentile(col_vals, percentiles)

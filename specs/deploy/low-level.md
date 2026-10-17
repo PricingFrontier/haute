@@ -631,7 +631,8 @@ sampled input to their common length *before* building DataFrames while preservi
 original sampled-row count (`failed_rows = sampled_rows - scored`),
 computes per-numeric-column `ColumnStats`, and — for the first numeric column only —
 a `_segment_breakdown` over every categorical (`Utf8`, 2–50 unique values) input column
-with at least 10 rows per segment value, keeping the top 10 by absolute mean change.
+with at least 10 rows per segment value, keeping the top 10 by absolute mean change,
+equal changes ordered by segment value.
 
 **Wire-size limits (`_request_limits.py`)** — the default `/quote` JSON body limit is
 8 MiB. `HAUTE_DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES` has first precedence;

@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import polars as pl
 import pytest
 
@@ -67,7 +68,8 @@ def test_random_split_write_sinks_without_collecting_full_split_plan(
     try:
         assert sink_schemas == [["feature", "target", "unused_wide", "_partition"]]
         assert sink_kwargs == [{"fast_checkpoint": True}]
-        expected_mask = split_mask(len(df), job.split_config)
+        # The counts, not the positions, are compared: any order gives them.
+        expected_mask = split_mask(len(df), job.split_config, row_order=np.arange(len(df)))
         assert split.n_train == int((expected_mask == 0).sum())
         assert split.n_validation == int((expected_mask == 1).sum())
         assert split.n_holdout == int((expected_mask == 2).sum())

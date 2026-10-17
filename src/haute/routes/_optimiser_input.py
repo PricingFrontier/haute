@@ -1161,17 +1161,94 @@ def build_quote_grid(
         chunk_size,
         execution_context,
     )
-    grid: QuoteGrid = price_contour().build_grid_from_parquet_chunked(
-        input_path,
-        constraint_cols,
-        chunk_size,
-        quote_id=qid_col,
-        scenario_index=step_col,
-        scenario_value=mult_col,
-        objective=objective,
-        n_steps=n_steps,
-    )
+    try:
+        grid: QuoteGrid = price_contour().build_grid_from_parquet_chunked(
+            input_path,
+            constraint_cols,
+            chunk_size,
+            quote_id=qid_col,
+            scenario_index=step_col,
+            scenario_value=mult_col,
+            objective=objective,
+            n_steps=n_steps,
+        )
+    except ValueError as exc:
+        # The builder refuses a file whose quotes are mixed; say so, naming the columns.
+        fault = (
+            None
+            if n_steps is None
+            else quote_layout_fault(
+                Path(input_path), str(qid_col), str(step_col), n_steps, execution_context
+            )
+        )
+        if fault is not None:
+            raise OptimiserSetupError(400, fault) from exc
+        raise
     return grid
+
+
+def quote_layout_fault(
+    path: Path,
+    quote_id: str,
+    scenario_index: str,
+    n_steps: int,
+    execution_context: ExecutionContext | None = None,
+) -> str | None:
+    """Why the solver input's quotes are not one after another, or None when they are.
+
+    The grid builder reads each quote's ``n_steps`` rows together, in ``scenario_index``
+    order: block ``row // n_steps`` holds one quote, row ``row`` holds step
+    ``row % n_steps``, and every quote holds ``n_steps`` rows. Two streaming group-bys
+    over the quote and scenario-index columns check it, keeping a few values per quote.
+    It runs only once the builder has refused the file.
+    """
+    import polars as pl
+
+    from haute._polars_utils import cancellable_streaming_collect
+
+    def collect(lf: pl.LazyFrame) -> pl.DataFrame:
+        if execution_context is None:
+            return lf.collect(engine="streaming")
+        return cancellable_streaming_collect(lf, execution_context=execution_context)
+
+    rows = (
+        pl.scan_parquet(path)
+        .select(
+            pl.col(quote_id).cast(pl.String).alias("quote"),
+            pl.col(scenario_index).alias("step"),
+        )
+        .with_row_index("row")
+    )
+    blocks = rows.group_by((pl.col("row") // n_steps).alias("block")).agg(
+        pl.col("row").min().alias("start"),
+        pl.col("quote").min().alias("low"),
+        pl.col("quote").max().alias("high"),
+        (pl.col("step") == pl.col("row") % n_steps).fill_null(False).all().alias("in_order"),
+        pl.len().alias("rows"),
+    )
+    well_formed = (
+        pl.col("low").eq_missing(pl.col("high")) & pl.col("in_order") & (pl.col("rows") == n_steps)
+    )
+    misplaced = collect(blocks.filter(~well_formed).sort("start").head(1).select("low"))
+    if misplaced.height:
+        quote = misplaced.item()
+    else:
+        repeated = collect(
+            rows.group_by("quote")
+            .agg(pl.len().alias("rows"))
+            .filter(pl.col("rows") != n_steps)
+            .select(pl.col("quote").min())
+        )
+        quote = repeated.item()
+        if quote is None:
+            return None
+    return (
+        f"Each quote's {n_steps} rows must reach the optimiser together, in "
+        f"'{scenario_index}' order from 0 to {n_steps - 1}, one quote after another in "
+        f"'{quote_id}', as the Scenario Expander writes them. The rows of quote {quote!r} "
+        "are not. A join or group-by after the Expander that does not keep row order mixes "
+        "quotes' rows."
+    )
 
 
 # ---------------------------------------------------------------------------

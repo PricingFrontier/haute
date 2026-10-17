@@ -23,11 +23,12 @@ Polars 2 and, on that evidence and by the same rule, decides where to turn
 spilling on. The pin moves only with the whole first round, so `main` never
 runs Polars 2 with a seam built for 1.44.
 The plan was reviewed by Codex and by a second opinion whose own measurements
-it cites as such. A defect that predates Polars 2 is fixed on the way: a training
-run's seed does not fix its split when the prepared frame's order varies
-(`PL2-05`). Every join Haute builds now states its row order, and a deployment
-proves it answers each quote of a request with one row, in request order
-([deploy](../deploy/high-level.md)).
+it cites as such. A defect that predates Polars 2 was fixed on the way: a training
+run's seed selects the same rows, and its charts the same samples and cuts, whatever
+order the prepared rows arrive in; a row limit's sample alone still follows the
+pipeline's order ([modelling](../modelling/high-level.md)). Every join Haute builds
+now states its row order, and a deployment proves it answers each quote of a request
+with one row, in request order ([deploy](../deploy/high-level.md)).
 
 ## Priorities
 
@@ -35,7 +36,6 @@ proves it answers each quote of a request with one row, in request order
 |---|---|---:|---|
 | PL2-01 | Planned | P1 | Haute requires Polars 2, and its version-pinned snapshots describe it. |
 | PL2-02 | Planned | P1 | Nothing Polars 1 computed is reused once Polars 2 runs. |
-| PL2-05 | Planned | P2 | Training, Workbench tables and Haute's tied cuts give the same result on every run. |
 | PL2-06 | Planned | P2 | The step editor renders only code Polars 2 runs, and **Change types** turns text into dates. |
 | PL2-07 | Planned | P1 | CSV inputs read as they did, or fail with a message that says what changed. |
 | PL2-12 | Planned | P2 | New Polars dtypes meet Haute's dtype vocabularies loudly or are normalised where they enter. |
@@ -142,67 +142,6 @@ hit under an unchanged version is unaffected.
 `src/haute/execution.py::dataframe_frame_input_fingerprint`;
 `src/haute/_source_cache.py::SourceCacheIdentity`;
 `src/haute/deploy/_schema.py::deploy_schema_cache_fingerprint`.
-
-### PL2-05 — Training, Workbench tables and Haute's tied cuts give the same result on every run
-**Why:** Haute's internal queries are almost all order-safe on 2.0: every
-internal join that feeds an order-dependent consumer sets `maintain_order`,
-internal sorts that feed a `head` or a slice carry a unique tiebreaker, and
-Model Score attaches predictions to the frame it scored. What remains reads a
-frame's order without fixing it:
-- Training selects rows by position. The seeded downsample
-  (`_seeded_training_sample`), the random split and partition mask
-  (`_random_split`, `_random_mask`), the temporal mask's tie at its boundary,
-  and the evaluation and SHAP samples pick rows by index over the prepared
-  frame, whose order is its pipeline's streaming order. Canonical grouped
-  validation and cross-validation (`_balanced_groups`, `_groups_near_target`)
-  collect groups in the order rows arrive and then shuffle that list with the
-  seed, so equal-sized groups can change partition when the order does. The
-  same seed then trains on different rows when that order varies: an unordered
-  join on 1.44 and 2.0, a sort with ties on 2.0.
-- A Workbench Output's many-row table is the connected frame's rows in the
-  order they arrive.
-- Tied counts decide which categories, grid values, segments and values make a
-  cut in the training charts' category fold, the partial-dependence grid, the
-  deploy impact report and the column profile's top values.
-- The optimiser's grid builder reads whole quotes from the solver input that
-  `bounded_sink` writes; an unordered join placed after a Scenario Expander
-  interleaves a quote's rows there, and whether price_contour's builder
-  rejects or mis-builds that input has not been traced.
-
-**Plan:** With every join Haute builds ordered, give training a selection that does not
-depend on row order, and never a Polars hash, whose values changed between
-1.44 and 2.0, so a model could not be retrained from its seed after an
-upgrade. In order of preference: sort the prepared frame by its row identity
-before the seeded positional selection; where no identity exists, sort it by
-every column, measured once per training run; where a Python pass is
-affordable, a Haute-owned hash as the older group helper already uses (MD5 of
-the seed and the value). Order the groups of grouped validation and
-cross-validation by their key rather than by arrival before the seeded
-shuffle. Add tiebreakers to the four cosmetic cuts; give a many-row Workbench
-table an order from its Workbench Output definition or state that it follows
-the upstream order; and trace the optimiser's grid builder with interleaved
-quotes, making it fail loudly if it does not already.
-
-**Acceptance:** a training run repeated over a permutation of the same
-prepared rows selects identical train, validation and holdout rows (whether the
-model is then identical also depends on the model library's own determinism,
-which is not this package's); canonical grouped validation and cross-validation
-assign every group to the same partition under a permutation, keep each group
-whole and keep their partition-size contracts; the four cuts are identical
-across repeated runs with ties; an interleaved solver input fails with a
-message naming the quote column, or is proven correct.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/routes/_training_preparation.py::_seeded_training_sample`;
-`src/haute/modelling/_split.py::_random_split`;
-`src/haute/modelling/_split.py::_random_mask`;
-`src/haute/modelling/_evaluation.py::_balanced_groups`;
-`src/haute/modelling/_evaluation.py::_groups_near_target`;
-`src/haute/modelling/_shap.py`;
-`src/haute/_workbench_output.py::workbench_response`;
-`src/haute/modelling/_metrics.py`; `src/haute/deploy/_impact.py`;
-`src/haute/_frame_profile.py`; `src/haute/routes/_optimiser_input.py`.
 
 ### PL2-06 — The step editor renders only code Polars 2 runs, and Change types turns text into dates
 **Why:** Rendering every step template against 17 column dtypes on both

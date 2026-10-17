@@ -26,6 +26,8 @@ The node's settings are split across five panes, **DATA**, **FACTORS**, **CONSTR
 
 If a mapped column is not in the input, the **SOLVE** pane names it (for example **Row ID uses "quote_id", which the input does not have.**).
 
+The optimiser reads each quote's scenario rows together, one quote after another, in **Scenario Index** order, as the [Expander](scenario-expander.md) writes them. A step between the Expander and the optimiser that leaves row order to Polars, such as an [Edge Join](edge-join.md) with **Order** set to **None**, can mix quotes' rows; the solve then stops with a message naming the **Row ID** and **Scenario Index** columns and the first quote out of place.
+
 ## The FACTORS pane
 
 In **Ratebook** mode the pane opens with **RATING FACTOR SOURCE**: the connected [Banding](banding.md) input that supplies the rating-factor levels. Choosing it ticks every factor it defines for optimisation. With no Banding node connected the pane says **No Banding nodes found. Add a Banding node to define rating factors.**; a Banding output with no valid levels is named, asking you to add labelled rules before selecting it.

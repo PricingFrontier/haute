@@ -38,6 +38,7 @@ class TestEvaluationPreviewPayload:
             source_sha256="a" * 64,
             row_count=4,
             task="regression",
+            row_order=range(4),
         )
 
         assert _evaluation_preview_payload(plan) == {

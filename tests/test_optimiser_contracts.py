@@ -978,20 +978,28 @@ def test_solve_rejects_null_quote_id_instead_of_dropping_rows(
     assert "Null quote_id values found in optimiser input (2 rows)." in status["message"]
 
 
-def test_build_grid_sanitises_unknown_interleaved_quote_failure() -> None:
-    store = JobStore()
-    service = OptimiserSolveService(store)
-    job_id = store.create_job({"status": "running"})
-    scored_lf = pl.LazyFrame(
+def _solver_input(quote_ids: list[str], steps: list[int]) -> pl.LazyFrame:
+    """A scored, scenario-expanded solver input with the quotes and steps given, row by row."""
+    rows = len(quote_ids)
+    return pl.LazyFrame(
         {
-            "quote_id": pl.Series(["q1", "q2", "q1", "q2"], dtype=pl.Categorical),
-            "scenario_index": pl.Series([0, 0, 1, 1], dtype=pl.Int32),
-            "scenario_value": pl.Series([0.9, 0.9, 1.1, 1.1], dtype=pl.Float32),
-            "expected_income": pl.Series([100.0, 200.0, 110.0, 220.0], dtype=pl.Float32),
-            "volume": pl.Series([0.9, 0.95, 0.8, 0.9], dtype=pl.Float32),
+            "quote_id": pl.Series(quote_ids, dtype=pl.Categorical),
+            "scenario_index": pl.Series(steps, dtype=pl.Int32),
+            "scenario_value": pl.Series(
+                [0.9 if step == 0 else 1.1 for step in steps], dtype=pl.Float32
+            ),
+            "expected_income": pl.Series(
+                [100.0 + index for index in range(rows)], dtype=pl.Float32
+            ),
+            "volume": pl.Series([0.9] * rows, dtype=pl.Float32),
         }
     )
 
+
+def _build_grid_failure(scored_lf: pl.LazyFrame) -> tuple[HTTPException, dict]:
+    store = JobStore()
+    service = OptimiserSolveService(store)
+    job_id = store.create_job({"status": "running"})
     with pytest.raises(HTTPException) as exc_info:
         service._build_grid(
             scored_lf,
@@ -1006,12 +1014,56 @@ def test_build_grid_sanitises_unknown_interleaved_quote_failure() -> None:
             "opt",
             job_id,
         )
+    return exc_info.value, store.require_job(job_id)
 
-    assert exc_info.value.status_code == 500
-    assert exc_info.value.detail == "Grid construction failed. Check the server logs for details."
-    assert "contiguous rows" not in exc_info.value.detail
-    assert "scenario_index order" not in exc_info.value.detail
-    job = store.require_job(job_id)
+
+@pytest.mark.parametrize(
+    ("quote_ids", "steps", "quote"),
+    [
+        (["q1", "q2", "q1", "q2"], [0, 0, 1, 1], "q1"),
+        (["q1", "q1", "q2", "q3", "q2", "q3"], [0, 1, 0, 0, 1, 1], "q2"),
+        (["q1", "q1", "q2", "q2", "q1", "q1"], [0, 1, 0, 1, 0, 1], "q1"),
+        (["q1", "q1", "q2", "q2"], [0, 1, 1, 0], "q2"),
+    ],
+    ids=[
+        "first_quote_interleaved",
+        "later_quotes_interleaved",
+        "quote_reappears",
+        "steps_reversed",
+    ],
+)
+def test_a_solver_input_with_mixed_quotes_fails_naming_the_quote_column(
+    quote_ids: list[str], steps: list[int], quote: str
+) -> None:
+    failure, job = _build_grid_failure(_solver_input(quote_ids, steps))
+
+    assert failure.status_code == 400
+    assert failure.detail == (
+        "Each quote's 2 rows must reach the optimiser together, in 'scenario_index' order "
+        "from 0 to 1, one quote after another in 'quote_id', as the Scenario Expander writes "
+        f"them. The rows of quote '{quote}' are not. A join or group-by after the Expander "
+        "that does not keep row order mixes quotes' rows."
+    )
+    assert job["status"] == "contract_error"
+
+
+def test_a_well_formed_solver_input_has_no_layout_fault(tmp_path: Path) -> None:
+    from haute.routes._optimiser_input import quote_layout_fault
+
+    path = tmp_path / "solver_input.parquet"
+    _solver_input(["q1", "q1", "q2", "q2", "q3", "q3"], [0, 1, 0, 1, 0, 1]).sink_parquet(path)
+
+    assert quote_layout_fault(path, "quote_id", "scenario_index", 2) is None
+
+
+def test_build_grid_sanitises_a_refusal_that_is_not_the_quote_layout() -> None:
+    builder = MagicMock()
+    builder.build_grid_from_parquet_chunked.side_effect = ValueError("internal builder detail")
+    with patch("haute.routes._optimiser_input.price_contour", return_value=builder):
+        failure, job = _build_grid_failure(_solver_input(["q1", "q1", "q2", "q2"], [0, 1, 0, 1]))
+
+    assert failure.status_code == 500
+    assert failure.detail == "Grid construction failed. Check the server logs for details."
     assert job["status"] == "error"
     assert job["terminal_reason"] == "error"
 

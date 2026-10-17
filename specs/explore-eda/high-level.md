@@ -337,7 +337,8 @@ Out of scope (owned elsewhere):
   simultaneously. Each batch remains a cancellable native streaming query. Whole-row
   distinct counting runs separately when needed; an exactly unique column proves zero
   duplicate rows, and a one-column frame reuses its column distinct count.
-- **Bounded categorical value counts.** Value counts are capped at the top 50 by count
+- **Bounded categorical value counts.** Value counts are capped at the top 50 by count,
+  equal counts ordered by value so the cut is the same on every run,
   (`_CATEGORICAL_VALUE_COUNT_LIMIT`) so a high-cardinality column cannot make the report
   unbounded in size. `values_truncated` follows the number of display-label groups emitted by
   that same expression, not raw-value cardinality, and is false when no value counts ran (for

@@ -66,9 +66,10 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/_train_config.py` | Single source of truth for modelling-node config → training-job kwargs (`build_training_job_kwargs`, `build_train_params`, `parse_evaluation_config`, `parse_tuning_config`, `training_objective_issue`, `default_metrics`, `effective_metrics`), plus the GLM value contract (`GLM_FAMILY_LINKS`, `GLM_CONFIG_KEYS`, `CATBOOST_ONLY_LEVERS`, `is_glm_config`, `glm_params_issue`, `validate_glm_params`). |
 | `src/haute/modelling/_glm_terms.py` | Pure GLM term contract shared by the config builder, routes, job, and adapter: `SUPPORTED_TERM_TYPES` and `TERM_KEYS`, dtype classes (`glm_dtype_class`, `MAIN_FITS_BY_CLASS`, `SLOT_FITS_BY_CLASS`), the parameter contract (`validate_term_spec`, `validate_interaction_entry`), the expression grammar (`expression_identifiers`), the schema-free `glm_model_columns()` used for projection demand, `validate_glm_model_columns()` against a real schema and role columns, `resolve_categorical_levels()`, the order-independent `resolve_glm_design()`, and `penalised_smooth_terms()` / `monotone_constraint_terms()`. Imports no RustyStats, so the schema-free half runs during projection planning before any data exists. |
 | `src/haute/modelling/_target_check.py` | `training_target_task_issue()` — data-dependent target-column vs task/metric gate returning an actionable message (or nothing when the pairing is valid), keyed on the effective reported-metric set (explicit config metrics or the objective-implied defaults), shared by the train route's pre-dispatch validation and `TrainingJob._prepare_data`. |
-| `src/haute/modelling/_split.py` | Internal partition-mask execution used by a final or selection fit. Its `SplitConfig` is a private test seam for direct callers exercising the shared partition/fit machinery; it is not a public modelling-node config contract and is not exported. |
+| `src/haute/modelling/_split.py` | Internal partition-mask execution used by a final or selection fit. Its `SplitConfig` is a private test seam for direct callers exercising the shared partition/fit machinery; it is not a public modelling-node config contract and is not exported. `split_mask` takes a random mask, and a temporal mask with a holdout, over the canonical row order its caller passes (`needs_row_order` says when one is required) and scatters the labels back to the source's positions; a group mask hashes group values and needs none. |
+| `src/haute/modelling/_row_order.py` | The canonical row order every positional selection in training is taken over. `canonical_row_order` refines a run id one column at a time, most significant first (`row_order_columns`: the identity columns, then the rest in the frame's order): a stable sort by (run id, column) followed by a new run id wherever either changes, stopping once every row is distinct or the columns run out. `frame_row_order` reads the columns of an in-memory frame; `scan_row_order` reads them one collect at a time from a lazy frame through the caller's collect, so a training stage keeps its name and its execution context. The result is an array of source positions in canonical order. |
 | `src/haute/modelling/_metrics.py` | Primary metric functions and diagnostic data computation (double lift, AvE, residuals, actual-vs-predicted, Lorenz, PDP). |
-| `src/haute/modelling/_shap.py` | The SHAP diagnostics every SHAP-capable family shares: `shap_sample` (the seeded, shuffled sample of at most `SHAP_SAMPLE_ROWS` = 5,000 diagnostics rows) and `shap_diagnostics`, which turns the algorithm's per-row SHAP matrix into `ShapViews`: the mean-absolute summary, the beeswarm (`BEESWARM_ROWS` = 2,000 rows, `BEESWARM_FEATURES` = 20 features) and the per-feature curves (`CURVE_BANDS` = 20 numeric bands, `CURVE_LEVELS` = 30 categorical levels). |
+| `src/haute/modelling/_shap.py` | The SHAP diagnostics every SHAP-capable family shares: `shap_sample` (the seeded, shuffled sample of at most `SHAP_SAMPLE_ROWS` = 5,000 diagnostics rows, drawn over their canonical order) and `shap_diagnostics`, which turns the algorithm's per-row SHAP matrix into `ShapViews`: the mean-absolute summary, the beeswarm (`BEESWARM_ROWS` = 2,000 rows, `BEESWARM_FEATURES` = 20 features) and the per-feature curves (`CURVE_BANDS` = 20 numeric bands, `CURVE_LEVELS` = 30 categorical levels). |
 | `src/haute/modelling/_feature_contract.py` | `FeatureContract` build/save/load/cache, contract comparison, and categorical-level normalisation/validation. |
 | `src/haute/modelling/_signature.py` | `build_signature()` — MLflow `ModelSignature` construction with loud dtype/metadata validation, structural Date/parameterised-Datetime mapping, and the explicit no-lossy-Decimal policy. |
 | `src/haute/modelling/_candidate_run.py` | The candidate-run contract builder shared by canvas and scripted logging (`CANDIDATE_RUN_CONTRACT_VERSION`, `training_identity_sha256`, `CandidateProvenance` capture including git state, `CandidateArtifacts.require_files`, `build_candidate_run`); see [mlflow-model-registry](../mlflow-model-registry/low-level.md#candidate-run-contract). |
@@ -414,7 +415,9 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    slices the frame directly when sliceable (`strategy="sliced"`), or slices the recipe's input
    when the node carries one (`strategy="input_sliced"`), or sinks natively and records why
    (`strategy="native"`, `native_reason` naming the recipe's reason or `not_sliceable`);
-   a row-limit sample discards the recipe and takes the native path with
+   a row-limit sample (`_seeded_training_sample`, Polars' seeded shuffle of the row
+   positions, kept below the limit, in the order the pipeline delivers its rows; see the
+   high-level specification) discards the recipe and takes the native path with
    `native_reason="row_limit_sample"` unless the sampled frame is itself sliceable;
    a `RecipeEquivalenceError` writes again through the same `write_file` with no recipe, which
    always lands on `native` with `native_reason="recipe_mismatch"` and warning code
@@ -545,8 +548,11 @@ omit it retain the constructor-only internal/test-seam split pipeline described 
    derives the final feature set and schema snapshot, and applies GLM term narrowing
    and monotonicity validation once before planning.
 2. **Plan once** — `_build_evaluation_plan` reads only the target or strategy key
-   columns needed for planning, computes the prepared-source digest, and calls
-   `generate_evaluation_plan`. `_run_evaluation` saves then strictly reloads
+   columns needed for planning (a random plan also reads every column once, one
+   collect at a time, for the source's canonical order: `scan_row_order`), computes
+   the prepared-source digest, and calls `generate_evaluation_plan`, which takes a
+   random plan's positions in that order (`row_order`, refused when missing or not a
+   permutation of the source's positions). `_run_evaluation` saves then strictly reloads
    `{model}.evaluation-plan.json` against that digest before any fit begins.
    Internal clones reuse that once-computed digest instead of re-hashing the
    source for every selection or trial fit; the orchestrator re-hashes the
@@ -1247,8 +1253,13 @@ potentially large copy on its threadpool.
 - Random classification planning is target-stratified. It reports class counts and
   the minimum required rows when a requested partition/fold cannot contain every
   class; random regression remains seeded but unstratified.
+- Random planning shuffles the source's positions in canonical order, and
+  stratification takes its classes in label order (`_stratified_parts`,
+  `_stratified_sample`), so a permutation of the source's rows selects the same rows.
 - Group planning canonicalises keys, never divides a group between memberships, and
-  greedily balances seeded groups toward requested row counts. Too few groups for the
+  greedily balances seeded groups toward requested row counts, shuffling the keys in
+  sorted order rather than the order they appeared (`_balanced_groups`,
+  `_groups_near_target`). Too few groups for the
   requested test/validation structure fails instead of leaking or creating an empty
   fit.
 - `EvaluationConfig.from_plain_data` rejects unknown versions/fields, Boolean numeric
@@ -1317,6 +1328,13 @@ potentially large copy on its threadpool.
   `(y_true, weight)` tie-break, so both the Gini scalar and the plotted Lorenz curve
   are exactly independent of input row order (`test_metrics_gini_ties.py` is a
   dedicated regression suite for this).
+- The other diagnostics are independent of row order too. `compute_double_lift` sorts
+  by prediction with the same `(y_true, weight)` tie-break (`np.lexsort`), so tied
+  predictions fall in the same deciles; `compute_actual_vs_predicted` lists, or samples
+  its deciles, over that order; `compute_pdp` takes its `max_sample` rows through the
+  diagnostics rows' canonical order; a categorical PDP grid keeps its 30 most frequent
+  levels with equal counts ordered by level, and AvE's category fold its largest levels
+  with equal exposure ordered by level.
 - The feature contract is hashed over sorted, separator-compact canonical JSON but
   written to disk pretty-printed — human-reviewable on disk, byte-deterministic for
   hashing.
@@ -1459,11 +1477,13 @@ rows/features) and retry.
   optional diagnostic failure. Loss importance stays full-partition. Targeted tests
   pin stage order, the absence of a SHAP stage for algorithms without it, and
   cancellation before loss importance.
-- SHAP is computed once per run, on `shap_sample(diag_df)`: `diag_df.sample(n,
-  seed=42, shuffle=True)` with `n = min(height, 5,000)`, so the rows come in random
-  order even when the partition is smaller than the cap, and the beeswarm's leading rows
-  are a uniform sample rather than the partition's leading (on a temporal split, oldest)
-  rows. Every SHAP-capable adapter receives this sample: XGBoost and LightGBM no
+- SHAP is computed once per run, on `shap_sample(diag_df, row_order)`: numpy's
+  `default_rng(42)` chooses `n = min(height, 5,000)` positions of the diagnostics rows'
+  canonical order (`frame_row_order`) without replacement, in the order chosen, so the
+  rows come in random order even when the partition is smaller than the cap, the
+  beeswarm's leading rows are a uniform sample rather than the partition's leading (on a
+  temporal split, oldest) rows, and the same rows are chosen whatever order the
+  partition arrives in. Every SHAP-capable adapter receives this sample: XGBoost and LightGBM no
   longer compute contributions over the whole partition. `shap_values(model, df,
   features, cat_features)` returns a `float64` matrix of one row per sampled row and
   one column per feature in training order, without the bias column; an adapter
@@ -1679,6 +1699,14 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
 - `test_train_service_coverage.py` and
   `test_train_service_helpers_coverage.py` — `TrainService` error/cleanup
   branches and its pure column-demand helper functions.
+- `tests/test_row_order.py` — the canonical order equals one stable sort over every
+  column (identity columns first, nulls last, a categorical by its labels, an Enum by its
+  levels, duplicate rows, a null-only column) and stops reading columns once every row is
+  distinct; over a permuted source, a random, temporal-holdout and group split, every
+  random, group and temporal evaluation plan, and the SHAP, PDP and actual-against-
+  predicted samples select the same rows, compared by value; group planning gives every
+  group the same partition whatever order the groups appear in; and double lift, AvE's
+  category fold and the categorical PDP grid cut ties the same way under a permutation.
 - `test_shap_diagnostics.py` — `shap_sample` caps at 5,000 rows, shuffles a smaller
   partition and is deterministic; `shap_diagnostics` orders the summary largest first,
   keeps the beeswarm to the summary's first 20 features and the first 2,000 rows, rounds

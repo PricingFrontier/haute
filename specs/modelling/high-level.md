@@ -306,6 +306,12 @@ Invariants that always hold:
 - Optional diagnostics (SHAP, partial dependence, GLM inference statistics) can fail
   independently without aborting the run; failures are recorded and surfaced, not
   swallowed.
+- Diagnostics depend on the diagnostics rows, not their order. The SHAP,
+  partial-dependence and actual-against-predicted samples are drawn over a canonical
+  order of the rows; double lift orders tied predictions by actual value and weight,
+  as the Gini and Lorenz curve do; and where a chart keeps the largest categorical
+  levels (AvE's levels by exposure, the PDP grid's by count), equal sizes are
+  ordered by the level.
 - Training never silently proceeds with an empty feature set. CatBoost's selected
   features and GLM terms produce the same version-1 feature-selection
   diagnostic shape in start/status results, including deterministic capped lists of
@@ -352,6 +358,31 @@ reports the class counts and required minimum. Regression remains unstratified. 
 evaluation canonicalises group keys, keeps each group in exactly one partition, and
 uses a deterministic seeded row-count-balancing assignment. It fails when any
 requested partition/fold would be empty.
+
+A seed selects the same rows from the same data whatever order the rows arrive in.
+A selection that depends on position (a random split or random evaluation plan, the
+most recent rows' share of a temporal holdout, the SHAP and partial-dependence
+samples) is taken over the rows' canonical order, not the order the pipeline
+delivered them in. The canonical order sorts the rows by the identity columns
+(`id_columns`), then by every other column in the frame's order, ascending with
+nulls last; text and categorical values sort by their characters and an Enum by its
+declared levels. Rows equal in every column keep their arrival order, and no
+selection can tell them apart. The order is built one column at a time, most
+significant first, and stops once every row is distinct, so it holds one column and
+the order rather than the frame: on a 2-million-row, 40-column frame it took
+0.4 GB and 2.6 seconds, where one sort over every column took 2.3 GB, four times the
+frame. Group evaluation orders its groups by key, and stratified evaluation its
+classes by label, before the seeded assignment, so neither depends on which group or
+class appeared first. The model library still receives the training rows in the
+prepared order, so whether the fitted model is identical across orders is the
+library's own determinism.
+
+A row limit's sample is the exception: it keeps seeded positions in the order the
+pipeline delivers its rows. Putting the whole pipeline output in order first would
+take memory and disk in proportion to every row the limit removes, which is what the
+limit exists to avoid. A pipeline whose row order is fixed samples the same rows on
+every run; one with a step that leaves row order to Polars, such as an Edge Join
+whose order is None, can sample different rows.
 
 After null-target filtering, planning writes and strictly reloads one canonical
 digest-linked `{model}.evaluation-plan.json` for the exact prepared parquet. The artifact
@@ -625,7 +656,8 @@ SHAP never announce that stage. This presentation change preserves diagnostic
 values, sampling, and training parameters.
 
 SHAP runs for the tree families (CatBoost, XGBoost, LightGBM) on one seeded, shuffled
-sample of at most 5,000 diagnostics rows, the same for every family, so its cost does
+sample of at most 5,000 diagnostics rows, drawn over their canonical order and the
+same for every family, so its cost does
 not grow with the diagnostics partition. From that one matrix of per-row SHAP values the
 result carries three views:
 

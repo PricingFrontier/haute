@@ -498,8 +498,9 @@ def _stratified_parts(
         raise HauteValidationError(f"class counts {counts}; required minimum {parts}")
     rng = np.random.default_rng(seed)
     output: list[list[int]] = [[] for _ in range(parts)]
-    for rows in classes.values():
-        rows = list(rows)
+    # Classes in label order, so the seeded stream does not follow which appeared first.
+    for key in sorted(classes, key=str):
+        rows = list(classes[key])
         rng.shuffle(rows)
         for index, row in enumerate(rows):
             output[index % parts].append(row)
@@ -543,7 +544,8 @@ def _stratified_sample(
 
 def _balanced_groups(groups: Mapping[str, list[int]], buckets: int, seed: int) -> list[list[int]]:
     rng = np.random.default_rng(seed)
-    keys = list(groups)
+    # Shuffled from key order, not the order the groups appeared in.
+    keys = sorted(groups)
     rng.shuffle(keys)
     rank = {x: i for i, x in enumerate(keys)}
     keys.sort(key=lambda x: (-len(groups[x]), rank[x]))
@@ -561,7 +563,8 @@ def _balanced_groups(groups: Mapping[str, list[int]], buckets: int, seed: int) -
 def _groups_near_target(groups: Mapping[str, list[int]], target: int, seed: int) -> list[int]:
     """Seeded greedy assignment that minimises distance from one requested row target."""
     rng = np.random.default_rng(seed)
-    keys = list(groups)
+    # Shuffled from key order, not the order the groups appeared in.
+    keys = sorted(groups)
     rng.shuffle(keys)
     rank = {key: index for index, key in enumerate(keys)}
     keys.sort(key=lambda key: (-len(groups[key]), rank[key]))
@@ -587,6 +590,34 @@ def _groups_near_target(groups: Mapping[str, list[int]], target: int, seed: int)
     return selected
 
 
+def _canonical_positions(
+    row_order: Sequence[int] | np.ndarray | None, all_positions: tuple[int, ...]
+) -> list[int]:
+    """A random plan's source positions in canonical order, checked to be every position once.
+
+    The list holds *all_positions*' own integers rather than new ones, so it costs a
+    pointer a row.
+    """
+    row_count = len(all_positions)
+    if row_order is None:
+        raise HauteValidationError(
+            "A random plan selects rows by position and needs the canonical row order"
+        )
+    order = np.asarray(row_order)
+    if (
+        order.ndim != 1
+        or len(order) != row_count
+        or order.dtype.kind not in "iu"
+        or int(order.min()) < 0
+        or int(order.max()) >= row_count
+        or int(np.bincount(order, minlength=row_count).max()) != 1
+    ):
+        raise HauteValidationError(
+            f"The canonical row order is not a permutation of the source's {row_count} positions"
+        )
+    return [all_positions[position] for position in order]
+
+
 def generate_evaluation_plan(
     config: EvaluationConfig,
     *,
@@ -596,10 +627,22 @@ def generate_evaluation_plan(
     target_values: Sequence[object] | None = None,
     group_values: Sequence[object] | None = None,
     date_values: Sequence[object] | None = None,
+    row_order: Sequence[int] | np.ndarray | None = None,
 ) -> EvaluationPlan:
+    """Plan a source's development, final-test and validation-fit memberships.
+
+    A random plan selects positions, so it takes *row_order*, the source positions in
+    canonical order (``haute.modelling._row_order``), and draws over that order: the
+    same rows are selected whatever order the source holds them in. Group and temporal
+    plans decide by group and date values and take no order.
+    """
     if row_count < 1:
         raise HauteValidationError("invalid source or row count")
     _sha256(source_sha256, "source_sha256")
+    if config.strategy != "random" and row_order is not None:
+        raise HauteValidationError(
+            f"Only a random plan takes a row order; a {config.strategy} plan decides by values"
+        )
     all_positions = tuple(range(row_count))
     method = config.validation["method"]
     summary: dict[str, Any] = {}
@@ -692,8 +735,9 @@ def generate_evaluation_plan(
             else:
                 parts = []
         else:
+            canonical = _canonical_positions(row_order, all_positions)
             rng = np.random.default_rng(config.seed)
-            positions = list(all_positions)
+            positions = list(canonical)
             rng.shuffle(positions)
             if task == "classification":
                 if target_values is None or len(target_values) != row_count:
@@ -721,9 +765,7 @@ def generate_evaluation_plan(
                         else (1 if method == "single" else 0)
                     )
                     test = tuple(
-                        _stratified_sample(
-                            all_positions, target_values, n, config.seed or 0, remaining
-                        )
+                        _stratified_sample(canonical, target_values, n, config.seed or 0, remaining)
                     )
                 else:
                     test = tuple(positions[:n])
@@ -735,11 +777,14 @@ def generate_evaluation_plan(
             development_order = [
                 position for position in positions if position in development_membership
             ]
+            canonical_development = [
+                position for position in canonical if position in development_membership
+            ]
             if method == "cross_validation":
                 if task == "classification":
                     assert target_values is not None
                     parts = _stratified_parts(
-                        dev,
+                        canonical_development,
                         target_values,
                         config.validation["fold_count"],
                         config.seed or 0,
@@ -756,7 +801,11 @@ def generate_evaluation_plan(
                 n = _count(config.validation["size"], row_count)
                 if task == "classification":
                     assert target_values is not None
-                    parts = [_stratified_sample(dev, target_values, n, (config.seed or 0) + 1, 1)]
+                    parts = [
+                        _stratified_sample(
+                            canonical_development, target_values, n, (config.seed or 0) + 1, 1
+                        )
+                    ]
                 else:
                     parts = [development_order[:n]]
             else:

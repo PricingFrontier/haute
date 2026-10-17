@@ -71,7 +71,16 @@ context without the resolved value rather than silently resetting elapsed-time a
   `pipeline_chunk_size` (the setting) and `n_steps`. `scenario_step_count` reads `n_steps` as one
   past the largest `scenario_index` in one scan of that column, and the builder receives it
   explicitly instead of auto-detecting it from its first chunk (which fails below
-  `n_steps + 1` rows). The ratebook factor artifact has one row per quote, so its contexts take
+  `n_steps + 1` rows). The builder reads each quote's `n_steps` rows together, in
+  `scenario_index` order, one quote after another, and refuses a file laid out otherwise
+  with a `ValueError`. `build_quote_grid` then checks the layout itself
+  (`quote_layout_fault`: block `row // n_steps` holds one quote, row `row` holds step
+  `row % n_steps`, and every quote holds `n_steps` rows, in two streaming group-bys over
+  the quote and scenario-index columns) and, when the quotes are mixed, raises an
+  `OptimiserSetupError` 400 `contract_error` naming the quote column, the scenario index
+  column and the first quote out of place; any other refusal stays the sanitised 500.
+  The check runs only after a refusal, so a well-formed input pays nothing for it.
+  The ratebook factor artifact has one row per quote, so its contexts take
   the setting as it is.
 - `FrontierAutoRangeContext` (`src/haute/routes/_optimiser_service.py`, frozen) — per-job bundle
   of the reducer's batch rows (`chunk_size`, defaulting to `current_streaming_chunk_size()`)

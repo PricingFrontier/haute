@@ -150,7 +150,9 @@ def _evaluation_payload(output_dir: Path, model_name: str) -> dict[str, object]:
             "test": {"size": 0.2},
         }
     )
-    plan = generate_evaluation_plan(config, source_sha256="c" * 64, row_count=10, task="regression")
+    plan = generate_evaluation_plan(
+        config, source_sha256="c" * 64, row_count=10, task="regression", row_order=range(10)
+    )
     save_evaluation_plan(plan, plan_path)
     plan_sha256 = file_sha256(plan_path)
     results = EvaluationResultsArtifact(

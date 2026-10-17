@@ -1253,7 +1253,9 @@ Out of scope:
     their declared types, and nothing else of the frames it was given. A column fits its
     declared type when it is of that type or null throughout, when it is any integer for an
     Integer column or any number for a Decimal one, and when it is categorical for a Text one.
-    A one-row table holds exactly one row; a many-row table holds any number. Clicking the node
+    A one-row table holds exactly one row; a many-row table holds any number, in the order
+    its frame delivers them, so a step upstream that leaves row order to Polars can list
+    them differently from one run to the next. Clicking the node
     previews its tables as dataframes, one at a time, chosen from the preview's table picker
     when there are several, the first table first. Clicking a value in them traces it from
     the node connected to its table: the same row of that node's frame, and the column that

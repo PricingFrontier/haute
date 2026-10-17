@@ -8,7 +8,7 @@ import hashlib
 import os
 import tempfile
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager, closing, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,12 +52,14 @@ from haute.modelling._evaluation import file_sha256 as evaluation_file_sha256
 from haute.modelling._feature_contract import ModelIdentity
 from haute.modelling._metrics import compute_metrics
 from haute.modelling._model_export import MODEL_FILE_SUFFIXES
+from haute.modelling._row_order import frame_row_order, scan_row_order
 from haute.modelling._shap import shap_diagnostics, shap_sample
 from haute.modelling._split import (
     PARTITION_HOLDOUT,
     PARTITION_TRAIN,
     PARTITION_VALIDATION,
     SplitConfig,
+    needs_row_order,
     split_mask,
 )
 from haute.modelling._train_config import (
@@ -330,6 +332,31 @@ def _training_streaming_collect(
         label=f"after_{stage_name}",
     )
     return df
+
+
+def _training_row_order(
+    lf: pl.LazyFrame,
+    height: int,
+    id_columns: Sequence[str],
+    *,
+    stage_name: str,
+    execution_context: ExecutionContext | None = None,
+) -> np.ndarray:
+    """The canonical order of a training frame's rows, read one column per collect.
+
+    Every column of *lf* is read at most once, under one stage: the order holds one
+    column at a time, never the frame (``haute.modelling._row_order``).
+    """
+    _training_checkpoint(execution_context, label=f"before_{stage_name}")
+    with _training_stage(execution_context, stage_name):
+        order = scan_row_order(
+            lf,
+            height,
+            id_columns,
+            collect=lambda column: streaming_collect(column, execution_context=execution_context),
+        )
+    _training_checkpoint(execution_context, label=f"after_{stage_name}")
+    return order
 
 
 def _record_diag_error(
@@ -1015,6 +1042,18 @@ class TrainingJob:
                 execution_context=execution_context,
             )
             values = {column: frame[column].to_list() for column in columns}
+        # A random plan selects positions: it draws over the source's canonical order.
+        row_order = (
+            _training_row_order(
+                pl.scan_parquet(prepared.data_path),
+                prepared.total_rows,
+                self.id_columns,
+                stage_name="evaluation_plan_row_order",
+                execution_context=execution_context,
+            )
+            if self.evaluation.strategy == "random"
+            else None
+        )
         return generate_evaluation_plan(
             self.evaluation,
             source_sha256=evaluation_file_sha256(prepared.data_path),
@@ -1023,6 +1062,7 @@ class TrainingJob:
             target_values=values.get(self.target),
             group_values=values.get(self.evaluation.group_column or ""),
             date_values=values.get(self.evaluation.date_column or ""),
+            row_order=row_order,
         )
 
     def _new_evaluation_job(
@@ -2304,8 +2344,20 @@ class TrainingJob:
                     stage_name="training_split_key_collect",
                     execution_context=execution_context,
                 )
-            mask = split_mask(total_rows, self.split_config, df=mask_df)
-            del mask_df
+            # A mask that selects positions draws over the rows' canonical order.
+            row_order = (
+                _training_row_order(
+                    split_lf,
+                    total_rows,
+                    self.id_columns,
+                    stage_name="training_split_row_order",
+                    execution_context=execution_context,
+                )
+                if needs_row_order(self.split_config)
+                else None
+            )
+            mask = split_mask(total_rows, self.split_config, df=mask_df, row_order=row_order)
+            del mask_df, row_order
         n_train = int((mask == PARTITION_TRAIN).sum())
         n_validation = int((mask == PARTITION_VALIDATION).sum())
         n_holdout = int((mask == PARTITION_HOLDOUT).sum())
@@ -2844,11 +2896,16 @@ class TrainingJob:
         shap_curves: list[dict[str, Any]] = []
         shap_link: str | None = None
         feature_importance_loss: list[dict[str, Any]] = []
+        # The SHAP and PDP samples draw over the diagnostics rows' canonical order, built
+        # inside the optional diagnostics' guards: SHAP builds it and PDP reuses it, or
+        # orders the rows itself when it samples them.
+        diag_row_order: np.ndarray | None = None
         if hasattr(algo, "shap_values"):
             _report("Computing SHAP values", 0.85)
             try:
+                diag_row_order = frame_row_order(diag_df, self.id_columns)
                 # One bounded sample for every family; every view or none.
-                shap_rows = shap_sample(diag_df)
+                shap_rows = shap_sample(diag_df, diag_row_order)
                 views = shap_diagnostics(
                     algo.shap_values(model, shap_rows, features, cat_features),
                     shap_rows,
@@ -2903,6 +2960,7 @@ class TrainingJob:
                 features,
                 cat_features,
                 offset=self.offset,
+                row_order=diag_row_order,
             )
             # Importance ranks charts, never the positional inputs to prediction.
             pdp_order = {feature: index for index, feature in enumerate(sorted_features)}
@@ -2933,7 +2991,7 @@ class TrainingJob:
             except Exception as exc:
                 _record_diag_error(diagnostics_errors, "tboost_tables", exc)
 
-        del diag_df
+        del diag_df, diag_row_order
         gc.collect()
 
         # Clean up split parquet

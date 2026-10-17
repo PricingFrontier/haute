@@ -150,12 +150,14 @@ def test_random_regression_plan_assigns_test_first_and_never_leaks_it() -> None:
         config,
         source_sha256="a" * 64,
         row_count=50,
+        row_order=range(50),
         task="regression",
     )
     assert first == generate_evaluation_plan(
         config,
         source_sha256="a" * 64,
         row_count=50,
+        row_order=range(50),
         task="regression",
     )
     assert len(first.test_positions) == 10
@@ -183,12 +185,14 @@ def test_random_regression_validation_membership_is_seeded_and_reproducible() ->
         single,
         source_sha256="a" * 64,
         row_count=100,
+        row_order=range(100),
         task="regression",
     )
     repeated = generate_evaluation_plan(
         single,
         source_sha256="a" * 64,
         row_count=100,
+        row_order=range(100),
         task="regression",
     )
     different_seed = generate_evaluation_plan(
@@ -198,6 +202,7 @@ def test_random_regression_validation_membership_is_seeded_and_reproducible() ->
         ),
         source_sha256="a" * 64,
         row_count=100,
+        row_order=range(100),
         task="regression",
     )
 
@@ -237,6 +242,7 @@ def test_random_classification_is_stratified_or_rejected_with_counts() -> None:
         random_config(test={"size": 0.2}),
         source_sha256="b" * 64,
         row_count=len(target),
+        row_order=range(len(target)),
         task="classification",
         target_values=target,
     )
@@ -251,6 +257,7 @@ def test_random_classification_is_stratified_or_rejected_with_counts() -> None:
             random_config(test={"size": 0.2}),
             source_sha256="b" * 64,
             row_count=7,
+            row_order=range(7),
             task="classification",
             target_values=["rare", "common", "common", "common", "common", "common", "common"],
         )
@@ -463,6 +470,7 @@ def test_evaluation_plan_artifact_is_strict_digest_linked_and_byte_stable(
         random_config(test={"size": 0.25}),
         source_sha256="e" * 64,
         row_count=20,
+        row_order=range(20),
         task="regression",
     )
     first = tmp_path / "first.json"
@@ -505,6 +513,7 @@ def test_evaluation_artifact_atomic_write_preserves_destination_on_replace_failu
         random_config(),
         source_sha256="8" * 64,
         row_count=12,
+        row_order=range(12),
         task="regression",
     )
     destination = tmp_path / "plan.json"
@@ -562,6 +571,7 @@ def test_evaluation_results_aggregate_weighted_metrics_from_exact_plan() -> None
         random_config(),
         source_sha256="f" * 64,
         row_count=11,
+        row_order=range(11),
         task="regression",
     )
     plan_sha256 = hashlib.sha256(canonical_json_bytes(plan.to_plain_data())).hexdigest()
@@ -609,6 +619,7 @@ def test_holdout_report_counts_the_final_refit_only_when_it_runs(
         random_config(validation={"method": "single", "size": 0.25}),
         source_sha256="f" * 64,
         row_count=12,
+        row_order=range(12),
         task="regression",
     )
     plan_sha256 = hashlib.sha256(canonical_json_bytes(plan.to_plain_data())).hexdigest()

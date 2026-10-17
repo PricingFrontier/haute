@@ -92,6 +92,7 @@ def test_internal_evaluation_plan_requires_its_explicit_evaluation_contract() ->
         source_sha256="0" * 64,
         row_count=6,
         task="regression",
+        row_order=range(6),
     )
 
     with pytest.raises(ValueError, match="evaluation_plan requires an explicit evaluation"):

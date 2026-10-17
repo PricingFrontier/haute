@@ -1574,7 +1574,10 @@ def _column_profile(frame: pl.DataFrame, name: str, dtype: pl.DataType) -> dict[
             # Name the count field explicitly: Polars refuses `value_counts` on
             # a column already called `count`, which is an ordinary name in an
             # aggregated frame and used to abort the entire profile.
-            counts = column.value_counts(sort=True, name=CATEGORICAL_COUNT_FIELD)
+            # Equal counts in value order, so the profile reads the same on every run.
+            counts = column.value_counts(name=CATEGORICAL_COUNT_FIELD).sort(
+                [CATEGORICAL_COUNT_FIELD, name], descending=[True, False], nulls_last=True
+            )
             profile["values"] = [
                 {
                     "value": _profile_value(row[name]),
