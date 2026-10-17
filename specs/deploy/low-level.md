@@ -284,16 +284,19 @@
      the RAM estimate) and is parsed by `_parse_program(cardinality_only=True)`; a parse
      failure is refused as `unproven` with the parser's reason. Its operations are walked
      in step with the AST calls they came from. From a `request` root, `select`,
-     `select_seq`, `with_columns`, `with_columns_seq` and `fill_null` keep the rows when
+     `select_seq`, `with_columns` and `fill_null` keep the rows when
      every argument is row-local by `classify_row_local_expression` (a `fill_null`
      `strategy` other than `zero` or `one` is not); `rename`, `drop` and `cast` keep them;
      `filter`, `drop_nulls`, `head`, `tail`, `limit`, `slice`, `top_k`, `bottom_k` and
      `unique` drop, `sort` and `reverse` reorder, `explode` and `unpivot` repeat, and
-     `group_by`, `shift`, `with_row_index`, `interpolate` and `join_asof` mix. A join keeps
+     `group_by`, `shift`, `with_row_index`, `interpolate` and `join_asof` mix; an
+     expression the classifier rejects mixes when the registry knows its operation reads
+     other rows, and is `unproven` otherwise (a helper's call, a `**` unpacking). A join keeps
      the rows under the join rule below; a frame that is not `request` stays as it is. A
      `group_by(K).agg` or `unique(subset=S)` with literal keys gives `unique_on` that set,
      kept through `filter`, `sort`, `reverse`, `head`, `tail`, `limit`, `slice`, `top_k`,
-     `bottom_k` and `drop_nulls` and lost to anything else.
+     `bottom_k` and `drop_nulls`, carried through a `rename` of a key and a
+     `with_columns` whose named outputs leave the keys alone, and lost to anything else.
    - The join rule, for an Edge Join (base is the left side; with the request on the join
      side only a right join ordered `right` or `right_left` is driven by it) and a code
      box's join alike: the request side must drive it; `how` must be `left` or `cross`
@@ -310,8 +313,8 @@
      `()`, `_output_assembler._array_prefix`) must carry a `request` frame; a mapping with
      no top-level port is refused (`replaces`). A Workbench Output answers one quote per
      request and is refused (`unproven`) behind a Quote Input.
-   Then `check_lookups` runs every `LookupCheck` under one `deploy_lookup_check`
-   admission: the checked side is built by `score_graph_lazy(..., output_node_id=<its
+   Then `check_lookups` runs every `LookupCheck`, each under its own
+   `deploy_lookup_check` admission: the checked side is built by `score_graph_lazy(..., output_node_id=<its
    node>, request_rows=None)` over the bundled artefact paths with an empty request
    frame, its port selected, and `streaming_collect` reads
    `select(keys).filter(no key null).group_by(keys).agg(pl.len()).filter(len > 1).head(1)`

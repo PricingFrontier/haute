@@ -294,6 +294,49 @@ def test_the_build_refuses_keys_repeated_only_by_post_load_code(remap):
         request_rows(graph, ["quotes"], "out", remap)
 
 
+def test_the_build_reads_a_snapshot_lookup_across_its_bundled_parts(tmp_path):
+    """A CSV lookup ships as its snapshot generation's parts; a key repeated across two
+    parts is found, and the parts' digests are those the bundle copies check."""
+    parts = [tmp_path / "part-00000.parquet", tmp_path / "part-00001.parquet"]
+    pl.DataFrame({"region": ["N", "S"], "rate": [1.1, 1.2]}).write_parquet(parts[0])
+    pl.DataFrame({"region": ["E", "N"], "rate": [1.3, 9.9]}).write_parquet(parts[1])
+    bundled = {f"rates__snapshot.{part.name}": str(part) for part in parts}
+    lookup = _node(
+        "rates",
+        "dataInput",
+        {
+            "inputType": "file",
+            "format": "csv",
+            "mode": "scan",
+            "path": "rates.csv",
+            "arguments": {"schema_overrides": {"region": "String", "rate": "Float64"}},
+        },
+    )
+    graph = PipelineGraph.model_validate(
+        {
+            "nodes": [
+                _node("quotes", "apiInput", {"path": ""}),
+                lookup,
+                _node("priced", "edgeJoin", ORDERED_LEFT),
+                _node("out", "output", _output(["quote_id", "rate"], "priced")),
+            ],
+            "edges": [
+                _quotes_edge("priced", targetHandle="base"),
+                _edge("rates", "priced", targetHandle="join"),
+                _edge("priced", "out"),
+            ],
+        }
+    )
+
+    with pytest.raises(DeployError, match="'rates' holds the join key \\{'region': 'N'\\}"):
+        request_rows(graph, ["quotes"], "out", bundled)
+
+    pl.DataFrame({"region": ["E", "W"], "rate": [1.3, 1.4]}).write_parquet(parts[1])
+    rows = request_rows(graph, ["quotes"], "out", bundled)
+    assert rows.multi_quote == "in_request_order"
+    assert set(record_digests({name: Path(path) for name, path in bundled.items()})) == set(bundled)
+
+
 def test_null_keys_never_match_a_quote_and_are_not_counted(tmp_path, remap):
     pl.DataFrame({"region": ["N", None, None], "rate": [1.1, 2.0, 3.0]}).write_parquet(
         tmp_path / "rates.parquet"

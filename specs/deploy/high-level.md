@@ -175,7 +175,8 @@ request side drives it, as a left or cross join ordered `left` or `left_right`, 
 other side cannot repeat a quote: a side built only from what the deployment carries is
 checked when the deployment is built (below), a Constant is one row, and a side derived
 from the request needs a `group_by` or `unique` on part of the join keys with nothing after
-it but row filters and sorts, or a declared `validate` of `"m:1"` or `"1:1"`, which Polars
+it that could change those keys (row filters, sorts, a rename of a key and columns computed
+beside them keep it), or a declared `validate` of `"m:1"` or `"1:1"`, which Polars
 checks when the request is scored. The response's top level must come from the request
 side.
 

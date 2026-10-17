@@ -159,7 +159,9 @@ def handle_deploy(config: DeployCliConfig) -> None:
     click.echo(f"  \u2713 Inferred input schema ({len(resolved_deploy.input_schema)} columns)")
     click.echo(f"  \u2713 Inferred output schema ({len(resolved_deploy.output_schema)} columns)")
     # A deployment that answers one quote per request still deploys; say why it does.
-    click.echo(f"  \u2713 {resolved_deploy.request_rows.describe()}")
+    request_rows = resolved_deploy.request_rows
+    mark = "!" if request_rows.multi_quote == "refused" else "\u2713"
+    click.echo(f"  {mark} {request_rows.describe()}")
 
     # 3. Validate
     try:
