@@ -20,6 +20,7 @@ import polars as pl
 import pytest
 
 from haute._hashing import content_hash_bytes
+from haute.deploy._request_rows import RequestRows
 from tests.conftest import make_graph as _g
 from tests.conftest import make_node
 
@@ -379,6 +380,11 @@ class TestHauteModelEdgeCases:
             "pruned_graph": {"nodes": [], "edges": []},
             "input_node_ids": ["src"],
             "output_node_id": "out",
+            "request_rows": {
+                "multi_quote": "in_request_order",
+                "refusals": [],
+                "checked_lookups": [],
+            },
             "output_fields": None,
             "artifacts": {
                 "model.pkl": "/orig/model.pkl",
@@ -413,6 +419,11 @@ class TestHauteModelEdgeCases:
             "pruned_graph": {"nodes": [], "edges": []},
             "input_node_ids": ["src"],
             "output_node_id": "out",
+            "request_rows": {
+                "multi_quote": "in_request_order",
+                "refusals": [],
+                "checked_lookups": [],
+            },
             "artifacts": {},
         }
         manifest_path = tmp_path / "deploy_manifest.json"
@@ -437,6 +448,7 @@ class TestHauteModelEdgeCases:
         model._output_node_id = "out"
         model._artifact_paths = {}
         model._output_fields = None
+        model._request_rows = RequestRows("in_request_order")
 
         input_pd = pd.DataFrame({"a": [1, 2], "b": [3.0, 4.0]})
         mock_result = pl.DataFrame({"a": [1, 2], "b": [3.0, 4.0]})

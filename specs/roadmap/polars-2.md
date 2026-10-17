@@ -13,8 +13,8 @@ carries, quantile and rank binning) is deferred.
 The packages form two rounds. The first makes Haute correct on Polars 2 with
 CI green: the pin, every seam that breaks or silently changes, Polars'
 out-of-core spilling kept off and contained (the pin turns it on; the
-execution-engine specification records the settings), and five packages that
-change what a user sees (`PL2-04`, `PL2-06`, `PL2-07`, `PL2-12`, `PL2-19`).
+execution-engine specification records the settings), and four packages that
+change what a user sees (`PL2-06`, `PL2-07`, `PL2-12`, `PL2-19`).
 Their designs, and the spilling settings, were decided
 on 17 October 2026 by one rule: of the robust options, the one that uses least
 memory, then the fastest. Each entry records the measurement behind its
@@ -23,10 +23,11 @@ Polars 2 and, on that evidence and by the same rule, decides where to turn
 spilling on. The pin moves only with the whole first round, so `main` never
 runs Polars 2 with a seam built for 1.44.
 The plan was reviewed by Codex and by a second opinion whose own measurements
-it cites as such. Two defects that predate Polars 2 are fixed on the way: a multi-quote
-deploy request through an unordered join can be answered against the wrong
-quotes (`PL2-04`), and a training run's seed does not fix its split when the
-prepared frame's order varies (`PL2-05`).
+it cites as such. A defect that predates Polars 2 is fixed on the way: a training
+run's seed does not fix its split when the prepared frame's order varies
+(`PL2-05`). Every join Haute builds now states its row order, and a deployment
+proves it answers each quote of a request with one row, in request order
+([deploy](../deploy/high-level.md)).
 
 ## Priorities
 
@@ -34,7 +35,6 @@ prepared frame's order varies (`PL2-05`).
 |---|---|---:|---|
 | PL2-01 | Planned | P1 | Haute requires Polars 2, and its version-pinned snapshots describe it. |
 | PL2-02 | Planned | P1 | Nothing Polars 1 computed is reused once Polars 2 runs. |
-| PL2-04 | Planned | P1 | Row order is defined wherever Haute builds the query, and deployed answers stay with their quotes. |
 | PL2-05 | Planned | P2 | Training, Workbench tables and Haute's tied cuts give the same result on every run. |
 | PL2-06 | Planned | P2 | The step editor renders only code Polars 2 runs, and **Change types** turns text into dates. |
 | PL2-07 | Planned | P1 | CSV inputs read as they did, or fail with a message that says what changed. |
@@ -144,166 +144,6 @@ hit under an unchanged version is unaffected.
 `src/haute/_source_cache.py::SourceCacheIdentity`;
 `src/haute/deploy/_schema.py::deploy_schema_cache_fingerprint`.
 
-### PL2-04 — Row order is defined wherever Haute builds the query
-**Why:** On Polars 2.0 a `collect()` with the default engine runs the
-streaming engine, which keeps a join's input order only when `maintain_order`
-says so; 1.44's default was the in-memory engine, which kept it. Paths that
-still used the default changed with the upgrade: `Pipeline.run` and
-`Pipeline.score` (`_collect_standalone_output`) returned a three-row Edge
-Join's quotes in base order in about half of 20 runs (every run on 1.44, none
-at a thousand rows), an eagerly collected Edge Join in 16 of 20, and a
-Workbench Output's many-row tables follow the same frames. On 2.0 the
-in-memory engine is no longer a guarantee either: it kept a scan-to-scan
-join's left order in only about half of repeated runs. Two step kinds changed
-without any join: **Sort rows** renders no `maintain_order`, and on 2.0 ties
-over a Parquet scan come out in a different order from run to run on both
-engines (stable on 1.44); **Unpivot to rows** now emits row-major order where
-1.44's default path emitted variable-major, and Polars guarantees neither.
-Order decides values wherever an order-dependent operation follows: **Limit
-rows**, `first` or `last`, `cum_sum`, `shift`, forward and backward fills, a
-row index, `unique(keep="first")` (probed: `join` then `unique(keep="first")`
-keeps different rows on every 2.0 engine, `maintain_order` on the `unique`
-notwithstanding).
-
-One consequence predates Polars 2. Deploy scoring has always collected on the
-streaming engine, which reorders a left join even at ten rows on 1.44 and 2.0
-alike (probed: no run of 20 in order), while OUTPUT assembly answers request
-row *i* with result row *i* (`render_output_document`: "a batch's answers stay
-aligned with its requests"). A multi-quote request through an Edge Join or a
-Join step without **Maintain order** can therefore be answered against the
-wrong quotes today. Rating steps are safe: their lookups already set
-`maintain_order="left"`.
-
-The step editor already renders **Remove duplicates**, **Group and
-aggregate** and **Pivot to columns** with `maintain_order=True`. Ordered joins
-cost nothing measurable on Polars 2's streaming engine at pricing shapes: ten
-million quotes against a 5,000-row lookup (this review), and in the second
-opinion's measurements five million against 5,000, two million against 50,000
-keys with fan-out four, and three million against three million, where the
-worst case, a full join ordered `"left"`, took 23% longer at 16% more peak
-memory, and one ordered `"left_right"` 18% longer at 7% more. A stable sort
-measured as fast as an unstable one. An ordered unpivot did not:
-defining its order through a row index and a sort took three times the time
-and memory of a plain unpivot. Polars 2's streaming sink keeps a
-`maintain_order` join's order, so the chunked writer's special treatment of
-ordered joins is no longer needed: today it takes its whole-join native path
-only for unordered joins (`_join_within_memory_budget`), collects ordered parts
-in memory instead of sinking them, and refuses to chunk an ordered full join
-(`full_join_ordered`), which under an ordered default would send every full
-Edge Join through one native sink.
-
-**Plan:** Decided on 17 October 2026; specify in the execution-engine,
-frontend-node-editors and deploy specifications, restating the io-layer policy
-(a query that defines its order keeps it through every seam; an unordered one
-has none). Haute's own query builders define order wherever it costs little
-or nothing:
-- `maintainOrder` becomes a required field of the Join step and the Edge Join
-  (canonical-only: a saved join without it is refused by name, and Recover
-  offers the value). The editor writes `"left_right"` for a new inner, left,
-  full or cross join, `"right_left"` for a right join and `"left"` for a semi
-  or anti join (`"left"` alone leaves the order of one row's matches open in a
-  one-to-many join, which varied between runs), and **None** remains the
-  explicit choice. The order costs memory only where something reads it: a
-  full join of twelve million rows a side ordered `"left_right"` peaked 6%
-  higher than an unordered one when it was sunk as it was, and 1% higher when
-  an unordered group-by followed it; at lookup and one-to-many shapes the cost
-  was within noise.
-- **Sort rows** renders a stable sort, which on forty million rows took 1.9
-  seconds against 1.8 and peaked 2% higher than an unstable one.
-- **Unpivot to rows** keeps an undefined order, said on its node page, with a
-  following sort where order matters: defining its order cost three times the
-  time and memory.
-- The chunked writer drops its in-memory ordered parts, which hold a whole part
-  in memory where a sink now streams it in order, and its unordered-only native
-  path, and chunks ordered full joins, on a measurement of a large chunked Edge
-  Join.
-
-Leaving order undefined is cheaper still and was rejected: `first`, `cum_sum`,
-a row index, a positional answer and a written file would change from run to
-run. Collecting on the in-memory engine was rejected: it uses more memory, and
-on 2.0 it neither keeps a scan's join order nor settles sort ties.
-
-A defined order is not enough for deployed answers: a sort the author adds
-reorders a request's rows, an inner join or a filter drops one, a one-to-many
-join or an unpivot repeats one, and **None** stays available. Deploy validation
-therefore proves, from the cardinality analysis and the operation registry,
-that every operation between the request input and OUTPUT keeps exactly one row
-per request, in request order: row-local expressions, Haute's row-preserving
-nodes (Rating Step lookups, Model Score), and left joins driven by the request
-side, with a request-side order, whose other side is unique. Uniqueness does
-not rest on Polars' `validate`, which on 1.44 and 2.0 alike sends a join
-through the streaming engine's in-memory join node, at 39% to 76% more peak
-memory from 1,000 requests against a ten-million-row lookup to forty million
-rows against 5,000. The other side is unique by construction (a Rating Step
-lookup, or a group-by or `unique` on the join keys that the analysis follows
-to the join), or it is computed only from inputs the deployment carries. Then
-Haute evaluates that side's join keys once, when the deployment is built,
-through the pipeline's own code for that branch, a Data Input's post-load code
-included, over exactly the bytes the deployment ships (a snapshot's leased
-generation, or a direct Parquet input's bundled copy), with a streaming
-duplicate check. The check is bound to each artefact's content signature,
-which the build checks again when it copies the artefact, so a file that
-changes in between fails the build. A side derived from the request needs a
-structural proof or a declared `validate` of `"m:1"` or `"1:1"`, whose
-in-memory join the request bounds; `"1:m"` and `"m:m"` prove nothing about the
-other side, and the editor never adds a contract. Any other operation is
-refused with the node and the operation named: a filter, an inner, semi or
-anti join (which drop requests), a join whose other side is not proven unique
-(which can repeat one), a sort or a join with no order (which reorder), an
-explode or unpivot, and free code the analysis cannot prove. A count alone is
-not enough: requests `A, B` inner-joined to a lookup holding `A` twice give
-`A, A`, two rows in order, with B answered by A's row. A run-time check that
-the result has as many rows as the request stays as a backstop, failing loudly
-with both counts; a single-row request needs neither.
-The proof costs nothing per request. It tightens the contract: a pipeline that
-declines a quote by filtering it out is refused for multi-quote requests, so a
-decline becomes a flag column on the answer, stated on the deploy page.
-
-Carrying a private request identity to OUTPUT and realigning by it was
-rejected: it carries an extra column through every operation and realigns at
-the end, and it fails every pipeline whose code selects named columns or
-aggregates request rows. The count check alone was rejected: it misses a drop
-and a repeat that cancel out.
-
-The Edge Join, Join, Sort and Unpivot node pages state the result.
-
-**Acceptance:** execution parity and deployed answers are tested apart. The
-frame a pipeline with an Edge Join, a Join step and a sort with ties produces is
-identical, rows and order, across 20 runs of a preview, `Pipeline.run`,
-`Pipeline.score`, a Data Output write and the deploy scorer before OUTPUT
-assembly, and an unpivot's frame is identical as a set; the edge-join, lazy
-join-projection, lineage, standalone-node and codegen-equivalence tests that
-failed on order pass without sorting; a saved join without `maintainOrder` is
-refused by name; the chunked writer's handling of ordered joins rests on a
-recorded measurement. Separately, a multi-quote deploy request through ordered
-left joins against a bundled lookup with unique keys, with no `validate`, is
-answered in request order. The deployment build refuses, naming the input and
-the key, the same lookup with a duplicated key, a lookup whose keys become
-duplicated only through its post-load code, and a direct Parquet lookup
-replaced between the check and its copy into the bundle. Deploy validation
-refuses, naming node and operation, a pipeline with a sort, an unordered join,
-a join whose other side is not proven unique (including one whose only
-contract is `validate="1:m"` or `"m:m"`), an inner join, a filter or an
-unpivot between the request input and OUTPUT, including requests `A, B` against
-a lookup holding `A` twice, where a drop and a repeat leave the count
-unchanged. A pipeline whose row count changes at run time despite the proof
-fails the request with both counts.
-
-**Dependencies:** PL2-01.
-
-**Evidence:** `src/haute/_edge_join.py::build_edge_join_kwargs`;
-`src/haute/_polars_steps.py::_Renderer`;
-`src/haute/pipeline.py::_collect_standalone_output`;
-`src/haute/deploy/_scorer.py::score_graph_lazy`;
-`src/haute/deploy/_bundler.py`;
-`src/haute/_output_assembler.py::render_output_document`;
-`src/haute/_chunked_writes.py::_join_within_memory_budget`;
-`src/haute/_polars_operations.py::POLARS_OPERATIONS`;
-`docs/building-models/nodes/edge-join.md`;
-`tests/test_edge_join.py::test_edge_join_declaration_joins_in_pipeline_run`;
-`tests/test_codegen_execution_equivalence.py::test_multi_frame_api_input_run_matches_executor_by_each_frame_label`;
-`specs/io-layer/low-level.md`.
-
 ### PL2-05 — Training, Workbench tables and Haute's tied cuts give the same result on every run
 **Why:** Haute's internal queries are almost all order-safe on 2.0: every
 internal join that feeds an order-dependent consumer sets `maintain_order`,
@@ -330,7 +170,7 @@ frame's order without fixing it:
   interleaves a quote's rows there, and whether price_contour's builder
   rejects or mis-builds that input has not been traced.
 
-**Plan:** With `PL2-04` in place, give training a selection that does not
+**Plan:** With every join Haute builds ordered, give training a selection that does not
 depend on row order, and never a Polars hash, whose values changed between
 1.44 and 2.0, so a model could not be retrained from its seed after an
 upgrade. In order of preference: sort the prepared frame by its row identity
@@ -353,7 +193,7 @@ whole and keep their partition-size contracts; the four cuts are identical
 across repeated runs with ties; an interleaved solver input fails with a
 message naming the quote column, or is proven correct.
 
-**Dependencies:** PL2-04.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/routes/_training_preparation.py::_seeded_training_sample`;
 `src/haute/modelling/_split.py::_random_split`;
@@ -502,7 +342,7 @@ optimiser's routes. Polars 2.0 resolves `auto` to the streaming engine for a
 lazy query, so each of those calls changed engine with the upgrade, and each
 would change again if a user or host set `POLARS_ENGINE_AFFINITY`. The engine
 decides memory behaviour and which operations stream; on 2.0 it no longer
-decides join order, which only `maintain_order` or a sort fixes (`PL2-04`).
+decides join order, which only `maintain_order` or a sort fixes.
 
 **Plan:** Make the engine a required argument of `execution_collect` and the
 background collect, and give every direct collect in `src/haute/` an explicit
@@ -515,8 +355,8 @@ rejects an engine-less collect in `src/haute/`.
 engine, held by the lint test; setting `POLARS_ENGINE_AFFINITY=in-memory`
 changes no test result.
 
-**Dependencies:** PL2-04, so the engine chosen at each site serves the order
-contract.
+**Dependencies:** None; every join Haute builds states its order, so the engine
+chosen at each site serves the order contract.
 
 **Evidence:** `src/haute/_polars_utils.py::execution_collect`;
 `src/haute/_polars_utils.py::_cancellable_collect`;
@@ -628,7 +468,7 @@ banding statistics tests run on Polars 2 with no Polars deprecation warning
 (enforced by an error filter for Polars deprecations in those modules), and
 their golden outputs are unchanged.
 
-**Dependencies:** PL2-01; `PL2-04` for the join idiom the guide teaches.
+**Dependencies:** PL2-01.
 
 **Evidence:** `examples/reference/main.py`;
 `src/haute/assistant/assets/examples/linear_pricing/pipeline.py`;
@@ -695,7 +535,7 @@ Polars upgrade.
 
 **Plan:** Fold each test change into the package whose behaviour it asserts;
 make a test that asserts order assert the order its specification now promises
-(`PL2-04`) or compare sorted frames where none is promised, never sorting to
+or compare sorted frames where none is promised, never sorting to
 hide a promised order; add the gap tests with their packages; then push the
 round. The pull request runs the CI workflow and, for this change, the
 mutation and dependency workflows; the performance (at its `ci` and `1m`
@@ -749,7 +589,8 @@ operations `PL2-14` registers; change a policy only where the new measurement
 crosses its rule, both ways. Measure a join with a `validate` contract the same
 way, charge it in the RAM estimate as the materialisation of both inputs it
 is, and make the estimate's advice name that cost beside Haute's own
-uniqueness proofs (`PL2-04`) instead of recommending the contract alone. Then
+uniqueness proofs ([deploy](../deploy/high-level.md)) instead of recommending the
+contract alone. Then
 measure the same boundaries in a capped worker with spilling on and its
 threshold set from the worker's admitted envelope (static per spawn, or per
 task through `pl.Config.load`), on Linux as well as Windows, since the

@@ -888,6 +888,8 @@ def score_test_quotes(
 
     results: list[TestQuoteResult] = []
     one_quote_per_request = _reads_one_quote_per_request(resolved)
+    # A deployment that answers one quote per request is checked as it will be served.
+    case_per_request = resolved.request_rows.multi_quote != "in_request_order"
 
     def score(input_df: pl.DataFrame | QuoteRequest) -> pl.DataFrame:
         return score_graph(
@@ -897,6 +899,7 @@ def score_test_quotes(
             output_node_id=resolved.output_node_id,
             artifact_paths={name: str(path) for name, path in resolved.artifacts.items()},
             output_fields=resolved.config.output_fields,
+            request_rows=resolved.request_rows,
         )
 
     for jf in json_files:
@@ -912,6 +915,10 @@ def score_test_quotes(
                 ]
                 _validate_expected_outputs_per_case(cases=cases, outputs=outputs)
                 rows = sum(output.height for output in outputs if output is not None)
+            elif case_per_request:
+                answers = [score(pl.DataFrame([case.input])) for case in cases]
+                _validate_expected_outputs_per_case(cases=cases, outputs=list(answers))
+                rows = sum(answer.height for answer in answers)
             else:
                 output = score(pl.DataFrame([case.input for case in cases]))
                 _validate_expected_outputs(cases=cases, output=output)

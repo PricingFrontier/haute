@@ -1303,8 +1303,10 @@ class TestValidators:
         from haute.deploy._config import DeployConfig, ResolvedDeploy
         from haute.deploy._project_modules import ProjectModules
         from haute.deploy._pruner import find_output_node, prune_for_deploy
+        from haute.deploy._request_rows import RequestRows
         from haute.deploy._schema import infer_input_schema, infer_output_schema
         from haute.deploy._validators import validate_deploy
+        from tests._deploy_helpers import artifact_digests
 
         output_id = find_output_node(full_graph)
         pruned, _kept, removed = prune_for_deploy(full_graph, output_id)
@@ -1326,6 +1328,8 @@ class TestValidators:
             input_schema=input_schema,
             output_schema=output_schema,
             project_modules=ProjectModules(utility=None, unbundled_imports=()),
+            request_rows=RequestRows(multi_quote="in_request_order"),
+            artifact_digests=artifact_digests(artifacts),
             removed_node_ids=removed,
         )
 
@@ -1336,8 +1340,10 @@ class TestValidators:
         from haute.deploy._config import DeployConfig, ResolvedDeploy
         from haute.deploy._project_modules import ProjectModules
         from haute.deploy._pruner import find_output_node, prune_for_deploy
+        from haute.deploy._request_rows import RequestRows
         from haute.deploy._schema import infer_input_schema, infer_output_schema
         from haute.deploy._validators import score_test_quotes
+        from tests._deploy_helpers import artifact_digests
 
         output_id = find_output_node(full_graph)
         pruned, _kept, removed = prune_for_deploy(full_graph, output_id)
@@ -1360,6 +1366,8 @@ class TestValidators:
             input_schema=input_schema,
             output_schema=output_schema,
             project_modules=ProjectModules(utility=None, unbundled_imports=()),
+            request_rows=RequestRows(multi_quote="in_request_order"),
+            artifact_digests=artifact_digests(artifacts),
             removed_node_ids=removed,
         )
 

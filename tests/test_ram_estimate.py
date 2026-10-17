@@ -1834,6 +1834,7 @@ def test_estimate_graph_index_rejects_non_dataframe_runtime_source_frame() -> No
 
 
 def test_cardinality_binding_collision_and_safe_edge_names_fail_closed(monkeypatch) -> None:
+    import haute._graph_utils as graph_utils
     import haute._ram_estimate as ram_estimate
 
     index = _cardinality_index_for_node(NodeType.POLARS, {}, parent_count=2)
@@ -1843,8 +1844,9 @@ def test_cardinality_binding_collision_and_safe_edge_names_fail_closed(monkeypat
     edges = tuple(edge for edge in index.pruned_edges if edge.target == "target")
     names = [ram_estimate._safe_edge_input_name(edge, index) for edge in edges]
     assert all(names)
+    # The naming rules are code_input_bindings', shared with the deploy proof.
     monkeypatch.setattr(
-        ram_estimate,
+        graph_utils,
         "resolve_input_mapping_names",
         lambda source_names, mapping: (source_names[1], source_names[1]),
     )

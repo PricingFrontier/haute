@@ -50,6 +50,7 @@ from haute.execution import (
 from haute.executor import _build_node_fn
 
 if TYPE_CHECKING:
+    from haute.deploy._request_rows import RequestRows
     from haute.modelling._feature_contract import FeatureContract
 
 _RUNTIME_PATH_NODE_TYPES = REQUEST_INPUT_NODE_TYPES | frozenset(
@@ -612,6 +613,7 @@ def score_graph_lazy(
     artifact_paths: dict[str, str] | None = None,
     output_fields: list[str] | None = None,
     execution_context: ExecutionContext | None = None,
+    request_rows: RequestRows | None = None,
 ) -> DeployScorePlan:
     """Build a lazy deployed scoring plan with injected input data.
 
@@ -630,16 +632,21 @@ def score_graph_lazy(
         artifact_paths: Optional remapped artifact paths
             (``artifact_name → local_path``).
         output_fields: Optional list of columns to select from output.
+        request_rows: The deployment's record of how it answers a request of several
+            quotes, which refuses one it does not cover; ``None`` for a dry run.
 
     Returns:
         A lazy output plan and execution context.
     """
+    from haute.deploy._request_rows import refuse_multi_quote
+
     if execution_context is None:
         execution_context = admit_deploy_execution(
             operation="deploy_score_graph",
             row_count=input_df.height,
         )
     try:
+        refuse_multi_quote(request_rows, input_df.height)
         return _score_graph_lazy(
             graph=graph,
             input_df=input_df,
@@ -1178,14 +1185,18 @@ def score_graph(
     output_fields: list[str] | None = None,
     execution_context: ExecutionContext | None = None,
     retain_admission_on_success: bool = False,
+    request_rows: RequestRows | None = None,
 ) -> pl.DataFrame:
     """Execute a pruned graph and collect output, optionally retaining admission.
 
     ``retain_admission_on_success`` is for callers that must perform one final
     materialising conversion under the same reservation. Plan resources are still
     cleaned immediately; the caller must release ``execution_context`` in ``finally``.
-    Failures always release here.
+    Failures always release here. Under *request_rows* a request of several quotes is
+    refused when the deployment does not cover it, and counted when it does.
     """
+    from haute.deploy._request_rows import check_answer_rows
+
     if retain_admission_on_success and execution_context is None:
         raise ValueError("retain_admission_on_success requires a caller-owned execution_context")
     plan = score_graph_lazy(
@@ -1196,6 +1207,7 @@ def score_graph(
         artifact_paths=artifact_paths,
         output_fields=output_fields,
         execution_context=execution_context,
+        request_rows=request_rows,
     )
     preserve_primary_error = False
     succeeded = False
@@ -1213,6 +1225,7 @@ def score_graph(
             label="after_deploy_collect",
             node_id=output_node_id,
         )
+        check_answer_rows(request_rows, input_df.height, result.height)
         succeeded = True
         return result
     except BaseException:

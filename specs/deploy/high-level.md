@@ -161,6 +161,63 @@ schema and stores only the selected columns, in configured order, in the resolve
 Test-quote scoring applies the same projection. The deploy manifest, MLflow signature,
 golden validation, and served response therefore describe one output contract.
 
+**Answers in request order.** A request may hold several quotes, and the response answers
+quote *i* with row *i* (`render_output_document`). Resolution proves that from the pruned
+graph without running it: every node from the request input to the response keeps
+exactly one row per quote, in request order, each row computed from its own quote alone.
+A Quote Input whose one table is its root (`$[:]`) starts the proof, and a promoted Data
+Input's post-load code is its first step. Row-local expressions (the operation registry's
+row-local class), renames, drops and casts keep the rows, and so do Banding, Rating Step
+lookups (deduplicated and ordered by construction), Model Score, a ratebook Optimiser Apply
+read from the bundle, a Data Output, a collapsed Live Switch and the training nodes'
+passthrough, each node's own code proved in the same way. A join keeps them when the
+request side drives it, as a left or cross join ordered `left` or `left_right`, and its
+other side cannot repeat a quote: a side built only from what the deployment carries is
+checked when the deployment is built (below), a Constant is one row, and a side derived
+from the request needs a `group_by` or `unique` on part of the join keys with nothing after
+it but row filters and sorts, or a declared `validate` of `"m:1"` or `"1:1"`, which Polars
+checks when the request is scored. The response's top level must come from the request
+side.
+
+Any other operation stops the proof, named by its node and operation and what it does to
+the quotes: a filter, a row limit, a duplicate removal or an inner, semi or anti join can
+drop a quote; a sort or a join in another order can reorder them; an explode, an unpivot,
+a full join, a join whose other side may hold a key twice or a Scenario Expander can repeat
+one; a join driven by another input answers with that input's rows; a group-by, an
+expression that reads other rows (an aggregate, a window, a shift, a rank) or an online
+Optimiser Apply (which answers in quote-id order) makes one quote's answer depend on the
+others; and code the proof cannot follow, an Optimiser Apply that loads its result from
+MLflow when served, a submodel occurrence the deployed graph still holds (BUG-18) and a
+Quote Input with more than its root table (whose tables a deployed request is not yet split
+into, BUG-31) cannot be proved. A pipeline the proof does not cover still deploys and
+answers one quote per request: a request of several quotes is refused before anything is
+scored, naming every node and operation that stopped the proof, so a declined quote is a
+flag column on its answer rather than a filtered-out row. A Workbench Input reads one quote
+per request and needs no proof. The result is recorded in the manifest as `request_rows`,
+shown on `/health`, and printed by `haute deploy`.
+
+Each keyed join the request drives against a side the deployment carries is checked once,
+when the deployment is resolved: the scorer builds that side with the pipeline's own code, a
+Data Input's post-load code included, over exactly the bundled artefacts, and a streaming
+group-by over the join keys looks for a key held twice. A key with a null part never matches
+a quote and is not counted. A repeated key fails the deployment with a `DeployError` naming
+the lookup, the join and the key, because it would repeat a quote even when the quote is
+sent alone; a join meant to match several rows declares `validate="m:m"` (or `"1:m"`),
+which skips the check and leaves the deployment answering one quote per request. A cross
+join's carried side is counted the same way: one row answers each quote once, and any other
+count (a table of product tiers, say) leaves the deployment answering one quote per request,
+as does a side the build cannot read in bounded memory. Every bundled artefact's content
+digest is recorded when it is collected, before the check and the dry runs read it, and
+every copy into a bundle (the container's `artifacts/`, the Databricks model's staged
+artefacts) recomputes the digest from the bytes it writes, so a file changed in between
+fails the deployment naming it.
+
+A proven deployment's answer to a request of several quotes is counted as a backstop: a
+result whose row count differs from the request's fails the request with both counts. A
+single-quote request needs neither the proof nor the count. When the proof does not cover a
+Quote Input pipeline, its test quotes are scored one request each, as the deployment will
+serve them.
+
 **Project modules.** A preamble may import the project's `utility` package: the module
 or package that `utility` resolves to from the pipeline directory or the working
 directory, the same resolution the executor uses. Deploy ships that package with the
@@ -215,7 +272,8 @@ External File's code sees them beside `obj`, and a Model Score's code beside `mo
   `HAUTE_EXECUTION_MEMORY_POLICY=strict_server`; `/health` reports
   `memory_enforcement="admission_rss_best_effort"` for in-process live scoring, plus
   `batch_memory_enforcement` (whether the batch worker's hard cap is `required` or
-  `best_effort` on this host) and the bundle's `execution_policy` record. The live figure
+  `best_effort` on this host), the bundle's `execution_policy` record and its
+  `request_rows` record (see **Answers in request order**). The live figure
   is an application-level admission and sampled-RSS guarantee, not a substitute for a
   platform hard limit; the batch worker's cap is a real one.
 
@@ -246,6 +304,19 @@ approving it.
   intercepting only the handful of node types that need live-input injection or
   artefact-path remapping (`NodeBuildHooks(before_build=_intercept)`). This keeps
   dev/deploy behavioural drift structurally impossible for every other node type.
+- **Request order is proved, not restored.** Deploy scoring has always collected on the
+  streaming engine, which reorders an unordered join even at ten rows, so before the proof
+  a multi-quote request through such a join could be answered against the wrong quotes.
+  Carrying a private request identity through every node and realigning by it at the end
+  was rejected: it adds a column to every operation and fails every pipeline whose code
+  selects named columns or aggregates request rows. A count check alone was rejected: a
+  dropped quote and a repeated one leave the count unchanged (requests `A, B` inner-joined
+  to a lookup holding `A` twice give `A, A`). Polars' `validate` is not the uniqueness
+  proof for a bundled lookup: it sends the join through the streaming engine's in-memory
+  join node, at 39% to 76% more peak memory from 1,000 requests against a ten-million-row
+  lookup to forty million rows against 5,000, where the build-time check reads the
+  lookup's keys once. The proof tightens the contract: a pipeline that declines a quote by
+  filtering it out answers one quote per request.
 - **The pruned graph JSON, not the `.py` file, is the deployment unit.** This was a
   deliberate design decision: `_utils.py::build_manifest` embeds `resolved.pruned_graph.model_dump()` into
   `deploy_manifest.json`, every Workbench Input's `sample` left out (`shipped_graph`; the
@@ -370,6 +441,15 @@ most: a silent wrong answer here mis-prices real policies.
   artefact validates the contract, then raises `RuntimeError` naming the node: the
   contract check happens first so drift is reported precisely even though scoring is
   impossible either way.
+- **Rows a deployment cannot answer in order.** A bundled lookup holding a join key twice
+  fails resolution with one `DeployError` naming every such lookup, its join and an
+  example key. An artefact whose bytes changed after resolution recorded its digest fails
+  the copy into the bundle with a `DeployError` naming it. A request of several quotes to a
+  deployment the proof does not cover raises `MultiQuoteRequestRefusedError` before
+  anything is scored (HTTP 422 `multi_quote_request_refused` from a container, naming each
+  node and operation; the Databricks model's `predict` raises it). A proven deployment
+  whose answer to such a request has another row count fails that request with both
+  counts (HTTP 500 `deploy_internal_error` from a container).
 - **Pre-deploy validation failures** (structural checks, project-local imports the bundle
   does not carry, and test-quote scoring/expected-output mismatches) are all collected
   and raised together as a single `DeployError`

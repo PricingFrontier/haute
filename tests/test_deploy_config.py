@@ -25,7 +25,9 @@ from haute.deploy._config import (
     _validate_toml_keys,
 )
 from haute.deploy._project_modules import ProjectModules
+from haute.deploy._request_rows import RequestRows
 from haute.deploy._validators import validate_deploy
+from tests._deploy_helpers import artifact_digests
 
 
 @pytest.fixture()
@@ -454,6 +456,8 @@ def _make_resolved(
         input_schema=input_schema or {"col": "float"},
         output_schema=output_schema or {"result": "float"},
         project_modules=ProjectModules(utility=None, unbundled_imports=()),
+        request_rows=RequestRows(multi_quote="in_request_order"),
+        artifact_digests=artifact_digests(artifacts or {}),
     )
 
 

@@ -42,6 +42,7 @@ from haute._logging import get_logger
 from haute._polars_utils import bounded_sink
 from haute._types import PipelineGraph
 from haute._worker_isolation import IsolatedWorkerConfig, worker_config_for_memory_policy
+from haute.deploy._request_rows import RequestRows, check_answer_rows, refuse_multi_quote
 from haute.errors import BoundedMemoryUnsupportedError
 from haute.routes._contract_errors import PUBLIC_CONTRACT_ERROR_TYPES
 
@@ -73,6 +74,8 @@ class BatchScoreRequest:
     # The bundle's schema dry run sends its sample's schema, so a sample whose values
     # are all null (a Workbench Input's) keeps its types; a served request sends none.
     input_schema: dict[str, pl.DataType] | None = None
+    # The deployment's record of how it answers several quotes; None for the dry run.
+    request_rows: RequestRows | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,11 +210,14 @@ def score_batch_scoring_request(
         artifact_paths=dict(request.artifact_paths),
         output_fields=list(request.output_fields) if request.output_fields else None,
         execution_context=execution_context,
+        request_rows=request.request_rows,
     )
     preserve_primary_error = False
     try:
         with execution_context.stage("deploy_batch_sink", node_id=request.output_node_id):
             bounded_sink(plan.lazy_frame, request.result_path)
+        row_count = _parquet_row_count(request.result_path)
+        check_answer_rows(request.request_rows, input_df.height, row_count)
     except BaseException:
         preserve_primary_error = True
         raise
@@ -223,7 +229,7 @@ def score_batch_scoring_request(
             release_admission=False,
         )
     return BatchScoreOutcome(
-        row_count=_parquet_row_count(request.result_path),
+        row_count=row_count,
         execution_metrics=execution_context.metrics_payload(status="completed"),
     )
 
@@ -297,13 +303,18 @@ def prepare_batch_scoring(
     output_fields: list[str] | None,
     operation: str = "deploy_quote",
     input_schema: Mapping[str, pl.DataType] | None = None,
+    request_rows: RequestRows | None = None,
 ) -> BatchScorePlan:
     """Admit the parent batch context and stage the child's inputs on disk.
 
     *input_schema*, when given, types the rows the child reads: the bundle's
     schema dry run passes its sample's, which JSON alone would lose for nulls.
+    A request the deployment's *request_rows* does not cover is refused before
+    anything is admitted.
     """
     from haute.deploy._scorer import admit_deploy_execution
+
+    refuse_multi_quote(request_rows, len(rows))
 
     # The batch path is one fixed execution path: it always admits the served
     # ``DEPLOY_BATCH`` envelope and batch ``modelScore`` contract, even when the
@@ -328,6 +339,7 @@ def prepare_batch_scoring(
                 input_path=str(input_path),
                 result_path=str(Path(temp_dir) / "result.parquet"),
                 input_schema=dict(input_schema) if input_schema is not None else None,
+                request_rows=request_rows,
             )
             worker_config = worker_config_for_memory_policy(
                 memory_limit_bytes=budget.memory_limit_bytes,

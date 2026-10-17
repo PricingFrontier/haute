@@ -156,6 +156,8 @@ _EXPECTED_KEYS = {
     "nodes_skipped",
     "nodes_skipped_names",
     "execution_policy",
+    "request_rows",
+    "artifact_digests",
 }
 
 

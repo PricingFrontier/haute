@@ -358,6 +358,14 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
         "CUDA_VISIBLE_DEVICES",
         "os.environ.get",
     ),
+    # Polars' own spill-folder variable, which Haute sets in every process it starts:
+    # the parent removes an ended worker's folder under it (PL2-16).
+    (
+        "src/haute/_polars_environment.py",
+        "<module>.release_polars_spill_dir",
+        "POLARS_OOC_SPILL_DIR",
+        "os.environ.get",
+    ),
     # Credentials and external integration endpoints.
     (
         "src/haute/assistant/_config.py",

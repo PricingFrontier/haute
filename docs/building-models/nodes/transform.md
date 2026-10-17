@@ -154,7 +154,7 @@ After **Switch to code**, the **TRANSFORM** tab holds a code box, **POLARS CODE*
 - After a failed run, the code box highlights the line that failed.
 
 ```python
-df = policies.join(claims, on="policy_id", how="left")
+df = policies.join(claims, on="policy_id", how="left", maintain_order="left_right")
 df = df.with_columns(
     (pl.col("claim_amount") / pl.col("premium")).alias("loss_ratio")
 )
@@ -236,6 +236,7 @@ df = df.join(
     right_on=["policy_id"],
     how="left",
     suffix="_right",
+    maintain_order="left_right",
 )
 df = df.with_columns(
     (pl.col("claim_amount") / pl.col("premium")).alias("loss_ratio")

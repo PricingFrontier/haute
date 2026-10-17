@@ -62,6 +62,10 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
         self._input_node_ids = self._manifest["input_node_ids"]
         self._output_node_id = self._manifest["output_node_id"]
         self._output_fields = self._manifest.get("output_fields")
+        # Whether a request of several quotes is answered in request order, or refused.
+        from haute.deploy._request_rows import RequestRows
+
+        self._request_rows = RequestRows.from_manifest(self._manifest["request_rows"])
 
         manifest_artifacts = set(self._manifest.get("artifacts", {}))
         missing_artifacts = sorted(manifest_artifacts - set(context.artifacts))
@@ -82,8 +86,10 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
     ) -> pd.DataFrame:
         """Score one or more rows through the pipeline."""
 
+        from haute.deploy._request_rows import refuse_multi_quote
         from haute.deploy._scorer import admit_deploy_execution, score_graph
 
+        refuse_multi_quote(self._request_rows, len(model_input))
         execution_context = admit_deploy_execution(
             operation="deploy_pyfunc_predict",
             row_count=len(model_input),
@@ -102,6 +108,7 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
                 output_fields=self._output_fields,
                 execution_context=execution_context,
                 retain_admission_on_success=True,
+                request_rows=self._request_rows,
             )
             with execution_context.stage("deploy_to_pandas"):
                 pandas_result = result.to_pandas()

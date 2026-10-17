@@ -52,7 +52,7 @@ and the Transform node's **Generated code** panel shows:
 
 ```python
 df = quotes
-df = df.join(params, how="cross", suffix="_right")
+df = df.join(params, how="cross", suffix="_right", maintain_order="left_right")
 df = df.with_columns(
     (pl.col("base_premium") * pl.col("expense_loading")).alias("loaded_premium")
 )

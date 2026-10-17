@@ -205,6 +205,33 @@ This catches problems early: schema mismatches, missing model files, runtime err
 
 ---
 
+## Requests with several quotes
+
+A request to a deployed pipeline can hold several quotes. The answer then has one row per quote, in the order the quotes were sent, so the first row answers the first quote.
+
+When you deploy, Haute checks every node between the Quote Input and the Quote Response to make sure each quote keeps exactly one row, in its place, and that no quote's answer depends on the other quotes sent with it. `haute deploy` prints the result. When the check passes, the deployment answers several quotes per request. When it doesn't, the deployment still answers one quote per request, but it refuses a request holding more than one quote. The refusal (HTTP 422 from a container) and the deploy output name each node that stopped the check and what it does:
+
+| In a node | Why it stops the check |
+|---|---|
+| **Filter rows**, **Limit rows**, **Remove duplicates**, or an inner, semi or anti join | It can drop a quote |
+| **Sort rows**, or a join whose order is not the quotes' (see below) | It can reorder the quotes |
+| **Unpivot to rows**, **Append inputs**, a full join, or an [Expander](../building-models/nodes/scenario-expander.md) | It can repeat a quote or add rows |
+| A join that starts from another input instead of the quotes | It answers with that input's rows |
+| **Group and aggregate**, **Pivot to columns**, a **Fill missing values** strategy that reads other rows, or a formula that does (a total, an average, a rank, a running total, the previous row's value) | One quote's answer would depend on the others |
+| An [Apply Optimisation](../building-models/nodes/optimiser-apply.md) node in online mode, or one that loads its result from MLflow | Online mode answers in quote-id order; an MLflow result can't be checked before it is loaded |
+| Code the check can't follow, a [Submodel](../building-models/nodes/submodel.md), or a [Quote Input](../building-models/nodes/quote-input.md) with more than one table | It can't be checked yet |
+
+A join keeps each quote's row when it starts from the quotes, is a left join (or a cross join with a single-row [Constant](../building-models/nodes/constant.md)), and keeps the quotes' order: **left input order** or **left, then right** in a **Join another input** step, **Left** or **Left then right** in an [Edge Join](../building-models/nodes/edge-join.md). The table it joins must also hold each key once:
+
+- **A lookup the deployment carries** (a [Data Input](../building-models/nodes/data-input.md)) is checked when you deploy, after its post-load code runs. If a key appears twice, the deploy fails naming the lookup, the join and the key: remove the repeated rows. If a quote is meant to match several rows, set the join's validation to **many to many** (**m:m** in an Edge Join); the deployment then answers one quote per request.
+- **A table built from the quote itself**, such as a quote's drivers, must be grouped by the join key before the join, or the join's validation set to **many to one (unique right keys)** or **one to one** (**m:1** or **1:1** in an Edge Join).
+
+To decline a quote, keep its row and add a column saying so, for example `declined` set to true, instead of filtering the quote out.
+
+When the deployment answers one quote per request, its test quotes are scored one request each. `haute impact` sends quotes in batches, so it needs a deployment that answers several quotes per request.
+
+---
+
 ## Validation and release controls
 
 Haute validates a deployment graph and scores configured test quotes before a non-dry-run target dispatch. It also provides `haute smoke` and `haute impact` commands for an already-running endpoint. These are useful release building blocks, not a managed safety system:

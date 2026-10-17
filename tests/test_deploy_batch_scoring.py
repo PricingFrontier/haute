@@ -243,6 +243,7 @@ def _load_app(
         "pruned_graph": PipelineGraph().model_dump(mode="json"),
         "input_node_ids": ["quotes"],
         "output_node_id": "quotes",
+        "request_rows": {"multi_quote": "in_request_order", "refusals": [], "checked_lookups": []},
         "artifacts": {},
         "output_fields": None,
     }

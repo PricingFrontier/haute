@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from haute._hashing import content_hash
 from haute.deploy._config import ContainerConfig, DeployConfig, ResolvedDeploy
 from haute.deploy._project_modules import ProjectModules
+from haute.deploy._request_rows import RequestRows
 from haute.graph_utils import PipelineGraph
 
 FIXTURE_DIR = Path("tests/fixtures")
@@ -76,6 +78,18 @@ def make_resolved_deploy(
         "input_schema": {"col": "Int64"},
         "output_schema": {"col": "Int64"},
         "project_modules": ProjectModules(utility=None, unbundled_imports=()),
+        "request_rows": RequestRows(multi_quote="in_request_order"),
     }
     defaults.update(overrides)
+    if "artifact_digests" not in defaults:
+        artifacts = defaults["artifacts"]
+        assert isinstance(artifacts, dict)
+        defaults["artifact_digests"] = artifact_digests(artifacts)
     return ResolvedDeploy(**defaults)
+
+
+def artifact_digests(artifacts: dict[str, Path]) -> dict[str, str]:
+    """Each existing artefact's digest, as resolution records it before anything reads it."""
+    return {
+        name: content_hash(Path(path)) for name, path in artifacts.items() if Path(path).is_file()
+    }

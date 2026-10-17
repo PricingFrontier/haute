@@ -28,6 +28,7 @@ import polars as pl
 import pytest
 
 from haute._types import PipelineGraph
+from haute.deploy._request_rows import RequestRows
 from haute.errors import DeployError
 from tests._deploy_helpers import FIXTURE_DIR
 from tests._deploy_helpers import make_resolved_deploy as _make_resolved
@@ -129,6 +130,11 @@ class TestHauteModelLoadContext:
             "pruned_graph": {"nodes": [], "edges": []},
             "input_node_ids": ["api_src"],
             "output_node_id": "out",
+            "request_rows": {
+                "multi_quote": "in_request_order",
+                "refusals": [],
+                "checked_lookups": [],
+            },
             "output_fields": ["premium"],
             "artifacts": {"model.pkl": "/tmp/model.pkl"},
         }
@@ -162,6 +168,11 @@ class TestHauteModelLoadContext:
             "pruned_graph": {"nodes": [], "edges": []},
             "input_node_ids": ["src"],
             "output_node_id": "out",
+            "request_rows": {
+                "multi_quote": "in_request_order",
+                "refusals": [],
+                "checked_lookups": [],
+            },
             "artifacts": {},
         }
         manifest_path = tmp_path / "deploy_manifest.json"
@@ -183,6 +194,11 @@ class TestHauteModelLoadContext:
             "pruned_graph": {"nodes": [], "edges": []},
             "input_node_ids": ["src"],
             "output_node_id": "out",
+            "request_rows": {
+                "multi_quote": "in_request_order",
+                "refusals": [],
+                "checked_lookups": [],
+            },
             "artifacts": {"missing.pkl": "/original/path.pkl"},
         }
         manifest_path = tmp_path / "deploy_manifest.json"
@@ -216,6 +232,7 @@ class TestHauteModelPredict:
         model._output_node_id = "out"
         model._artifact_paths = {}
         model._output_fields = None
+        model._request_rows = RequestRows("in_request_order")
 
         input_pd = pd.DataFrame({"x": [1.0, 2.0], "y": [3.0, 4.0]})
         expected_result = pl.DataFrame({"x": [1.0, 2.0], "result": [10.0, 20.0]})
@@ -251,6 +268,7 @@ class TestHauteModelPredict:
         model._output_node_id = "out"
         model._artifact_paths = {}
         model._output_fields = None
+        model._request_rows = RequestRows("in_request_order")
         admission_error = ExecutionAdmissionError(
             "deploy_pyfunc_predict",
             profile=ExecutionProfile.DEPLOY_BATCH,
@@ -297,6 +315,7 @@ class TestHauteModelPredict:
         model._output_node_id = "out"
         model._artifact_paths = {}
         model._output_fields = None
+        model._request_rows = RequestRows("in_request_order")
 
         monkeypatch.setattr(
             "haute.deploy._scorer.admit_deploy_execution",
@@ -332,6 +351,7 @@ class TestHauteModelPredict:
         model._output_node_id = "out"
         model._artifact_paths = {}
         model._output_fields = None
+        model._request_rows = RequestRows("in_request_order")
 
         class Result:
             def to_pandas(self):
@@ -363,6 +383,7 @@ class TestHauteModelPredict:
         model._output_node_id = "out"
         model._artifact_paths = {}
         model._output_fields = ["premium"]
+        model._request_rows = RequestRows("in_request_order")
 
         input_pd = pd.DataFrame({"x": [1.0]})
         mock_result = pl.DataFrame({"premium": [100.0]})
@@ -388,6 +409,7 @@ class TestHauteModelPredict:
         model._output_node_id = "out"
         model._artifact_paths = {"model.pkl": "/served/model.pkl"}
         model._output_fields = None
+        model._request_rows = RequestRows("in_request_order")
 
         input_pd = pd.DataFrame({"x": [1.0]})
         mock_result = pl.DataFrame({"x": [1.0]})
@@ -416,6 +438,7 @@ class TestHauteModelPredict:
         model._input_node_ids = ["quotes"]
         model._output_node_id = "output"
         model._output_fields = output_fields
+        model._request_rows = RequestRows("in_request_order")
         model._artifact_paths = {}
         return model
 
@@ -4522,6 +4545,10 @@ class TestResolveConfigEdgeCases:
                 return_value=_STUB_EXECUTION_POLICY,
             ),
             patch("haute.deploy._schema.infer_output_schema", return_value={"out": "Float64"}),
+            patch(
+                "haute.deploy._request_rows.request_rows",
+                return_value=RequestRows("in_request_order"),
+            ),
         ):
             resolved = resolve_config(config)
 

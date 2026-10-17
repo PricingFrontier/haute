@@ -286,6 +286,31 @@ class DeployError(HauteError):
     """Deploy validation or bundling failure."""
 
 
+class MultiQuoteRequestRefusedError(DeployError):
+    """A request of several quotes reached a deployment that answers one quote per request.
+
+    ``refusals`` names each node and operation that stopped the deployment's proof that
+    it answers every quote with one row, in request order (specs/deploy).
+    """
+
+    error_code = "multi_quote_request_refused"
+    public_fields = ("quotes", "refusals")
+
+    def __init__(self, message: str, *, quotes: int, refusals: list[dict[str, str]]) -> None:
+        self.quotes = quotes
+        self.refusals = refusals
+        super().__init__(message)
+
+
+class RequestRowCountError(ExecutionError):
+    """A deployment proved to answer each quote with one row answered with another count."""
+
+    def __init__(self, message: str, *, quotes: int, rows: int) -> None:
+        self.quotes = quotes
+        self.rows = rows
+        super().__init__(message, quotes=quotes, rows=rows)
+
+
 class FeatureMismatchError(HauteError):
     """Feature or categorical train-vs-score contract mismatch."""
 

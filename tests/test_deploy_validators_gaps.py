@@ -24,8 +24,10 @@ import pytest
 
 from haute.deploy._config import DeployConfig, ResolvedDeploy
 from haute.deploy._project_modules import ProjectModules
+from haute.deploy._request_rows import RequestRows
 from haute.errors import DeployError
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from tests._deploy_helpers import artifact_digests
 
 FIXTURE_DIR = Path("tests/fixtures")
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
@@ -74,6 +76,8 @@ def _make_resolved(
         input_schema=input_schema or {"col": "Int64"},
         output_schema=output_schema or {"result": "Float64"},
         project_modules=ProjectModules(utility=None, unbundled_imports=()),
+        request_rows=RequestRows(multi_quote="in_request_order"),
+        artifact_digests=artifact_digests(artifacts or {}),
     )
 
 

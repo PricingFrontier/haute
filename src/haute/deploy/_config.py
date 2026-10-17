@@ -8,7 +8,7 @@ import re
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from haute._graph_shape import validate_singleton_groups
 from haute._io import read_user_text
@@ -24,6 +24,9 @@ from haute.deploy._pruner import (
 )
 from haute.errors import DeployError
 from haute.graph_utils import NodeType, PipelineGraph, flatten_graph
+
+if TYPE_CHECKING:
+    from haute.deploy._request_rows import RequestRows
 
 logger = get_logger(component="deploy.config")
 
@@ -520,6 +523,10 @@ class ResolvedDeploy:
     input_schema: dict[str, str]
     output_schema: dict[str, str]
     project_modules: ProjectModules
+    request_rows: RequestRows
+    """How a request of several quotes is answered: in request order, or refused."""
+    artifact_digests: dict[str, str]
+    """Each artefact's content digest, recorded before anything read it."""
     execution_policy: dict[str, Any] = field(default_factory=dict)
     removed_node_ids: list[str] = field(default_factory=list)
     snapshot_provenance: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -565,6 +572,7 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
     from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
     from haute._project import resolve_pipeline_file
     from haute.deploy._bundler import collect_artifacts
+    from haute.deploy._request_rows import record_digests, request_rows
     from haute.deploy._schema import (
         DeployBatchRuntime,
         infer_deploy_execution_policy,
@@ -686,6 +694,9 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
             snapshot_provenance=snapshot_provenance,
             model_sources=model_sources,
         )
+        # Before anything below reads an artefact: every copy into a bundle is checked
+        # against these, so it carries the bytes this resolution checked.
+        artifact_digests = record_digests(artifacts)
 
         # Infer schemas. The output-schema dry-run scores with the exact bundled
         # artifacts the container serves so validate-time and serve-time load the
@@ -735,6 +746,9 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
                     available_fields=available,
                 )
             output_schema = {field: output_schema[field] for field in fields}
+        # Whether a request of several quotes is answered in request order; a lookup
+        # the bundle carries is read here for repeated join keys.
+        rows = request_rows(pruned_graph, deploy_inputs, output_node_id, artifact_paths)
         project_modules = resolve_project_modules(pruned_graph.preamble or "", pipeline_dir)
     except BaseException:
         resources.close()
@@ -748,6 +762,7 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
         removed_nodes=len(removed_ids),
         input_nodes=len(deploy_inputs),
         artifacts=len(artifacts),
+        multi_quote=rows.multi_quote,
     )
     return ResolvedDeploy(
         config=config,
@@ -759,6 +774,8 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
         input_schema=input_schema,
         output_schema=output_schema,
         project_modules=project_modules,
+        request_rows=rows,
+        artifact_digests=artifact_digests,
         execution_policy=execution_policy,
         removed_node_ids=removed_ids,
         snapshot_provenance=snapshot_provenance,

@@ -534,6 +534,11 @@ class TestEditorAndPackagedScoringAgree:
             "pruned_graph": pruned.model_dump(),
             "input_node_ids": ["src"],
             "output_node_id": out_id,
+            "request_rows": {
+                "multi_quote": "in_request_order",
+                "refusals": [],
+                "checked_lookups": [],
+            },
             "artifacts": {},
         }
         manifest_path = tmp_path / "deploy_manifest.json"

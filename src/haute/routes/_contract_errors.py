@@ -18,6 +18,7 @@ from haute.errors import (
     HauteError,
     InputPreparationError,
     LiveSwitchScenarioError,
+    MultiQuoteRequestRefusedError,
     NodeConfigError,
     PreambleError,
     RatingExtremaUndefinedError,
@@ -63,6 +64,7 @@ PUBLIC_CONTRACT_ERROR_TYPES: tuple[type[HauteError], ...] = (
     SeedPlanExpiredError,
     WorkbenchTablesError,
     WorkbenchInputError,
+    MultiQuoteRequestRefusedError,
 )
 
 

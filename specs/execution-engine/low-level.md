@@ -2691,6 +2691,11 @@ present a structural or schema result as execution evidence.
 
 ## Testing
 
+- **`tests/test_row_order_parity.py`** — a pipeline with an ordered Edge Join, a Join step
+  and a Sort rows with ties over Parquet scans gives the same rows in the same order from a
+  preview, `Pipeline.run`, `Pipeline.score`, a Data Output write and the deploy scorer on
+  each of 20 runs, equal to the stable order computed in Python (the same graph with an
+  unordered Edge Join fails it); an unpivot gives the same rows as a set on every run.
 - **`tests/test_preview_snapshot_seeding.py`** — the eager engine under a preview plan: a
   seeded node builds nothing at or above it; a capture under a row limit holds the full
   output and the limited rows are read from it; the limit-boundary filter and sum over a

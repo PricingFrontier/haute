@@ -98,4 +98,6 @@ def build_manifest(resolved: ResolvedDeploy) -> dict[str, Any]:
         "nodes_deployed": len(resolved.pruned_graph.nodes),
         "nodes_skipped": len(resolved.removed_node_ids),
         "nodes_skipped_names": resolved.removed_node_ids,
+        "request_rows": resolved.request_rows.to_manifest(),
+        "artifact_digests": dict(resolved.artifact_digests),
     }

@@ -26,6 +26,7 @@ from haute.deploy._project_modules import UTILITY_PACKAGE
 from haute.deploy._request_limits import (
     DEFAULT_DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES,
 )
+from haute.deploy._request_rows import copy_verified
 from haute.deploy._utils import build_manifest, model_source_line
 from haute.errors import DeployError
 
@@ -110,9 +111,14 @@ def write_bundle(
     manifest_path = build_dir / "deploy_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
+    # Each artefact is copied under the digest resolution recorded before checking it.
     for artifact_name, artifact_path in resolved.artifacts.items():
-        dest = artifacts_dir / artifact_name
-        shutil.copy2(artifact_path, dest)
+        copy_verified(
+            artifact_path,
+            artifacts_dir / artifact_name,
+            digest=resolved.artifact_digests[artifact_name],
+            name=artifact_name,
+        )
 
     # A reused build directory must not keep an earlier build's utility code:
     # a stale package would shadow the module this build validated.
@@ -404,6 +410,7 @@ from haute.deploy._batch_scoring import (
     prepare_batch_scoring,
     score_batch_worker,
 )
+from haute.deploy._request_rows import RequestRows
 from haute.deploy._scorer import (
     QuoteRequest,
     admit_deploy_execution,
@@ -424,6 +431,8 @@ _input_node_ids = _manifest["input_node_ids"]
 # any other request input takes the rows as a frame.
 _reads_quotes = reads_one_quote_per_request(_pruned_graph, _input_node_ids)
 _output_node_id = _manifest["output_node_id"]
+# Whether a request of several quotes is answered in request order, or refused.
+_request_rows = RequestRows.from_manifest(_manifest["request_rows"])
 
 
 def _resolve_manifest_artifact_path(raw_path):
@@ -511,6 +520,7 @@ def health() -> dict:
         # Multi-row batches run in a spawn worker with a hard RSS cap.
         "batch_memory_enforcement": resolve_worker_memory_enforcement(),
         "execution_policy": _manifest.get("execution_policy"),
+        "request_rows": _manifest["request_rows"],
     }}
 
 
@@ -663,6 +673,7 @@ async def _quote_batch(request: Request, rows: list):
             output_node_id=_output_node_id,
             artifact_paths=_artifact_paths,
             output_fields=_output_fields,
+            request_rows=_request_rows,
         )
         outcome = await run_isolated_worker_async(
             score_batch_worker,
@@ -847,6 +858,7 @@ async def quote(request: Request) -> JSONResponse:
                 artifact_paths=_artifact_paths,
                 output_fields=_output_fields,
                 execution_context=execution_context,
+                request_rows=_request_rows,
             )
             spool = await run_in_threadpool(_materialize_quote_ndjson, plan)
             return StreamingResponse(
@@ -861,6 +873,7 @@ async def quote(request: Request) -> JSONResponse:
             artifact_paths=_artifact_paths,
             output_fields=_output_fields,
             execution_context=execution_context,
+            request_rows=_request_rows,
         )
         return JSONResponse(content=_quote_response_content(result, execution_context))
     except ExecutionAdmissionError as exc:

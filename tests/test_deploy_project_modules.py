@@ -174,18 +174,21 @@ def test_pyfunc_model_scores_with_its_own_utility_package(
 ) -> None:
     import mlflow.pyfunc
 
-    from haute.deploy._mlflow import _pyfunc_model_arguments
+    from haute.deploy._mlflow import _pyfunc_model_arguments, _stage_artifacts
     from haute.deploy._utils import build_manifest
 
     project = tmp_path / "project"
     _make_project(project, monkeypatch)
     model_dir = tmp_path / "model"
+    staging = tmp_path / "staging"
+    staging.mkdir()
     with _resolve(project) as resolved:
         validate_deploy(resolved)
         manifest_path = tmp_path / "deploy_manifest.json"
         manifest_path.write_text(json.dumps(build_manifest(resolved)), encoding="utf-8")
         mlflow.pyfunc.save_model(
-            path=str(model_dir), **_pyfunc_model_arguments(resolved, manifest_path)
+            path=str(model_dir),
+            **_pyfunc_model_arguments(resolved, manifest_path, _stage_artifacts(resolved, staging)),
         )
 
     shutil.rmtree(project / "utility")

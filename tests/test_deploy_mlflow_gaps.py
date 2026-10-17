@@ -151,13 +151,24 @@ class TestArtifactCopy:
             artifacts={"my_model": artifact_file},
         )
 
+        staged: dict[str, bytes] = {}
+
+        def read_staged(**kwargs: object) -> None:
+            artifacts = kwargs["artifacts"]
+            assert isinstance(artifacts, dict)
+            staged.update({name: Path(path).read_bytes() for name, path in artifacts.items()})
+
         with mock_mlflow_deploy() as mocks:
+            mocks.log_model.side_effect = read_staged
             deploy_to_mlflow(resolved)
 
         artifacts = mocks.log_model.call_args.kwargs["artifacts"]
-        # The manifest is always present; the resolved artifact must be added too.
-        assert artifacts["my_model"] == str(artifact_file)
+        # The manifest is always present; the resolved artifact goes in as a copy staged
+        # under the digest resolution recorded, removed once the model is logged.
         assert "deploy_manifest" in artifacts
+        assert staged["my_model"] == artifact_file.read_bytes()
+        assert Path(artifacts["my_model"]).name == "my_model"
+        assert not Path(artifacts["my_model"]).exists()
 
 
 class TestVersionSelection:
