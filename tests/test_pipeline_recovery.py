@@ -2734,6 +2734,62 @@ def test_remove_connection_mends_a_submodel_with_no_nodes(
     assert "submodel.connect(" not in child.read_text(encoding="utf-8")
 
 
+_PRICING = (
+    "import haute\nimport polars as pl\n\n"
+    'submodel = haute.Submodel("pricing", definition_id="pricing", input_ports=[], '
+    'output_ports=[{"name": "out", "source": {"nodeId": "rates", "handleId": None}}], '
+    'pipeline_dir="..")\n\n'
+    "@submodel.polars\ndef rates():\n    return None\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("child_extra", "parent_extra"),
+    [
+        pytest.param("", 'pipeline.connect("ghost", "quotes")\n', id="in-the-pipeline"),
+        pytest.param('\nsubmodel.connect("ghost", "rates")\n', "", id="in-the-definition"),
+    ],
+)
+def test_remove_connection_beside_one_file_registered_under_two_spellings(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    child_extra: str,
+    parent_extra: str,
+) -> None:
+    """Recovery groups registrations by the file they resolve to and names it by the first."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "modules").mkdir()
+    _write(tmp_path / "modules" / "pricing.py", _PRICING + child_extra)
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        "import haute\n"
+        'pipeline = haute.Pipeline("connections")\n\n'
+        "@pipeline.polars\ndef quotes():\n    return None\n\n"
+        'pipeline.submodel("modules/pricing.py", "pricing")\n'
+        'pipeline.submodel("./modules/pricing.py", "pricing_copy", instance_of="pricing")\n'
+        + parent_extra,
+    )
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    assert document.load_status == "degraded"
+    assert document.submodels is not None
+    assert [definition.file for definition in document.submodels.values()] == ["modules/pricing.py"]
+
+    response = client.post(
+        "/api/pipeline/repair/connection/remove/apply",
+        json=_connection_request(document, "connection_endpoint_missing"),
+    )
+
+    assert response.status_code == 200, response.text
+    repaired = response.json()["document"]
+    assert repaired["load_status"] == "ready"
+    assert {key: value["file"] for key, value in repaired["submodels"].items()} == {
+        "pricing": "modules/pricing.py"
+    }
+
+
 @pytest.mark.parametrize(
     ("source", "code", "refusal"),
     [

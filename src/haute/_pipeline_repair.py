@@ -1107,7 +1107,8 @@ def _recovery_structure(document: PipelineEditorDocument) -> str:
 def _recovery_snapshot(document: PipelineEditorDocument) -> dict[str, Any]:
     """Nodes, edges and unresolved connections by authored identity, never by recovery id.
 
-    Submodel definitions are keyed by the file they are registered at: the
+    Submodel definitions are keyed by the path of the first registration of
+    their file, which the parser and recovery both record as ``file``: the
     document keys one that fails to load by that path and a loaded one by its
     id, so a repair that mends a definition would otherwise change its key.
     """
@@ -1134,14 +1135,9 @@ def _recovery_snapshot(document: PipelineEditorDocument) -> dict[str, Any]:
                 for edge in graph.unresolved_connections
             ],
             "submodels": {
-                _registered_file(definition.file): snapshot(definition.graph)
+                definition.file: snapshot(definition.graph)
                 for definition in (graph.submodels or {}).values()
             },
         }
 
     return snapshot(document)
-
-
-def _registered_file(path: str) -> str:
-    """A registration *path* with separators, ``.`` and empty segments folded."""
-    return "/".join(part for part in path.replace("\\", "/").split("/") if part not in ("", "."))

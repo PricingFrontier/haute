@@ -55,7 +55,7 @@ from haute._sidecar import (
     _normalise_sidecar_sources,
     read_sidecar_state,
 )
-from haute._submodel_paths import resolve_submodel_reference
+from haute._submodel_paths import resolve_submodel_reference, submodel_source_key
 from haute._submodel_recovery import submodel_registration_evidence
 from haute._types import (
     GLOBAL_CONSTANTS_FILE,
@@ -1541,6 +1541,9 @@ def _recover_registered_submodels(
 
     path_to_def_id: dict[str, str] = {}
     definition_sources: dict[str, str] = {}
+    # Registrations that resolve to one file share its definition, named by the
+    # first of them, as the parser groups them; also while it fails to load.
+    source_definitions: dict[str, str] = {}
 
     for registration in registrations:
         if registration.path in path_to_def_id:
@@ -1597,6 +1600,11 @@ def _recover_registered_submodels(
             )
             continue
 
+        source_key = submodel_source_key(child_path)
+        if source_key in source_definitions:
+            path_to_def_id[registration.path] = source_definitions[source_key]
+            continue
+
         try:
             _child_raw, child_source = captures.read(child_path)
             child_graph = parse_submodel_source(
@@ -1607,6 +1615,7 @@ def _recover_registered_submodels(
         except (HauteError, OSError, UnicodeError) as exc:
             def_id = registration.path
             path_to_def_id[registration.path] = def_id
+            source_definitions[source_key] = def_id
             code = (
                 "submodel_syntax_invalid"
                 if isinstance(exc, ParseError) and isinstance(exc.__cause__, SyntaxError)
@@ -1636,6 +1645,7 @@ def _recover_registered_submodels(
         except Exception:  # noqa: BLE001 - named submodel recovery isolation boundary
             def_id = registration.path
             path_to_def_id[registration.path] = def_id
+            source_definitions[source_key] = def_id
             incident_id = uuid4().hex
             logger.error(
                 "pipeline_recovery_submodel_unexpected",
@@ -1661,7 +1671,7 @@ def _recover_registered_submodels(
 
         def_id = child_graph._parser_definition_id or registration.path
         path_to_def_id[registration.path] = def_id
-        source_key = str(child_path.resolve()).casefold()
+        source_definitions[source_key] = def_id
 
         if def_id in definition_sources and definition_sources[def_id] != source_key:
             diagnostic = _diagnostic(
