@@ -760,10 +760,21 @@ is no eager dataframe or collect-then-write fallback.
   `wide_integer_message`, which gives the cast that fixes it (`Int64`, or `Float64` if the
   values can exceed it): the feature contract (`contract_dtype_name` refuses one rather
   than recording it as `Int64`), the training job and the train route before they write or
-  convert anything, the predict frame and a deploy's MLflow signature. Elsewhere the column
-  stays a Polars column: a preview, a CSV or IPC write and a Parquet write by Polars keep
-  it, while a path that writes or reads Parquet through pyarrow (a bounded Parquet write, a
-  file's metadata) fails on it with pyarrow's own error.
+  convert anything, the predict frame and a deploy's MLflow signature. pyarrow cannot even
+  read the footer of a Parquet file holding one (`pq.read_metadata` fails), so it names no
+  column, and Haute refuses one first wherever it can name it (`refuse_wide_integers`):
+  - at the node whose output holds it, wherever the walk resolves that output's schema: a
+    preview, which reports every node's schema, and a node with an output contract, whose
+    columns are checked; the refusal names the node, the column and the cast;
+  - at every Parquet write: Haute's part writer (`write_parts`: every snapshot and chunked
+    write), a streaming Parquet sink and an eager Parquet write (`_polars_utils`), and a
+    Data Output writing Parquet, Delta or Iceberg, the formats written through Arrow, so
+    Haute never writes a file pandas, Spark or Haute's own metadata read cannot open;
+  - at `read_parquet_metadata`, which reads the file's schema through Polars before
+    pyarrow reads its footer, for a file another program wrote.
+
+  A CSV, JSON or IPC write keeps such a column where no node check met it first (a run
+  through nodes without output contracts), since Polars reads it back.
 - Under Polars 2, `round`, `floor`, `ceil` and `sign` widen a `Decimal`'s precision by
   one, so the recorded dtype of such a column differs from the one Polars 1 recorded for
   the same pipeline.

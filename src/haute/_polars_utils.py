@@ -30,6 +30,7 @@ from haute._pipeline_settings import (
 from haute._pipeline_settings import (
     MAX_STREAMING_CHUNK_SIZE as MAX_STREAMING_CHUNK_SIZE,
 )
+from haute._polars_dtypes import refuse_wide_integers
 
 logger = get_logger(component="polars_utils")
 
@@ -604,6 +605,7 @@ def _streaming_sink_to_path(
     if fmt == "csv":
         sink_plan = lf.sink_csv(target, lazy=True, engine="streaming")
     else:
+        refuse_wide_integers(lf.collect_schema())
         sink_plan = lf.sink_parquet(
             target,
             compression=compression,
@@ -628,6 +630,7 @@ def _eager_write_to_path(
     if fmt == "csv":
         df.write_csv(target)
     else:
+        refuse_wide_integers(df.schema)
         df.write_parquet(target, compression=compression)
 
 
@@ -910,6 +913,8 @@ def read_parquet_metadata(path: Path) -> dict[str, Any]:
     import pyarrow.parquet as pq
 
     stat = path.stat()
+    # pyarrow cannot read the footer of a file holding a 128-bit integer, nor name it.
+    refuse_wide_integers(pl.read_parquet_schema(path), path=str(path))
     meta = pq.read_metadata(str(path))
     arrow_schema = pq.read_schema(str(path))
     columns = {name: str(arrow_schema.field(name).type) for name in arrow_schema.names}

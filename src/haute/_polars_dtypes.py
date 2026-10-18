@@ -426,6 +426,18 @@ def wide_integer_column(schema: Mapping[str, Any]) -> tuple[str, Any] | None:
     return None
 
 
+def refuse_wide_integers(schema: Mapping[str, Any], **context: Any) -> None:
+    """Refuse *schema*'s first column holding a 128-bit integer, with the cast that fixes it.
+
+    *context* names where (a node, a file) beside the column. pyarrow cannot read the
+    footer of a Parquet file holding one, so a path that would hand one to pyarrow, or
+    write a file pyarrow must later open, refuses it first (specs/io-layer).
+    """
+    wide = wide_integer_column(schema)
+    if wide is not None:
+        raise SchemaMismatchError(wide_integer_message(*wide), column=wide[0], **context)
+
+
 def wide_integer_message(column: str, dtype: Any) -> str:
     """The refusal of a column holding a 128-bit integer, with the cast that fixes it."""
     what = "a 128-bit integer" if dtype in WIDE_INTEGER_DTYPES else "which holds a 128-bit integer"

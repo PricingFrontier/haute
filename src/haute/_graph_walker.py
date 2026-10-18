@@ -73,6 +73,7 @@ from haute._graph_utils import edge_input_name, resolve_orig_source_names
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._logging import get_logger
 from haute._path_resolution import runtime_project_root_scoped
+from haute._polars_dtypes import refuse_wide_integers
 from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_utils import _malloc_trim, projected_or_carrier_columns, streaming_collect
 from haute._source_cache import SourceCacheError
@@ -1509,6 +1510,7 @@ class _Walk:
             columns = frozenset(names)
         else:
             columns = _columns_of(shaped)
+            refuse_wide_integers(_lazy(shaped).collect_schema(), node=boundary.node.data.label)
             self.column_cache[(boundary.node_id, None)] = columns
             if self.context is not None:
                 self.context.record_column_widths(
@@ -1669,6 +1671,8 @@ class _Walk:
             if recorded is not None:
                 available = list(recorded)
         output = self._full_model_score_schema(node_id, node, _schema_items(shaped))
+        # The schema is resolved: a 128-bit integer is refused at the node that makes it.
+        refuse_wide_integers(shaped.collect_schema(), node=node.data.label)
         if _is_plain_model_score(node):
             available = output
         self.available_columns[node_id] = available

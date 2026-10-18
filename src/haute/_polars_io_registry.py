@@ -54,7 +54,7 @@ from haute._map_columns import (
     map_column_names,
     parquet_map_column_names,
 )
-from haute._polars_dtypes import parse_schema_mapping
+from haute._polars_dtypes import parse_schema_mapping, refuse_wide_integers
 from haute._polars_io_schema import (
     installed_provides_callable,
     retired_argument_names,
@@ -1377,6 +1377,11 @@ def _sliced_sink_taken(
     return True
 
 
+# Formats whose files are written as, or read back through, Arrow: pyarrow cannot
+# hold a 128-bit integer, so a Data Output refuses one in them by name.
+_ARROW_WRITTEN_FORMATS = frozenset({"parquet", "delta", "iceberg"})
+
+
 def write_polars_output(
     lf: pl.LazyFrame,
     config: Mapping[str, Any],
@@ -1406,6 +1411,10 @@ def write_polars_output(
     target = _resolve_output_target(fmt, config)
 
     _require_engines(fmt, fmt.write_engines, operation="write")
+    if fmt.name in _ARROW_WRITTEN_FORMATS:
+        refuse_wide_integers(
+            lf.collect_schema(), **({"node": node_id} if node_id is not None else {})
+        )
 
     try:
         if fmt.source_kind == "database":

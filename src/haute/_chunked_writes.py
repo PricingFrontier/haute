@@ -37,6 +37,7 @@ from haute._edge_join import build_edge_join_kwargs
 from haute._execution_context import ExecutionContext, current_execution_context
 from haute._file_ops import ensure_disk_headroom
 from haute._logging import get_logger
+from haute._polars_dtypes import refuse_wide_integers
 from haute._polars_utils import (
     atomic_write,
     bounded_hashed_sink,
@@ -537,6 +538,7 @@ def write_parts(
     # A join's own schema resolution runs first: Polars rejects some
     # validate/how combinations there, and the write must raise exactly that.
     schema = (join.native() if join is not None else frame).collect_schema()
+    refuse_wide_integers(schema, **({"node": node_id} if node_id is not None else {}))
     parts = _Parts(
         directory,
         schema=schema,
