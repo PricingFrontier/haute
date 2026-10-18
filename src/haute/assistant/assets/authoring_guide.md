@@ -179,7 +179,7 @@ input and `regions` as its second:
 
 ```json
 [
-  {"id": "logic", "kind": "free_code", "code": "# Add each quote's zone and regional loading\ndf = df.join(regions, on=\"region\", how=\"left\").with_columns(loading=pl.col(\"region\").replace_strict(obj, default=1.0))"}
+  {"id": "logic", "kind": "free_code", "code": "# Add each quote's zone and regional loading\ndf = df.join(regions, on=\"region\", how=\"left\", maintain_order=\"left\").with_columns(loading=pl.col(\"region\").replace_strict(obj, default=1.0))"}
 ]
 ```
 

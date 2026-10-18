@@ -644,8 +644,10 @@ hands over its write's digests the same way:
   A `semi`/`anti` join reads only the lookup's distinct keys. A `full` join adds the lookup
   rows no driving row matched, once each and in the lookup's order, after every driving
   row, as the full join of an empty base with them: where an ordered full join places them.
-  Every join states its order (`maintainOrder` is required). An order naming the driving
-  side keeps Polars' order: each part is sunk on the streaming engine, which keeps a
+  Every join states its order (`maintainOrder` is required), and so does every frame join
+  in `src/haute/`, the assistant's examples included: `"none"` where nothing reads the
+  order (a count, a table keyed by id, a sort after it), held by `tests/test_join_orders.py`.
+  An order naming the driving side keeps Polars' order: each part is sunk on the streaming engine, which keeps a
   `maintain_order` join's order on Polars 2, its matches read in the lookup's order, so the
   parts read back as the native join row for row and in order; an order led by the lookup
   side is written natively (`native_reason="ordered_by_lookup_side"`). Measured on Polars

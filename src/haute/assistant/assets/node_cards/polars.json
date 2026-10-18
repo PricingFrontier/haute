@@ -51,7 +51,7 @@
           {
             "id": "logic",
             "kind": "free_code",
-            "code": "# Attach the no-claims discount and derive vehicle age\ndf = df.join(ncd_scale, on=\"ncd_years\", how=\"left\").with_columns(\n    vehicle_age=2026 - pl.col(\"vehicle_year\"),\n    ncd_discount=pl.col(\"ncd_discount\").fill_null(0.0),\n)"
+            "code": "# Attach the no-claims discount and derive vehicle age\ndf = df.join(ncd_scale, on=\"ncd_years\", how=\"left\", maintain_order=\"left\").with_columns(\n    vehicle_age=2026 - pl.col(\"vehicle_year\"),\n    ncd_discount=pl.col(\"ncd_discount\").fill_null(0.0),\n)"
           }
         ]
       },

@@ -224,9 +224,10 @@ def write_quote_analysis(
                 .unique()
                 .select(pl.col(quote_id).cast(pl.String))
             )
-            table = solved.join(reduced, on=quote_id, how="left").with_columns(
-                pl.col(ANALYSIS_ROW_PRESENT_COLUMN).fill_null(False)
-            )
+            # A table keyed by quote id, its rows in no order (a group-by built it).
+            table = solved.join(
+                reduced, on=quote_id, how="left", maintain_order="none"
+            ).with_columns(pl.col(ANALYSIS_ROW_PRESENT_COLUMN).fill_null(False))
         bounded_sink(
             table.select(quote_id, *analysis_columns, ANALYSIS_ROW_PRESENT_COLUMN),
             handle["path"],
@@ -632,7 +633,7 @@ class ScenarioHistogram:
             schema={"optimal_step": pl.Int32, "scenario_value": pl.Float64},
         )
         rows = frames.collect(
-            grid.join(per_step, on="optimal_step", how="left")
+            grid.join(per_step, on="optimal_step", how="left", maintain_order="none")
             .with_columns(pl.col(counted_columns).fill_null(0))
             .sort("optimal_step")
         )
