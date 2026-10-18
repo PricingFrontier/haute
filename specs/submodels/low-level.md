@@ -81,7 +81,10 @@ Public handles are constructed only as `in__<name>` and `out__<name>`.
 Port names are canonical identifiers; internal node ids and labels are not public
 port names. Inputs fan out to their ordered targets, outputs have exactly one
 source, port names are unique across both input and output ports in the definition, and every endpoint must
-refer to a node in the definition graph.
+refer to a node in the definition graph. Parsing a submodel file checks these rules
+(`check_submodel_interface`, which the definition model shares) and refuses a file that
+breaks them with a `ParseError` naming it, so the editor shows that submodel unavailable
+with the reason instead of failing the whole document.
 
 The source form persists identity on both sides of the relationship:
 

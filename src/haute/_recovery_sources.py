@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from haute._artifact_paths import conflict, read_artifact, safe_path
-from haute._ast_helpers import _extract_function_bodies, _get_decorator_kwargs
+from haute._ast_helpers import _function_body_source, _get_decorator_kwargs
 from haute._config_builder import (
     _attach_code_from_body,
     _reconcile_steps,
@@ -53,8 +53,11 @@ def read_raw_node_settings(
     source_file = target.source_file or document.source_file
     source = safe_path(root, source_file).read_bytes().decode("utf-8-sig")
     tree = ast.parse(source)
+    # An async node function is refused by the parser; recovery rewrites it as a plain def.
     functions = [
-        s for s in tree.body if isinstance(s, ast.FunctionDef) and s.name == target.authored_id
+        s
+        for s in tree.body
+        if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef)) and s.name == target.authored_id
     ]
     if len(functions) != 1 or len(functions[0].decorator_list) != 1:
         raise conflict("Recovery requires one function with one recognised node decorator.")
@@ -104,7 +107,7 @@ def read_raw_node_settings(
                     "Correct the file manually, or use Reset node to replace it."
                 ) from exc
     params = [arg.arg for arg in (*function.args.posonlyargs, *function.args.args)]
-    body = _extract_function_bodies(source, tree=tree)[function.name]
+    body = _function_body_source(source.splitlines(), function)
     keyword_only = [arg.arg for arg in function.args.kwonlyargs]
     body_dropped = uncalled_function_body(node_type, body, [*params, *keyword_only], params)
     if body_dropped:

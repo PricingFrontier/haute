@@ -1568,6 +1568,65 @@ def test_missing_submodel_preserves_occurrence_and_unrelated_root_nodes(
     )
 
 
+@pytest.mark.parametrize(
+    ("output_ports", "message"),
+    [
+        pytest.param(
+            '[{"name": "out", "source": {"nodeId": "ghost", "handleId": None}}]',
+            "missing child nodes: ['ghost']",
+            id="missing-node",
+        ),
+        pytest.param(
+            '[{"name": "out", "source": {"nodeId": "quotes", "handleId": None}}, '
+            '{"name": "out", "source": {"nodeId": "quotes", "handleId": None}}]',
+            "duplicate public port names: ['out']",
+            id="duplicate-name",
+        ),
+    ],
+)
+def test_a_submodel_whose_ports_break_its_interface_is_unavailable_on_its_own(
+    tmp_path: Path, output_ports: str, message: str
+) -> None:
+    """Its own parse refuses it; the definition model refusing it failed the whole document."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "modules").mkdir()
+    _write(
+        tmp_path / "modules" / "inputs.py",
+        "import haute\nimport polars as pl\n\n"
+        'submodel = haute.Submodel("inputs", definition_id="inputs", input_ports=[], '
+        f'output_ports={output_ports}, pipeline_dir="..")\n\n'
+        "@submodel.polars\ndef quotes():\n"
+        '    df = pl.LazyFrame({"quote_id": [1]})\n    return df\n',
+    )
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("ports")
+
+        @pipeline.polars
+        def healthy():
+            return None
+
+        pipeline.submodel("modules/inputs.py", "inputs")
+        """,
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "degraded"
+    by_id = {node.authored_id: node for node in document.nodes}
+    assert by_id["healthy"].availability == "ready"
+    assert by_id["inputs"].availability == "unavailable"
+    reasons = [
+        diagnostic.message
+        for diagnostic in document.diagnostics
+        if diagnostic.diagnostic_id in by_id["inputs"].diagnostic_ids
+    ]
+    assert any(message in reason for reason in reasons)
+
+
 def test_unknown_submodel_decorator_is_rejected_strictly_and_conserved(
     tmp_path: Path,
 ) -> None:

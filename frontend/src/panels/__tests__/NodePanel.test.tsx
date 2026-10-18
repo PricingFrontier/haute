@@ -547,7 +547,7 @@ describe("NodePanel", () => {
       incident_id: null,
     }
 
-    it("recovers or resets each one by its own identity in the submodel's file", () => {
+    it("recovers, resets or removes each one by its own identity in the submodel's file", () => {
       useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
         load_status: "degraded",
         capabilities: { can_repair: true },
@@ -570,22 +570,25 @@ describe("NodePanel", () => {
       expect(listed.getByRole("listitem")).toHaveTextContent(orderDiagnostic.message)
       fireEvent.click(listed.getByRole("button", { name: "Recover settings for claim_join" }))
       fireEvent.click(listed.getByRole("button", { name: "Reset node claim_join" }))
+      fireEvent.click(listed.getByRole("button", { name: "Remove node claim_join" }))
       expect(onRemoveUnavailableNode.mock.calls).toEqual([
         [{ sourceFile: "rating/modules/data_inputs.py", recoveryId: "claim_join", action: "recover" }],
         [{ sourceFile: "rating/modules/data_inputs.py", recoveryId: "claim_join", action: "reset" }],
+        [{ sourceFile: "rating/modules/data_inputs.py", recoveryId: "claim_join" }],
       ])
       // The submodel itself is still only removed, never rebuilt.
       expect(screen.queryByRole("button", { name: "Recover settings" })).not.toBeInTheDocument()
       expect(screen.getByRole("button", { name: "Remove unavailable node" })).toBeInTheDocument()
     })
 
-    it("offers no action without repair capability or for a node recovery cannot rebuild", () => {
+    it("only removes a node recovery cannot rebuild, and offers nothing without repair capability", () => {
       useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
         load_status: "degraded",
         capabilities: { can_repair: true },
       }))
+      const onRemoveUnavailableNode = vi.fn()
       const { unmount } = renderPanel({
-        onRemoveUnavailableNode: vi.fn(),
+        onRemoveUnavailableNode,
         node: card,
         submodels: definition([
           innerNode("copied", "polars", "unavailable", { config: { instanceOf: "claims" } }),
@@ -594,7 +597,15 @@ describe("NodePanel", () => {
       })
       const listed = within(screen.getByRole("region", { name: "Unavailable nodes in this submodel" }))
       expect(listed.getAllByRole("listitem")).toHaveLength(2)
-      expect(listed.queryByRole("button")).not.toBeInTheDocument()
+      expect(listed.getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
+        "Remove node copied",
+        "Remove node legacy",
+      ])
+      fireEvent.click(listed.getByRole("button", { name: "Remove node legacy" }))
+      expect(onRemoveUnavailableNode).toHaveBeenCalledWith({
+        sourceFile: "rating/modules/data_inputs.py",
+        recoveryId: "legacy",
+      })
       unmount()
 
       useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({

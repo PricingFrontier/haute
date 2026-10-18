@@ -910,10 +910,10 @@ and `Reset node` as the destructive alternative. Submodels, instances, unknown
 types and blocked nodes cannot reset or recover. The editor does not open an
 unavailable submodel's definition, so that submodel's inspector lists the
 definition's unavailable nodes (`submodels[config.definitionId]`) under
-"Unavailable nodes in this submodel", each with its diagnostics and, for a known
-ordinary node, `Recover settings` and `Reset node` submitted with that node's own
-`_recoveryId` and `_sourceFile` (the submodel's file); removal stays with the
-submodel's card. `PipelineRepairTarget.action` chooses the dialog
+"Unavailable nodes in this submodel", each with its diagnostics, `Recover settings`
+and `Reset node` for a known ordinary node, and `Remove node` for any of them (an
+unknown decorator or an instance has nothing to rebuild), all submitted with that
+node's own `_recoveryId` and `_sourceFile` (the submodel's file). `PipelineRepairTarget.action` chooses the dialog
 transport and confirmation labels. Reset explicitly warns that settings/custom
 code are replaced and configuration may be needed; recover explains that valid
 settings and code are retained, that a function body the node never runs is replaced

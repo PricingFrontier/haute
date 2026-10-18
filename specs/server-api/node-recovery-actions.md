@@ -90,7 +90,11 @@ carries as its remediation. The author rewrites it, or removes the node.
   may remain blocked solely by an unrepaired upstream. An unreadable
   configuration sidecar (malformed JSON, duplicate keys, bad encoding) refuses the
   action with a manual-repair error and changes no bytes — there is no draft archive,
-  and Reset is the explicit destructive replacement. Unknown types, node instances,
+  and Reset is the explicit destructive replacement. Settings with no provider the node
+  can keep (a Data Input or Data Output whose config file is missing, or whose `inputType`
+  or `outputType` is unknown) are refused with `repair_action_unsupported`, naming Reset.
+  An `async def` node function, which the parser refuses, is a node function to Recover
+  and Reset alike, and both regenerate it as a plain `def`. Unknown types, node instances,
   submodels, and ambiguous or shared artifacts cannot be recovered by this action.
 
 ## Consumer error attribution

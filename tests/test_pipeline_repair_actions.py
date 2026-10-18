@@ -859,3 +859,134 @@ def test_repair_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path, a
     assert (tmp_path / "a.json").read_bytes() == upstream_bytes
     sibling = next(item for item in result.document.nodes if item.authored_id == "source_a")
     assert sibling.availability == "unavailable"
+
+
+@pytest.mark.parametrize(
+    ("reference", "content"),
+    [
+        pytest.param("missing.json", None, id="config-file-missing"),
+        pytest.param(
+            "in.json",
+            {"inputType": "carrier-pigeon", "path": "quotes.parquet", "arguments": {}},
+            id="unknown-provider",
+        ),
+    ],
+)
+def test_recover_refuses_settings_with_no_provider_and_reset_replaces_them(
+    tmp_path, reference, content
+):
+    # Nothing is left for Recover to keep: it refuses naming Reset, where it
+    # used to fail with a server error, and Reset starts the node afresh.
+    from haute._pipeline_repair import PipelineRepairError, build_recover_unavailable_node_plan
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n'
+        f'@pipeline.data_input(config="{reference}")\ndef source(): ...\n'
+    )
+    if content is not None:
+        (tmp_path / reference).write_text(json.dumps(content))
+
+    with pytest.raises(PipelineRepairError) as refused:
+        build_recover_unavailable_node_plan(
+            project_root=tmp_path, request=_request(tmp_path, "source", "recover")
+        )
+    assert refused.value.code == "repair_action_unsupported"
+    assert "Reset node" in refused.value.message
+
+    assert _apply(tmp_path, _request(tmp_path, "source", "reset")).document.load_status == "ready"
+
+
+@pytest.mark.parametrize("action", ["recover", "reset"])
+def test_an_async_node_is_rewritten_as_a_plain_function(tmp_path, action):
+    # The parser refuses an async node; both actions find it and write a plain
+    # def, and Recover keeps its body.
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n\n'
+        "@pipeline.polars\ndef quotes():\n"
+        '    df = pl.LazyFrame({"quote_id": [1]})\n    return df\n\n'
+        "@pipeline.polars\nasync def later(quotes):\n    df = quotes.head(1)\n    return df\n"
+    )
+
+    result = _apply(tmp_path, _request(tmp_path, "later", action))
+
+    assert result.document.load_status == "ready"
+    source = (tmp_path / "main.py").read_text()
+    assert "async def" not in source
+    assert ("df = quotes.head(1)" in source) is (action == "recover")
+
+
+def _submodel_with_an_unbound_node(root: Path, *, parent_node: str) -> Path:
+    """A submodel whose `uses` names an input it does not have; the parent's node is named."""
+    (root / "haute.toml").write_text('[project]\nname="demo"\n')
+    child = root / "modules" / "Inputs.py"
+    child.parent.mkdir()
+    child.write_text(
+        "import haute\nimport polars as pl\n\n"
+        'submodel = haute.Submodel("Inputs", definition_id="Inputs", input_ports=[], '
+        'output_ports=[{"name": "out", "source": {"nodeId": "quotes", "handleId": None}}], '
+        'pipeline_dir="..")\n\n'
+        "@submodel.polars\ndef quotes():\n"
+        '    df = pl.LazyFrame({"quote_id": [1]})\n    return df\n\n'
+        "@submodel.polars\ndef uses(ghost: pl.LazyFrame) -> pl.LazyFrame:\n"
+        "    df = ghost\n    return df\n",
+        encoding="utf-8",
+    )
+    parent = root / "main.py"
+    parent.write_text(
+        'import haute\nimport polars as pl\n\npipeline = haute.Pipeline("demo")\n\n'
+        f"@pipeline.polars\ndef {parent_node}(out: pl.LazyFrame) -> pl.LazyFrame:\n"
+        "    df = out\n    return df\n\n"
+        'pipeline.submodel("modules/Inputs.py", "Inputs")\n'
+        f'pipeline.connect("Inputs", "{parent_node}", source_port="out")\n',
+        encoding="utf-8",
+    )
+    return parent
+
+
+def test_a_binding_failure_inside_a_submodel_is_that_nodes_to_recover(tmp_path):
+    # The submodel file's own parse refuses the node, so its definition is
+    # unavailable with the node in it, where Recover rebinds it.
+    from haute.schemas import PipelineRepairRecoverRequest
+
+    parent = _submodel_with_an_unbound_node(tmp_path, parent_node="priced")
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+    assert next(n for n in document.nodes if n.authored_id == "Inputs").availability == (
+        "unavailable"
+    )
+    assert document.submodels is not None
+    (definition,) = document.submodels.values()
+    inner = next(n for n in definition.graph.nodes if n.authored_id == "uses")
+    assert inner.availability == "unavailable"
+
+    result = _apply(
+        tmp_path,
+        PipelineRepairRecoverRequest(
+            source_file=document.source_file,
+            source_revision=document.source_revision,
+            target_source_file=inner.source_file,
+            target_recovery_id=inner.recovery_id,
+            action="recover",
+        ),
+    )
+
+    assert result.document.load_status == "ready"
+    # It has no connected input, so it takes no parameter.
+    assert "def uses() -> pl.LazyFrame:" in (tmp_path / "modules" / "Inputs.py").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_a_binding_failure_inside_a_submodel_never_blames_a_parent_node_of_its_name(tmp_path):
+    parent = _submodel_with_an_unbound_node(tmp_path, parent_node="uses")
+
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+
+    root_uses = next(n for n in document.nodes if n.authored_id == "uses")
+    assert root_uses.availability == "blocked"
+    assert document.submodels is not None
+    (definition,) = document.submodels.values()
+    assert next(n for n in definition.graph.nodes if n.authored_id == "uses").availability == (
+        "unavailable"
+    )

@@ -57,8 +57,8 @@ submodel = haute.Submodel(
 )
 
 @submodel.polars
-def base_rate(df: pl.LazyFrame) -> pl.LazyFrame:
-    return df.with_columns(pl.lit(100.0).alias("base"))
+def base_rate(records: pl.LazyFrame) -> pl.LazyFrame:
+    return records.with_columns(pl.lit(100.0).alias("base"))
 
 @submodel.polars
 def adjust(base_rate: pl.LazyFrame) -> pl.LazyFrame:
@@ -266,6 +266,38 @@ pipeline.submodel("modules/inner.py", "inner")
             parse_submodel_source("def broken(:\n    pass\n", "broken.py")
 
         assert exc_info.value.context["source_file"] == "broken.py"
+
+    def test_refuses_a_node_whose_parameters_do_not_name_its_inputs(self) -> None:
+        """The file's own parse checks its bindings, so the failure names the file."""
+        source = _VALID_SUBMODEL.replace("def base_rate(records:", "def base_rate(df:")
+
+        with pytest.raises(ParseError, match="parameters do not match") as exc_info:
+            parse_submodel_source(source, "modules/pricing.py")
+
+        assert exc_info.value.context["node_id"] == "base_rate"
+        assert exc_info.value.context["unbound_parameters"] == ["df"]
+        assert exc_info.value.context["source_file"] == "modules/pricing.py"
+
+    @pytest.mark.parametrize(
+        ("old", "new", "message"),
+        [
+            pytest.param(
+                '"nodeId": "adjust"', '"nodeId": "ghost"', "missing child nodes", id="missing-node"
+            ),
+            pytest.param(
+                '"name": "priced"',
+                '"name": "records"',
+                "duplicate public port names",
+                id="duplicate-name",
+            ),
+        ],
+    )
+    def test_refuses_ports_that_break_the_interface(self, old: str, new: str, message: str) -> None:
+        """Refused by the file's own parse, not when the definition is built."""
+        with pytest.raises(ParseError, match=message) as exc_info:
+            parse_submodel_source(_VALID_SUBMODEL.replace(old, new), "modules/pricing.py")
+
+        assert exc_info.value.context["source_file"] == "modules/pricing.py"
 
 
 def _parent_graph() -> PipelineGraph:

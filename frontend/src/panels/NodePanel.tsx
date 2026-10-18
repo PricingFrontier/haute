@@ -995,9 +995,10 @@ function UnavailableDefinitionNode({
   const target = canRepair
     && typeof data._sourceFile === "string"
     && typeof data._recoveryId === "string"
-    && rebuildsSettings(node)
     ? { sourceFile: data._sourceFile, recoveryId: data._recoveryId }
     : null
+  // An unknown decorator or an instance has nothing to rebuild, but can still be removed.
+  const rebuilds = target !== null && rebuildsSettings(node)
   return (
     <li
       className="rounded-lg p-3 text-[11px] leading-relaxed"
@@ -1011,23 +1012,40 @@ function UnavailableDefinitionNode({
       ))}
       {target && repair && (
         <div className="mt-2 flex gap-2">
+          {rebuilds && (
+            <>
+              <button
+                type="button"
+                aria-label={`Recover settings for ${label}`}
+                onClick={() => repair({ ...target, action: "recover" })}
+                className="flex-1 rounded px-3 py-1.5 font-semibold"
+                style={{ color: "var(--text-on-accent)", background: "var(--accent)" }}
+              >
+                Recover settings
+              </button>
+              <button
+                type="button"
+                aria-label={`Reset node ${label}`}
+                onClick={() => repair({ ...target, action: "reset" })}
+                className="flex-1 rounded px-3 py-1.5 font-semibold"
+                style={{ color: "var(--text-on-accent)", background: "var(--accent)" }}
+              >
+                Reset node
+              </button>
+            </>
+          )}
           <button
             type="button"
-            aria-label={`Recover settings for ${label}`}
-            onClick={() => repair({ ...target, action: "recover" })}
+            aria-label={`Remove node ${label}`}
+            onClick={() => repair(target)}
             className="flex-1 rounded px-3 py-1.5 font-semibold"
-            style={{ color: "var(--text-on-accent)", background: "var(--accent)" }}
+            style={{
+              color: "var(--danger-text)",
+              background: "var(--danger-soft)",
+              border: "1px solid var(--danger-border)",
+            }}
           >
-            Recover settings
-          </button>
-          <button
-            type="button"
-            aria-label={`Reset node ${label}`}
-            onClick={() => repair({ ...target, action: "reset" })}
-            className="flex-1 rounded px-3 py-1.5 font-semibold"
-            style={{ color: "var(--text-on-accent)", background: "var(--accent)" }}
-          >
-            Reset node
+            Remove node
           </button>
         </div>
       )}

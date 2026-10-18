@@ -14,7 +14,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from haute._graph_utils import incoming_edge_bindings
-from haute._types import NodeType, PipelineGraph, SubmodelDefinition
+from haute._types import NodeType, PipelineGraph, SubmodelInputPort
 from haute.errors import ParseError
 
 _REMEDIATION_MESSAGE = (
@@ -29,6 +29,7 @@ def _validate_node_parameters(
     authored_params: Sequence[str],
     connected_inputs: Sequence[str],
     input_mapping: Mapping[str, str] | None,
+    source_file: str | None = None,
 ) -> None:
     """Raise unless the authored parameters and the connected inputs coincide.
 
@@ -56,6 +57,9 @@ def _validate_node_parameters(
             unconsumed_inputs.append(name)
 
     if unbound_parameters or unconsumed_inputs:
+        # A definition file names itself, so its failure is never taken for a
+        # parent node of the same name.
+        located = {} if source_file is None else {"source_file": source_file}
         raise ParseError(
             "Pipeline function parameters do not match the node's connected inputs.",
             node_id=node_id,
@@ -63,6 +67,7 @@ def _validate_node_parameters(
             unconsumed_inputs=unconsumed_inputs,
             connected_inputs=list(connected_inputs),
             remediation=_REMEDIATION_MESSAGE,
+            **located,
         )
 
 
@@ -76,17 +81,14 @@ def _declared_input_mapping(config: Mapping[str, Any]) -> Mapping[str, str] | No
     return mapping if isinstance(mapping, Mapping) else None
 
 
-def _port_bound_inputs(definition: SubmodelDefinition, node_id: str) -> list[str]:
+def _port_bound_inputs(input_ports: Sequence[SubmodelInputPort], node_id: str) -> list[str]:
     """Inputs a definition node receives through public input ports.
 
     Flattening binds a port-targeted node to the public input port name,
     so that port name is the name the authored parameter must carry.
     """
     return [
-        port.name
-        for port in definition.input_ports
-        for target in port.targets
-        if target.node_id == node_id
+        port.name for port in input_ports for target in port.targets if target.node_id == node_id
     ]
 
 
@@ -94,13 +96,13 @@ def assert_polars_parameters_bound(
     graph: PipelineGraph,
     raw_nodes: Sequence[Mapping[str, Any]],
 ) -> None:
-    """Reject any Polars node whose positional parameters do not equal its inputs.
+    """Reject any parent Polars node whose positional parameters do not equal its inputs.
 
     Root nodes are checked against the hierarchical graph (occurrence outputs,
     API frames and ordinary sources all contribute their executable input
-    names through :func:`incoming_edge_bindings`). Definition nodes are checked
-    against their definition graph plus the public input ports that target
-    them. Non-Polars node types have no authored signature and are skipped;
+    names through :func:`incoming_edge_bindings`). Definition nodes were
+    checked when their file was parsed (:func:`assert_definition_parameters_bound`).
+    Non-Polars node types have no authored signature and are skipped;
     keyword-only parameters are configuration, not edges, and are ignored.
     """
     node_map = graph.node_map
@@ -121,19 +123,31 @@ def assert_polars_parameters_bound(
             input_mapping=_declared_input_mapping(config),
         )
 
-    for definition in (graph.submodels or {}).values():
-        child_graph = definition.graph
-        edge_params = child_graph._parser_edge_parameter_names
-        for child_node in child_graph.nodes:
-            if child_node.data.nodeType != NodeType.POLARS:
-                continue
-            connected = [
-                *_port_bound_inputs(definition, child_node.id),
-                *(name for _edge, name in incoming_edge_bindings(child_graph, child_node.id)),
-            ]
-            _validate_node_parameters(
-                node_id=child_node.id,
-                authored_params=edge_params[child_node.id],
-                connected_inputs=connected,
-                input_mapping=_declared_input_mapping(child_node.data.config),
-            )
+
+def assert_definition_parameters_bound(
+    graph: PipelineGraph,
+    input_ports: Sequence[SubmodelInputPort],
+    *,
+    source_file: str,
+) -> None:
+    """Reject any Polars node of a submodel file whose parameters do not equal its inputs.
+
+    Checked against the definition's own graph plus the public input ports
+    that target each node, when the file is parsed, so the failure is the
+    submodel's own and names its file.
+    """
+    edge_params = graph._parser_edge_parameter_names
+    for child_node in graph.nodes:
+        if child_node.data.nodeType != NodeType.POLARS:
+            continue
+        connected = [
+            *_port_bound_inputs(input_ports, child_node.id),
+            *(name for _edge, name in incoming_edge_bindings(graph, child_node.id)),
+        ]
+        _validate_node_parameters(
+            node_id=child_node.id,
+            authored_params=edge_params[child_node.id],
+            connected_inputs=connected,
+            input_mapping=_declared_input_mapping(child_node.data.config),
+            source_file=source_file,
+        )

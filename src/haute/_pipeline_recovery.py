@@ -1200,6 +1200,43 @@ def _port_names(ports: list[dict[str, Any]]) -> tuple[str, ...]:
     )
 
 
+def _attribute_binding_failure(
+    failure: BaseException | None,
+    candidates: Sequence[_RecoveredCandidate],
+    *,
+    source_file: str,
+    diagnostics: list[PipelineRecoveryDiagnostic],
+    definition: bool,
+) -> None:
+    """Mark the node a parameter-binding failure names unavailable, with that failure.
+
+    The binding gate checks a whole graph, so no node fails it on its own; the
+    failure names its node, and a definition file's failure names that file
+    too, so it is never taken for a parent node of the same name.
+    """
+    if not (isinstance(failure, ParseError) and "unbound_parameters" in failure.context):
+        return
+    if ("source_file" in failure.context) != definition:
+        return
+    failed_node_id = failure.context.get("node_id")
+    matching = [candidate for candidate in candidates if candidate.authored_id == failed_node_id]
+    if len(matching) != 1 or matching[0].availability != "ready":
+        return
+    failed = matching[0]
+    diagnostic = _diagnostic(
+        code="node_parse_invalid",
+        scope="node",
+        message=failure.message,
+        source_file=source_file,
+        element_id=failed.recovery_id,
+        source_span=failed.span,
+        remediation=failure.context.get("remediation", "Correct this node's source or reset it."),
+    )
+    diagnostics.append(diagnostic)
+    failed.diagnostic_ids.append(diagnostic.diagnostic_id)
+    failed.availability = "unavailable"
+
+
 def _recover_submodel_snapshot(
     child_path: Path,
     *,
@@ -1207,8 +1244,13 @@ def _recover_submodel_snapshot(
     config_base: Path,
     diagnostics: list[PipelineRecoveryDiagnostic],
     captures: _SourceCaptures,
+    failure: BaseException | None = None,
 ) -> tuple[RecoveryGraphSnapshot, list[dict[str, Any]], list[dict[str, Any]]]:
-    """Best-effort child graph recovery without making it canonical."""
+    """Best-effort child graph recovery without making it canonical.
+
+    *failure* is the strict parse's refusal of the file, attributed to the node
+    it names when the binding gate raised it.
+    """
     child_source_file = _wire_path(child_path, project_root)
     try:
         _raw, source = captures.read(child_path)
@@ -1249,6 +1291,13 @@ def _recover_submodel_snapshot(
         receiver="submodel",
         source_file=child_source_file,
         diagnostics=diagnostics,
+    )
+    _attribute_binding_failure(
+        failure,
+        candidates,
+        source_file=child_source_file,
+        diagnostics=diagnostics,
+        definition=True,
     )
     nodes, edges, unresolved = _build_recovery_graph(
         candidates,
@@ -1311,6 +1360,7 @@ def _recover_unavailable_submodel_definition(
     message: str,
     remediation: str,
     incident_id: str | None = None,
+    failure: BaseException | None = None,
 ) -> RecoverySubmodelDefinition:
     """Recover a child snapshot while keeping its definition non-canonical."""
     def_id = definition_id or registration.path
@@ -1321,6 +1371,7 @@ def _recover_unavailable_submodel_definition(
         config_base=config_base,
         diagnostics=diagnostics,
         captures=captures,
+        failure=failure,
     )
     diagnostic = _diagnostic(
         code=code,
@@ -1452,6 +1503,7 @@ def _recover_registered_submodels(
                     if isinstance(exc, HauteError)
                     else "Open the submodel source and correct the diagnosed definition."
                 ),
+                failure=exc,
             )
             continue
         except Exception:  # noqa: BLE001 - named submodel recovery isolation boundary
@@ -2059,30 +2111,13 @@ def _load_readable_pipeline_editor_document(
                     )
                 )
             candidates.extend(unavailable_registrations)
-            if (
-                isinstance(strict_failure, ParseError)
-                and "unbound_parameters" in strict_failure.context
-            ):
-                failed_node_id = strict_failure.context.get("node_id")
-                matching = [
-                    candidate for candidate in candidates if candidate.authored_id == failed_node_id
-                ]
-                if len(matching) == 1 and matching[0].availability == "ready":
-                    failed = matching[0]
-                    diagnostic = _diagnostic(
-                        code="node_parse_invalid",
-                        scope="node",
-                        message=strict_failure.message,
-                        source_file=source_file,
-                        element_id=failed.recovery_id,
-                        source_span=failed.span,
-                        remediation=strict_failure.context.get(
-                            "remediation", "Correct this node's source or reset it."
-                        ),
-                    )
-                    diagnostics.append(diagnostic)
-                    failed.diagnostic_ids.append(diagnostic.diagnostic_id)
-                    failed.availability = "unavailable"
+            _attribute_binding_failure(
+                strict_failure,
+                candidates,
+                source_file=source_file,
+                diagnostics=diagnostics,
+                definition=False,
+            )
             nodes, edges, unresolved = _build_recovery_graph(
                 candidates,
                 connections,

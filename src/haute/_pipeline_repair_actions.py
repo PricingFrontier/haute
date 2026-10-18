@@ -61,7 +61,7 @@ def _unsupported(message: str) -> PipelineRepairError:
 
 def _replace_spans(
     source: bytes,
-    changes: Sequence[tuple[ast.expr | ast.FunctionDef, str]],
+    changes: Sequence[tuple[ast.expr | ast.FunctionDef | ast.AsyncFunctionDef, str]],
 ) -> bytes:
     """Convert AST byte coordinates to the shared formatting-preserving CST boundary."""
     prefix, text, body = _decode_utf8_artifact(source, artifact="Repair source")
@@ -76,7 +76,7 @@ def _replace_spans(
                 end_line=node.end_lineno,
                 end_column=len(lines[node.end_lineno - 1][: node.end_col_offset].decode("utf-8")),
                 source=replacement,
-                is_function=isinstance(node, ast.FunctionDef),
+                is_function=isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)),
             )
         )
     return prefix + replace_source_nodes(text, replacements).encode("utf-8")
@@ -169,10 +169,12 @@ def _reset_node(
         raise _unsupported("This node type is not installed and cannot be reset.") from exc
     before = path.read_bytes()
     tree = _parse(before)
+    # An async node function is refused by the parser; the regenerated node is a plain def.
     functions = [
         statement
         for statement in tree.body
-        if isinstance(statement, ast.FunctionDef) and statement.name == target.authored_id
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and statement.name == target.authored_id
     ]
     if len(functions) != 1:
         raise _unsupported("Reset requires exactly one ordinary node function.")
@@ -411,14 +413,26 @@ def _recover_completeness(
     issues: Sequence[RecoveryIssue],
 ) -> list[PipelineNodeCompleteness]:
     """What the recover could not fix: provider gaps plus unresolved engine errors."""
-    from haute._polars_io_registry import data_input_completeness, data_output_completeness
+    from haute._polars_io_registry import (
+        PolarsIoConfigError,
+        data_input_completeness,
+        data_output_completeness,
+    )
 
-    if node_type is NodeType.DATA_INPUT:
-        gaps = [(gap.path, gap.code, gap.message) for gap in data_input_completeness(config)]
-    elif node_type is NodeType.DATA_OUTPUT:
-        gaps = [(gap.path, gap.code, gap.message) for gap in data_output_completeness(config)]
-    else:
-        gaps = []
+    try:
+        if node_type is NodeType.DATA_INPUT:
+            gaps = [(gap.path, gap.code, gap.message) for gap in data_input_completeness(config)]
+        elif node_type is NodeType.DATA_OUTPUT:
+            gaps = [(gap.path, gap.code, gap.message) for gap in data_output_completeness(config)]
+        else:
+            gaps = []
+    except PolarsIoConfigError as exc:
+        # No provider survived (a missing config file, an unknown inputType):
+        # nothing is left for Recover to keep, and Reset starts the node afresh.
+        raise _unsupported(
+            f"Recover settings cannot rebuild these settings ({exc}). "
+            "Reset node replaces them with a new node's."
+        ) from exc
     # An error the engine could not resolve must never read as fixed: the
     # recover applies and the node shows it as unfinished.
     for issue in issues:

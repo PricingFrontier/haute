@@ -593,7 +593,9 @@ it on the reading node instead of aborting the walk, and every other run propaga
   with no parameter, or a duplicate raises `ParseError` (`unbound_parameters`,
   `unconsumed_inputs`, `connected_inputs`, `remediation`) from the binding gate; the document
   loads as non-ready with that diagnostic and Save is refused, so a Save can never rewrite the
-  authored signature (F13). Because the parser also infers an edge from any parameter named
+  authored signature (F13). A submodel file's nodes are checked when that file is parsed, so
+  the failure is the submodel's own: the editor marks the node unavailable inside its
+  definition, and the submodel's inspector lists it with Recover settings, which rebinds it. Because the parser also infers an edge from any parameter named
   like a node, an API input's frame handle must not equal another node's sanitised name: Save
   validation (`SavePipelineService.validate_graph`, which assistant dry-run also runs) refuses
   that collision before anything is written, so the binding gate never meets it.
