@@ -714,7 +714,7 @@ class SourceCacheStore:
     def _pointer_path(self, identity: SourceCacheIdentity) -> Path:
         return self.identity_path(identity) / "current.json"
 
-    def _current_generation_id(self, identity: SourceCacheIdentity) -> str | None:
+    def _pointed_generation_id(self, identity: SourceCacheIdentity) -> str | None:
         """The current generation's id, or None without a pointer."""
         try:
             return self._read_pointer(identity)
@@ -1089,7 +1089,7 @@ class SourceCacheStore:
                 context.checkpoint()
                 # Self-validate the staged directory using the same strict validator after rename.
                 with self._lease_lock:
-                    if replacing is not None and self._current_generation_id(identity) != replacing:
+                    if replacing is not None and self._pointed_generation_id(identity) != replacing:
                         raise _Superseded(replacing)
                     if not context.defer_retirement:
                         self._retire_unleased_locked(identity)
