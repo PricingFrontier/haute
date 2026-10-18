@@ -40,6 +40,10 @@ carries as its remediation. The author rewrites it, or removes the node.
   submodels and ambiguous/shared artifacts cannot be reset. Resetting an empty Polars
   node produces the normal explicit incomplete-code template; it never invents a
   passthrough. The confirmation explains that configuration/code may be needed before running.
+  The reset node's `contract=` annotation is derived offline, as Recover settings derives
+  it, so a reset Model Score, which has no model yet, never loads one. An Edge Join cannot
+  be reset (`repair_action_unsupported`): a new join has no keys, and a join without keys
+  cannot be written; Recover settings keeps its keys.
   Palette defaults with declared-incomplete required values (for example a file input's
   empty path) persist as loadable incomplete configurations reported through the
   document's completeness list; reset is never blocked by completeness, only by unknown
@@ -98,6 +102,21 @@ carries as its remediation. The author rewrites it, or removes the node.
   and Reset alike, and both regenerate it as a plain `def`. Unknown types, node instances,
   submodels, and ambiguous or shared artifacts cannot be recovered by this action.
 
+## Remove connection
+
+A connection the recovery pass cannot resolve (a `connect()` naming a node that does not
+exist or is ambiguous, a duplicate declaration, a non-literal argument, an undeclared
+submodel port, a Quote or Workbench Input connection that names no frame) is an unresolved
+connection: there is no node to recover, and it blocks Reset and Recover settings on the
+nodes it touches. **Remove connection** deletes that one `connect()` statement, found by the
+connection's recovery id and the file it is in. The statement must be a standalone top-level
+`pipeline.connect(...)` (or `submodel.connect(...)` in a submodel file) holding only that
+connection, on lines of its own. A chained statement holding more than one connection is
+refused (`repair_connection_chain_mixed`), and so is a connection made by a parameter name
+rather than by a `connect()` statement (`repair_connection_not_declared`). The plan, commit,
+revision checks and rollback are the removal's; the commit verifies that the connection is
+gone. The nodes it joined are untouched.
+
 ## Consumer error attribution
 
 Rewriting a rejected submodel registration may reveal a separately invalid consumer
@@ -114,7 +133,10 @@ document. Recover responses additionally carry the engine's field-outcome report
 (`field_changes`: path, `outcome: retained | defaulted | needs_input | removed`, reason),
 the target's completeness entries, and the exact previous configuration
 (`previous_config`) for optional display. The removal route shares this contract with
-its explicit `delete_config` choice. No request accepts replacement bytes or source spans.
+its explicit `delete_config` choice. `POST /api/pipeline/repair/connection/remove/apply`
+accepts source file/revision, target source file and `target_connection_id`, and responds
+with `repair_kind: remove_connection` in the same shape. No request accepts replacement
+bytes or source spans.
 
 ## Engine coverage and limits
 

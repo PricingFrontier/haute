@@ -236,6 +236,13 @@ def _reset_node(
         )
     if len(set(source_names)) != len(source_names):
         raise _unsupported("Incoming node names are ambiguous.")
+    if replacement_config is None and node_type is NodeType.EDGE_JOIN:
+        # A new join has no keys until they are chosen, and a join without keys
+        # cannot be written; Recover settings keeps the join's own.
+        raise _unsupported(
+            "An Edge Join cannot be reset: a new join has no keys to write. Recover its "
+            "settings, which keeps its keys, or remove it."
+        )
     config: dict[str, Any] = (
         palette_default_config(node_type) if replacement_config is None else replacement_config
     )
@@ -248,15 +255,10 @@ def _reset_node(
         ),
     )
     try:
-        # A node rebuilt from given settings (recovered, or a scoped save) has
-        # its annotation regenerated from them as the reload's parse check
-        # derives it; carrying the old one forward keeps a stale annotation
-        # that check rejects.
-        generated = _node_to_code(
-            node,
-            source_names=source_names,
-            contract_source="builder" if replacement_config is None else "offline",
-        )
+        # The annotation is regenerated from the settings as the reload's parse
+        # check derives it, never loading a model: a reset Model Score has no
+        # model yet, and an old annotation carried forward goes stale.
+        generated = _node_to_code(node, source_names=source_names, contract_source="offline")
     except (HauteError, ValueError) as exc:
         raise _unsupported(
             f"This node cannot be generated from these settings and connections: {exc}"

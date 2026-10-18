@@ -63,6 +63,7 @@ import {
   createUtilityFile,
   updateUtilityFile,
   deleteUtilityFile,
+  applyRemoveBrokenConnection,
   applyRemoveUnavailableNode,
   getPipelineSettings,
   patchPipelineSettings,
@@ -1872,5 +1873,20 @@ describe("no request carries streaming_chunk_size", () => {
       source_file: "main.py", source_revision: "rev-1", target_source_file: "main.py", target_recovery_id: "broken@10", delete_config: false,
     })
     expect(response.changes[0].path).toBe("main.py")
+  })
+
+  it("sends the exact connection-removal request body and parses its response", async () => {
+    const request = { sourceFile: "main.py", sourceRevision: "rev-1", targetSourceFile: "modules/inputs.py", targetConnectionId: "edge:abc" }
+    mockFetch.mockReturnValueOnce(jsonResponse({
+      repair_kind: "remove_connection", applied_artifacts: ["modules/inputs.py"],
+      changes: [{ path: "modules/inputs.py", operation: "update", description: "Remove the broken connection.", diff: "-connect", diff_truncated: false }],
+      document: makePipelineEditorDocument(), field_changes: [], completeness: [], previous_config: null,
+    }))
+    const response = await applyRemoveBrokenConnection(request)
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/api/pipeline/repair/connection/remove/apply")
+    expect(JSON.parse(mockFetch.mock.calls.at(-1)?.[1].body)).toEqual({
+      source_file: "main.py", source_revision: "rev-1", target_source_file: "modules/inputs.py", target_connection_id: "edge:abc",
+    })
+    expect(response.repair_kind).toBe("remove_connection")
   })
 })

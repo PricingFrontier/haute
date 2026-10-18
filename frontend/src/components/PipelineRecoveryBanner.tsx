@@ -4,7 +4,23 @@ import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 
 interface PipelineRecoveryBannerProps {
   onSelectElement?: (elementId: string) => void
+  onRemoveConnection?: (target: { sourceFile: string; recoveryId: string }) => void
 }
+
+/**
+ * Diagnostics of a connection a connect() statement declares, which Remove
+ * connection deletes. An ambiguous implicit binding is a parameter name, with
+ * no statement to remove.
+ */
+const DECLARED_CONNECTION_CODES = new Set([
+  "connection_declaration_invalid",
+  "connection_duplicate",
+  "connection_endpoint_missing",
+  "connection_endpoint_ambiguous",
+  "connection_frame_missing",
+  "submodel_input_port_invalid",
+  "submodel_output_port_invalid",
+])
 
 function diagnosticLocation(sourceFile: string | null, line: number | undefined): string | null {
   if (sourceFile === null) return line === undefined ? null : `line ${line}`
@@ -13,6 +29,7 @@ function diagnosticLocation(sourceFile: string | null, line: number | undefined)
 
 export default function PipelineRecoveryBanner({
   onSelectElement,
+  onRemoveConnection,
 }: PipelineRecoveryBannerProps) {
   const loadStatus = useDocumentStatusStore((state) => state.loadStatus)
   const diagnostics = useDocumentStatusStore((state) => state.diagnostics)
@@ -56,11 +73,15 @@ export default function PipelineRecoveryBanner({
                 diagnostic.source_span?.start_line,
               )
               const canNavigate = diagnostic.element_id !== null && onSelectElement !== undefined
+              const sourceFile = diagnostic.source_file
+              const connectionId = DECLARED_CONNECTION_CODES.has(diagnostic.code)
+                ? diagnostic.element_id
+                : null
               return (
-                <li key={diagnostic.diagnostic_id}>
+                <li key={diagnostic.diagnostic_id} className="flex items-start gap-2">
                   <button
                     type="button"
-                    className="w-full rounded px-2 py-1 text-left hover-chrome-solid disabled:cursor-default"
+                    className="min-w-0 flex-1 rounded px-2 py-1 text-left hover-chrome-solid disabled:cursor-default"
                     disabled={!canNavigate}
                     onClick={() => {
                       if (diagnostic.element_id !== null) onSelectElement?.(diagnostic.element_id)
@@ -73,6 +94,20 @@ export default function PipelineRecoveryBanner({
                       </span>
                     )}
                   </button>
+                  {onRemoveConnection && sourceFile !== null && connectionId !== null && (
+                    <button
+                      type="button"
+                      className="shrink-0 rounded px-2 py-1 text-[11px] font-semibold"
+                      style={{
+                        color: "var(--danger-text)",
+                        background: "var(--danger-soft)",
+                        border: "1px solid var(--danger-border)",
+                      }}
+                      onClick={() => onRemoveConnection({ sourceFile, recoveryId: connectionId })}
+                    >
+                      Remove connection
+                    </button>
+                  )}
                 </li>
               )
             })}

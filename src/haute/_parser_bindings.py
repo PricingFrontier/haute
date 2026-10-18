@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from haute._graph_utils import incoming_edge_bindings
+from haute._graph_utils import REQUEST_INPUT_KINDS, incoming_edge_bindings
 from haute._types import NodeType, PipelineGraph, SubmodelInputPort
 from haute.errors import ParseError
 
@@ -121,6 +121,33 @@ def assert_polars_parameters_bound(
             authored_params=authored,
             connected_inputs=connected,
             input_mapping=_declared_input_mapping(config),
+        )
+
+
+def assert_request_frames_named(graph: PipelineGraph, *, source_file: str | None = None) -> None:
+    """Refuse an edge out of a Quote or Workbench Input that names none of its tables.
+
+    Such an input emits one frame per table, so each edge out of it takes the
+    table its ``connect()`` names in ``source_port``, or the one its parameter
+    is named after. Refused here, the failure is the connection's, which the
+    editor offers to remove, rather than an error the whole document fails on.
+    """
+    node_types = {node.id: str(node.data.nodeType) for node in graph.nodes}
+    missing = [
+        f"{edge.source} -> {edge.target}"
+        for edge in graph.edges
+        if node_types.get(edge.source) in REQUEST_INPUT_KINDS and edge.sourceHandle is None
+    ]
+    if missing:
+        located = {} if source_file is None else {"source_file": source_file}
+        raise ParseError(
+            "An input from a Quote or Workbench Input does not name the table it takes.",
+            frame_missing_edges=missing,
+            remediation=(
+                "Name the table in the connect()'s source_port, or name the parameter after "
+                "the table."
+            ),
+            **located,
         )
 
 

@@ -1036,3 +1036,64 @@ def test_recover_drops_an_unreadable_contract_and_keeps_the_code(tmp_path):
     source = (tmp_path / "main.py").read_text()
     assert 'contract="none"' not in source
     assert "df = quotes.head(1)" in source
+
+
+def test_reset_writes_a_model_score_without_loading_a_model(tmp_path):
+    # Reset derived the annotation as a save does, resolving the model; a new
+    # Model Score has none yet, so every Reset of one was refused.
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    sidecar = tmp_path / "config" / "model_scoring" / "scored.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(json.dumps({"frobnicate": 1}))
+    (tmp_path / "main.py").write_text(
+        _TWO_SOURCES + '@pipeline.model_score(config="config/model_scoring/scored.json")\n'
+        "def scored(quotes): ...\n"
+        'pipeline.connect("quotes", "scored")\n'
+    )
+
+    result = _apply(tmp_path, _request(tmp_path, "scored", "reset"))
+
+    assert result.document.load_status == "ready"
+    assert "frobnicate" not in sidecar.read_text()
+
+
+def test_reset_refuses_an_edge_join_and_recover_keeps_its_keys(tmp_path):
+    # A new join has no keys, and a join without keys cannot be written.
+    from haute._pipeline_repair import PipelineRepairError, build_recover_unavailable_node_plan
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n\n'
+        + _ORDERLESS_JOIN.replace("OWNER", "pipeline").replace("HOW", "left")
+    )
+
+    with pytest.raises(PipelineRepairError, match="cannot be reset") as refused:
+        build_recover_unavailable_node_plan(
+            project_root=tmp_path, request=_request(tmp_path, "joined", "reset")
+        )
+    assert refused.value.code == "repair_action_unsupported"
+
+    assert _apply(tmp_path, _request(tmp_path, "joined", "recover")).document.load_status == (
+        "ready"
+    )
+    assert 'on=["quote_id"]' in (tmp_path / "main.py").read_text()
+
+
+def test_recover_commits_in_a_file_a_stray_statement_keeps_degraded(tmp_path):
+    # The file parses once the node is recovered, but a statement a save would
+    # drop keeps it degraded; the commit took that for a failed repair and
+    # rolled every repair in such a file back.
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n\n'
+        + _ORDERLESS_JOIN.replace("OWNER", "pipeline").replace("HOW", "left")
+        + "\nrate = 1.5\n"
+    )
+
+    result = _apply(tmp_path, _request(tmp_path, "joined", "recover"))
+
+    assert result.document.load_status == "degraded"
+    assert [diagnostic.code for diagnostic in result.document.diagnostics] == [
+        "unkept_module_statement"
+    ]
+    assert 'maintain_order="left_right"' in (tmp_path / "main.py").read_text()

@@ -560,21 +560,25 @@ describe("NodePanel", () => {
         submodels: definition([
           innerNode("claims", "polars", "ready"),
           innerNode("claim_join", "edgeJoin", "unavailable", { _loadDiagnosticIds: ["claim-join-order"] }),
+          innerNode("banded", "banding", "unavailable"),
           innerNode("source_switch", "liveSwitch", "blocked"),
         ]),
       })
 
       const listed = within(screen.getByRole("region", { name: "Unavailable nodes in this submodel" }))
-      expect(listed.getAllByRole("listitem")).toHaveLength(1)
-      expect(listed.getByRole("listitem")).toHaveTextContent("claim_join")
-      expect(listed.getByRole("listitem")).toHaveTextContent(orderDiagnostic.message)
-      fireEvent.click(listed.getByRole("button", { name: "Recover settings for claim_join" }))
-      fireEvent.click(listed.getByRole("button", { name: "Reset node claim_join" }))
-      fireEvent.click(listed.getByRole("button", { name: "Remove node claim_join" }))
+      const [join, banded] = listed.getAllByRole("listitem")
+      expect(listed.getAllByRole("listitem")).toHaveLength(2)
+      expect(join).toHaveTextContent("claim_join")
+      expect(join).toHaveTextContent(orderDiagnostic.message)
+      // A new Edge Join has no keys to write, so the join is never reset.
+      expect(within(join).queryByRole("button", { name: "Reset node claim_join" })).not.toBeInTheDocument()
+      fireEvent.click(within(join).getByRole("button", { name: "Recover settings for claim_join" }))
+      fireEvent.click(within(join).getByRole("button", { name: "Remove node claim_join" }))
+      fireEvent.click(within(banded).getByRole("button", { name: "Reset node banded" }))
       expect(onRemoveUnavailableNode.mock.calls).toEqual([
         [{ sourceFile: "rating/modules/data_inputs.py", recoveryId: "claim_join", action: "recover" }],
-        [{ sourceFile: "rating/modules/data_inputs.py", recoveryId: "claim_join", action: "reset" }],
         [{ sourceFile: "rating/modules/data_inputs.py", recoveryId: "claim_join" }],
+        [{ sourceFile: "rating/modules/data_inputs.py", recoveryId: "banded", action: "reset" }],
       ])
       // The submodel itself is still only removed, never rebuilt.
       expect(screen.queryByRole("button", { name: "Recover settings" })).not.toBeInTheDocument()
@@ -621,6 +625,23 @@ describe("NodePanel", () => {
       expect(unrepairable.getByRole("listitem")).toHaveTextContent("claim_join")
       expect(unrepairable.queryByRole("button")).not.toBeInTheDocument()
     })
+  })
+
+  it("recovers an unavailable Edge Join but never resets it: a new join has no keys to write", () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded",
+      capabilities: { can_repair: true },
+    }))
+    renderPanel({
+      onRemoveUnavailableNode: vi.fn(),
+      node: makeNode({ data: {
+        label: "joined", description: "", nodeType: "edgeJoin", _loadAvailability: "unavailable",
+        _sourceFile: "main.py", _recoveryId: "joined@3",
+      } }),
+    })
+    expect(screen.getByRole("button", { name: "Recover settings" })).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Reset node" })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Remove unavailable node" })).toBeInTheDocument()
   })
 
   it("does not offer reset for an unavailable node instance", () => {

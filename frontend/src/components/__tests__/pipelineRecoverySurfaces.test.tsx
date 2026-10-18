@@ -54,6 +54,38 @@ describe("pipeline recovery surfaces", () => {
     expect(screen.getByLabelText("Pipeline issues")).toBeInTheDocument()
   })
 
+  it("offers Remove connection on a broken connect() line, not on a parameter name", () => {
+    const onRemoveConnection = vi.fn()
+    const connection = (code: string, elementId: string, message: string) => ({
+      ...diagnostic,
+      diagnostic_id: elementId,
+      code,
+      scope: "edge" as const,
+      element_id: elementId,
+      source_file: "rating/modules/inputs.py",
+      message,
+    })
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded",
+      diagnostics: [
+        connection("connection_endpoint_missing", "edge:dangling", "Dangling connection."),
+        connection("implicit_binding_ambiguous", "edge:implicit", "Ambiguous parameter."),
+        { ...diagnostic, element_id: "broken-node", scope: "node" },
+      ],
+    }))
+
+    render(<PipelineRecoveryBanner onRemoveConnection={onRemoveConnection} />)
+    fireEvent.click(screen.getByText("Review detected issues"))
+    const removals = screen.getAllByRole("button", { name: "Remove connection" })
+    expect(removals).toHaveLength(1)
+    fireEvent.click(removals[0])
+
+    expect(onRemoveConnection).toHaveBeenCalledWith({
+      sourceFile: "rating/modules/inputs.py",
+      recoveryId: "edge:dangling",
+    })
+  })
+
   it("shows current source and diagnostics for a source-only document", () => {
     useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
       load_status: "source_only",

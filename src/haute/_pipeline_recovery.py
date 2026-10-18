@@ -38,7 +38,7 @@ from haute._graph_builders import (
     _extract_decorated_node_skeletons,
     _resolve_node_skeleton,
 )
-from haute._graph_utils import edge_input_name, executable_input_name
+from haute._graph_utils import REQUEST_INPUT_KINDS, edge_input_name, executable_input_name
 from haute._hashing import content_hash_bytes
 from haute._io import read_user_bytes_and_text, read_user_text
 from haute._logging import get_logger
@@ -778,6 +778,22 @@ def _build_recovery_graph(
                 continue
             source_port = connection.source_port
             source_handle = f"out__{connection.source_port}"
+        if str(source_candidate.node_type) in REQUEST_INPUT_KINDS and not connection.source_port:
+            # A Quote or Workbench Input emits a frame per table; a connect()
+            # naming none has no frame to carry.
+            unresolved.append(
+                _unresolved_connection(
+                    connection,
+                    ordinal=ordinal,
+                    code="connection_frame_missing",
+                    message="This connection does not name the table it takes from the input.",
+                    source_file=source_file,
+                    diagnostics=diagnostics,
+                    source_recovery_id=source_candidate.recovery_id,
+                    target_recovery_id=target_candidate.recovery_id,
+                )
+            )
+            continue
         if target_candidate.node_type == NodeType.SUBMODEL:
             if connection.target_port not in target_candidate.submodel_input_ports:
                 unresolved.append(
@@ -850,6 +866,30 @@ def _build_recovery_graph(
                     )
                 )
                 implicit_ordinal += 1
+                continue
+            if (
+                str(sources[0].node_type) in REQUEST_INPUT_KINDS
+                and source_id == sources[0].authored_id
+            ):
+                # The parameter names the input, not one of its tables, so it
+                # binds no frame: the consumer's own failure, which Recover
+                # settings rebinds to its connected inputs.
+                if target_candidate.availability == "ready":
+                    diagnostic = _diagnostic(
+                        code="node_input_frame_missing",
+                        scope="node",
+                        message=(
+                            f"Parameter {source_id!r} names the input itself, not one of its "
+                            "tables."
+                        ),
+                        source_file=source_file,
+                        element_id=target_candidate.recovery_id,
+                        source_span=target_candidate.span,
+                        remediation="Name the parameter after the table it takes.",
+                    )
+                    diagnostics.append(diagnostic)
+                    target_candidate.diagnostic_ids.append(diagnostic.diagnostic_id)
+                    target_candidate.availability = "unavailable"
                 continue
             pair = (sources[0].recovery_id, target_candidate.recovery_id)
             if pair in explicit_pairs or pair in seen_implicit:
@@ -1209,6 +1249,7 @@ _STRICT_FAILURE_SHOWN_AS: dict[str, frozenset[str]] = {
     "dangling_edges": frozenset({"connection_endpoint_missing", "connection_endpoint_ambiguous"}),
     "duplicate_edges": frozenset({"connection_duplicate"}),
     "missing_paths": frozenset({"submodel_file_missing"}),
+    "frame_missing_edges": frozenset({"connection_frame_missing", "node_input_frame_missing"}),
 }
 
 

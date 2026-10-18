@@ -72,6 +72,7 @@ from haute._pipeline_recovery import (
 from haute._pipeline_repair import (
     PipelineRepairError,
     apply_recover_unavailable_node_plan,
+    apply_remove_connection_plan,
     apply_remove_unavailable_node_plan,
 )
 from haute._pipeline_repair_actions import apply_scoped_node_save
@@ -203,6 +204,7 @@ from haute.schemas import (
     PipelineRecoveryDiagnostic,
     PipelineRepairApplyResponse,
     PipelineRepairRecoverRequest,
+    PipelineRepairRemoveConnectionRequest,
     PipelineRepairRemoveRequest,
     PipelineSettingsAutomatic,
     PipelineSettingsResponse,
@@ -1058,6 +1060,33 @@ async def scoped_node_save(
                 "code": "repair_artifact_unavailable",
                 "message": (
                     "A save artifact could not be written; original artifacts were restored."
+                ),
+            },
+        )
+
+
+@router.post("/pipeline/repair/connection/remove/apply", response_model=PipelineRepairApplyResponse)
+async def apply_remove_broken_connection(
+    body: PipelineRepairRemoveConnectionRequest,
+) -> PipelineRepairApplyResponse | JSONResponse:
+    """Plan and commit one confirmed broken-connection removal through the shared transaction."""
+    try:
+        async with save_lock:
+            return await run_in_threadpool(
+                apply_remove_connection_plan,
+                project_root=Path.cwd().resolve(),
+                request=body,
+            )
+    except PipelineRepairError as exc:
+        return _pipeline_recovery_error_response(exc.status_code, exc.detail())
+    except OSError as exc:
+        logger.warning("pipeline_repair_apply_io_failed", error=str(exc))
+        return _pipeline_recovery_error_response(
+            409,
+            {
+                "code": "repair_artifact_unavailable",
+                "message": (
+                    "A repair artifact could not be written; original artifacts were restored."
                 ),
             },
         )

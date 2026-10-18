@@ -906,8 +906,9 @@ node when `useDocumentStatusStore.capabilities.can_repair` is true. It passes
 the node's `_recoveryId` and server-supplied `_sourceFile` to the document-level
 repair flow; it never derives or submits source spans.
 Known unavailable ordinary nodes offer `Recover settings` as the primary action
-and `Reset node` as the destructive alternative. Submodels, instances, unknown
-types and blocked nodes cannot reset or recover. The editor does not open an
+and `Reset node` as the destructive alternative, except an Edge Join, which offers no
+Reset: a new join has no keys, and a join without keys cannot be written. Submodels,
+instances, unknown types and blocked nodes cannot reset or recover. The editor does not open an
 unavailable submodel's definition, so that submodel's inspector lists the
 definition's unavailable nodes (`submodels[config.definitionId]`) under
 "Unavailable nodes in this submodel", each with its diagnostics, `Recover settings`

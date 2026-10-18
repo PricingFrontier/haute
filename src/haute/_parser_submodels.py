@@ -32,7 +32,10 @@ from haute._graph_builders import (
     _extract_decorated_nodes,
 )
 from haute._graph_utils import _edge_id, _sanitize_func_name
-from haute._parser_bindings import assert_definition_parameters_bound
+from haute._parser_bindings import (
+    assert_definition_parameters_bound,
+    assert_request_frames_named,
+)
 from haute._parser_conservation import assert_parser_structure_conserved
 from haute._submodel_instances import rewrite_submodel_alias_references
 from haute._submodel_paths import is_pipeline_dir
@@ -477,6 +480,7 @@ def parse_submodel_source(
         graph._parser_input_ports,
         graph._parser_output_ports,
     ) = _extract_definition_contract(tree)
+    assert_request_frames_named(graph, source_file=source_file)
     if graph._parser_input_ports is not None and graph._parser_output_ports is not None:
         try:
             check_submodel_interface(graph, graph._parser_input_ports, graph._parser_output_ports)

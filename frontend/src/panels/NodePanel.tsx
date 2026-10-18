@@ -961,6 +961,11 @@ function rebuildsSettings(node: RecoveryNode): boolean {
     && data._authoredDecorator !== "instance"
 }
 
+/** Reset writes a new node's settings; a new Edge Join has no keys, and cannot be written. */
+function resettable(node: RecoveryNode): boolean {
+  return rebuildsSettings(node) && effectiveNodeType(node) !== NODE_TYPES.EDGE_JOIN
+}
+
 /** An unavailable submodel's own unavailable nodes: the editor does not open its definition. */
 function unavailableDefinitionNodes(
   node: SimpleNode,
@@ -1023,15 +1028,17 @@ function UnavailableDefinitionNode({
               >
                 Recover settings
               </button>
-              <button
-                type="button"
-                aria-label={`Reset node ${label}`}
-                onClick={() => repair({ ...target, action: "reset" })}
-                className="flex-1 rounded px-3 py-1.5 font-semibold"
-                style={{ color: "var(--text-on-accent)", background: "var(--accent)" }}
-              >
-                Reset node
-              </button>
+              {resettable(node) && (
+                <button
+                  type="button"
+                  aria-label={`Reset node ${label}`}
+                  onClick={() => repair({ ...target, action: "reset" })}
+                  className="flex-1 rounded px-3 py-1.5 font-semibold"
+                  style={{ color: "var(--text-on-accent)", background: "var(--accent)" }}
+                >
+                  Reset node
+                </button>
+              )}
             </>
           )}
           <button
@@ -1075,9 +1082,10 @@ function RecoveryNodePanel({
   const canRemove = availability === "unavailable"
     && canRepair
     && hasRecoveryTarget
-  // Recover and Reset share eligibility: unavailable, known ordinary, owned.
-  const canReset = canRemove && rebuildsSettings(node)
-  const canRecover = canReset
+  // Recover and Reset share eligibility (unavailable, known ordinary, owned),
+  // except that an Edge Join cannot be reset.
+  const canRecover = canRemove && rebuildsSettings(node)
+  const canReset = canRemove && resettable(node)
   const innerNodes = availability === "unavailable" ? unavailableDefinitionNodes(node, submodels) : []
 
   return (

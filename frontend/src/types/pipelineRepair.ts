@@ -24,6 +24,13 @@ export interface RemoveUnavailableNodeRequest {
   deleteConfig: boolean
 }
 
+export interface RemoveBrokenConnectionRequest {
+  sourceFile: string
+  sourceRevision: string
+  targetSourceFile: string
+  targetConnectionId: string
+}
+
 export type RecoverUnavailableNodeAction = "reset" | "recover"
 
 export interface RecoverUnavailableNodeRequest {
@@ -77,6 +84,10 @@ export interface RemoveUnavailableNodeApplyResponse {
 
 export interface RecoverUnavailableNodeApplyResponse extends Omit<RemoveUnavailableNodeApplyResponse, "repair_kind"> {
   repair_kind: "reset_node" | "recover_node"
+}
+
+export interface RemoveBrokenConnectionApplyResponse extends Omit<RemoveUnavailableNodeApplyResponse, "repair_kind"> {
+  repair_kind: "remove_connection"
 }
 
 function uniqueStrings(value: unknown, field: string, nonEmpty: boolean): string[] {
@@ -164,6 +175,18 @@ export function parseRecoverUnavailableNodeApplyResponse(value: unknown): Recove
   expectExactKeys(PARSER, object, "response", APPLY_RESPONSE_KEYS)
   return {
     repair_kind: expectStringLiteral(PARSER, object.repair_kind, "response.repair_kind", ["reset_node", "recover_node"]),
+    applied_artifacts: uniqueStrings(object.applied_artifacts, "response.applied_artifacts", true),
+    changes: parseChanges(object),
+    document: parsePipelineEditorDocument(object.document),
+    ...parseRepairExtras(object),
+  }
+}
+
+export function parseRemoveBrokenConnectionApplyResponse(value: unknown): RemoveBrokenConnectionApplyResponse {
+  const object = expectPlainObject(PARSER, value, "response")
+  expectExactKeys(PARSER, object, "response", APPLY_RESPONSE_KEYS)
+  return {
+    repair_kind: expectStringLiteral(PARSER, object.repair_kind, "response.repair_kind", ["remove_connection"]),
     applied_artifacts: uniqueStrings(object.applied_artifacts, "response.applied_artifacts", true),
     changes: parseChanges(object),
     document: parsePipelineEditorDocument(object.document),
