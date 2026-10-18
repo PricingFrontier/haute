@@ -1467,6 +1467,66 @@ def test_a_reencoded_copy_never_replaces_a_generation_published_meanwhile(
     assert generation.lazy_frame.collect()["id"].to_list() == [9]
 
 
+def test_a_build_replacing_a_generation_that_is_not_current_publishes_nothing(
+    tmp_path: Path,
+) -> None:
+    import haute._source_cache as module
+
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="a.csv")
+    frame = pl.LazyFrame({"id": [1]})
+
+    # With no generation current, and then with another one current.
+    with pytest.raises(module._Superseded):
+        store.build(
+            identity, _LazyBuilder(frame), context=_context(), refresh=True, replacing="old"
+        )
+    assert store.status(identity).state == "missing"
+    current = store.build(identity, _LazyBuilder(frame), context=_context())
+    with pytest.raises(module._Superseded):
+        store.build(
+            identity, _LazyBuilder(frame), context=_context(), refresh=True, replacing="old"
+        )
+    assert store.published_generation_id(identity) == current.generation_id
+    assert [path.name for path in (store.identity_path(identity) / "generations").iterdir()] == [
+        current.generation_id
+    ]
+
+
+def test_a_snapshot_another_process_refreshed_before_its_copy_began_is_not_copied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute._source_cache as module
+
+    identity, _builder, old_id = _arrow_written_map_generation(tmp_path, monkeypatch)
+    fresh = pa.table(
+        {"id": [9], "m": pa.array([[("z", 9)]], type=pa.map_(pa.string(), pa.int64()))}
+    )
+    reencoded = SourceCacheStore._reencoded
+    copies: list[object] = []
+
+    def refreshed_first(
+        self: SourceCacheStore, identity: SourceCacheIdentity, generation_id: str
+    ) -> object:
+        # Another store on the same root publishes a refresh before this one leases.
+        SourceCacheStore(tmp_path).build(
+            identity, _BatchBuilder([fresh]), context=_context(), refresh=True
+        )
+        copies.append(reencoded(self, identity, generation_id))
+        return copies[-1]
+
+    monkeypatch.setattr(SourceCacheStore, "_reencoded", refreshed_first)
+    monkeypatch.setattr(
+        module._MapEntriesCopy, "build", lambda *_args: pytest.fail("the old generation was copied")
+    )
+
+    generation = SourceCacheStore(tmp_path).open_generation(identity)
+
+    assert copies == [None]
+    assert generation.generation_id != old_id
+    assert generation.lazy_frame.collect()["id"].to_list() == [9]
+
+
 def test_a_lease_holds_the_old_generation_until_its_copy_is_published(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -77,6 +77,11 @@ def test_a_dtype_the_codec_knows_but_rating_does_not_support_is_rejected(dtype) 
         rating_dtype_descriptor(dtype)
 
 
+def test_a_map_which_the_codec_refuses_is_not_a_rating_factor() -> None:
+    with pytest.raises(ValueError, match="unsupported rating factor dtype"):
+        rating_dtype_descriptor(pl.Map(pl.String, pl.Int64))
+
+
 @pytest.mark.parametrize(
     ("dtype", "contract_name", "mlflow_type"),
     [

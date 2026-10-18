@@ -396,13 +396,12 @@ class SourceCacheMetadata:
             "created_at": self.created_at,
             "profile": self.profile,
             "build_class": self.build_class,
+            "polars_version": self.polars_version,
         }
         if self.node_output is not None:
             payload["node_output"] = dict(self.node_output)
         if self.build_seconds is not None:
             payload["build_seconds"] = self.build_seconds
-        if self.polars_version is not None:
-            payload["polars_version"] = self.polars_version
         return payload
 
 
