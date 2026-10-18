@@ -5,7 +5,9 @@ callers do, then reads the resident set before and after ``_malloc_trim``. The k
 are the allocators a Haute process uses: a Polars frame (Polars' own allocator,
 jemalloc on Linux and mimalloc on Windows), many mid-sized NumPy arrays (the C
 runtime's heap, each below glibc's mmap threshold, as a model's buffers are) and
-many small Python objects (Python's own arenas and the C runtime's heap).
+many small Python objects (Python's own arenas and the C runtime's heap). The pinned
+NumPy kind keeps one array allocated after the rest, as a later allocation of a
+running job does, so the heap cannot shrink from its top on its own.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from pathlib import Path
 
 from scripts.memory_smoke import StdlibMemorySampler
 
-KINDS = ("polars", "numpy", "python")
+KINDS = ("polars", "numpy", "numpy_pinned", "python")
 
 #: About 256 MiB of each kind: large enough to read through resident-set noise.
 _POLARS_ROWS = 4_000_000
@@ -36,7 +38,7 @@ def _allocate(kind: str) -> object:
 
         column = pl.int_range(0, _POLARS_ROWS, eager=True).cast(pl.Float64)
         return pl.DataFrame({f"c{index}": column + index for index in range(_POLARS_COLUMNS)})
-    if kind == "numpy":
+    if kind in {"numpy", "numpy_pinned"}:
         import numpy as np
 
         return [
@@ -45,6 +47,12 @@ def _allocate(kind: str) -> object:
     if kind == "python":
         return [(index, float(index), str(index)) for index in range(_PYTHON_OBJECTS)]
     raise ValueError(f"unknown kind {kind!r}")
+
+
+def _allocate_pin() -> object:
+    import numpy as np
+
+    return np.zeros(_NUMPY_ARRAY_FLOATS, dtype=np.float64)
 
 
 def _settled_rss(sampler: StdlibMemorySampler) -> int:
@@ -70,12 +78,15 @@ def main() -> int:
     gc.collect()
     baseline = _settled_rss(sampler)
     held = _allocate(args.kind)
+    # Allocated after the rest, so it outlives them above them in the heap.
+    pinned = _allocate_pin() if args.kind == "numpy_pinned" else None
     allocated = _settled_rss(sampler)
     del held
     gc.collect()
     after_free = _settled_rss(sampler)
     _malloc_trim()
     after_trim = _settled_rss(sampler)
+    del pinned
     payload = {
         "schema_version": 1,
         "kind": args.kind,
