@@ -13,7 +13,9 @@ those files fail before a first release succeeds. The guides now give the manual
 step that works today for each, and drop it when the package lands. `BUG-27` to
 `BUG-30`, found the same day, are text that no longer matches the behaviour it
 describes: the CLI's help, the offset tooltip, a tuned t-boost run's summary and the
-t-boost starter parameters in the modelling UI specification.
+t-boost starter parameters in the modelling UI specification. `BUG-39` was found on
+18 October 2026 while fixing a nested answer's proof: a deployment answering several
+quotes per request fails a request whose quotes' answers coincide.
 
 ## Priorities
 
@@ -31,6 +33,7 @@ t-boost starter parameters in the modelling UI specification.
 | BUG-28 | Planned | P2 | The offset tooltip names every loss that treats the offset as an exposure, and the losses that take no offset. |
 | BUG-29 | Planned | P2 | A tuned t-boost run's summary says its published model is the winning trial's fit, not a refit. |
 | BUG-30 | Planned | P3 | The modelling UI specification lists the t-boost starter parameters and readiness issues the editor has. |
+| BUG-39 | Decision | P1 | A deployment answering several quotes per request answers two quotes whose answers coincide with a row each. |
 
 ## Planned improvements
 
@@ -276,3 +279,32 @@ values, and the readiness issues match `trainingObjective.ts`.
 **Evidence:** `specs/frontend-modelling-optimiser-ui/high-level.md` (Behaviour, t-boost);
 `frontend/src/panels/ModellingConfig.tsx` (`TBOOST_DEFAULT_PARAMS`);
 `frontend/src/utils/trainingObjective.ts` (the t-boost readiness issues).
+
+### BUG-39 — Two quotes whose answers coincide are answered as one
+**Why:** The response assembler takes an object's own field values as its identity
+([json-shredding](../json-shredding/high-level.md), "Level objects"), so the rows a Quote
+Response emits at its top level are merged when every field it maps is equal. A
+deployment that answers several quotes per request answers quote *i* with row *i*
+([deploy](../deploy/high-level.md)). A request holding two quotes whose answers coincide
+is therefore assembled into fewer rows than quotes: a response mapping only `premium`,
+say, where both quotes rate the same, or the same quote sent twice. The count backstop
+then fails the whole request with `RequestRowCountError` rather than answering both.
+`haute impact` sends such batches. Before 18 October 2026 the same request was answered
+with its rows out of step with its quotes.
+
+**Plan:** Decide between two fixes, each keeping nested levels placed by their relation
+keys:
+- A level a frame emits at keeps one object per row, so only a level synthesised from
+  deeper rows groups them. A document holding two identical top-level objects then
+  round-trips through the shred.
+- A deployed answer alone keeps one object per quote: the assembler groups its top level
+  by an ordinal too, which the rendered answer leaves out.
+
+**Acceptance:** A request of two identical quotes to a deployment that answers in
+request order is answered with two equal rows, in order.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_output_assembler.py::_assemble_document` (`_group_rows` over
+a level's own fields); `src/haute/deploy/_request_rows.py::check_answer_rows`;
+`specs/json-shredding/high-level.md` ("Level objects").
