@@ -778,6 +778,60 @@ class TestColumnsAreNamedByTheHeaderOrTheConfig:
 
         assert out.to_dicts() == [{"amount": 10, "id": 1, "name": "a"}]
 
+    def test_a_windows_1252_csv_is_checked_as_the_eager_reader_decodes_it(
+        self, haute_scratch
+    ) -> None:
+        """The scanner decodes only UTF-8, so the header check decodes the file itself."""
+        headerless = haute_scratch / "headerless.csv"
+        headerless.write_bytes("1,Zo\u00eb,10\n2,Bront\u00eb,20\n".encode("cp1252"))
+        headed = haute_scratch / "headed.csv"
+        headed.write_bytes("id,caf\u00e9,amount\n1,a,10\n".encode("cp1252"))
+
+        def read(path: Path, **arguments: object) -> pl.DataFrame:
+            config = {
+                "format": "csv",
+                "mode": "read",
+                "path": str(path),
+                "arguments": {"encoding": "windows-1252", **arguments},
+            }
+            return read_polars_input(config).collect()
+
+        named = read(headerless, has_header=False, new_columns=["id", "name", "amount"])
+        typed = read(headed, schema={"amount": "int64", "caf\u00e9": "str", "id": "int64"})
+
+        assert named["name"].to_list() == ["Zo\u00eb", "Bront\u00eb"]
+        assert typed.to_dicts() == [{"amount": 10, "caf\u00e9": "a", "id": 1}]
+        with pytest.raises(PolarsIoConfigError, match="has 3 columns and new_columns names 2"):
+            read(headerless, has_header=False, new_columns=["id", "name"])
+        with pytest.raises(PolarsIoConfigError, match=r"schema names \['cafe'\] the header"):
+            read(headed, schema={"amount": "int64", "cafe": "str", "id": "int64"})
+
+    def test_a_header_beyond_the_first_read_of_a_windows_1252_csv_is_found(
+        self, haute_scratch
+    ) -> None:
+        path = haute_scratch / "preamble.csv"
+        preamble = "".join(f"report line {index:05d}, caf\u00e9\n" for index in range(4000))
+        path.write_bytes((preamble + "id,name\n1,a\n").encode("cp1252"))
+        config = {
+            "format": "csv",
+            "mode": "read",
+            "path": str(path),
+            "arguments": {"encoding": "windows-1252", "skip_lines": 4000},
+        }
+
+        typed = read_polars_input(
+            {
+                **config,
+                "arguments": {**config["arguments"], "schema": {"name": "str", "id": "int64"}},
+            }
+        ).collect()
+
+        assert typed.to_dicts() == [{"name": "a", "id": 1}]
+        with pytest.raises(PolarsIoConfigError, match=r"leaves out \['name'\]"):
+            read_polars_input(
+                {**config, "arguments": {**config["arguments"], "schema": {"id": "int64"}}}
+            )
+
     def test_haute_names_a_headerless_sheet(self, haute_scratch) -> None:
         openpyxl = pytest.importorskip("openpyxl")
         path = haute_scratch / "headerless.xlsx"

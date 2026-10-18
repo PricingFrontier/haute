@@ -722,7 +722,12 @@ is no eager dataframe or collect-then-write fallback.
   arguments (`_CSV_DIALECT_ARGUMENTS`, `infer_schema=False`): a header-less file whose
   `new_columns` length differs from that line's field count, and a headed file whose
   `schema` names are not exactly its header's, are refused with `PolarsIoConfigError`
-  before Polars resolves the scan.
+  before Polars resolves the scan. The scanner decodes only UTF-8, and the eager reader
+  decodes another `encoding` in Python before it parses, so for such a file
+  `_csv_first_line_names` decodes a 64 KiB prefix the same way (a `-lossy` codec
+  replacing what it cannot decode), cuts it after its last complete line, and has Polars
+  parse the header and one row from it, doubling the prefix until a row past the header
+  parses or the prefix holds the whole file.
 - Argument *defaults* are Polars'. haute forwards what a node config sets and takes the
   installed Polars' behaviour for everything else, so a default that moves inside the
   specifier moves haute's results with it. That is reported by

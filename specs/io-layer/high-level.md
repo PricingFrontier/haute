@@ -76,7 +76,8 @@ name, and one naming columns the header does not have, which renamed columns by
 position under Polars 1, is refused with Haute's message pointing at `new_columns` (to
 rename) and `schema_overrides` (to set types), never Polars' own hint
 (`extra_columns='ignore'`), which would drop the mismatched columns. These checks read
-the configuration and the file's first line, and cost nothing beyond the scan. Haute's
+the configuration and the file's first line, decoded as the read decodes it (a prefix
+of a file in another encoding than UTF-8), and cost nothing beyond the scan. Haute's
 own CSV reads pass `raise_if_empty=True` and `truncate_ragged_lines=False`, so an empty
 file and a row with more fields than the header fail as they did. A scan of several
 files infers its schema from the first ten (`infer_schema_files`), and a
