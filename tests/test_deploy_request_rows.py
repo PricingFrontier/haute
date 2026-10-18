@@ -239,9 +239,7 @@ def test_the_databricks_model_answers_in_request_order_or_quote_by_quote(tmp_pat
 
     from haute.deploy._model_code import HauteModel
 
-    graph = _two_join_graph(remap)
-
-    def load(rows: RequestRows) -> HauteModel:
+    def load(graph: PipelineGraph, rows: RequestRows) -> HauteModel:
         manifest = {
             "polars_version": pl.__version__,
             "pruned_graph": graph.model_dump(mode="json"),
@@ -259,15 +257,18 @@ def test_the_databricks_model_answers_in_request_order_or_quote_by_quote(tmp_pat
         model.load_context(context)
         return model
 
-    covered = load(request_rows(graph, ["quotes"], "out", remap))
+    graph = _two_join_graph(remap)
+    covered = load(graph, request_rows(graph, ["quotes"], "out", remap))
     answer = covered.predict(MagicMock(), QUOTES.to_pandas())
     _assert_expected(pl.from_pandas(answer).to_dicts())
 
-    # Uncovered, each quote is scored alone: the same answers, in request order.
-    uncovered = load(
-        RequestRows("quote_by_quote", (RowRefusal("calc", "calc", "sort", "reorders"),))
-    )
-    _assert_expected(pl.from_pandas(uncovered.predict(MagicMock(), QUOTES.to_pandas())).to_dicts())
+    # A real sort: in one frame it answers in rate order; quote by quote, in request order.
+    sorted_graph = _priced_graph(ORDERED_LEFT, remap, after="df = priced.sort('rate')")
+    rows = request_rows(sorted_graph, ["quotes"], "out", remap)
+    assert rows.multi_quote == "quote_by_quote"
+    uncovered = load(sorted_graph, rows)
+    answers = pl.from_pandas(uncovered.predict(MagicMock(), QUOTES.to_pandas()))
+    assert answers["quote_id"].to_list() == QUOTES["quote_id"].to_list()
     one = uncovered.predict(MagicMock(), pd.DataFrame(QUOTES.head(1).to_dicts()))
     assert len(one) == 1
 

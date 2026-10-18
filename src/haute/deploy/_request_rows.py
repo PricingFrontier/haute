@@ -980,8 +980,8 @@ def check_lookups(
     quote) would repeat a quote even when it is sent alone, so it fails the deployment
     with one ``DeployError`` naming every such side, its join and the key. A cross
     join's side holding other than one row, or a side the build cannot read in bounded
-    memory (a group-by on it without an estimate), only leaves the deployment answering
-    one quote per request: their refusals are returned with the checks that passed.
+    memory (a group-by on it without an estimate), only leaves the deployment answering a
+    batch quote by quote: their refusals are returned with the checks that passed.
     """
     from haute._execution_context import ExecutionProfile
     from haute._polars_utils import streaming_collect
@@ -1041,7 +1041,7 @@ def check_lookups(
                         f"{lookup.join_node_label!r} more than once, so the join would repeat a "
                         "quote: give each key one row, or declare the join's validate as "
                         "'m:m' if a quote is meant to match several rows (the deployment then "
-                        "answers one quote per request)"
+                        "answers a batch quote by quote)"
                     )
                 else:
                     passed.append(lookup)
