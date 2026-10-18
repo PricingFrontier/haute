@@ -518,7 +518,8 @@ def _limit_level_plan(
     first, *others = keys
     if not others:
         return plan.filter(pl.col(first).is_in(ancestor_keys[first].to_list()))
-    return plan.join(ancestor_keys.lazy(), on=keys, how="semi")
+    # The level's objects are its rows in first-occurrence order, so the join keeps them.
+    return plan.join(ancestor_keys.lazy(), on=keys, how="semi", maintain_order="left")
 
 
 # ---------------------------------------------------------------------------

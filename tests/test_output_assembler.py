@@ -1234,8 +1234,41 @@ def test_limited_level_semi_joins_on_every_own_key_of_its_ancestor() -> None:
         },
     )
 
-    assert sorted(limited.collect()["$[:].a[:].b[:].v"].to_list()) == [10, 30]
+    assert limited.collect()["$[:].a[:].b[:].v"].to_list() == [10, 30]
     assert "SEMI" in limited.explain().upper()
+
+
+def test_limited_assembly_of_a_level_nested_by_two_keys_equals_the_unlimited_one() -> None:
+    """A level selected by two keys keeps its rows' order over many streaming morsels."""
+    policies, per_cover = 4, 30_000
+    covers = pl.DataFrame(
+        {
+            "$[:].id": [policy for policy in range(policies) for _ in range(2)],
+            "$[:].covers[:].k1": [policy for policy in range(policies) for _ in range(2)],
+            "$[:].covers[:].k2": ["x", "y"] * policies,
+        }
+    )
+    rows = policies * 2 * per_cover
+    # Each cover's items interleave with every other cover's.
+    cover_of_row = [index % (policies * 2) for index in range(rows)]
+    items = pl.DataFrame(
+        {
+            "$[:].id": [cover // 2 for cover in cover_of_row],
+            "$[:].covers[:].k1": [cover // 2 for cover in cover_of_row],
+            "$[:].covers[:].k2": ["xy"[cover % 2] for cover in cover_of_row],
+            "$[:].covers[:].items[:].n": list(range(rows)),
+        }
+    )
+    frames = {
+        "root": pl.LazyFrame({"$[:].id": list(range(policies))}),
+        "covers": covers.lazy(),
+        "items": items.lazy(),
+    }
+
+    limited = _assemble_document(frames, row_limit=2)
+
+    assert limited == _assemble_document(frames)[:2]
+    assert [item["n"] for item in limited[1]["covers"][0]["items"][:3]] == [2, 10, 18]
 
 
 def test_limited_level_without_ancestor_keys_reads_every_row() -> None:
