@@ -219,8 +219,8 @@ Join whose `maintainOrder` is missing or not one of `none`, `left`, `right`, `le
 `haute._edge_join.require_edge_join_order`, the check `build_edge_join_kwargs` runs for save
 and execution. A pipeline file written before the order was required therefore opens in the
 editor for recovery, and Recover settings gives each such join the order for its type. A join
-inside a submodel makes the submodel's definition unavailable, and the editor does not open an
-unavailable definition, so that join is fixed in the submodel's file.
+inside a submodel makes the submodel's definition unavailable, and the submodel's inspector
+lists the join with its own Recover settings.
 
 **What a recover cannot fix.** The editor's Recover settings action
 (`src/haute/_pipeline_repair_actions.py::_recover_node`, over

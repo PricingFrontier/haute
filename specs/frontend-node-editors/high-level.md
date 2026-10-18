@@ -701,7 +701,9 @@ spelling instead of coercing the node to a supported type.
 
 Selecting an unavailable or blocked node opens a read-only diagnostic inspector rather than its
 normal configuration editor. The inspector shows attributed messages, remediation, source/config
-location, incident id, and blocking path where present. Ready siblings in a degraded document may
+location, incident id, and blocking path where present. The editor does not open an unavailable
+submodel's definition, so that submodel's inspector also lists the definition's unavailable
+nodes, each with its diagnostics and its own recovery actions. Ready siblings in a degraded document may
 be inspected through a static read-only configuration view. Normal editors are not mounted in
 that state, so editor effects cannot start schema, preview, training, cache, or publication work
 behind disabled controls. Selection, panning, zooming, recovery preview, and diagnostic inspection

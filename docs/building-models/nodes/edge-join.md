@@ -102,7 +102,7 @@ If the scores table calls the key `id` instead, choose **Paired base/join keys**
     | **SUFFIX** | `suffix` (defaults to `"_right"`) |
     | **COALESCE** | `coalesce`: `true` or `false` (absent when not set) |
     | **VALIDATE** | `validate`: `"1:1"`, `"1:m"`, `"m:1"` or `"m:m"` (absent when not set) |
-    | **MAINTAIN ORDER** | `maintainOrder`, written `maintain_order` in the decorator: `"none"`, `"left"`, `"right"`, `"left_right"` or `"right_left"`. Required: a pipeline file that leaves it out opens for recovery, and **Recover settings** gives the join the order for its type. A join inside a submodel is fixed in the submodel's file, by adding `maintain_order` to its decorator |
+    | **MAINTAIN ORDER** | `maintainOrder`, written `maintain_order` in the decorator: `"none"`, `"left"`, `"right"`, `"left_right"` or `"right_left"`. Required: a pipeline file that leaves it out opens for recovery, and **Recover settings** gives the join the order for its type. For a join inside a submodel, select the submodel: its panel lists the join with its own **Recover settings** |
     | **COLUMNS** tab | `selected_columns` |
 
     In the node's settings, same-name keys look like this:

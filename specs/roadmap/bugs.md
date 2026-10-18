@@ -13,9 +13,7 @@ those files fail before a first release succeeds. The guides now give the manual
 step that works today for each, and drop it when the package lands. `BUG-27` to
 `BUG-30`, found the same day, are text that no longer matches the behaviour it
 describes: the CLI's help, the offset tooltip, a tuned t-boost run's summary and the
-t-boost starter parameters in the modelling UI specification. `BUG-40` was found on 18
-October 2026 opening the motor pricing demo on Polars 2: the editor cannot recover a node
-inside a submodel whose definition fails to load.
+t-boost starter parameters in the modelling UI specification.
 
 ## Priorities
 
@@ -33,7 +31,6 @@ inside a submodel whose definition fails to load.
 | BUG-28 | Planned | P2 | The offset tooltip names every loss that treats the offset as an exposure, and the losses that take no offset. |
 | BUG-29 | Planned | P2 | A tuned t-boost run's summary says its published model is the winning trial's fit, not a refit. |
 | BUG-30 | Planned | P3 | The modelling UI specification lists the t-boost starter parameters and readiness issues the editor has. |
-| BUG-40 | Planned | P2 | The editor recovers a node inside a submodel whose definition fails to load. |
 
 ## Planned improvements
 
@@ -279,28 +276,3 @@ values, and the readiness issues match `trainingObjective.ts`.
 **Evidence:** `specs/frontend-modelling-optimiser-ui/high-level.md` (Behaviour, t-boost);
 `frontend/src/panels/ModellingConfig.tsx` (`TBOOST_DEFAULT_PARAMS`);
 `frontend/src/utils/trainingObjective.ts` (the t-boost readiness issues).
-
-### BUG-40 — The editor recovers a node inside an unavailable submodel
-**Why:** A node in a submodel file that fails the strict parse (an Edge Join saved before
-its row order was required, a removed config key, a stale contract) makes the submodel's
-definition unavailable. The editor shows the submodel's card with only **Remove
-unavailable node** and does not open the definition, so the node's **Recover settings**
-is out of reach and the author edits the submodel's file by hand. The recover action
-itself works on such a node: the server resolves it from the definition's recovered
-graph by its submodel file and recovery id. The motor pricing demo's `data_inputs`
-submodel hit this with an Edge Join that had no row order.
-
-**Plan:** Let the unavailable submodel's panel list its definition's unavailable nodes,
-each with its diagnostic and the recovery actions it supports, applied through the
-existing recover route with the submodel's file as the target.
-
-**Acceptance:** A pipeline whose submodel holds an Edge Join without its order opens for
-recovery; **Recover settings** on that join, reached from the submodel's panel, gives it
-its type's order, and the pipeline then loads ready. An end-to-end journey covers it.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/NodePanel.tsx` (the recovery section, `canRecover`);
-`frontend/src/hooks/useSubmodelNavigation.ts` (`handleDrillIntoSubmodel`);
-`src/haute/_pipeline_repair.py` (`_find_target`);
-`tests/test_pipeline_repair_actions.py` (`test_recover_reaches_a_join_saved_without_its_order_inside_a_submodel`).

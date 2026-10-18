@@ -82,6 +82,9 @@ carries as its remediation. The author rewrites it, or removes the node.
   rather than carried forward. The recovered sidecar holds no `contract` key; the
   annotation lives on the decorator. The applied node must load (available, or blocked only by an upstream
   failure) — completeness and execution-readiness are explicitly not plan gates.
+  A node inside a submodel's file is a target like any other, named by that file and its
+  recovery id, also when its definition fails to load: the target resolves from the
+  definition's recovered graph, and the action rewrites the submodel's file.
   Identity, description, position, connections, and exclusively owned config references
   follow the Reset rules, so a damaged chain recovers in any order and the applied node
   may remain blocked solely by an unrepaired upstream. An unreadable
