@@ -114,6 +114,7 @@ class IoFormat:
     needs_schema_when_bounded: bool = False
     # True -> the source is a table folder, not a file, so pickers select a folder.
     source_is_folder: bool = False
+    # True -> Polars marks every callable of the format unstable (``@unstable()``).
     unstable: bool = False
     # Engine packages (import names): reading/writing needs at least one
     # importable. Empty = polars-native, always available.
@@ -215,6 +216,8 @@ FORMATS: tuple[IoFormat, ...] = (
         writer="write_avro",
         extensions=(".avro",),
         bounded_read=False,
+        # Polars 2 marks read_avro and write_avro unstable.
+        unstable=True,
         source_owned_args=frozenset({"source", "file"}),
     ),
     IoFormat(

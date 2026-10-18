@@ -215,6 +215,32 @@ class TestRegistrySchemaCompleteness:
             missing = {n for n in fmt.source_owned_args if n not in all_args}
             assert not missing, f"{fmt.name}: source_owned_args not in any signature: {missing}"
 
+    def test_a_format_is_unstable_when_polars_marks_every_callable_of_it_so(self) -> None:
+        """Held to the installed Polars, whose ``@unstable()`` wrapper issues the warning."""
+
+        def marked_unstable(owner: object, name: str) -> bool:
+            code = getattr(getattr(owner, name), "__code__", None)
+            return code is not None and "issue_unstable_warning" in code.co_names
+
+        marks = {
+            fmt.name: [
+                marked_unstable(owner, name)
+                for owner, name in (
+                    (pl, fmt.reader),
+                    (pl, fmt.scanner),
+                    (pl.DataFrame, fmt.writer),
+                    (pl.LazyFrame, fmt.sinker),
+                )
+                if name is not None
+            ]
+            for fmt in FORMATS
+        }
+
+        assert {fmt.name: fmt.unstable for fmt in FORMATS} == {
+            name: all(callables) for name, callables in marks.items()
+        }
+        assert FORMATS_BY_NAME["avro"].unstable
+
     @pytest.mark.parametrize("extension", ["csv", ".CSV", "", ".csv/backup"])
     def test_registry_rejects_noncanonical_extensions(self, extension: str) -> None:
         with pytest.raises(ValueError, match="lower-case leading-dot suffix"):

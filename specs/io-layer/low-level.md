@@ -705,7 +705,10 @@ is no eager dataframe or collect-then-write fallback.
   callable therefore costs the editor that one mode rather than the whole format catalogue;
   configuring or executing such a format raises `PolarsIoConfigError` from
   `haute._polars_io_registry.allowed_arguments()` rather than a bare `AttributeError`, and
-  the interface contract test fails on the same condition in CI.
+  the interface contract test fails on the same condition in CI. A format's `unstable`
+  flag, which the editor shows as "(unstable)", says Polars marks every callable of the
+  format unstable (its `@unstable()` wrapper), held to the installed Polars by a test:
+  Avro (Polars 2), Text lines and Iceberg.
 - The intersection governs node-config arguments only. Keyword names haute itself writes as
   literals — `haute.executor._output_row_count_scan_kwargs()` for exact artifact row counts,
   `haute._io.read_source()` for declared-dtype CSV scans, and the compression argument in
