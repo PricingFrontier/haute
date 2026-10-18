@@ -16,6 +16,7 @@ import pytest
 
 from haute._polars_utils import execution_collect
 from haute.deploy._container import _generate_app_source
+from tests._source_files import source_files
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "haute"
 _SINKS = frozenset({"sink_parquet", "sink_csv", "sink_ipc", "sink_ndjson", "sink_batches"})
@@ -49,7 +50,7 @@ def engineless_collects(source: str) -> list[int]:
 def test_every_collect_in_haute_names_its_engine() -> None:
     reports = [
         f"src/haute/{path.relative_to(SRC).as_posix()}:{line}"
-        for path in sorted(SRC.rglob("*.py"))
+        for path in source_files(SRC)
         for line in engineless_collects(path.read_text(encoding="utf-8"))
     ]
     reports += [

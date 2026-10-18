@@ -2713,13 +2713,15 @@ _RETIRED_POLARS_FORMS = {
 def _shown_or_taught_polars_code() -> dict[str, str]:
     """Documentation code blocks, and every teaching asset and example in full."""
     texts: dict[str, str] = {}
-    for document in sorted((ROOT / "docs").rglob("*.md")):
+    for document in source_files(ROOT / "docs", suffix=".md"):
         blocks = re.findall(r"```.*?```", document.read_text(encoding="utf-8"), flags=re.DOTALL)
         texts[document.relative_to(ROOT).as_posix()] = "\n".join(blocks)
     assets = ROOT / "src" / "haute" / "assistant" / "assets"
-    for path in sorted(
-        [*assets.rglob("*.md"), *assets.rglob("*.py"), *(ROOT / "examples").rglob("*.py")]
-    ):
+    for path in [
+        *source_files(assets, suffix=".md"),
+        *source_files(assets),
+        *source_files(ROOT / "examples"),
+    ]:
         texts[path.relative_to(ROOT).as_posix()] = path.read_text(encoding="utf-8")
     return texts
 
