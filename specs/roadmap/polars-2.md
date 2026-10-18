@@ -242,20 +242,16 @@ promise to keep in order.
   `pl.Series._import`, the method that line returns frames through. Update the
   guard's docstring and the optimiser low-level specification to match.
 - Run every test module that drives the library.
-- Independently of the release, `_prepare_online_apply_frame` passes only the
-  columns the apply reads.
 
 **Acceptance:**
 - Haute pins price-contour 0.7.0.
 - A test that removes the private method the installed build returns frames
   through fails the guard with its message, not a solve.
 - Every module that drives the real library passes.
-- An Optimiser Apply hands price-contour only the columns it reads.
 
 **Dependencies:** None in Haute. The move waits for price-contour 0.7.0 on PyPI.
 
 **Evidence:** `src/haute/_price_contour.py::price_contour`;
-`src/haute/_builders.py::_prepare_online_apply_frame`;
 `tests/test_price_contour_guard.py`;
 `tests/test_optimiser_routes_real_library.py`.
 

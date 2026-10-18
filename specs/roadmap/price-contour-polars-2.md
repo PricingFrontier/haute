@@ -135,7 +135,7 @@ Apart from the joins and the lazy query above, nothing in `python/price_contour`
 - Both lines go through private Polars Python methods. Python Polars 2.0.0 has all of them, with no deprecation notice (`py-polars/src/polars/series/series.py:511-562` at `py-2.0.0`).
 - `Series._import` first appears in Python Polars 1.28.0. The Arrow PyCapsule interface (`__arrow_c_stream__`) exists in Polars 2.0, but pyo3-polars does not use it.
 - Two files are byte-identical at rs-0.55.1 and py-2.0.0: `crates/polars-ffi/src/version_0.rs` (the FFI format) and `crates/polars-arrow/src/datatypes/field.rs` (the Categorical and Enum metadata keys). That is why 0.28 works with Python Polars 2.0.0. It was established by comparing sources, not by running them, so stage 2's tests check it.
-- Haute's Optimiser Apply sends a whole frame to `ApplyOptimiser.apply`. So with 0.25, every multi-chunk column of a large frame is copied during each apply.
+- Haute's Optimiser Apply hands `ApplyOptimiser.apply` only the columns it reads, but those can arrive multi-chunk, so with 0.25 each is copied during each apply.
 
 ### Cargo
 
@@ -237,7 +237,8 @@ Keep all of this unchanged in 0.7.0. Haute's guard checks every name and keyword
   - `scenario_value`, the objective and the constraint columns as Float32;
   - analysis columns under private names, which the reader does not select.
 - **Ratebook factor Parquet:** one row per quote with the factor columns, read by `build_ratebook_factor_contexts_from_parquet_chunked`.
-- **The Optimiser Apply frame**, in memory (`src/haute/_builders.py:1808-1831`). It is the whole input frame: `quote_id` String, `scenario_index` Int32, the value columns Float32, and every other column the analyst's frame has, in any dtype.
+- **The Optimiser Apply frame**, in memory (`src/haute/_builders.py:1695-1756` and `1811-1834`). It holds only the columns the artifact reads (`online_apply_read_columns`): `quote_id` String, `scenario_index` Int32, and the scenario value, objective and constraint columns (a ratio constraint's numerator and denominator) Float32. Before 18 October 2026, a preview or `haute run` handed over every other column of the analyst's frame too, and a Struct, Decimal, Int128 or Map column failed the apply.
+- **The explainability trace frame** (`src/haute/_optimiser_apply_explainability.py`): the same columns plus a UInt32 row number, `__haute_explained_row__`, passed to `with_explainer_columns`. Haute joins the frame's other columns back on that number, so `with_explainer_columns` must keep returning every input column it is handed, including ones it does not read.
 - **Haute's check frame:** one row with `quote_id` String, `scenario_index` Int32, and `scenario_value` and `objective` Float32. It goes through `ApplyOptimiser(lambdas={}, objective="objective", constraints={}).apply(frame).dataframe`.
 
 ## Acceptance
@@ -289,10 +290,7 @@ Once 0.7.0 is on PyPI, relock (step 1 of "Haute's side") and run `uv sync --lock
    - the guard's module docstring (`src/haute/_price_contour.py:9-12`);
    - the guard's description in the optimiser low-level specification;
    - `PL2-20`, which then retires.
-4. **Recommended now, independent of the release:** have `_prepare_online_apply_frame` (`src/haute/_builders.py:1808-1831`) pass only the columns the apply reads.
-   - Nothing is lost: the native result carries no passthrough columns, and a ratio constraint's numerator and denominator are already among the columns cast there.
-   - With 0.6.0, this stops the bridge rechunking and converting every column of the analyst's frame.
-5. **Deployment needs no change.** Containers pin `price-contour==<verified version>` from PyPI, and the Linux x86_64 wheel covers them.
+4. **Deployment needs no change.** Containers pin `price-contour==<verified version>` from PyPI, and the Linux x86_64 wheel covers them.
 
 ## Haute is not waiting
 

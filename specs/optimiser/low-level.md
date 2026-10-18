@@ -1014,7 +1014,13 @@ the neutral-miss path.
 ### Runtime online apply (`_apply_online` in `src/haute/_builders.py`)
 
 `_apply_online` applies an online artifact through `price_contour.ApplyOptimiser` on the frame
-`_prepare_online_apply_frame` materialises (null quote ids dropped, apply dtypes cast). The
+`_prepare_online_apply_frame` materialises (null quote ids dropped, apply dtypes cast) from only
+the columns the artifact reads (`online_apply_read_columns`): the quote id, scenario index and
+value, and objective, then the constraint columns (a ratio constraint's numerator and
+denominator). price-contour's native module converts every column it is handed and fails on
+some types the apply never reads: a Struct, Decimal, Int128 or Map column. So no other column
+reaches it, whichever walk runs the apply. A sink walk's planned demand narrows the input
+already; a display walk's (a preview, `haute run`) does not. The
 apply emits one row per quote in ascending order of the `Utf8` quote id, with the literal id
 column `quote_id` whatever the artifact names its input quote-id column. How the result is
 exposed depends on the artifact's constraints (`has_ratio_constraint`):
@@ -1095,7 +1101,11 @@ emits; filters the parent frame to that quote unless the artifact has a ratio co
 linearisation baseline is the whole input); raises `OptimiserApplyTraceError` when no input row
 remains; builds the online apply input frame
 (`_prepare_online_apply_frame`), constructs a `price_contour.ApplyOptimiser` with the artifact's
-lambdas/constraints/column names, and calls `applier.with_explainer_columns(df)` — the
+lambdas/constraints/column names, and calls `applier.with_explainer_columns`. It hands that
+call only the frame's read columns (`online_apply_read_columns`) and a private row number,
+then joins the frame's other columns back on that number. The native module therefore never
+sees a column the apply does not read (see the runtime online apply above), while every
+candidate row keeps every column. `with_explainer_columns` is the
 `price-contour` API documented in full in
 [`with_explainer_columns` contract](#withexplainercolumns-contract) below. It filters to the
 clicked quote's rows, asserts exactly one `selected` and exactly one `is_baseline` candidate, and

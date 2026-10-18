@@ -6,6 +6,7 @@ artifact caching, and deploy bundling/scoring.
 
 import itertools
 import json
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -18,6 +19,8 @@ from haute._config_builder import _build_node_config
 from haute._types import GraphNode, NodeData, NodeType
 from haute.codegen import _node_to_code
 from haute.errors import ConfigError, RatingFactorDtypeContractError
+from haute.executor import execute_graph
+from tests.conftest import make_edge, make_graph, make_ready_file_input_config
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -436,6 +439,104 @@ class TestExecutorOnline:
         assert "optimal_objective" in result.columns
         assert "__optimiser_version__" in result.columns
         assert result["__optimiser_version__"][0] == "test_v1"
+
+    # price-contour 0.6.0's native module converts every column it is handed and
+    # cannot convert these types (a Decimal or a Map panics in Rust).
+    _UNREAD_COLUMNS = (
+        pl.Series("unread", [Decimal("1.50")] * 6, dtype=pl.Decimal(10, 2)),
+        pl.Series("unread", [{"k": 1}] * 6),
+        pl.Series("unread", [1] * 6, dtype=pl.Int128),
+        pl.Series("unread", [{"a": 1}] * 6, dtype=pl.Map(pl.String, pl.Int64)),
+    )
+
+    @pytest.mark.parametrize("unread", _UNREAD_COLUMNS, ids=["decimal", "struct", "int128", "map"])
+    def test_a_column_the_apply_does_not_read_never_reaches_price_contour(
+        self, write_artifact, unread
+    ):
+        path = write_artifact(_make_online_artifact())
+        node = _make_node({"sourceType": "file", "artifact_path": path})
+        _, fn, _ = _build_node_fn(node, source_names=["scored"])
+
+        applied = fn(_scored_df().with_columns(unread).lazy()).collect(engine="in-memory")
+
+        assert applied.equals(fn(_scored_df().lazy()).collect(engine="in-memory"))
+
+    def test_the_apply_hands_price_contour_exactly_the_columns_it_reads(
+        self, write_artifact, monkeypatch
+    ):
+        from haute._price_contour import price_contour
+
+        handed: list[list[str]] = []
+        real = price_contour().ApplyOptimiser.apply
+
+        def spy(applier, frame):
+            handed.append(frame.columns)
+            return real(applier, frame)
+
+        monkeypatch.setattr(price_contour().ApplyOptimiser, "apply", spy)
+        path = write_artifact(_make_online_artifact())
+        node = _make_node({"sourceType": "file", "artifact_path": path})
+        _, fn, _ = _build_node_fn(node, source_names=["scored"])
+
+        fn(_scored_df().with_columns(note=pl.lit("x")).lazy()).collect(engine="in-memory")
+
+        assert handed == [
+            ["quote_id", "scenario_index", "scenario_value", "predicted_income", "predicted_volume"]
+        ]
+
+    def test_a_ratio_apply_hands_price_contour_its_numerator_and_denominator(self, write_artifact):
+        artifact = {
+            **_make_online_artifact(),
+            "lambdas": {"loss_ratio": 0.2},
+            "constraints": {
+                "loss_ratio": {"max": 0.6, "numerator": "claims", "denominator": "premium"}
+            },
+        }
+        node = _make_node({"sourceType": "file", "artifact_path": write_artifact(artifact)})
+        _, fn, _ = _build_node_fn(node, source_names=["scored"])
+        scored = _scored_df().with_columns(
+            claims=pl.col("predicted_income") * 0.6, premium=pl.lit(100.0)
+        )
+
+        applied = fn(scored.with_columns(self._UNREAD_COLUMNS[0]).lazy()).collect()
+
+        assert applied.equals(fn(scored.lazy()).collect())
+        assert applied.height == 2
+
+    def test_a_preview_of_the_apply_reads_past_a_column_it_does_not_read(self, haute_scratch):
+        # A display walk does not narrow the apply's input to its planned demand.
+        scored = haute_scratch / "scored.parquet"
+        _scored_df().with_columns(self._UNREAD_COLUMNS[0]).write_parquet(scored)
+        artifact = haute_scratch / "optimiser.json"
+        artifact.write_text(json.dumps(_make_online_artifact()), encoding="utf-8")
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "scored",
+                        "data": {
+                            "label": "scored",
+                            "nodeType": "dataInput",
+                            "config": make_ready_file_input_config(str(scored)),
+                        },
+                    },
+                    {
+                        "id": "apply",
+                        "data": {
+                            "label": "apply",
+                            "nodeType": "optimiserApply",
+                            "config": {"sourceType": "file", "artifact_path": str(artifact)},
+                        },
+                    },
+                ],
+                "edges": [make_edge("scored", "apply").model_dump()],
+            }
+        )
+
+        result = execute_graph(graph, target_node_id="apply")["apply"]
+
+        assert result.status == "ok", result.error
+        assert result.row_count == 2
 
     def test_online_custom_version_column(self, write_artifact):
         path = write_artifact(_make_online_artifact())

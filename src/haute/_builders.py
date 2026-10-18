@@ -1711,6 +1711,7 @@ def _apply_online(
     mult_col = artifact.get("scenario_value", "scenario_value")
     objective = artifact.get("objective", "expected_income")
     constraints = artifact.get("constraints") or {}
+    read_columns = online_apply_read_columns(artifact)
 
     def apply(frame: _Frame) -> pl.DataFrame:
         applier = price_contour().ApplyOptimiser(
@@ -1721,8 +1722,10 @@ def _apply_online(
             scenario_index=step_col,
             scenario_value=mult_col,
         )
+        # price-contour converts every column it is handed and fails on some
+        # types the apply never reads, so it is handed only the ones it reads.
         result_df: pl.DataFrame = applier.apply(
-            _prepare_online_apply_frame(frame, artifact)
+            _prepare_online_apply_frame(frame.select(read_columns), artifact)
         ).dataframe
         result_df = _rename_column_if_configured(
             result_df,
@@ -1856,21 +1859,32 @@ def _online_apply_constraint_columns(artifact: Mapping[str, Any]) -> tuple[str, 
     return tuple(columns)
 
 
+def online_apply_read_columns(artifact: Mapping[str, Any]) -> tuple[str, ...]:
+    """The input columns an online apply reads, in order; price-contour sees no other.
+
+    The quote id, scenario index and value, and objective come first, then the
+    constraint columns its artifact names.
+    """
+    return tuple(
+        dict.fromkeys(
+            (
+                artifact.get("quote_id", "quote_id"),
+                artifact.get("scenario_index", "scenario_index"),
+                artifact.get("scenario_value", "scenario_value"),
+                artifact.get("objective", "expected_income"),
+                *_online_apply_constraint_columns(artifact),
+            )
+        )
+    )
+
+
 def online_apply_input_columns(artifact: Mapping[str, Any]) -> frozenset[str]:
     """Every input column an online apply reads; its output carries no other.
 
     The apply builds a new frame from the quote id, scenario index and value,
     objective, and constraint columns its artifact names.
     """
-    return frozenset(
-        {
-            artifact.get("quote_id", "quote_id"),
-            artifact.get("scenario_index", "scenario_index"),
-            artifact.get("scenario_value", "scenario_value"),
-            artifact.get("objective", "expected_income"),
-            *_online_apply_constraint_columns(artifact),
-        }
-    )
+    return frozenset(online_apply_read_columns(artifact))
 
 
 # Composite ratebook factor groups (3b.2): price-contour names a composite

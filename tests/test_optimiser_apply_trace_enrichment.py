@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from unittest.mock import patch
 
 import polars as pl
@@ -188,6 +189,50 @@ def test_online_execute_trace_attaches_candidate_explanation(tmp_path):
     assert detail["selected"]["selected"] is True
     assert detail["baseline"]["scenario_index"] == 1
     assert detail["baseline"]["is_baseline"] is True
+
+
+def test_online_trace_hands_price_contour_only_the_columns_the_apply_reads(tmp_path):
+    """price-contour cannot convert a Decimal or a Struct, so the trace hands it the read
+    columns and a row number; every candidate row still carries the other columns."""
+    artifact_path = _write_json(tmp_path / "online.json", _online_artifact())
+    scored_path = tmp_path / "scored.parquet"
+    _scored_online_df().with_columns(
+        note=pl.lit(Decimal("1.50"), dtype=pl.Decimal(10, 2)),
+        meta=pl.lit({"k": 1}),
+    ).write_parquet(scored_path)
+    graph = _g(
+        {
+            "nodes": [
+                _source_node("scored", str(scored_path)),
+                _optimiser_apply_node({"sourceType": "file", "artifact_path": artifact_path}),
+            ],
+            "edges": [_edge("scored", "apply")],
+        }
+    )
+
+    result = execute_trace(
+        graph, row_index=0, target_node_id="apply", column="optimal_scenario_value"
+    )
+
+    detail = _step_by_id(result, "apply").node_detail
+    assert detail is not None
+    assert detail["status"] == "ok"
+    candidates = detail["candidates"]
+    assert [row["scenario_index"] for row in candidates] == [0, 1, 2]
+    assert [(row["row"]["note"], row["row"]["meta"]) for row in candidates] == [
+        ("1.50", {"k": 1})
+    ] * 3
+    assert list(candidates[0]["row"])[:7] == [
+        "quote_id",
+        "scenario_index",
+        "scenario_value",
+        "predicted_income",
+        "predicted_volume",
+        "note",
+        "meta",
+    ]
+    assert detail["selected"]["scenario_index"] == 2
+    assert detail["baseline"]["scenario_index"] == 1
 
 
 def test_online_trace_prefers_artifact_configured_quote_id_column(tmp_path):
