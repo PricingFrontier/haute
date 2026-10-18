@@ -17,6 +17,7 @@ from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
 from haute._polars_io_registry import PolarsIoConfigError
 from haute._sandbox import contained_path
+from haute.errors import SchemaMismatchError
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.schemas import (
     BrowseFilesResponse,
@@ -395,6 +396,9 @@ async def get_schema(
         ) from None
     except (ApiInputSchemaError, PolarsIoConfigError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    except SchemaMismatchError as exc:
+        # The message without its context, which holds the absolute path.
+        raise HTTPException(status_code=400, detail=exc.message) from None
     except ValueError as exc:
         # Raw ValueError text may embed absolute paths, tracebacks, or
         # git output — never safe to surface.  Log full detail
