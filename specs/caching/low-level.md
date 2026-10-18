@@ -107,7 +107,12 @@ would keep only a repeated key's last value while the digests still matched, so 
 re-encoded from its own parts through pyarrow, one row group at a time, into a new
 current generation (`source_cache_generation_reencoded`), with no provider fetch; a
 lease of exactly the old generation then reports it missing, so its holder resolves the
-identity again. A node-output generation is never re-described: its identity names the
+identity again. The old generation is leased from the moment it is found current until
+the copy publishes, so no process retires it mid-copy, and the copy publishes only while
+the old generation is still current, checked under the lease lock every process shares
+(`build(..., replacing=...)`): a generation another build published meanwhile, from the
+source itself, is never replaced by a copy of older data. Such a copy is discarded
+(`source_cache_reencoding_superseded`) and the opener reads what is current. A node-output generation is never re-described: its identity names the
 Polars that computed it.
 
 ## Control flow

@@ -102,6 +102,15 @@ class _MapPartsNeedReencoding(Exception):  # noqa: N818 - a signal, not an error
     """
 
 
+class _Superseded(Exception):  # noqa: N818 - a signal, not an error
+    """The generation a build was to replace is no longer current, so it publishes nothing.
+
+    A re-encoded copy holds the data of the generation it copied; once another
+    build has published, possibly in another process, the copy would replace
+    newer data with older (see :meth:`SourceCacheStore._reencoded`).
+    """
+
+
 class SourceCacheBuildError(SourceCacheError):
     """A builder is not admissible for a source snapshot build."""
 
@@ -705,6 +714,13 @@ class SourceCacheStore:
     def _pointer_path(self, identity: SourceCacheIdentity) -> Path:
         return self.identity_path(identity) / "current.json"
 
+    def _current_generation_id(self, identity: SourceCacheIdentity) -> str | None:
+        """The current generation's id, or None without a pointer."""
+        try:
+            return self._read_pointer(identity)
+        except FileNotFoundError:
+            return None
+
     def _read_pointer(self, identity: SourceCacheIdentity) -> str:
         path = self._pointer_path(identity)
         if not path.exists():
@@ -882,23 +898,28 @@ class SourceCacheStore:
 
     def _reencoded(
         self, identity: SourceCacheIdentity, generation_id: str
-    ) -> SourceCacheGeneration:
-        """Publish a copy of a generation whose parts hold a physical Parquet map.
+    ) -> SourceCacheGeneration | None:
+        """Publish a copy of the current generation, whose parts hold a physical Parquet map.
 
         pyarrow reads the generation's own parts one row group at a time, every map
         becoming a list of key-value structs with all its entries, so nothing is
-        fetched from the provider. The old generation is leased while it is read,
-        and retired like any superseded generation.
+        fetched from the provider. The old generation is leased from the moment it
+        is found current until the copy is published, then retired like any
+        superseded generation. The copy is published only while the old generation
+        is still current, checked under the lease lock every process shares, so a
+        generation another build published meanwhile is never replaced by older
+        data. Returns None when the old generation is no longer current.
         """
-        generation_dir = self.identity_path(identity) / "generations" / generation_id
-        raw = json.loads((generation_dir / "meta.json").read_text(encoding="utf-8"))
-        parts = tuple(
-            generation_dir / SourceCachePart.from_dict(part).name for part in raw["parts"]
-        )
-        self._acquire_input_lease(identity, generation_id, require_current=False)
+        if not self._acquire_input_lease(identity, generation_id, require_current=True):
+            return None
         try:
             from haute._execution_context import ExecutionProfile
 
+            generation_dir = self.identity_path(identity) / "generations" / generation_id
+            raw = json.loads((generation_dir / "meta.json").read_text(encoding="utf-8"))
+            parts = tuple(
+                generation_dir / SourceCachePart.from_dict(part).name for part in raw["parts"]
+            )
             generation = self.build(
                 identity,
                 _MapEntriesCopy(parts),
@@ -907,7 +928,15 @@ class SourceCacheStore:
                 ),
                 source_signature=raw.get("source_signature"),
                 refresh=True,
+                replacing=generation_id,
             )
+        except _Superseded:
+            logger.info(
+                "source_cache_reencoding_superseded",
+                identity_digest=identity.digest,
+                generation_id=generation_id,
+            )
+            return None
         finally:
             self._release_input_lease(identity, generation_id)
         logger.info(
@@ -933,7 +962,8 @@ class SourceCacheStore:
                     f"source-cache generation {generation_id} uses the retired layout"
                 ) from exc
             except _MapPartsNeedReencoding:
-                return self._reencoded(identity, generation_id)
+                # None when another build published meanwhile: open that one.
+                return self._reencoded(identity, generation_id) or self.open_generation(identity)
 
     def _write_output(
         self,
@@ -988,7 +1018,13 @@ class SourceCacheStore:
         context: SourceCacheBuildContext,
         source_signature: str | None = None,
         refresh: bool = False,
+        replacing: str | None = None,
     ) -> SourceCacheGeneration:
+        """Build a generation of *identity* and publish it as current.
+
+        With *replacing*, the build publishes only while that generation is current,
+        and raises :class:`_Superseded` otherwise, having published nothing.
+        """
         if context.build_class == "unsupported":
             raise SourceCacheBuildError("unsupported source-cache build class")
         if identity.provider == NODE_OUTPUT_PROVIDER:
@@ -1053,6 +1089,8 @@ class SourceCacheStore:
                 context.checkpoint()
                 # Self-validate the staged directory using the same strict validator after rename.
                 with self._lease_lock:
+                    if replacing is not None and self._current_generation_id(identity) != replacing:
+                        raise _Superseded(replacing)
                     if not context.defer_retirement:
                         self._retire_unleased_locked(identity)
                     final_dir = generations_dir / generation_id
@@ -1097,9 +1135,11 @@ class SourceCacheStore:
                 try:
                     generation = self._metadata_from_path(identity, generation_id)
                 except _MapPartsNeedReencoding:
-                    # Lease the re-encoded copy, which is now current.
-                    self._release_input_lease(identity, generation_id)
-                    self._reencoded(identity, generation_id)
+                    # Still leased while it is copied; the loop then leases what is current.
+                    try:
+                        self._reencoded(identity, generation_id)
+                    finally:
+                        self._release_input_lease(identity, generation_id)
                     continue
                 except BaseException as exc:
                     self._release_input_lease(identity, generation_id)

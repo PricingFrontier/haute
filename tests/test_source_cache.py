@@ -1433,3 +1433,56 @@ def test_a_lease_under_another_polars_leases_the_reencoded_snapshot(
         assert leased.generation_id != old_id
         assert leased.lazy_frame.collect()["m"].to_list() == _ENTRIES
     assert builder.calls == 1
+
+
+def test_a_reencoded_copy_never_replaces_a_generation_published_meanwhile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refresh another process publishes while the copy is made keeps its newer data."""
+    import haute._source_cache as module
+
+    identity, _builder, old_id = _arrow_written_map_generation(tmp_path, monkeypatch)
+    fresh = pa.table(
+        {"id": [9], "m": pa.array([[("z", 9)]], type=pa.map_(pa.string(), pa.int64()))}
+    )
+    copy = module._MapEntriesCopy.build
+    refreshed: list[str] = []
+
+    def refreshed_meanwhile(self: object, context: SourceCacheBuildContext) -> Iterator[pa.Table]:
+        if not refreshed:
+            # Another store on the same root publishes a refresh from the source.
+            other = SourceCacheStore(tmp_path).build(
+                identity, _BatchBuilder([fresh]), context=_context(), refresh=True
+            )
+            refreshed.append(other.generation_id)
+        yield from copy(self, context)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(module._MapEntriesCopy, "build", refreshed_meanwhile)
+    store = SourceCacheStore(tmp_path)
+
+    generation = store.open_generation(identity)
+
+    assert refreshed and generation.generation_id == refreshed[0] != old_id
+    assert store.published_generation_id(identity) == refreshed[0]
+    assert generation.lazy_frame.collect()["id"].to_list() == [9]
+
+
+def test_a_lease_holds_the_old_generation_until_its_copy_is_published(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity, _builder, old_id = _arrow_written_map_generation(tmp_path, monkeypatch)
+    store = SourceCacheStore(tmp_path)
+    reencoded = SourceCacheStore._reencoded
+    held: list[bool] = []
+
+    def watched(
+        self: SourceCacheStore, identity: SourceCacheIdentity, generation_id: str
+    ) -> object:
+        held.append(generation_id in self.leased_generation_ids(identity))
+        return reencoded(self, identity, generation_id)
+
+    monkeypatch.setattr(SourceCacheStore, "_reencoded", watched)
+    with store.lease(identity) as leased:
+        assert leased.generation_id != old_id
+
+    assert held == [True]
