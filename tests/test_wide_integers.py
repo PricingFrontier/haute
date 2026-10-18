@@ -15,6 +15,8 @@ import pyarrow.parquet as pq
 import pytest
 
 from haute._chunked_writes import part_paths, write_parts
+from haute._mlflow_io import ScoringModel
+from haute._model_scorer import ScoreOutputDestination, _batch_score_to_parquet
 from haute._polars_io_registry import write_polars_output
 from haute._polars_utils import bounded_sink, read_parquet_metadata
 from haute.errors import SchemaMismatchError
@@ -114,6 +116,64 @@ def test_a_data_output_keeps_one_in_a_format_polars_writes_itself(tmp_path: Path
     write_polars_output(_wide(), config, resolved_path=str(tmp_path / "out.csv"), node_id="out")
 
     assert pl.read_csv(tmp_path / "out.csv")["c"].to_list() == [4, 6]
+
+
+def test_a_map_holding_one_in_its_values_is_refused_at_a_write(tmp_path: Path) -> None:
+    held = pl.LazyFrame(
+        {"m": pl.Series([{"a": 1}], dtype=pl.Map(pl.String, pl.Int128))},
+    )
+
+    with pytest.raises(SchemaMismatchError, match="Column 'm' is Map") as refused:
+        write_parts(tmp_path, held, node_id="maps")
+
+    assert refused.value.context == {"column": "m", "node": "maps"}
+    assert part_paths(tmp_path) == []
+
+
+class _OneScore:
+    """A model scoring every row 1.0, enough for the batched scorer's writes."""
+
+    feature_names_: list[str] = ["a"]  # noqa: RUF012
+
+    def predict(self, x_data: object) -> list[float]:
+        return [1.0] * len(x_data)  # type: ignore[arg-type]
+
+
+def _scoring_model() -> ScoringModel:
+    return ScoringModel(
+        model=_OneScore(), feature_names=["a"], cat_feature_names=frozenset(), flavor="catboost"
+    )
+
+
+@pytest.mark.parametrize("rows", [2, 0], ids=["scored", "empty"])
+def test_the_batched_scorer_writes_no_part_holding_one(tmp_path: Path, rows: int) -> None:
+    """A passthrough column the model never reads still reaches the scored parts."""
+    scored = pl.LazyFrame(
+        {"a": pl.Series([1.0, 2.0][:rows]), "b": pl.Series([3, 4][:rows], dtype=pl.UInt64)}
+    ).with_columns(c=pl.col("a").cast(pl.Int64) + pl.col("b"))
+    out = tmp_path / "parts"
+
+    with pytest.raises(SchemaMismatchError, match=_REFUSED):
+        _batch_score_to_parquet(
+            _scoring_model(),
+            scored,
+            ["a"],
+            "pred",
+            "regression",
+            destination=ScoreOutputDestination(directory=out),
+        )
+
+    assert not out.exists() or part_paths(out) == []
+
+
+def test_the_batched_scorer_names_one_in_its_parquet_input(tmp_path: Path) -> None:
+    path = tmp_path / "input.parquet"
+    _wide().collect().write_parquet(path)
+
+    with pytest.raises(SchemaMismatchError, match=_REFUSED) as refused:
+        _batch_score_to_parquet(_scoring_model(), str(path), ["a"], "pred", "regression")
+
+    assert refused.value.context["path"] == str(path)
 
 
 def test_reading_a_file_that_holds_one_names_its_column(tmp_path: Path) -> None:

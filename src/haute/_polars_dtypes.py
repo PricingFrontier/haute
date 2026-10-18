@@ -408,13 +408,15 @@ WIDE_INTEGER_DTYPES: tuple[type[pl.DataType], ...] = (pl.Int128, pl.UInt128)
 
 
 def holds_wide_integer(dtype: Any) -> bool:
-    """Whether *dtype* is a 128-bit integer or nests one in a list, array or struct."""
+    """Whether *dtype* is a 128-bit integer or nests one in a list, array, struct or map."""
     if dtype in WIDE_INTEGER_DTYPES:
         return True
     if isinstance(dtype, pl.List | pl.Array):
         return holds_wide_integer(dtype.inner)
     if isinstance(dtype, pl.Struct):
         return any(holds_wide_integer(field.dtype) for field in dtype.fields)
+    if isinstance(dtype, pl.Map):
+        return holds_wide_integer(dtype.key) or holds_wide_integer(dtype.value)
     return False
 
 

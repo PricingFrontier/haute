@@ -754,7 +754,8 @@ is no eager dataframe or collect-then-write fallback.
   a map as a list of key-value structs and an unknown extension as its storage type before
   a pipeline sees it.
 - `Int128` and `UInt128`, which Polars 2 produces from `Int64` or `Int32` combined with
-  `UInt64`, have no model, MLflow or Arrow form: `to_numpy` panics on one (a
+  `UInt64`, have no model, MLflow or Arrow form, alone or nested in a list, array, struct or
+  map's keys or values: `to_numpy` panics on one (a
   `BaseException` that escapes `except Exception`), and pyarrow cannot open a Parquet file
   that holds one. The consumers that convert one refuse it by name with
   `wide_integer_message`, which gives the cast that fixes it (`Int64`, or `Float64` if the
@@ -767,7 +768,8 @@ is no eager dataframe or collect-then-write fallback.
     preview, which reports every node's schema, and a node with an output contract, whose
     columns are checked; the refusal names the node, the column and the cast;
   - at every Parquet write: Haute's part writer (`write_parts`: every snapshot and chunked
-    write), a streaming Parquet sink and an eager Parquet write (`_polars_utils`), and a
+    write), a streaming Parquet sink and an eager Parquet write (`_polars_utils`), a batched
+    Model Score's scored parts (and its Parquet input, before pyarrow opens it), and a
     Data Output writing Parquet, Delta or Iceberg, the formats written through Arrow, so
     Haute never writes a file pandas, Spark or Haute's own metadata read cannot open;
   - at `read_parquet_metadata`, which reads the file's schema through Polars before

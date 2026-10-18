@@ -1023,16 +1023,21 @@ class TestMallocTrimDispatch:
     @pytest.mark.parametrize("platform", ["win32", "darwin"])
     def test_other_platforms_do_nothing(self, monkeypatch, platform):
         """Windows' heap compaction returned nothing measured (PL2-17); macOS has none."""
+        import ctypes
         from unittest.mock import MagicMock
 
-        mock_cdll_cls = MagicMock()
-        mock_cdll_inst = MagicMock()
+        windll = MagicMock()
+        cdll_cls = MagicMock()
+        cdll_inst = MagicMock()
+        # Installed on every platform, so a call into the Windows heap API shows here.
+        monkeypatch.setattr(ctypes, "windll", windll, raising=False)
+        monkeypatch.setattr("ctypes.CDLL", cdll_cls)
+        monkeypatch.setattr("ctypes.cdll", cdll_inst)
         monkeypatch.setattr("sys.platform", platform)
-        monkeypatch.setattr("ctypes.CDLL", mock_cdll_cls)
-        monkeypatch.setattr("ctypes.cdll", mock_cdll_inst)
         _malloc_trim()
-        mock_cdll_cls.assert_not_called()
-        mock_cdll_inst.assert_not_called()
+        assert windll.mock_calls == []
+        cdll_cls.assert_not_called()
+        cdll_inst.assert_not_called()
 
     def test_linux_graceful_on_oserror(self, monkeypatch):
         """If libc.so.6 can't be loaded, _malloc_trim must not raise."""
