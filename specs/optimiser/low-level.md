@@ -1105,7 +1105,8 @@ lambdas/constraints/column names, and calls `applier.with_explainer_columns`. It
 call only the frame's read columns (`online_apply_read_columns`) and a private row number,
 then joins the frame's other columns back on that number. The native module therefore never
 sees a column the apply does not read (see the runtime online apply above), while every
-candidate row keeps every column. `with_explainer_columns` is the
+candidate row keeps every column. A frame column the explainer would append is refused with
+the `ValueError` price-contour raises for it. `with_explainer_columns` is the
 `price-contour` API documented in full in
 [`with_explainer_columns` contract](#withexplainercolumns-contract) below. It filters to the
 clicked quote's rows, asserts exactly one `selected` and exactly one `is_baseline` candidate, and
