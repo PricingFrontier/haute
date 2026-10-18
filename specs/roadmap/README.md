@@ -82,6 +82,21 @@ a metadata slot, offsets, an unknown-category policy and smaller items) that
 would let Haute integrate t-boost exactly like its other boosted families, with
 their status at t-boost 0.8.0. It is a supporting report and owns no Haute work.
 
+## price-contour on Polars 2 — 18 October 2026
+
+The [price-contour on Polars 2](price-contour-polars-2.md) plan is a handover
+specification for the price-contour project. No Rust Polars or pyo3-polars
+release matches Python Polars 2.0.0 yet. So it says what price-contour 0.7.0 can
+change now:
+- declaring and testing Polars 2;
+- keeping two result orders;
+- sending only the columns a native call reads;
+- moving to pyo3-polars 0.28.
+
+It also says what Haute changes when it moves to that release. It is a supporting
+report and owns no Haute work; `PL2-20` in the [Polars 2 roadmap](polars-2.md)
+carries Haute's side.
+
 ## Working protocol
 
 1. Pick one package from its owning component, in the order the
