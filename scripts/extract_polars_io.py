@@ -33,6 +33,8 @@ import inspect
 import json
 import re
 import sys
+import types
+import typing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -190,9 +192,35 @@ def default_repr(value: Any) -> str:
     return _MEM_ADDR.sub("", repr(value))
 
 
-# Python 3.13 defines ``pathlib.Path`` in ``pathlib._local``; the interface names the
-# public module, so one Polars renders the same on every supported Python.
-_PUBLIC_MODULE_NAMES = (("pathlib._local.", "pathlib."),)
+# Modules a class is defined in under one Python and not another: Python 3.13 defines
+# ``pathlib.Path`` in ``pathlib._local``. The interface names the public module.
+_PUBLIC_MODULES = {"pathlib._local": "pathlib", "builtins": "", "typing": ""}
+
+
+def _canonical_annotation(ann: Any) -> str:
+    """*ann*, an evaluated annotation, spelled the same on every supported Python.
+
+    Python 3.14 spells a union ``X | Y`` and earlier ones ``Union[X, Y]``, and a class's
+    module can move, so the spelling is built from the annotation's parts: a union as
+    ``Union[...]``, a forward reference by its name, a class by its public module.
+    """
+    if ann is None or ann is type(None):
+        return "None"
+    if isinstance(ann, typing.ForwardRef):
+        return ann.__forward_arg__
+    origin = typing.get_origin(ann)
+    args = typing.get_args(ann)
+    if origin is typing.Union or origin is types.UnionType:
+        return "Union[" + ", ".join(_canonical_annotation(arg) for arg in args) + "]"
+    if origin is not None:
+        name = _canonical_annotation(origin)
+        if not args:
+            return name
+        return f"{name}[" + ", ".join(_canonical_annotation(arg) for arg in args) + "]"
+    if isinstance(ann, type):
+        module = _PUBLIC_MODULES.get(ann.__module__, ann.__module__)
+        return f"{module}.{ann.__qualname__}" if module else ann.__qualname__
+    return inspect.formatannotation(ann)
 
 
 def annotation_str(ann: Any) -> str | None:
@@ -200,10 +228,7 @@ def annotation_str(ann: Any) -> str | None:
         return None
     if isinstance(ann, str):
         return ann
-    rendered = inspect.formatannotation(ann)
-    for private, public in _PUBLIC_MODULE_NAMES:
-        rendered = rendered.replace(private, public)
-    return rendered
+    return _canonical_annotation(ann)
 
 
 def extract_function(owner: str, name: str, func: Any) -> dict[str, Any]:
