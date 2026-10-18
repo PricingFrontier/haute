@@ -230,6 +230,8 @@ def bounded_collect_batches(
                 fast_checkpoint=True,
                 execution_context=metrics_context,
                 node_id=node_id,
+                # Read back here by Polars alone, which reads a 128-bit integer.
+                internal=True,
             )
             source = scan_parts(part_paths(staging))
         chunk_size, _, _ = _budgeted_rows(
@@ -601,11 +603,14 @@ def _streaming_sink_to_path(
     *,
     fmt: str,
     compression: Literal["lz4", "zstd"],
+    internal: bool = False,
 ) -> None:
     if fmt == "csv":
         sink_plan = lf.sink_csv(target, lazy=True, engine="streaming")
     else:
-        refuse_wide_integers(lf.collect_schema())
+        # A staging copy only Polars reads back (*internal*) may hold a 128-bit integer.
+        if not internal:
+            refuse_wide_integers(lf.collect_schema())
         sink_plan = lf.sink_parquet(
             target,
             compression=compression,
@@ -818,10 +823,15 @@ def _sink_parquet_hashing(
     target: Path,
     *,
     compression: Literal["lz4", "zstd"],
+    internal: bool,
 ) -> str:
     with HashingWriter(open(target, "wb")) as writer:
         _streaming_sink_to_path(
-            lf, cast("IO[bytes]", writer), fmt="parquet", compression=compression
+            lf,
+            cast("IO[bytes]", writer),
+            fmt="parquet",
+            compression=compression,
+            internal=internal,
         )
     return writer.hexdigest()
 
@@ -831,13 +841,20 @@ def hashed_streaming_sink(
     path: str | Path,
     *,
     fast_checkpoint: bool = False,
+    internal: bool = False,
 ) -> str:
-    """Sink a LazyFrame with write-time hashing and Polars streaming."""
+    """Sink a LazyFrame with write-time hashing and Polars streaming.
+
+    A 128-bit integer is refused, unless the file is *internal*: a staging copy
+    only Polars reads back.
+    """
     path = Path(path)
     compression = _checkpoint_compression(fast_checkpoint)
     return _write_atomically_if_possible(
         path,
-        lambda target: _sink_parquet_hashing(lf, target, compression=compression),
+        lambda target: _sink_parquet_hashing(
+            lf, target, compression=compression, internal=internal
+        ),
     )
 
 
@@ -846,12 +863,13 @@ def bounded_hashed_sink(
     path: str | Path,
     *,
     fast_checkpoint: bool = False,
+    internal: bool = False,
 ) -> str:
     """Sink a LazyFrame through the native streaming API, hashing during write."""
     path = Path(path)
     return _bounded_sink_execute(
         path,
-        lambda: hashed_streaming_sink(lf, path, fast_checkpoint=fast_checkpoint),
+        lambda: hashed_streaming_sink(lf, path, fast_checkpoint=fast_checkpoint, internal=internal),
     )
 
 
@@ -899,8 +917,14 @@ def read_parquet_metadata(path: Path) -> dict[str, Any]:
     import pyarrow.parquet as pq
 
     stat = path.stat()
-    # pyarrow cannot read the footer of a file holding a 128-bit integer, nor name it.
-    refuse_wide_integers(pl.read_parquet_schema(path), path=str(path))
+    # pyarrow cannot read the footer of a file holding a 128-bit integer, nor name it. A
+    # file Polars cannot read as Parquet is pyarrow's to report, as it always has.
+    try:
+        schema = pl.read_parquet_schema(path)
+    except pl.exceptions.PolarsError:
+        schema = None
+    if schema is not None:
+        refuse_wide_integers(schema, path=str(path))
     meta = pq.read_metadata(str(path))
     arrow_schema = pq.read_schema(str(path))
     columns = {name: str(arrow_schema.field(name).type) for name in arrow_schema.names}

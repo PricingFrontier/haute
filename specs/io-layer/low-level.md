@@ -767,13 +767,18 @@ is no eager dataframe or collect-then-write fallback.
   - at the node whose output holds it, wherever the walk resolves that output's schema: a
     preview, which reports every node's schema, and a node with an output contract, whose
     columns are checked; the refusal names the node, the column and the cast;
-  - at every Parquet write: Haute's part writer (`write_parts`: every snapshot and chunked
-    write), a streaming Parquet sink and an eager Parquet write (`_polars_utils`), a batched
-    Model Score's scored parts (and its Parquet input, before pyarrow opens it), and a
-    Data Output writing Parquet, Delta or Iceberg, the formats written through Arrow, so
-    Haute never writes a file pandas, Spark or Haute's own metadata read cannot open;
+  - at every Parquet write another reader opens: Haute's part writer (`write_parts`: every
+    snapshot, source cache and chunked write), a streaming Parquet sink (`_polars_utils`),
+    a batched Model Score's scored parts (and its Parquet input, before pyarrow opens it),
+    and a Data Output writing Parquet, Delta or Iceberg, the formats written through Arrow,
+    so Haute never writes a file pandas, Spark or Haute's own metadata read cannot open. A
+    staging copy only Polars reads back keeps the column: `bounded_collect_batches` and a
+    chunked join's staged input pass `internal=True` to `write_parts`, which hands it on to
+    the hashed part sink;
   - at `read_parquet_metadata`, which reads the file's schema through Polars before
-    pyarrow reads its footer, for a file another program wrote.
+    pyarrow reads its footer, for a file another program wrote; a file Polars cannot read
+    as Parquet is left to pyarrow, which reports it as before (a `ValueError`, which the
+    RAM estimate's metadata reader treats as an unknown source).
 
   A CSV, JSON or IPC write keeps such a column where no node check met it first (a run
   through nodes without output contracts), since Polars reads it back.

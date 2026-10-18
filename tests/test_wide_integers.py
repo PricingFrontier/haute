@@ -176,6 +176,21 @@ def test_the_batched_scorer_names_one_in_its_parquet_input(tmp_path: Path) -> No
     assert refused.value.context["path"] == str(path)
 
 
+def test_a_staging_copy_only_polars_reads_back_keeps_one(tmp_path: Path) -> None:
+    write_parts(tmp_path, _wide(), node_id="total", internal=True)
+
+    assert pl.scan_parquet(part_paths(tmp_path)).collect()["c"].dtype == pl.Int128
+
+
+def test_a_file_that_is_not_parquet_is_reported_as_before(tmp_path: Path) -> None:
+    """The RAM estimate treats pyarrow's ``ValueError`` as an unknown source."""
+    path = tmp_path / "quotes.csv"
+    path.write_text("a,b\n1,2\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Parquet magic bytes"):
+        read_parquet_metadata(path)
+
+
 def test_reading_a_file_that_holds_one_names_its_column(tmp_path: Path) -> None:
     path = tmp_path / "wide.parquet"
     _wide().collect().write_parquet(path)

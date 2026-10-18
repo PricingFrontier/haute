@@ -330,12 +330,14 @@ class _Parts:
         fast_checkpoint: bool,
         execution_context: ExecutionContext | None,
         node_id: str | None,
+        internal: bool,
     ) -> None:
         self.directory = directory
         self.schema = schema
         self.fast_checkpoint = fast_checkpoint
         self.execution_context = execution_context
         self.node_id = node_id
+        self.internal = internal
         self.names: list[str] = []
         self.digests: dict[str, str] = {}
 
@@ -353,7 +355,7 @@ class _Parts:
             self.directory, (self.directory / self.names[-1]).stat().st_size if self.names else 0
         )
         digest = bounded_hashed_sink(
-            lf, self.directory / name, fast_checkpoint=self.fast_checkpoint
+            lf, self.directory / name, fast_checkpoint=self.fast_checkpoint, internal=self.internal
         )
         self.names.append(name)
         self.digests[name] = digest
@@ -521,6 +523,7 @@ def write_parts(
     fast_checkpoint: bool = True,
     execution_context: ExecutionContext | None = None,
     node_id: str | None = None,
+    internal: bool = False,
 ) -> ChunkedWrite:
     """Write ``frame`` into ``directory`` as ordered part files.
 
@@ -529,7 +532,9 @@ def write_parts(
     ``recipe``, when given, is the write recipe ``frame`` was built from;
     the write is then performed a slice of its input at a time when chunk-local.
     The directory must exist and hold no parts yet. Inputs the write stages are
-    kept in a private subdirectory and removed before returning.
+    kept in a private subdirectory and removed before returning. A 128-bit
+    integer is refused, since pyarrow cannot open a file holding one, unless the
+    parts are *internal*: a staging copy only Polars reads back.
     """
     rows = _chunk_rows(chunk_rows)
     execution_context = execution_context or current_execution_context()
@@ -538,13 +543,15 @@ def write_parts(
     # A join's own schema resolution runs first: Polars rejects some
     # validate/how combinations there, and the write must raise exactly that.
     schema = (join.native() if join is not None else frame).collect_schema()
-    refuse_wide_integers(schema, **({"node": node_id} if node_id is not None else {}))
+    if not internal:
+        refuse_wide_integers(schema, **({"node": node_id} if node_id is not None else {}))
     parts = _Parts(
         directory,
         schema=schema,
         fast_checkpoint=fast_checkpoint,
         execution_context=execution_context,
         node_id=node_id,
+        internal=internal,
     )
     native_reason: str | None = None
     if join is not None:
@@ -877,7 +884,9 @@ def _staged(
     target = staging / f"input-{counter[0]}"
     counter[0] += 1
     target.mkdir(parents=True)
-    write_parts(target, lf, execution_context=execution_context, fast_checkpoint=True)
+    write_parts(
+        target, lf, execution_context=execution_context, fast_checkpoint=True, internal=True
+    )
     return scan_parts(part_paths(target))
 
 
