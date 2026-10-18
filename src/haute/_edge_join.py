@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 import polars as pl
@@ -148,8 +148,19 @@ def build_edge_join_kwargs(config: dict[str, Any]) -> dict[str, Any]:
     if coalesce is not None and coalesce != "":
         kwargs["coalesce"] = coalesce
 
-    # The joined rows' order is stated, never left to the engine: Polars 2's
-    # streaming engine keeps a join's input order only when told to.
+    require_edge_join_order(config)
+    kwargs["maintain_order"] = config["maintainOrder"]
+
+    return kwargs
+
+
+def require_edge_join_order(config: Mapping[str, Any]) -> None:
+    """Refuse an Edge Join config that does not state its joined rows' order.
+
+    The order is stated, never left to the engine: Polars 2's streaming engine
+    keeps a join's input order only when told to. The parse, save and execution
+    all run this check.
+    """
     maintain_order = config.get("maintainOrder")
     if maintain_order not in JOIN_MAINTAIN_ORDER:
         raise ConfigError(
@@ -159,9 +170,6 @@ def build_edge_join_kwargs(config: dict[str, Any]) -> dict[str, Any]:
             maintainOrder=maintain_order,
             supported=list(JOIN_MAINTAIN_ORDER),
         )
-    kwargs["maintain_order"] = maintain_order
-
-    return kwargs
 
 
 def edge_join_key_columns_by_role(config: dict[str, Any]) -> tuple[frozenset[str], frozenset[str]]:

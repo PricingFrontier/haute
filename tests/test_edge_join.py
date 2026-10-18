@@ -199,6 +199,43 @@ pipeline.connect("quotes", "join_rates", target_port="base")
     }
 
 
+@pytest.mark.parametrize("order", [None, "sideways"])
+def test_the_parser_refuses_an_edge_join_that_does_not_state_its_order(
+    tmp_path: Path, order: str | None
+) -> None:
+    """A file saved before the order was required opens for recovery instead of loading."""
+    stated = "" if order is None else f', maintain_order="{order}"'
+    code = f"""\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("joins")
+
+
+@pipeline.polars
+def quotes() -> pl.LazyFrame:
+    return pl.LazyFrame()
+
+
+@pipeline.polars
+def lookup() -> pl.LazyFrame:
+    return pl.LazyFrame()
+
+
+@pipeline.edge_join(how="left", on=["region"]{stated})
+def join_rates(quotes, lookup): ...
+
+
+pipeline.connect("lookup", "join_rates", target_port="join")
+pipeline.connect("quotes", "join_rates", target_port="base")
+"""
+    with pytest.raises(
+        ConfigError, match="Edge Join 'join_rates' does not state its joined rows' order"
+    ) as refused:
+        parse_pipeline_file(_write_pipeline(tmp_path, code))
+    assert refused.value.context["maintainOrder"] == order
+
+
 @pytest.mark.parametrize("selected_columns", [None, [], ["factor"]])
 def test_codegen_emits_edge_join_with_base_first_params_and_connects(
     tmp_path: Path,

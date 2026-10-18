@@ -719,6 +719,88 @@ def test_recover_never_moves_a_body_its_decorator_never_calls_into_a_hook(tmp_pa
     assert "SaleFlag" in main_diff
 
 
+_ORDERLESS_JOIN = (
+    "@OWNER.polars\ndef quotes():\n"
+    '    df = pl.LazyFrame({"quote_id": [1]})\n    return df\n\n'
+    "@OWNER.polars\ndef rates():\n"
+    '    df = pl.LazyFrame({"quote_id": [1], "rate": [2.0]})\n    return df\n\n'
+    '@OWNER.edge_join(how="HOW", on=["quote_id"])\n'
+    "def joined(quotes, rates): ...\n\n"
+    'OWNER.connect("quotes", "joined", target_port="base")\n'
+    'OWNER.connect("rates", "joined", target_port="join")\n'
+)
+
+
+def test_recover_gives_a_join_saved_without_its_order_the_order_for_its_type(tmp_path):
+    # A join saved before its order was required fails the strict parse, so
+    # it opens unavailable; recover writes its type's order into the decorator
+    # (a right join's is right_left, not the palette's left_right).
+    from haute.parser import parse_pipeline_file
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n\n'
+        + _ORDERLESS_JOIN.replace("OWNER", "pipeline").replace("HOW", "right")
+    )
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    assert next(n for n in document.nodes if n.authored_id == "joined").availability == (
+        "unavailable"
+    )
+
+    result = _apply(tmp_path, _request(tmp_path, "joined", "recover"))
+
+    assert ("/maintainOrder", "defaulted") in {
+        (change.path, change.outcome) for change in result.field_changes
+    }
+    assert result.document.load_status == "ready"
+    assert 'maintain_order="right_left"' in (tmp_path / "main.py").read_text()
+    joined = parse_pipeline_file(tmp_path / "main.py").node_map["joined"]
+    assert joined.data.config["maintainOrder"] == "right_left"
+
+
+def test_recover_reaches_a_join_saved_without_its_order_inside_a_submodel(tmp_path):
+    # The submodel's definition fails the strict parse, so its join opens
+    # unavailable inside the definition, and recover rewrites the submodel file.
+    from haute.schemas import PipelineRepairRecoverRequest
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    child = tmp_path / "modules" / "Inputs.py"
+    child.parent.mkdir()
+    child.write_text(
+        "import haute\nimport polars as pl\n\n"
+        'submodel = haute.Submodel("Inputs", definition_id="Inputs", input_ports=[], '
+        'output_ports=[{"name": "joined", "source": {"nodeId": "joined", "handleId": None}}], '
+        'pipeline_dir="..")\n\n'
+        + _ORDERLESS_JOIN.replace("OWNER", "submodel").replace("HOW", "left"),
+        encoding="utf-8",
+    )
+    parent = tmp_path / "main.py"
+    parent.write_text(
+        'import haute\nimport polars as pl\n\npipeline = haute.Pipeline("demo")\n\n'
+        'pipeline.submodel("modules/Inputs.py", "Inputs")\n',
+        encoding="utf-8",
+    )
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+    assert document.submodels is not None
+    (definition,) = document.submodels.values()
+    target = next(n for n in definition.graph.nodes if n.authored_id == "joined")
+    assert target.availability == "unavailable"
+
+    result = _apply(
+        tmp_path,
+        PipelineRepairRecoverRequest(
+            source_file=document.source_file,
+            source_revision=document.source_revision,
+            target_source_file=target.source_file,
+            target_recovery_id=target.recovery_id,
+            action="recover",
+        ),
+    )
+
+    assert result.document.load_status == "ready"
+    assert 'maintain_order="left_right"' in child.read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize(("action", "sink_path"), [("recover", "out.parquet"), ("reset", "")])
 def test_repair_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path, action, sink_path):
     # Recovering or resetting a damaged downstream node must not require

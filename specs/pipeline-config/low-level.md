@@ -212,7 +212,15 @@ completeness-tolerant mode (`require_complete=False`): structural and branch vio
 raise `ConfigError`, while missing required locator values (the empty string treated as
 absence) no longer fail the parse. Field-level completeness is not a parse artefact; the
 editor document loader recomputes it from the same validators, and execution, preview, and
-deploy still validate strictly before running.
+deploy still validate strictly before running. An Edge Join's row order has no incomplete
+form (a new join carries its type's, `DEFAULT_JOIN_ORDER`), so the parse refuses an Edge
+Join whose `maintainOrder` is missing or not one of `none`, `left`, `right`, `left_right` and
+`right_left`, with a `ConfigError` naming the node, through
+`haute._edge_join.require_edge_join_order`, the check `build_edge_join_kwargs` runs for save
+and execution. A pipeline file written before the order was required therefore opens in the
+editor for recovery, and Recover settings gives each such join the order for its type. A join
+inside a submodel makes the submodel's definition unavailable, and the editor does not open an
+unavailable definition, so that join is fixed in the submodel's file.
 
 **What a recover cannot fix.** The editor's Recover settings action
 (`src/haute/_pipeline_repair_actions.py::_recover_node`, over
