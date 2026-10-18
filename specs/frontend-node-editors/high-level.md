@@ -563,7 +563,8 @@ parsed from their text, so a list of whole numbers matches a float column and `0
 stays exact for a `Decimal` one. The editor refuses a fraction for a whole-number
 column and a value with more decimal places than a `Decimal` column's scale, neither of
 which can match; where the column's type is unknown the list offers the kind as a
-"Number type" select. Date values in a list are passed to Polars as one list
+"Number type" select. Removing a value keeps the kind while the list holds one, and so
+does switching between "is one of" and "is not one of", which keeps the values. Date values in a list are passed to Polars as one list
 (`implode()`). Where the editor does not know a column's type it offers everything, and
 a step Polars refuses fails the run on that step (see the error line below).
 

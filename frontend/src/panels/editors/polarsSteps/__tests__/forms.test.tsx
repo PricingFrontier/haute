@@ -1257,6 +1257,32 @@ describe("steps offer only what Polars 2 runs on the column types the editor kno
     expect(spy.mock.calls.some(([next]) => (next as Extract<Step, { kind: "filter" }>).conditions[0].values?.length)).toBe(false)
   })
 
+  it("a membership list keeps its kind of number when a value is removed", () => {
+    const spy = vi.fn()
+    const values = [100, 200].map((value) => ({ kind: "literal" as const, type: "number" as const, value }))
+    const step: Step = { id: "f", kind: "filter", match: "all", conditions: [{ column: "premium", operator: "is_in", values, numberType: "decimal" }] }
+    render(<StatefulIn initial={step} spy={spy} context={ctx} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove 100" }))
+    expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>).conditions[0]).toEqual({ column: "premium", operator: "is_in", values: [values[1]], numberType: "decimal" })
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove 200" }))
+    expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>).conditions[0]).toEqual({ column: "premium", operator: "is_in", values: [] })
+  })
+
+  it("a membership list keeps its values and kind of number from is one of to is not one of", () => {
+    const spy = vi.fn()
+    const values = [{ kind: "literal" as const, type: "number" as const, value: 2 }]
+    const step: Step = { id: "f", kind: "filter", match: "all", conditions: [{ column: "claims", operator: "is_in", values, numberType: "integer" }] }
+    render(<StatefulIn initial={step} spy={spy} context={ctx} />)
+
+    fireEvent.change(screen.getByLabelText("Filter condition 1 operator"), { target: { value: "not_in" } })
+    expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>).conditions[0]).toEqual({ column: "claims", operator: "not_in", values, numberType: "integer" })
+
+    fireEvent.change(screen.getByLabelText("Filter condition 1 operator"), { target: { value: "eq" } })
+    expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>).conditions[0]).not.toHaveProperty("numberType")
+  })
+
   it("a membership list asks for the number type while its column's type is unknown", () => {
     const spy = vi.fn()
     const step: Step = { id: "f", kind: "filter", match: "all", conditions: [{ column: "premium", operator: "is_in", values: [{ kind: "literal", type: "number", value: 100 }], numberType: "float" }] }

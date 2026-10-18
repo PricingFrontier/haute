@@ -1079,7 +1079,7 @@ export function LiteralListField({
             key={`${index}-${String(item.value)}`}
             label={String(item.value)}
             removeLabel={`Remove ${String(item.value)}`}
-            onRemove={() => onChange(values.filter((_, i) => i !== index))}
+            onRemove={() => onChange(values.filter((_, i) => i !== index), kind)}
           />
         ))}
         <div className="flex-1 basis-28 min-w-0 flex items-center gap-1">
@@ -1164,7 +1164,11 @@ export function ConditionRow({
       const textOk = keep && (keep.kind !== "literal" || keep.type === "text")
       next.value = isStringOperator(operator) ? (textOk ? keep : literal("text", "")) : (keep ?? literal("number", 0))
     }
-    if (nextTakes === "values") next.values = condition.values ?? []
+    if (nextTakes === "values") {
+      // One membership list to another keeps its values and the kind of number they are.
+      next.values = condition.values ?? []
+      if (next.values.length > 0 && condition.numberType !== undefined) next.numberType = condition.numberType
+    }
     onChange(next)
   }
   return (
