@@ -793,13 +793,16 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     )
     # The per-PR lane measured 350-370 s on CI runners in September 2026 with
     # every test passing, about 195 s of it the two execution-engine
-    # certification tests, so 360 s failed about half the runs on noise alone.
-    # 420 s leaves headroom for runner variance; the scheduled workflow passes
-    # its own, larger budget.
+    # certification tests, so 360 s failed about half the runs on noise alone,
+    # and 420 s was set. In October 2026 Polars 2's binning boundaries joined
+    # the certification's growth witness: the lane measured 405-422 s, about
+    # 240 s of it those two tests, and 420 s failed on noise alone in turn.
+    # 480 s keeps the same headroom for runner variance; the scheduled workflow
+    # passes its own, larger budget.
     parser.add_argument(
         "--max-total-seconds",
         type=float,
-        default=420.0,
+        default=480.0,
         help="Maximum wall-clock time for the whole performance lane.",
     )
     parser.add_argument(
