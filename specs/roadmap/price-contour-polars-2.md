@@ -81,8 +81,8 @@ Polars 2.0's `DataFrame.join` defaults `maintain_order` to `"none"`. Its documen
 Where to select them:
 - `apply`, `solve` and the other Python wrappers can select the columns before they call the native module.
 - `QuoteGridBuilder` is the native class itself (`python/price_contour/builder.py:5`). Its `append` converts the whole frame (`crates/price-contour/src/builder_py.rs:97`) before any Python runs, and the class cannot be subclassed from Python. So:
-  - `python/price_contour/_grid_utils.py:34-42`, its internal caller, selects the columns before calling `append`;
-  - for other callers, either export a thin Python class that holds the native builder and selects the columns in its own `append`, or document that callers pass only the named columns.
+  - export `QuoteGridBuilder` as a thin Python class that holds the native builder and selects the columns in its own `append`, with the native class's methods and signatures (and update `_price_contour.pyi` to match);
+  - `python/price_contour/_grid_utils.py:34-42`, its internal caller, then goes through that class like any other caller.
 
 What it buys:
 - Unrelated columns then cost nothing.
@@ -97,7 +97,7 @@ Apart from the joins and the lazy query above, nothing in `python/price_contour`
 
 1. For each quote-id dtype (String, Categorical, Enum), a round trip through `ApplyOptimiser.apply`, `OnlineOptimiser.solve` and `build_grid_from_parquet_chunked`, asserting the returned schema and values.
 2. Parquet written by Python Polars 2.0 the way Haute writes it ("What Haute calls and sends"), read by `build_grid_from_parquet_chunked` and `build_ratebook_factor_contexts_from_parquet_chunked`. The file has a Categorical `quote_id`, Int32 `scenario_index`, Float32 values, and an extra column the reader does not select.
-3. An input with extra `pl.Map`, `pl.Struct` and `pl.Decimal` columns, through `ApplyOptimiser.apply` and through `QuoteGridBuilder.append` (or its wrapper), which must not fail.
+3. An input with extra `pl.Map`, `pl.Struct` and `pl.Decimal` columns, through `ApplyOptimiser.apply` and through the `QuoteGridBuilder` wrapper's `append`, which must not fail.
 4. Row order:
    - `with_explainer_columns` on a shuffled input returns the input order;
    - ratio results follow the grid's quote order;
