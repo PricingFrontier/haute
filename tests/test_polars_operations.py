@@ -382,7 +382,7 @@ def test_boundary_operator_memory_factors_are_pinned_to_the_evidence() -> None:
             *materialising_expression_methods(),
         )
     } == {
-        "sort": 300,
+        "sort": 450,
         "unique": 350,
         "join": 200,
         "join_asof": 250,

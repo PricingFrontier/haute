@@ -452,10 +452,11 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         _P_BOUNDARY,
         "global ordering; lineage keeps the schema and demands the sort keys. "
         "materialises: certified by the fresh-process lane against the scan control and "
-        "witnessed above the scan_head floor; the certified observed/(width x 3.0) ratio "
-        "needs 300 basis points of margin",
+        "witnessed above the scan_head floor; on Polars 2.0 the certified "
+        "observed/(width x 3.0) ratio reaches 4.33 on the Linux reference runner, so it "
+        "needs 450 basis points of margin",
         lineage_supported=True,
-        materialisation_factor_basis_points=300,
+        materialisation_factor_basis_points=450,
         memory_evidence="measured",
     ),
     _op(

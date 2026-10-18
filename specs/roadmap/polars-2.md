@@ -97,8 +97,13 @@ specifications promise.
 ### PL2-17 — Every operator memory policy and RAM estimate rests on Polars 2 evidence
 **Status:** since 17 October 2026 the estimate's advice for a many-to-many join names
 the `validate` contract's cost, and the execution strategy guide adds the deployment's own
-key check; a declared join was already estimated holding both inputs. The measurements on
-Polars 2, the spilling decision and the rest of the plan remain.
+key check; a declared join was already estimated holding both inputs. Since 18 October 2026
+the certification lane's operator probes have run on Polars 2.0 (CI, three runs): `sort`'s
+peak reached 4.33 times the estimator's rows x width x 3.0 figure, so its factor is 450
+basis points, and `over_narrow` measures about 1.44x `scan_narrow`, above the 1.3x streaming
+ceiling it is now held to; every other factor bounds its observation and every other
+witness holds. The measurements at larger scales and in capped workers, the spilling
+decision and the rest of the plan remain.
 **Why:** The operation registry admits `sort`, `unique`, `join`, `join_asof`,
 `top_k`, `bottom_k`, `reverse`, `shift`, `explode`, `group_by` and `over` as
 materialisation boundaries, and keeps `unpivot`, `rolling`,

@@ -3152,7 +3152,7 @@ def test_literal_unpivot_cardinality_is_bounded_by_the_on_column_count() -> None
     ("operator", "factor_basis_points"),
     [
         ("group_by", 100),
-        ("sort", 300),
+        ("sort", 450),
         ("unique", 350),
         ("reverse", 250),
         ("shift", 100),
@@ -3399,7 +3399,7 @@ def test_join_boundary_with_an_unresolvable_port_stays_unavailable(tmp_path: Pat
     [
         (("unique", "reverse"), 350),
         (("reverse", "unique"), 350),
-        (("sort", "reverse"), 300),
+        (("sort", "reverse"), 450),
         (("reverse",), 250),
     ],
 )
@@ -3560,19 +3560,19 @@ def test_self_join_charges_the_shared_port_width_twice(tmp_path: Path) -> None:
             self_join, ["joined"], boundary_operators={"joined": ("join",)}
         )
     )
-    [(_, sorted_once)] = list(
+    [(_, held_once)] = list(
         estimate_materialisation_boundaries(
-            single, ["joined"], boundary_operators={"joined": ("sort",)}
+            single, ["joined"], boundary_operators={"joined": ("top_k",)}
         )
     )
 
     assert joined.state is MaterialisationEstimateState.AVAILABLE, joined.unavailable_reason
     assert "boundary_resident_operand_count=2" in joined.assumptions
     assert joined.estimated_peak_bytes is not None
-    assert sorted_once.estimated_peak_bytes is not None
+    assert held_once.estimated_peak_bytes is not None
     # Same rows and same source columns: only the doubled port width and the
-    # two operators' factors (200 for join, 300 for sort) differ.
-    single_port_width_at_join_factor = (sorted_once.estimated_peak_bytes * 200 + 299) // 300
+    # two operators' factors (200 for join, 100 for top_k, no surcharge) differ.
+    single_port_width_at_join_factor = held_once.estimated_peak_bytes * 2
     assert joined.estimated_peak_bytes == 2 * single_port_width_at_join_factor
 
 

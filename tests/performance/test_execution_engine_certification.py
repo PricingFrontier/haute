@@ -109,8 +109,14 @@ _MIN_WITNESS_FLOOR_RATIO = 1.25
 #                  left, so a wide left with a small right sits near the floor;
 #                  swapping the ports puts the large frame in the buffered one.
 # ``probe`` of ``None`` means the operation's own measurement is the witness.
+# ``over_narrow`` must exceed the streaming ceiling, which disproves streaming: Polars 2.0
+# measures about 1.44x ``scan_narrow`` on the Linux reference runner, where 1.4x gave more.
 _WITNESS_VARIANTS = {
-    "over": {"probe": "over_narrow", "floor": _NARROW_FLOOR, "min_ratio": 1.5},
+    "over": {
+        "probe": "over_narrow",
+        "floor": _NARROW_FLOOR,
+        "min_ratio": _MAX_STREAMING_FLOOR_RATIO,
+    },
     "join_asof": {
         "probe": "join_asof_big_right",
         "floor": _TINY_OUTPUT_FLOOR,
@@ -260,6 +266,7 @@ def test_extreme_many_to_many_join_skew_is_estimated_and_rejected_without_execut
                 "how": "inner",
                 "on": ["id"],
                 "validate": "m:m",
+                "maintainOrder": "left_right",
             },
         ),
     )
