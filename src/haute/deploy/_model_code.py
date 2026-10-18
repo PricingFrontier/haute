@@ -109,7 +109,9 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
         from haute.deploy._request_rows import refuse_multi_quote
         from haute.deploy._scorer import admit_deploy_execution, score_graph
 
-        refuse_multi_quote(self._request_rows, len(model_input))
+        # The quotes' keys are checked once the frame is read as the request, in
+        # ``score_graph``.
+        refuse_multi_quote(self._request_rows, len(model_input), None)
         execution_context = admit_deploy_execution(
             operation="deploy_pyfunc_predict",
             row_count=len(model_input),

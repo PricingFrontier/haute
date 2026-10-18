@@ -556,6 +556,7 @@ class TestEditorAndPackagedScoringAgree:
                 "multi_quote": "in_request_order",
                 "refusals": [],
                 "checked_lookups": [],
+                "quote_keys": [],
             },
             "artifacts": {},
         }

@@ -219,13 +219,19 @@ When you deploy, Haute checks every node between the Quote Input and the Quote R
 | A join that starts from another input instead of the quotes | It answers with that input's rows |
 | **Group and aggregate**, **Pivot to columns**, a **Fill missing values** strategy that reads other rows, or a formula that does (a total, an average, a rank, a running total, the previous row's value) | One quote's answer would depend on the others |
 | An [Apply Optimisation](../building-models/nodes/optimiser-apply.md) node in online mode, or one that loads its result from MLflow | Online mode answers in quote-id order; an MLflow result can't be checked before it is loaded |
-| A [Quote Response](../building-models/nodes/output.md) that nests rows built from the quotes, such as each quote's drivers, under the quotes | A nested row goes under every quote whose key it carries, so two quotes sharing a key would take each other's rows; the check can't follow which quote a row came from |
+| A [Quote Response](../building-models/nodes/output.md) that nests a quote's own rows, such as its drivers, under it with no key, or by a key that changes on the way | Each nested row goes under the quote holding its key, so the key must reach the response as the quote sent it (see [Nesting a quote's rows](#nesting-a-quotes-rows)) |
 | Code the check can't follow, or a [Submodel](../building-models/nodes/submodel.md) | It can't be checked yet |
 
 A join keeps each quote's row when it starts from the quotes, is a left join (or a cross join with a single-row [Constant](../building-models/nodes/constant.md)), and keeps the quotes' order: **left input order** or **left, then right** in a **Join another input** step, **Left** or **Left then right** in an [Edge Join](../building-models/nodes/edge-join.md). The table it joins must also hold each key once:
 
 - **A lookup the deployment carries** (a [Data Input](../building-models/nodes/data-input.md)) is checked when you deploy, after its post-load code runs. If a key appears twice, the deploy fails naming the lookup, the join and the key: remove the repeated rows. If a quote is meant to match several rows, set the join's validation to **many to many** (**m:m** in an Edge Join); the deployment then answers one quote per request.
 - **A table built from the quotes themselves**, such as a node's result joined back to the quotes it came from, or a quote's drivers, can pair one quote with another's rows, so the deployment answers one quote per request. Add columns along one chain of nodes instead of splitting the quotes and joining them back.
+
+### Nesting a quote's rows
+
+A [Quote Response](../building-models/nodes/output.md) can nest a quote's own rows under it, such as the drivers from the Quote Input's `drivers` table. The response places each driver under the quote whose key it holds: the top-level fields the drivers map, for example `$[:].quote_id`. The check passes when each of those fields reaches the response unchanged from the same Quote Input field, read as the same type, on both sides: the quote's own column and the drivers' copy of it. A step that recalculates the key, changes its type or fills it, a **Fill missing values** step with no columns chosen, or a step on the drivers that reads other drivers' rows stops the check. **Filter rows** on the drivers keeps it when its conditions read only each driver's own fields.
+
+When the check passes, a request in which two quotes hold the same key is refused with HTTP 422 (error code `quote_key_repeated`, naming the two quotes and the key), because each would take the other's drivers. Give each quote in a request its own key.
 
 To decline a quote, keep its row and add a column saying so, for example `declined` set to true, instead of filtering the quote out.
 

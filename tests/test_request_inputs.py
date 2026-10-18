@@ -1241,7 +1241,12 @@ def test_the_containers_quote_route_reads_the_request_as_sent(project: Path) -> 
         "pruned_graph": shipped_graph(graph),
         "input_node_ids": ["request"],
         "output_node_id": "listed",
-        "request_rows": {"multi_quote": "in_request_order", "refusals": [], "checked_lookups": []},
+        "request_rows": {
+            "multi_quote": "in_request_order",
+            "refusals": [],
+            "checked_lookups": [],
+            "quote_keys": [],
+        },
         "artifacts": {},
         "output_fields": None,
     }

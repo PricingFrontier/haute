@@ -7,15 +7,17 @@ exactly one row per quote, in request order, each row computed from its own quot
 alone. A join against a side the deployment carries is proved by :func:`check_lookups`,
 which reads that side's join keys once over the bundled artefacts. A pipeline the proof
 does not cover answers one quote per request, and :func:`refuse_multi_quote` refuses a
-request of several quotes naming every node and operation that stopped the proof
-(specs/deploy, "Answers in request order").
+request of several quotes naming every node and operation that stopped the proof. A
+response nesting a quote's rows under it by key is proved only when each key is a request
+value the proof follows unchanged to both levels, and a request whose quotes repeat one is
+refused (specs/deploy, "Answers in request order").
 """
 
 from __future__ import annotations
 
 import ast
 import shutil
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
@@ -23,7 +25,7 @@ from typing import Any, Literal, cast, get_args
 
 import polars as pl
 
-from haute._api_input_schema import quote_input_reads_tables
+from haute._api_input_schema import ApiInputSchemaError, quote_input_reads_tables
 from haute._cardinality import normalise_join_validation
 from haute._column_lineage import (
     LineageOperation,
@@ -42,7 +44,12 @@ from haute._polars_operations import POLARS_OPERATIONS, OperationClass
 from haute._polars_selectors import preamble_selector_aliases
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute.chunking import classify_row_local_expression
-from haute.errors import DeployError, MultiQuoteRequestRefusedError, RequestRowCountError
+from haute.errors import (
+    DeployError,
+    MultiQuoteRequestRefusedError,
+    QuoteKeyRepeatedError,
+    RequestRowCountError,
+)
 
 logger = get_logger(component="deploy.request_rows")
 
@@ -107,6 +114,14 @@ class LookupCheck:
         }
 
 
+#: A request value a column holds: its path in the request and the column type the Quote
+#: Input reads it as, which together fix the value a frame holds for a quote.
+RequestValue = tuple[str, str]
+
+#: The request values a nested response level is placed under each quote by, sorted.
+QuoteKey = tuple[RequestValue, ...]
+
+
 @dataclass(frozen=True, slots=True)
 class RequestRows:
     """How a deployment answers a request of several quotes (the manifest's ``request_rows``)."""
@@ -114,12 +129,19 @@ class RequestRows:
     multi_quote: MultiQuote
     refusals: tuple[RowRefusal, ...] = ()
     checked_lookups: tuple[LookupCheck, ...] = ()
+    quote_keys: tuple[QuoteKey, ...] = ()
+    """The keys a nested response level is placed under each quote by: a request whose
+    quotes hold the same values of one is refused (an ``in_request_order`` deployment's)."""
 
     def __post_init__(self) -> None:
         if self.multi_quote not in get_args(MultiQuote):
             raise ValueError(f"Unknown multi_quote {self.multi_quote!r}.")
         if (self.multi_quote == "refused") != bool(self.refusals):
             raise ValueError("A deployment refuses multi-quote requests exactly when it names why.")
+        if self.quote_keys and self.multi_quote != "in_request_order":
+            raise ValueError("Only a deployment answering in request order keys nested rows.")
+        if not all(self.quote_keys):
+            raise ValueError("A quote key names at least one request value.")
 
     def describe(self) -> str:
         """The proof's result in one sentence, as ``haute deploy`` prints it."""
@@ -134,6 +156,7 @@ class RequestRows:
             "multi_quote": self.multi_quote,
             "refusals": [refusal.to_manifest() for refusal in self.refusals],
             "checked_lookups": [check.to_manifest() for check in self.checked_lookups],
+            "quote_keys": [[list(value) for value in key] for key in self.quote_keys],
         }
 
     @classmethod
@@ -161,6 +184,10 @@ class RequestRows:
                 )
                 for item in record["checked_lookups"]
             ),
+            quote_keys=tuple(
+                tuple(sorted((str(path), str(type_)) for path, type_ in key))
+                for key in record["quote_keys"]
+            ),
         )
 
 
@@ -169,20 +196,62 @@ class RequestRows:
 # ---------------------------------------------------------------------------
 
 
-def refuse_multi_quote(request_rows: RequestRows | None, quotes: int) -> None:
-    """Refuse a request of several quotes to a deployment the proof does not cover.
+def refuse_multi_quote(
+    request_rows: RequestRows | None,
+    quotes: int,
+    records: Callable[[], Sequence[Any]] | None,
+) -> None:
+    """Refuse a request of several quotes the deployment does not answer quote by quote.
 
-    ``None`` is a dry run, never refused. A Workbench Input's reader refuses a
-    multi-quote request itself.
+    A deployment the proof does not cover refuses every such request. One whose response
+    nests a quote's rows under it by key refuses a request in which two quotes hold the
+    same values of a key, read from *records* (the request's quotes, read only then);
+    ``None`` where the caller has yet to read them and scores through
+    ``score_graph_lazy``, which checks them. ``None`` *request_rows* is a dry run, never
+    refused. A Workbench Input's reader refuses a multi-quote request itself.
     """
-    if request_rows is None or quotes <= 1 or request_rows.multi_quote != "refused":
+    if request_rows is None or quotes <= 1:
         return
-    raise MultiQuoteRequestRefusedError(
-        f"This deployment answers one quote per request, and this request holds {quotes} "
-        "quotes: " + "; ".join(refusal.describe() for refusal in request_rows.refusals) + ".",
-        quotes=quotes,
-        refusals=[refusal.to_manifest() for refusal in request_rows.refusals],
-    )
+    if request_rows.multi_quote == "refused":
+        raise MultiQuoteRequestRefusedError(
+            f"This deployment answers one quote per request, and this request holds {quotes} "
+            "quotes: " + "; ".join(refusal.describe() for refusal in request_rows.refusals) + ".",
+            quotes=quotes,
+            refusals=[refusal.to_manifest() for refusal in request_rows.refusals],
+        )
+    if not request_rows.quote_keys or records is None:
+        return
+    quote_records = records()
+    for key in request_rows.quote_keys:
+        _refuse_repeated_key(key, quote_records)
+
+
+def _refuse_repeated_key(key: QuoteKey, records: Sequence[Any]) -> None:
+    """Refuse two quotes holding the same values of *key*, as the response compares them."""
+    from haute._json_shred._shred import quote_values
+    from haute._output_assembler import _identity
+
+    try:
+        values = quote_values(records, key)
+    except ApiInputSchemaError:
+        # The request does not fit the Quote Input's tables, which reading it into them
+        # refuses, naming the column.
+        return
+    first: dict[tuple[Any, ...], int] = {}
+    for position, row in enumerate(values, start=1):
+        earlier = first.setdefault(tuple(_identity(value) for value in row), position)
+        if earlier == position:
+            continue
+        paths = [path for path, _type in key]
+        named = " and ".join(paths)
+        raise QuoteKeyRepeatedError(
+            f"Quotes {earlier} and {position} of this request hold the same {named}. The "
+            "response places each quote's nested rows under the quote holding their "
+            f"{named}, so each would take the other's rows: send them in separate requests.",
+            quotes=len(values),
+            key=paths,
+            positions=[earlier, position],
+        )
 
 
 def check_answer_rows(request_rows: RequestRows | None, quotes: int, rows: int) -> None:
@@ -237,9 +306,16 @@ def copy_verified(source: Path, dest: Path, *, digest: str, name: str) -> None:
 class _Rows(Enum):
     REQUEST = "request"
     """One row per quote, in request order, each computed from its own quote."""
+    CHILD = "child"
+    """A quote's array rows (a Quote Input's other table), in the table's order, each
+    computed from its own quote alone."""
     ONE = "one"
     """Exactly one row."""
     OTHER = "other"
+
+
+#: The rows the proof holds quote by quote: an operation that changes them is refused.
+_QUOTE_ROWS = frozenset({_Rows.REQUEST, _Rows.CHILD})
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,10 +326,28 @@ class _FrameFacts:
     from_request: bool
     carried: bool
     """Built only from bundled artefacts, Constants and the preamble, so the build can read it."""
+    carries: Mapping[str, RequestValue] | None = None
+    """The columns holding a request value unchanged, each to its path and type, as far
+    as the proof follows them; ``None`` past an operation it cannot follow."""
 
 
 _REQUEST_FACTS = _FrameFacts(_Rows.REQUEST, from_request=True, carried=False)
 _LOST = _FrameFacts(_Rows.OTHER, from_request=True, carried=False)
+
+
+def _quote_rows(facts: _FrameFacts) -> bool:
+    return facts.rows in _QUOTE_ROWS
+
+
+def _without(
+    carries: Mapping[str, RequestValue] | None, columns: Iterable[str] | None
+) -> Mapping[str, RequestValue] | None:
+    """*carries* less *columns*, which a node wrote; ``None`` when it may have written any."""
+    if carries is None or columns is None:
+        return None
+    written = frozenset(columns)
+    return {column: value for column, value in carries.items() if column not in written}
+
 
 # A code box's frame operations, by what they do to a request frame's rows. ``select``,
 # ``with_columns`` and ``fill_null`` keep the rows when every argument is row-local.
@@ -302,6 +396,8 @@ class _Walk:
     """A Quote Input's facts per table, where its ports differ."""
     refusals: list[RowRefusal] = field(default_factory=list)
     checks: list[LookupCheck] = field(default_factory=list)
+    quote_keys: set[QuoteKey] = field(default_factory=set)
+    """The keys a nested response level is placed under each quote by."""
 
     def refuse(self, node: GraphNode, operation: str, effect: RowEffect) -> _FrameFacts:
         refusal = RowRefusal(node.id, node.data.label, operation, effect)
@@ -337,7 +433,7 @@ class _Walk:
             # A source the request does not reach: a bundled Data Input, or code that
             # builds its own frame. The build can read it.
             return _FrameFacts(_Rows.OTHER, from_request=False, carried=True)
-        request_in = any(facts.rows is _Rows.REQUEST for facts in inputs)
+        request_in = any(_quote_rows(facts) for facts in inputs)
         first = inputs[0]
         if node_type in {NodeType.DATA_OUTPUT, NodeType.MODELLING}:
             return first
@@ -355,12 +451,15 @@ class _Walk:
                 self.named_input(node, edges, inputs, node.data.config.get("data_input")) or first
             )
         if node_type is NodeType.BANDING:
-            return first
+            return self.after_writes(node, first)
         if node_type in {NodeType.RATING_STEP, NodeType.EXPLORE}:
             # A Rating Step's lookups are deduplicated and joined ``maintain_order="left"``;
             # its code, and an Explore's, see the frame as ``df`` alone.
+            looked_up = (
+                self.after_writes(node, first) if node_type is NodeType.RATING_STEP else first
+            )
             code = _code(node)
-            return self.code_box(node, code, {"df": (first, edges[0])}) if code else first
+            return self.code_box(node, code, {"df": (looked_up, edges[0])}) if code else looked_up
         if node_type is NodeType.MODEL_SCORE:
             return self.model_score(node, edges, inputs)
         if node_type is NodeType.EXTERNAL_FILE:
@@ -399,6 +498,28 @@ class _Walk:
             else _lost_like(inputs)
         )
 
+    def after_writes(self, node: GraphNode, facts: _FrameFacts) -> _FrameFacts:
+        """*facts* past a node that adds columns its configuration names, before its code.
+
+        A Banding factor, a Rating Step table and a Model Score write the columns their
+        registered column contract creates, overwriting any of that name.
+        """
+        if facts.carries is None:
+            return facts
+        from haute._contracts import get_column_contract
+
+        config = node.data.config
+        node_type = node.data.nodeType
+        if node_type is NodeType.MODEL_SCORE:
+            # The prediction, and a classifier's positive-class probability beside it.
+            output = str(config.get("output_column") or "prediction")
+            written: set[str] | None = {output, f"{output}_proba"}
+        else:
+            # A Rating Step's code is walked as its own code box after the lookups.
+            lookups = {**config, "code": ""} if node_type is NodeType.RATING_STEP else config
+            written, _read = get_column_contract(node_type, lookups)
+        return replace(facts, carries=_without(facts.carries, written))
+
     def request_input(self, node: GraphNode) -> _FrameFacts:
         config = node.data.config
         if node.data.nodeType is NodeType.DATA_INPUT:
@@ -410,14 +531,25 @@ class _Walk:
         if not quote_input_reads_tables(config):
             return _REQUEST_FACTS
         # The request is shredded into the tables: the root table holds one row per
-        # quote, in request order; another table holds a quote's array rows.
-        ports = {
-            str(table["label"]): _REQUEST_FACTS if table.get("path") == "$[:]" else _LOST
-            for table in config.get("tables") or []
-            if table_is_emitting(table)
-        }
+        # quote, in request order; another table holds a quote's array rows, in order.
+        # Each column holds its path's values, typed as declared: a table's own, or an
+        # ancestor's it distributes over the table's rows.
+        ports: dict[str, _FrameFacts] = {}
+        for table in config.get("tables") or []:
+            if not table_is_emitting(table):
+                continue
+            carries = {
+                str(column["name"]): (str(column["path"]), str(column["type"]))
+                for column in table.get("columns") or []
+                if column.get("selected")
+            }
+            rows = _Rows.REQUEST if table.get("path") == "$[:]" else _Rows.CHILD
+            ports[str(table["label"])] = _FrameFacts(
+                rows, from_request=True, carried=False, carries=carries
+            )
         self.port_facts[node.id] = ports
-        return _REQUEST_FACTS if _REQUEST_FACTS in ports.values() else _LOST
+        root = next((facts for facts in ports.values() if facts.rows is _Rows.REQUEST), None)
+        return root if root is not None else _LOST
 
     def named_input(
         self,
@@ -443,7 +575,7 @@ class _Walk:
         self, node: GraphNode, edges: Sequence[GraphEdge], inputs: Sequence[_FrameFacts]
     ) -> _FrameFacts:
         # Scoring attaches predictions to the frame it scored, its first input.
-        scored = inputs[0]
+        scored = self.after_writes(node, inputs[0])
         code = _code(node)
         if not code:
             return scored
@@ -453,7 +585,7 @@ class _Walk:
         self, node: GraphNode, edges: Sequence[GraphEdge], inputs: Sequence[_FrameFacts]
     ) -> _FrameFacts:
         config = node.data.config
-        request_in = any(facts.rows is _Rows.REQUEST for facts in inputs)
+        request_in = any(_quote_rows(facts) for facts in inputs)
         source_type = config.get("sourceType", "")
         if source_type in {"run", "registered"}:
             # Its result is loaded from MLflow when a request is scored.
@@ -469,8 +601,9 @@ class _Walk:
                     if request_in
                     else _lost_like(inputs)
                 )
-            # Factor-table lookups, deduplicated and joined ``maintain_order="left"``.
-            return selected
+            # Factor-table lookups, deduplicated and joined ``maintain_order="left"``; the
+            # columns they add are the artefact's, which the proof does not follow.
+            return replace(selected, carries=None)
         if mode == "online":
             # One row per quote id, in the id's text order (``key_prefix_python_scan``).
             return (
@@ -508,12 +641,18 @@ class _Walk:
         from_request = any(facts.from_request for facts in inputs)
         try:
             prefixes: dict[str, tuple[str, ...]] = {}
+            # Each port's top-level output paths, by the column it maps to each.
+            top_level: dict[str, dict[str, str]] = {}
             for entry in node.data.config.get("outputMapping") or []:
                 if not is_active_mapping_entry(entry):
                     continue
                 prefix = tuple(_array_prefix(_parse_output_path(entry["output_path"])))
                 port = entry["source_port"]
                 prefixes[port] = max(prefixes.get(port, ()), prefix, key=len)
+                if not prefix:
+                    top_level.setdefault(port, {})[str(entry["output_path"])] = str(
+                        entry["source_column"]
+                    )
         except Exception:  # noqa: BLE001 - the assembler refuses the mapping when it runs
             return (
                 self.refuse(node, "response mapping", "unproven")
@@ -539,27 +678,69 @@ class _Walk:
         if root.rows is not _Rows.REQUEST:
             if not root.from_request:
                 return self.refuse(node, f"response top level from {top[0]}", "replaces")
+            if root.rows is _Rows.CHILD:
+                # A quote's array rows: an object for each, not for each quote.
+                return self.refuse(node, f"response top level from {top[0]}", "repeats")
             # The request frame was lost upstream, where it was refused.
             return _LOST
-        # A nested level is placed under each quote by the values of the keys its rows
-        # carry, so rows derived from the request would sit under another quote when two
-        # quotes share a key or a node rewrites one; and a quote's other tables reach the
-        # response without the proof following them. Such a level is not proved.
         nested = sorted(
             port
             for port, prefix in prefixes.items()
             if prefix and port in frames and frames[port].from_request
         )
-        for port in nested:
-            self.refuse(node, f"response nests {port!r} under each quote", "unproven")
-        return _LOST if nested else _REQUEST_FACTS
+        root_columns = top_level[top[0]]
+        proved = [
+            self.nested_level(node, port, frames[port], root, top_level.get(port, {}), root_columns)
+            for port in nested
+        ]
+        return _REQUEST_FACTS if all(proved) else _LOST
+
+    def nested_level(
+        self,
+        node: GraphNode,
+        port: str,
+        facts: _FrameFacts,
+        root: _FrameFacts,
+        keys: Mapping[str, str],
+        root_columns: Mapping[str, str],
+    ) -> bool:
+        """Whether a nested port's rows sit under their own quote alone, recording its keys.
+
+        The response places a nested row under every quote whose values of the port's
+        top-level paths (its keys) it carries. When each key is a request value the proof
+        follows unchanged, read as the same type, to both the nested row and the quote's
+        row, a row sits under its own quote, and under another only if that quote holds the
+        same values, which a served request is refused for (``refuse_multi_quote``).
+        """
+        if not _quote_rows(facts):
+            # Its rows were lost upstream, where that was refused.
+            return False
+        if not keys:
+            self.refuse(node, f"response nests {port!r} with no key to its quote", "mixes")
+            return False
+        values: set[RequestValue] = set()
+        for output_path, column in sorted(keys.items()):
+            own = (facts.carries or {}).get(column)
+            root_column = root_columns.get(output_path)
+            quote = (root.carries or {}).get(root_column) if root_column is not None else None
+            if own is None or own != quote:
+                self.refuse(
+                    node,
+                    f"response nests {port!r} by {output_path!r}, which the proof cannot "
+                    "follow to the request",
+                    "unproven",
+                )
+                return False
+            values.add(own)
+        self.quote_keys.add(tuple(sorted(values)))
+        return True
 
     # -- joins ---------------------------------------------------------------
 
     def edge_join(
         self, node: GraphNode, edges: Sequence[GraphEdge], inputs: Sequence[_FrameFacts]
     ) -> _FrameFacts:
-        request_in = any(facts.rows is _Rows.REQUEST for facts in inputs)
+        request_in = any(_quote_rows(facts) for facts in inputs)
         try:
             kwargs = build_edge_join_kwargs(node.data.config)
             base_index, join_index = resolve_edge_join_role_indices(
@@ -575,7 +756,7 @@ class _Walk:
         right_keys = _key_tuple(on if on is not None else kwargs.get("right_on"))
         base, joined = inputs[base_index], inputs[join_index]
         operation = f"join (how={how!r}, maintain_order={order!r})"
-        if base.rows is not _Rows.REQUEST and joined.rows is _Rows.REQUEST:
+        if not _quote_rows(base) and _quote_rows(joined):
             # Only a right join, ordered by its right side, is driven by the request here.
             return self.join(
                 node,
@@ -618,8 +799,8 @@ class _Walk:
     ) -> _FrameFacts:
         from_request = driver.from_request or other.from_request
         carried = driver.carried and other.carried
-        if driver.rows is not _Rows.REQUEST:
-            if other.rows is _Rows.REQUEST:
+        if not _quote_rows(driver):
+            if _quote_rows(other):
                 return self.refuse(node, operation, "replaces")
             one = driver.rows is _Rows.ONE and other.rows is _Rows.ONE and how == "cross"
             return _FrameFacts(_Rows.ONE if one else _Rows.OTHER, from_request, carried)
@@ -640,8 +821,11 @@ class _Walk:
             return self.refuse(node, operation, _JOIN_EFFECT_BY_HOW.get(how, "replaces"))
         if order not in ({"left", "left_right"} if driver_is_left else {"right", "right_left"}):
             return self.refuse(node, operation, "reorders")
+        # The driving side's columns keep their names and values from the left; from the
+        # right, Polars suffixes any the left also has.
+        kept = replace(driver, carries=driver.carries if driver_is_left else None)
         if other.rows is _Rows.ONE:
-            return _REQUEST_FACTS
+            return kept
         if other.from_request:
             # Two parts of the request joined can pair one quote with another's rows even
             # when both sides' keys are unique (a branch that shifts the quote's key), so
@@ -655,10 +839,10 @@ class _Walk:
             # drops) them, which a single quote may mean, so it is refused, not failed.
             assert other_edge is not None
             self.check(node, other_edge, ())
-            return _REQUEST_FACTS
+            return kept
         if declared_many:
             return self.refuse(node, f"{operation}, validate={validate!r}", "repeats")
-        return _REQUEST_FACTS
+        return kept
 
     # -- code boxes ----------------------------------------------------------
 
@@ -671,7 +855,7 @@ class _Walk:
         *,
         alias_first_as_df: bool,
     ) -> _FrameFacts:
-        request_in = any(facts.rows is _Rows.REQUEST for facts in inputs)
+        request_in = any(_quote_rows(facts) for facts in inputs)
         try:
             bindings = code_input_bindings(
                 node,
@@ -698,7 +882,7 @@ class _Walk:
         named: Mapping[str, tuple[_FrameFacts, GraphEdge | None]],
     ) -> _FrameFacts:
         facts_by_name = {name: facts for name, (facts, _edge) in named.items()}
-        request_in = any(facts.rows is _Rows.REQUEST for facts in facts_by_name.values())
+        request_in = any(_quote_rows(facts) for facts in facts_by_name.values())
         from_request = any(facts.from_request for facts in facts_by_name.values())
         carried = all(facts.carried for facts in facts_by_name.values())
         # ``df`` names the first input wherever the executor aliases it, beside that
@@ -758,21 +942,32 @@ class _Walk:
             )
         if current.rows is _Rows.OTHER:
             return current
-        refusal = self.row_effect(operation, calls[0])
+        refusal = self.row_effect(operation, calls[0], child=current.rows is _Rows.CHILD)
         if refusal is None:
-            return current
+            return replace(current, carries=_carried_after(operation, current.carries))
         described, effect = refusal
-        if current.rows is _Rows.REQUEST:
+        if _quote_rows(current):
             self.refuse(node, described, effect)
         return _FrameFacts(_Rows.OTHER, current.from_request, current.carried)
 
     def row_effect(
-        self, operation: LineageOperation, call: ast.Call
+        self, operation: LineageOperation, call: ast.Call, *, child: bool = False
     ) -> tuple[str, RowEffect] | None:
-        """Why *operation* does not keep a frame's rows, or None when it does."""
+        """Why *operation* does not keep a frame's rows, or None when it does.
+
+        A quote's array rows (*child*) may also lose rows a row at a time: a filter that
+        reads only each row, or a null drop, keeps or drops each row by its own values.
+        """
         method = operation.method
         if method in _KEEPS_ROWS:
             return None
+        if child and method == "drop_nulls":
+            return None
+        if child and method == "filter":
+            blocking = _first_non_row_local(call, self.selector_aliases, skip=set())
+            if blocking is None:
+                return None
+            return f"filter: {blocking}", "mixes" if _reads_other_rows(blocking) else "unproven"
         if method in _EXPRESSION_METHODS:
             if method == "fill_null":
                 strategy = _literal_keyword(call, "strategy")
@@ -791,6 +986,39 @@ class _Walk:
             effect: RowEffect = "mixes" if _reads_other_rows(blocking) else "unproven"
             return f"{method}: {blocking}", effect
         return method, _EFFECT_BY_METHOD.get(method, "unproven")
+
+
+def _carried_after(
+    operation: LineageOperation, carries: Mapping[str, RequestValue] | None
+) -> Mapping[str, RequestValue] | None:
+    """*carries* past *operation*, which kept the frame's rows: the columns still holding
+    their request values unchanged, or ``None`` where the proof cannot tell."""
+    if carries is None:
+        return None
+    kind = operation.kind
+    if kind is LineageOperationKind.RENAME:
+        renamed = dict(operation.renamed_columns)
+        return {renamed.get(column, column): value for column, value in carries.items()}
+    if kind is LineageOperationKind.DROP:
+        # A selector may drop a column the walk would otherwise still name.
+        return None if operation.selector_items else _without(carries, operation.subset_columns)
+    if kind in (LineageOperationKind.SELECT, LineageOperationKind.WITH_COLUMNS):
+        if operation.selector_items or not operation.output_to_inputs:
+            # A selector, or an output the parser could not name, may write any column.
+            return None
+        if kind is LineageOperationKind.SELECT:
+            return {c: v for c, v in carries.items() if c in operation.identity_outputs}
+        written = {name for name, _inputs in operation.output_to_inputs}
+        return _without(carries, written - operation.identity_outputs)
+    if operation.method == "cast":
+        # A whole-frame cast names no column and recasts every one.
+        return _without(carries, operation.referenced_columns or carries)
+    if operation.method in {"filter", "drop_nulls"}:
+        # A quote's array rows each kept whole.
+        return carries
+    # A frame-wide null fill writes any column holding a null: a key the request left
+    # out would take the fill value, which another quote may hold.
+    return None
 
 
 def _lost_like(inputs: Iterable[_FrameFacts]) -> _FrameFacts:
@@ -890,16 +1118,18 @@ def prove_request_rows(
     input_node_ids: Sequence[str],
     output_node_id: str,
     artifact_paths: Mapping[str, str],
-) -> tuple[MultiQuote, tuple[RowRefusal, ...], tuple[LookupCheck, ...]]:
+) -> tuple[MultiQuote, tuple[RowRefusal, ...], tuple[LookupCheck, ...], tuple[QuoteKey, ...]]:
     """Prove the pruned *graph* answers each quote of a request with one row, in order.
 
-    Returns the verdict, every refusal (each node and operation that stops the proof)
-    and the joins whose carried side :func:`check_lookups` must read.
+    Returns the verdict, every refusal (each node and operation that stops the proof),
+    the joins whose carried side :func:`check_lookups` must read, and the keys a nested
+    response level is placed under each quote by, whose values must tell a request's
+    quotes apart.
     """
     node_map = {node.id: node for node in graph.nodes}
     inputs = frozenset(input_node_ids)
     if any(node_map[node_id].data.nodeType is NodeType.WORKBENCH_INPUT for node_id in inputs):
-        return "one_quote_per_request", (), ()
+        return "one_quote_per_request", (), (), ()
     edges_by_target: dict[str, list[GraphEdge]] = {}
     for edge in graph.edges:
         if edge.source in node_map and edge.target in node_map:
@@ -918,8 +1148,8 @@ def prove_request_rows(
     if walk.facts[output_node_id].rows is not _Rows.REQUEST and not walk.refusals:
         walk.refuse(output, "response", "replaces")
     if walk.refusals:
-        return "refused", tuple(walk.refusals), tuple(walk.checks)
-    return "in_request_order", (), tuple(walk.checks)
+        return "refused", tuple(walk.refusals), tuple(walk.checks), ()
+    return "in_request_order", (), tuple(walk.checks), tuple(sorted(walk.quote_keys))
 
 
 def _topological_order(
@@ -1065,11 +1295,14 @@ def request_rows(
     artifact_paths: Mapping[str, str],
 ) -> RequestRows:
     """The proof, its lookups checked: the record a deployment carries."""
-    verdict, refusals, checks = prove_request_rows(
+    verdict, refusals, checks, quote_keys = prove_request_rows(
         graph, input_node_ids, output_node_id, artifact_paths
     )
     checked_refusals, checked = check_lookups(graph, input_node_ids, checks, artifact_paths)
     if checked_refusals:
         refusals = (*refusals, *checked_refusals)
         verdict = "refused"
-    return RequestRows(multi_quote=verdict, refusals=refusals, checked_lookups=checked)
+        quote_keys = ()
+    return RequestRows(
+        multi_quote=verdict, refusals=refusals, checked_lookups=checked, quote_keys=quote_keys
+    )

@@ -13,10 +13,7 @@ those files fail before a first release succeeds. The guides now give the manual
 step that works today for each, and drop it when the package lands. `BUG-27` to
 `BUG-30`, found the same day, are text that no longer matches the behaviour it
 describes: the CLI's help, the offset tooltip, a tuned t-boost run's summary and the
-t-boost starter parameters in the modelling UI specification. `BUG-38` was found on 18 October 2026 in the
-review of the Polars 2 branch: a response nesting a quote's drivers under it was taken
-as answering each quote alone, which the deploy proof did not establish, so such a
-deployment now answers one quote per request.
+t-boost starter parameters in the modelling UI specification.
 
 ## Priorities
 
@@ -34,7 +31,6 @@ deployment now answers one quote per request.
 | BUG-28 | Planned | P2 | The offset tooltip names every loss that treats the offset as an exposure, and the losses that take no offset. |
 | BUG-29 | Planned | P2 | A tuned t-boost run's summary says its published model is the winning trial's fit, not a refit. |
 | BUG-30 | Planned | P3 | The modelling UI specification lists the t-boost starter parameters and readiness issues the editor has. |
-| BUG-38 | Decision | P2 | A deployment whose response nests a quote's other tables under it answers several quotes per request, each quote's nested rows its own. |
 
 ## Planned improvements
 
@@ -280,33 +276,3 @@ values, and the readiness issues match `trainingObjective.ts`.
 **Evidence:** `specs/frontend-modelling-optimiser-ui/high-level.md` (Behaviour, t-boost);
 `frontend/src/panels/ModellingConfig.tsx` (`TBOOST_DEFAULT_PARAMS`);
 `frontend/src/utils/trainingObjective.ts` (the t-boost readiness issues).
-
-### BUG-38 — A response nesting a quote's tables answers several quotes per request
-**Why:** A Quote Input's other tables (a quote's drivers, say) hold rows derived from the
-request, and the response nests each such row under every quote whose key values it
-carries. The deploy proof (`prove_request_rows`) did not follow these tables: a drivers'
-mean taken over a batch gave each quote the mean of every quote's drivers, and two quotes
-of one request sharing the key their drivers nest by took each other's drivers, while the
-deployment claimed to answer each quote alone. Since 18 October 2026 a response nesting
-rows derived from the request is refused, so such a deployment answers one quote per
-request, and `haute impact`, which sends batches, cannot score it.
-
-**Plan:** Decide whether to prove these nestings. Proving one needs (1) a nested table's
-rows checked as the root table's are, so that a filter, sort, aggregate or join with
-another part of the request stops the proof; (2) every nested level holding rows derived
-from the request nesting under the quotes by at least one key; (3) a served request whose
-quotes repeat those keys refused before `output_fields` projects them away
-(`MultiQuoteRequestRefusedError` already answers 422 on the container's in-process and
-batch-worker paths and the Databricks model); and (4) either column tracking through every
-node type, so that a node rewriting a key stops the proof, or an accepted rule that a
-pipeline carries a nested row's keys as the request gave them.
-
-**Acceptance:** A response nesting a quote's drivers answers a request of several quotes
-exactly as it answers each quote alone, or refuses the request naming why.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/deploy/_request_rows.py::_Walk.response`;
-`src/haute/_output_assembler.py::_assemble_document` (nesting by relation keys);
-`tests/test_deploy_quote_input_tables.py::test_a_calculation_across_a_table_s_rows_answers_each_quote_alone`,
-`::test_two_quotes_sharing_the_key_their_drivers_nest_by_are_not_answered_together`.

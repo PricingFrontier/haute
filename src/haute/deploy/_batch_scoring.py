@@ -315,7 +315,7 @@ def prepare_batch_scoring(
     """
     from haute.deploy._scorer import admit_deploy_execution
 
-    refuse_multi_quote(request_rows, len(rows))
+    refuse_multi_quote(request_rows, len(rows), lambda: rows)
 
     # The batch path is one fixed execution path: it always admits the served
     # ``DEPLOY_BATCH`` envelope and batch ``modelScore`` contract, even when the

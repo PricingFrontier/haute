@@ -21,6 +21,7 @@ from haute.errors import (
     MultiQuoteRequestRefusedError,
     NodeConfigError,
     PreambleError,
+    QuoteKeyRepeatedError,
     RatingExtremaUndefinedError,
     RatingFactorDtypeContractError,
     RatingFactorMissingError,
@@ -65,6 +66,7 @@ PUBLIC_CONTRACT_ERROR_TYPES: tuple[type[HauteError], ...] = (
     WorkbenchTablesError,
     WorkbenchInputError,
     MultiQuoteRequestRefusedError,
+    QuoteKeyRepeatedError,
 )
 
 

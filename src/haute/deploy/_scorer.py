@@ -672,7 +672,7 @@ def score_graph_lazy(
             row_count=input_df.height,
         )
     try:
-        refuse_multi_quote(request_rows, input_df.height)
+        refuse_multi_quote(request_rows, input_df.height, lambda: request_records(input_df))
         return _score_graph_lazy(
             graph=graph,
             input_df=input_df,

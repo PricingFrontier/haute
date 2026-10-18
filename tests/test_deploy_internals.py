@@ -135,6 +135,7 @@ class TestHauteModelLoadContext:
                 "multi_quote": "in_request_order",
                 "refusals": [],
                 "checked_lookups": [],
+                "quote_keys": [],
             },
             "output_fields": ["premium"],
             "artifacts": {"model.pkl": "/tmp/model.pkl"},
@@ -174,6 +175,7 @@ class TestHauteModelLoadContext:
                 "multi_quote": "in_request_order",
                 "refusals": [],
                 "checked_lookups": [],
+                "quote_keys": [],
             },
             "artifacts": {},
         }
@@ -201,6 +203,7 @@ class TestHauteModelLoadContext:
                 "multi_quote": "in_request_order",
                 "refusals": [],
                 "checked_lookups": [],
+                "quote_keys": [],
             },
             "artifacts": {"missing.pkl": "/original/path.pkl"},
         }

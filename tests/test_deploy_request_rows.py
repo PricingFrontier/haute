@@ -130,7 +130,7 @@ def remap(tmp_path: Path) -> dict[str, str]:
 
 
 def _refusals(graph: PipelineGraph, remap: dict[str, str] | None = None) -> list[RowRefusal]:
-    verdict, refusals, _checks = prove_request_rows(graph, ["quotes"], "out", remap or {})
+    verdict, refusals, _checks, _keys = prove_request_rows(graph, ["quotes"], "out", remap or {})
     assert (verdict == "refused") == bool(refusals)
     return list(refusals)
 
@@ -586,7 +586,7 @@ def test_node_types_that_cannot_answer_in_order_are_refused(tmp_path):
     }
     for node_id, (node, operation, effect) in cases.items():
         graph = _single(node)
-        verdict, refusals, _checks = prove_request_rows(
+        verdict, refusals, _checks, _keys = prove_request_rows(
             graph, ["quotes"], "out", {"apply__online.json": str(online)}
         )
         assert verdict == "refused", node_id
@@ -618,8 +618,9 @@ def test_a_quote_input_s_root_table_is_the_request_and_its_others_are_not():
     drivers_first = graph.model_dump()
     drivers_first["edges"] = [_edge("quotes", "out", sourceHandle="drivers")]
     drivers_first["nodes"][1]["data"]["config"] = _output(["age"], "drivers")
+    # An answer for each of a quote's drivers, not for each quote.
     assert _refusals(PipelineGraph.model_validate(drivers_first)) == [
-        RowRefusal("out", "out", "response", "replaces")
+        RowRefusal("out", "out", "response top level from drivers", "repeats")
     ]
 
 
@@ -685,7 +686,12 @@ def test_a_workbench_input_reads_one_quote_per_request():
             node["data"]["nodeType"] = "workbenchInput"
     workbench = PipelineGraph.model_validate(dumped)
 
-    assert prove_request_rows(workbench, ["quotes"], "out", {}) == ("one_quote_per_request", (), ())
+    assert prove_request_rows(workbench, ["quotes"], "out", {}) == (
+        "one_quote_per_request",
+        (),
+        (),
+        (),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -819,6 +825,17 @@ def test_the_manifest_records_the_proof_and_reads_it_back_strictly(remap):
     assert RequestRows.from_manifest(manifest["request_rows"]) == rows
     with pytest.raises(KeyError):
         RequestRows.from_manifest({"multi_quote": "in_request_order", "refusals": []})
+    with pytest.raises(KeyError):
+        RequestRows.from_manifest(
+            {"multi_quote": "in_request_order", "refusals": [], "checked_lookups": []}
+        )
+    keyed = RequestRows("in_request_order", quote_keys=((("$[:].quote_id", "int"),),))
+    assert keyed.to_manifest()["quote_keys"] == [[["$[:].quote_id", "int"]]]
+    assert RequestRows.from_manifest(json.loads(json.dumps(keyed.to_manifest()))) == keyed
+    with pytest.raises(ValueError, match="keys nested rows"):
+        RequestRows("refused", SORTED.refusals, quote_keys=keyed.quote_keys)
+    with pytest.raises(ValueError, match="at least one request value"):
+        RequestRows("in_request_order", quote_keys=((),))
     with pytest.raises(ValueError, match="exactly when it names why"):
         RequestRows("refused")
     with pytest.raises(ValueError, match="Unknown multi_quote"):
@@ -844,7 +861,7 @@ def test_the_record_describes_itself_as_haute_deploy_prints_it():
 
 
 def _verdict(graph: PipelineGraph, remap: dict[str, str] | None = None, inputs=("quotes",)):
-    verdict, refusals, _checks = prove_request_rows(graph, list(inputs), "out", remap or {})
+    verdict, refusals, _checks, _keys = prove_request_rows(graph, list(inputs), "out", remap or {})
     return verdict, list(refusals)
 
 
@@ -1157,7 +1174,7 @@ def test_a_lookup_joined_twice_is_checked_once(remap):
         }
     )
 
-    verdict, refusals, checks = prove_request_rows(graph, ["quotes"], "out", remap)
+    verdict, refusals, checks, _keys = prove_request_rows(graph, ["quotes"], "out", remap)
     assert (verdict, refusals) == ("in_request_order", ())
     assert [(check.join_node_id, check.side_node_id) for check in checks] == [("calc", "rates")]
 
@@ -1186,7 +1203,7 @@ def test_a_left_join_against_one_row_needs_no_check():
         }
     )
 
-    assert prove_request_rows(graph, ["quotes"], "out", {}) == ("in_request_order", (), ())
+    assert prove_request_rows(graph, ["quotes"], "out", {}) == ("in_request_order", (), (), ())
 
 
 def test_input_names_the_executor_would_refuse_are_not_proved():
@@ -1213,7 +1230,7 @@ def test_a_carried_branch_the_parser_cannot_read_is_still_checked(remap):
     ]
     graph = PipelineGraph.model_validate({"nodes": nodes, "edges": edges})
 
-    verdict, refusals, checks = prove_request_rows(graph, ["quotes"], "out", remap)
+    verdict, refusals, checks, _keys = prove_request_rows(graph, ["quotes"], "out", remap)
     assert (verdict, refusals) == ("in_request_order", ())
     assert [check.side_node_id for check in checks] == ["shaped"]
 
@@ -1430,7 +1447,7 @@ def test_a_constant_s_one_row_is_lost_to_a_sort_and_then_checked():
         }
     )
 
-    verdict, refusals, checks = prove_request_rows(graph, ["quotes"], "out", {})
+    verdict, refusals, checks, _keys = prove_request_rows(graph, ["quotes"], "out", {})
     assert (verdict, refusals) == ("in_request_order", ())
     assert [(check.side_node_id, check.keys) for check in checks] == [("sorted", ())]
 
@@ -1453,7 +1470,7 @@ def test_a_carried_branch_through_any_node_is_still_a_lookup(remap):
     ]
     graph = PipelineGraph.model_validate({"nodes": nodes, "edges": edges})
 
-    verdict, refusals, checks = prove_request_rows(graph, ["quotes"], "out", remap)
+    verdict, refusals, checks, _keys = prove_request_rows(graph, ["quotes"], "out", remap)
     assert (verdict, refusals) == ("in_request_order", ())
     assert [(check.side_node_id, check.keys) for check in checks] == [("expanded", ("region",))]
 

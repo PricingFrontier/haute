@@ -4,9 +4,10 @@ The editor shreds a Quote Input's sample through its tables, one frame per port.
 deployed pipeline now shreds each served request the same way, in memory
 (``shred_request``), so each port receives its own table's rows and declared types, and
 a request that does not fit the tables is refused rather than answered without a row.
-A response nesting a table's rows under the quotes answers one quote per request: the
-rows are placed under a quote by the keys they carry, which the proof does not check
-(specs/deploy, specs/json-shredding).
+A response nesting a table's rows under the quotes answers several quotes per request
+when it nests them by a key the proof follows, unchanged, to the request; two quotes of
+one request holding the same key are refused when served, since each would take the
+other's rows (BUG-38; specs/deploy, specs/json-shredding).
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ from haute.deploy._container import _generate_app_source
 from haute.deploy._request_rows import RowRefusal, prove_request_rows, request_rows
 from haute.deploy._schema import _read_sample_row, infer_output_schema
 from haute.deploy._scorer import QuoteRequest, reads_records, score_graph
-from haute.errors import MultiQuoteRequestRefusedError
+from haute.errors import MultiQuoteRequestRefusedError, QuoteKeyRepeatedError
 from haute.execution import ExecutionProfile, execute_lazy_graph
 from tests.conftest import build_test_api_input_snapshots
 
@@ -81,7 +82,14 @@ ROW_LOCAL_BAND = (
     "df = drivers.with_columns(pl.when(pl.col('age') < 25).then(pl.lit('young'))"
     ".otherwise(pl.lit('adult')).alias('band'))"
 )
-NESTED = RowRefusal("out", "out", "response nests 'banded' under each quote", "unproven")
+#: The key the drivers nest under each quote by, as the proof records it.
+KEYED = ((("$[:].quote_id", "int"),),)
+UNFOLLOWED = RowRefusal(
+    "out",
+    "out",
+    "response nests 'banded' by '$[:].quote_id', which the proof cannot follow to the request",
+    "unproven",
+)
 
 
 def _graph(
@@ -143,6 +151,16 @@ def _deployed(graph: PipelineGraph, quotes: list[dict[str, Any]]) -> list[dict[s
         request_rows=rows,
     )
     return render_output_document(answer)
+
+
+def _refusals(graph: PipelineGraph) -> list[RowRefusal]:
+    verdict, refusals, _checks, keys = prove_request_rows(graph, ["request"], "out", {})
+    assert (verdict == "refused") == bool(refusals) and not (refusals and keys)
+    return list(refusals)
+
+
+def _alone(graph: PipelineGraph, quotes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [answer for quote in quotes for answer in _deployed(graph, [quote])]
 
 
 def test_each_port_receives_its_own_table_and_the_answer_matches_the_editor(sample):
@@ -210,12 +228,89 @@ def test_a_request_that_does_not_fit_the_tables_is_refused(sample, quotes, messa
         )
 
 
-def test_a_nested_table_and_a_rejoin_answer_one_quote_per_request(sample):
-    assert prove_request_rows(_graph(sample), ["request"], "out", {}) == (
-        "refused",
-        (NESTED,),
+def test_drivers_nested_by_the_quote_s_key_answer_several_quotes_in_order(sample):
+    graph = _graph(sample)
+
+    assert prove_request_rows(graph, ["request"], "out", {}) == (
+        "in_request_order",
         (),
+        (),
+        KEYED,
     )
+    assert request_rows(graph, ["request"], "out", {}).quote_keys == KEYED
+    assert _deployed(graph, QUOTES) == EXPECTED == _alone(graph, QUOTES)
+
+
+@pytest.mark.parametrize(
+    "band",
+    [
+        # Each driver is kept or dropped by its own row, within its quote.
+        "df = drivers.filter(pl.col('age') > 20).drop_nulls().with_columns(band=pl.lit('a'))",
+        # The key renamed and back, a column dropped and one selected: still the quote's.
+        "df = drivers.rename({'quote_id': 'qid'}).rename({'qid': 'quote_id'})"
+        ".drop('age').select('quote_id', age=pl.lit(1), band=pl.lit('a'))",
+    ],
+    ids=["filtered", "renamed"],
+)
+def test_steps_that_keep_each_driver_whole_keep_it_with_its_quote(sample, band):
+    graph = _graph(sample, band=band)
+
+    assert _refusals(graph) == []
+    assert _deployed(graph, QUOTES) == _alone(graph, QUOTES)
+
+
+@pytest.mark.parametrize(
+    ("tables", "band"),
+    [
+        (TABLES, "df = drivers.with_columns(pl.lit(7).alias('quote_id'), band=pl.lit('a'))"),
+        (TABLES, "df = drivers.cast({'quote_id': pl.Int32}).with_columns(band=pl.lit('a'))"),
+        (TABLES, "df = drivers.cast(pl.Int32).with_columns(band=pl.lit('a'))"),
+        # A quote sent without a key would take the fill value, which another may hold.
+        (TABLES, "df = drivers.fill_null(0).with_columns(band=pl.lit('a'))"),
+        (TABLES, "df = drivers.select(pl.all(), band=pl.lit('a'))"),
+        # Read as text, the drivers' key is not the value the quote holds.
+        (
+            [
+                TABLES[0],
+                {
+                    **TABLES[1],
+                    "columns": [
+                        _column("quote_id", "$[:].quote_id", "str"),
+                        _column("age", "$[:].drivers[:].age", "int"),
+                    ],
+                },
+            ],
+            ROW_LOCAL_BAND,
+        ),
+    ],
+    ids=["rewritten", "cast", "cast-all", "filled", "selector", "read-as-text"],
+)
+def test_a_key_the_proof_cannot_follow_answers_one_quote_per_request(sample, tables, band):
+    assert _refusals(_graph(sample, tables=tables, band=band)) == [UNFOLLOWED]
+
+
+def test_a_dropped_selection_of_columns_cannot_be_followed(sample):
+    graph = _graph(
+        sample, band="df = drivers.drop(cs.string()).with_columns(band=pl.lit('a'))"
+    ).model_dump()
+    graph["preamble"] = "import polars.selectors as cs"
+
+    assert _refusals(PipelineGraph.model_validate(graph)) == [UNFOLLOWED]
+
+
+def test_drivers_nested_with_no_key_to_their_quote_answer_one_quote(sample):
+    graph = _graph(sample).model_dump()
+    config = graph["nodes"][2]["data"]["config"]
+    config["outputMapping"] = [
+        entry for entry in config["outputMapping"] if entry["output_path"] != "$[:].quote_id"
+    ] + [_entry("quote", "quote_id", "$[:].quote_id")]
+
+    assert _refusals(PipelineGraph.model_validate(graph)) == [
+        RowRefusal("out", "out", "response nests 'banded' with no key to its quote", "mixes")
+    ]
+
+
+def test_a_rejoin_of_a_quote_s_drivers_answers_one_quote_per_request(sample):
     rejoin = _graph(sample).model_dump()
     rejoin["nodes"].append(
         _node(
@@ -255,15 +350,10 @@ def test_a_nested_table_and_a_rejoin_answer_one_quote_per_request(sample):
         {"id": "o", "source": "joined", "target": "out"},
     ]
 
-    assert prove_request_rows(PipelineGraph.model_validate(rejoin), ["request"], "out", {}) == (
-        "refused",
-        (
-            RowRefusal(
-                "joined", "joined", "join (how='left', maintain_order='left_right')", "mixes"
-            ),
-        ),
-        (),
-    )
+    assert _refusals(PipelineGraph.model_validate(rejoin)) == [
+        RowRefusal("youngest", "youngest", "group_by.agg", "mixes"),
+        RowRefusal("joined", "joined", "join (how='left', maintain_order='left_right')", "mixes"),
+    ]
 
 
 def test_a_calculation_across_a_table_s_rows_answers_each_quote_alone(sample):
@@ -271,8 +361,8 @@ def test_a_calculation_across_a_table_s_rows_answers_each_quote_alone(sample):
     graph = _graph(sample, band="df = drivers.with_columns(pl.col('age').mean().alias('band'))")
     rows = request_rows(graph, ["request"], "out", {})
 
-    assert rows.refusals == (NESTED,)
-    with pytest.raises(MultiQuoteRequestRefusedError, match="nests 'banded' under each quote"):
+    assert rows.refusals == (RowRefusal("banded", "banded", "with_columns: mean", "mixes"),)
+    with pytest.raises(MultiQuoteRequestRefusedError, match=r"'banded' \(with_columns: mean\)"):
         _deployed(graph, QUOTES)
     alone = [_deployed(graph, [quote]) for quote in QUOTES[:2]]
     assert [[d["band"] for d in answer[0]["drivers"]] for answer in alone] == [
@@ -292,11 +382,20 @@ def test_a_calculation_across_a_table_s_rows_answers_each_quote_alone(sample):
     ]
 
 
-def test_two_quotes_sharing_the_key_their_drivers_nest_by_are_not_answered_together(sample):
+def test_two_quotes_sharing_the_key_their_drivers_nest_by_are_refused_when_served(sample):
     shared = [QUOTES[0], {**QUOTES[1], "quote_id": QUOTES[0]["quote_id"]}]
 
-    with pytest.raises(MultiQuoteRequestRefusedError):
+    with pytest.raises(QuoteKeyRepeatedError, match=r"Quotes 2 and 3 .* same \$\[:\]\.quote_id"):
+        _deployed(_graph(sample), [QUOTES[2], *shared])
+    with pytest.raises(QuoteKeyRepeatedError) as refused:
         _deployed(_graph(sample), shared)
+    assert refused.value.to_payload() == {
+        "error_code": "quote_key_repeated",
+        "message": str(refused.value),
+        "quotes": 2,
+        "key": ["$[:].quote_id"],
+        "positions": [1, 2],
+    }
     # Unrefused, each quote would take the other's drivers too.
     batch = score_graph(
         graph=_graph(sample),
@@ -312,16 +411,42 @@ def test_two_quotes_sharing_the_key_their_drivers_nest_by_are_not_answered_toget
     ]
 
 
+def test_quote_keys_are_compared_as_the_quote_input_reads_them(sample):
+    """A key read as text holds 7 and "7" alike, so quotes sending them share it."""
+    text_key = [
+        {**table, "columns": [_column("quote_id", "$[:].quote_id", "str"), *table["columns"][1:]]}
+        for table in TABLES
+    ]
+    graph = _graph(sample, tables=text_key)
+
+    with pytest.raises(QuoteKeyRepeatedError):
+        _deployed(graph, [QUOTES[0], {**QUOTES[1], "quote_id": "7"}])
+    # A key that does not fit its type is refused by the read, naming the column.
+    with pytest.raises(ApiInputSchemaError, match="column 'quote_id'"):
+        _deployed(_graph(sample), [QUOTES[0], {**QUOTES[1], "quote_id": "seven"}])
+
+
+def test_quote_values_are_read_at_the_quote_s_own_level():
+    from haute._json_shred._shred import quote_values
+
+    assert quote_values([{"a": {"b": 7}}, {"a": {"b": "7"}}, {}], [("$[:].a.b", "str")]) == [
+        ("7",),
+        ("7",),
+        (None,),
+    ]
+    with pytest.raises(ValueError, match="not a quote-level path"):
+        quote_values([{}], [("$[:].drivers[:].age", "int")])
+
+
 def test_a_quote_input_without_a_root_table_cannot_answer_in_order(sample):
     graph = _graph(sample, tables=[TABLES[1]]).model_dump()
     graph["edges"] = [e for e in graph["edges"] if e["id"] != "q"]
     graph["nodes"][2]["data"]["config"]["outputMapping"] = [_entry("banded", "age", "$[:].age")]
 
-    verdict, refusals, _checks = prove_request_rows(
-        PipelineGraph.model_validate(graph), ["request"], "out", {}
-    )
-    assert verdict == "refused"
-    assert [refusal.node_id for refusal in refusals] == ["out"]
+    # An answer for each driver, not for each quote.
+    assert _refusals(PipelineGraph.model_validate(graph)) == [
+        RowRefusal("out", "out", "response top level from banded", "repeats")
+    ]
 
 
 def test_the_dry_run_reads_the_sample_s_first_quote_into_the_tables(sample):
@@ -360,7 +485,7 @@ def _load_app(root: Path, graph: PipelineGraph) -> Any:
         sys.modules.pop(module_name, None)
 
 
-def test_quote_answers_one_quote_through_its_tables_and_refuses_several(
+def test_quote_answers_several_quotes_through_their_tables_and_refuses_a_shared_key(
     sample, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
 ):
     container = haute_scratch / "container"
@@ -377,12 +502,18 @@ def test_quote_answers_one_quote_through_its_tables_and_refuses_several(
 
     one = client.post("/quote", json=QUOTES[0])
     several = client.post("/quote", json=QUOTES)
+    shared = client.post("/quote", json=[QUOTES[0], {**QUOTES[1], "quote_id": 7}])
     misfit = client.post("/quote", json={"quote_id": 1, "region": "N", "drivers": ["x"]})
 
     assert one.status_code == 200, one.text
     assert one.json()["rows"] == [EXPECTED[0]]
-    assert several.status_code == 422, several.text
-    assert several.json()["error_code"] == "multi_quote_request_refused"
+    assert several.status_code == 200, several.text
+    assert several.json()["rows"] == EXPECTED
+    assert shared.status_code == 422, shared.text
+    assert (shared.json()["error_code"], shared.json()["positions"]) == (
+        "quote_key_repeated",
+        [1, 2],
+    )
     assert misfit.status_code == 422
     assert misfit.json()["error_code"] == "api_input_schema_invalid"
 

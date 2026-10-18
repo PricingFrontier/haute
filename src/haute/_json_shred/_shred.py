@@ -594,13 +594,7 @@ def shred_request(
     element whose shape does not fit its table, refuses the request naming the table,
     since an answer must not silently lose a quote's rows (specs/deploy).
     """
-    for index, record in enumerate(records):
-        if not isinstance(record, Mapping):
-            raise ApiInputSchemaError(
-                f"The request does not fit this Quote Input's tables: quote {index} is not "
-                "an object.",
-                quote=index,
-            )
+    _require_quote_objects(records)
     table_specs = _emitting_table_specs(v2_config)
     rows: dict[str, list[_Row]] = {spec.label: [] for spec in table_specs}
     stats = ShredSkipStats()
@@ -621,6 +615,42 @@ def shred_request(
             skipped_rows=dict(stats.skipped_rows_by_table),
         )
     return {spec.label: _rows_to_frame(rows[spec.label], spec.leaf_specs) for spec in table_specs}
+
+
+def quote_values(
+    records: Sequence[Any], columns: Sequence[tuple[str, str]]
+) -> list[tuple[Any, ...]]:
+    """Each quote's values at quote-level *columns*, as the Quote Input's root table holds them.
+
+    *columns* pairs a path at the quote's level (``$[:].quote_id``) with the column type
+    it is read as; the values are read and typed by the walk and the typed frame
+    :func:`shred_request` uses, so they equal the root table's. Raises
+    :class:`ApiInputSchemaError` where it would for these columns.
+    """
+    _require_quote_objects(records)
+    specs: list[_WalkSpec] = []
+    for index, (path, type_token) in enumerate(columns):
+        locating, leaf = parse_column_path_full(path)
+        if array_depth(locating):
+            raise ValueError(f"{path!r} is not a quote-level path.")
+        # Numbered, since two columns may read one path as different types.
+        specs.append((f"value_{index}", leaf, type_token, 0))
+    read_row = _compile_row_reader(specs, 0)
+    rows = [read_row(dict(record), ()) for record in records]
+    return _rows_to_frame(
+        rows, [(name, leaf, type_token) for name, leaf, type_token, _ in specs]
+    ).rows()
+
+
+def _require_quote_objects(records: Sequence[Any]) -> None:
+    """Refuse a request holding a quote that is not an object, naming it."""
+    for index, record in enumerate(records):
+        if not isinstance(record, Mapping):
+            raise ApiInputSchemaError(
+                f"The request does not fit this Quote Input's tables: quote {index} is not "
+                "an object.",
+                quote=index,
+            )
 
 
 # Values are Polars DataType *classes*, not instances. Polars's Schema /

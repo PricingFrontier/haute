@@ -302,6 +302,24 @@ class MultiQuoteRequestRefusedError(DeployError):
         super().__init__(message)
 
 
+class QuoteKeyRepeatedError(DeployError):
+    """Two quotes of one request hold the same values of a key the response nests by.
+
+    The response places a nested row under every quote holding its key values, so each
+    quote would take the other's rows. ``key`` names the request paths and ``positions``
+    the two quotes, counted from one (specs/deploy).
+    """
+
+    error_code = "quote_key_repeated"
+    public_fields = ("quotes", "key", "positions")
+
+    def __init__(self, message: str, *, quotes: int, key: list[str], positions: list[int]) -> None:
+        self.quotes = quotes
+        self.key = key
+        self.positions = positions
+        super().__init__(message)
+
+
 class RequestRowCountError(ExecutionError):
     """A deployment proved to answer each quote with one row answered with another count."""
 
