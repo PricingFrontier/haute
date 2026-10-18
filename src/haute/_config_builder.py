@@ -33,7 +33,6 @@ from haute._explore_overview import validate_explore_overview
 from haute._explore_pivots import validate_explore_pivot_state
 from haute._logging import get_logger
 from haute._polars_steps import (
-    STEP_SPELLINGS,
     STEPPED_NODE_TYPES,
     STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
     PolarsStepError,
@@ -575,21 +574,17 @@ def _reconcile_steps(
         reason = f"the steps cannot be rendered ({exc})"
     else:
         kind = _EXTRACTION_KIND_BY_CODE_TYPE[node_type]
-        # The renderer's older spellings are accepted too, so a body it saved
-        # before keeps its steps, rendered afresh at the next save; free code
-        # must match either way.
-        older = (
-            render_polars_steps(
-                steps,
-                step_input_names(node_type, param_names),
-                start=surface.start,
-                spelling=spelling,
-            ).code
-            for spelling in STEP_SPELLINGS[1:]
-        )
+        # The renderer's earlier call spelling is accepted too, so a body it
+        # saved before keeps its steps; free code must match either way.
+        earlier = render_polars_steps(
+            steps,
+            step_input_names(node_type, param_names),
+            start=surface.start,
+            spelling="earlier",
+        ).code
         if any(
             _same_program(normalise_user_code(code, kind=kind), body_code)
-            for code in (rendered, *older)
+            for code in (rendered, earlier)
         ):
             return config
         reason = "the function body no longer matches the rendered steps"

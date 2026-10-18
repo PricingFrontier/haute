@@ -3445,8 +3445,10 @@ def test_parse_keeps_steps_saved_by_an_earlier_renderer(tmp_path: Path) -> None:
     assert node.data.config["code"] == GOLDEN_CODE
 
 
-def test_parse_keeps_a_sort_saved_before_sorts_kept_their_ties_order(tmp_path: Path) -> None:
-    """A body whose sort predates the stable sort keeps its steps and runs the stable one."""
+def test_parse_reads_a_sort_saved_before_sorts_kept_their_ties_order_as_free_code(
+    tmp_path: Path,
+) -> None:
+    """Canonical only: a body whose sort predates the stable sort is not the steps' body."""
     quotes, rates = _frames(tmp_path)
     steps = [
         source(),
@@ -3464,9 +3466,12 @@ def test_parse_keeps_a_sort_saved_before_sorts_kept_their_ties_order(tmp_path: P
 
     parsed = parse_pipeline_source(unordered, _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "t")
-    assert node.data.config["steps"] == steps
-    assert "_steps_discarded" not in node.data.config
-    assert stable in node.data.config["code"]
+    assert "steps" not in node.data.config
+    assert node.data.config["_steps_discarded"] == (
+        "Steps were discarded because the function body no longer matches the rendered steps."
+    )
+    assert 'df = df.sort("premium", descending=True)' in node.data.config["code"]
+    assert stable not in node.data.config["code"]
 
 
 @pytest.mark.parametrize(

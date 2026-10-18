@@ -74,7 +74,6 @@ __all__ = [
     "OPERATORS",
     "STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE",
     "STEP_KINDS",
-    "STEP_SPELLINGS",
     "PolarsStepError",
     "RenderedSteps",
     "ResolvedFreeCode",
@@ -507,15 +506,11 @@ def validate_polars_steps(steps: object) -> list[dict[str, Any]]:
     return _Renderer(steps, None, "input").steps
 
 
-#: How the renderer spells its calls: ``current``; ``earlier`` for the
+#: How the renderer spells its calls: ``current``, or ``earlier`` for the
 #: spelling it used before (lists for keys, aggregations and columns, and
-#: Polars' sort and unique defaults spelled out); and ``unordered_sort``, the
-#: current spelling as it was before a sort kept its ties' order. The last two
-#: only serve to recognise a body saved by them, whose steps are kept and
-#: rendered in the current spelling at the next save.
-StepSpelling = Literal["current", "earlier", "unordered_sort"]
-#: Every spelling a saved body may be in, current first.
-STEP_SPELLINGS: tuple[StepSpelling, ...] = ("current", "earlier", "unordered_sort")
+#: Polars' sort and unique defaults spelled out), which only serves to
+#: recognise a body saved by it.
+StepSpelling = Literal["current", "earlier"]
 
 
 def render_polars_steps(
@@ -901,7 +896,6 @@ class _Renderer:
         self.input_names = None if input_names is None else frozenset(input_names)
         self.start = start
         self.earlier = spelling == "earlier"
-        self.stable_sort = spelling == "current"
         self.variables: set[str] = set()
         self.constant_references: list[ConstantReference] = []
         self.index = 0
@@ -1597,8 +1591,7 @@ class _Renderer:
             options += f", descending={descending[0] if len(descending) == 1 else descending!r}"
         if nulls_last:
             options += ", nulls_last=True"
-        if self.stable_sort:
-            options += ", maintain_order=True"
+        options += ", maintain_order=True"
         return f"df = df.sort({', '.join(repr(c) for c in columns)}{options})"
 
     def _render_unique(self, step: Mapping[str, Any]) -> str:
