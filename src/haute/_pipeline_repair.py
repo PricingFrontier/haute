@@ -922,17 +922,9 @@ def _removes_only(
 ) -> bool:
     """Whether *after* is *before* with one unresolved *identity* gone and nothing else changed."""
 
-    def by_file(definitions: dict[str, Any]) -> dict[str, Any]:
-        # A definition that fails to load is keyed by its path, a loaded one by
-        # its id, so mending one renames its key: compare by the file its nodes are in.
-        return {
-            (definition["nodes"][0][0] if definition["nodes"] else key): definition
-            for key, definition in definitions.items()
-        }
-
     def unresolved(snapshot: dict[str, Any], scope: str) -> Counter[tuple[Any, ...]]:
         counts = Counter((scope, *item) for item in snapshot["unresolved"])
-        for file, definition in by_file(snapshot["submodels"]).items():
+        for file, definition in snapshot["submodels"].items():
             counts.update(unresolved(definition, f"{scope}/{file}"))
         return counts
 
@@ -944,7 +936,7 @@ def _removes_only(
             "edges": sorted((edge[0], edge[1]) for edge in snapshot["edges"]),
             "submodels": {
                 file: without_unresolved(definition)
-                for file, definition in by_file(snapshot["submodels"]).items()
+                for file, definition in snapshot["submodels"].items()
             },
         }
 
@@ -1113,7 +1105,12 @@ def _recovery_structure(document: PipelineEditorDocument) -> str:
 
 
 def _recovery_snapshot(document: PipelineEditorDocument) -> dict[str, Any]:
-    """Nodes, edges and unresolved connections by authored identity, never by recovery id."""
+    """Nodes, edges and unresolved connections by authored identity, never by recovery id.
+
+    Submodel definitions are keyed by the file they are registered at: the
+    document keys one that fails to load by that path and a loaded one by its
+    id, so a repair that mends a definition would otherwise change its key.
+    """
 
     def snapshot(graph: PipelineEditorDocument | RecoveryGraphSnapshot) -> dict[str, Any]:
         return {
@@ -1137,9 +1134,14 @@ def _recovery_snapshot(document: PipelineEditorDocument) -> dict[str, Any]:
                 for edge in graph.unresolved_connections
             ],
             "submodels": {
-                key: snapshot(definition.graph)
-                for key, definition in (graph.submodels or {}).items()
+                _registered_file(definition.file): snapshot(definition.graph)
+                for definition in (graph.submodels or {}).values()
             },
         }
 
     return snapshot(document)
+
+
+def _registered_file(path: str) -> str:
+    """A registration *path* with separators, ``.`` and empty segments folded."""
+    return "/".join(part for part in path.replace("\\", "/").split("/") if part not in ("", "."))

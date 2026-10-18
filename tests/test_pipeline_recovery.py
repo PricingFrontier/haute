@@ -2688,6 +2688,52 @@ def test_remove_connection_reaches_a_broken_connection_inside_a_submodel(
     assert "submodel.connect(" not in child.read_text(encoding="utf-8")
 
 
+def test_remove_connection_mends_a_submodel_with_no_nodes(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keyed by its path while it fails and by its id once it loads, it is one definition."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "modules").mkdir()
+    child = _write(
+        tmp_path / "modules" / "empty.py",
+        "import haute\n\n"
+        'submodel = haute.Submodel("empty", definition_id="empty", input_ports=[], '
+        'output_ports=[], pipeline_dir="..")\n\n'
+        'submodel.connect("gone_a", "gone_b")\n',
+    )
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("connections")
+
+        @pipeline.polars
+        def quotes():
+            return None
+
+        pipeline.submodel("modules/empty.py", "empty")
+        """,
+    )
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    assert document.submodels is not None
+    assert list(document.submodels) == ["modules/empty.py"]
+
+    response = client.post(
+        "/api/pipeline/repair/connection/remove/apply",
+        json=_connection_request(document, "connection_endpoint_missing"),
+    )
+
+    assert response.status_code == 200, response.text
+    repaired = response.json()["document"]
+    assert repaired["load_status"] == "ready"
+    assert list(repaired["submodels"]) == ["empty"]
+    assert "submodel.connect(" not in child.read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize(
     ("source", "code", "refusal"),
     [
