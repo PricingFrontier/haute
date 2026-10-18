@@ -1200,6 +1200,34 @@ def _port_names(ports: list[dict[str, Any]]) -> tuple[str, ...]:
     )
 
 
+#: Strict refusals the recovery pass reports element by element in its own
+#: words: the context key that marks the refusal, and the diagnostic codes that
+#: already show it on screen.
+_STRICT_FAILURE_SHOWN_AS: dict[str, frozenset[str]] = {
+    "decorator": frozenset({"node_decorator_unknown"}),
+    "duplicate_name": frozenset({"node_identity_duplicate"}),
+    "dangling_edges": frozenset({"connection_endpoint_missing", "connection_endpoint_ambiguous"}),
+    "duplicate_edges": frozenset({"connection_duplicate"}),
+    "missing_paths": frozenset({"submodel_file_missing"}),
+}
+
+
+def _strict_failure_shown(
+    failure: BaseException | None, diagnostics: Sequence[PipelineRecoveryDiagnostic]
+) -> bool:
+    """Whether a diagnostic already shows the strict parse's refusal."""
+    message = _exception_message(failure or ParseError("Pipeline parsing failed."))
+    if any(diagnostic.message == message for diagnostic in diagnostics):
+        return True
+    if not isinstance(failure, HauteError):
+        return False
+    codes = {diagnostic.code for diagnostic in diagnostics}
+    return any(
+        key in failure.context and not codes.isdisjoint(shown)
+        for key, shown in _STRICT_FAILURE_SHOWN_AS.items()
+    )
+
+
 def _attribute_binding_failure(
     failure: BaseException | None,
     candidates: Sequence[_RecoveredCandidate],
@@ -2039,7 +2067,24 @@ def _load_readable_pipeline_editor_document(
             pipeline_description = ""
             preserved_blocks = _extract_preserved_blocks(source)
         else:
-            pipeline_name, pipeline_description = _extract_pipeline_meta(tree)
+            try:
+                pipeline_name, pipeline_description = _extract_pipeline_meta(tree)
+            except ParseError as exc:
+                # A name or description that is not a literal belongs to the
+                # constructor, not to any node; the rest of the file recovers.
+                diagnostics.append(
+                    _diagnostic(
+                        code="pipeline_constructor_invalid",
+                        scope="pipeline",
+                        message=_exception_message(exc),
+                        source_file=source_file,
+                        remediation=(
+                            "Give haute.Pipeline(...) its name and description as plain "
+                            'strings, such as haute.Pipeline("motor").'
+                        ),
+                    )
+                )
+                pipeline_name, pipeline_description = None, ""
             pipeline_name = pipeline_name or path.stem
             preamble = _extract_preamble(source, tree=tree)
             preserved_blocks = _extract_preserved_blocks(source)
@@ -2126,7 +2171,10 @@ def _load_readable_pipeline_editor_document(
                 diagnostics=diagnostics,
                 initial_unresolved=initially_unresolved,
             )
-            if not diagnostics:
+            # The recovery pass re-checks each element, but not every refusal
+            # belongs to one: unless a diagnostic already shows it, the parse's
+            # own refusal is shown, so no other problem on screen can hide it.
+            if not _strict_failure_shown(strict_failure, diagnostics):
                 diagnostics.append(
                     _diagnostic(
                         code="pipeline_parse_invalid",

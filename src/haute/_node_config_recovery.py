@@ -750,6 +750,21 @@ def reconcile_config(
             )
             issues.append(_issue(path, "unknown_discriminant", f"Select a supported {path}."))
             continue
+        if key == "contract":
+            try:
+                Contract.from_user_declared(value)
+            except ValueError:
+                # The annotation is generated scaffolding: the regenerated
+                # decorator derives it from the settings, as for a stale one.
+                changes.append(
+                    RecoveryFieldChange(
+                        path=path,
+                        outcome="removed",
+                        reason="The contract annotation could not be read; it is derived again "
+                        "from the settings.",
+                    )
+                )
+                continue
         default = defaults.get(key) if key != discriminant_field else None
         recovered = _reconcile_value(value, hints[key], default, _pointer("", key), changes, issues)
         if recovered is not _UNRECOVERED:

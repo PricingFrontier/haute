@@ -261,3 +261,11 @@ spans. The editor recovery service is the sole consumer that may resolve those f
 separate recovery DTOs defined by the server API. Those DTOs never inherit from, return, or
 deserialize as `PipelineGraph`. Expected node-local authored errors become attributed diagnostics
 at that editor boundary; strict parsing continues to propagate the original error unchanged.
+A strict refusal that no element's diagnostic shows is listed as a pipeline-level
+`pipeline_parse_invalid` diagnostic, whatever else is on screen, so an unrelated problem never
+hides it. One counts as shown when a diagnostic carries its message, or when the recovery pass
+reports that refusal element by element in its own words (an unknown decorator, a duplicate
+node name, a dangling or duplicate connection, a missing submodel file:
+`_STRICT_FAILURE_SHOWN_AS`). A pipeline name or description that is not a literal is the
+constructor's failure, not a node's: the document loads around it with a
+`pipeline_constructor_invalid` diagnostic and the file's name as the pipeline's.

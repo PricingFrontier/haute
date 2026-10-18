@@ -220,7 +220,10 @@ Join whose `maintainOrder` is missing or not one of `none`, `left`, `right`, `le
 and execution. A pipeline file written before the order was required therefore opens in the
 editor for recovery, and Recover settings gives each such join the order for its type. A join
 inside a submodel makes the submodel's definition unavailable, and the submodel's inspector
-lists the join with its own Recover settings.
+lists the join with its own Recover settings. A `config=` that is not a string and a
+`contract=` that cannot be read are refused the same way, with a `ConfigError` naming the node,
+so each is that node's own failure in the editor rather than an error the whole document
+fails on.
 
 **What a recover cannot fix.** The editor's Recover settings action
 (`src/haute/_pipeline_repair_actions.py::_recover_node`, over

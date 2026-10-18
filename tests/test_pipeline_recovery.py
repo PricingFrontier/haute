@@ -1568,6 +1568,98 @@ def test_missing_submodel_preserves_occurrence_and_unrelated_root_nodes(
     )
 
 
+def test_a_refusal_no_element_shows_is_listed_beside_other_problems(tmp_path: Path) -> None:
+    """The parse refuses the constants path first; a broken join elsewhere no longer hides it."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "global_constants.json").write_text('{"constants": []}')
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        import polars as pl
+
+        PATH = "config/global_constants.json"
+        pipeline = haute.Pipeline("p", global_constants=PATH)
+
+        @pipeline.polars
+        def quotes():
+            return pl.LazyFrame({"id": [1]})
+
+        @pipeline.polars
+        def rates():
+            return pl.LazyFrame({"id": [1]})
+
+        @pipeline.edge_join(how="left", on=["id"])
+        def joined(quotes, rates): ...
+
+        pipeline.connect("quotes", "joined", target_port="base")
+        pipeline.connect("rates", "joined", target_port="join")
+        """,
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    by_code = {diagnostic.code: diagnostic for diagnostic in document.diagnostics}
+    assert "node_config_invalid" in by_code
+    assert "global_constants must be a string literal" in by_code["pipeline_parse_invalid"].message
+
+
+def test_a_pipeline_name_that_is_not_a_literal_degrades_without_blanking_the_canvas(
+    tmp_path: Path,
+) -> None:
+    """It failed the whole document as an internal error; the nodes now load around it."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+
+        NAME = "motor"
+        pipeline = haute.Pipeline(NAME)
+
+        @pipeline.polars
+        def quotes():
+            return None
+        """,
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "degraded"
+    assert document.pipeline_name == "main"
+    assert [node.availability for node in document.nodes] == ["ready"]
+    (diagnostic,) = document.diagnostics
+    assert diagnostic.code == "pipeline_constructor_invalid"
+    assert "pipeline name must be a string literal" in diagnostic.message
+
+
+def test_a_refusal_shown_element_by_element_is_not_listed_again(tmp_path: Path) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("p")
+
+        @pipeline.polars
+        def quotes():
+            return None
+
+        pipeline.connect("ghost", "quotes")
+        """,
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert [diagnostic.code for diagnostic in document.diagnostics] == [
+        "connection_endpoint_missing"
+    ]
+
+
 @pytest.mark.parametrize(
     ("output_ports", "message"),
     [

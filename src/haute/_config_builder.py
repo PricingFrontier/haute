@@ -327,7 +327,17 @@ def _validate_user_contract(
     concrete ``outputs`` even when the builder's ``referenced`` side is
     opaque (MODEL_SCORE is the canonical example).
     """
-    declared = Contract.from_user_declared(user_declared)
+    try:
+        declared = Contract.from_user_declared(user_declared)
+    except ValueError as exc:
+        # The node's own failure, so the editor offers it Recover settings,
+        # which regenerates the annotation, rather than an error the whole
+        # document fails on.
+        raise ConfigError(
+            f"Node {func_name!r} has a contract= that cannot be read: {exc}",
+            node_id=func_name,
+            node_type=node_type.value,
+        ) from exc
     if declared is None:
         return
 
@@ -642,6 +652,15 @@ def _resolve_node_config(
     # "Carry over the user's declared contract" below).
     user_contract = decorator_kwargs.pop("contract", None)
     config_ref = decorator_kwargs.pop("config", None)
+    if config_ref is not None and not isinstance(config_ref, str):
+        # The node's own failure, so the editor offers it Reset, rather than an
+        # error the whole document fails on.
+        raise ConfigError(
+            f"Node {func_name!r} has config={config_ref!r}; config= takes the path of its JSON "
+            "config file as a string.",
+            func_name=func_name,
+            node_type=node_type.value,
+        )
     if config_ref:
         normalised_ref = config_ref.replace("\\", "/")
         base = base_dir or Path.cwd()

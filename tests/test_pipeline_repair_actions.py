@@ -990,3 +990,49 @@ def test_a_binding_failure_inside_a_submodel_never_blames_a_parent_node_of_its_n
     assert next(n for n in definition.graph.nodes if n.authored_id == "uses").availability == (
         "unavailable"
     )
+
+
+_TWO_SOURCES = (
+    'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n\n'
+    "@pipeline.polars\ndef quotes():\n"
+    '    df = pl.LazyFrame({"quote_id": [1]})\n    return df\n\n'
+)
+
+
+def test_a_config_reference_that_is_not_a_path_leaves_only_its_node_to_reset(tmp_path):
+    # It failed the whole document; now its node is unavailable and Reset
+    # writes the node afresh with a config file of its own.
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        _TWO_SOURCES + "@pipeline.banding(config=1)\ndef banded(quotes): ...\n"
+    )
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    assert document.load_status == "degraded"
+    by_id = {node.authored_id: node for node in document.nodes}
+    assert by_id["quotes"].availability == "ready"
+    assert by_id["banded"].availability == "unavailable"
+
+    result = _apply(tmp_path, _request(tmp_path, "banded", "reset"))
+
+    assert result.document.load_status == "ready"
+    assert "config=1" not in (tmp_path / "main.py").read_text()
+
+
+def test_recover_drops_an_unreadable_contract_and_keeps_the_code(tmp_path):
+    # It failed the whole document; Recover derives the annotation again from
+    # the settings, as for a stale one, and the code survives (Reset would not).
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        _TWO_SOURCES + '@pipeline.polars(contract="none")\ndef later(quotes):\n'
+        "    df = quotes.head(1)\n    return df\n"
+    )
+
+    result = _apply(tmp_path, _request(tmp_path, "later", "recover"))
+
+    assert result.document.load_status == "ready"
+    assert ("/contract", "removed") in {
+        (change.path, change.outcome) for change in result.field_changes
+    }
+    source = (tmp_path / "main.py").read_text()
+    assert 'contract="none"' not in source
+    assert "df = quotes.head(1)" in source

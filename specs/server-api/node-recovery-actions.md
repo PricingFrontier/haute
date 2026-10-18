@@ -79,8 +79,9 @@ carries as its remediation. The author rewrites it, or removes the node.
   scaffolding: recover derives it from the recovered settings exactly as the parse-time check does (never loading an
   external model artifact), and a declared contract supplies only the sides that
   derivation leaves opaque, so an annotation left stale by a settings edit is replaced
-  rather than carried forward. The recovered sidecar holds no `contract` key; the
-  annotation lives on the decorator. The applied node must load (available, or blocked only by an upstream
+  rather than carried forward. An annotation that cannot be read at all is dropped and
+  reported as `/contract` removed, so the regenerated decorator derives it the same way.
+  The recovered sidecar holds no `contract` key; the annotation lives on the decorator. The applied node must load (available, or blocked only by an upstream
   failure) — completeness and execution-readiness are explicitly not plan gates.
   A node inside a submodel's file is a target like any other, named by that file and its
   recovery id, also when its definition fails to load: the target resolves from the
