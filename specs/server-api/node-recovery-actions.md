@@ -89,7 +89,9 @@ carries as its remediation. The author rewrites it, or removes the node.
   failure) — completeness and execution-readiness are explicitly not plan gates.
   A node inside a submodel's file is a target like any other, named by that file and its
   recovery id, also when its definition fails to load: the target resolves from the
-  definition's recovered graph, and the action rewrites the submodel's file.
+  definition's recovered graph, and the action rewrites the submodel's file. Its inputs are
+  its edges in that graph and the definition's public input ports that target it, each bound
+  by the port's name (and an Edge Join's role by the port target's handle).
   Identity, description, position, connections, and exclusively owned config references
   follow the Reset rules, so a damaged chain recovers in any order and the applied node
   may remain blocked solely by an unrepaired upstream. An unreadable
@@ -109,13 +111,18 @@ exist or is ambiguous, a duplicate declaration, a non-literal argument, an undec
 submodel port, a Quote or Workbench Input connection that names no frame) is an unresolved
 connection: there is no node to recover, and it blocks Reset and Recover settings on the
 nodes it touches. **Remove connection** deletes that one `connect()` statement, found by the
-connection's recovery id and the file it is in. The statement must be a standalone top-level
-`pipeline.connect(...)` (or `submodel.connect(...)` in a submodel file) holding only that
-connection, on lines of its own. A chained statement holding more than one connection is
-refused (`repair_connection_chain_mixed`), and so is a connection made by a parameter name
-rather than by a `connect()` statement (`repair_connection_not_declared`). The plan, commit,
-revision checks and rollback are the removal's; the commit verifies that the connection is
-gone. The nodes it joined are untouched.
+connection's recovery id and the file it is in. The statement must be a bare top-level
+`pipeline.connect(...)` (or `submodel.connect(...)` in a submodel file), on lines of its own:
+a chained statement, which can also hold another connection or a call such as a submodel
+registration, is refused (`repair_connection_chain_mixed`), and so is a connection made by a
+parameter name rather than by a `connect()` statement (`repair_connection_not_declared`).
+Planning previews the edit and refuses it (`repair_connection_removal_unsafe`) unless the
+file then recovers with the same nodes and edges and one fewer such connection, compared by
+authored identity, since a recovery id carries an ordinal that renumbers once a declaration
+is gone; the commit holds the write to that preview. The revision checks and rollback are
+the removal's. The nodes it joined are untouched. A parameter named after a Quote or
+Workbench Input itself, which no `connect()` binds to one of its tables, is its node's
+failure instead (`node_input_frame_missing`), which Recover settings rebinds.
 
 ## Consumer error attribution
 

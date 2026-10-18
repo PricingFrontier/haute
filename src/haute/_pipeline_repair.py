@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 import difflib
 import json
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -460,16 +461,24 @@ def _connect_statement(tree: ast.Module, span: RecoverySourceSpan, *, receiver: 
     for statement in tree.body:
         if not (statement.lineno <= span.start_line <= (statement.end_lineno or statement.lineno)):
             continue
-        links = _chained_receiver_calls(statement, receiver=receiver, method="connect")
-        if not links:
+        if not _chained_receiver_calls(statement, receiver=receiver, method="connect"):
             break
-        if len(links) > 1:
+        # Only a bare ``<receiver>.connect(...)`` holds nothing else: a chain can
+        # also hold another connection or a call such as a submodel registration.
+        call = statement.value if isinstance(statement, ast.Expr) else None
+        if not (
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "connect"
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id == receiver
+        ):
             raise PipelineRepairError(
                 "repair_connection_chain_mixed",
-                "A chained connection statement holds more than one connection; split it "
-                "before removing one.",
+                "This connection is chained with other calls in one statement; write each "
+                "connect() on its own line before removing one.",
             )
-        if (links[0].lineno, links[0].col_offset) != (span.start_line, span.start_column):
+        if (call.lineno, call.col_offset) != (span.start_line, span.start_column):
             break
         return statement
     raise PipelineRepairError(
@@ -852,6 +861,21 @@ def build_remove_connection_plan(
         after=updated_source,
         description=f"Remove the broken connection {label}.",
     )
+    # Recovery ids carry an ordinal that renumbers once a declaration is gone,
+    # so the removal is proven on authored identities instead: the edited file
+    # must recover with the same nodes and edges and one fewer such connection.
+    from haute._pipeline_repair_actions import _preview
+
+    preview = _preview(root, root_path, [edit])
+    if not _removes_only(
+        _recovery_snapshot(document),
+        _recovery_snapshot(preview),
+        _connection_identity(connection),
+    ):
+        raise PipelineRepairError(
+            "repair_connection_removal_unsafe",
+            "Removing this line would change more than this one connection; edit the file by hand.",
+        )
     public_diff, diff_truncated = _bounded_diff(edit)
     response = PipelineRepairPlanResponse(
         repair_kind="remove_connection",
@@ -876,7 +900,63 @@ def build_remove_connection_plan(
         edits=(edit,),
         root_path=root_path,
         target_path=target_path,
+        expected_structure=_recovery_structure(preview),
     )
+
+
+def _connection_identity(
+    connection: RecoveryUnresolvedConnection,
+) -> tuple[str, str, str | None, str | None]:
+    return (
+        connection.source_authored_id,
+        connection.target_authored_id,
+        connection.source_port,
+        connection.target_port,
+    )
+
+
+def _removes_only(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    identity: tuple[str, str, str | None, str | None],
+) -> bool:
+    """Whether *after* is *before* with one unresolved *identity* gone and nothing else changed."""
+
+    def by_file(definitions: dict[str, Any]) -> dict[str, Any]:
+        # A definition that fails to load is keyed by its path, a loaded one by
+        # its id, so mending one renames its key: compare by the file its nodes are in.
+        return {
+            (definition["nodes"][0][0] if definition["nodes"] else key): definition
+            for key, definition in definitions.items()
+        }
+
+    def unresolved(snapshot: dict[str, Any], scope: str) -> Counter[tuple[Any, ...]]:
+        counts = Counter((scope, *item) for item in snapshot["unresolved"])
+        for file, definition in by_file(snapshot["submodels"]).items():
+            counts.update(unresolved(definition, f"{scope}/{file}"))
+        return counts
+
+    def without_unresolved(snapshot: dict[str, Any]) -> dict[str, Any]:
+        # Edges compare by their ends: an edge from a submodel's output carries
+        # its port only while the definition fails to load.
+        return {
+            "nodes": sorted(snapshot["nodes"]),
+            "edges": sorted((edge[0], edge[1]) for edge in snapshot["edges"]),
+            "submodels": {
+                file: without_unresolved(definition)
+                for file, definition in by_file(snapshot["submodels"]).items()
+            },
+        }
+
+    if without_unresolved(before) != without_unresolved(after):
+        return False
+    gone = unresolved(before, "")
+    gone.subtract(unresolved(after, ""))
+    changed = [(key, count) for key, count in gone.items() if count]
+    if len(changed) != 1:
+        return False
+    (scope_and_identity, count) = changed[0]
+    return count == 1 and scope_and_identity[1:] == identity
 
 
 def apply_remove_connection_plan(
@@ -938,17 +1018,9 @@ def _commit_repair_plan(
                 "repair_post_write_conservation_failed",
                 "The repaired node/connection structure differs from the planned repair.",
             )
-        if plan.response.repair_kind == "remove_connection":
-            wanted = plan.response.target_source_file.replace("\\", "/").casefold()
-            if any(
-                connection.recovery_id == plan.response.target_recovery_id and declared_in == wanted
-                for connection, declared_in in _located_connections(document)
-            ):
-                raise PipelineRepairError(
-                    "repair_post_write_conservation_failed",
-                    "The selected connection remained after the repair was staged.",
-                )
-        else:
+        # A connection removal is held to its preview (expected_structure above),
+        # which planning proved is the document less that one connection.
+        if plan.response.repair_kind != "remove_connection":
             remaining_target = [
                 node
                 for node in _iter_recovery_nodes(document)
@@ -1037,6 +1109,11 @@ def apply_recover_unavailable_node_plan(
 
 def _recovery_structure(document: PipelineEditorDocument) -> str:
     """Stable authored identities for checking the staged document against its preview."""
+    return canonical_json(_recovery_snapshot(document))
+
+
+def _recovery_snapshot(document: PipelineEditorDocument) -> dict[str, Any]:
+    """Nodes, edges and unresolved connections by authored identity, never by recovery id."""
 
     def snapshot(graph: PipelineEditorDocument | RecoveryGraphSnapshot) -> dict[str, Any]:
         return {
@@ -1065,4 +1142,4 @@ def _recovery_structure(document: PipelineEditorDocument) -> str:
             },
         }
 
-    return canonical_json(snapshot(document))
+    return snapshot(document)

@@ -1097,3 +1097,72 @@ def test_recover_commits_in_a_file_a_stray_statement_keeps_degraded(tmp_path):
         "unkept_module_statement"
     ]
     assert 'maintain_order="left_right"' in (tmp_path / "main.py").read_text()
+
+
+_PORT_FED = {
+    "edge-join": (
+        '{"nodeId": "result", "handleId": "base"}',
+        "@submodel.polars\ndef rates():\n"
+        '    df = pl.LazyFrame({"quote_id": [1], "rate": [2.0]})\n    return df\n\n'
+        '@submodel.edge_join(how="left", on=["quote_id"])\ndef result(records, rates): ...\n\n'
+        'submodel.connect("rates", "result", target_port="join")\n',
+        'maintain_order="left_right"',
+    ),
+    "polars": (
+        '{"nodeId": "result", "handleId": None}',
+        '@submodel.polars(contract="none")\ndef result(records):\n'
+        "    df = records.head(1)\n    return df\n",
+        "df = records.head(1)",
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_PORT_FED))
+def test_recover_keeps_the_input_a_submodel_port_feeds(tmp_path, kind):
+    # A node inside a submodel is fed by the definition's public input port as
+    # well as by its edges; regenerated from the edges alone, it lost that
+    # input (a join without its base, a Polars node without its parameter).
+    from haute.schemas import PipelineRepairRecoverRequest
+
+    port_target, child_body, kept = _PORT_FED[kind]
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    child = tmp_path / "modules" / "Inputs.py"
+    child.parent.mkdir()
+    child.write_text(
+        "import haute\nimport polars as pl\n\n"
+        'submodel = haute.Submodel("Inputs", definition_id="Inputs", '
+        f'input_ports=[{{"name": "records", "targets": [{port_target}]}}], '
+        'output_ports=[{"name": "out", "source": {"nodeId": "result", "handleId": None}}], '
+        'pipeline_dir="..")\n\n' + child_body,
+        encoding="utf-8",
+    )
+    parent = tmp_path / "main.py"
+    parent.write_text(
+        'import haute\nimport polars as pl\n\npipeline = haute.Pipeline("demo")\n\n'
+        "@pipeline.polars\ndef quotes():\n"
+        '    df = pl.LazyFrame({"quote_id": [1]})\n    return df\n\n'
+        'pipeline.submodel("modules/Inputs.py", "Inputs")\n'
+        'pipeline.connect("quotes", "Inputs", target_port="records")\n',
+        encoding="utf-8",
+    )
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+    assert document.submodels is not None
+    (definition,) = document.submodels.values()
+    inner = next(n for n in definition.graph.nodes if n.authored_id == "result")
+    assert inner.availability == "unavailable"
+
+    result = _apply(
+        tmp_path,
+        PipelineRepairRecoverRequest(
+            source_file=document.source_file,
+            source_revision=document.source_revision,
+            target_source_file=inner.source_file,
+            target_recovery_id=inner.recovery_id,
+            action="recover",
+        ),
+    )
+
+    assert result.document.load_status == "ready"
+    source = child.read_text(encoding="utf-8")
+    assert "records" in source.split("def result(", 1)[1].split(")", 1)[0]
+    assert kept in source

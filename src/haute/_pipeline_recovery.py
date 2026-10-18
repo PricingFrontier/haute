@@ -870,12 +870,16 @@ def _build_recovery_graph(
                 )
                 implicit_ordinal += 1
                 continue
+            pair = (sources[0].recovery_id, target_candidate.recovery_id)
+            if pair in explicit_pairs or pair in seen_implicit:
+                continue
             if (
                 str(sources[0].node_type) in REQUEST_INPUT_KINDS
                 and source_id == sources[0].authored_id
             ):
-                # The parameter names the input, not one of its tables, so it
-                # binds no frame: the consumer's own failure, which Recover
+                # The parameter names the input, not one of its tables, and no
+                # connect() binds it (an input may name a table after itself), so
+                # it binds no frame: the consumer's own failure, which Recover
                 # settings rebinds to its connected inputs.
                 if target_candidate.availability == "ready":
                     diagnostic = _diagnostic(
@@ -893,9 +897,6 @@ def _build_recovery_graph(
                     diagnostics.append(diagnostic)
                     target_candidate.diagnostic_ids.append(diagnostic.diagnostic_id)
                     target_candidate.availability = "unavailable"
-                continue
-            pair = (sources[0].recovery_id, target_candidate.recovery_id)
-            if pair in explicit_pairs or pair in seen_implicit:
                 continue
             seen_implicit.add(pair)
             edge_specs.append(

@@ -145,6 +145,22 @@ def _target_graph(
     return graph
 
 
+def _definition_port_inputs(
+    document: PipelineEditorDocument, target: RecoveryPipelineNode
+) -> list[tuple[str, str | None]]:
+    """The public input ports of *target*'s submodel that feed it: (port name, handle)."""
+    for definition in (document.submodels or {}).values():
+        if not any(node is target for node in definition.graph.nodes):
+            continue
+        return [
+            (str(port["name"]), entry.get("handleId"))
+            for port in definition.input_ports
+            for entry in port.get("targets", [])
+            if entry.get("nodeId") == target.authored_id
+        ]
+    return []
+
+
 def _reset_node(
     root: Path,
     root_path: Path,
@@ -204,15 +220,18 @@ def _reset_node(
         )
     nodes = {node.recovery_id: node for node in graph.nodes}
     incoming = [edge for edge in graph.edges if edge.target_recovery_id == target.recovery_id]
+    # A node inside a submodel is also fed by the definition's public input
+    # ports, which bind it by the port's name; they are not edges of its graph.
+    port_inputs = _definition_port_inputs(document, target)
     if node_type == NodeType.EDGE_JOIN:
-        if {edge.target_handle for edge in incoming} != {"base", "join"} or len(incoming) != 2:
+        handles = [edge.target_handle for edge in incoming] + [h for _n, h in port_inputs]
+        if set(handles) != {"base", "join"} or len(handles) != 2:
             raise _unsupported("An Edge Join reset requires its base and join connections.")
-        incoming.sort(key=lambda edge: edge.target_handle != "base")
-    source_names: list[str] = []
+    named_inputs: list[tuple[str | None, str]] = []
     for edge in incoming:
         source = nodes[edge.source_recovery_id]
         if edge.input_name is not None:
-            source_names.append(edge.input_name)
+            named_inputs.append((edge.target_handle, edge.input_name))
             continue
         # A blocked or unavailable upstream still has authored identity: a damaged
         # chain resets, recovers and saves in any order, never upstream first.
@@ -221,19 +240,26 @@ def _reset_node(
             or source.default_input_name
         )
         if fallback:
-            source_names.append(fallback)
+            named_inputs.append((edge.target_handle, fallback))
             continue
         if source.node_type is None:
             raise _unsupported(
                 "The upstream node's identity is unknown; repair it before changing this node."
             )
-        source_names.append(
-            executable_input_name(
-                node_type=source.node_type,
-                label=source.label,
-                source_handle=edge.source_handle,
+        named_inputs.append(
+            (
+                edge.target_handle,
+                executable_input_name(
+                    node_type=source.node_type,
+                    label=source.label,
+                    source_handle=edge.source_handle,
+                ),
             )
         )
+    named_inputs.extend((handle, name) for name, handle in port_inputs)
+    if node_type == NodeType.EDGE_JOIN:
+        named_inputs.sort(key=lambda item: item[0] != "base")
+    source_names = [name for _handle, name in named_inputs]
     if len(set(source_names)) != len(source_names):
         raise _unsupported("Incoming node names are ambiguous.")
     if replacement_config is None and node_type is NodeType.EDGE_JOIN:

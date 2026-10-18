@@ -2540,6 +2540,79 @@ def test_remove_connection_deletes_only_the_broken_connect_line(
     assert [node.id for node in parse_pipeline_file(pipeline_file).nodes] == ["quotes", "priced"]
 
 
+def test_remove_connection_takes_out_one_duplicate_at_a_time(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recovery ids renumber once a declaration is gone, so the removal is judged by name."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(
+        tmp_path / "main.py", _CONNECTED + '    pipeline.connect("quotes", "priced")\n' * 2
+    )
+    monkeypatch.chdir(tmp_path)
+
+    for remaining in (2, 1):
+        document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+        response = client.post(
+            "/api/pipeline/repair/connection/remove/apply",
+            json=_connection_request(document, "connection_duplicate"),
+        )
+        assert response.status_code == 200, response.text
+        assert pipeline_file.read_text(encoding="utf-8").count("pipeline.connect(") == remaining
+
+    assert response.json()["document"]["load_status"] == "ready"
+
+
+def test_a_quote_input_named_after_its_table_keeps_its_connected_consumer(
+    tmp_path: Path,
+) -> None:
+    """An input may name a table after itself; a connect() binding that table is no mistake."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    config = tmp_path / "config" / "quote_input" / "quotes.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        '{"path": "data/request.json", "tables": [{"path": "$[:]", "label": "quotes", '
+        '"emit": true, "columns": [{"name": "id", "path": "$[:].id", "type": "int", '
+        '"status": "Confirmed", "selected": true}]}]}',
+        encoding="utf-8",
+    )
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("frames")
+
+        @pipeline.api_input(config="config/quote_input/quotes.json")
+        def quotes(): ...
+
+        @pipeline.polars
+        def priced(quotes):
+            return quotes
+
+        @pipeline.polars
+        def rates():
+            return None
+
+        @pipeline.edge_join(how="left", on=["id"])
+        def joined(priced, rates): ...
+
+        pipeline.connect("quotes", "priced", source_port="quotes")
+        pipeline.connect("priced", "joined", target_port="base")
+        pipeline.connect("rates", "joined", target_port="join")
+        """,
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    by_id = {node.authored_id: node for node in document.nodes}
+    assert by_id["priced"].availability == "ready"
+    assert by_id["joined"].availability == "unavailable"
+    assert [diagnostic.code for diagnostic in document.diagnostics] == ["node_config_invalid"]
+
+
 def test_remove_connection_refuses_a_stale_document_or_an_unknown_connection(
     tmp_path: Path,
     client: TestClient,
@@ -2587,13 +2660,20 @@ def test_remove_connection_reaches_a_broken_connection_inside_a_submodel(
         "@submodel.polars\ndef quotes():\n    return None\n\n"
         'submodel.connect("ghost", "quotes")\n',
     )
+    # The parent reads the submodel's output: once the definition loads, that
+    # edge is shown without its port, which is no change the removal made.
     pipeline_file = _write(
         tmp_path / "main.py",
         """
         import haute
         pipeline = haute.Pipeline("connections")
 
+        @pipeline.polars
+        def priced(out):
+            return out
+
         pipeline.submodel("modules/inputs.py", "inputs")
+        pipeline.connect("inputs", "priced", source_port="out")
         """,
     )
     monkeypatch.chdir(tmp_path)
@@ -2629,6 +2709,13 @@ def test_remove_connection_reaches_a_broken_connection_inside_a_submodel(
             "implicit_binding_ambiguous",
             "repair_connection_not_declared",
             id="parameter-name",
+        ),
+        pytest.param(
+            _CONNECTED
+            + '    pipeline.submodel("modules/inputs.py", "inputs").connect("ghost", "priced")\n',
+            "connection_endpoint_missing",
+            "repair_connection_chain_mixed",
+            id="chained-after-a-registration",
         ),
     ],
 )
