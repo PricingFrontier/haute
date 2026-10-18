@@ -2540,6 +2540,36 @@ def test_remove_connection_deletes_only_the_broken_connect_line(
     assert [node.id for node in parse_pipeline_file(pipeline_file).nodes] == ["quotes", "priced"]
 
 
+def test_remove_connection_refuses_a_stale_document_or_an_unknown_connection(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Planned against the document the editor showed, it never writes over a newer one."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(
+        tmp_path / "main.py", _CONNECTED + '    pipeline.connect("ghost", "priced")\n'
+    )
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    request = _connection_request(document, "connection_endpoint_missing")
+
+    unknown = client.post(
+        "/api/pipeline/repair/connection/remove/apply",
+        json={**request, "target_connection_id": "edge:not-in-this-file"},
+    )
+    assert unknown.status_code == 409
+    assert unknown.json()["detail"]["code"] == "repair_target_not_unique"
+
+    _write_bytes(pipeline_file, pipeline_file.read_bytes() + b"\n# concurrent external edit\n")
+    externally_edited = pipeline_file.read_bytes()
+    stale = client.post("/api/pipeline/repair/connection/remove/apply", json=request)
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "repair_revision_conflict"
+    assert pipeline_file.read_bytes() == externally_edited
+
+
 def test_remove_connection_reaches_a_broken_connection_inside_a_submodel(
     tmp_path: Path,
     client: TestClient,
