@@ -102,6 +102,20 @@ def test_a_data_output_refuses_one_in_a_format_written_through_arrow(
     assert not (tmp_path / f"out.{suffix}").exists()
 
 
+def test_a_data_output_keeps_one_in_a_format_polars_writes_itself(tmp_path: Path) -> None:
+    config = {
+        "outputType": "file",
+        "format": "csv",
+        "mode": "sink",
+        "path": "out.csv",
+        "arguments": {},
+    }
+
+    write_polars_output(_wide(), config, resolved_path=str(tmp_path / "out.csv"), node_id="out")
+
+    assert pl.read_csv(tmp_path / "out.csv")["c"].to_list() == [4, 6]
+
+
 def test_reading_a_file_that_holds_one_names_its_column(tmp_path: Path) -> None:
     path = tmp_path / "wide.parquet"
     _wide().collect().write_parquet(path)

@@ -340,10 +340,10 @@ def _quote_rows(facts: _FrameFacts) -> bool:
 
 
 def _without(
-    carries: Mapping[str, RequestValue] | None, columns: Iterable[str] | None
+    carries: Mapping[str, RequestValue], columns: Iterable[str] | None
 ) -> Mapping[str, RequestValue] | None:
     """*carries* less *columns*, which a node wrote; ``None`` when it may have written any."""
-    if carries is None or columns is None:
+    if columns is None:
         return None
     written = frozenset(columns)
     return {column: value for column, value in carries.items() if column not in written}

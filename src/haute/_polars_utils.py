@@ -620,20 +620,6 @@ def _streaming_sink_to_path(
     )
 
 
-def _eager_write_to_path(
-    df: pl.DataFrame,
-    target: Path,
-    *,
-    fmt: str,
-    compression: Literal["lz4", "zstd"],
-) -> None:
-    if fmt == "csv":
-        df.write_csv(target)
-    else:
-        refuse_wide_integers(df.schema)
-        df.write_parquet(target, compression=compression)
-
-
 _T = TypeVar("_T")
 
 

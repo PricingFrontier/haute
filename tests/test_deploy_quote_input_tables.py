@@ -289,6 +289,44 @@ def test_a_key_the_proof_cannot_follow_answers_one_quote_per_request(sample, tab
     assert _refusals(_graph(sample, tables=tables, band=band)) == [UNFOLLOWED]
 
 
+def _through(sample: Path, node_type: str, config: dict[str, Any]) -> PipelineGraph:
+    """The drivers through one node of *node_type*, nested under each quote."""
+    graph = _graph(sample).model_dump()
+    graph["nodes"][1] = _node("banded", node_type, config)
+    return PipelineGraph.model_validate(graph)
+
+
+def _band(output: str) -> dict[str, Any]:
+    return {"factors": [{"column": "age", "outputColumn": output, "rules": [{}]}]}
+
+
+@pytest.mark.parametrize(
+    ("node_type", "config", "refusals"),
+    [
+        ("banding", _band("band"), []),
+        ("banding", _band("quote_id"), [UNFOLLOWED]),
+        ("ratingStep", {"tables": [], "code": "df = df.with_columns(band=pl.lit('a'))"}, []),
+        ("modelScore", {"output_column": "band"}, []),
+        ("modelScore", {"output_column": "quote_id"}, [UNFOLLOWED]),
+    ],
+    ids=["banding", "banding-the-key", "rating-step", "model-score", "model-score-the-key"],
+)
+def test_a_node_writing_the_key_stops_the_proof(sample, node_type, config, refusals):
+    assert _refusals(_through(sample, node_type, config)) == refusals
+
+
+def test_a_node_whose_written_columns_are_unknown_cannot_be_followed(sample, monkeypatch):
+    monkeypatch.setattr("haute._contracts.get_column_contract", lambda *_args: (None, None))
+
+    assert _refusals(_through(sample, "banding", _band("band"))) == [UNFOLLOWED]
+
+
+def test_a_filter_reading_other_drivers_rows_answers_one_quote_per_request(sample):
+    graph = _graph(sample, band="df = drivers.filter(pl.col('age') > pl.col('age').mean())")
+
+    assert _refusals(graph) == [RowRefusal("banded", "banded", "filter: mean", "mixes")]
+
+
 def test_a_dropped_selection_of_columns_cannot_be_followed(sample):
     graph = _graph(
         sample, band="df = drivers.drop(cs.string()).with_columns(band=pl.lit('a'))"

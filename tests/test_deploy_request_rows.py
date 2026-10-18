@@ -595,14 +595,17 @@ def test_node_types_that_cannot_answer_in_order_are_refused(tmp_path):
 
 def test_a_quote_input_s_root_table_is_the_request_and_its_others_are_not():
     column = {"name": "x", "path": "$[:].x", "type": "int", "status": "Confirmed", "selected": True}
+    drivers = {
+        "path": "$[:].drivers[:]",
+        "label": "drivers",
+        "emit": True,
+        "columns": [{**column, "path": "$[:].drivers[:].age", "name": "age"}],
+    }
     tables = [
         {"path": "$[:]", "label": "quote", "emit": True, "columns": [column]},
-        {
-            "path": "$[:].drivers[:]",
-            "label": "drivers",
-            "emit": True,
-            "columns": [{**column, "path": "$[:].drivers[:].age", "name": "age"}],
-        },
+        drivers,
+        # A table that emits nothing gives no port.
+        {**drivers, "label": "unread", "emit": False},
     ]
     graph = PipelineGraph.model_validate(
         {
