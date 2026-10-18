@@ -1183,6 +1183,7 @@ def test_a_deployed_batch_keeps_one_top_level_object_per_row() -> None:
     )
 
     assert _assemble_document(field_frames) == [first, second]
+    assert _assemble_document(field_frames, top_level_per_row=True) == [first, first, second]
     with context.stage("output_assembly"):
         per_row = _assemble_document(field_frames, top_level_per_row=True)
     assert per_row == [first, first, second]
@@ -1191,6 +1192,26 @@ def test_a_deployed_batch_keeps_one_top_level_object_per_row() -> None:
     assert _assemble_document(nested_only, top_level_per_row=True) == _assemble_document(
         nested_only
     )
+
+
+def test_the_deploy_scorer_s_key_keeps_the_output_node_s_rows_apart() -> None:
+    from haute._output_assembler import DEPLOY_ANSWER_PER_ROW_CONFIG_KEY
+
+    mapping = [
+        {"source_port": "quotes", "source_column": "id", "output_path": "$[:].id", "enabled": True}
+    ]
+    quotes = pl.LazyFrame({"id": [1, 1]})
+
+    def assembled(config: dict[str, object]) -> list[dict[str, object]]:
+        frame = assemble_output_from_config(quotes, config=config, source_names=["quotes"])
+        # The in-memory engine runs the assembly's scan on this thread.
+        return frame.collect(engine="in-memory").to_dicts()
+
+    assert assembled({"outputMapping": mapping}) == [{"id": 1}]
+    assert assembled({"outputMapping": mapping, DEPLOY_ANSWER_PER_ROW_CONFIG_KEY: True}) == [
+        {"id": 1},
+        {"id": 1},
+    ]
 
 
 def test_limited_assembly_collapses_duplicate_root_rows() -> None:

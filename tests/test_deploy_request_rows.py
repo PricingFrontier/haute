@@ -754,6 +754,33 @@ def test_a_quote_answered_with_no_row_fails_a_batch_answered_quote_by_quote(rema
     assert _score(graph, remap, SORTED, QUOTES.slice(1, 1)).height == 0
 
 
+def test_a_batch_answered_quote_by_quote_holds_its_caller_s_admission_to_the_end(remap):
+    graph = _priced_graph(ORDERED_LEFT, remap, after="df = priced.sort('rate')")
+
+    def answer(context: Any, *, retain: bool) -> pl.DataFrame:
+        return score_graph(
+            graph=graph,
+            input_df=QUOTES,
+            input_node_ids=["quotes"],
+            output_node_id="out",
+            artifact_paths=remap,
+            execution_context=context,
+            retain_admission_on_success=retain,
+            request_rows=SORTED,
+        )
+
+    retained = admit_deploy_execution(operation="deploy_quote", row_count=QUOTES.height)
+    try:
+        assert answer(retained, retain=True).height == QUOTES.height
+        # Held across every quote and past the last, for the caller's own conversion.
+        assert not retained.lease.released
+    finally:
+        retained.release_admission()
+    released = admit_deploy_execution(operation="deploy_quote", row_count=QUOTES.height)
+    assert answer(released, retain=False).height == QUOTES.height
+    assert released.lease.released
+
+
 def test_a_batch_answered_quote_by_quote_is_never_one_lazy_plan(remap):
     graph = _priced_graph(ORDERED_LEFT, remap, after="df = priced.sort('rate')")
 
