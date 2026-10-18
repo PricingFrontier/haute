@@ -893,9 +893,12 @@ def _csv_first_line_names(
 
     The scanner decodes only UTF-8. For another encoding the eager reader decodes
     the whole file in Python and parses the result; this decodes a prefix of the
-    file the same way, cut after its last complete line, and lets Polars parse
-    that, so the dialect's rules stay Polars' own. The prefix doubles until Polars
-    reads a row past the header from it, or it holds the whole file.
+    file the same way, cut after its last complete line, and lets Polars read the
+    header from it as the scanner does, without parsing a data row, so the
+    dialect's rules stay Polars' own and the row options do not apply. A prefix
+    can end inside the header (after many skipped lines, or inside a quoted name
+    holding a line break), so the prefix doubles until two prefixes read the same
+    names, or it holds the whole file.
     """
     encoding = str(dialect.get("encoding", "utf8"))
     if encoding in {"utf8", "utf8-lossy"}:
@@ -913,6 +916,7 @@ def _csv_first_line_names(
     as_utf8 = {**{k: v for k, v in dialect.items() if k != "glob"}, "encoding": "utf8"}
     eol = str(dialect.get("eol_char") or "\n")
     size = _CSV_HEADER_PREFIX_BYTES
+    previous: list[str] | None = None
     with Path(source).open("rb") as handle:
         while True:
             handle.seek(0)
@@ -922,19 +926,20 @@ def _csv_first_line_names(
             if not whole:
                 text = text[: text.rfind(eol) + 1]
             try:
-                first = pl.read_csv(
-                    text.encode("utf-8"),
-                    has_header=has_header,
-                    infer_schema=False,
-                    n_rows=1,
-                    **as_utf8,
+                names: list[str] | None = (
+                    pl.scan_csv(
+                        text.encode("utf-8"), has_header=has_header, infer_schema=False, **as_utf8
+                    )
+                    .collect_schema()
+                    .names()
                 )
             except pl.exceptions.PolarsError:
                 if whole:
                     raise
-            else:
-                if first.height or whole:
-                    return first.columns
+                names = None
+            if names is not None and (whole or names == previous):
+                return names
+            previous = names
             size *= 2
 
 

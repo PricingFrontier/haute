@@ -729,8 +729,11 @@ is no eager dataframe or collect-then-write fallback.
   decodes another `encoding` in Python before it parses, so for such a file
   `_csv_first_line_names` decodes a 64 KiB prefix the same way (a `-lossy` codec
   replacing what it cannot decode), cuts it after its last complete line, and has Polars
-  parse the header and one row from it, doubling the prefix until a row past the header
-  parses or the prefix holds the whole file.
+  read the header from it as the scanner reads a UTF-8 file's, parsing no data row, so the
+  read's row options (`truncate_ragged_lines`, `skip_rows_after_header`) never apply to
+  the check. A prefix can end inside the header (after many skipped lines, or inside a
+  quoted name holding a line break), so the prefix doubles until two prefixes read the
+  same names or the prefix holds the whole file.
 - Argument *defaults* are Polars'. haute forwards what a node config sets and takes the
   installed Polars' behaviour for everything else, so a default that moves inside the
   specifier moves haute's results with it. That is reported by

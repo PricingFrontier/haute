@@ -832,6 +832,49 @@ class TestColumnsAreNamedByTheHeaderOrTheConfig:
         with pytest.raises(PolarsIoConfigError, match=r"schema names \['cafe'\] the header"):
             read(headed, schema={"amount": "int64", "cafe": "str", "id": "int64"})
 
+    @pytest.mark.parametrize(
+        ("rows", "arguments"),
+        [
+            ("1,Zo\u00eb,discard\n", {"truncate_ragged_lines": True}),
+            ("generated 01/02/2026\n1,Zo\u00eb\n", {"skip_rows_after_header": 1}),
+        ],
+    )
+    def test_a_windows_1252_csv_s_row_options_apply_only_to_its_read(
+        self, haute_scratch, rows: str, arguments: dict[str, object]
+    ) -> None:
+        """The header check reads the header alone, as the scanner does for UTF-8."""
+        path = haute_scratch / "rows.csv"
+        path.write_bytes(("id,name\n" + rows).encode("cp1252"))
+        config = {
+            "format": "csv",
+            "mode": "read",
+            "path": str(path),
+            "arguments": {
+                "encoding": "windows-1252",
+                "schema": {"name": "str", "id": "int64"},
+                **arguments,
+            },
+        }
+
+        assert read_polars_input(config).collect().to_dicts() == [{"name": "Zo\u00eb", "id": 1}]
+
+    def test_a_quoted_header_name_cut_by_the_first_read_is_read_whole(self, haute_scratch) -> None:
+        path = haute_scratch / "quoted.csv"
+        # The first read ends inside the second, quoted name, which holds a line break.
+        first = "x" * (64 * 1024 - 10)
+        second = "long\n" + "y" * 40
+        path.write_bytes(f'{first},"{second}"\n1,2\n'.encode("cp1252"))
+        config = {
+            "format": "csv",
+            "mode": "read",
+            "path": str(path),
+            "arguments": {"encoding": "windows-1252", "schema": {second: "str", first: "str"}},
+        }
+
+        read = read_polars_input(config).collect()
+
+        assert read.rows() == [("2", "1")]
+
     def test_a_header_beyond_the_first_read_of_a_windows_1252_csv_is_found(
         self, haute_scratch
     ) -> None:
