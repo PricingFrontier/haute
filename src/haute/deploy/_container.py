@@ -380,7 +380,7 @@ from haute._execution_admission import (
 )
 from haute._execution_context import ExecutionCancelledError, ExecutionMemoryLimitExceededError
 from haute._output_assembler import render_output_document
-from haute._polars_utils import bounded_collect_batches
+from haute._polars_utils import bounded_collect_batches, streaming_collect
 from haute._types import PipelineGraph
 from haute.errors import HauteError, BoundedMemoryUnsupportedError, is_public_contract_error
 from haute.deploy._request_limits import (
@@ -587,7 +587,7 @@ def _quote_ndjson_chunks(spool):
 def _batch_response_content(result):
     row_count = result.row_count
     returned_rows = min(row_count, _QUOTE_RESPONSE_ROW_LIMIT)
-    frame = pl.scan_parquet(result.result_path).head(returned_rows).collect(engine="streaming")
+    frame = streaming_collect(pl.scan_parquet(result.result_path).head(returned_rows))
     return {{
         "rows": render_output_document(frame),
         "row_count": row_count,

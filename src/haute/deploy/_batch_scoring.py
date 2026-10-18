@@ -39,7 +39,7 @@ from haute._execution_context import (
     ExecutionProfile,
 )
 from haute._logging import get_logger
-from haute._polars_utils import bounded_sink
+from haute._polars_utils import bounded_sink, streaming_collect
 from haute._types import PipelineGraph
 from haute._worker_isolation import IsolatedWorkerConfig, worker_config_for_memory_policy
 from haute.deploy._request_rows import RequestRows, check_answer_rows, refuse_multi_quote
@@ -135,7 +135,7 @@ class BatchScoreResult:
 
 def _parquet_row_count(path: str | Path) -> int:
     """Return the row count of a sunk parquet without materialising its rows."""
-    return int(pl.scan_parquet(path).select(pl.len()).collect(engine="streaming").item())
+    return int(streaming_collect(pl.scan_parquet(path).select(pl.len())).item())
 
 
 def _remove_batch_temp_dir(temp_dir: str, *, primary_error: BaseException | None) -> None:

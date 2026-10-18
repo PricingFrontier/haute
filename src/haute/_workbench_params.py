@@ -19,6 +19,7 @@ from pathlib import Path
 import polars as pl
 
 from haute._artifact_paths import ordinary_path_problem
+from haute._polars_utils import streaming_collect
 from haute._project_layout import pipeline_files_folder
 from haute._workbench_config import WorkbenchError
 from haute._workbench_form import FormSpec
@@ -125,13 +126,14 @@ def read_param_file(project_root: Path, file: str, column: str | None = None) ->
     if column not in columns:
         raise ParamFileError(f"{name} has no column {column}.", path=name)
     values = (
-        _read(path, name, columns=[column])
-        .lazy()
-        .select(pl.col(column).str.strip_chars())
-        .filter(pl.col(column).is_not_null() & (pl.col(column) != ""))
-        .unique(maintain_order=True)
-        .head(PARAM_VALUES_LIMIT + 1)
-        .collect(engine="streaming")
+        streaming_collect(
+            _read(path, name, columns=[column])
+            .lazy()
+            .select(pl.col(column).str.strip_chars())
+            .filter(pl.col(column).is_not_null() & (pl.col(column) != ""))
+            .unique(maintain_order=True)
+            .head(PARAM_VALUES_LIMIT + 1)
+        )
         .to_series()
         .to_list()
     )

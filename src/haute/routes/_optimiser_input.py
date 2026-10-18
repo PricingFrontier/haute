@@ -264,7 +264,6 @@ def forecast_resident_grid_bytes(
     """The resident grid's conservative peak, from row count and a decoded sample."""
     import polars as pl
 
-    from haute._polars_utils import cancellable_streaming_collect
     from haute._ram_estimate import (
         decoded_frame_row_width_bytes,
         estimate_optimiser_grid_peak_bytes,
@@ -272,11 +271,7 @@ def forecast_resident_grid_bytes(
 
     row_count = int(read_parquet_metadata(path)["row_count"])
     sample_lf = pl.scan_parquet(path).select(list(dict.fromkeys(columns))).head(512)
-    sample = (
-        sample_lf.collect(engine="streaming")
-        if execution_context is None
-        else cancellable_streaming_collect(sample_lf, execution_context=execution_context)
-    )
+    sample = streaming_collect(sample_lf, execution_context=execution_context)
     return estimate_optimiser_grid_peak_bytes(
         row_count=row_count,
         constraint_count=constraint_count,
@@ -343,14 +338,8 @@ def scenario_step_count(
     """
     import polars as pl
 
-    from haute._polars_utils import cancellable_streaming_collect
-
     max_lf = pl.scan_parquet(path).select(pl.col(scenario_index).max())
-    frame = (
-        max_lf.collect(engine="streaming")
-        if execution_context is None
-        else cancellable_streaming_collect(max_lf, execution_context=execution_context)
-    )
+    frame = streaming_collect(max_lf, execution_context=execution_context)
     largest = frame.item()
     return None if largest is None else int(largest) + 1
 
@@ -1205,12 +1194,8 @@ def quote_layout_fault(
     """
     import polars as pl
 
-    from haute._polars_utils import cancellable_streaming_collect
-
     def collect(lf: pl.LazyFrame) -> pl.DataFrame:
-        if execution_context is None:
-            return lf.collect(engine="streaming")
-        return cancellable_streaming_collect(lf, execution_context=execution_context)
+        return streaming_collect(lf, execution_context=execution_context)
 
     rows = (
         pl.scan_parquet(path)

@@ -52,7 +52,7 @@ from haute._host_memory import available_ram_bytes, require_positive_available_r
 from haute._logging import get_logger
 from haute._polars_operations import materialisation_factor_basis_points
 from haute._polars_selectors import preamble_selector_aliases
-from haute._polars_utils import read_parquet_metadata
+from haute._polars_utils import read_parquet_metadata, streaming_collect
 from haute._types import (
     REQUEST_INPUT_NODE_TYPES,
     GraphEdge,
@@ -644,11 +644,8 @@ def _probe_expanded_variable_widths(
     ]
     if not variable_columns:
         return MappingProxyType({})
-    probe = (
-        pl.scan_parquet(path)
-        .select(variable_columns)
-        .head(min(row_count, max_rows))
-        .collect(engine="streaming")
+    probe = streaming_collect(
+        pl.scan_parquet(path).select(variable_columns).head(min(row_count, max_rows))
     )
     if probe.height == 0:
         return MappingProxyType({})
@@ -724,7 +721,7 @@ def _workbench_input_port_metadata(node: GraphNode, port: str) -> _DetailedSourc
     if port not in labels:
         return None
     frame = workbench_table_frames(config, port_columns={port: None})[port]
-    return _detailed_dataframe_metadata(frame.collect(engine="streaming"), node.id)
+    return _detailed_dataframe_metadata(streaming_collect(frame), node.id)
 
 
 def _json_api_input_port_metadata(node: GraphNode, port: str) -> _DetailedSourceMetadata | None:
