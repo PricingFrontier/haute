@@ -536,12 +536,23 @@ class _Walk:
                 else _lost_like(inputs)
             )
         root = frames[top[0]]
-        if root.rows is _Rows.REQUEST:
-            return _REQUEST_FACTS
-        if not root.from_request:
-            return self.refuse(node, f"response top level from {top[0]}", "replaces")
-        # The request frame was lost upstream, where it was refused.
-        return _LOST
+        if root.rows is not _Rows.REQUEST:
+            if not root.from_request:
+                return self.refuse(node, f"response top level from {top[0]}", "replaces")
+            # The request frame was lost upstream, where it was refused.
+            return _LOST
+        # A nested level is placed under each quote by the values of the keys its rows
+        # carry, so rows derived from the request would sit under another quote when two
+        # quotes share a key or a node rewrites one; and a quote's other tables reach the
+        # response without the proof following them. Such a level is not proved.
+        nested = sorted(
+            port
+            for port, prefix in prefixes.items()
+            if prefix and port in frames and frames[port].from_request
+        )
+        for port in nested:
+            self.refuse(node, f"response nests {port!r} under each quote", "unproven")
+        return _LOST if nested else _REQUEST_FACTS
 
     # -- joins ---------------------------------------------------------------
 

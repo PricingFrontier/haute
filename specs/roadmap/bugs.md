@@ -15,7 +15,10 @@ step that works today for each, and drop it when the package lands. `BUG-27` to
 describes: the CLI's help, the offset tooltip, a tuned t-boost run's summary and the
 t-boost starter parameters in the modelling UI specification. `BUG-32` was found on
 17 October 2026 while delivering `PL2-12`: pyarrow cannot open a Parquet file that holds
-a 128-bit integer, which Polars 2 writes.
+a 128-bit integer, which Polars 2 writes. `BUG-33` was found on 18 October 2026 in the
+review of the Polars 2 branch: a response nesting a quote's drivers under it was taken
+as answering each quote alone, which the deploy proof did not establish, so such a
+deployment now answers one quote per request.
 
 ## Priorities
 
@@ -34,6 +37,7 @@ a 128-bit integer, which Polars 2 writes.
 | BUG-29 | Planned | P2 | A tuned t-boost run's summary says its published model is the winning trial's fit, not a refit. |
 | BUG-30 | Planned | P3 | The modelling UI specification lists the t-boost starter parameters and readiness issues the editor has. |
 | BUG-32 | Decision | P2 | A column holding a 128-bit integer fails with Haute's cast message wherever pyarrow would meet it, never with pyarrow's own error. |
+| BUG-33 | Decision | P2 | A deployment whose response nests a quote's other tables under it answers several quotes per request, each quote's nested rows its own. |
 
 ## Planned improvements
 
@@ -308,3 +312,33 @@ names the column and the cast.
 `src/haute/_source_cache.py::SourceCacheStore._metadata_from_path`;
 `src/haute/_json_shred/_writer.py::_BoundedParquetRowGroupWriter`;
 `src/haute/_polars_dtypes.py::wide_integer_message`.
+
+### BUG-33 — A response nesting a quote's tables answers several quotes per request
+**Why:** A Quote Input's other tables (a quote's drivers, say) hold rows derived from the
+request, and the response nests each such row under every quote whose key values it
+carries. The deploy proof (`prove_request_rows`) did not follow these tables: a drivers'
+mean taken over a batch gave each quote the mean of every quote's drivers, and two quotes
+of one request sharing the key their drivers nest by took each other's drivers, while the
+deployment claimed to answer each quote alone. Since 18 October 2026 a response nesting
+rows derived from the request is refused, so such a deployment answers one quote per
+request, and `haute impact`, which sends batches, cannot score it.
+
+**Plan:** Decide whether to prove these nestings. Proving one needs (1) a nested table's
+rows checked as the root table's are, so that a filter, sort, aggregate or join with
+another part of the request stops the proof; (2) every nested level holding rows derived
+from the request nesting under the quotes by at least one key; (3) a served request whose
+quotes repeat those keys refused before `output_fields` projects them away
+(`MultiQuoteRequestRefusedError` already answers 422 on the container's in-process and
+batch-worker paths and the Databricks model); and (4) either column tracking through every
+node type, so that a node rewriting a key stops the proof, or an accepted rule that a
+pipeline carries a nested row's keys as the request gave them.
+
+**Acceptance:** A response nesting a quote's drivers answers a request of several quotes
+exactly as it answers each quote alone, or refuses the request naming why.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/deploy/_request_rows.py::_Walk.response`;
+`src/haute/_output_assembler.py::_assemble_document` (nesting by relation keys);
+`tests/test_deploy_quote_input_tables.py::test_a_calculation_across_a_table_s_rows_answers_each_quote_alone`,
+`::test_two_quotes_sharing_the_key_their_drivers_nest_by_are_not_answered_together`.

@@ -175,7 +175,7 @@ graph without running it: every node from the request input to the response keep
 exactly one row per quote, in request order, each row computed from its own quote alone.
 A Quote Input's root table (`$[:]`), one row per quote, starts the proof, and a promoted
 Data Input's post-load code is its first step; a Quote Input's other tables hold a quote's
-array rows and are derived from the request, free to fill the response's nested parts. Row-local expressions (the operation registry's
+array rows and are derived from the request. Row-local expressions (the operation registry's
 row-local class), renames, drops and casts keep the rows, and so do Banding, Rating Step
 lookups (deduplicated and ordered by construction), Model Score, a ratebook Optimiser Apply
 read from the bundle, a Data Output, a collapsed Live Switch and the training nodes'
@@ -186,7 +186,13 @@ checked when the deployment is built (below), and a Constant is one row. A side 
 from the request is never proved, whatever the join declares: two parts of the request
 joined back together can pair one quote with another's row even when both sides' keys are
 unique (a branch that shifts the quote's key passes Polars' `validate`). The response's
-top level must come from the request side.
+top level must come from the request side, and no nested level may hold rows derived
+from the request: the response places a nested row under every quote whose key values
+it carries, so two quotes of one request sharing a key, or a node that rewrites one,
+would give a quote another's rows, and the proof does not follow which quote a row came
+from. A response nesting a quote's drivers under it therefore answers one quote per
+request. A nested level built only from what the deployment carries is a lookup by
+the quote's own key values and keeps the proof.
 
 Any other operation stops the proof, named by its node and operation and what it does to
 the quotes: a filter, a row limit, a duplicate removal or an inner, semi or anti join can
@@ -195,7 +201,8 @@ a full join, a join whose other side may hold a key twice or a Scenario Expander
 one; a join driven by another input answers with that input's rows; a group-by, an
 expression that reads other rows (an aggregate, a window, a shift, a rank) or an online
 Optimiser Apply (which answers in quote-id order) makes one quote's answer depend on the
-others, and so can a join with another part of the request; and code the proof cannot follow, an Optimiser Apply that loads its result from
+others, and so can a join with another part of the request; and a response nesting
+rows derived from the request, code the proof cannot follow, an Optimiser Apply that loads its result from
 MLflow when served and a submodel occurrence the deployed graph still holds (BUG-18) cannot
 be proved. A pipeline the proof does not cover still deploys and
 answers one quote per request: a request of several quotes is refused before anything is

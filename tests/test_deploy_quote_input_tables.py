@@ -3,7 +3,9 @@
 The editor shreds a Quote Input's sample through its tables, one frame per port. A
 deployed pipeline now shreds each served request the same way, in memory
 (``shred_request``), so each port receives its own table's rows and declared types, and
-a request that does not fit the tables is refused rather than answered without a row
+a request that does not fit the tables is refused rather than answered without a row.
+A response nesting a table's rows under the quotes answers one quote per request: the
+rows are placed under a quote by the keys they carry, which the proof does not check
 (specs/deploy, specs/json-shredding).
 """
 
@@ -29,6 +31,7 @@ from haute.deploy._container import _generate_app_source
 from haute.deploy._request_rows import RowRefusal, prove_request_rows, request_rows
 from haute.deploy._schema import _read_sample_row, infer_output_schema
 from haute.deploy._scorer import QuoteRequest, reads_records, score_graph
+from haute.errors import MultiQuoteRequestRefusedError
 from haute.execution import ExecutionProfile, execute_lazy_graph
 from tests.conftest import build_test_api_input_snapshots
 
@@ -74,12 +77,17 @@ def _node(node_id: str, node_type: str, config: dict[str, Any]) -> dict[str, Any
     return {"id": node_id, "data": {"label": node_id, "nodeType": node_type, "config": config}}
 
 
-def _graph(sample: Path, *, tables: list[dict[str, Any]] = TABLES) -> PipelineGraph:
+ROW_LOCAL_BAND = (
+    "df = drivers.with_columns(pl.when(pl.col('age') < 25).then(pl.lit('young'))"
+    ".otherwise(pl.lit('adult')).alias('band'))"
+)
+NESTED = RowRefusal("out", "out", "response nests 'banded' under each quote", "unproven")
+
+
+def _graph(
+    sample: Path, *, tables: list[dict[str, Any]] = TABLES, band: str = ROW_LOCAL_BAND
+) -> PipelineGraph:
     """Each quote answered with its drivers, banded, nested under it."""
-    band = (
-        "df = drivers.with_columns(pl.when(pl.col('age') < 25).then(pl.lit('young'))"
-        ".otherwise(pl.lit('adult')).alias('band'))"
-    )
     mapping = [
         _entry("quote", "quote_id", "$[:].quote_id"),
         _entry("quote", "region", "$[:].region"),
@@ -141,7 +149,7 @@ def test_each_port_receives_its_own_table_and_the_answer_matches_the_editor(samp
     graph = _graph(sample)
     assert reads_records(graph, ["request"])
 
-    deployed = _deployed(graph, QUOTES)
+    deployed = [answer for quote in QUOTES for answer in _deployed(graph, [quote])]
 
     assert deployed == EXPECTED
     # The editor reads the same quotes from the Quote Input's sample.
@@ -202,10 +210,10 @@ def test_a_request_that_does_not_fit_the_tables_is_refused(sample, quotes, messa
         )
 
 
-def test_nested_tables_keep_the_quotes_in_order_and_a_rejoin_answers_one_quote(sample):
+def test_a_nested_table_and_a_rejoin_answer_one_quote_per_request(sample):
     assert prove_request_rows(_graph(sample), ["request"], "out", {}) == (
-        "in_request_order",
-        (),
+        "refused",
+        (NESTED,),
         (),
     )
     rejoin = _graph(sample).model_dump()
@@ -258,6 +266,52 @@ def test_nested_tables_keep_the_quotes_in_order_and_a_rejoin_answers_one_quote(s
     )
 
 
+def test_a_calculation_across_a_table_s_rows_answers_each_quote_alone(sample):
+    """A drivers' mean taken over a batch would mix its quotes; each is priced alone."""
+    graph = _graph(sample, band="df = drivers.with_columns(pl.col('age').mean().alias('band'))")
+    rows = request_rows(graph, ["request"], "out", {})
+
+    assert rows.refusals == (NESTED,)
+    with pytest.raises(MultiQuoteRequestRefusedError, match="nests 'banded' under each quote"):
+        _deployed(graph, QUOTES)
+    alone = [_deployed(graph, [quote]) for quote in QUOTES[:2]]
+    assert [[d["band"] for d in answer[0]["drivers"]] for answer in alone] == [
+        [31.5, 31.5],
+        [61.0],
+    ]
+    # Unrefused, one pass over both quotes would give each the mean of all three drivers.
+    batch = score_graph(
+        graph=graph,
+        input_df=QuoteRequest(tuple(QUOTES[:2])),
+        input_node_ids=["request"],
+        output_node_id="out",
+    )
+    assert batch["drivers"].list.eval(pl.element().struct.field("band")).to_list() == [
+        [124 / 3, 124 / 3],
+        [124 / 3],
+    ]
+
+
+def test_two_quotes_sharing_the_key_their_drivers_nest_by_are_not_answered_together(sample):
+    shared = [QUOTES[0], {**QUOTES[1], "quote_id": QUOTES[0]["quote_id"]}]
+
+    with pytest.raises(MultiQuoteRequestRefusedError):
+        _deployed(_graph(sample), shared)
+    # Unrefused, each quote would take the other's drivers too.
+    batch = score_graph(
+        graph=_graph(sample),
+        input_df=QuoteRequest(tuple(shared)),
+        input_node_ids=["request"],
+        output_node_id="out",
+    )
+    ages = batch["drivers"].list.eval(pl.element().struct.field("age")).to_list()
+    assert ages == [[19, 44, 61], [19, 44, 61]]
+    assert [_deployed(_graph(sample), [quote])[0]["drivers"] for quote in shared] == [
+        EXPECTED[0]["drivers"],
+        EXPECTED[1]["drivers"],
+    ]
+
+
 def test_a_quote_input_without_a_root_table_cannot_answer_in_order(sample):
     graph = _graph(sample, tables=[TABLES[1]]).model_dump()
     graph["edges"] = [e for e in graph["edges"] if e["id"] != "q"]
@@ -306,7 +360,7 @@ def _load_app(root: Path, graph: PipelineGraph) -> Any:
         sys.modules.pop(module_name, None)
 
 
-def test_quote_answers_one_quote_and_several_through_their_tables(
+def test_quote_answers_one_quote_through_its_tables_and_refuses_several(
     sample, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
 ):
     container = haute_scratch / "container"
@@ -323,14 +377,14 @@ def test_quote_answers_one_quote_and_several_through_their_tables(
 
     one = client.post("/quote", json=QUOTES[0])
     several = client.post("/quote", json=QUOTES)
-    refused = client.post("/quote", json=[QUOTES[0], {"quote_id": 1, "drivers": ["x"]}])
+    misfit = client.post("/quote", json={"quote_id": 1, "region": "N", "drivers": ["x"]})
 
     assert one.status_code == 200, one.text
     assert one.json()["rows"] == [EXPECTED[0]]
-    assert several.status_code == 200, several.text
-    assert several.json()["rows"] == EXPECTED
-    assert refused.status_code == 422
-    assert refused.json()["error_code"] == "api_input_schema_invalid"
+    assert several.status_code == 422, several.text
+    assert several.json()["error_code"] == "multi_quote_request_refused"
+    assert misfit.status_code == 422
+    assert misfit.json()["error_code"] == "api_input_schema_invalid"
 
 
 def test_the_databricks_model_hands_the_quote_input_its_records(sample):
