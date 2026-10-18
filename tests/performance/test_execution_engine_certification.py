@@ -87,7 +87,14 @@ _PAIRED_SAMPLES = 3
 # ``interpolate`` is a narrow-frame case whose ratio sits at about 1.24 against a
 # 1.30 ceiling, close enough that three pairs let batch drift decide the result.
 # More pairs cost time only on that one operation.
-_PAIRED_SAMPLES_BY_OPERATION = {"interpolate": 5}
+# Two pairs for the binning probes, whose growth (13x to 23x on Windows) is an order of
+# magnitude past their witness, to keep the pull-request lane inside its time budget.
+_PAIRED_SAMPLES_BY_OPERATION = {
+    "interpolate": 5,
+    "bin_quantiles_expr": 2,
+    "bin_ranks_expr": 2,
+    "approx_quantile_expr": 2,
+}
 # A streaming policy is the safety-critical direction: an operator wrongly
 # recorded as streaming is one the planner will never admit. Every streaming
 # operator is bound by the full passthrough control, because a streaming
@@ -153,6 +160,15 @@ _OPERATION_CODE = {
     "shift_expr": "df = df.with_columns(pl.col('v1').shift(1).alias('v1_shift'))",
     "diff_expr": "df = df.with_columns(pl.col('v1').diff().alias('v1_diff'))",
     "pct_change_expr": "df = df.with_columns(pl.col('v1').pct_change().alias('v1_pct_change'))",
+    "bin_quantiles_expr": (
+        "df = df.with_columns(pl.col('v1').bin_quantiles(10, labels=False).alias('v1_decile'))"
+    ),
+    "bin_ranks_expr": (
+        "df = df.with_columns(pl.col('v1').bin_ranks(10, labels=False).alias('v1_rank_band'))"
+    ),
+    "approx_quantile_expr": (
+        "df = df.with_columns(pl.col('v1').approx_quantile(0.5).alias('v1_median'))"
+    ),
     "interpolate": "df = df.select('key', 'v1_gaps').interpolate()",
 }
 _TWO_INPUT_OPERATIONS = frozenset({"join", "join_asof"})
@@ -168,19 +184,32 @@ _OPERATION_RECEIVERS = {
     "shift_expr": OperationReceiver.EXPR,
     "diff_expr": OperationReceiver.EXPR,
     "pct_change_expr": OperationReceiver.EXPR,
+    "bin_quantiles_expr": OperationReceiver.EXPR,
+    "bin_ranks_expr": OperationReceiver.EXPR,
+    "approx_quantile_expr": OperationReceiver.EXPR,
 }
-# The neighbouring-row boundaries buffer state whose size depends on scheduling.
-# Each must show it does not stream in either of two ways: at the lane's rows its
-# paired-mean ratio exceeds the streaming ceiling, or measured again at this
-# multiple of the rows its extra memory over the scan control grows by at least
-# this factor (a constant buffer stays near 1.0). Neither alone is steady enough to
-# gate on: a single lag column's growth is one or two chunk-buffer steps on the
-# four-thread CI runner (1.44x to 2.46x across runs, where the ratio held at 1.39x
-# to 1.53x), and the ratio sits below the ceiling on hosts with a larger passthrough
-# floor (frame ``shift`` near 1.15x on Windows, where its growth is 3x or more).
-_NEIGHBOURING_ROW_BOUNDARY_PROBES = ("shift", "shift_expr", "diff_expr", "pct_change_expr")
+# The neighbouring-row boundaries buffer state whose size depends on scheduling, and
+# a column binned or broadcast from the whole column holds the frame until the
+# column is read. Each must show it does not stream in either of two ways: at the
+# lane's rows its paired-mean ratio exceeds the streaming ceiling, or measured again
+# at this multiple of the rows its extra memory over the scan control grows by at
+# least this factor (a constant buffer stays near 1.0). Neither alone is steady
+# enough to gate on: a single lag column's growth is one or two chunk-buffer steps on
+# the four-thread CI runner (1.44x to 2.46x across runs, where the ratio held at
+# 1.39x to 1.53x), and the ratio sits below the ceiling on hosts with a larger
+# passthrough floor (frame ``shift`` near 1.15x on Windows, where its growth is 3x or
+# more; the binning probes near 1.05x on Windows, where their growth is 13x to 23x).
+_GROWTH_WITNESSED_BOUNDARY_PROBES = (
+    "shift",
+    "shift_expr",
+    "diff_expr",
+    "pct_change_expr",
+    "bin_quantiles_expr",
+    "bin_ranks_expr",
+    "approx_quantile_expr",
+)
 _GROWTH_ROW_MULTIPLE = 4
-_MIN_NEIGHBOURING_ROW_GROWTH = 1.5
+_MIN_BOUNDARY_GROWTH = 1.5
 _STREAMING_POLICIES = frozenset({OperationPolicy.ROW_LOCAL, OperationPolicy.STREAMING})
 _RESILIENCE_SCALES = {
     "ci": {"calls": 120, "replacements": 8, "timeout_seconds": 120},
@@ -1496,6 +1525,7 @@ def _run_operation_memory_probe(
     operation_name: str,
     *,
     keep_sink: bool = False,
+    spill_budget_mb: int | None = None,
 ) -> dict[str, Any]:
     result_path = tmp_path / f"operation-{operation_name}.json"
     child_output = io.BytesIO()
@@ -1522,6 +1552,7 @@ def _run_operation_memory_probe(
             "--output",
             str(result_path),
             *(["--keep-sink"] if keep_sink else []),
+            *(["--spill-budget-mb", str(spill_budget_mb)] if spill_budget_mb is not None else []),
         ],
         enable_tracemalloc=False,
         poll_interval_seconds=0.005,
@@ -2166,11 +2197,11 @@ def test_global_operation_memory_policies_match_the_registry(
     assert not failures, "registry policy contradicted by measured peak RSS: " + "; ".join(failures)
 
 
-def test_neighbouring_row_boundaries_grow_with_their_input(
+def test_whole_column_boundaries_grow_with_their_input(
     tmp_path: Path,
     request: pytest.FixtureRequest,
 ) -> None:
-    """Witness the neighbouring-row boundaries by growth rather than a floor ratio.
+    """Witness the neighbouring-row and whole-column binning boundaries by growth.
 
     Each probe is measured against the full-width scan control at the lane's rows
     and at a multiple of them. A streaming operator's extra memory over the
@@ -2187,7 +2218,7 @@ def test_neighbouring_row_boundaries_grow_with_their_input(
     measurements: list[dict[str, Any]] = []
     failures: list[str] = []
     environment: dict[str, Any] = {}
-    for operation_name in _NEIGHBOURING_ROW_BOUNDARY_PROBES:
+    for operation_name in _GROWTH_WITNESSED_BOUNDARY_PROBES:
         policy = _registered_operation_policy(operation_name)
         record: dict[str, Any] = {
             "operation": operation_name,
@@ -2232,9 +2263,7 @@ def test_neighbouring_row_boundaries_grow_with_their_input(
                     f"must bound observed mean peak={paired['operation_mean_bytes']}"
                 )
         base_extra, scaled_extra = extra_by_size["base"], extra_by_size["scaled"]
-        grew = scaled_extra > 0 and scaled_extra >= _MIN_NEIGHBOURING_ROW_GROWTH * max(
-            base_extra, 0.0
-        )
+        grew = scaled_extra > 0 and scaled_extra >= _MIN_BOUNDARY_GROWTH * max(base_extra, 0.0)
         exceeds_ceiling = ratio_by_size["base"] > _MAX_STREAMING_FLOOR_RATIO
         record["growth"] = scaled_extra / base_extra if base_extra > 0 else None
         record["grew"] = grew
@@ -2245,7 +2274,7 @@ def test_neighbouring_row_boundaries_grow_with_their_input(
                 f"{fixtures_by_size['base']['fact_rows']} rows must exceed "
                 f"{_MAX_STREAMING_FLOOR_RATIO} of the scan control "
                 f"(got {ratio_by_size['base']:.2f}) or its extra memory must grow at least "
-                f"{_MIN_NEIGHBOURING_ROW_GROWTH}x for {_GROWTH_ROW_MULTIPLE}x the rows "
+                f"{_MIN_BOUNDARY_GROWTH}x for {_GROWTH_ROW_MULTIPLE}x the rows "
                 f"(got {base_extra:.0f} -> {scaled_extra:.0f} bytes)"
             )
         measurements.append(record)
@@ -2254,7 +2283,7 @@ def test_neighbouring_row_boundaries_grow_with_their_input(
         (
             "haute_perf_evidence",
             {
-                "scenario": "neighbouring_row_boundary_growth",
+                "scenario": "whole_column_boundary_growth",
                 "scale": "ci-operation-memory",
                 "execution_profiles": [ExecutionProfile.LAZY_SINK.value],
                 **environment,
@@ -2271,7 +2300,7 @@ def test_neighbouring_row_boundaries_grow_with_their_input(
                 "rss_contract": {
                     "paired_samples": _PAIRED_SAMPLES,
                     "growth_row_multiple": _GROWTH_ROW_MULTIPLE,
-                    "min_growth": _MIN_NEIGHBOURING_ROW_GROWTH,
+                    "min_growth": _MIN_BOUNDARY_GROWTH,
                     "max_streaming_floor_ratio": _MAX_STREAMING_FLOOR_RATIO,
                     "boundary_admission_bytes": _BOUNDARY_ADMISSION_BYTES,
                 },
@@ -2294,4 +2323,4 @@ def test_neighbouring_row_boundaries_grow_with_their_input(
             },
         )
     )
-    assert not failures, "neighbouring-row boundary evidence failed: " + "; ".join(failures)
+    assert not failures, "whole-column boundary evidence failed: " + "; ".join(failures)

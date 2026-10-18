@@ -832,9 +832,40 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
     _unproven_expr("bin_intervals", "per-row interval label from fixed breaks"),
     _unproven_expr("erf", "per-row error function"),
     _unproven_expr("erfc", "per-row complementary error function"),
-    _fan_in_expr("bin_quantiles", "bins by quantiles of the whole column"),
-    _fan_in_expr("bin_ranks", "bins by ranks across the whole column"),
-    _fan_in_expr("approx_quantile", "approximate quantile of the whole column"),
+    _op(
+        _EXPR,
+        "bin_quantiles",
+        _FAN_IN,
+        _P_BOUNDARY,
+        "bins by quantiles of the whole column. materialises: a decile column over the "
+        "full-width fact holds the frame until its quantiles are known, certified by the "
+        "fresh-process lane against the scan control and witnessed by growth at four times "
+        "the rows; the certified observed/(width x 3.0) ratio needs no margin",
+        memory_evidence="measured",
+    ),
+    _op(
+        _EXPR,
+        "bin_ranks",
+        _FAN_IN,
+        _P_BOUNDARY,
+        "bins by ranks across the whole column. materialises: a rank-band column over the "
+        "full-width fact holds the frame until its ranks are known, certified by the "
+        "fresh-process lane against the scan control and witnessed by growth at four times "
+        "the rows; the certified observed/(width x 3.0) ratio needs no margin",
+        memory_evidence="measured",
+    ),
+    _op(
+        _EXPR,
+        "approx_quantile",
+        _FAN_IN,
+        _P_BOUNDARY,
+        "approximate quantile of the whole column. materialises: set beside every row, as "
+        "a column, it holds the frame until the quantile is known (a reduction to one row "
+        "needs only its sketch, so this is the conservative side), certified by the "
+        "fresh-process lane against the scan control and witnessed by growth at four times "
+        "the rows; the certified observed/(width x 3.0) ratio needs no margin",
+        memory_evidence="measured",
+    ),
     _op(
         _EXPR,
         "map_elements",

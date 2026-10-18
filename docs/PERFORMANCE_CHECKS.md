@@ -145,6 +145,12 @@ uv run python scripts/run_perf_suite.py --polars-scale 1m
 uv run python scripts/run_perf_suite.py --polars-scale 10m
 ```
 
+Tests also marked `pytest.mark.perf_evidence` measure for a decision and assert none
+of their figures, such as the spilling and heap-trim measurements behind the memory
+policies. The pull-request perf job leaves them out with
+`--pytest-arg=-m "--pytest-arg=perf and not perf_evidence"`; the Performance workflow
+runs them and keeps their evidence in its artifacts.
+
 Generated scale fixtures are never committed. Keep the artifacts under the
 chosen output directory instead. They record semantic evidence and product metrics
 for the scenario, alongside the independent runner RSS baseline; they are not a

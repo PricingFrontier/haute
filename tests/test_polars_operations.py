@@ -355,8 +355,16 @@ def test_measured_streaming_global_operations_are_not_boundaries() -> None:
         assert entry.policy is not OperationPolicy.MATERIALISATION_BOUNDARY, name
 
 
-def test_windows_and_neighbouring_row_methods_are_the_boundary_expression_methods() -> None:
-    assert materialising_expression_methods() == {"over", "shift", "diff", "pct_change"}
+def test_windows_neighbouring_rows_and_whole_column_bins_are_the_boundary_expressions() -> None:
+    assert materialising_expression_methods() == {
+        "over",
+        "shift",
+        "diff",
+        "pct_change",
+        "bin_quantiles",
+        "bin_ranks",
+        "approx_quantile",
+    }
 
 
 def test_expression_namespace_names_are_polars_expression_namespaces() -> None:
@@ -393,6 +401,9 @@ def test_boundary_operator_memory_factors_are_pinned_to_the_evidence() -> None:
         "shift": 100,
         "diff": 100,
         "pct_change": 150,
+        "bin_quantiles": 100,
+        "bin_ranks": 100,
+        "approx_quantile": 100,
         "group_by": 100,
         # explode's estimate is unavailable, so its factor is never applied.
         "explode": 100,
@@ -631,6 +642,9 @@ def test_every_measured_operation_is_named_by_the_evidence_accessor() -> None:
         "shift",
         "diff",
         "pct_change",
+        "bin_quantiles",
+        "bin_ranks",
+        "approx_quantile",
     }
 
 

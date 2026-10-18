@@ -2223,8 +2223,11 @@ def prepare_data_output(
     from haute._polars_utils import _malloc_trim, streaming_collect
 
     # Joins and fan-outs are captured into shared snapshots under the seed
-    # plan, so Polars sees each as an independent plan (#24206) and the next
-    # run starts there. The plan is held until the output is written.
+    # plan: a branch reads its parent's snapshot instead of carrying its plan,
+    # and a chain of joins runs as separate stages, since Polars' streaming
+    # engine accumulates memory across joins run as one query
+    # (pola-rs/polars#24206). The next run starts there, and the plan is held
+    # until the output is written.
     plans = ExitStack()
     retain_staging = False
 

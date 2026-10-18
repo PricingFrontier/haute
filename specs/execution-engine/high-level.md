@@ -318,6 +318,12 @@ running heavy work in a child process the parent can kill on timeout or memory l
   boundary, which is conservative for a single lag or difference column; the
   same-named methods of an expression namespace (`list.shift`, `list.diff`,
   `arr.shift`) work within each row's value and never create a boundary.
+  Polars 2's quantile and rank binning (`bin_quantiles`, `bin_ranks`) and an
+  `approx_quantile` set beside every row hold the frame until the whole column is
+  read: at four times the rows their extra memory over the passthrough control grows
+  13 to 23 times, so they are boundaries recorded at the expression level too. An
+  `approx_quantile` reduced to one row needs only its sketch, which makes its
+  boundary the conservative side.
   `unpivot`, `rolling`, `group_by_dynamic`, `merge_sorted`,
   `interpolate`, and `filter` were measured at or below the streaming control
   matched to what they read rather than what they emit — a full-width passthrough
@@ -604,10 +610,11 @@ successful run does no extra work.
   A full preview-cache hit also reuses the immutable strategy result that produced the
   cached frame, so it retains projection warnings and provenance without repeating
   footer estimation. Any miss or cache extension plans afresh before materialisation.
-- **Materialise only at capture points.** Polars duplicates the upstream plan for
-  every downstream branch of a lazy frame (a known upstream limitation —
-  pola-rs/polars#24206); materialising *every* node would erase the benefit of staying
-  lazy at all, so a planned run writes only its capture points — a node with more than
+- **Materialise only at capture points.** A lazy frame read by several branches
+  carries its whole upstream plan into each, and Polars' streaming engine accumulates
+  memory across a chain of joins run as one query (pola-rs/polars#24206, open at
+  Polars 2.0, whose own workaround is to sink each stage and read it back);
+  materialising *every* node would erase the benefit of staying lazy at all, so a planned run writes only its capture points — a node with more than
   one parent or child along effective edges or that feeds a join, a materialising
   operation, a batch Model Score, and the producer a caller consumes — through the
   bounded sink into the shared snapshot store, and continues from what it wrote. A run

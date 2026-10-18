@@ -368,6 +368,37 @@ def test_neighbouring_row_expression_boundaries_preserve_ordering_and_schema(
     assert planned.equals(expected)
 
 
+@pytest.mark.parametrize(
+    ("operator", "code", "expression"),
+    [
+        (
+            "bin_quantiles",
+            "df = src.with_columns(pl.col('premium').bin_quantiles(4, labels=False).alias('q'))",
+            pl.col("premium").bin_quantiles(4, labels=False).alias("q"),
+        ),
+        (
+            "bin_ranks",
+            "df = src.with_columns(pl.col('premium').bin_ranks(4, labels=False).alias('r'))",
+            pl.col("premium").bin_ranks(4, labels=False).alias("r"),
+        ),
+        (
+            "approx_quantile",
+            "df = src.with_columns(pl.col('premium').approx_quantile(0.5).alias('median'))",
+            pl.col("premium").approx_quantile(0.5).alias("median"),
+        ),
+    ],
+)
+def test_whole_column_binning_boundaries_preserve_ordering_and_schema(
+    tmp_path: Path, operator: str, code: str, expression: pl.Expr
+) -> None:
+    """Proves: ordering, schema, and the bins computed over the whole column."""
+    planned, source = _run_single_input(tmp_path, code, operator, receiver="expr")
+
+    expected = _tail(source.with_columns(expression)).collect()
+    _assert_same_schema(planned, expected)
+    assert planned.equals(expected)
+
+
 def test_top_k_boundary_preserves_ordering_row_count_and_schema(tmp_path: Path) -> None:
     """Proves: ordering, row multiplicity, schema."""
     planned, source = _run_single_input(tmp_path, "df = src.top_k(25, by='premium')", "top_k")

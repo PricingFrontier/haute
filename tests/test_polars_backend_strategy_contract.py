@@ -2476,6 +2476,21 @@ _NEW_BOUNDARY_SHAPES: tuple[tuple[str, str, str], ...] = (
         "pct_change",
         "df = df.with_columns(pl.col('premium').pct_change().alias('change_rate'))",
     ),
+    (
+        "bin_quantiles",
+        "bin_quantiles",
+        "df = df.with_columns(pl.col('premium').bin_quantiles(4, labels=False).alias('band'))",
+    ),
+    (
+        "bin_ranks",
+        "bin_ranks",
+        "df = df.with_columns(pl.col('premium').bin_ranks(4, labels=False).alias('band'))",
+    ),
+    (
+        "approx_quantile",
+        "approx_quantile",
+        "df = df.with_columns(pl.col('premium').approx_quantile(0.5).alias('median'))",
+    ),
 )
 
 
