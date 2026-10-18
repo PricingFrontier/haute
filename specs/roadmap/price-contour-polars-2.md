@@ -9,9 +9,9 @@ Paths are price-contour's, at v0.6.0 (`cd3aac8`), unless they start with `src/ha
 Polars has not published Rust crates for Python Polars 2.0.0. So price-contour cannot yet be rebuilt on Polars 2's Rust code. What a release can do now, as 0.7.0:
 
 1. **Declare and test Polars 2.** price-contour declares `polars>=0.20`, and its CI has only ever tested Polars 1.38. No Rust change is needed.
-2. **Keep two result orders.** Three joins should state the row order Polars 2 no longer promises. No Rust change is needed.
+2. **Keep result row orders.** Four joins should state the row order Polars 2 no longer promises. No Rust change is needed.
 3. **Send only the columns a native call reads.** No Rust change is needed.
-4. **Move the bridge to pyo3-polars 0.28 (recommended).** This is the newest released bridge between Python Polars and the Rust crates. Its data path is the one Python Polars 2.0.0 ships. It stops copying every incoming column and needs no pyarrow. It is not Polars 2's Rust code.
+4. **Move the bridge to pyo3-polars 0.28 (recommended).** This is the newest released bridge between Python Polars and the Rust crates. Its data path is the one Python Polars 2.0.0 ships. It stops rechunking every incoming column and needs no pyarrow. It is not Polars 2's Rust code.
 5. **Publish only after CI passes.**
 
 Later, when Polars publishes Rust crates from its 2.0 tree, a further release moves to them.
@@ -62,7 +62,9 @@ Polars 2.0's `DataFrame.join` defaults `maintain_order` to `"none"`. Its documen
 - **`python/price_contour/_ratio_results.py:98-102`:** add `maintain_order="left"` to the inner join.
   - With ratio constraints, this frame becomes `SolveResult.dataframe`, `ApplyResult.dataframe` and the ratebook `quote_results`. Their rows "follow the grid's quote order" (`docs/DESIGN_DECISIONS.md:1184-1186`).
   - Its ratio totals are Float64 sums taken in row order (_ratio_results.py:49-50), so the order also fixes their last bits.
-- `python/price_contour/solver.py:1504-1509` (a join that only feeds sums) needs nothing.
+- **`python/price_contour/solver.py:1504-1509`:** add `maintain_order="left"` to the inner join in the ratio history replay.
+  - It feeds `_safe_ratio_from_columns`, whose Float64 sums become the public `history[*]["total_constraints"]` for ratio constraints (solver.py:1456-1458).
+  - Their values do not depend on the order, but their last bits do, as above.
 
 ### The one lazy query
 
@@ -76,8 +78,13 @@ Polars 2.0's `DataFrame.join` defaults `maintain_order` to `"none"`. Its documen
 - the quote id, scenario index, scenario value, objective and constraint columns;
 - a ratio constraint's numerator and denominator.
 
-Do this in `apply`, in `QuoteGridBuilder.append`, in `solve`, and wherever else a frame crosses.
+Where to select them:
+- `apply`, `solve` and the other Python wrappers can select the columns before they call the native module.
+- `QuoteGridBuilder` is the native class itself (`python/price_contour/builder.py:5`). Its `append` converts the whole frame (`crates/price-contour/src/builder_py.rs:97`) before any Python runs, and the class cannot be subclassed from Python. So:
+  - `python/price_contour/_grid_utils.py:34-42`, its internal caller, selects the columns before calling `append`;
+  - for other callers, either export a thin Python class that holds the native builder and selects the columns in its own `append`, or document that callers pass only the named columns.
 
+What it buys:
 - Unrelated columns then cost nothing.
 - A column the extension's Polars cannot import can no longer fail an apply. Examples are Polars 2's `Map` (added after the 0.55 crates, polars PR #28984) and `Struct`, `Decimal` or `Array`, whose Polars features the extension does not enable.
 - `with_explainer_columns` keeps returning every input column, because it builds them in Python.
@@ -90,8 +97,11 @@ Apart from the joins and the lazy query above, nothing in `python/price_contour`
 
 1. For each quote-id dtype (String, Categorical, Enum), a round trip through `ApplyOptimiser.apply`, `OnlineOptimiser.solve` and `build_grid_from_parquet_chunked`, asserting the returned schema and values.
 2. Parquet written by Python Polars 2.0 the way Haute writes it ("What Haute calls and sends"), read by `build_grid_from_parquet_chunked` and `build_ratebook_factor_contexts_from_parquet_chunked`. The file has a Categorical `quote_id`, Int32 `scenario_index`, Float32 values, and an extra column the reader does not select.
-3. An `apply` input with extra `pl.Map`, `pl.Struct` and `pl.Decimal` columns, which must not fail.
-4. Row order: `with_explainer_columns` on a shuffled input returns the input order, and ratio results follow the grid's quote order.
+3. An input with extra `pl.Map`, `pl.Struct` and `pl.Decimal` columns, through `ApplyOptimiser.apply` and through `QuoteGridBuilder.append` (or its wrapper), which must not fail.
+4. Row order:
+   - `with_explainer_columns` on a shuffled input returns the input order;
+   - ratio results follow the grid's quote order;
+   - a ratio solve's `history` totals equal the sums taken in that order.
 
 ### Docs
 
@@ -118,7 +128,7 @@ Apart from the joins and the lazy query above, nothing in `python/price_contour`
 | Rust crates | polars 0.52, PyO3 0.26 | polars 0.55, PyO3 0.29 |
 | Into Rust | `rechunk`, then `_newest_compat_level`, `CompatLevel._with_version`, `to_arrow(compat_level=...)` and pyarrow's `_export_to_c` (`src/types.rs:173-202` in 0.25.0) | `Series._s._export(ptr)` through Polars' own FFI, `polars_ffi::version_0` (`src/types.rs:176-185` in 0.28.0) |
 | Back to Python | `pl.Series._import_arrow_from_c` (`src/types.rs:256-333` in 0.25.0) | `pl.Series._import(ptr)` (`src/types.rs:242-251` in 0.28.0) |
-| Copies | Every incoming column is rechunked, so a multi-chunk column is copied | None: a multi-chunk column arrives as it is |
+| Copies | Every incoming column is rechunked, so a multi-chunk column is copied | No rechunk: numeric and string columns arrive as they are. Categorical and Enum columns are rebuilt from their strings (`CategoricalChunked::from_str_iter` in polars-core 0.55's dictionary importer, `crates/polars-core/src/series/from.rs`) |
 | pyarrow | Required | Not used |
 | Enum columns | Arrive in Rust as Categorical (polars issue #25993) | Arrive as `DataType::Enum` (fixed by polars PR #26000, in pyo3-polars 0.26) |
 
@@ -138,7 +148,10 @@ polars = "0.55"
 ```
 
 - **Polars features:** keep `parquet` and `dtype-categorical` (`crates/price-contour/Cargo.toml:15`).
-- **pyo3-polars features:** none are needed. `lazy` and `derive` are unused, and its `dtype-*` features only switch on the matching Polars features.
+- **pyo3-polars features:** none are needed.
+  - `lazy` and `derive` are unused.
+  - Its `dtype-*` features switch on the matching Polars dtype features, and the `PyDataType` conversions for those dtypes (`src/types.rs:395`, `413` and `442` in 0.28.0).
+  - price-contour converts no `PyDataType`, and it enables `dtype-categorical` on its own `polars` dependency.
 - **PyO3:** 0.30 is out (0.30.1 on 14 October), but pyo3-polars 0.28 requires 0.29, whose latest release is 0.29.3. A build links only one PyO3, so PyO3 and pyo3-polars move together.
 - **Lock:** regenerate `Cargo.lock`, and check that `cargo tree -d` shows a single `pyo3` and a single `polars-core`.
 - **Rust:** stable, at least 1.85. Polars uses edition 2024, and PyO3 0.29's MSRV is 1.83.
@@ -198,7 +211,7 @@ Polars has not yet published Rust crates from its 2.0 tree, and the next pyo3-po
 2. **Release 0.7.0, not 0.6.1.**
    - The supported Polars range and the dependency set change. price-contour's `AGENTS.md:83-90` makes a contract change before 1.0 a minor bump.
    - Haute's `<0.7` pin then keeps 0.7.0 out of Haute until Haute moves its pin and its guard test together.
-3. **Ship stage 2 in 0.7.0.** It is three code changes and a version bump, and it shares stage 1's testing. Deferring it keeps pyarrow and the copy of every incoming column.
+3. **Ship stage 2 in 0.7.0.** It is three code changes and a version bump, and it shares stage 1's testing. Deferring it keeps pyarrow and the rechunk of every incoming column.
 4. **Use the released crates, not a git pin.**
 
 ## What Haute calls and sends
@@ -237,17 +250,37 @@ Keep all of this unchanged in 0.7.0. Haute's guard checks every name and keyword
 5. The wheel requires `polars>=2.0,<3`, and does not require pyarrow if stage 2 shipped.
 6. Haute's ratebook frontier repro runs no slower than on 0.6.0. It is in `scripts/benchmarks/price_contour_ratebook_frontier`, whose README gives the steps.
 
-**Haute, against a local build before release.**
-- Haute's guard refuses a version outside its pin, so do this on a Haute branch with steps 1 and 2 of "Haute's side" applied first.
-- Build into Haute's environment with `uv run maturin develop --release` from the price-contour checkout.
-- Then run every Haute test module that drives the library with `uv run --no-sync` (the module list is `grep -l price_contour tests/*.py`), at least `tests/test_price_contour_guard.py`, `tests/test_optimiser_routes_real_library.py`, `tests/test_optimiser_apply.py`, `tests/test_optimiser_apply_trace_enrichment.py`, `tests/test_optimiser_frontier_materialisation.py`, `tests/test_optimiser_ratebook_apply_agreement.py`, `tests/test_optimiser_ratebook_choices.py`, `tests/test_optimiser_quotes.py`, `tests/test_optimiser_outcomes.py`, `tests/test_optimiser_segments.py`, `tests/test_optimiser_solver_session.py` and `tests/test_frontier_point_summary.py`.
-- price-contour's `AGENTS.md:56-81` already asks for `tests/test_optimiser_routes_real_library.py` when the API or a result shape changes. This release changes the boundary itself, so run the whole set.
+**Haute, against a local build before release.** Haute's guard refuses a version outside its pin, so do this on a Haute branch:
+1. Set the `price-contour` specifier in `pyproject.toml` and `REQUIRED_SPECIFIER` in `src/haute/_price_contour.py:49` to `>=0.7.0,<0.8`. If stage 2 shipped, also apply step 2 of "Haute's side". Do not relock: 0.7.0 is not on PyPI yet.
+2. In the price-contour checkout, build the wheel with `uv run maturin build --release`. It lands in `target/wheels/`.
+3. In the Haute checkout, install that wheel into Haute's environment: `uv pip install --python .venv/bin/python <wheel>` (`.venv\Scripts\python.exe` on Windows). Running `uv run maturin develop` from the price-contour checkout would install into price-contour's own environment instead.
+4. Check the install.
+   - `uv run --no-sync python -c "import importlib.metadata as m; print(m.version('price-contour'))"` prints `0.7.0`.
+   - Haute's guard logs `price_contour_verified` with source `direct URL <wheel path>`.
+   - A container build refuses a direct-URL install by design. The tests of container builds opt into the `released_price_contour` fixture (`tests/conftest.py:84-98`), which presents the install as a released wheel.
+5. Run every Haute test module that drives the library with `uv run --no-sync`. The module list is `grep -l price_contour tests/*.py`. Run at least these:
+   - `tests/test_price_contour_guard.py`
+   - `tests/test_optimiser_routes_real_library.py`
+   - `tests/test_optimiser_apply.py`
+   - `tests/test_optimiser_apply_trace_enrichment.py`
+   - `tests/test_optimiser_frontier_materialisation.py`
+   - `tests/test_optimiser_ratebook_apply_agreement.py`
+   - `tests/test_optimiser_ratebook_choices.py`
+   - `tests/test_optimiser_quotes.py`
+   - `tests/test_optimiser_outcomes.py`
+   - `tests/test_optimiser_segments.py`
+   - `tests/test_optimiser_solver_session.py`
+   - `tests/test_frontier_point_summary.py`
+
+   price-contour's `AGENTS.md:56-81` already asks for `tests/test_optimiser_routes_real_library.py` when the API or a result shape changes. This release changes the boundary itself, so run the whole set.
+
+Once 0.7.0 is on PyPI, relock (step 1 of "Haute's side") and run `uv sync --locked`, which replaces the local wheel with the published one.
 
 ## Haute's side after the release
 
 1. **Move the pin.**
-   - Set `price-contour>=0.7.0,<0.8` in `pyproject.toml`, and `REQUIRED_SPECIFIER` in `src/haute/_price_contour.py:49`; `tests/test_dependency_contracts.py` requires the two to be equal.
-   - Relock with CI's uv: `uvx --from "uv==0.8.22" uv lock`. A newer uv rewrites unrelated wheels.
+   - Set `price-contour>=0.7.0,<0.8` in `pyproject.toml`, and `REQUIRED_SPECIFIER` in `src/haute/_price_contour.py:49`, unless the pre-release check already did. `tests/test_dependency_contracts.py` requires the two to be equal.
+   - Once 0.7.0 is on PyPI, relock with CI's uv, `uvx --from "uv==0.8.22" uv lock`, then run `uv sync --locked`. A newer uv rewrites unrelated wheels.
 2. **Rewrite the guard's private-method test, if stage 2 shipped** (`tests/test_price_contour_guard.py:453`).
    - Today it deletes `pl.Series._import_arrow_from_c` and expects a `PanicException`. A stage-2 build no longer calls that method, so the round trip would pass and the test would fail.
    - Delete `pl.Series._import` instead, and assert the error the new path raises.

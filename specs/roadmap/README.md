@@ -89,7 +89,7 @@ specification for the price-contour project. No Rust Polars or pyo3-polars
 release matches Python Polars 2.0.0 yet. So it says what price-contour 0.7.0 can
 change now:
 - declaring and testing Polars 2;
-- keeping two result orders;
+- stating the row order of four joins;
 - sending only the columns a native call reads;
 - moving to pyo3-polars 0.28.
 

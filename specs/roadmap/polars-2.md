@@ -232,8 +232,8 @@ Polars 0.52 Rust crates. It moves frames through Polars' private Python methods
 `to_arrow(compat_level=...)`, rechunking every incoming column on the way. On
 Polars 2.0 all 139 tests that drive the real library pass, so nothing breaks
 today. But price-contour declares `polars>=0.20`, its own CI has only run Polars
-1.38, and two of its result orders rest on joins Polars 2 does not promise to keep
-in order.
+1.38, and the row order of its results rests on four joins Polars 2 does not
+promise to keep in order.
 
 **Plan:**
 - Once price-contour 0.7.0 is on PyPI, move `pyproject.toml`'s `price-contour`
