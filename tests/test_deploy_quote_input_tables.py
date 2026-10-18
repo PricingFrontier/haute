@@ -267,6 +267,8 @@ def test_steps_that_keep_each_driver_whole_keep_it_with_its_quote(sample, band):
         (TABLES, "df = drivers.cast(pl.Int32).with_columns(band=pl.lit('a'))"),
         # A quote sent without a key would take the fill value, which another may hold.
         (TABLES, "df = drivers.fill_null(0).with_columns(band=pl.lit('a'))"),
+        # A Fill missing values step with no columns chosen fills every column.
+        (TABLES, "df = drivers.with_columns(pl.all().fill_null(0), band=pl.lit('a'))"),
         (TABLES, "df = drivers.select(pl.all(), band=pl.lit('a'))"),
         # Read as text, the drivers' key is not the value the quote holds.
         (
@@ -283,7 +285,7 @@ def test_steps_that_keep_each_driver_whole_keep_it_with_its_quote(sample, band):
             ROW_LOCAL_BAND,
         ),
     ],
-    ids=["rewritten", "cast", "cast-all", "filled", "selector", "read-as-text"],
+    ids=["rewritten", "cast", "cast-all", "filled", "filled-step", "selector", "read-as-text"],
 )
 def test_a_key_the_proof_cannot_follow_answers_one_quote_per_request(sample, tables, band):
     assert _refusals(_graph(sample, tables=tables, band=band)) == [UNFOLLOWED]
