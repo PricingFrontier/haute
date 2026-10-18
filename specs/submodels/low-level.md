@@ -84,7 +84,14 @@ source, port names are unique across both input and output ports in the definiti
 refer to a node in the definition graph. Parsing a submodel file checks these rules
 (`check_submodel_interface`, which the definition model shares) and refuses a file that
 breaks them with a `ParseError` naming it, so the editor shows that submodel unavailable
-with the reason instead of failing the whole document.
+with the reason instead of failing the whole document. It checks the definition's node
+topology there too (an Explore node takes exactly one input and feeds nothing), counting
+the edges its public ports add (`definition_boundary_topology`, which the merge-time check
+shares), so the failure is the submodel's own and the editor lists that node inside it.
+A copy rule broken between occurrences (a copy naming a missing original or another
+copy, a definition with no owner or two, an input port bound twice) marks the
+occurrences it names unavailable (`submodel_instance_invalid`), each of which can be
+removed.
 
 The source form persists identity on both sides of the relationship:
 

@@ -109,6 +109,7 @@ nav:
     - Execution Strategy: building-models/execution-strategy.md
     - Project Files: building-models/project-files.md
     - Workbench: building-models/workbench.md
+    - Recovering a Pipeline: building-models/recovering-a-pipeline.md
     - Node Types:
       - building-models/nodes/index.md
       - Inputs:

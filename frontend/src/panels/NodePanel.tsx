@@ -966,6 +966,11 @@ function resettable(node: RecoveryNode): boolean {
   return rebuildsSettings(node) && effectiveNodeType(node) !== NODE_TYPES.EDGE_JOIN
 }
 
+/** Wrong connections, which rebuilding the settings cannot mend: only removal helps. */
+function connectionsBroken(data: HauteNodeData, diagnostics: PipelineDiagnostic[]): boolean {
+  return diagnosticsFor(data, diagnostics).some((diagnostic) => diagnostic.code === "node_topology_invalid")
+}
+
 /** An unavailable submodel's own unavailable nodes: the editor does not open its definition. */
 function unavailableDefinitionNodes(
   node: SimpleNode,
@@ -1002,8 +1007,9 @@ function UnavailableDefinitionNode({
     && typeof data._recoveryId === "string"
     ? { sourceFile: data._sourceFile, recoveryId: data._recoveryId }
     : null
-  // An unknown decorator or an instance has nothing to rebuild, but can still be removed.
-  const rebuilds = target !== null && rebuildsSettings(node)
+  // An unknown decorator, an instance or a node with wrong connections has
+  // nothing a rebuild can mend, but can still be removed.
+  const rebuilds = target !== null && rebuildsSettings(node) && !connectionsBroken(data, diagnostics)
   return (
     <li
       className="rounded-lg p-3 text-[11px] leading-relaxed"
@@ -1082,10 +1088,11 @@ function RecoveryNodePanel({
   const canRemove = availability === "unavailable"
     && canRepair
     && hasRecoveryTarget
-  // Recover and Reset share eligibility (unavailable, known ordinary, owned),
-  // except that an Edge Join cannot be reset.
-  const canRecover = canRemove && rebuildsSettings(node)
-  const canReset = canRemove && resettable(node)
+  // Recover and Reset share eligibility (unavailable, known ordinary, owned,
+  // connections sound), except that an Edge Join cannot be reset.
+  const settingsMendable = canRemove && !connectionsBroken(recoveryData, diagnostics)
+  const canRecover = settingsMendable && rebuildsSettings(node)
+  const canReset = settingsMendable && resettable(node)
   const innerNodes = availability === "unavailable" ? unavailableDefinitionNodes(node, submodels) : []
 
   return (

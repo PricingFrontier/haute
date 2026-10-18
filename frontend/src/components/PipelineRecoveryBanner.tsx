@@ -53,7 +53,7 @@ export default function PipelineRecoveryBanner({
         <AlertTriangle size={14} aria-hidden="true" />
         <span className="flex-1">
           Pipeline opened in recovery mode. {total} {total === 1 ? "issue" : "issues"} must be
-          resolved in source before editing, saving, or running the pipeline.
+          resolved before editing, saving, or running the pipeline.
         </span>
         {diagnosticsOmitted > 0 && (
           <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>

@@ -2627,6 +2627,107 @@ def test_remove_connection_refuses_what_is_not_one_connect_line_without_writing(
     assert pipeline_file.read_bytes() == before
 
 
+def _submodel_project(root: Path, *, input_ports: str, body: str, parent_extra: str = "") -> Path:
+    """A pipeline registering modules/inputs.py, whose ports and nodes are given."""
+    (root / "modules").mkdir()
+    _write(
+        root / "modules" / "inputs.py",
+        "import haute\nimport polars as pl\n\n"
+        f'submodel = haute.Submodel("inputs", definition_id="inputs", input_ports={input_ports}, '
+        'output_ports=[{"name": "out", "source": {"nodeId": "quotes", "handleId": None}}], '
+        'pipeline_dir="..")\n\n'
+        "@submodel.polars\ndef quotes():\n    return None\n\n" + body,
+    )
+    return _write(
+        root / "main.py",
+        "import haute\n"
+        'pipeline = haute.Pipeline("shapes")\n\n'
+        'pipeline.submodel("modules/inputs.py", "inputs")\n' + parent_extra,
+    )
+
+
+def test_an_explore_with_no_input_inside_a_submodel_is_listed_in_it(tmp_path: Path) -> None:
+    """Checked by the submodel's own parse, the failure is attributed to its node."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _submodel_project(
+        tmp_path, input_ports="[]", body="@submodel.explore\ndef look(): ...\n"
+    )
+    with pytest.raises(ParseError, match="exactly one incoming edge") as refused:
+        parse_pipeline_file(pipeline_file)
+    assert refused.value.context["source_file"].endswith("inputs.py")
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.submodels is not None
+    (definition,) = document.submodels.values()
+    look = next(node for node in definition.graph.nodes if node.authored_id == "look")
+    assert look.availability == "unavailable"
+    codes = {
+        item.code for item in document.diagnostics if item.diagnostic_id in look.diagnostic_ids
+    }
+    assert codes == {"node_topology_invalid"}
+
+
+def test_an_explore_a_port_feeds_is_not_flagged_in_an_unavailable_submodel(
+    tmp_path: Path,
+) -> None:
+    """The port is its input: recovery counts it, as the parse does."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _submodel_project(
+        tmp_path,
+        input_ports='[{"name": "records", "targets": [{"nodeId": "look", "handleId": None}]}]',
+        body="@submodel.explore\ndef look(records): ...\n\n"
+        "@submodel.polars\ndef rates():\n    return None\n\n"
+        '@submodel.edge_join(how="left", on=["id"])\ndef joined(quotes, rates): ...\n\n'
+        'submodel.connect("quotes", "joined", target_port="base")\n'
+        'submodel.connect("rates", "joined", target_port="join")\n',
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.submodels is not None
+    (definition,) = document.submodels.values()
+    by_id = {node.authored_id: node for node in definition.graph.nodes}
+    assert by_id["joined"].availability == "unavailable"
+    assert by_id["look"].availability == "ready"
+
+
+def test_a_submodel_copy_naming_a_missing_original_is_its_own_to_remove(
+    tmp_path: Path,
+) -> None:
+    """The copy breaks the rule, so its card is unavailable, and Remove takes it out."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute._pipeline_repair import apply_remove_unavailable_node_plan
+    from haute.schemas import PipelineRepairRemoveRequest
+
+    pipeline_file = _submodel_project(
+        tmp_path,
+        input_ports="[]",
+        body="",
+        parent_extra='pipeline.submodel("modules/inputs.py", "copy", instance_of="ghost")\n',
+    )
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    by_id = {node.authored_id: node for node in document.nodes}
+    assert by_id["inputs"].availability == "ready"
+    assert by_id["copy"].availability == "unavailable"
+    assert [item.code for item in document.diagnostics] == ["submodel_instance_invalid"]
+
+    result = apply_remove_unavailable_node_plan(
+        project_root=tmp_path,
+        request=PipelineRepairRemoveRequest(
+            source_file=document.source_file,
+            source_revision=document.source_revision,
+            target_source_file=by_id["copy"].source_file,
+            target_recovery_id=by_id["copy"].recovery_id,
+        ),
+    )
+
+    assert result.document.load_status == "ready"
+    assert "copy" not in pipeline_file.read_text(encoding="utf-8")
+
+
 def _quote_input_project(root: Path, consumer: str, connect: str) -> Path:
     """A Quote Input with one table, `quotes`, and a consumer written as given."""
     config = root / "config" / "quote_input" / "request.json"

@@ -644,6 +644,35 @@ describe("NodePanel", () => {
     expect(screen.getByRole("button", { name: "Remove unavailable node" })).toBeInTheDocument()
   })
 
+  it("only removes a node whose connections are wrong: rebuilding its settings cannot mend them", () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded",
+      capabilities: { can_repair: true },
+      diagnostics: [{
+        diagnostic_id: "explore-topology",
+        code: "node_topology_invalid",
+        severity: "error",
+        scope: "node",
+        message: "Explore nodes must have exactly one incoming edge.",
+        element_id: "look@3",
+        source_file: "main.py",
+        source_span: null,
+        remediation: null,
+        incident_id: null,
+      }],
+    }))
+    renderPanel({
+      onRemoveUnavailableNode: vi.fn(),
+      node: makeNode({ data: {
+        label: "look", description: "", nodeType: "explore", _loadAvailability: "unavailable",
+        _loadDiagnosticIds: ["explore-topology"], _sourceFile: "main.py", _recoveryId: "look@3",
+      } }),
+    })
+    expect(screen.queryByRole("button", { name: "Recover settings" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Reset node" })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Remove unavailable node" })).toBeInTheDocument()
+  })
+
   it("does not offer reset for an unavailable node instance", () => {
     useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
       load_status: "degraded",

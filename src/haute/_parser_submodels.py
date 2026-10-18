@@ -31,6 +31,7 @@ from haute._graph_builders import (
     _build_rf_nodes,
     _extract_decorated_nodes,
 )
+from haute._graph_shape import definition_boundary_topology, validate_graph_shape_contracts
 from haute._graph_utils import _edge_id, _sanitize_func_name
 from haute._parser_bindings import (
     assert_definition_parameters_bound,
@@ -498,6 +499,20 @@ def parse_submodel_source(
         assert_definition_parameters_bound(
             graph, graph._parser_input_ports, source_file=source_file
         )
+        incoming, outgoing = definition_boundary_topology(
+            graph._parser_input_ports, graph._parser_output_ports
+        )
+        try:
+            validate_graph_shape_contracts(
+                graph,
+                graph_label=f"definition:{source_file}",
+                extra_incoming_by_node=incoming,
+                extra_outgoing_by_node=outgoing,
+            )
+        except ParseError as exc:
+            # Located, the failure is this submodel's own, which the editor
+            # attributes to the node inside it.
+            raise ParseError(exc.message, source_file=source_file, **exc.context) from exc
     _validate_pipeline_dir(tree, source_file, _base_dir)
     return graph
 

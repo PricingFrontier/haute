@@ -38,6 +38,7 @@ from haute._graph_builders import (
     _extract_decorated_node_skeletons,
     _resolve_node_skeleton,
 )
+from haute._graph_shape import definition_boundary_topology
 from haute._graph_utils import REQUEST_INPUT_KINDS, edge_input_name, executable_input_name
 from haute._hashing import content_hash_bytes
 from haute._io import read_user_bytes_and_text, read_user_text
@@ -667,6 +668,8 @@ def _build_recovery_graph(
     positions: dict[str, dict[str, float]],
     diagnostics: list[PipelineRecoveryDiagnostic],
     initial_unresolved: list[RecoveryUnresolvedConnection] | None = None,
+    boundary_incoming: Mapping[str, Sequence[str]] | None = None,
+    boundary_outgoing: Mapping[str, Sequence[str]] | None = None,
 ) -> tuple[
     list[RecoveryPipelineNode],
     list[RecoveryPipelineEdge],
@@ -914,16 +917,21 @@ def _build_recovery_graph(
     # Graph-shape validation is currently node-local (Explore is the only
     # topology-constrained canonical type).  Attribute the failure to that
     # node and continue validating independent siblings.
+    # In a submodel, its public ports add edges of their own (*boundary_*).
     for candidate in candidates:
         if candidate.availability != "ready" or candidate.node_type != NodeType.EXPLORE:
             continue
-        incoming = [edge for edge in edge_specs if edge.target is candidate]
-        outgoing = [edge for edge in edge_specs if edge.source is candidate]
-        if len(incoming) == 1 and not outgoing:
+        incoming_count = sum(1 for edge in edge_specs if edge.target is candidate) + len(
+            (boundary_incoming or {}).get(candidate.authored_id, ())
+        )
+        outgoing_count = sum(1 for edge in edge_specs if edge.source is candidate) + len(
+            (boundary_outgoing or {}).get(candidate.authored_id, ())
+        )
+        if incoming_count == 1 and not outgoing_count:
             continue
         message = (
             "Explore nodes must have exactly one incoming edge."
-            if len(incoming) != 1
+            if incoming_count != 1
             else "Explore nodes cannot have outgoing edges."
         )
         diagnostic = _diagnostic(
@@ -1306,6 +1314,48 @@ def _attribute_binding_failure(
     failed.availability = "unavailable"
 
 
+def _attribute_instance_failure(
+    failure: BaseException | None,
+    candidates: Sequence[_RecoveredCandidate],
+    *,
+    source_file: str,
+    diagnostics: list[PipelineRecoveryDiagnostic],
+) -> None:
+    """Mark the submodel occurrences a copy rule names unavailable, with that rule.
+
+    Each occurrence registers fine on its own; only together do they break a
+    rule (a copy naming a missing original, a definition with no owner or two),
+    so the failure names the occurrences, and each can then be removed.
+    """
+    if not isinstance(failure, ParseError) or "definition_id" not in failure.context:
+        return
+    named = failure.context.get("instance_ids") or (
+        [failure.context["instance_id"]] if "instance_id" in failure.context else []
+    )
+    for candidate in candidates:
+        if (
+            candidate.node_type != NodeType.SUBMODEL
+            or candidate.authored_id not in named
+            or candidate.availability != "ready"
+        ):
+            continue
+        diagnostic = _diagnostic(
+            code="submodel_instance_invalid",
+            scope="node",
+            message=failure.message,
+            source_file=source_file,
+            element_id=candidate.recovery_id,
+            source_span=candidate.span,
+            remediation=(
+                "Remove the occurrence, or give it instance_of naming the definition's "
+                "one owner occurrence."
+            ),
+        )
+        diagnostics.append(diagnostic)
+        candidate.diagnostic_ids.append(diagnostic.diagnostic_id)
+        candidate.availability = "unavailable"
+
+
 def _recover_submodel_snapshot(
     child_path: Path,
     *,
@@ -1368,6 +1418,19 @@ def _recover_submodel_snapshot(
         diagnostics=diagnostics,
         definition=True,
     )
+    try:
+        _definition_id, input_ports, output_ports = _extract_definition_contract(tree)
+    except HauteError:
+        input_payload: list[dict[str, Any]] = []
+        output_payload: list[dict[str, Any]] = []
+        boundary_incoming: dict[str, list[str]] = {}
+        boundary_outgoing: dict[str, list[str]] = {}
+    else:
+        input_payload = [port.model_dump(mode="json", by_alias=True) for port in input_ports]
+        output_payload = [port.model_dump(mode="json", by_alias=True) for port in output_ports]
+        boundary_incoming, boundary_outgoing = definition_boundary_topology(
+            input_ports, output_ports
+        )
     nodes, edges, unresolved = _build_recovery_graph(
         candidates,
         connections,
@@ -1375,15 +1438,9 @@ def _recover_submodel_snapshot(
         positions=positions,
         diagnostics=diagnostics,
         initial_unresolved=initially_unresolved,
+        boundary_incoming=boundary_incoming,
+        boundary_outgoing=boundary_outgoing,
     )
-    try:
-        _definition_id, input_ports, output_ports = _extract_definition_contract(tree)
-    except HauteError:
-        input_payload: list[dict[str, Any]] = []
-        output_payload: list[dict[str, Any]] = []
-    else:
-        input_payload = [port.model_dump(mode="json", by_alias=True) for port in input_ports]
-        output_payload = [port.model_dump(mode="json", by_alias=True) for port in output_ports]
     return (
         RecoveryGraphSnapshot(
             nodes=nodes,
@@ -2203,6 +2260,9 @@ def _load_readable_pipeline_editor_document(
                 source_file=source_file,
                 diagnostics=diagnostics,
                 definition=False,
+            )
+            _attribute_instance_failure(
+                strict_failure, candidates, source_file=source_file, diagnostics=diagnostics
             )
             nodes, edges, unresolved = _build_recovery_graph(
                 candidates,
