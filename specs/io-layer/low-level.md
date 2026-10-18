@@ -4,8 +4,8 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/_io.py` | API-input flat-file adapters, source/schema validation, direct CSV/JSON/NDJSON/Parquet reads, and external-object loading. |
-| `src/haute/_polars_io_registry.py` | Canonical Data Input/Output format registry, strict config and argument validation, capability publication, and Polars invocation; `refuse_direct_map_columns` refuses a direct Parquet scan whose file holds a map, and `read_parquet_map_entries_for_snapshot` reads such a file for its snapshot through pyarrow (*Map columns* under Edge cases and invariants). |
+| `src/haute/_io.py` | API-input flat-file adapters, source/schema validation, direct CSV/JSON/NDJSON/Parquet reads (a Parquet file with a map column refused), and external-object loading. |
+| `src/haute/_polars_io_registry.py` | Canonical Data Input/Output format registry, strict config and argument validation, capability publication, and Polars invocation; `parquet_source_map_columns` finds a Parquet source's map columns in its files' own schema, `refuse_direct_map_columns` refuses a direct Parquet scan whose files hold a map, and `read_parquet_map_entries_for_snapshot` reads such a file for its snapshot through pyarrow and refuses a map in a source of several files (*Map columns* under Edge cases and invariants). |
 | `src/haute/_input_providers.py` | Provider dispatch, source identity/signature construction, explicit snapshot build, and leased snapshot resolution. |
 | `src/haute/_input_preparation.py` | Automatic snapshot preparation planned before execution: freshness check, cap gate, in-process or worker build, per-process single-flight, preparation records, and staging-token cleanup. |
 | `src/haute/_database_io.py` | Credential-free database locator/query validation and bounded read-only SQLite snapshot batches. |
@@ -762,9 +762,13 @@ is no eager dataframe or collect-then-write fallback.
 
 - Polars 2 reads an Arrow or Parquet map as its `Map` dtype, and its Parquet reader keeps
   only the last value of a key a map repeats, even when a scan asks for a list of
-  key-value structs. Haute's dtype vocabularies have no `Map`, and Polars 1 read every
-  map as a list of `{key, value}` structs holding every entry, so a pipeline receives that
-  shape on every path a source takes:
+  key-value structs, and when a `schema` argument names the map one. Haute's dtype
+  vocabularies have no `Map`, and Polars 1 read every map as a list of `{key, value}`
+  structs holding every entry, so a pipeline receives that shape on every path a source
+  takes. A Parquet source's map columns are found in its files' own schema
+  (`parquet_source_map_columns`), read from a footer with only the arguments that choose
+  the files (`glob`, `hidden_file_prefix`, `storage_options`, `credential_provider`), so
+  a configured `schema` cannot hide one:
   - A provider's Arrow batches (a Databricks fetch, a database query) are cast with
     pyarrow before the snapshot part is written. The cast shares the map's buffers and
     keeps the schema's and every field's metadata.
@@ -773,13 +777,18 @@ is no eager dataframe or collect-then-write fallback.
     reads it. That read applies `columns` (names or positions, in the order given) and
     `n_rows` itself, accepts the arguments that only change how fast a read runs, and
     refuses any other argument that is set, by name. A file that yields no rows still
-    writes its schema.
+    writes its schema. A source naming several files (a folder or a glob) whose files hold
+    a map is refused by name: pyarrow keeps every entry one file at a time, without the
+    file expansion and hive partitioning Polars applies to such a source.
   - A frame Polars read from any other source is cast in Polars before its parts are
     written. An Arrow IPC file keeps every entry this way; a lakehouse table, which
     Polars' Parquet reader reads, keeps the last value of a repeated key, and lakehouse
     writers keep a map's keys unique.
-  - A direct Parquet scan whose schema holds a map is refused before any row is read,
-    naming the map columns and the snapshot route (`mode` `"read"`).
+  - A direct Parquet scan whose files hold a map is refused before any row is read,
+    whatever `schema` it declares, naming the map columns and the snapshot route (`mode`
+    `"read"`). So is a Parquet file `_io.read_source` reads, the flat-file reader behind a
+    flat Quote Input, a training file, the deploy input schema and the file routes
+    (`SchemaMismatchError`).
   - Schema-only resolution of an input with no snapshot reports the shape its snapshot
     will hold.
 - An Arrow extension column Polars does not know loads as its storage type on every path,
@@ -862,7 +871,7 @@ failure sections above are the maintained answers.
 - `tests/test_external_file_nested_relative_path.py` verifies project-root relative external-file loading, absolute passthrough, and project-escape rejection.
 - `tests/test_pipeline_runtime_path_validation.py` verifies runtime path/graph validation, HTTP status mapping, sidecar/codegen case-collision and reserved-name protections, and safe rename/delete semantics.
 - `tests/test_read_user_text.py` verifies robust text/config/pipeline decoding across encodings and malformed inputs.
-- `tests/test_map_columns.py` pins the map policy: Polars' Parquet reader drops a repeated key (the reason for it); the Arrow cast keeps every entry, shares the map's buffers, reaches maps nested in structs, lists and maps, and keeps metadata; the Parquet read holds one row group at a time (counted reads at each yield), applies `columns` and `n_rows`, and yields an empty file's schema; a provider's batches, a Polars frame and a Parquet snapshot keep every entry, a Parquet snapshot refuses arguments its read cannot apply, a direct scan of a map-bearing file is refused, schema-only resolution reports the snapshot's shape, and an unknown extension column loads as its storage type on the direct, frame and Arrow paths in a process started with Haute's Polars settings.
+- `tests/test_map_columns.py` pins the map policy: Polars' Parquet reader drops a repeated key (the reason for it); the Arrow cast keeps every entry, shares the map's buffers, reaches maps nested in structs, lists and maps, and keeps metadata; the Parquet read holds one row group at a time (counted reads at each yield), applies `columns` and `n_rows`, and yields an empty file's schema; a provider's batches, a Polars frame and a Parquet snapshot keep every entry, a Parquet snapshot refuses arguments its read cannot apply, a direct scan of a map-bearing file is refused (also when its configured schema names the map a list of key-value structs, which a test shows reads it the same lossy way), so is a flat Quote Input's map-bearing file and a snapshot of a folder or glob of them (a folder without a map is unaffected), schema-only resolution reports the snapshot's shape, and an unknown extension column loads as its storage type on the direct, frame and Arrow paths in a process started with Haute's Polars settings.
 - `tests/test_polars_dtypes.py` pins the one dtype vocabulary: a Polars attribute that is not a dtype is rejected with the column and name, a rating descriptor is the shared codec's spec under rating's key names (and rejects dtypes the codec knows but rating does not support), and the feature-contract view, its MLflow projection and the rendered-dtype MLflow view map representative dtypes exactly, `parse_rendered_dtype` rebuilds scalar, parametric and nested dtypes from their rendering and rejects a name that is not a dtype or an expression that is not a literal; every dtype class Polars exports is covered by one sample at least, each of which round-trips exactly through the spec codec and its rendering, or (`Map`, `Extension`) is refused by `dtype_to_spec`, so a dtype a later Polars adds fails the test until the codec handles it; a categorical in a named pool round-trips with its pool, trains as categorical and is the rating descriptor `{"kind": "Categorical"}`; `tests/test_io.py` pins that declared API-input source dtypes accept the same vocabulary and reject anything else.
 - `tests/test_sink.py` verifies sink execution errors, parquet/CSV output, directory creation, scenario handling, compute failures, and response metadata.
 - `tests/test_data_output_seeding.py` drives writes through the write-output route with the sink worker in process: a second write seeds the producer the first captured and builds nothing; a write after a batch training run builds its producer, because a training capture holds only the columns training reads and a write reads them all, and captures it in full, which the next training run seeds; an in-process `write_data_output` seeds and captures too; no `haute_sink_` directory is written; a worker stopped, timed out, or killed at its cap leaves no capture staging and publishes nothing; the worker stages under the parent's token; the response metrics keep the parent's input preparation; a superseded capture is read from the run's own staging through the write, with the plan held until the write completes under the process chunk size; preparation that ends past the sink timeout — returning or failing — is a 504 that starts no worker, and otherwise the worker gets the remainder; a request cancelled during preparation stops it, and one cancelled while preparation still succeeds starts no worker; and a parent plan-opening failure (contract, corrupt cache, admission) starts no worker.

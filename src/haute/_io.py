@@ -17,6 +17,7 @@ import polars as pl
 from haute._execution_context import ExecutionProfile
 from haute._hashing import content_hash
 from haute._logging import get_logger
+from haute._map_columns import map_column_names
 from haute._polars_dtypes import parse_dtype
 from haute._polars_utils import (
     is_bounded_execution_profile,
@@ -481,6 +482,15 @@ def read_source(
         return _select_columns(lf, projection_columns)
 
     lf = pl.scan_parquet(path_string)
+    maps = map_column_names(lf.collect_schema())
+    if maps:
+        raise SchemaMismatchError(
+            f"The Parquet file has map column(s) {maps}, which Polars reads "
+            'keeping only the last value of a repeated key. A Data Input in mode "read" '
+            "reads such a file with every entry; anywhere else, write the file with each map "
+            "a list of key-value structs.",
+            path=path_string,
+        )
     _validate_declared_schema(lf, source_schema_overrides, path=path_string)
     return _select_columns(lf, projection_columns)
 

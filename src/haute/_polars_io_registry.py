@@ -1087,23 +1087,47 @@ def read_polars_input_for_snapshot(
     return _invoke_polars_input(fmt, callable_name, config, arguments), warning_code
 
 
-def refuse_direct_map_columns(path: str, frame: pl.LazyFrame) -> pl.LazyFrame:
-    """*frame*, a direct Parquet scan of *path*, unless the file holds a map column.
+# The arguments that choose which files a Parquet source names: the only ones a read of
+# the files' own schema passes on.
+_PARQUET_FILE_SELECTION_ARGUMENTS = frozenset(
+    {"glob", "hidden_file_prefix", "storage_options", "credential_provider"}
+)
 
-    Polars' Parquet reader keeps only the last value of a key a map repeats, so
-    a direct scan would change the data without a word. The scan's schema comes
-    from the file's footer, so no row is read before the refusal; a snapshot
-    build reads such a file through pyarrow instead (``haute._map_columns``).
+
+def parquet_source_map_columns(source: str, arguments: Mapping[str, Any]) -> list[str]:
+    """The columns of the Parquet files *source* names that hold a map, by their own schema.
+
+    Polars' Parquet reader keeps only the last value of a key a map repeats, and so
+    does a ``schema`` argument naming the map a list of key-value structs, which would
+    hide it. The files' schema is therefore read with only the arguments that choose
+    the files. It comes from a footer, so no row is read.
     """
-    maps = map_column_names(frame.collect_schema())
+    selection = {
+        name: value
+        for name, value in arguments.items()
+        if name in _PARQUET_FILE_SELECTION_ARGUMENTS
+    }
+    return map_column_names(pl.scan_parquet(source, **selection).collect_schema())
+
+
+def refuse_direct_map_columns(config: Mapping[str, Any], *, label: str) -> None:
+    """Refuse a direct Parquet scan (*config*, anchored) whose files hold a map column.
+
+    A direct scan would change the data without a word, whatever schema the
+    configuration declares; a snapshot build reads such a file through pyarrow
+    instead (``haute._map_columns``). *label* is the path as configured.
+    """
+    fmt = format_for_config(config)
+    maps = parquet_source_map_columns(
+        _resolve_input_source(fmt, config)[0], config.get("arguments") or {}
+    )
     if maps:
         raise PolarsIoConfigError(
-            f"The Parquet file {path!r} has map column(s) {maps}, which a direct scan would "
+            f"The Parquet file {label!r} has map column(s) {maps}, which a direct scan would "
             "read keeping only the last value of a repeated key. Give the Data Input mode "
             '"read" in the pipeline file: Haute then copies the file into a snapshot through '
             "pyarrow, which keeps every entry, each map a list of key-value structs."
         )
-    return frame
 
 
 # A Parquet file with a map column is snapshotted through pyarrow, which applies
@@ -1151,13 +1175,27 @@ def read_parquet_map_entries_for_snapshot(
     that repeats a key, where Polars' Parquet reader keeps the last, and reads
     one row group at a time (``haute._map_columns``). It applies ``columns`` and
     ``n_rows`` itself; any other argument that changes the rows is refused by
-    name, since this read cannot apply it.
+    name, since this read cannot apply it. A source of several files (a folder or
+    a glob) holding a map is refused: pyarrow reads one file at a time, without
+    the hive partitioning and file expansion Polars applies to such a source.
     """
     fmt = format_for_config(config)
     if fmt.name != "parquet":
         return None
-    path = Path(_resolve_input_source(fmt, config)[0])
-    if not path.is_file() or not parquet_map_column_names(path):
+    source = _resolve_input_source(fmt, config)[0]
+    path = Path(source)
+    if not path.is_file():
+        maps = parquet_source_map_columns(source, config.get("arguments") or {})
+        if maps:
+            raise PolarsIoConfigError(
+                f"The Parquet source {config['path']!r} names several files and has map "
+                f"column(s) {maps}. Polars reads a map keeping only the last value of a "
+                "repeated key, and Haute keeps every entry only when it reads one file "
+                "through pyarrow: give each file its own Data Input, or write the files with "
+                "each map a list of key-value structs."
+            )
+        return None
+    if not parquet_map_column_names(path):
         return None
     mode, _build_class, _warning_code = snapshot_input_plan(fmt, config)
     owner, callable_name = input_callable_key(fmt, mode)

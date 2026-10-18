@@ -399,9 +399,8 @@ def resolve_data_input(
     validated = validate_data_input_config(config)
     if data_input_is_direct(validated):
         anchored = _resolved_config_path(validated, base_dir)
-        return refuse_direct_map_columns(
-            validated["path"], read_polars_input(anchored, profile=profile)
-        )
+        refuse_direct_map_columns(anchored, label=validated["path"])
+        return read_polars_input(anchored, profile=profile)
 
     cache_store = store or SourceCacheStore(_cache_root())
     try:

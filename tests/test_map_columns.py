@@ -26,6 +26,7 @@ from haute._input_providers import (
     recording_schema_tiers,
     resolve_data_input,
 )
+from haute._io import read_data_source
 from haute._map_columns import (
     arrow_holds_map,
     holds_map,
@@ -37,9 +38,15 @@ from haute._map_columns import (
 )
 from haute._polars_io_registry import PolarsIoConfigError
 from haute._source_cache import SourceCacheBuildContext, SourceCacheIdentity, SourceCacheStore
+from haute.errors import SchemaMismatchError
 
 _MAP = pa.map_(pa.string(), pa.int64())
 _ENTRIES = pl.List(pl.Struct({"key": pl.String, "value": pl.Int64}))
+# The same list of key-value structs, as a Data Input's configured schema spells it.
+_ENTRIES_SPEC = {
+    "type": "List",
+    "inner": {"type": "Struct", "fields": {"key": "String", "value": "Int64"}},
+}
 # A map that repeats a key: Polars 1 kept all three entries, as pyarrow does.
 _REPEATED = [("a", 1), ("a", 2), ("b", 3)]
 _REPEATED_ENTRIES = [
@@ -73,6 +80,15 @@ def test_polars_reads_a_repeated_map_key_only_once_from_parquet(tmp_path: Path) 
     path = _write_map_parquet(tmp_path / "maps.parquet")
 
     read = pl.read_parquet(path).select(pl.col("m").cast(_ENTRIES))
+
+    assert _entries(read)[0] == [{"key": "a", "value": 2}, {"key": "b", "value": 3}]
+
+
+def test_a_schema_naming_a_map_a_list_of_entries_reads_it_the_same_way(tmp_path: Path) -> None:
+    """Why a map is found in the file's own schema: a declared schema hides it."""
+    path = _write_map_parquet(tmp_path / "maps.parquet")
+
+    read = pl.scan_parquet(path, schema={"id": pl.Int64, "m": _ENTRIES}).collect()
 
     assert _entries(read)[0] == [{"key": "a", "value": 2}, {"key": "b", "value": 3}]
 
@@ -340,6 +356,51 @@ def test_a_direct_scan_of_a_parquet_file_with_a_map_is_refused(tmp_path: Path) -
     message = str(exc_info.value)
     assert "'maps.parquet' has map column(s) ['m']" in message
     assert 'mode "read"' in message
+
+
+def test_a_direct_scan_is_refused_whatever_schema_it_declares_for_the_map(
+    tmp_path: Path,
+) -> None:
+    _write_map_parquet(tmp_path / "maps.parquet")
+    config = _parquet_input(arguments={"schema": {"id": "Int64", "m": _ENTRIES_SPEC}})
+
+    with pytest.raises(PolarsIoConfigError, match=r"'maps.parquet' has map column\(s\) \['m'\]"):
+        resolve_data_input(config, store=SourceCacheStore(tmp_path), base_dir=tmp_path)
+
+
+def test_a_flat_quote_input_refuses_a_parquet_file_with_a_map(tmp_path: Path) -> None:
+    """A flat Quote Input reads its file directly, as a direct scan does."""
+    path = _write_map_parquet(tmp_path / "maps.parquet")
+
+    with pytest.raises(SchemaMismatchError, match=r"has map column\(s\) \['m'\]"):
+        read_data_source({"sourceType": "flat_file", "path": str(path)})
+
+
+@pytest.mark.parametrize("source", ["parts", "parts/*.parquet"])
+def test_a_snapshot_of_several_parquet_files_holding_a_map_is_refused(
+    tmp_path: Path, source: str
+) -> None:
+    """pyarrow keeps every entry one file at a time, not across Polars' file expansion."""
+    (tmp_path / "parts").mkdir()
+    for name in ("a.parquet", "b.parquet"):
+        _write_map_parquet(tmp_path / "parts" / name)
+    config = {"inputType": "file", "format": "parquet", "path": source, "mode": "read"}
+
+    with pytest.raises(PolarsIoConfigError, match=r"names several files and has map column"):
+        build_input_snapshot(config, store=SourceCacheStore(tmp_path), base_dir=tmp_path)
+
+
+def test_a_snapshot_of_several_parquet_files_without_a_map_is_unaffected(tmp_path: Path) -> None:
+    (tmp_path / "parts").mkdir()
+    for index, name in enumerate(("a.parquet", "b.parquet")):
+        pl.DataFrame({"id": [index]}).write_parquet(tmp_path / "parts" / name)
+    config = {"inputType": "file", "format": "parquet", "path": "parts", "mode": "read"}
+    store = SourceCacheStore(tmp_path)
+
+    build_input_snapshot(config, store=store, base_dir=tmp_path)
+    snapshot = resolve_data_input(config, store=store, base_dir=tmp_path).collect()
+
+    assert sorted(snapshot["id"].to_list()) == [0, 1]
 
 
 def test_a_direct_scan_without_a_map_is_unaffected(tmp_path: Path) -> None:
