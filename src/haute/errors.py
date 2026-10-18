@@ -286,37 +286,21 @@ class DeployError(HauteError):
     """Deploy validation or bundling failure."""
 
 
-class MultiQuoteRequestRefusedError(DeployError):
-    """A request of several quotes reached a deployment that answers one quote per request.
+class QuoteAnswerRowsError(DeployError):
+    """A quote of a batch answered quote by quote gave no row or several.
 
-    ``refusals`` names each node and operation that stopped the deployment's proof that
-    it answers every quote with one row, in request order (specs/deploy).
+    A batch is answered with one row per quote, so answer *i* is quote *i*'s.
+    ``position`` counts the quote from one; sent alone, it is answered with every row it
+    gives (specs/deploy).
     """
 
-    error_code = "multi_quote_request_refused"
-    public_fields = ("quotes", "refusals")
+    error_code = "quote_answer_rows"
+    public_fields = ("quotes", "position", "rows")
 
-    def __init__(self, message: str, *, quotes: int, refusals: list[dict[str, str]]) -> None:
+    def __init__(self, message: str, *, quotes: int, position: int, rows: int) -> None:
         self.quotes = quotes
-        self.refusals = refusals
-        super().__init__(message)
-
-
-class QuoteKeyRepeatedError(DeployError):
-    """Two quotes of one request hold the same values of a key the response nests by.
-
-    The response places a nested row under every quote holding its key values, so each
-    quote would take the other's rows. ``key`` names the request paths and ``positions``
-    the two quotes, counted from one (specs/deploy).
-    """
-
-    error_code = "quote_key_repeated"
-    public_fields = ("quotes", "key", "positions")
-
-    def __init__(self, message: str, *, quotes: int, key: list[str], positions: list[int]) -> None:
-        self.quotes = quotes
-        self.key = key
-        self.positions = positions
+        self.position = position
+        self.rows = rows
         super().__init__(message)
 
 

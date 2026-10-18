@@ -207,9 +207,12 @@ This catches problems early: schema mismatches, missing model files, runtime err
 
 ## Requests with several quotes
 
-A request to a deployed pipeline can hold several quotes. The answer then has one row per quote, in the order the quotes were sent, so the first row answers the first quote.
+A request to a deployed pipeline can hold several quotes, sent as a JSON array. The answer then has one row per quote, in the order the quotes were sent, so the first row answers the first quote. `haute impact` sends quotes this way, in batches.
 
-When you deploy, Haute checks every node between the Quote Input and the Quote Response to make sure each quote keeps exactly one row, in its place, and that no quote's answer depends on the other quotes sent with it. `haute deploy` prints the result. When the check passes, the deployment answers several quotes per request. When it doesn't, the deployment still answers one quote per request, but it refuses a request holding more than one quote. The refusal (HTTP 422 from a container) and the deploy output name each node that stopped the check and what it does:
+Every deployment answers such a request, in one of two ways. When you deploy, Haute checks every node between the Quote Input and the Quote Response to make sure each quote keeps exactly one row, in its place, and that no quote's answer depends on the other quotes sent with it. `haute deploy` prints the result.
+
+- **When the check passes**, the quotes run through the pipeline together, which is fast. Two quotes whose answers come out identical are still answered with a row each.
+- **When it doesn't**, the deployment answers the quotes one at a time, each exactly as if it had been sent on its own, so the answer is the same either way and only slower. The deploy output names each node that stopped the check and what it does:
 
 | In a node | Why it stops the check |
 |---|---|
@@ -219,23 +222,17 @@ When you deploy, Haute checks every node between the Quote Input and the Quote R
 | A join that starts from another input instead of the quotes | It answers with that input's rows |
 | **Group and aggregate**, **Pivot to columns**, a **Fill missing values** strategy that reads other rows, or a formula that does (a total, an average, a rank, a running total, the previous row's value) | One quote's answer would depend on the others |
 | An [Apply Optimisation](../building-models/nodes/optimiser-apply.md) node in online mode, or one that loads its result from MLflow | Online mode answers in quote-id order; an MLflow result can't be checked before it is loaded |
-| A [Quote Response](../building-models/nodes/output.md) that nests a quote's own rows, such as its drivers, under it with no key, or by a key that changes on the way | Each nested row goes under the quote holding its key, so the key must reach the response as the quote sent it (see [Nesting a quote's rows](#nesting-a-quotes-rows)) |
+| A [Quote Response](../building-models/nodes/output.md) that nests a quote's own rows, such as its drivers, under it | Run together, each driver would go under every quote holding its key, so two quotes sharing a key would share drivers |
 | Code the check can't follow, or a [Submodel](../building-models/nodes/submodel.md) | It can't be checked yet |
 
 A join keeps each quote's row when it starts from the quotes, is a left join (or a cross join with a single-row [Constant](../building-models/nodes/constant.md)), and keeps the quotes' order: **left input order** or **left, then right** in a **Join another input** step, **Left** or **Left then right** in an [Edge Join](../building-models/nodes/edge-join.md). The table it joins must also hold each key once:
 
-- **A lookup the deployment carries** (a [Data Input](../building-models/nodes/data-input.md)) is checked when you deploy, after its post-load code runs. If a key appears twice, the deploy fails naming the lookup, the join and the key: remove the repeated rows. If a quote is meant to match several rows, set the join's validation to **many to many** (**m:m** in an Edge Join); the deployment then answers one quote per request.
-- **A table built from the quotes themselves**, such as a node's result joined back to the quotes it came from, or a quote's drivers, can pair one quote with another's rows, so the deployment answers one quote per request. Add columns along one chain of nodes instead of splitting the quotes and joining them back.
+- **A lookup the deployment carries** (a [Data Input](../building-models/nodes/data-input.md)) is checked when you deploy, after its post-load code runs. If a key appears twice, the deploy fails naming the lookup, the join and the key: remove the repeated rows. If a quote is meant to match several rows, set the join's validation to **many to many** (**m:m** in an Edge Join); the deployment then answers the quotes one at a time.
+- **A table built from the quotes themselves**, such as a node's result joined back to the quotes it came from, can pair one quote with another's rows, so the deployment answers the quotes one at a time. Add columns along one chain of nodes instead of splitting the quotes and joining them back.
 
-### Nesting a quote's rows
+Answered one at a time, each quote must still give one row, so that the answers line up with the quotes. A quote that gives no row or several (one a filter drops, say) fails the request with HTTP 422 (error code `quote_answer_rows`), naming its place in the request; sent on its own, it is answered with every row it gives. To decline a quote, keep its row and add a column saying so, for example `declined` set to true, instead of filtering the quote out.
 
-A [Quote Response](../building-models/nodes/output.md) can nest a quote's own rows under it, such as the drivers from the Quote Input's `drivers` table. The response places each driver under the quote whose key it holds: the top-level fields the drivers map, for example `$[:].quote_id`. The check passes when each of those fields reaches the response unchanged from the same Quote Input field, read as the same type, on both sides: the quote's own column and the drivers' copy of it. A step that recalculates the key, changes its type or fills it, a **Fill missing values** step with no columns chosen, or a step on the drivers that reads other drivers' rows stops the check. **Filter rows** on the drivers keeps it when its conditions read only each driver's own fields.
-
-When the check passes, a request in which two quotes hold the same key is refused with HTTP 422 (error code `quote_key_repeated`, naming the two quotes and the key), because each would take the other's drivers. Give each quote in a request its own key.
-
-To decline a quote, keep its row and add a column saying so, for example `declined` set to true, instead of filtering the quote out.
-
-When the deployment answers one quote per request, its test quotes are scored one request each. `haute impact` sends quotes in batches, so it needs a deployment that answers several quotes per request.
+A deployment that answers the quotes one at a time scores its test quotes one request each. A [Workbench Input](../building-models/nodes/workbench-input.md) reads one quote per request, so its deployment refuses a request holding several.
 
 ---
 

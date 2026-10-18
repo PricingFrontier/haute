@@ -1,10 +1,10 @@
 """A deployed pipeline answers each quote of a request with one row, in request order (PL2-04).
 
-Deploy validation proves it from the pruned graph (``prove_request_rows``), checks every
+Deploy validation proves it from the pruned graph (``prove_request_rows``) and checks every
 lookup the deployment carries for repeated join keys over the bundled bytes
-(``check_lookups``), and a deployment the proof does not cover answers one quote per
-request: a request of several quotes is refused naming each node and operation, and a
-covered deployment's answer is counted as a backstop (specs/deploy).
+(``check_lookups``). A covered deployment scores a request of several quotes as one frame,
+its answer counted as a backstop; one the proof does not cover answers it quote by quote,
+each quote scored alone and answered with one row (specs/deploy).
 """
 
 from __future__ import annotations
@@ -34,9 +34,9 @@ from haute.deploy._request_rows import (
     record_digests,
     request_rows,
 )
-from haute.deploy._scorer import admit_deploy_execution, score_graph
+from haute.deploy._scorer import admit_deploy_execution, score_graph, score_graph_lazy
 from haute.deploy._utils import build_manifest
-from haute.errors import DeployError, MultiQuoteRequestRefusedError, RequestRowCountError
+from haute.errors import DeployError, QuoteAnswerRowsError, RequestRowCountError
 from tests._deploy_helpers import make_resolved_deploy
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
@@ -130,8 +130,8 @@ def remap(tmp_path: Path) -> dict[str, str]:
 
 
 def _refusals(graph: PipelineGraph, remap: dict[str, str] | None = None) -> list[RowRefusal]:
-    verdict, refusals, _checks, _keys = prove_request_rows(graph, ["quotes"], "out", remap or {})
-    assert (verdict == "refused") == bool(refusals)
+    verdict, refusals, _checks = prove_request_rows(graph, ["quotes"], "out", remap or {})
+    assert (verdict == "quote_by_quote") == bool(refusals)
     return list(refusals)
 
 
@@ -234,7 +234,7 @@ def test_the_batch_worker_answers_in_request_order_and_counts(tmp_path, remap):
     _assert_expected(pl.read_parquet(tmp_path / "result.parquet").to_dicts())
 
 
-def test_the_databricks_model_answers_in_request_order_and_refuses_when_uncovered(tmp_path, remap):
+def test_the_databricks_model_answers_in_request_order_or_quote_by_quote(tmp_path, remap):
     from unittest.mock import MagicMock
 
     from haute.deploy._model_code import HauteModel
@@ -263,10 +263,12 @@ def test_the_databricks_model_answers_in_request_order_and_refuses_when_uncovere
     answer = covered.predict(MagicMock(), QUOTES.to_pandas())
     _assert_expected(pl.from_pandas(answer).to_dicts())
 
-    refused = load(RequestRows("refused", (RowRefusal("calc", "calc", "sort", "reorders"),)))
-    with pytest.raises(MultiQuoteRequestRefusedError, match="'calc' \\(sort\\)"):
-        refused.predict(MagicMock(), QUOTES.to_pandas())
-    one = refused.predict(MagicMock(), pd.DataFrame(QUOTES.head(1).to_dicts()))
+    # Uncovered, each quote is scored alone: the same answers, in request order.
+    uncovered = load(
+        RequestRows("quote_by_quote", (RowRefusal("calc", "calc", "sort", "reorders"),))
+    )
+    _assert_expected(pl.from_pandas(uncovered.predict(MagicMock(), QUOTES.to_pandas())).to_dicts())
+    one = uncovered.predict(MagicMock(), pd.DataFrame(QUOTES.head(1).to_dicts()))
     assert len(one) == 1
 
 
@@ -371,7 +373,7 @@ def test_a_join_declared_many_to_many_is_not_checked_and_answers_one_quote(tmp_p
         _priced_graph({**ORDERED_LEFT, "validate": "m:m"}, remap), ["quotes"], "out", remap
     )
 
-    assert rows.multi_quote == "refused"
+    assert rows.multi_quote == "quote_by_quote"
     assert rows.refusals[0].effect == "repeats"
     assert rows.checked_lookups == ()
 
@@ -586,10 +588,10 @@ def test_node_types_that_cannot_answer_in_order_are_refused(tmp_path):
     }
     for node_id, (node, operation, effect) in cases.items():
         graph = _single(node)
-        verdict, refusals, _checks, _keys = prove_request_rows(
+        verdict, refusals, _checks = prove_request_rows(
             graph, ["quotes"], "out", {"apply__online.json": str(online)}
         )
-        assert verdict == "refused", node_id
+        assert verdict == "quote_by_quote", node_id
         assert list(refusals) == [RowRefusal(node_id, node_id, operation, effect)]
 
 
@@ -621,9 +623,8 @@ def test_a_quote_input_s_root_table_is_the_request_and_its_others_are_not():
     drivers_first = graph.model_dump()
     drivers_first["edges"] = [_edge("quotes", "out", sourceHandle="drivers")]
     drivers_first["nodes"][1]["data"]["config"] = _output(["age"], "drivers")
-    # An answer for each of a quote's drivers, not for each quote.
     assert _refusals(PipelineGraph.model_validate(drivers_first)) == [
-        RowRefusal("out", "out", "response top level from drivers", "repeats")
+        RowRefusal("out", "out", "response", "replaces")
     ]
 
 
@@ -689,54 +690,118 @@ def test_a_workbench_input_reads_one_quote_per_request():
             node["data"]["nodeType"] = "workbenchInput"
     workbench = PipelineGraph.model_validate(dumped)
 
-    assert prove_request_rows(workbench, ["quotes"], "out", {}) == (
-        "one_quote_per_request",
-        (),
-        (),
-        (),
+    assert prove_request_rows(workbench, ["quotes"], "out", {}) == ("one_quote_per_request", (), ())
+
+
+# ---------------------------------------------------------------------------
+# Served: as one frame or quote by quote, counted, recorded
+# ---------------------------------------------------------------------------
+
+SORTED = RequestRows("quote_by_quote", (RowRefusal("calc", "calc", "sort", "reorders"),))
+
+
+def _alone(graph: PipelineGraph, remap: dict[str, str], quotes: pl.DataFrame) -> pl.DataFrame:
+    """Each quote answered in a request of its own, the answers in request order."""
+    return pl.concat(
+        [_score(graph, remap, SORTED, quotes.slice(index, 1)) for index in range(quotes.height)]
     )
 
 
-# ---------------------------------------------------------------------------
-# Served: refused, counted, recorded
-# ---------------------------------------------------------------------------
+def test_a_deployment_the_proof_does_not_cover_answers_a_batch_quote_by_quote(tmp_path, remap):
+    graph = _priced_graph(ORDERED_LEFT, remap, after="df = priced.sort('rate')")
+    alone = _alone(graph, remap, QUOTES)
 
-SORTED = RequestRows("refused", (RowRefusal("calc", "calc", "sort", "reorders"),))
+    assert _score(graph, remap, SORTED, QUOTES).equals(alone)
+    # In one frame the sort would answer in rate order, not request order.
+    together = _score(graph, remap, RequestRows("in_request_order"), QUOTES)
+    assert together["quote_id"].to_list() != QUOTES["quote_id"].to_list()
+    # The batch child answers it the same way.
+    plan = prepare_batch_scoring(
+        QUOTES.to_dicts(),
+        graph=graph,
+        input_node_ids=["quotes"],
+        output_node_id="out",
+        artifact_paths=remap,
+        output_fields=None,
+        request_rows=SORTED,
+    )
+    try:
+        outcome = score_batch_scoring_request(
+            plan.request, execution_context=plan.execution_context
+        )
+        assert outcome.row_count == QUOTES.height
+        assert pl.read_parquet(plan.request.result_path).equals(alone)
+    finally:
+        plan.cleanup(primary_error=None)
 
 
-def test_a_refused_deployment_answers_one_quote_and_refuses_several(remap):
+def test_a_quote_answered_with_no_row_fails_a_batch_answered_quote_by_quote(remap):
+    graph = _priced_graph(ORDERED_LEFT, remap, after="df = priced.filter(pl.col('age') > 30)")
+
+    with pytest.raises(QuoteAnswerRowsError) as raised:
+        _score(graph, remap, SORTED, QUOTES)
+
+    assert raised.value.to_payload() == {
+        "error_code": "quote_answer_rows",
+        "message": "Quote 2 of this request of 5 quotes was answered with 0 rows. A request "
+        "of several quotes is answered with one row per quote, in order, so send this quote "
+        "in a request of its own.",
+        "quotes": 5,
+        "position": 2,
+        "rows": 0,
+    }
+    # Sent alone, it is answered with every row it gives: none.
+    assert _score(graph, remap, SORTED, QUOTES.slice(1, 1)).height == 0
+
+
+def test_a_batch_answered_quote_by_quote_is_never_one_lazy_plan(remap):
     graph = _priced_graph(ORDERED_LEFT, remap, after="df = priced.sort('rate')")
 
-    assert _score(graph, remap, SORTED, QUOTES.head(1)).height == 1
-    with pytest.raises(MultiQuoteRequestRefusedError) as raised:
-        _score(graph, remap, SORTED, QUOTES)
-    assert raised.value.to_payload() == {
-        "error_code": "multi_quote_request_refused",
-        "message": "This deployment answers one quote per request, and this request holds 5 "
-        "quotes: 'calc' (sort) can change the quotes' order.",
-        "quotes": 5,
-        "refusals": [
-            {"node_id": "calc", "node_label": "calc", "operation": "sort", "effect": "reorders"}
-        ],
-    }
-    with pytest.raises(MultiQuoteRequestRefusedError):
-        prepare_batch_scoring(
-            QUOTES.to_dicts(),
+    with pytest.raises(ValueError, match="one quote at a time"):
+        score_graph_lazy(
             graph=graph,
+            input_df=QUOTES,
             input_node_ids=["quotes"],
             output_node_id="out",
             artifact_paths=remap,
-            output_fields=None,
             request_rows=SORTED,
         )
 
 
-def _load_app(tmp_path: Path, rows: RequestRows) -> Any:
+def test_two_quotes_whose_answers_coincide_are_answered_with_a_row_each(tmp_path, remap):
+    """The response merges top-level objects whose fields are all equal; a batch does not."""
+    graph = _two_join_graph(remap)
+    rows = request_rows(graph, ["quotes"], "out", remap)
+    twice = pl.concat([QUOTES.head(1), QUOTES.head(1)])
+
+    answer = _score(graph, remap, rows, twice)
+
+    assert answer.to_dicts() == [{"quote_id": 7, "premium": pytest.approx(1.2)}] * 2
+    input_path = tmp_path / "input.json"
+    input_path.write_text(json.dumps(twice.to_dicts()), encoding="utf-8")
+    request = BatchScoreRequest(
+        graph=graph,
+        input_node_ids=["quotes"],
+        output_node_id="out",
+        artifact_paths=remap,
+        output_fields=None,
+        input_path=str(input_path),
+        result_path=str(tmp_path / "result.parquet"),
+        request_rows=rows,
+    )
+    context = admit_deploy_execution(operation="deploy_quote", row_count=2)
+    try:
+        assert score_batch_scoring_request(request, execution_context=context).row_count == 2
+    finally:
+        context.release_admission(preserve_primary_error=False)
+
+
+def _load_app(tmp_path: Path, rows: RequestRows, graph: PipelineGraph) -> Any:
     manifest = {
         "polars_version": pl.__version__,
-        "pruned_graph": PipelineGraph().model_dump(mode="json"),
+        "pruned_graph": graph.model_dump(mode="json"),
         "input_node_ids": ["quotes"],
-        "output_node_id": "quotes",
+        "output_node_id": "out",
         "request_rows": rows.to_manifest(),
         "artifacts": {},
         "output_fields": None,
@@ -756,16 +821,40 @@ def _load_app(tmp_path: Path, rows: RequestRows) -> Any:
         sys.modules.pop(module_name, None)
 
 
-def test_the_container_refuses_several_quotes_with_422_and_shows_the_record(tmp_path):
-    module = _load_app(tmp_path, SORTED)
+def test_the_container_shows_the_record_and_names_a_quote_a_batch_cannot_answer(
+    tmp_path, monkeypatch
+):
+    # No lookup, so the container needs no artefact: quotes over 30 answered, others dropped.
+    graph = PipelineGraph.model_validate(
+        {
+            "nodes": [
+                _node("quotes", "apiInput", {"path": ""}),
+                _node("calc", "polars", {"code": "df = quotes.filter(pl.col('age') > 30)"}),
+                _node("out", "output", _output(["quote_id", "age"], "calc")),
+            ],
+            "edges": [_quotes_edge("calc"), _edge("calc", "out")],
+        }
+    )
+    module = _load_app(tmp_path, SORTED, graph)
+
+    async def in_process(function, *args, config):
+        del config
+        return function(*args)
+
+    # The batch worker runs in this process, as its spawn would run it.
+    monkeypatch.setattr(module, "run_isolated_worker_async", in_process)
     client = TestClient(module.app)
 
-    response = client.post("/quote", json=[{"age": 30}, {"age": 31}])
+    response = client.post("/quote", json=[{"quote_id": 1, "age": 30}, {"quote_id": 2, "age": 31}])
+    answered = client.post("/quote", json=[{"quote_id": 1, "age": 40}, {"quote_id": 2, "age": 31}])
 
-    assert response.status_code == 422
-    assert response.json()["error_code"] == "multi_quote_request_refused"
-    assert response.json()["refusals"] == [SORTED.refusals[0].to_manifest()]
     assert client.get("/health").json()["request_rows"] == SORTED.to_manifest()
+    assert answered.status_code == 200, answered.text
+    assert answered.json()["rows"] == [{"quote_id": 1, "age": 40}, {"quote_id": 2, "age": 31}]
+    # The first quote is not over 30, so it gives no row and fails the batch.
+    assert response.status_code == 422, response.text
+    assert response.json()["error_code"] == "quote_answer_rows"
+    assert (response.json()["position"], response.json()["rows"]) == (1, 0)
 
 
 def test_a_covered_deployment_fails_an_answer_whose_row_count_changes(tmp_path, remap):
@@ -796,7 +885,9 @@ def test_a_covered_deployment_fails_an_answer_whose_row_count_changes(tmp_path, 
         context.release_admission(preserve_primary_error=True)
 
 
-def test_a_refused_deployment_scores_its_test_quotes_one_request_each(tmp_path, remap):
+def test_a_deployment_answering_quote_by_quote_scores_its_test_quotes_one_request_each(
+    tmp_path, remap
+):
     from haute.deploy._validators import score_test_quotes
 
     quotes_dir = tmp_path / "quotes"
@@ -828,33 +919,22 @@ def test_the_manifest_records_the_proof_and_reads_it_back_strictly(remap):
     assert RequestRows.from_manifest(manifest["request_rows"]) == rows
     with pytest.raises(KeyError):
         RequestRows.from_manifest({"multi_quote": "in_request_order", "refusals": []})
-    with pytest.raises(KeyError):
-        RequestRows.from_manifest(
-            {"multi_quote": "in_request_order", "refusals": [], "checked_lookups": []}
-        )
-    keyed = RequestRows("in_request_order", quote_keys=((("$[:].quote_id", "int"),),))
-    assert keyed.to_manifest()["quote_keys"] == [[["$[:].quote_id", "int"]]]
-    assert RequestRows.from_manifest(json.loads(json.dumps(keyed.to_manifest()))) == keyed
-    with pytest.raises(ValueError, match="keys nested rows"):
-        RequestRows("refused", SORTED.refusals, quote_keys=keyed.quote_keys)
-    with pytest.raises(ValueError, match="at least one request value"):
-        RequestRows("in_request_order", quote_keys=((),))
     with pytest.raises(ValueError, match="exactly when it names why"):
-        RequestRows("refused")
+        RequestRows("quote_by_quote")
     with pytest.raises(ValueError, match="Unknown multi_quote"):
         RequestRows("several")  # type: ignore[arg-type]
 
 
 def test_the_record_describes_itself_as_haute_deploy_prints_it():
     assert RequestRows("in_request_order").describe() == (
-        "Answers several quotes per request, one row per quote in request order"
+        "Answers several quotes per request as one frame, one row per quote in request order"
     )
     assert RequestRows("one_quote_per_request").describe() == (
         "Answers one quote per request (a Workbench Input reads one quote)"
     )
-    assert (
-        SORTED.describe()
-        == "Answers one quote per request: 'calc' (sort) can change the quotes' order"
+    assert SORTED.describe() == (
+        "Answers several quotes per request one quote at a time: 'calc' (sort) can change "
+        "the quotes' order"
     )
 
 
@@ -864,7 +944,7 @@ def test_the_record_describes_itself_as_haute_deploy_prints_it():
 
 
 def _verdict(graph: PipelineGraph, remap: dict[str, str] | None = None, inputs=("quotes",)):
-    verdict, refusals, _checks, _keys = prove_request_rows(graph, list(inputs), "out", remap or {})
+    verdict, refusals, _checks = prove_request_rows(graph, list(inputs), "out", remap or {})
     return verdict, list(refusals)
 
 
@@ -924,7 +1004,7 @@ def test_nodes_that_keep_each_quote_s_row(node_type, config):
 )
 def test_nodes_that_cannot_keep_each_quote_s_row(node_type, config, operation, effect):
     assert _verdict(_single(_node("node", node_type, config))) == (
-        "refused",
+        "quote_by_quote",
         [RowRefusal("node", "node", operation, effect)],
     )
 
@@ -956,7 +1036,7 @@ def test_a_live_switch_still_holding_two_inputs_is_not_proved():
     )
 
     assert _verdict(graph) == (
-        "refused",
+        "quote_by_quote",
         [RowRefusal("switch", "switch", "Live Switch", "unproven")],
     )
 
@@ -964,7 +1044,10 @@ def test_a_live_switch_still_holding_two_inputs_is_not_proved():
 def test_a_data_input_with_an_input_of_its_own_is_not_proved():
     graph = _single(_node("odd", "dataInput", {}))
 
-    assert _verdict(graph) == ("refused", [RowRefusal("odd", "odd", "dataInput", "unproven")])
+    assert _verdict(graph) == (
+        "quote_by_quote",
+        [RowRefusal("odd", "odd", "dataInput", "unproven")],
+    )
 
 
 def test_a_promoted_data_input_proves_its_post_load_code(remap):
@@ -982,7 +1065,7 @@ def test_a_promoted_data_input_proves_its_post_load_code(remap):
     for code in ("", "df = df.with_columns((pl.col('rate') * 2).alias('r2'))"):
         assert _verdict(graph(code), inputs=("rates",)) == ("in_request_order", [])
     assert _verdict(graph("df = df.filter(pl.col('rate') > 1)"), inputs=("rates",)) == (
-        "refused",
+        "quote_by_quote",
         [RowRefusal("rates", "rates", "filter", "drops")],
     )
 
@@ -1002,12 +1085,12 @@ def test_an_optimiser_apply_in_ratebook_mode_keeps_the_input_it_rates(tmp_path):
 
     assert _verdict(graph("quotes"), bundled) == ("in_request_order", [])
     assert _verdict(graph("elsewhere"), bundled) == (
-        "refused",
+        "quote_by_quote",
         [RowRefusal("apply", "apply", "Apply Optimisation input", "unproven")],
     )
     # Not bundled: its mode cannot be read.
     assert _verdict(graph("quotes")) == (
-        "refused",
+        "quote_by_quote",
         [RowRefusal("apply", "apply", "Apply Optimisation", "unproven")],
     )
 
@@ -1042,7 +1125,7 @@ def test_an_optimiser_read_from_mlflow_cannot_be_a_checked_lookup(join, operatio
     )
 
     assert _verdict(graph, remap) == (
-        "refused",
+        "quote_by_quote",
         [RowRefusal("priced", "priced", operation, "unproven")],
     )
 
@@ -1076,7 +1159,7 @@ def test_a_response_takes_its_top_level_from_the_quotes(remap):
 
     only_nested = [_entry("rates", "rate", "$[:].rates[:].rate")]
     assert _verdict(_response_graph(only_nested, remap), remap) == (
-        "refused",
+        "quote_by_quote",
         [RowRefusal("out", "out", "response top level", "replaces")],
     )
     from_lookup = [
@@ -1084,12 +1167,12 @@ def test_a_response_takes_its_top_level_from_the_quotes(remap):
         _entry("quotes", "quote_id", "$[:].quotes[:].quote_id"),
     ]
     assert _verdict(_response_graph(from_lookup, remap), remap) == (
-        "refused",
+        "quote_by_quote",
         [RowRefusal("out", "out", "response top level from rates", "replaces")],
     )
     unreadable = [_entry("quotes", "quote_id", "quote_id")]
     assert _verdict(_response_graph(unreadable, remap), remap) == (
-        "refused",
+        "quote_by_quote",
         [RowRefusal("out", "out", "response mapping", "unproven")],
     )
 
@@ -1101,7 +1184,7 @@ def test_an_edge_join_whose_config_does_not_build_is_not_proved(remap):
     graph = _priced_graph({"how": "left", "maintainOrder": "left_right"}, remap)
 
     assert _verdict(graph, remap) == (
-        "refused",
+        "quote_by_quote",
         [RowRefusal("priced", "priced", "Edge Join", "unproven")],
     )
 
@@ -1155,7 +1238,7 @@ def test_a_join_driven_by_another_input_answers_with_its_rows(remap):
 
     # Named once, though both joins answer with the lookup's rows.
     assert _verdict(graph, remap) == (
-        "refused",
+        "quote_by_quote",
         [RowRefusal("calc", "calc", "join (how='left', maintain_order='left_right')", "replaces")],
     )
 
@@ -1177,7 +1260,7 @@ def test_a_lookup_joined_twice_is_checked_once(remap):
         }
     )
 
-    verdict, refusals, checks, _keys = prove_request_rows(graph, ["quotes"], "out", remap)
+    verdict, refusals, checks = prove_request_rows(graph, ["quotes"], "out", remap)
     assert (verdict, refusals) == ("in_request_order", ())
     assert [(check.join_node_id, check.side_node_id) for check in checks] == [("calc", "rates")]
 
@@ -1206,7 +1289,7 @@ def test_a_left_join_against_one_row_needs_no_check():
         }
     )
 
-    assert prove_request_rows(graph, ["quotes"], "out", {}) == ("in_request_order", (), (), ())
+    assert prove_request_rows(graph, ["quotes"], "out", {}) == ("in_request_order", (), ())
 
 
 def test_input_names_the_executor_would_refuse_are_not_proved():
@@ -1214,7 +1297,10 @@ def test_input_names_the_executor_would_refuse_are_not_proved():
         _node("calc", "polars", {"code": "df = frame", "inputMapping": {"frame": "missing"}})
     )
 
-    assert _verdict(graph) == ("refused", [RowRefusal("calc", "calc", "input names", "unproven")])
+    assert _verdict(graph) == (
+        "quote_by_quote",
+        [RowRefusal("calc", "calc", "input names", "unproven")],
+    )
 
 
 def test_a_carried_branch_the_parser_cannot_read_is_still_checked(remap):
@@ -1233,7 +1319,7 @@ def test_a_carried_branch_the_parser_cannot_read_is_still_checked(remap):
     ]
     graph = PipelineGraph.model_validate({"nodes": nodes, "edges": edges})
 
-    verdict, refusals, checks, _keys = prove_request_rows(graph, ["quotes"], "out", remap)
+    verdict, refusals, checks = prove_request_rows(graph, ["quotes"], "out", remap)
     assert (verdict, refusals) == ("in_request_order", ())
     assert [check.side_node_id for check in checks] == ["shaped"]
 
@@ -1369,7 +1455,7 @@ def test_renames_drops_and_casts_keep_each_quote_s_row():
     )
 
     assert _verdict(_single(_node("calc", "polars", {"code": code}))) == (
-        "refused",
+        "quote_by_quote",
         [RowRefusal("calc", "calc", "with_columns: **", "unproven")],
     )
     assert _verdict(_single(_node("calc", "polars", {"code": code.split(".with_columns")[0]}))) == (
@@ -1424,7 +1510,7 @@ def test_a_cross_join_with_a_request_branch_is_refused():
     )
 
     assert _verdict(graph) == (
-        "refused",
+        "quote_by_quote",
         [RowRefusal("joined", "joined", "join (how='cross', maintain_order='left')", "mixes")],
     )
 
@@ -1450,7 +1536,7 @@ def test_a_constant_s_one_row_is_lost_to_a_sort_and_then_checked():
         }
     )
 
-    verdict, refusals, checks, _keys = prove_request_rows(graph, ["quotes"], "out", {})
+    verdict, refusals, checks = prove_request_rows(graph, ["quotes"], "out", {})
     assert (verdict, refusals) == ("in_request_order", ())
     assert [(check.side_node_id, check.keys) for check in checks] == [("sorted", ())]
 
@@ -1473,7 +1559,7 @@ def test_a_carried_branch_through_any_node_is_still_a_lookup(remap):
     ]
     graph = PipelineGraph.model_validate({"nodes": nodes, "edges": edges})
 
-    verdict, refusals, checks, _keys = prove_request_rows(graph, ["quotes"], "out", remap)
+    verdict, refusals, checks = prove_request_rows(graph, ["quotes"], "out", remap)
     assert (verdict, refusals) == ("in_request_order", ())
     assert [(check.side_node_id, check.keys) for check in checks] == [("expanded", ("region",))]
 
@@ -1490,13 +1576,16 @@ def test_a_response_that_is_not_the_request_s_rows_is_refused(remap):
         }
     )
 
-    assert _verdict(graph, remap) == ("refused", [RowRefusal("out", "out", "response", "replaces")])
+    assert _verdict(graph, remap) == (
+        "quote_by_quote",
+        [RowRefusal("out", "out", "response", "replaces")],
+    )
 
 
 def test_operations_the_proof_cannot_pair_with_their_code_are_not_proved(monkeypatch):
     monkeypatch.setattr("haute.deploy._request_rows._frame_chain_calls", lambda _value: [])
 
     assert _verdict(_single(_node("calc", "polars", {"code": "df = quotes.sort('age')"}))) == (
-        "refused",
+        "quote_by_quote",
         [RowRefusal("calc", "calc", "code: code", "unproven")],
     )

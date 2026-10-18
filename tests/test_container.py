@@ -100,12 +100,7 @@ def _load_generated_app(
         ).model_dump(mode="json"),
         "input_node_ids": ["quotes"],
         "output_node_id": "quotes",
-        "request_rows": {
-            "multi_quote": "in_request_order",
-            "refusals": [],
-            "checked_lookups": [],
-            "quote_keys": [],
-        },
+        "request_rows": {"multi_quote": "in_request_order", "refusals": [], "checked_lookups": []},
         "artifacts": artifacts or {},
         "output_fields": None,
     }

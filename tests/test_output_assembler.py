@@ -1167,6 +1167,32 @@ def test_limited_assembly_of_a_synthesised_root_is_complete() -> None:
     assert _assemble_document(field_frames, row_limit=1) == _assemble_document(field_frames)
 
 
+def test_a_deployed_batch_keeps_one_top_level_object_per_row() -> None:
+    """Each row answers its own quote, so equal answers stay two objects; nesting holds."""
+    field_frames = {
+        "quotes": pl.LazyFrame({"$[:].id": [1, 1, 2], "$[:].premium": [9.0, 9.0, 7.0]}),
+        "drivers": pl.LazyFrame({"$[:].id": [1, 2], "$[:].drivers[:].age": [30, 40]}),
+    }
+    first = {"id": 1, "premium": 9.0, "drivers": [{"age": 30}]}
+    second = {"id": 2, "premium": 7.0, "drivers": [{"age": 40}]}
+    context = FaultInjectingExecutionContext(
+        operation="test_output_assembly",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_sampler=lambda: 1,
+        fault_injector=lambda point: None,
+    )
+
+    assert _assemble_document(field_frames) == [first, second]
+    with context.stage("output_assembly"):
+        per_row = _assemble_document(field_frames, top_level_per_row=True)
+    assert per_row == [first, first, second]
+    # A top level built from deeper rows has no rows of its own to keep: it groups as before.
+    nested_only = {"drivers": field_frames["drivers"]}
+    assert _assemble_document(nested_only, top_level_per_row=True) == _assemble_document(
+        nested_only
+    )
+
+
 def test_limited_assembly_collapses_duplicate_root_rows() -> None:
     field_frames = {"root": pl.LazyFrame({"$[:].id": ["A", "A", "B"]})}
 

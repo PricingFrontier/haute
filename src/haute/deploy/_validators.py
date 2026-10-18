@@ -901,7 +901,8 @@ def score_test_quotes(
     one_quote_per_request = _reads_one_quote_per_request(resolved)
     # A Quote Input with tables reads its quotes as their records, as served.
     as_records = reads_records(resolved.pruned_graph, resolved.input_node_ids)
-    # A deployment that answers one quote per request is checked as it will be served.
+    # A deployment that answers a batch quote by quote scores each quote alone, as each
+    # case is checked here, its expected rows compared with its own answer.
     case_per_request = resolved.request_rows.multi_quote != "in_request_order"
 
     def score(input_df: pl.DataFrame | QuoteRequest) -> pl.DataFrame:

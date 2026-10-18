@@ -215,7 +215,10 @@ specification defines it.
    first-occurrence order; an object's identity is the tuple of its own leaf
    values, container values canonicalised to hashable tuples. A level no frame
    emits at is synthesised from the rows of the frames below it, grouped the same
-   way by the ancestor values those rows carry.
+   way by the ancestor values those rows carry. A deployed batch answered as one frame
+   keeps one top-level object per row instead, since each row answers its own quote
+   ([deploy](../deploy/high-level.md)): two quotes whose answers coincide are two
+   objects.
 5. *Nesting.* Assembly descends the level tree carrying a *scope* of relation
    keys. Under each parent object, the parent level's own fields that the child's
    subtree carries (the *relation keys* of that parent and child) join the scope

@@ -169,54 +169,61 @@ schema and stores only the selected columns, in configured order, in the resolve
 Test-quote scoring applies the same projection. The deploy manifest, MLflow signature,
 golden validation, and served response therefore describe one output contract.
 
-**Answers in request order.** A request may hold several quotes, and the response answers
-quote *i* with row *i* (`render_output_document`). Resolution proves that from the pruned
-graph without running it: every node from the request input to the response keeps
-exactly one row per quote, in request order, each row computed from its own quote alone.
-A Quote Input's root table (`$[:]`), one row per quote, starts the proof, and a promoted
-Data Input's post-load code is its first step. A Quote Input's other tables hold a quote's
-array rows (its drivers, say), and each starts the proof as one quote's rows in the
-table's order, held to the same rules as the root table, except that a filter or a null
-drop that reads only its own row keeps them quote by quote. Row-local expressions (the operation registry's
-row-local class), renames, drops and casts keep the rows, and so do Banding, Rating Step
-lookups (deduplicated and ordered by construction), Model Score, a ratebook Optimiser Apply
-read from the bundle, a Data Output, a collapsed Live Switch and the training nodes'
-passthrough, each node's own code proved in the same way. A join keeps them when the
-request side drives it, as a left or cross join ordered `left` or `left_right`, and its
-other side cannot repeat a quote: a side built only from what the deployment carries is
-checked when the deployment is built (below), and a Constant is one row. A side derived
-from the request is never proved, whatever the join declares: two parts of the request
-joined back together can pair one quote with another's row even when both sides' keys are
-unique (a branch that shifts the quote's key passes Polars' `validate`). The response's
-top level must come from the request side. The response places a nested row under every
-quote whose key values it carries, so a nested level holding a quote's rows (a table
-other than the root one, or the root rows nested again) is proved only when it nests by
-at least one key and each key is a value of the request, read as the same column type,
-that the proof follows unchanged to both the quote's row and the nested row: the proof
-records which request value each column holds through every node it reads, and a key a
-node rewrites, computes, casts, fills or renames past its reach stops the proof. Two
-quotes of one request holding the same values of those keys, compared as the Quote Input
-reads them, would take each other's rows, so a deployment proved this way refuses such a
-request when it is served, before any node runs, naming the two quotes and the key (HTTP
-422). A nested level built only from what the deployment carries is a
-lookup by the quote's own key values and keeps the proof.
+**Answers in request order.** A request may hold several quotes (a JSON array; `haute
+impact` sends batches), and the response answers quote *i* with row *i*
+(`render_output_document`). Every deployment answers such a batch, in one of two ways
+resolution decides from the pruned graph without running it:
 
-Any other operation stops the proof, named by its node and operation and what it does to
-the quotes: a filter, a row limit, a duplicate removal or an inner, semi or anti join can
-drop a quote; a sort or a join in another order can reorder them; an explode, an unpivot,
-a full join, a join whose other side may hold a key twice or a Scenario Expander can repeat
-one; a join driven by another input answers with that input's rows; a group-by, an
-expression that reads other rows (an aggregate, a window, a shift, a rank) or an online
-Optimiser Apply (which answers in quote-id order) makes one quote's answer depend on the
-others, and so can a join with another part of the request; and a response nesting a
-quote's rows by no key, or by one the proof cannot follow to the request, code the proof
-cannot follow, an Optimiser Apply that loads its result from
-MLflow when served and a submodel occurrence the deployed graph still holds (BUG-18) cannot
-be proved. A pipeline the proof does not cover still deploys and
-answers one quote per request: a request of several quotes is refused before anything is
-scored, naming every node and operation that stopped the proof, so a declined quote is a
-flag column on its answer rather than a filtered-out row. A Workbench Input reads one quote
-per request and needs no proof. The result is recorded in the manifest as `request_rows`,
+- *As one frame*, when the proof shows that every node from the request input to the
+  response keeps exactly one row per quote, in request order, each row computed from its
+  own quote alone: the batch runs through the pipeline once. Its answer keeps one
+  top-level object per row, so two quotes whose answers coincide are still answered with
+  a row each (an editor's document merges top-level objects whose fields are all equal,
+  [json-shredding](../json-shredding/high-level.md)).
+- *Quote by quote*, otherwise: each quote is scored alone, one after another within the
+  request, as if it had been sent in its own request (a flat request's one-row slice
+  keeps the column types the whole request gave it), and each must be answered with one
+  row. A quote answered with no row or several fails the request naming its
+  place in the batch; sent alone, it is answered with every row it gives. A batch is
+  never refused for its shape and never answered wrongly; one the proof does not cover
+  costs time instead.
+
+A Quote Input's root table (`$[:]`), one row per quote, starts the proof, and a promoted
+Data Input's post-load code is its first step; a Quote Input's other tables hold a quote's
+array rows (its drivers, say) and are derived from the request. Row-local expressions (the
+operation registry's row-local class), renames, drops and casts keep the rows, and so do
+Banding, Rating Step lookups (deduplicated and ordered by construction), Model Score, a
+ratebook Optimiser Apply read from the bundle, a Data Output, a collapsed Live Switch and
+the training nodes' passthrough, each node's own code proved in the same way. A join keeps
+them when the request side drives it, as a left or cross join ordered `left` or
+`left_right`, and its other side cannot repeat a quote: a side built only from what the
+deployment carries is checked when the deployment is built (below), and a Constant is one
+row. A side derived from the request is never proved, whatever the join declares: two
+parts of the request joined back together can pair one quote with another's row even when
+both sides' keys are unique (a branch that shifts the quote's key passes Polars'
+`validate`). The response's top level must come from the request side, and no nested
+level may hold rows derived from the request: the response places a nested row under
+every quote whose key values it carries, so in one frame two quotes sharing a key, or a
+node that rewrites one, would give a quote another's rows. A response nesting a quote's
+drivers under it is therefore answered quote by quote, where each quote's drivers are its
+own. A nested level built only from what the deployment carries is a lookup by the quote's
+own key values and keeps one frame.
+
+Any other operation makes the deployment answer quote by quote, named by its node and
+operation and what it does to the quotes: a filter, a row limit, a duplicate removal or an
+inner, semi or anti join can drop a quote; a sort or a join in another order can reorder
+them; an explode, an unpivot, a full join, a join whose other side may hold a key twice or
+a Scenario Expander can repeat one; a join driven by another input answers with that
+input's rows; a group-by, an expression that reads other rows (an aggregate, a window, a
+shift, a rank) or an online Optimiser Apply (which answers in quote-id order) makes one
+quote's answer depend on the others, and so can a join with another part of the request;
+and a response nesting rows derived from the request, code the proof cannot follow, an
+Optimiser Apply that loads its result from MLflow when served and a submodel occurrence
+the deployed graph still holds (BUG-18) cannot be proved. A declined quote is a flag column
+on its answer rather than a filtered-out row, so a batch keeps one row per quote. A
+Workbench Input reads one quote per request and its response is the workbench's tables,
+which hold no row per quote, so its deployment answers one quote per request and its reader
+refuses a batch. The result is recorded in the manifest as `request_rows`,
 shown on `/health`, and printed by `haute deploy`.
 
 Each keyed join the request drives against a side the deployment carries is checked once,
@@ -226,10 +233,10 @@ group-by over the join keys looks for a key held twice. A key with a null part n
 a quote and is not counted. A repeated key fails the deployment with a `DeployError` naming
 the lookup, the join and the key, because it would repeat a quote even when the quote is
 sent alone; a join meant to match several rows declares `validate="m:m"` (or `"1:m"`),
-which skips the check and leaves the deployment answering one quote per request. A cross
+which skips the check and leaves the deployment answering quote by quote. A cross
 join's carried side is counted the same way: one row answers each quote once, and any other
-count (a table of product tiers, say) leaves the deployment answering one quote per request,
-as does a side the build cannot read in bounded memory. Every bundled artefact's content
+count (a table of product tiers, say) leaves the deployment answering quote by quote, as
+does a side the build cannot read in bounded memory. Every bundled artefact's content
 digest is recorded when it is collected, before the check and the dry runs read it, and
 every copy into a bundle (the container's `artifacts/`, the Databricks model's staged
 artefacts) recomputes the digest from the bytes it writes, so a file changed in between
@@ -338,8 +345,12 @@ approving it.
   proof for a bundled lookup: it sends the join through the streaming engine's in-memory
   join node, at 39% to 76% more peak memory from 1,000 requests against a ten-million-row
   lookup to forty million rows against 5,000, where the build-time check reads the
-  lookup's keys once. The proof tightens the contract: a pipeline that declines a quote by
-  filtering it out answers one quote per request.
+  lookup's keys once. A batch the proof does not cover is answered quote by quote rather
+  than refused: each quote alone gives the answer it would in its own request, so the
+  cost is time, never a wrong answer, and nothing new runs through the pipeline's nodes
+  (a nested level matched to its quote by key, which a node can rewrite, is the case
+  that needs it). The proof tightens the contract: a pipeline that declines a quote by
+  filtering it out answers a batch quote by quote, where that quote fails the batch.
 - **The pruned graph JSON, not the `.py` file, is the deployment unit.** This was a
   deliberate design decision: `_utils.py::build_manifest` embeds `resolved.pruned_graph.model_dump()` into
   `deploy_manifest.json`, every Workbench Input's `sample` left out (`shipped_graph`; the
@@ -467,12 +478,13 @@ most: a silent wrong answer here mis-prices real policies.
 - **Rows a deployment cannot answer in order.** A bundled lookup holding a join key twice
   fails resolution with one `DeployError` naming every such lookup, its join and an
   example key. An artefact whose bytes changed after resolution recorded its digest fails
-  the copy into the bundle with a `DeployError` naming it. A request of several quotes to a
-  deployment the proof does not cover raises `MultiQuoteRequestRefusedError` before
-  anything is scored (HTTP 422 `multi_quote_request_refused` from a container, naming each
-  node and operation; the Databricks model's `predict` raises it). A proven deployment
-  whose answer to such a request has another row count fails that request with both
-  counts (HTTP 500 `deploy_internal_error` from a container).
+  the copy into the bundle with a `DeployError` naming it. In a batch answered quote by
+  quote, a quote answered with no row or several fails the request with
+  `QuoteAnswerRowsError`, naming its place in the batch and its row count (HTTP 422
+  `quote_answer_rows` from a container; the Databricks model's `predict` raises it): sent
+  alone, it is answered with every row it gives. A deployment answering a batch as one
+  frame whose answer has another row count fails that request with both counts (HTTP 500
+  `deploy_internal_error` from a container).
 - **Pre-deploy validation failures** (structural checks, project-local imports the bundle
   does not carry, and test-quote scoring/expected-output mismatches) are all collected
   and raised together as a single `DeployError`

@@ -42,7 +42,11 @@ from haute._logging import get_logger
 from haute._polars_utils import bounded_sink, streaming_collect
 from haute._types import PipelineGraph
 from haute._worker_isolation import IsolatedWorkerConfig, worker_config_for_memory_policy
-from haute.deploy._request_rows import RequestRows, check_answer_rows, refuse_multi_quote
+from haute.deploy._request_rows import (
+    RequestRows,
+    answers_quote_by_quote,
+    check_answer_rows,
+)
 from haute.errors import BoundedMemoryUnsupportedError
 from haute.routes._contract_errors import PUBLIC_CONTRACT_ERROR_TYPES
 
@@ -190,7 +194,12 @@ def score_batch_scoring_request(
     execution_context: ExecutionContext,
 ) -> BatchScoreOutcome:
     """Score one batch under an already-constructed worker-local context."""
-    from haute.deploy._scorer import QuoteRequest, reads_records, score_graph_lazy
+    from haute.deploy._scorer import (
+        QuoteRequest,
+        reads_records,
+        score_graph_lazy,
+        score_quote_by_quote,
+    )
 
     execution_context.checkpoint(label="before_deploy_batch_dataframe")
     rows = json.loads(Path(request.input_path).read_text(encoding="utf-8"))
@@ -202,6 +211,26 @@ def score_batch_scoring_request(
         else pl.DataFrame(rows, schema=request.input_schema)
     )
     execution_context.checkpoint(label="after_deploy_batch_dataframe")
+
+    if answers_quote_by_quote(request.request_rows, input_df.height):
+        # Each quote scored alone under this worker's context, which the worker entrypoint
+        # releases once.
+        answers = score_quote_by_quote(
+            graph=request.graph,
+            input_df=input_df,
+            input_node_ids=list(request.input_node_ids),
+            output_node_id=request.output_node_id,
+            artifact_paths=dict(request.artifact_paths),
+            output_fields=list(request.output_fields) if request.output_fields else None,
+            execution_context=execution_context,
+            retain_admission_on_success=True,
+        )
+        with execution_context.stage("deploy_batch_sink", node_id=request.output_node_id):
+            bounded_sink(answers.lazy(), request.result_path)
+        return BatchScoreOutcome(
+            row_count=answers.height,
+            execution_metrics=execution_context.metrics_payload(status="completed"),
+        )
 
     plan = score_graph_lazy(
         graph=request.graph,
@@ -314,8 +343,6 @@ def prepare_batch_scoring(
     anything is admitted.
     """
     from haute.deploy._scorer import admit_deploy_execution
-
-    refuse_multi_quote(request_rows, len(rows), lambda: rows)
 
     # The batch path is one fixed execution path: it always admits the served
     # ``DEPLOY_BATCH`` envelope and batch ``modelScore`` contract, even when the

@@ -271,10 +271,17 @@ def _rows_from_dataframe(
     return rows
 
 
+#: A private OUTPUT node config key the deploy scorer sets on its own graph copy for a
+#: batch answered as one frame: each row of the top level answers its own quote, so the
+#: top level keeps one object per row rather than merging rows whose fields are all equal.
+DEPLOY_ANSWER_PER_ROW_CONFIG_KEY = "__haute_deploy_answer_per_row"
+
+
 def _assemble_document(
     field_frames: dict[str, pl.LazyFrame],
     *,  # pragma: no mutate
     row_limit: int | None = None,  # pragma: no mutate
+    top_level_per_row: bool = False,
 ) -> list[Any]:
     """Assemble the nested JSON document by descending the array-prefix tree.
 
@@ -293,6 +300,10 @@ def _assemble_document(
     no cross-branch blow-up (the 2×2×3 denormalisation the data model names as
     arithmetically meaningless). This is the default, swappable serialiser;
     running it on a single frame renders that frame's own JSON view.
+
+    *top_level_per_row* makes each row of an emitting root level its own object, in
+    order, instead of grouping rows by their own fields; a deployed batch answered as one
+    frame asks for it, each row answering its own quote.
 
     *row_limit* reads only the first rows of an emitting root level and, for
     every deeper emitting level, only the rows whose keys match its nearest
@@ -453,15 +464,18 @@ def _assemble_document(
 
         own = [c for c, p in all_paths.items() if _array_prefix(p) == prefix]
         objects: list[dict[str, Any]] = []
-        grouped_rows = _group_rows(
-            rows,
-            own,
-            on_row=(
-                (lambda: progress.advance("output_assembly_build"))
-                if execution_context is not None
-                else None
-            ),
+        on_row = (
+            (lambda: progress.advance("output_assembly_build"))
+            if execution_context is not None
+            else None
         )
+        if top_level_per_row and not prefix and prefix in port_at:
+            grouped_rows = [[row] for row in rows]
+            if on_row is not None:
+                for _ in rows:
+                    on_row()
+        else:
+            grouped_rows = _group_rows(rows, own, on_row=on_row)
         for grp in grouped_rows:
             progress.advance("output_assembly_build")
             obj: dict[str, Any] = {}
@@ -711,6 +725,7 @@ def assemble_output_from_mapping(
     mapping: list[dict[str, Any]],
     *,  # pragma: no mutate
     row_limit: int | None = None,  # pragma: no mutate
+    top_level_per_row: bool = False,
 ) -> list[Any]:
     """Assemble the OUTPUT JSON document from source frames + an ``outputMapping``.
 
@@ -734,7 +749,9 @@ def assemble_output_from_mapping(
         )
         for port, entries in by_port.items()
     }
-    return _assemble_document(field_frames, row_limit=row_limit)
+    return _assemble_document(
+        field_frames, row_limit=row_limit, top_level_per_row=top_level_per_row
+    )
 
 
 def _document_dtype(node: Any) -> pl.DataType:

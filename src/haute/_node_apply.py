@@ -519,6 +519,7 @@ def assemble_output_from_config(
     mapping = cfg.get("outputMapping")
 
     from haute._output_assembler import (
+        DEPLOY_ANSWER_PER_ROW_CONFIG_KEY,
         OutputMappingSchemaError,
         assemble_output_from_mapping,
         is_active_mapping_entry,
@@ -556,9 +557,13 @@ def assemble_output_from_config(
     from haute._polars_utils import limited_python_scan
 
     lazy_frames = {port: frame.lazy() for port, frame in frames.items()}
+    # Set only on the deploy scorer's own graph copy, for a batch answered as one frame.
+    top_level_per_row = bool(cfg.get(DEPLOY_ANSWER_PER_ROW_CONFIG_KEY))
 
     def produce(row_limit: int | None) -> pl.DataFrame:
-        document = assemble_output_from_mapping(lazy_frames, mapping, row_limit=row_limit)
+        document = assemble_output_from_mapping(
+            lazy_frames, mapping, row_limit=row_limit, top_level_per_row=top_level_per_row
+        )
         return pl.DataFrame(document, schema=schema)
 
     return limited_python_scan(produce, schema=schema)

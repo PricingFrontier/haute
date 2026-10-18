@@ -11,7 +11,7 @@ node types for live scoring:
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -659,20 +659,32 @@ def score_graph_lazy(
             (``artifact_name → local_path``).
         output_fields: Optional list of columns to select from output.
         request_rows: The deployment's record of how it answers a request of several
-            quotes, which refuses one it does not cover; ``None`` for a dry run.
+            quotes; ``None`` for a dry run. A request it answers as one frame keeps one
+            top-level answer object per quote; one it answers quote by quote is scored
+            through :func:`score_graph` or the batch child, one quote at a time.
 
     Returns:
         A lazy output plan and execution context.
     """
-    from haute.deploy._request_rows import refuse_multi_quote
+    from haute.deploy._request_rows import answers_quote_by_quote
 
+    if answers_quote_by_quote(request_rows, input_df.height):
+        raise ValueError(
+            "A request answered quote by quote is scored one quote at a time "
+            "(score_quote_by_quote), not as one lazy plan."
+        )
+    if (
+        request_rows is not None
+        and request_rows.multi_quote == "in_request_order"
+        and input_df.height > 1
+    ):
+        graph = _with_answer_per_row(graph, output_node_id)
     if execution_context is None:
         execution_context = admit_deploy_execution(
             operation="deploy_score_graph",
             row_count=input_df.height,
         )
     try:
-        refuse_multi_quote(request_rows, input_df.height, lambda: request_records(input_df))
         return _score_graph_lazy(
             graph=graph,
             input_df=input_df,
@@ -685,6 +697,75 @@ def score_graph_lazy(
     except BaseException:
         execution_context.release_admission(preserve_primary_error=True)
         raise
+
+
+def _with_answer_per_row(graph: PipelineGraph, output_node_id: str) -> PipelineGraph:
+    """*graph* with its response keeping one top-level object per row: a batch answered as
+    one frame, each row answering its own quote, even where two answers coincide."""
+    from haute._output_assembler import DEPLOY_ANSWER_PER_ROW_CONFIG_KEY
+
+    nodes = [
+        node.with_config({**node.data.config, DEPLOY_ANSWER_PER_ROW_CONFIG_KEY: True})
+        if node.id == output_node_id
+        else node
+        for node in graph.nodes
+    ]
+    return graph.model_copy(update={"nodes": nodes})
+
+
+def _quotes_of(input_df: DeployInput) -> Iterator[DeployInput]:
+    """Each quote of a request as a request of its own: its record, or the frame's row."""
+    if isinstance(input_df, QuoteRequest):
+        for record in input_df.records:
+            yield QuoteRequest((record,))
+    else:
+        for index in range(input_df.height):
+            yield input_df.slice(index, 1)
+
+
+def score_quote_by_quote(
+    *,
+    graph: PipelineGraph,
+    input_df: DeployInput,
+    input_node_ids: list[str],
+    output_node_id: str,
+    artifact_paths: dict[str, str] | None,
+    output_fields: list[str] | None,
+    execution_context: ExecutionContext | None,
+    retain_admission_on_success: bool,
+) -> pl.DataFrame:
+    """A request's quotes scored one at a time, each alone, and answered one row each.
+
+    Each quote runs through :func:`score_graph` as a request of its own, under the
+    caller's execution context when there is one, whose admission is kept between quotes
+    and released at the end unless *retain_admission_on_success*; a failure releases it.
+    A quote answered with no row or several fails the request (``check_quote_answer``).
+    """
+    from haute.deploy._request_rows import check_quote_answer
+
+    quotes = input_df.height
+    answers: list[pl.DataFrame] = []
+    try:
+        for position, quote in enumerate(_quotes_of(input_df), start=1):
+            answer = score_graph(
+                graph=graph,
+                input_df=quote,
+                input_node_ids=input_node_ids,
+                output_node_id=output_node_id,
+                artifact_paths=artifact_paths,
+                output_fields=output_fields,
+                execution_context=execution_context,
+                retain_admission_on_success=execution_context is not None,
+            )
+            check_quote_answer(quotes, position, answer.height)
+            answers.append(answer)
+    except BaseException:
+        if execution_context is not None:
+            execution_context.release_admission(preserve_primary_error=True)
+        raise
+    if execution_context is not None and not retain_admission_on_success:
+        execution_context.release_admission()
+    return pl.concat(answers, how="vertical")
 
 
 def _reject_incomplete_stepped_nodes(graph: PipelineGraph, relevant_node_ids: set[str]) -> None:
@@ -1225,12 +1306,24 @@ def score_graph(
     materialising conversion under the same reservation. Plan resources are still
     cleaned immediately; the caller must release ``execution_context`` in ``finally``.
     Failures always release here. Under *request_rows* a request of several quotes is
-    refused when the deployment does not cover it, and counted when it does.
+    answered as one frame, its row count checked, or quote by quote
+    (:func:`score_quote_by_quote`).
     """
-    from haute.deploy._request_rows import check_answer_rows
+    from haute.deploy._request_rows import answers_quote_by_quote, check_answer_rows
 
     if retain_admission_on_success and execution_context is None:
         raise ValueError("retain_admission_on_success requires a caller-owned execution_context")
+    if answers_quote_by_quote(request_rows, input_df.height):
+        return score_quote_by_quote(
+            graph=graph,
+            input_df=input_df,
+            input_node_ids=input_node_ids,
+            output_node_id=output_node_id,
+            artifact_paths=artifact_paths,
+            output_fields=output_fields,
+            execution_context=execution_context,
+            retain_admission_on_success=retain_admission_on_success,
+        )
     plan = score_graph_lazy(
         graph=graph,
         input_df=input_df,
