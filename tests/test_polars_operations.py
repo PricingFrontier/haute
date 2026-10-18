@@ -401,9 +401,9 @@ def test_boundary_operator_memory_factors_are_pinned_to_the_evidence() -> None:
         "shift": 100,
         "diff": 100,
         "pct_change": 150,
-        "bin_quantiles": 100,
-        "bin_ranks": 100,
-        "approx_quantile": 100,
+        "bin_quantiles": 150,
+        "bin_ranks": 150,
+        "approx_quantile": 150,
         "group_by": 100,
         # explode's estimate is unavailable, so its factor is never applied.
         "explode": 100,
@@ -530,6 +530,13 @@ def _missing(operations: dict[tuple[str, str | None, str], object]) -> list[obje
 
 def test_every_registered_operation_exists_on_the_installed_polars() -> None:
     assert _missing(dict(POLARS_OPERATIONS)) == []
+
+
+def test_the_measured_policies_rest_on_the_installed_polars_release() -> None:
+    """An upgrade fails here until the certification lane has measured the registry again."""
+    from haute._polars_operations import MEMORY_EVIDENCE_POLARS
+
+    assert MEMORY_EVIDENCE_POLARS == ".".join(pl.__version__.split(".")[:2])
 
 
 def test_an_entry_naming_an_operation_polars_removed_is_reported() -> None:

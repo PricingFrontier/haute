@@ -2035,14 +2035,18 @@ present a structural or schema result as execution evidence.
   `memory_evidence` is what makes the lane self-checking: `measured_operation_names(receiver)`
   returns every entry claiming evidence, and the certification test requires each
   of them to have a probe plan, so a policy can never rest on a measurement that
-  was never taken. Each boundary entry's `materialisation_factor_basis_points` is
+  was never taken. `MEMORY_EVIDENCE_POLARS` names the Polars release (major.minor) the
+  measured entries were certified on, Polars 2.0 on the Linux reference runner on
+  18 October 2026, and `tests/test_polars_operations.py` holds it to the installed
+  Polars, so an upgrade fails until the lane has measured them again. Each boundary entry's `materialisation_factor_basis_points` is
   derived from that evidence — measured peak divided by the estimator's
   rows × width × 3.0 figure for the same frame, with margin, rounded up to a whole
   multiple: `sort` 450 (its ratio reached 4.33 on Polars 2.0), `unique` 350, `join` 200,
   `join_asof` 250, `over` 250,
   `reverse` 250, `top_k`/`bottom_k` 100, `group_by` 100, `shift` 100 on both
   receivers, `diff` 100, `pct_change` 150, `bin_quantiles`, `bin_ranks` and
-  `approx_quantile` 100. The neighbouring-row boundaries (frame and expression
+  `approx_quantile` 150 (the first two reached 0.98 and 0.99 of the 100-point estimate
+  on the Linux reference runner). The neighbouring-row boundaries (frame and expression
   `shift`, `diff`, `pct_change`) and the whole-column binning boundaries
   (`bin_quantiles`, `bin_ranks`, `approx_quantile`, each a column of `v1` beside the
   full-width fact, which holds the frame until the column is read) carry no

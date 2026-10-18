@@ -1020,29 +1020,14 @@ class TestMallocTrimDispatch:
         mock_cdll.assert_called_once_with("libc.so.6")
         mock_cdll.return_value.malloc_trim.assert_called_once_with(0)
 
-    def test_windows_calls_heap_compact(self, monkeypatch):
-        import ctypes
-        from unittest.mock import MagicMock
-
-        mock_kernel32 = MagicMock()
-        mock_kernel32.GetProcessHeap.return_value = 12345
-        mock_windll = MagicMock(kernel32=mock_kernel32)
-        monkeypatch.setattr("sys.platform", "win32")
-        if not hasattr(ctypes, "windll"):
-            monkeypatch.setattr(ctypes, "windll", mock_windll, raising=False)
-        else:
-            monkeypatch.setattr("ctypes.windll", mock_windll)
-        _malloc_trim()
-        mock_kernel32.GetProcessHeap.assert_called_once()
-        mock_kernel32.HeapCompact.assert_called_once_with(12345, 0)
-
-    def test_macos_is_noop(self, monkeypatch):
-        """macOS has no native heap compaction — verify no ctypes calls."""
+    @pytest.mark.parametrize("platform", ["win32", "darwin"])
+    def test_other_platforms_do_nothing(self, monkeypatch, platform):
+        """Windows' heap compaction returned nothing measured (PL2-17); macOS has none."""
         from unittest.mock import MagicMock
 
         mock_cdll_cls = MagicMock()
         mock_cdll_inst = MagicMock()
-        monkeypatch.setattr("sys.platform", "darwin")
+        monkeypatch.setattr("sys.platform", platform)
         monkeypatch.setattr("ctypes.CDLL", mock_cdll_cls)
         monkeypatch.setattr("ctypes.cdll", mock_cdll_inst)
         _malloc_trim()
@@ -1055,20 +1040,6 @@ class TestMallocTrimDispatch:
 
         monkeypatch.setattr("sys.platform", "linux")
         monkeypatch.setattr("ctypes.CDLL", MagicMock(side_effect=OSError))
-        _malloc_trim()  # should not raise
-
-    def test_windows_graceful_on_attribute_error(self, monkeypatch):
-        """If kernel32.HeapCompact is missing, _malloc_trim must not raise."""
-        import ctypes
-        from unittest.mock import MagicMock, PropertyMock
-
-        mock_windll = MagicMock()
-        type(mock_windll).kernel32 = PropertyMock(side_effect=AttributeError)
-        monkeypatch.setattr("sys.platform", "win32")
-        if not hasattr(ctypes, "windll"):
-            monkeypatch.setattr(ctypes, "windll", mock_windll, raising=False)
-        else:
-            monkeypatch.setattr("ctypes.windll", mock_windll)
         _malloc_trim()  # should not raise
 
 

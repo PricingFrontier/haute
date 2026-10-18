@@ -172,7 +172,14 @@ running heavy work in a child process the parent can kill on timeout or memory l
   before Polars is imported, its workers inherit them, and the scoring container and a
   served model carry them ([deploy](../deploy/high-level.md)). A pipeline run in a user's
   own Python process keeps that process's Polars settings. Turning spilling on is a
-  measured decision for capped workers only, never a shared process.
+  measured decision for capped workers only, never a shared process, and on Polars 2.0
+  capped workers keep it off: measured with each boundary operator in a fresh process,
+  spilling off and then at budgets of a half and a quarter of its own peak, a budget
+  raised some operator's peak on both platforms. On Linux `over`'s rose 47% to 77% and
+  `join`'s 28% to 33% at a quarter, although `sort`'s fell 70% without writing a file; on
+  Windows nothing spilled at a half, and at a quarter `sort`'s rose 24% at ten times the
+  time. Spilling would be turned on only if no operator's peak rose and one fell
+  materially (memory first), so it stays off.
 - **`dataInput` and `dataOutput` are the sole tabular I/O node types.** A file-backed
   Parquet Data Input is scanned directly. Every other data input executes from a
   validated leased snapshot generation. Graph execution may schedule a missing or stale

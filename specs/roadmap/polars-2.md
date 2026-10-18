@@ -97,13 +97,34 @@ specifications promise.
 ### PL2-17 — Every operator memory policy and RAM estimate rests on Polars 2 evidence
 **Status:** since 17 October 2026 the estimate's advice for a many-to-many join names
 the `validate` contract's cost, and the execution strategy guide adds the deployment's own
-key check; a declared join was already estimated holding both inputs. Since 18 October 2026
-the certification lane's operator probes have run on Polars 2.0 (CI, three runs): `sort`'s
-peak reached 4.33 times the estimator's rows x width x 3.0 figure, so its factor is 450
-basis points, and `over_narrow` measures about 1.44x `scan_narrow`, above the 1.3x streaming
-ceiling it is now held to; every other factor bounds its observation and every other
-witness holds. The measurements at larger scales and in capped workers, the spilling
-decision and the rest of the plan remain.
+key check; a declared join was already estimated holding both inputs. Since 18 October 2026:
+- Every boundary and streaming witness in the registry rests on Polars 2.0. The
+  certification lane re-measured each on the Linux reference runner (CI perf runs
+  39099589384, 39099036905 and 39099038828; 39121069339 and 39121207008 for the entries
+  below), and `MEMORY_EVIDENCE_POLARS` names the release, held to the installed Polars by
+  a test.
+- `sort`'s peak reached 4.33 times the estimator's rows x width x 3.0 figure, so its factor
+  is 450 basis points. `over_narrow` measures about 1.44x `scan_narrow`, so it is held to
+  the 1.3x streaming ceiling.
+- Polars 2's `bin_quantiles` and `bin_ranks`, and an `approx_quantile` set beside every
+  row, hold the frame until the column is read. Their extra memory grows 4.5 to 5.4 times
+  at four times the rows, so they are boundaries at 150 basis points.
+- Capped workers keep spilling off. Measured against each boundary operator's own peak,
+  a budget raised `over`'s peak by 47% to 77% and `join`'s by 28% to 33% on Linux, and
+  `sort`'s by 24% on Windows, although `sort`'s fell 70% on Linux without writing a file.
+- `_malloc_trim` runs on Linux alone. There glibc's trim returned 256 MB of 268 MB of
+  NumPy buffers freed beneath one that stays, and 61 MB of the 73 MB left resident when
+  every buffer was freed, but nothing of a Polars frame. Windows' heap compaction
+  returned nothing.
+- The performance lane's baselines are keyed by Polars version. The 1.44 ones compare as
+  incompatible, and the first Polars 2 runs recorded new ones (39099036905 at `ci`,
+  39099038828 at `1m`). Its artifacts now upload: the action had skipped their folder,
+  whose name starts with a dot.
+- The capture-point rationale cites pola-rs/polars#24206 for what it reports.
+
+What remains: the training estimate's overhead multiplier (3.0) and the width probes
+against Polars 2's `estimated_size` (a literal column now estimates 84 bytes where 1.44
+gave 120), and the operator measurements at the monthly `10m` scale.
 **Why:** The operation registry admits `sort`, `unique`, `join`, `join_asof`,
 `top_k`, `bottom_k`, `reverse`, `shift`, `explode`, `group_by` and `over` as
 materialisation boundaries, and keeps `unpivot`, `rolling`,
@@ -187,15 +208,13 @@ on CI's Python 3.11.
 
 **Plan:** Measure a worker's address-space and resident baseline on Polars 2
 under each backend (Job Object, cgroup, `RLIMIT_AS`); with spilling off, as
-every Haute process runs, the cleaner thread never starts, so it matters only if `PL2-17`
-turns spilling on, and then it is started before the cap; rerun the fallback
-lane and classify its flake again.
+every Haute process runs and as `PL2-17` keeps it in capped workers, the cleaner
+thread never starts; rerun the fallback lane and classify its flake again.
 
 **Acceptance:** the worker-isolation and native-limit modules pass on Polars 2
-on every CI platform; if `PL2-17` turns spilling on, a capped worker that
-spills does not fail on a thread start.
+on every CI platform.
 
-**Dependencies:** `PL2-17` for the spilling decision.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_native_memory_limit.py::_start_polars_thread_pools`;
 `tests/test_native_memory_limit.py`; `tests/test_worker_isolation.py`.

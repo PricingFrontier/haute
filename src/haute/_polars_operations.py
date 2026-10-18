@@ -24,6 +24,7 @@ from types import MappingProxyType
 from typing import Literal
 
 __all__ = [
+    "MEMORY_EVIDENCE_POLARS",
     "POLARS_OPERATIONS",
     "POLARS_SELECTORS_MODULE_FUNCTIONS",
     "POLARS_SELECTOR_CONSTRUCTORS",
@@ -112,6 +113,13 @@ MemoryEvidence = Literal["measured", "none"]
 peak RSS against the streaming floor and the policy below records that result.
 ``none`` means the policy is inherited, not measured, and must not be read as
 evidence of anything."""
+
+#: The Polars release (major.minor) every ``measured`` entry was certified on: the
+#: certification lane re-measured each on Polars 2.0 on 18 October 2026 on the Linux
+#: reference runner (CI perf runs 39099589384, 39099036905 and 39099038828; the binning
+#: entries in 39121069339 and 39121207008). A test holds it to the installed Polars, so
+#: an upgrade fails until the lane has measured the registry again.
+MEMORY_EVIDENCE_POLARS = "2.0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -840,7 +848,9 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         "bins by quantiles of the whole column. materialises: a decile column over the "
         "full-width fact holds the frame until its quantiles are known, certified by the "
         "fresh-process lane against the scan control and witnessed by growth at four times "
-        "the rows; the certified observed/(width x 3.0) ratio needs no margin",
+        "the rows; the certified observed/(width x 3.0) ratio needs 150 basis points of "
+        "margin",
+        materialisation_factor_basis_points=150,
         memory_evidence="measured",
     ),
     _op(
@@ -851,7 +861,9 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         "bins by ranks across the whole column. materialises: a rank-band column over the "
         "full-width fact holds the frame until its ranks are known, certified by the "
         "fresh-process lane against the scan control and witnessed by growth at four times "
-        "the rows; the certified observed/(width x 3.0) ratio needs no margin",
+        "the rows; the certified observed/(width x 3.0) ratio needs 150 basis points of "
+        "margin",
+        materialisation_factor_basis_points=150,
         memory_evidence="measured",
     ),
     _op(
@@ -863,7 +875,9 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         "a column, it holds the frame until the quantile is known (a reduction to one row "
         "needs only its sketch, so this is the conservative side), certified by the "
         "fresh-process lane against the scan control and witnessed by growth at four times "
-        "the rows; the certified observed/(width x 3.0) ratio needs no margin",
+        "the rows; the certified observed/(width x 3.0) ratio needs 150 basis points of "
+        "margin",
+        materialisation_factor_basis_points=150,
         memory_evidence="measured",
     ),
     _op(

@@ -937,44 +937,23 @@ def read_parquet_metadata(path: Path) -> dict[str, Any]:
 
 
 def _malloc_trim() -> None:
-    """Ask the OS to return freed heap pages.
+    """Return the C heap's freed pages to the operating system, on Linux.
 
-    After ``del df``, Python's allocator keeps the pages mapped — RSS
-    stays high even though the memory is logically free.
-
-    Platform strategies:
-
-    - **Linux**: ``malloc_trim(0)`` via glibc forces arena release.
-    - **Windows**: ``HeapCompact`` on the process default heap.  This
-      compacts the heap where Rust/Polars allocations live (via
-      ``HeapAlloc``).  The previous ``_heapmin()`` call only affected
-      the CRT heap which Polars does not use.
-    - **macOS**: no direct API — callers should ``gc.collect()`` beforehand.
+    glibc keeps pages freed beneath a later allocation that still holds its heap's
+    top (NumPy buffers, a model's, Python's own large objects) until ``malloc_trim``
+    releases them. It does not reach Polars, which allocates through jemalloc on
+    Linux. Elsewhere it does nothing: on Windows ``HeapCompact`` returned none of a
+    freed Polars frame, NumPy buffers or Python objects (PL2-17), and macOS has no
+    such call.
     """
     import sys
 
-    platform = sys.platform
-    if platform == "linux":
-        try:
-            import ctypes
+    if sys.platform != "linux":
+        return
+    try:
+        import ctypes
 
-            ctypes.CDLL("libc.so.6").malloc_trim(0)
-        except (OSError, AttributeError):
-            logger.debug("malloc_trim_unavailable", platform=platform)
-    elif platform == "win32":
-        try:
-            import ctypes
-            import ctypes.wintypes
-
-            kernel32 = cast(Any, ctypes).windll.kernel32
-            # GetProcessHeap returns a HANDLE (void*) — must declare
-            # the return type explicitly or ctypes truncates it to
-            # c_int (32-bit) on 64-bit Python, causing access violations.
-            kernel32.GetProcessHeap.restype = ctypes.wintypes.HANDLE
-            kernel32.HeapCompact.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD]
-            kernel32.HeapCompact.restype = ctypes.c_size_t
-            heap = kernel32.GetProcessHeap()
-            kernel32.HeapCompact(heap, 0)
-        except (OSError, AttributeError):
-            logger.debug("heap_compact_unavailable", platform=platform)
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        logger.debug("malloc_trim_unavailable", platform=sys.platform)
     # macOS / other: no native heap compaction API available
