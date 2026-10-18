@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import codecs
 import importlib.util
+import io
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -882,8 +883,8 @@ def _check_csv_header(source: Any, arguments: Mapping[str, Any]) -> None:
     )
 
 
-# The first read of a non-UTF-8 CSV file's header; each retry reads twice as much.
-_CSV_HEADER_PREFIX_BYTES = 64 * 1024
+# The bytes a non-UTF-8 CSV file is decoded in at a time for its header check.
+_CSV_DECODE_CHUNK_BYTES = 1024 * 1024
 
 
 def _csv_first_line_names(
@@ -891,14 +892,13 @@ def _csv_first_line_names(
 ) -> list[str]:
     """The column names Polars reads from a CSV file's first line, in its dialect.
 
-    The scanner decodes only UTF-8. For another encoding the eager reader decodes
-    the whole file in Python and parses the result; this decodes a prefix of the
-    file the same way, cut after its last complete line, and lets Polars read the
-    header from it as the scanner does, without parsing a data row, so the
-    dialect's rules stay Polars' own and the row options do not apply. A prefix
-    can end inside the header (after many skipped lines, or inside a quoted name
-    holding a line break), so the prefix doubles until two prefixes read the same
-    names, or it holds the whole file.
+    Polars reads the header alone, parsing no data row, so the read's row options
+    never apply to the check. The scanner decodes only UTF-8; for another encoding
+    the eager reader decodes the whole file in Python before it parses, so the check
+    decodes the whole file the same way (a ``-lossy`` codec replacing what it cannot
+    decode), a chunk at a time into one UTF-8 buffer: where a header ends depends on
+    every quote before it, which no prefix proves. The buffer is the text the read
+    itself decodes and then holds beside the file's bytes and its frame.
     """
     encoding = str(dialect.get("encoding", "utf8"))
     if encoding in {"utf8", "utf8-lossy"}:
@@ -914,33 +914,18 @@ def _csv_first_line_names(
     )
     # The decoded text is one buffer: nothing to glob.
     as_utf8 = {**{k: v for k, v in dialect.items() if k != "glob"}, "encoding": "utf8"}
-    eol = str(dialect.get("eol_char") or "\n")
-    size = _CSV_HEADER_PREFIX_BYTES
-    previous: list[str] | None = None
+    decoder = codecs.getincrementaldecoder(codec)(errors=errors)
+    text = io.BytesIO()
     with Path(source).open("rb") as handle:
-        while True:
-            handle.seek(0)
-            raw = handle.read(size)
-            whole = len(raw) < size
-            text = codecs.getincrementaldecoder(codec)(errors=errors).decode(raw, final=whole)
-            if not whole:
-                text = text[: text.rfind(eol) + 1]
-            try:
-                names: list[str] | None = (
-                    pl.scan_csv(
-                        text.encode("utf-8"), has_header=has_header, infer_schema=False, **as_utf8
-                    )
-                    .collect_schema()
-                    .names()
-                )
-            except pl.exceptions.PolarsError:
-                if whole:
-                    raise
-                names = None
-            if names is not None and (whole or names == previous):
-                return names
-            previous = names
-            size *= 2
+        while chunk := handle.read(_CSV_DECODE_CHUNK_BYTES):
+            text.write(decoder.decode(chunk).encode("utf-8"))
+    text.write(decoder.decode(b"", final=True).encode("utf-8"))
+    text.seek(0)
+    return (
+        pl.scan_csv(text, has_header=has_header, infer_schema=False, **as_utf8)
+        .collect_schema()
+        .names()
+    )
 
 
 def missing_engines(engines: tuple[str, ...]) -> list[str]:

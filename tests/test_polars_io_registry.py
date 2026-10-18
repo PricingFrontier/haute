@@ -858,11 +858,13 @@ class TestColumnsAreNamedByTheHeaderOrTheConfig:
 
         assert read_polars_input(config).collect().to_dicts() == [{"name": "Zo\u00eb", "id": 1}]
 
-    def test_a_quoted_header_name_cut_by_the_first_read_is_read_whole(self, haute_scratch) -> None:
+    def test_a_quoted_header_name_holding_a_long_line_break_is_read_whole(
+        self, haute_scratch
+    ) -> None:
         path = haute_scratch / "quoted.csv"
-        # The first read ends inside the second, quoted name, which holds a line break.
+        # A quoted name holding a line break, then text longer than any prefix would read.
         first = "x" * (64 * 1024 - 10)
-        second = "long\n" + "y" * 40
+        second = "long\n" + "y" * 150_000
         path.write_bytes(f'{first},"{second}"\n1,2\n'.encode("cp1252"))
         config = {
             "format": "csv",
@@ -874,6 +876,28 @@ class TestColumnsAreNamedByTheHeaderOrTheConfig:
         read = read_polars_input(config).collect()
 
         assert read.rows() == [("2", "1")]
+
+    def test_a_headerless_windows_1252_csv_counts_a_long_quoted_field_as_one(
+        self, haute_scratch
+    ) -> None:
+        path = haute_scratch / "headerless.csv"
+        long_text = "line one\n" + "z" * 150_000
+        path.write_bytes(f'1,"{long_text}",3\n'.encode("cp1252"))
+        config = {
+            "format": "csv",
+            "mode": "read",
+            "path": str(path),
+            "arguments": {"encoding": "windows-1252", "has_header": False},
+        }
+
+        with pytest.raises(PolarsIoConfigError, match="has 3 columns and new_columns names 2"):
+            read_polars_input(
+                {**config, "arguments": {**config["arguments"], "new_columns": ["a", "b"]}}
+            )
+        named = read_polars_input(
+            {**config, "arguments": {**config["arguments"], "new_columns": ["a", "b", "c"]}}
+        ).collect()
+        assert named.rows() == [(1, long_text, 3)]
 
     def test_a_header_beyond_the_first_read_of_a_windows_1252_csv_is_found(
         self, haute_scratch

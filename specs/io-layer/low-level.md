@@ -727,13 +727,12 @@ is no eager dataframe or collect-then-write fallback.
   `schema` names are not exactly its header's, are refused with `PolarsIoConfigError`
   before Polars resolves the scan. The scanner decodes only UTF-8, and the eager reader
   decodes another `encoding` in Python before it parses, so for such a file
-  `_csv_first_line_names` decodes a 64 KiB prefix the same way (a `-lossy` codec
-  replacing what it cannot decode), cuts it after its last complete line, and has Polars
-  read the header from it as the scanner reads a UTF-8 file's, parsing no data row, so the
-  read's row options (`truncate_ragged_lines`, `skip_rows_after_header`) never apply to
-  the check. A prefix can end inside the header (after many skipped lines, or inside a
-  quoted name holding a line break), so the prefix doubles until two prefixes read the
-  same names or the prefix holds the whole file.
+  `_csv_first_line_names` decodes the whole file the same way (a `-lossy` codec replacing
+  what it cannot decode), a megabyte at a time into one UTF-8 buffer, and has Polars read
+  the header from it as the scanner reads a UTF-8 file's, parsing no data row, so the
+  read's row options (`truncate_ragged_lines`, `skip_rows_after_header`) never apply to the
+  check. No prefix proves where a header ends, which depends on every quote before it; the
+  buffer is the text the read decodes anyway and holds beside the file's bytes and frame.
 - Argument *defaults* are Polars'. haute forwards what a node config sets and takes the
   installed Polars' behaviour for everything else, so a default that moves inside the
   specifier moves haute's results with it. That is reported by
