@@ -153,6 +153,7 @@ def _scenario_graph(
                     "how": "left",
                     "on": ["region_key"],
                     "suffix": "_lookup",
+                    "maintainOrder": "left_right",
                     "contract": "opaque",
                 },
             ),

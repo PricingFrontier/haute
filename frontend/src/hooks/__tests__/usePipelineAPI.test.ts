@@ -1362,12 +1362,12 @@ describe("usePipelineAPI", () => {
   it.each([
     [
       "non-cross joins without keys",
-      { how: "left" },
+      { how: "left", maintainOrder: "left_right" },
       "Non-cross joins need join keys.",
     ],
     [
       "cross joins with keys",
-      { how: "cross", on: ["policy_id"] },
+      { how: "cross", on: ["policy_id"], maintainOrder: "left_right" },
       "Cross joins must not configure join keys.",
     ],
   ])("handleSave blocks invalid edgeJoin config before posting for %s", async (_caseName, config, message) => {
@@ -1418,7 +1418,7 @@ describe("usePipelineAPI", () => {
       source_revision: "revision-save",
       warnings: [],
     })
-    const graph = edgeJoinSaveGraph({ how: "left", on: ["policy_id"] })
+    const graph = edgeJoinSaveGraph({ how: "left", on: ["policy_id"], maintainOrder: "left_right" })
     const params = makeParams()
     params.graphRef.current = graph
     const { result } = renderHook(() => usePipelineAPI(params))

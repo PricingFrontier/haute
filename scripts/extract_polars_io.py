@@ -190,12 +190,20 @@ def default_repr(value: Any) -> str:
     return _MEM_ADDR.sub("", repr(value))
 
 
+# Python 3.13 defines ``pathlib.Path`` in ``pathlib._local``; the interface names the
+# public module, so one Polars renders the same on every supported Python.
+_PUBLIC_MODULE_NAMES = (("pathlib._local.", "pathlib."),)
+
+
 def annotation_str(ann: Any) -> str | None:
     if ann is inspect.Parameter.empty:
         return None
     if isinstance(ann, str):
         return ann
-    return inspect.formatannotation(ann)
+    rendered = inspect.formatannotation(ann)
+    for private, public in _PUBLIC_MODULE_NAMES:
+        rendered = rendered.replace(private, public)
+    return rendered
 
 
 def extract_function(owner: str, name: str, func: Any) -> dict[str, Any]:

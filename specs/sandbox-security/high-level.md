@@ -81,7 +81,7 @@ Out of scope (owned elsewhere, linked where relevant):
   calls that would hang or stop the server. Direct file, environment and network access
   from node text is not
   confined: the injected Polars module carries the whole Python object graph
-  beneath it (`pl.io.csv.functions.os` reaches the operating system), a preamble
+  beneath it (`pl.config.os` reaches the operating system), a preamble
   imports freely, and no OS-level sandbox (seccomp, Landlock, restricted token,
   network filter) exists on any supported platform. Only memory caps are enforced.
 - **Project reads and writes.** Haute's own loaders and writers stay inside the

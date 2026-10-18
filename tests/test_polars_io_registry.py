@@ -926,7 +926,11 @@ class TestColumnsAreNamedByTheHeaderOrTheConfig:
             )
 
     def test_haute_names_a_headerless_sheet(self, haute_scratch) -> None:
-        openpyxl = pytest.importorskip("openpyxl")
+        openpyxl = pytest.importorskip(
+            "openpyxl",
+            reason="the sheet is written with openpyxl, an Excel engine dev installs carry "
+            "as a transitive dependency but core haute does not require",
+        )
         path = haute_scratch / "headerless.xlsx"
         workbook = openpyxl.Workbook()
         for row in ([1, "a"], [2, "b"]):
