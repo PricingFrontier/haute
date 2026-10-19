@@ -5,15 +5,17 @@ import { CommittedTextField, FIELD_CLASS, INPUT_STYLE, LabelledRow, ValidatedTex
 import { confirmed } from "../../stores/useQuestionStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { leastSheetWidth } from "../../utils/sheetGeometry"
-import { pageWidgets, removePage, renamePage, setPageShowWhen, setPageWidth } from "../../utils/workbenchForm"
+import { leastSheetHeight, leastSheetWidth, sectionsHeight } from "../../utils/sheetGeometry"
+import { pageWidgets, removePage, renamePage, setPageHeight, setPageShowWhen, setPageWidth } from "../../utils/workbenchForm"
 import { ShowWhenEditor } from "../ShowWhenEditor"
 import { Section } from "./Section"
 
 /**
  * The showing sheet's panel: its title (a blank one kept out), when it shows, its width in
- * whole pixels, never under what its components reach, and at its foot Delete sheet, asking
- * first what goes with it and what stays (`confirmed`), while it is not the only sheet.
+ * whole pixels, never under what its components reach, its height, its sections' heights
+ * summed, set through its last section's, never under what that one's components reach,
+ * and at its foot Delete sheet, asking first what goes with it and what stays
+ * (`confirmed`), while it is not the only sheet.
  */
 export function SheetSettings({ form, page }: { form: FormSpec; page: Page }) {
   const change = useWorkbenchFormStore((s) => s.change)
@@ -30,6 +32,7 @@ export function SheetSettings({ form, page }: { form: FormSpec; page: Page }) {
   }
   const least = leastSheetWidth(pageWidgets(page))
   const width = wholeNumber({ min: least, unit: "pixels" })
+  const height = wholeNumber({ min: leastSheetHeight(page.sections), unit: "pixels" })
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-3 py-3 text-xs">
       <Section title="Title">
@@ -58,6 +61,17 @@ export function SheetSettings({ form, page }: { form: FormSpec; page: Page }) {
             value={String(page.width)}
             onCommit={(text) => change((spec) => setPageWidth(spec, page.id, Number(text)))}
             validate={width}
+            containerClassName="w-20"
+            className={`${FIELD_CLASS} w-full tabular-nums`}
+            style={INPUT_STYLE}
+          />
+        </LabelledRow>
+        <LabelledRow label="Height">
+          <ValidatedTextField
+            dataTestId="sheet-height"
+            value={String(sectionsHeight(page.sections))}
+            onCommit={(text) => change((spec) => setPageHeight(spec, page.id, Number(text)))}
+            validate={height}
             containerClassName="w-20"
             className={`${FIELD_CLASS} w-full tabular-nums`}
             style={INPUT_STYLE}

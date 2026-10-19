@@ -255,8 +255,11 @@ double-click it to fit the section to what it holds. A section never shrinks by 
 Sheets have tabs along the top: **+** adds one, the Left and Right arrows (and Home and
 End) go from tab to tab, double-click (or F2) renames one, dragging
 a tab onto another moves its sheet there (or press Alt+Left and Alt+Right on a tab), the
-settings mark on the showing tab opens the sheet's own panel (its title, when it shows
-and its width). **Delete sheet** at the foot of that panel deletes the sheet once you
+settings mark on the showing tab opens the sheet's own panel (its title, when it shows,
+its width and its height). The height is the sections' heights added up, and changing it
+changes the last section's. While that panel is open, the sheet has a handle on the
+middle of its right edge and one under the middle of its bottom: drag them to set its
+width and height. **Delete sheet** at the foot of that panel deletes the sheet once you
 confirm it in the box that opens, which says how many components go with it; the schema
 and the sample stay, and Ctrl+Z brings the sheet back. The last sheet cannot be deleted.
 

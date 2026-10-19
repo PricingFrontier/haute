@@ -820,6 +820,34 @@ describe("PropertiesPanel", () => {
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
   })
 
+  it("sets the showing sheet's height in its panel, its sections' heights summed, through its last section's, never under what that one's components reach, as one undo step", () => {
+    loadForm(sectionedForm())
+    useWorkbenchViewStore.setState({ pageId: "p1", sheetSelected: true })
+    render(<PropertiesPanel />)
+    const height = within(screen.getByRole("region", { name: "Layout" })).getByTestId("sheet-height")
+    const heights = () => currentForm().pages[0].sections.map((section) => section.height)
+    // 152 + 232 + 72: the bars drawn while building are no part of it.
+    expect(height).toHaveValue("456")
+
+    // Notes' Heading, 16 down and 40 tall, reaches 56, so the sheet is no shorter than 152 + 232 + 56.
+    for (const typed of ["439", "500.5", "tall"]) {
+      fireEvent.change(height, { target: { value: typed } })
+      fireEvent.blur(height)
+      expect(screen.getByTestId("sheet-height-error")).toHaveTextContent("Enter a whole number of pixels, 440 or more.")
+      expect(heights()).toEqual([152, 232, 72])
+    }
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(0)
+    fireEvent.change(height, { target: { value: "440" } })
+    fireEvent.blur(height)
+    expect(heights()).toEqual([152, 232, 56])
+    fireEvent.change(height, { target: { value: "800" } })
+    fireEvent.blur(height)
+    expect(heights()).toEqual([152, 232, 416])
+    expect(height).toHaveValue("800")
+    expect(screen.queryByTestId("sheet-height-error")).not.toBeInTheDocument()
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
+  })
+
   it("deletes the showing sheet from the foot of its panel once asked in the page's own question, as one undo step", async () => {
     loadForm(sectionedForm())
     useWorkbenchViewStore.setState({ pageId: "p1", sheetSelected: true })

@@ -147,6 +147,82 @@ describe("SheetCanvas", () => {
     expect(band("s_notes")).toHaveStyle({ top: "384px" })
   })
 
+  it("draws the sheet's handles while its own panel is open, the right edge's drag setting its width and the bottom's its height through its last section's, on the grid, never under what its components reach, each one undo step", () => {
+    loadForm(sectionedForm())
+    render(<SheetCanvas />)
+    const right = () => screen.getByTestId("sheet-edge-width")
+    const bottom = () => screen.getByTestId("sheet-edge-height")
+    const undoSteps = () => useWorkbenchFormStore.getState().undoStack.length
+    expect(screen.queryAllByTestId(/^sheet-edge-/)).toHaveLength(0)
+    act(() => useWorkbenchViewStore.getState().selectSection("s_notes"))
+    expect(screen.queryAllByTestId(/^sheet-edge-/)).toHaveLength(0)
+
+    act(() => useWorkbenchViewStore.getState().selectSheet())
+    // On its right edge, 936 across, and under its bottom, 152 + 232 + 72 and three bars of 24 down, less half the handle's 8.
+    expect(right()).toHaveStyle({ left: "932px", width: "8px", height: "40px" })
+    expect(bottom()).toHaveStyle({ top: "524px", width: "40px", height: "8px" })
+
+    // 43 right, 979, snaps to 976; the press is kept from the sheet, so its panel stays open.
+    act(() => drag(right(), [936, 264], [979, 264]))
+    expect(currentForm().pages[0].width).toBe(976)
+    expect(useWorkbenchViewStore.getState().sheetSelected).toBe(true)
+    expect(screen.getByTestId("sheet")).toHaveStyle({ width: "976px" })
+    expect(right()).toHaveStyle({ left: "972px" })
+    // Left past its Table's right edge, 16 + 720: kept there.
+    act(() => drag(right(), [976, 264], [300, 264]))
+    expect(currentForm().pages[0].width).toBe(736)
+
+    // 43 down, 499, snaps to 496: Notes 112, the others kept, the sheet as much longer.
+    act(() => drag(bottom(), [468, 528], [468, 571]))
+    expect(heights()).toEqual([152, 232, 112])
+    expect(screen.getByTestId("sheet")).toHaveStyle({ height: "568px" })
+    expect(bottom()).toHaveStyle({ top: "564px" })
+    // Up past Notes' Heading, 16 + 40: kept there.
+    act(() => drag(bottom(), [468, 568], [468, 100]))
+    expect(heights()).toEqual([152, 232, 56])
+    expect(undoSteps()).toBe(4)
+
+    act(() => useWorkbenchViewStore.getState().showSection("preview"))
+    expect(screen.queryAllByTestId(/^sheet-edge-/)).toHaveLength(0)
+    for (let step = 0; step < 4; step += 1) act(() => useWorkbenchFormStore.getState().undo())
+    expect(currentForm().pages[0].width).toBe(936)
+    expect(heights()).toEqual([152, 232, 72])
+  })
+
+  it("scrolls over the sheet as pressed while its edge or a section's bottom is dragged, so the scroll never carries the edge from the pointer, and over the sheet itself once the drag ends", () => {
+    loadForm(sectionedForm())
+    render(<SheetCanvas />)
+    // What the viewport scrolls over: the sheet and the padding either side, 64.
+    const area = () => screen.getByTestId("sheet").parentElement
+    act(() => useWorkbenchViewStore.getState().selectSheet())
+
+    // Its right edge, 936 across, dragged 200 in: the sheet narrower, the area as wide as it was.
+    pointer("pointerdown", 936, 264, screen.getByTestId("sheet-edge-width"))
+    pointer("pointermove", 736, 264)
+    expect(screen.getByTestId("sheet")).toHaveStyle({ width: "736px" })
+    expect(area()).toHaveStyle({ width: "1000px" })
+    pointer("pointerup", 736, 264)
+    expect(area()).toHaveStyle({ width: "800px" })
+
+    // Notes' bottom, 528 down the sheet, dragged 16 up: the area as long as the sheet was.
+    act(() => useWorkbenchViewStore.getState().selectSection("s_notes"))
+    pointer("pointerdown", 468, 528, screen.getByTestId("section-edge-s_notes"))
+    pointer("pointermove", 468, 512)
+    expect(heights()).toEqual([152, 232, 56])
+    expect(screen.getByTestId("sheet")).toHaveStyle({ height: "512px" })
+    expect(area()).toHaveStyle({ height: "592px" })
+    pointer("pointerup", 468, 512)
+    expect(area()).toHaveStyle({ height: "576px" })
+
+    // An undo during the drag ends it, and the area is the sheet's again.
+    pointer("pointerdown", 400, 120, screen.getByTestId("section-edge-s_notes"))
+    pointer("pointermove", 400, 300)
+    expect(area()).toHaveStyle({ height: "760px" })
+    act(() => useWorkbenchFormStore.getState().undo())
+    expect(useWorkbenchViewStore.getState().heldSize).toBeNull()
+    expect(area()).toHaveStyle({ height: "576px" })
+  })
+
   it("marks a component that shows nothing or a column that is gone, naming the problem", () => {
     loadForm({ ...sheetForm(), pages: [sheet("p1", "Sheet 1", [{ id: "w", type: "collection", x: 0, y: 0, w: 200, h: 100, title: "", columns: 3, ...COLLECTION_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }])] })
     render(<SheetCanvas />)

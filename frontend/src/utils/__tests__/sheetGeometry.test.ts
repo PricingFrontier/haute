@@ -23,16 +23,19 @@ import {
   freePlace,
   grownRect,
   leastSectionHeight,
+  leastSheetHeight,
   leastSheetWidth,
   moveRect,
   placeAt,
   readingOrder,
   resizeRect,
   sectionAt,
+  sectionsHeight,
   sheetHeight,
   snap,
   stackBottom,
   stackSections,
+  type Rect,
 } from "../sheetGeometry"
 
 const rect = { x: 96, y: 96, w: 200, h: 64 }
@@ -235,6 +238,17 @@ describe("sheetGeometry", () => {
     expect(sheetHeight(584)).toBe(584)
     expect(sheetHeight(1000)).toBe(1000)
     expect(sheetHeight(0)).toBe(MIN_SECTION_HEIGHT)
+  })
+
+  it("sums a sheet's sections' heights, and keeps it no shorter than its others and what its last one's components reach, or 48", () => {
+    const section = (height: number, widgets: Rect[] = []) => ({ height, widgets })
+    expect(sectionsHeight([section(152), section(232), section(72)])).toBe(456)
+    expect(sectionsHeight([])).toBe(0)
+    // The others as tall as they are, whatever they hold; the last only as short as its Heading, 16 + 40, lets it be.
+    const sheet = [section(152), section(232, [{ x: 16, y: 16, w: 720, h: 200 }]), section(72, [{ x: 16, y: 16, w: 480, h: 40 }])]
+    expect(leastSheetHeight(sheet)).toBe(152 + 232 + 56)
+    expect(leastSheetHeight([section(560)])).toBe(MIN_SECTION_HEIGHT)
+    expect(() => leastSheetHeight([])).toThrow("A sheet holds at least one section")
   })
 
   it("fits the sheet's width to the viewport across, in steps of 5%, never past 100%", () => {

@@ -65,6 +65,7 @@ import {
   sectionName,
   sectionProblems,
   setColumnLook,
+  setPageHeight,
   setPageShowWhen,
   setPageWidth,
   setRowPerValue,
@@ -1523,6 +1524,21 @@ describe("sections", () => {
     expect(setPageWidth(spec, "p", NaN)).toBe(spec)
     expect(setPageWidth(spec, "p", 2 ** 53)).toBe(spec)
     expect(() => setPageWidth(spec, "missing", 1000)).toThrow("The form has no sheet missing")
+  })
+
+  it("sets a sheet's height, its sections' heights summed, through its last section's, never under what that one's components reach or 48, the form as given while it is that already", () => {
+    // 136 + 232 + 48, Notes empty.
+    const spec = stacked()
+
+    expect(heights(setPageHeight(spec, "p", 600))).toEqual([136, 232, 232])
+    expect(heights(setPageHeight(spec, "p", 600.4))).toEqual([136, 232, 232])
+    expect(setPageHeight(spec, "p", 300)).toBe(spec)
+    expect(setPageHeight(spec, "p", 416)).toBe(spec)
+    expect(setPageHeight(spec, "p", NaN)).toBe(spec)
+    // A component in the last section keeps it as tall as it reaches, 100 + 40.
+    const noting = addWidget(setSectionHeight(spec, "s_notes", 200), "s_notes", { ...createWidget("heading", { x: 16, y: 100, w: 480, h: 40 }), id: "w_note" })
+    expect(heights(setPageHeight(noting, "p", 400))).toEqual([136, 232, 140])
+    expect(() => setPageHeight(spec, "missing", 1000)).toThrow("The form has no sheet missing")
   })
 
   it("leaves its input untouched", () => {

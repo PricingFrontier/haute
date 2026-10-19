@@ -33,6 +33,11 @@ export const NEW_SECTION_HEIGHT = 160
 /** The bar above each section while building, naming it; Preview has none. */
 export const SECTION_HEADER = 24
 /**
+ * The selected section's handle under the middle of its bottom, which sets its height, and
+ * each of the sheet's on its edges: 40 along the edge and 8 across it.
+ */
+export const EDGE_HANDLE = { w: 40, h: 8 }
+/**
  * A new sheet's one section, the whole sheet until another is added, as the server's blank
  * form has it (`BLANK_SECTION_HEIGHT` in `src/haute/_workbench_form.py`).
  */
@@ -107,6 +112,19 @@ export const contentBottom = (rects: readonly Rect[]): number => rects.reduce((m
 
 /** The least a section holding `rects` can be: as far down as they reach, and never under `MIN_SECTION_HEIGHT`. */
 export const leastSectionHeight = (rects: readonly Rect[]): number => Math.max(MIN_SECTION_HEIGHT, contentBottom(rects))
+
+/** Sections one under the next, their heights summed, with no bars. */
+export const sectionsHeight = (sections: readonly { height: number }[]): number => sections.reduce((sum, section) => sum + section.height, 0)
+
+/**
+ * The least a sheet's sections can be tall, its last as short as its components let it be:
+ * the others' heights summed and the last one's `leastSectionHeight`.
+ */
+export function leastSheetHeight(sections: readonly { height: number; widgets: readonly Rect[] }[]): number {
+  const last = sections.at(-1)
+  if (last === undefined) throw new Error("A sheet holds at least one section")
+  return sectionsHeight(sections) - last.height + leastSectionHeight(last.widgets)
+}
 
 /** A section fitted to `rects`: `SECTION_FIT_GAP` under the lowest, never under `MIN_SECTION_HEIGHT`, which an empty one is. */
 export const fittedSectionHeight = (rects: readonly Rect[]): number =>

@@ -16,6 +16,7 @@ import {
   freePlace,
   leastSectionHeight,
   leastSheetWidth,
+  sectionsHeight,
   type Rect,
   type Size,
 } from "./sheetGeometry"
@@ -509,6 +510,17 @@ export function setPageWidth(spec: FormSpec, id: string, width: number): FormSpe
   return edit(spec, (draft) => {
     pageOf(draft, id).width = kept
   })
+}
+
+/**
+ * Set a sheet's height, its sections' heights summed (`sectionsHeight`), through its last
+ * section's (`setSectionHeight`), so never under `leastSheetHeight`.
+ */
+export function setPageHeight(spec: FormSpec, id: string, height: number): FormSpec {
+  const { sections } = pageOf(spec, id)
+  const last = sections.at(-1)
+  if (last === undefined) throw new Error(`The sheet ${id} has no sections`)
+  return setSectionHeight(spec, last.id, height - sectionsHeight(sections) + last.height)
 }
 
 /** Remove a sheet with its components; the schema and the sample stay. The last sheet stays. */

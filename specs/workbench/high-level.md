@@ -382,7 +382,14 @@ Out of scope:
   the selected section has a handle under the middle of its bottom whose drag sets its
   height, on the grid, never less than its components reach nor than 48, and a
   double-click on it fits the section, 16 below its lowest component, or 48 with none.
-  Each is one undo step. A component stays inside its section: dragged, nudged, dropped
+  While the sheet's own panel is open (the properties panel, below), the sheet has a
+  handle at the middle of its right edge whose drag sets its width, on the grid, never
+  less than its components reach nor than 240, and one under the middle of its bottom
+  whose drag sets its height through its last section's, so the sheet ends where it is
+  dragged to, on the grid, never less than that section's components reach nor than 48
+  for it. While a section's handle or the sheet's is dragged, the viewport scrolls over no
+  less than the sheet as pressed, so a sheet growing shorter or narrower never scrolls the
+  edge away from the pointer; the scroll settles once the drag ends. Each is one undo step. A component stays inside its section: dragged, nudged, dropped
   or copied, it stops at the section's top and bottom, never lying across a border, and
   moves into another section only as its top edge goes over that one; resized past the
   bottom, it grows the section, pushing the sections under it down, as does a component
@@ -579,7 +586,10 @@ Out of scope:
   also move between. While building, the showing sheet's tab has a settings
   mark, and no delete of its own, that opens the sheet's own panel in the same place, with its
   title, its Show when and its layout, its width in whole pixels (no less than 240 or
-  than its components reach, a value below that refused at the field), and at its foot
+  than its components reach, a value below that refused at the field) and its height in
+  whole pixels, its sections' heights summed, the bars drawn while building no part of
+  it, set through its last section's (no less than the other sections' heights and what
+  the last one's components reach, or 48, a value below that refused at the field), and at its foot
   Delete sheet, disabled while it is the only sheet, which asks first in a dialog of the
   editor's own, never the browser's: it names the sheet and how many components go with
   it, the schema and the sample staying; Cancel, Escape or a press outside it keeps the
