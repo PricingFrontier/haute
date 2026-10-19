@@ -326,6 +326,10 @@ class CollectionWidget(_Placed):
                 f"widget {self.id} has a spacer after {self.spacers[-1]} fields, but shows "
                 f"{len(self.fields)}"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _looks_at_its_columns(self) -> CollectionWidget:
         _check_column_looks(self.id, self.fields, self.column_looks)
         return self
 
