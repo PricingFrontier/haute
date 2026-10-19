@@ -7,6 +7,8 @@ import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import {
   COLUMN_WIDTH_MAX,
   COLUMN_WIDTH_MIN,
+  LABEL_WIDTH_MAX,
+  LABEL_WIDTH_MIN,
   PLAIN_COLUMN_LOOK,
   columnLook,
   fieldColumn,
@@ -34,11 +36,24 @@ function useSharedLook(widget: LookWidget) {
   }
 }
 
-/** A width typed: blank for Auto, or a whole number of pixels. */
-const width = (text: string): string | null => (text.trim() === "" ? null : wholeNumber({ min: COLUMN_WIDTH_MIN, max: COLUMN_WIDTH_MAX })(text))
+/** A width typed: blank for Auto, or a whole number of pixels, or of percent. */
+const pixels = (text: string): string | null => (text.trim() === "" ? null : wholeNumber({ min: COLUMN_WIDTH_MIN, max: COLUMN_WIDTH_MAX })(text))
+const percent = (text: string): string | null => (text.trim() === "" ? null : wholeNumber({ min: LABEL_WIDTH_MIN, max: LABEL_WIDTH_MAX })(text))
 
-/** A width in pixels, blank for Auto. */
-export function WidthRow({ label = "Width", testId, value, onCommit }: { label?: string; testId: string; value: number | null; onCommit: (width: number | null) => void }) {
+/** A width in pixels, or, given `share`, in percent of its field, blank for Auto. */
+export function WidthRow({
+  label = "Width",
+  testId,
+  value,
+  onCommit,
+  share = false,
+}: {
+  label?: string
+  testId: string
+  value: number | null
+  onCommit: (width: number | null) => void
+  share?: boolean
+}) {
   return (
     <LabelledRow label={label}>
       <ValidatedTextField
@@ -46,11 +61,16 @@ export function WidthRow({ label = "Width", testId, value, onCommit }: { label?:
         value={value === null ? "" : String(value)}
         placeholder="Auto"
         onCommit={(text) => onCommit(text.trim() === "" ? null : Number(text))}
-        validate={width}
+        validate={share ? percent : pixels}
         containerClassName="w-20"
         className={`${FIELD_CLASS} w-full tabular-nums`}
         style={INPUT_STYLE}
       />
+      {share && (
+        <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+          %
+        </span>
+      )}
     </LabelledRow>
   )
 }

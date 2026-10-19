@@ -29,7 +29,7 @@ export function CollectionLook({ form, widget }: { form: FormSpec; widget: Colle
       </Section>
       <Section title="Labels">
         <SelectRow label="Position" value={widget.labels} choices={POSITIONS} onChange={(labels) => set({ labels })} />
-        {widget.labels === "beside" && <WidthRow testId="label-width" value={widget.label_width} onCommit={(label_width) => set({ label_width })} />}
+        {widget.labels === "beside" && <WidthRow share testId="label-width" value={widget.label_width} onCommit={(label_width) => set({ label_width })} />}
         <HeaderRows widget={widget} name="the labels'" />
       </Section>
       <Section title="Boxes">

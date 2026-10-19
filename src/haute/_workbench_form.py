@@ -73,10 +73,15 @@ ColumnAlign = Literal["auto", "left", "center", "right"]
 #: The sizes a Table's or a Collection's text is in, in pixels.
 FontSize = Literal[10, 11, 12, 13, 14, 16, 18]
 
-#: How narrow and how wide a Table's column, or a Collection's labels and boxes, can be set,
-#: in pixels, as the view's properties panel takes them (``frontend/src/utils/workbenchForm.ts``).
+#: How narrow and how wide a Table's column, or a Collection's boxes, can be set, in pixels,
+#: as the view's properties panel takes them (``frontend/src/utils/workbenchForm.ts``).
 COLUMN_WIDTH_MIN = 24
 COLUMN_WIDTH_MAX = 1000
+
+#: How little and how much of its field a Collection's label beside its box can take, in
+#: percent, as the view's properties panel takes them, so the box always keeps some.
+LABEL_WIDTH_MIN = 1
+LABEL_WIDTH_MAX = 99
 
 #: Where a Collection's labels sit: above its boxes, or beside them.
 CollectionLabels = Literal["above", "beside"]
@@ -300,7 +305,7 @@ class CollectionWidget(_Placed):
     header_wrap: bool = False
     header_color: Colour | None = None
     header_font_color: Colour | None = None
-    label_width: int | None = Field(default=None, ge=COLUMN_WIDTH_MIN, le=COLUMN_WIDTH_MAX)
+    label_width: int | None = Field(default=None, ge=LABEL_WIDTH_MIN, le=LABEL_WIDTH_MAX)
     box_style: LineStyle = "solid"
     box_weight: LineWeight = "thin"
     box_color: Colour | None = None

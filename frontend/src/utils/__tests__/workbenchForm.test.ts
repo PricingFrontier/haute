@@ -692,7 +692,7 @@ describe("what the sheets show", () => {
       header_wrap: true,
       header_color: "#F1F5F9",
       header_font_color: "#1E293B",
-      label_width: 160,
+      label_width: 60,
       box_style: "dashed",
       box_weight: "medium",
       box_color: "#DC2626",
@@ -707,7 +707,7 @@ describe("what the sheets show", () => {
     expect(() => updateWidget(spec, boxes.id, { groups: true })).toThrow("Only a Table has groups")
     expect(() => updateWidget(spec, boxes.id, { grid_color: "#2563EB" })).toThrow("Only a Table has grid_color")
     expect(() => updateWidget(spec, grid.id, { labels: "beside" })).toThrow("Only a Collection has labels")
-    expect(() => updateWidget(spec, grid.id, { label_width: 160 })).toThrow("Only a Collection has label_width")
+    expect(() => updateWidget(spec, grid.id, { label_width: 60 })).toThrow("Only a Collection has label_width")
     expect(() => updateWidget(spec, grid.id, { box_style: "dashed" })).toThrow("Only a Collection has box_style")
     expect(() => updateWidget(spec, "missing", { title: "x" })).toThrow("No sheet has a component missing")
 

@@ -162,7 +162,7 @@ Out of scope:
   look: `labels` (`above` or `beside`), `density` and `frame`, and, as a Table's are
   set, `font_size`, its labels' `header`, `header_font_size`, `header_bold`,
   `header_wrap`, `header_color` (their fill) and `header_font_color`, and `label_width`,
-  how wide a label beside its box is; its boxes' borders' `box_style`, `box_weight` and
+  the percentage of its field a label beside its box takes; its boxes' borders' `box_style`, `box_weight` and
   `box_color`, as a Table's gridlines' are, and `box_width`; its frame's `frame_color`
   and `frame_weight`; and `column_looks`, its fields' own looks, as a Table's columns'
   are, a field's label's `header_color` and `header_font_color`, its box's `cell_color`
@@ -434,8 +434,8 @@ Out of scope:
   `font_size`; its labels at their size, in capitals or as written, bold only while
   `header_bold`, wrapping with whole words kept rather than cut off while `header_wrap`,
   in their `header_font_color` and, given a fill, drawn as a cell, padded, and beside its
-  box as tall as it; a label beside its box `label_width` wide, else two fifths of its
-  field, or what its box leaves while the box has a width; its boxes' borders in their
+  box as tall as it; a label beside its box `label_width` percent of its field wide,
+  else two fifths of it, or what its box leaves while the box has a width; its boxes' borders in their
   `box_style`, `box_weight` and `box_color`, and each box `box_width` wide, else what its
   label leaves, never wider than its field, a narrower box under its label sitting across
   the field as its `align` says; its frame in its `frame_color` and `frame_weight`, the

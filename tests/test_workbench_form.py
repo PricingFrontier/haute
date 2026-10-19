@@ -173,7 +173,7 @@ FORM: dict[str, Any] = {
                             "header_wrap": True,
                             "header_color": "#F1F5F9",
                             "header_font_color": "#1E293B",
-                            "label_width": 160,
+                            "label_width": 60,
                             "box_style": "dotted",
                             "box_weight": "medium",
                             "box_color": "#DC2626",
@@ -652,7 +652,7 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         (lambda f: widgets(f)[0].update(gridlines="all"), "gridlines"),
         (lambda f: widgets(f)[0].update(header_orientation="up"), "header_orientation"),
         (lambda f: widgets(f)[1].update(labels="above"), "labels"),
-        (lambda f: widgets(f)[1].update(label_width=160), "label_width"),
+        (lambda f: widgets(f)[1].update(label_width=60), "label_width"),
         (lambda f: widgets(f)[1].update(box_style="solid"), "box_style"),
         (lambda f: widgets(f)[1].update(box_width=96), "box_width"),
         (lambda f: widgets(f)[0].update(labels="under"), "labels"),
@@ -669,12 +669,13 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         (lambda f: widgets(f)[1].update(grid_color="#dc2626"), "grid_color"),
         # Only a Table has them.
         (lambda f: widgets(f)[0].update(grid_color="#DC2626"), "grid_color"),
-        # A Collection's boxes come in a Table's line weights and styles, and its labels and
-        # boxes are as wide as a Table's columns can be.
+        # A Collection's boxes come in a Table's line weights and styles and are as wide as a
+        # Table's columns can be, and its labels take from 1 to 99 percent of a field.
         (lambda f: widgets(f)[0].update(box_style="double"), "box_style"),
         (lambda f: widgets(f)[0].update(box_weight="hairline"), "box_weight"),
         (lambda f: widgets(f)[0].update(box_color="#dc2626"), "box_color"),
-        (lambda f: widgets(f)[0].update(label_width=23), "label_width"),
+        (lambda f: widgets(f)[0].update(label_width=0), "label_width"),
+        (lambda f: widgets(f)[0].update(label_width=100), "label_width"),
         (lambda f: widgets(f)[0].update(box_width=1001), "box_width"),
         (lambda f: widgets(f)[0].update(font_size=15), "font_size"),
         # A field's look on a Collection is held as a Table column's is.

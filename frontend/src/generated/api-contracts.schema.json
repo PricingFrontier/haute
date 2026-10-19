@@ -931,8 +931,8 @@
         "label_width": {
           "anyOf": [
             {
-              "maximum": 1000,
-              "minimum": 24,
+              "maximum": 99,
+              "minimum": 1,
               "type": "integer"
             },
             {

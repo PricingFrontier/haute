@@ -52,8 +52,8 @@ const VALUE_PLACE: Record<ColumnLookOptions["align"], CSSProperties["justifyCont
  *
  * Its look, as a Table's is set: its values' size; its labels' size, case, weight, wrapping,
  * fill and colour, a filled label padded as a cell and, beside its box, as tall as it, and
- * beside their boxes their width, else two fifths of a field, or what a box of a set width
- * leaves; its boxes' borders' style, weight and colour, input and output boxes alike, and
+ * beside their boxes the share of a field they take, else two fifths of it, or what a box
+ * of a set width leaves; its boxes' borders' style, weight and colour, input and output boxes alike, and
  * their width, never wider than the field, a narrower box under its label placed as its
  * field aligns; and each field's own look over the Collection's: its label's fill and
  * colour, its box's fill, over the input and output fills, its colour and weight, where its
@@ -98,12 +98,12 @@ export function FieldBoxes({
         const across: CSSProperties = look.align === "auto" ? {} : { textAlign: look.align }
         // Its box's width: its field's, else the Collection's, else what its label leaves.
         const width = look.width ?? options.box_width
-        // Beside its box, a label is as wide as the Collection sets, else two fifths of its
-        // field while its box has no width, else what the box leaves.
+        // Beside its box, a label takes the share of its field the Collection sets, else two
+        // fifths of it while its box has no width, else what the box leaves.
         const labelPlace: CSSProperties = !beside
           ? {}
           : options.label_width !== null
-            ? { width: options.label_width, flexShrink: 0 }
+            ? { width: `${options.label_width}%`, flexShrink: 0 }
             : width === null
               ? { width: LABEL_SHARE, flexShrink: 0 }
               : TAKES_THE_REST

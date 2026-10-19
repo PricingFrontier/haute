@@ -235,14 +235,15 @@ describe("PropertiesPanel", () => {
 
     fireEvent.change(within(region("Look")).getByRole("combobox", { name: "Text size" }), { target: { value: "14" } })
 
-    // A label's width is set only beside its box, in whole pixels from 24 to 1000.
+    // A label's width is set only beside its box, a whole percentage of its field from 1 to 99.
     const labels = region("Labels")
     expect(screen.queryByTestId("label-width")).not.toBeInTheDocument()
     fireEvent.change(within(labels).getByRole("combobox", { name: "Position" }), { target: { value: "beside" } })
     expect(screen.getByTestId("label-width")).toHaveAttribute("placeholder", "Auto")
-    type("label-width", "10")
-    expect(screen.getByTestId("label-width-error")).toHaveTextContent("Enter a whole number from 24 to 1000.")
-    type("label-width", "160")
+    expect(within(labels).getByText("%")).toBeInTheDocument()
+    type("label-width", "100")
+    expect(screen.getByTestId("label-width-error")).toHaveTextContent("Enter a whole number from 1 to 99.")
+    type("label-width", "60")
     fireEvent.change(within(labels).getByRole("combobox", { name: "Case" }), { target: { value: "caps" } })
     fireEvent.change(within(labels).getByRole("combobox", { name: "Size" }), { target: { value: "11" } })
     fireEvent.click(within(labels).getByRole("button", { name: "Colour #4B5563 for the labels' fill" }))
@@ -263,7 +264,7 @@ describe("PropertiesPanel", () => {
     expect(boxes()).toMatchObject({
       font_size: 14,
       labels: "beside",
-      label_width: 160,
+      label_width: 60,
       header: "caps",
       header_font_size: 11,
       header_color: "#4B5563",

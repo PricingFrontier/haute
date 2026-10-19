@@ -422,7 +422,7 @@ describe("WidgetBody", () => {
       header_wrap: true,
       header_color: "#1E293B",
       header_font_color: "#FFFFFF",
-      label_width: 160,
+      label_width: 60,
       box_style: "dashed",
       box_weight: "thick",
       box_color: "#000000",
@@ -441,7 +441,7 @@ describe("WidgetBody", () => {
     expect(screen.getByText("Policy").style.borderBottom).toBe("1px solid rgb(147, 51, 234)")
     // Its labels filled, drawn as a cell as tall as the box beside it, in its font, its width,
     // capitals, size and weight, wrapping rather than cut off.
-    expect(label()).toHaveStyle({ background: "#1E293B", color: "#FFFFFF", width: "160px" })
+    expect(label()).toHaveStyle({ background: "#1E293B", color: "#FFFFFF", width: "60%" })
     expect(label()).toHaveClass("rounded-md", "px-2.5", "self-stretch")
     const labelText = label().firstElementChild as HTMLElement
     expect(labelText).toHaveClass("uppercase", "break-words")
@@ -507,9 +507,9 @@ describe("WidgetBody", () => {
     expect(output()).toHaveStyle({ width: "96px" })
     expect(label().style.width).toBe("")
     expect(label().style.flexGrow).toBe("1")
-    // A label of a set width keeps it; a field's own width wins over the Collection's.
-    draw({ box_width: 96, label_width: 200 }, setColumnLook(base, "w_boxes", state, { width: 64 }))
-    expect(label().style.width).toBe("200px")
+    // A label of a set share of its field keeps it; a field's own width wins over the Collection's.
+    draw({ box_width: 96, label_width: 30 }, setColumnLook(base, "w_boxes", state, { width: 64 }))
+    expect(label().style.width).toBe("30%")
     expect(box().style.width).toBe("64px")
     expect(output().style.width).toBe("96px")
 

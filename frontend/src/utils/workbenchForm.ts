@@ -688,12 +688,19 @@ export const PLAIN_COLUMN_LOOK: Readonly<ColumnLookOptions> = {
 }
 
 /**
- * How narrow and how wide a Table's column, or a Collection's labels and boxes, can be set,
- * in pixels, as the server's form takes them (`COLUMN_WIDTH_MIN` and `COLUMN_WIDTH_MAX` in
+ * How narrow and how wide a Table's column, or a Collection's boxes, can be set, in pixels,
+ * as the server's form takes them (`COLUMN_WIDTH_MIN` and `COLUMN_WIDTH_MAX` in
  * `src/haute/_workbench_form.py`).
  */
 export const COLUMN_WIDTH_MIN = 24
 export const COLUMN_WIDTH_MAX = 1000
+
+/**
+ * How little and how much of its field a Collection's label beside its box can take, in
+ * percent, as the server's form takes them (`LABEL_WIDTH_MIN` and `LABEL_WIDTH_MAX` there).
+ */
+export const LABEL_WIDTH_MIN = 1
+export const LABEL_WIDTH_MAX = 99
 
 /** The look of a Table's column or a Collection's field: its own, or the plain one while it has none. */
 export const columnLook = (widget: Pick<SharedLook, "column_looks">, field: FieldRef): ColumnLookOptions => {
