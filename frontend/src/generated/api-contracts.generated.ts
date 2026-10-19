@@ -2601,9 +2601,11 @@ export interface TableInputWidget {
 }
 /**
  * How one of a Table's columns, or one of a Collection's fields, looks, its field by table
- * and column id: each colour the component's own while None, its values and label placed as
- * its type puts them while ``auto``, and, while ``width`` is None, a Table's column as wide
- * as the grid makes it and a Collection's box as wide as the Collection makes it.
+ * and column id: each colour the component's own while None, its values placed as its type
+ * puts them, or as the Collection places its boxes', while ``align`` is ``auto``, its label
+ * over a Table's column as its values sit, or as the Collection places its labels, while
+ * ``header_align`` is, and, while ``width`` is None, a Table's column as wide as the grid
+ * makes it and a Collection's box as wide as the Collection makes it.
  */
 export interface ColumnLook {
   align: 'auto' | 'left' | 'center' | 'right';
@@ -2611,6 +2613,7 @@ export interface ColumnLook {
   cell_color: string | null;
   column: string;
   font_color: string | null;
+  header_align: 'auto' | 'left' | 'center' | 'right';
   header_color: string | null;
   header_font_color: string | null;
   table: string;
@@ -2629,6 +2632,7 @@ export interface FieldRef {
  * a look of its own looking as its ``column_looks`` entry says.
  */
 export interface CollectionWidget {
+  box_align: 'auto' | 'left' | 'center' | 'right';
   box_color: string | null;
   box_style: 'solid' | 'dashed' | 'dotted';
   box_weight: 'thin' | 'medium' | 'thick';
@@ -2643,6 +2647,7 @@ export interface CollectionWidget {
   frame_weight: 'thin' | 'medium' | 'thick';
   h: number;
   header: 'caps' | 'plain';
+  header_align: 'auto' | 'left' | 'center' | 'right';
   header_bold: boolean;
   header_color: string | null;
   header_font_color: string | null;

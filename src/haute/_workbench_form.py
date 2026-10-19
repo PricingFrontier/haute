@@ -66,8 +66,9 @@ LineWeight = Literal["thin", "medium", "thick"]
 #: How a Table's gridlines, or a Collection's boxes' borders, are drawn.
 LineStyle = Literal["solid", "dashed", "dotted"]
 
-#: Where a Table column's, or a Collection field's, values and label sit across it: as its
-#: type puts them, numbers on the right, or as chosen.
+#: Where a Table column's, or a Collection field's, values or label sit across it: as its
+#: type puts them, numbers on the right, or as chosen; a label while ``auto`` sits as its
+#: component puts it.
 ColumnAlign = Literal["auto", "left", "center", "right"]
 
 #: The sizes a Table's or a Collection's text is in, in pixels.
@@ -188,15 +189,18 @@ class ShowWhen(_Strict):
 
 class ColumnLook(_Strict):
     """How one of a Table's columns, or one of a Collection's fields, looks, its field by table
-    and column id: each colour the component's own while None, its values and label placed as
-    its type puts them while ``auto``, and, while ``width`` is None, a Table's column as wide
-    as the grid makes it and a Collection's box as wide as the Collection makes it."""
+    and column id: each colour the component's own while None, its values placed as its type
+    puts them, or as the Collection places its boxes', while ``align`` is ``auto``, its label
+    over a Table's column as its values sit, or as the Collection places its labels, while
+    ``header_align`` is, and, while ``width`` is None, a Table's column as wide as the grid
+    makes it and a Collection's box as wide as the Collection makes it."""
 
     table: str
     column: str
     #: Its label's fill and text, and its cells', or its box's, fill and text.
     header_color: Colour | None = None
     header_font_color: Colour | None = None
+    header_align: ColumnAlign = "auto"
     cell_color: Colour | None = None
     font_color: Colour | None = None
     bold: bool = False
@@ -294,10 +298,10 @@ class CollectionWidget(_Placed):
     frame: bool = True
     # Its text, its labels, its boxes and its frame, as a Table's are set: by default 12px
     # text, its labels the same size, or a pixel smaller in capitals, as written, neither
-    # bold nor wrapped, unfilled, coloured as the sheets' theme says and, beside their
-    # boxes, two fifths of a field wide; its boxes' borders thin and solid, coloured as the
-    # theme says, and each box as wide as its label leaves; a thin frame, coloured as the
-    # theme says.
+    # bold nor wrapped, unfilled, coloured as the sheets' theme says, at their fields'
+    # start and, beside their boxes, two fifths of a field wide; its boxes' borders thin and
+    # solid, coloured as the theme says, their values placed as their types put them, and
+    # each box as wide as its label leaves; a thin frame, coloured as the theme says.
     font_size: FontSize = 12
     header: TableHeader = "plain"
     header_font_size: FontSize | None = None
@@ -305,10 +309,12 @@ class CollectionWidget(_Placed):
     header_wrap: bool = False
     header_color: Colour | None = None
     header_font_color: Colour | None = None
+    header_align: ColumnAlign = "auto"
     label_width: int | None = Field(default=None, ge=LABEL_WIDTH_MIN, le=LABEL_WIDTH_MAX)
     box_style: LineStyle = "solid"
     box_weight: LineWeight = "thin"
     box_color: Colour | None = None
+    box_align: ColumnAlign = "auto"
     box_width: int | None = Field(default=None, ge=COLUMN_WIDTH_MIN, le=COLUMN_WIDTH_MAX)
     frame_color: Colour | None = None
     frame_weight: LineWeight = "thin"

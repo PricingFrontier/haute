@@ -81,10 +81,12 @@ export type CollectionOptions = Pick<
   | "header_wrap"
   | "header_color"
   | "header_font_color"
+  | "header_align"
   | "label_width"
   | "box_style"
   | "box_weight"
   | "box_color"
+  | "box_align"
   | "box_width"
   | "frame_color"
   | "frame_weight"
@@ -674,12 +676,13 @@ export const TABLE_OPTIONS: Readonly<TableOptions> = {
 
 /**
  * A Table column's or a Collection field's look before any is given: the component's own
- * colours, bold off, placed as its type puts it and as wide as the grid, or the Collection,
- * makes it.
+ * colours, bold off, its label and values placed as the component puts them and as wide as
+ * the grid, or the Collection, makes it.
  */
 export const PLAIN_COLUMN_LOOK: Readonly<ColumnLookOptions> = {
   header_color: null,
   header_font_color: null,
+  header_align: "auto",
   cell_color: null,
   font_color: null,
   bold: false,
@@ -741,9 +744,10 @@ export const setColumnLook = (spec: FormSpec, widgetId: string, field: FieldRef,
 /**
  * A new Collection's options: its labels above its boxes, comfortable and framed; 12px
  * text, its labels the same size, as written, neither bold nor wrapped, in the theme's
- * colours and two fifths of a field wide beside their boxes; its boxes' borders thin, solid
- * and in the theme's colour, each box as wide as its label leaves; a thin frame in the
- * theme's colour; and no field with a look of its own and no spacers among them.
+ * colours, at their fields' start and two fifths of a field wide beside their boxes; its
+ * boxes' borders thin, solid and in the theme's colour, their values placed as their types
+ * put them, each box as wide as its label leaves; a thin frame in the theme's colour; and
+ * no field with a look of its own and no spacers among them.
  */
 export const COLLECTION_OPTIONS: Readonly<CollectionOptions> = {
   labels: "above",
@@ -756,10 +760,12 @@ export const COLLECTION_OPTIONS: Readonly<CollectionOptions> = {
   header_wrap: false,
   header_color: null,
   header_font_color: null,
+  header_align: "auto",
   label_width: null,
   box_style: "solid",
   box_weight: "thin",
   box_color: null,
+  box_align: "auto",
   box_width: null,
   frame_color: null,
   frame_weight: "thin",

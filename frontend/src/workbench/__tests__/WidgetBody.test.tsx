@@ -422,10 +422,12 @@ describe("WidgetBody", () => {
       header_wrap: true,
       header_color: "#1E293B",
       header_font_color: "#FFFFFF",
+      header_align: "left",
       label_width: 60,
       box_style: "dashed",
       box_weight: "thick",
       box_color: "#000000",
+      box_align: "center",
       frame_color: "#9333EA",
       frame_weight: "medium",
     })
@@ -446,20 +448,23 @@ describe("WidgetBody", () => {
     const labelText = label().firstElementChild as HTMLElement
     expect(labelText).toHaveClass("uppercase", "break-words")
     expect(labelText).not.toHaveClass("truncate")
-    expect(labelText).toHaveStyle({ fontSize: "16px", fontWeight: "600" })
+    expect(labelText).toHaveStyle({ fontSize: "16px", fontWeight: "600", textAlign: "left" })
     // Its boxes, input and output alike, bordered in its own style, weight and colour over the
-    // theme's, their values at its size; an input box in the input cells' fill and the font.
+    // theme's, their values at its size and centred apart from their labels; an input box in
+    // the input cells' fill and the font.
     expect(box().style.border).toBe("3px dashed rgb(0, 0, 0)")
     expect(output().style.border).toBe("3px dashed rgb(0, 0, 0)")
-    expect(box()).toHaveStyle({ fontSize: "14px", background: "#DC2626", color: "#2563EB" })
-    expect(output()).toHaveStyle({ fontSize: "14px", justifyContent: "flex-end" })
+    expect(box()).toHaveStyle({ fontSize: "14px", background: "#DC2626", color: "#2563EB", textAlign: "center" })
+    expect(output()).toHaveStyle({ fontSize: "14px", justifyContent: "center" })
     cleanup()
 
-    // A field's own look over the Collection's: its label's fill and font, its box's fill, over
-    // the input and output fills, its font, weight and place.
+    // A field's own look over the Collection's: its label's fill, font and place, its box's
+    // fill, over the input and output fills, its font, weight and place; a field without a
+    // place of its own keeps the Collection's.
     form = setColumnLook(form, "w_boxes", state, {
       header_color: "#DC2626",
       header_font_color: "#000000",
+      header_align: "center",
       cell_color: "#D1D5DB",
       font_color: "#059669",
       bold: true,
@@ -468,8 +473,9 @@ describe("WidgetBody", () => {
     loadForm(setColumnLook(form, "w_boxes", premium, { cell_color: "#FFFFFF", font_color: "#000000", align: "left" }))
     renderBody("w_boxes")
     expect(label()).toHaveStyle({ background: "#DC2626", color: "#000000" })
-    expect(label().firstElementChild).toHaveStyle({ textAlign: "right" })
+    expect(label().firstElementChild).toHaveStyle({ textAlign: "center" })
     expect(box()).toHaveStyle({ background: "#D1D5DB", color: "#059669", fontWeight: "600", textAlign: "right" })
+    expect(screen.getByTestId("label-premiums:premiums.premium").firstElementChild).toHaveStyle({ textAlign: "left" })
     expect(output()).toHaveStyle({ background: "#FFFFFF", color: "#000000", justifyContent: "flex-start" })
     cleanup()
 
@@ -767,6 +773,18 @@ describe("WidgetBody", () => {
     const cell = screen.getByRole("textbox", { name: "Value row 1" }).closest("td") as HTMLElement
     expect(cell).toHaveStyle({ background: "#D1D5DB", textAlign: "right" })
     expect(cell.style.width).toBe("")
+    cleanup()
+
+    // A column's label given a place of its own sits there, apart from its cells, level and transposed.
+    form = setColumnLook(sheetForm(), "w_grid", value, { header_align: "left", align: "right" })
+    loadForm(form)
+    renderBody("w_grid")
+    expect(screen.getAllByRole("columnheader")[2]).toHaveStyle({ textAlign: "left" })
+    expect(screen.getByRole("textbox", { name: "Value row 1" }).closest("td")).toHaveStyle({ textAlign: "right" })
+    cleanup()
+    loadForm(updateWidget(form, "w_grid", { transposed: true }))
+    renderBody("w_grid")
+    expect(screen.getAllByRole("rowheader")[1]).toHaveStyle({ textAlign: "left" })
   })
 
   it("gives a checkbox's cell in a grid its row's height at either density", () => {

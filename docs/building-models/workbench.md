@@ -282,9 +282,10 @@ toolbar; a colour you set on a Table, or on one of its columns, is drawn over th
   output columns, which stay solid.
 - **Frame**: whether it is framed and, if so, the frame's **Weight** and **Colour** (the
   rule under its title takes the colour too).
-- **Columns**: click a column to open its own look: its header's **Fill** and **Font**, its
-  cells' **Fill** and **Font**, **Align** (Auto puts numbers on the right), **Width** in
-  pixels (blank for Auto, from 24 to 1000) and **Bold**. **Clear** takes the column's look
+- **Columns**: click a column to open its own look: its header's **Fill**, **Font** and
+  **Align** (Auto sits the header as its cells sit), its cells' **Fill**, **Font** and
+  **Align** (Auto puts numbers on the right), **Width** in pixels (blank for Auto, from 24
+  to 1000) and **Bold**. **Clear** takes the column's look
   away; a dot marks a column that has one. A column's fill covers the stripes and the
   output shade in its cells. Once every column has a width, the grid is as wide as its
   columns rather than its frame. When you stop showing a column, its look goes with it.
@@ -301,26 +302,30 @@ set on a Collection, or on one of its fields, is drawn over them.
 
 - **Look**: compact or comfortable boxes, and the **Text size** of the values in them.
 - **Labels**: their **Position**, **Above** or **Beside** the boxes; while beside, their
-  **Width** as a percentage of the field (blank for Auto, from 1 to 99); **As written** or in **Capitals**,
-  their **Size** (**Auto** is the values' size, a pixel smaller in capitals), a **Fill** and
-  **Font** colour, **Bold**, and **Wrap**. A label with a fill is drawn as a shaded cell,
+  **Width** as a percentage of the field (blank for Auto, from 1 to 99); **As written** or
+  in **Capitals**, their **Size** (**Auto** is the values' size, a pixel smaller in
+  capitals), **Align** (Auto puts them at the left), a **Fill** and **Font** colour,
+  **Bold**, and **Wrap**. A label with a fill is drawn as a shaded cell,
   as tall as its box when it sits beside it. Wrapped labels break between words onto more
   lines rather than being cut off.
 - **Boxes**: their borders' **Style** (solid, dashed or dotted), **Weight** (thin, medium or
-  thick) and **Colour**, and their **Width** in pixels (blank for Auto, from 24 to 1000).
+  thick) and **Colour**, **Align**, where the values sit in the boxes (Auto puts numbers on
+  the right), and their **Width** in pixels (blank for Auto, from 24 to 1000). Labels and
+  boxes align apart: labels on the left with values centred, say.
 - **Frame**: whether it is framed and, if so, the frame's **Weight** and **Colour** (the
   rule under its title takes the colour too).
-- **Fields**: click a field to open its own look: its label's **Fill** and **Font**, its
-  box's **Fill** and **Font**, **Align** (Auto puts numbers on the right), its box's
-  **Width** in pixels (blank for the Collection's) and **Bold**. **Clear** takes the
+- **Fields**: click a field to open its own look: its label's **Fill**, **Font** and
+  **Align**, its box's **Fill**, **Font** and **Align** (each Align on Auto follows the
+  Collection's), its box's **Width** in pixels (blank for the Collection's) and **Bold**. **Clear** takes the
   field's look away; a dot marks a field that has one. A field's fill covers the output
   shade in its box. When you stop showing a field, its look goes with it.
 
 With labels beside the boxes and both widths on Auto, each label takes two fifths of its
-field and its box the rest. Give the labels a width, say 80%, and the boxes take the rest; give the boxes a width
-instead and the labels take the rest: for a Collection of tick boxes in one column, set the
-boxes' **Width** to about 40 for wide labels and small boxes. A box never grows wider than its field. With labels above, a box
-narrower than its field sits at the field's left, or where the field's **Align** puts it.
+field and its box the rest. Give the labels a width, say 80%, and the boxes take the
+rest; give the boxes a width instead and the labels take the rest: for a Collection of
+tick boxes in one column, set the boxes' **Width** to about 40 for wide labels and small
+boxes. A box never grows wider than its field. With labels above, a box narrower than its
+field sits at the field's left, or where the boxes' **Align** puts it.
 
 ## Showing sheets, sections and components conditionally
 

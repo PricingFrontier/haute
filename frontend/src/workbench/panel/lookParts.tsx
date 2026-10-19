@@ -173,7 +173,7 @@ export function ColumnLooks({ form, widget, headings, sized }: { form: FormSpec;
   )
 }
 
-/** One column's look: its label's fill and font, its values' fill and font, where its values sit, its width while `sized`, and bold; Clear while it has one. */
+/** One column's look: its label's fill, font and place, its values' fill, font and place, its width while `sized`, and bold; Clear while it has one. */
 function ColumnLookFields({
   widget,
   field,
@@ -199,10 +199,11 @@ function ColumnLookFields({
       <EditorLabel as="div">{headings.label}</EditorLabel>
       <ColourRow beside label="Fill" name={`${labelName} fill`} value={look.header_color} update={colour("header_color")} />
       <ColourRow beside label="Font" name={`${labelName} font`} value={look.header_font_color} update={colour("header_font_color")} />
+      <SelectRow label="Align" name={`${labelName} align`} value={look.header_align} choices={ALIGNS} onChange={(header_align) => set({ header_align })} />
       <EditorLabel as="div">{headings.values}</EditorLabel>
       <ColourRow beside label="Fill" name={`${label}'s fill`} value={look.cell_color} update={colour("cell_color")} />
       <ColourRow beside label="Font" name={`${label}'s font`} value={look.font_color} update={colour("font_color")} />
-      <SelectRow label="Align" value={look.align} choices={ALIGNS} onChange={(align) => set({ align })} />
+      <SelectRow label="Align" name={`${label}'s align`} value={look.align} choices={ALIGNS} onChange={(align) => set({ align })} />
       {sized && <WidthRow testId={`column-width-${field.table}:${field.column}`} value={look.width} onCommit={(width) => set({ width })} />}
       <LabelledRow>
         <ConfigCheckbox label="Bold" checked={look.bold} onChange={(bold) => set({ bold })} />

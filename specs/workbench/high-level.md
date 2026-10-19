@@ -152,21 +152,23 @@ Out of scope:
   `thick`, 1, 2 or 3px) and `grid_style` (`solid`, `dashed` or `dotted`), its frame's
   `frame_color` and `frame_weight`, each colour `#RRGGBB` in capitals or null for the
   theme's, and `column_looks`, the looks of the columns given one of their own, each the
-  column it shows by `table` and `column`, its label's `header_color` and
-  `header_font_color`, its cells' `cell_color` and `font_color`, `bold`, `align` (`auto`,
-  `left`, `center` or `right`) and `width` (24 to 1000 pixels, or null), one for each
+  column it shows by `table` and `column`, its label's `header_color`,
+  `header_font_color` and `header_align`, its cells' `cell_color` and `font_color`, `bold`,
+  `align` (each align `auto`, `left`, `center` or `right`) and `width` (24 to 1000 pixels, or null), one for each
   column at most, none for a column it does not show and none that changes nothing), a
   Collection (`collection`, boxes
   showing columns of one-row tables, `columns` across, its `spacers`, the gaps among
   them, each the number of fields before it, in order and none past the last, and its
   look: `labels` (`above` or `beside`), `density` and `frame`, and, as a Table's are
   set, `font_size`, its labels' `header`, `header_font_size`, `header_bold`,
-  `header_wrap`, `header_color` (their fill) and `header_font_color`, and `label_width`,
+  `header_wrap`, `header_color` (their fill), `header_font_color` and `header_align`, and
+  `label_width`,
   the percentage of its field a label beside its box takes; its boxes' borders' `box_style`, `box_weight` and
-  `box_color`, as a Table's gridlines' are, and `box_width`; its frame's `frame_color`
+  `box_color`, as a Table's gridlines' are, `box_align`, where their values sit, and
+  `box_width`; its frame's `frame_color`
   and `frame_weight`; and `column_looks`, its fields' own looks, as a Table's columns'
-  are, a field's label's `header_color` and `header_font_color`, its box's `cell_color`
-  and `font_color`, `bold`, `align` and its box's `width`, each width 24 to 1000 pixels
+  are, a field's label's `header_color`, `header_font_color` and `header_align`, its box's
+  `cell_color` and `font_color`, `bold`, `align` and its box's `width`, each width 24 to 1000 pixels
   or null), a Chart (`chart`, plotting number
   columns, with what labels the rows of its many-row tables, `category`, a schema column
   named as a field is or null to number them, and how it draws: `chart_type` (`column`,
@@ -422,8 +424,8 @@ Out of scope:
   `header_color`, its labels and group names in its `header_font_color`; and each column's
   own look over the Table's: its label's fill and font, its cells' fill, drawn over the
   stripes and the output shade, their font, on an index's numbers and a dash too, and
-  weight, where its label and values sit
-  across it, as its type puts them while `auto`, and its width, exactly that wide, the
+  weight, where its values sit across it, as its type puts them while `auto`, and where its
+  label does, as its values do while its `header_align` is `auto`, and its width, exactly that wide, the
   grid as wide as its columns rather than its frame once every column has one;
   transposed, a column's look is its field's line, its label the line's label, and it
   has no width; a Collection as boxes, its columns across, their labels above
@@ -433,16 +435,18 @@ Out of scope:
   starting a new row below the gap; and its look as a Table's is set: its values at its
   `font_size`; its labels at their size, in capitals or as written, bold only while
   `header_bold`, wrapping with whole words kept rather than cut off while `header_wrap`,
-  in their `header_font_color` and, given a fill, drawn as a cell, padded, and beside its
-  box as tall as it; a label beside its box `label_width` percent of its field wide,
+  in their `header_font_color`, across their field as `header_align` says, at its start
+  while `auto`, and, given a fill, drawn as a cell, padded, and beside its box as tall as
+  it; a label beside its box `label_width` percent of its field wide,
   else two fifths of it, or what its box leaves while the box has a width; its boxes' borders in their
   `box_style`, `box_weight` and `box_color`, and each box `box_width` wide, else what its
-  label leaves, never wider than its field, a narrower box under its label sitting across
-  the field as its `align` says; its frame in its `frame_color` and `frame_weight`, the
+  label leaves, never wider than its field, its value across it as `box_align` says, as
+  its type puts it while `auto`, and a narrower box under its label across the field
+  likewise, at its start while `auto`; its frame in its `frame_color` and `frame_weight`, the
   rule under its title in that colour; and each field's own look over the Collection's:
   its label's fill and font, its box's fill, over the input and output fills, font and
-  weight, where its label and value sit across it, as its type puts them while `auto`,
-  and its box's width; each of the two in a frame, a border round the panel's
+  weight, where its label and its value sit across it, each as the Collection's sit while
+  `auto`, and its box's width; each of the two in a frame, a border round the panel's
   colour, unless `frame` is off, when it sits on the sheet as its title and fields alone,
   all in the sheets' colours (below);
   a Chart as its type draws the values it plots (Charts, below); a Heading as its
@@ -521,8 +525,8 @@ Out of scope:
   Rotated up, Rotated down or Stacked, its Fill and Font, and whether it is Bold and
   wraps; its Lines, the Gridlines, their Style, Weight, Thin, Medium or Thick, and Colour;
   its Frame and, while framed, the frame's Weight and Colour; and its Columns, each in its
-  order opened in turn to its own look, its header's Fill and Font, its cells' Fill and
-  Font, Align, Auto, Left, Centre or Right, its Width, blank for Auto, a whole number of
+  order opened in turn to its own look, its header's Fill, Font and Align, its cells' Fill
+  and Font and Align, each Align Auto, Left, Centre or Right, its Width, blank for Auto, a whole number of
   pixels from 24 to 1000 otherwise refused at the field, not while transposed, and Bold,
   with Clear while it has a look, a column with one marked in the list; a colour picked
   as the sheets' colours are, shown as it is picked and one undo step, a pick that an undo
@@ -530,11 +534,12 @@ Out of scope:
   the picker is left, and a column that stops being shown losing its look), a
   Collection's look, set as a Table's is (its density and its text size; its Labels,
   their Position, Above or Beside, while beside their Width, blank for Auto, a whole
-  number of pixels from 24 to 1000 otherwise refused at the field, their Case, Size, Fill
-  and Font, and whether they are Bold and wrap; its Boxes, their borders' Style, Weight
-  and Colour and their Width, as a label's; its Frame and, while framed, the frame's
+  percentage of the field from 1 to 99 otherwise refused at the field, their Case, Size,
+  Align, Fill and Font, and whether they are Bold and wrap; its Boxes, their borders'
+  Style, Weight and Colour, their Align, and their Width, blank for Auto, a whole number
+  of pixels from 24 to 1000 otherwise refused at the field; its Frame and, while framed, the frame's
   Weight and Colour; and its Fields, each in its order opened in turn to its own look, its
-  label's Fill and Font, its box's Fill and Font, Align, Width and Bold, with Clear while
+  label's Fill, Font and Align, its box's Fill, Font and Align, Width and Bold, with Clear while
   it has a look, a field with one marked in the list; its colours picked as a Table's are,
   and a field that stops being shown losing its look), a
   Chart's chart (its type, Column, Line,

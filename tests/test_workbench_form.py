@@ -162,10 +162,11 @@ FORM: dict[str, Any] = {
                             "density": "compact",
                             "frame": False,
                             # Its text larger, its labels in capitals, smaller, bold,
-                            # wrapped, filled, coloured and 160px wide; its boxes' borders
-                            # red, heavier and dotted, each box 96px wide; its frame black
-                            # and heavier still; and its state's label and box coloured,
-                            # bold, on the right and narrower.
+                            # wrapped, filled, coloured, centred and 60 percent of a field
+                            # wide; its boxes' borders red, heavier and dotted, their values
+                            # on the left, each box 96px wide; its frame black and heavier
+                            # still; and its state's label coloured and on the left, and its
+                            # box coloured, bold, on the right and narrower.
                             "font_size": 13,
                             "header": "caps",
                             "header_font_size": 11,
@@ -173,10 +174,12 @@ FORM: dict[str, Any] = {
                             "header_wrap": True,
                             "header_color": "#F1F5F9",
                             "header_font_color": "#1E293B",
+                            "header_align": "center",
                             "label_width": 60,
                             "box_style": "dotted",
                             "box_weight": "medium",
                             "box_color": "#DC2626",
+                            "box_align": "left",
                             "box_width": 96,
                             "frame_color": "#000000",
                             "frame_weight": "thick",
@@ -186,6 +189,7 @@ FORM: dict[str, Any] = {
                                     "column": "c_state",
                                     "header_color": "#2563EB",
                                     "header_font_color": "#FFFFFF",
+                                    "header_align": "left",
                                     "cell_color": "#DBEAFE",
                                     "font_color": "#000000",
                                     "bold": True,
@@ -231,7 +235,8 @@ FORM: dict[str, Any] = {
                             # Its text and its header's larger, its labels plain, wrapped,
                             # turned upwards and coloured; its lines red, heavy and dashed;
                             # its frame black and heavier still; and its limit's column
-                            # filled, bold, centred and a set width.
+                            # filled, bold, its label on the right over its values centred,
+                            # and a set width.
                             "font_size": 14,
                             "header_font_size": 16,
                             "header_bold": False,
@@ -250,6 +255,7 @@ FORM: dict[str, Any] = {
                                     "column": "c_limit",
                                     "header_color": "#2563EB",
                                     "header_font_color": "#FFFFFF",
+                                    "header_align": "right",
                                     "cell_color": "#DBEAFE",
                                     "font_color": "#000000",
                                     "bold": True,
@@ -506,10 +512,12 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         "header_wrap",
         "header_color",
         "header_font_color",
+        "header_align",
         "label_width",
         "box_style",
         "box_weight",
         "box_color",
+        "box_align",
         "box_width",
         "frame_color",
         "frame_weight",
@@ -578,9 +586,10 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
     }
     # A Collection labelled above its boxes, comfortable and framed, with no spacers: 12px
     # text, its labels the same size, as written, neither bold nor wrapped, in the theme's
-    # colours and two fifths of a field wide beside their boxes; its boxes' borders thin,
-    # solid and in the theme's colour, each box as wide as its label leaves; a thin frame in
-    # the theme's colour, and no field with a look.
+    # colours, at their fields' start and two fifths of a field wide beside their boxes; its
+    # boxes' borders thin, solid and in the theme's colour, their values placed as their
+    # types put them, each box as wide as its label leaves; a thin frame in the theme's
+    # colour, and no field with a look.
     boxes = widgets(written)[0]
     assert {field: boxes[field] for field in collection_options} == {
         "labels": "above",
@@ -593,10 +602,12 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         "header_wrap": False,
         "header_color": None,
         "header_font_color": None,
+        "header_align": "auto",
         "label_width": None,
         "box_style": "solid",
         "box_weight": "thin",
         "box_color": None,
+        "box_align": "auto",
         "box_width": None,
         "frame_color": None,
         "frame_weight": "thin",
@@ -655,6 +666,8 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         (lambda f: widgets(f)[1].update(label_width=60), "label_width"),
         (lambda f: widgets(f)[1].update(box_style="solid"), "box_style"),
         (lambda f: widgets(f)[1].update(box_width=96), "box_width"),
+        (lambda f: widgets(f)[1].update(box_align="left"), "box_align"),
+        (lambda f: widgets(f)[1].update(header_align="left"), "header_align"),
         (lambda f: widgets(f)[0].update(labels="under"), "labels"),
         (lambda f: widgets(f)[0].update(density="roomy"), "density"),
         (lambda f: widgets(f)[1].update(header="bold"), "header"),
@@ -677,6 +690,9 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         (lambda f: widgets(f)[0].update(label_width=0), "label_width"),
         (lambda f: widgets(f)[0].update(label_width=100), "label_width"),
         (lambda f: widgets(f)[0].update(box_width=1001), "box_width"),
+        (lambda f: widgets(f)[0].update(box_align="middle"), "box_align"),
+        (lambda f: widgets(f)[0].update(header_align="justify"), "header_align"),
+        (lambda f: widgets(f)[0]["column_looks"][0].update(header_align="middle"), "header_align"),
         (lambda f: widgets(f)[0].update(font_size=15), "font_size"),
         # A field's look on a Collection is held as a Table column's is.
         (

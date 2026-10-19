@@ -27,7 +27,7 @@ const LABEL_SHARE = "40%"
 /** A label or a box beside the other taking what the other leaves of its field. */
 const TAKES_THE_REST: CSSProperties = { flexGrow: 1, flexBasis: 0, minWidth: 0 }
 
-/** Where a box narrower than its field sits under its label, by the field's alignment: at the field's start while it sets none. */
+/** Where a box narrower than its field sits under its label, by its box's alignment: at the field's start while none is set. */
 const BOX_PLACE: Record<ColumnLookOptions["align"], CSSProperties> = {
   auto: {},
   left: {},
@@ -35,7 +35,7 @@ const BOX_PLACE: Record<ColumnLookOptions["align"], CSSProperties> = {
   right: { marginLeft: "auto" },
 }
 
-/** Where an output's value sits across its box, by its field's alignment: on the right, as a number's does, while it sets none. */
+/** Where an output's value sits across its box, by its box's alignment: on the right, as a number's does, while none is set. */
 const VALUE_PLACE: Record<ColumnLookOptions["align"], CSSProperties["justifyContent"]> = {
   auto: "flex-end",
   left: "flex-start",
@@ -51,13 +51,13 @@ const VALUE_PLACE: Record<ColumnLookOptions["align"], CSSProperties["justifyCont
  * price is for other values, and a dash before the first answer or after pricing fails.
  *
  * Its look, as a Table's is set: its values' size; its labels' size, case, weight, wrapping,
- * fill and colour, a filled label padded as a cell and, beside its box, as tall as it, and
- * beside their boxes the share of a field they take, else two fifths of it, or what a box
- * of a set width leaves; its boxes' borders' style, weight and colour, input and output boxes alike, and
- * their width, never wider than the field, a narrower box under its label placed as its
- * field aligns; and each field's own look over the Collection's: its label's fill and
- * colour, its box's fill, over the input and output fills, its colour and weight, where its
- * label and value sit across it, and its box's width.
+ * place, fill and colour, a filled label padded as a cell and, beside its box, as tall as
+ * it, and beside their boxes the share of a field they take, else two fifths of it, or what
+ * a box of a set width leaves; its boxes' borders' style, weight and colour, input and
+ * output boxes alike, where their values sit, and their width, never wider than the field,
+ * a narrower box under its label placed as its value sits; and each field's own look over
+ * the Collection's: its label's fill, colour and place, its box's fill, over the input and
+ * output fills, its colour, weight and place, and its box's width.
  */
 export function FieldBoxes({
   fields,
@@ -95,7 +95,11 @@ export function FieldBoxes({
         const priced = found !== null && found.table.role === "output" ? price?.tables[found.table.name]?.[0]?.[found.column.name] : undefined
         const look = lookOf(key)
         const fill = look.header_color ?? options.header_color
-        const across: CSSProperties = look.align === "auto" ? {} : { textAlign: look.align }
+        // Where its label and its value sit across them: as its own look says, else as the Collection's does.
+        const labelAlign = look.header_align === "auto" ? options.header_align : look.header_align
+        const boxAlign = look.align === "auto" ? options.box_align : look.align
+        const labelAcross: CSSProperties = labelAlign === "auto" ? {} : { textAlign: labelAlign }
+        const valueAcross: CSSProperties = boxAlign === "auto" ? {} : { textAlign: boxAlign }
         // Its box's width: its field's, else the Collection's, else what its label leaves.
         const width = look.width ?? options.box_width
         // Beside its box, a label takes the share of its field the Collection sets, else two
@@ -109,8 +113,8 @@ export function FieldBoxes({
               : TAKES_THE_REST
         // A box of a set width is exactly that wide, but never wider than its field.
         const boxPlace: CSSProperties =
-          width === null ? (beside ? TAKES_THE_REST : {}) : { width, minWidth: 0, maxWidth: "100%", ...(beside ? {} : BOX_PLACE[look.align]) }
-        const valueText: CSSProperties = { fontSize: options.font_size, ...(look.bold ? { fontWeight: 600 } : {}), ...across }
+          width === null ? (beside ? TAKES_THE_REST : {}) : { width, minWidth: 0, maxWidth: "100%", ...(beside ? {} : BOX_PLACE[boxAlign]) }
+        const valueText: CSSProperties = { fontSize: options.font_size, ...(look.bold ? { fontWeight: 600 } : {}), ...valueAcross }
         return (
           <Fragment key={key}>
             {spacersAt(index)}
@@ -120,7 +124,7 @@ export function FieldBoxes({
                 className={`flex min-w-0 items-center ${fill === null ? "" : `rounded-md px-2.5 ${beside ? "self-stretch" : "py-1"}`}`}
                 style={{ ...labelPlace, ...(fill === null ? {} : { background: fill }), color: labelFont(found, look, options, colours.font) }}
               >
-                <span className={`min-w-0 flex-1 ${label.className} ${options.header_wrap ? "break-words" : "truncate"}`} style={{ ...label.style, ...across }}>
+                <span className={`min-w-0 flex-1 ${label.className} ${options.header_wrap ? "break-words" : "truncate"}`} style={{ ...label.style, ...labelAcross }}>
                   <FieldLabel found={found} />
                 </span>
               </span>
@@ -148,7 +152,7 @@ export function FieldBoxes({
                     ...boxPlace,
                     ...boxStyle(look.cell_color ?? colours.output ?? "var(--bg-elevated)"),
                     ...valueText,
-                    justifyContent: VALUE_PLACE[look.align],
+                    justifyContent: VALUE_PLACE[boxAlign],
                     // The field's own font on anything it shows, a dash too.
                     color: look.font_color ?? (priced === undefined || priced === null ? "var(--text-secondary)" : (colours.font ?? "var(--text-primary)")),
                     opacity: stale ? 0.5 : 1,

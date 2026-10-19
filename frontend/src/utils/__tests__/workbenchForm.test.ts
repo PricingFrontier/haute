@@ -659,10 +659,12 @@ describe("what the sheets show", () => {
       "header_wrap",
       "header_color",
       "header_font_color",
+      "header_align",
       "label_width",
       "box_style",
       "box_weight",
       "box_color",
+      "box_align",
       "box_width",
       "frame_color",
       "frame_weight",
@@ -692,10 +694,12 @@ describe("what the sheets show", () => {
       header_wrap: true,
       header_color: "#F1F5F9",
       header_font_color: "#1E293B",
+      header_align: "left",
       label_width: 60,
       box_style: "dashed",
       box_weight: "medium",
       box_color: "#DC2626",
+      box_align: "center",
       box_width: 96,
       frame_color: "#000000",
       frame_weight: "thick",
@@ -709,6 +713,8 @@ describe("what the sheets show", () => {
     expect(() => updateWidget(spec, grid.id, { labels: "beside" })).toThrow("Only a Collection has labels")
     expect(() => updateWidget(spec, grid.id, { label_width: 60 })).toThrow("Only a Collection has label_width")
     expect(() => updateWidget(spec, grid.id, { box_style: "dashed" })).toThrow("Only a Collection has box_style")
+    expect(() => updateWidget(spec, grid.id, { header_align: "left" })).toThrow("Only a Collection has header_align")
+    expect(() => updateWidget(spec, grid.id, { box_align: "center" })).toThrow("Only a Collection has box_align")
     expect(() => updateWidget(spec, "missing", { title: "x" })).toThrow("No sheet has a component missing")
 
     const copied = duplicateWidget(spec, grid.id)
@@ -844,8 +850,8 @@ describe("what the sheets show", () => {
     // A Collection's fields have looks as a Table's columns do, dropped as the field goes.
     const state = { table: "policy", column: "policy.state" }
     const boxes = (form: FormSpec) => widgetsOf(form)[0] as Extract<Widget, { type: "collection" }>
-    const boxed = setColumnLook(spec, "w_boxes", state, { header_color: "#2563EB", width: 64 })
-    expect(boxes(boxed).column_looks).toEqual([{ ...state, ...PLAIN_COLUMN_LOOK, header_color: "#2563EB", width: 64 }])
+    const boxed = setColumnLook(spec, "w_boxes", state, { header_color: "#2563EB", header_align: "left", width: 64 })
+    expect(boxes(boxed).column_looks).toEqual([{ ...state, ...PLAIN_COLUMN_LOOK, header_color: "#2563EB", header_align: "left", width: 64 }])
     expect(boxes(setColumnLook(boxed, "w_boxes", state, "clear")).column_looks).toEqual([])
     expect(boxes(toggleField(boxed, "w_boxes", state)).column_looks).toEqual([])
 

@@ -734,6 +734,17 @@
       "additionalProperties": false,
       "description": "A Collection: boxes showing columns of one-row schema tables, ``columns`` across, with\na gap across it wherever one of its ``spacers`` sits among them, each of its fields given\na look of its own looking as its ``column_looks`` entry says.",
       "properties": {
+        "box_align": {
+          "default": "auto",
+          "enum": [
+            "auto",
+            "left",
+            "center",
+            "right"
+          ],
+          "title": "Box Align",
+          "type": "string"
+        },
         "box_color": {
           "anyOf": [
             {
@@ -865,6 +876,17 @@
             "plain"
           ],
           "title": "Header",
+          "type": "string"
+        },
+        "header_align": {
+          "default": "auto",
+          "enum": [
+            "auto",
+            "left",
+            "center",
+            "right"
+          ],
+          "title": "Header Align",
           "type": "string"
         },
         "header_bold": {
@@ -1009,10 +1031,12 @@
         "header_wrap",
         "header_color",
         "header_font_color",
+        "header_align",
         "label_width",
         "box_style",
         "box_weight",
         "box_color",
+        "box_align",
         "box_width",
         "frame_color",
         "frame_weight",
@@ -1042,7 +1066,7 @@
     },
     "ColumnLook": {
       "additionalProperties": false,
-      "description": "How one of a Table's columns, or one of a Collection's fields, looks, its field by table\nand column id: each colour the component's own while None, its values and label placed as\nits type puts them while ``auto``, and, while ``width`` is None, a Table's column as wide\nas the grid makes it and a Collection's box as wide as the Collection makes it.",
+      "description": "How one of a Table's columns, or one of a Collection's fields, looks, its field by table\nand column id: each colour the component's own while None, its values placed as its type\nputs them, or as the Collection places its boxes', while ``align`` is ``auto``, its label\nover a Table's column as its values sit, or as the Collection places its labels, while\n``header_align`` is, and, while ``width`` is None, a Table's column as wide as the grid\nmakes it and a Collection's box as wide as the Collection makes it.",
       "properties": {
         "align": {
           "default": "auto",
@@ -1089,6 +1113,17 @@
           ],
           "default": null,
           "title": "Font Color"
+        },
+        "header_align": {
+          "default": "auto",
+          "enum": [
+            "auto",
+            "left",
+            "center",
+            "right"
+          ],
+          "title": "Header Align",
+          "type": "string"
         },
         "header_color": {
           "anyOf": [
@@ -1140,6 +1175,7 @@
         "column",
         "header_color",
         "header_font_color",
+        "header_align",
         "cell_color",
         "font_color",
         "bold",

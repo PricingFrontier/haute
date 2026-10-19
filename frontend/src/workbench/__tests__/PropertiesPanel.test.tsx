@@ -246,16 +246,18 @@ describe("PropertiesPanel", () => {
     type("label-width", "60")
     fireEvent.change(within(labels).getByRole("combobox", { name: "Case" }), { target: { value: "caps" } })
     fireEvent.change(within(labels).getByRole("combobox", { name: "Size" }), { target: { value: "11" } })
+    fireEvent.change(within(labels).getByRole("combobox", { name: "Align" }), { target: { value: "left" } })
     fireEvent.click(within(labels).getByRole("button", { name: "Colour #4B5563 for the labels' fill" }))
     fireEvent.click(within(labels).getByRole("button", { name: "Colour #FFFFFF for the labels' font" }))
     fireEvent.click(within(labels).getByRole("checkbox", { name: "Bold" }))
     fireEvent.click(within(labels).getByRole("checkbox", { name: "Wrap" }))
 
-    // Its boxes' borders and their width.
+    // Its boxes' borders, where their values sit, apart from their labels, and their width.
     const boxRegion = region("Boxes")
     fireEvent.change(within(boxRegion).getByRole("combobox", { name: "Style" }), { target: { value: "dotted" } })
     fireEvent.change(within(boxRegion).getByRole("combobox", { name: "Weight" }), { target: { value: "medium" } })
     fireEvent.click(within(boxRegion).getByRole("button", { name: "Colour #000000 for the boxes" }))
+    fireEvent.change(within(boxRegion).getByRole("combobox", { name: "Align" }), { target: { value: "center" } })
     type("box-width", "96")
 
     const frame = region("Frame")
@@ -271,16 +273,18 @@ describe("PropertiesPanel", () => {
       header_font_color: "#FFFFFF",
       header_bold: true,
       header_wrap: true,
+      header_align: "left",
       box_style: "dotted",
       box_weight: "medium",
       box_color: "#000000",
+      box_align: "center",
       box_width: 96,
       frame_weight: "thick",
       frame_color: "#000000",
     })
-    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(15)
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(17)
 
-    // A field's own look: its label's and its box's fills and fonts, its place, its box's width and bold.
+    // A field's own look: its label's and its box's fills, fonts and places, its box's width and bold.
     const fields = region("Fields")
     fireEvent.click(within(fields).getByRole("button", { name: "State" }))
     const state = within(fields).getByRole("group", { name: "State's look" })
@@ -288,7 +292,8 @@ describe("PropertiesPanel", () => {
     fireEvent.click(within(state).getByRole("button", { name: "Colour #FFFFFF for State's label font" }))
     fireEvent.click(within(state).getByRole("button", { name: "Colour #D1D5DB for State's fill" }))
     fireEvent.click(within(state).getByRole("button", { name: "Colour #000000 for State's font" }))
-    fireEvent.change(within(state).getByRole("combobox", { name: "Align" }), { target: { value: "right" } })
+    fireEvent.change(within(state).getByRole("combobox", { name: "State's label align" }), { target: { value: "center" } })
+    fireEvent.change(within(state).getByRole("combobox", { name: "State's align" }), { target: { value: "right" } })
     type("column-width-policy:policy.state", "64")
     fireEvent.click(within(state).getByRole("checkbox", { name: "Bold" }))
     expect(boxes().column_looks).toEqual([
@@ -297,6 +302,7 @@ describe("PropertiesPanel", () => {
         column: "policy.state",
         header_color: "#2563EB",
         header_font_color: "#FFFFFF",
+        header_align: "center",
         cell_color: "#D1D5DB",
         font_color: "#000000",
         bold: true,
@@ -304,7 +310,7 @@ describe("PropertiesPanel", () => {
         width: 64,
       },
     ])
-    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(22)
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(25)
     expect(within(fields).getByRole("button", { name: "State, has a look of its own" })).toBeInTheDocument()
     fireEvent.click(within(state).getByRole("button", { name: "Clear" }))
     expect(boxes().column_looks).toEqual([])
@@ -438,13 +444,15 @@ describe("PropertiesPanel", () => {
     fireEvent.click(within(item).getByRole("button", { name: "Colour #FFFFFF for Item's header font" }))
     fireEvent.click(within(item).getByRole("button", { name: "Colour #D1D5DB for Item's fill" }))
     fireEvent.click(within(item).getByRole("button", { name: "Colour #000000 for Item's font" }))
-    const align = within(item).getByRole("combobox", { name: "Align" })
+    // Its header and its cells each placed apart.
+    const align = within(item).getByRole("combobox", { name: "Item's align" })
     expect(choices(align)).toEqual([
       ["auto", "Auto"],
       ["left", "Left"],
       ["center", "Centre"],
       ["right", "Right"],
     ])
+    fireEvent.change(within(item).getByRole("combobox", { name: "Item's header align" }), { target: { value: "left" } })
     fireEvent.change(align, { target: { value: "center" } })
     fireEvent.click(within(item).getByRole("checkbox", { name: "Bold" }))
 
@@ -462,6 +470,7 @@ describe("PropertiesPanel", () => {
         column: "equipment.item",
         header_color: "#2563EB",
         header_font_color: "#FFFFFF",
+        header_align: "left",
         cell_color: "#D1D5DB",
         font_color: "#000000",
         bold: true,
@@ -469,7 +478,7 @@ describe("PropertiesPanel", () => {
         width: 120,
       },
     ])
-    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(7)
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(8)
     // Marked in the list as having a look of its own.
     expect(columnButton("Item, has a look of its own")).toBeInTheDocument()
     expect(columnButton("Value")).toBeInTheDocument()

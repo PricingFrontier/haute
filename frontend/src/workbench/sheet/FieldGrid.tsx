@@ -76,8 +76,9 @@ function groupRuns(fields: ShownField[]): { group: string; start: number; size: 
  * at the foot of the header; its lines' colour and weight, which its gridlines, the rule
  * under its header, the line before an output and a group's rule all take, and its
  * gridlines' style, the rules staying solid; and each column's own look, its label's fill
- * and colour, its cells' fill, colour and weight, where its label and values sit across it
- * and, unless transposed, its width. A colour it sets is drawn over the theme's, and a
+ * and colour, its cells' fill, colour and weight, where its values sit across it and its
+ * label, as its values do until it is given a place of its own, and, unless transposed,
+ * its width. A colour it sets is drawn over the theme's, and a
  * column's over the Table's; a column's fill hides the stripes and the output shade in its
  * cells. Transposed, a column's look is its field's line, its label the line's label.
  */
@@ -357,7 +358,7 @@ export function FieldGrid({
                       style={{
                         ...headStyle,
                         left: runs === null ? 0 : GROUP_COLUMN_WIDTH - 1,
-                        textAlign: look.align === "auto" ? (turn === null ? "left" : "center") : look.align,
+                        textAlign: look.header_align !== "auto" ? look.header_align : look.align === "auto" ? (turn === null ? "left" : "center") : look.align,
                         background: look.header_color ?? headFill,
                         boxShadow: grouped ? `${ruleLeft}, ${ruleRight}` : ruleRight,
                         borderTop: above,
@@ -423,7 +424,17 @@ export function FieldGrid({
                 const look = lookOf(key)
                 // Level, it cuts off or wraps across its column; turned, it sits at the header's foot.
                 const shape = turn !== null ? "px-1.5 py-1.5 align-bottom" : wrap ? "px-2.5 py-1 break-words" : "truncate px-2.5"
-                const across = look.align !== "auto" ? look.align : turn !== null ? "center" : found !== null && isNumeric(found.column.type) ? "right" : undefined
+                // Its own place, else its values': as set, centred turned, a number's on the right.
+                const across =
+                  look.header_align !== "auto"
+                    ? look.header_align
+                    : look.align !== "auto"
+                      ? look.align
+                      : turn !== null
+                        ? "center"
+                        : found !== null && isNumeric(found.column.type)
+                          ? "right"
+                          : undefined
                 return (
                   <th
                     key={key}
