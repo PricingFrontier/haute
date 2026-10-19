@@ -406,12 +406,12 @@ Out of scope:
   say: its rows numbered in a column of their own unless `row_numbers` is off, compact rows
   (28px) or comfortable ones (36px), a line between rows and before each output column
   (`rows`), between every column too (`all`) or none at all (`none`), every other row
-  shaded unless `striped` is off, and Add row under the last row and a delete on each row
-  unless its rows are fixed; transposed (`transposed`), the same grid on its side: a line
+  shaded unless `striped` is off, and a delete on each row unless its rows are fixed;
+  transposed (`transposed`), the same grid on its side: a line
   per field, labelled at its start in the header's look, the labels staying in view as
   the rows scroll across and ruled off from them, and a column per row, numbered above
   unless `row_numbers` is off, the numbers staying in view as the fields scroll down,
-  with a delete over each and an add after the last unless its rows are fixed; its
+  with a delete over each unless its rows are fixed; its
   stripes and gridlines are its lines' as drawn, a full grid lining its columns too, and
   an output field is ruled off above its line; showing groups (`groups`), while a field
   it shows is in a schema group, each run of fields side by side in one group headed
@@ -688,7 +688,7 @@ Out of scope:
   a row's value is not typing: a quote holding nothing else typed, a row left out included,
   is neither marked nor priced nor saved, and the server takes it as the empty quote, as it
   takes a blank one. A grid showing the table shows its rows, whatever its rows and fixed
-  rows, with no Add row and no delete, the column's cells showing each row's value as text,
+  rows, with no row inserted or deleted, the column's cells showing each row's value as text,
   which takes no typing, and a value typed into the grid writes all its rows. A grid
   showing it beside another many-row table whose rows are not the same (another column's
   values, or rows of its own) shows every row of each, a table's cells past its own rows
@@ -702,8 +702,13 @@ Out of scope:
   sample: the quote an analyst keys in as an underwriter would, saved with the form and
   what the pipeline's previews run on (the Workbench Input, below). A Collection's boxes
   hold its one-row tables' one row; a Table's grid holds its
-  many-row tables' rows, row by row, with Add row and a delete on each row, unless its rows
-  are fixed or a column gives them (above), adding and deleting a row in every input table the grid shows at once, so
+  many-row tables' rows, row by row, with a delete on each row and a menu a right-click on
+  a row opens, unless its rows are fixed or a column gives them (above): Insert, which
+  offers Insert Row Above, Insert Row Below, Insert Multiple Rows Above and Insert
+  Multiple Rows Below, the last two asking in a box how many rows, a whole number from 1,
+  and Delete Row; transposed, the menu opens on a row's column, its number too, and says
+  Column, Columns, Left and Right for Row, Rows, Above and Below. Rows are inserted, empty,
+  and deleted in every input table the grid shows at once, as one undo step, so
   their cells stay side by side; a one-row table's column in a grid shows that table's one
   value on every row. A grid starts with its rows: while its input tables hold no rows it
   shows that many empty ones, which the first value typed into it keeps; once they hold

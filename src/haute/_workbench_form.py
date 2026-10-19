@@ -242,8 +242,8 @@ class TableInputWidget(_Placed):
     fields: list[FieldRef] = Field(default_factory=list)
     show_when: ShowWhen = Field(default_factory=ShowWhen)
     rows: int = Field(default=3, ge=1, le=TABLE_ROWS_MAX)
-    # How the grid looks, whether its rows are a set structure with no Add row and no
-    # delete, whether it is transposed, its fields down its side and its rows across, and
+    # How the grid looks, whether its rows are a set structure, none inserted or
+    # deleted, whether it is transposed, its fields down its side and its rows across, and
     # whether its fields' schema groups head their labels: by default numbered, compact,
     # lined between rows, striped, not fixed, its header as written, framed, not
     # transposed and without groups.

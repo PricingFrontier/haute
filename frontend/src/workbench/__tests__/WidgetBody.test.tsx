@@ -48,6 +48,18 @@ function renderBody(id: string, values: Values = "sample") {
   return render(body(id, values))
 }
 
+/** A right-click on a grid's cell, then each of `entries` in the menu it opens, clicked in turn. */
+function fromRowMenu(cell: HTMLElement, ...entries: string[]) {
+  fireEvent.contextMenu(cell)
+  for (const entry of entries) fireEvent.click(screen.getByRole("menuitem", { name: entry }))
+}
+
+/** A right-click on a cell of a grid whose rows are fixed: the browser's own menu, not the grid's. */
+function expectNoRowMenu(cell: HTMLElement) {
+  expect(fireEvent.contextMenu(cell)).toBe(true)
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument()
+}
+
 describe("WidgetBody", () => {
   beforeEach(() => {
     stubLayout()
@@ -84,7 +96,7 @@ describe("WidgetBody", () => {
     expect(currentForm().sample.policy).toEqual([{ "policy.year": "2021" }])
   })
 
-  it("types the sample into a Table's grid row by row, keeping the rows it starts with, adding and deleting rows in every table it shows", () => {
+  it("types the sample into a Table's grid row by row, keeping the rows it starts with, inserting and deleting rows in every table it shows", () => {
     renderBody("w_grid")
     expect(screen.getAllByRole("row")).toHaveLength(4)
 
@@ -95,7 +107,7 @@ describe("WidgetBody", () => {
     expect(currentForm().sample.equipment).toEqual([{}, { "equipment.item": "Crane" }, {}])
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
 
-    fireEvent.click(screen.getByRole("button", { name: "Add row" }))
+    fromRowMenu(screen.getByRole("textbox", { name: "Item row 3" }), "Insert", "Insert Row Below")
     expect(currentForm().sample.equipment).toEqual([{}, { "equipment.item": "Crane" }, {}, {}])
     expect(screen.getAllByRole("row")).toHaveLength(5)
 
@@ -119,6 +131,111 @@ describe("WidgetBody", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete row 2" }))
     expect(currentForm().sample.equipment).toEqual([{}, {}])
     expect(screen.getAllByRole("row")).toHaveLength(3)
+  })
+
+  it("inserts rows above and below a row through its right-click menu, one or as many as typed, each as one undo step, and deletes it, in every table the grid shows", () => {
+    let form = addSchemaTable(sheetForm(), table("hire", "hire", { rows: "many", columns: [column("hire.days", "days", { type: "int" })] }))
+    form = toggleField(form, "w_grid", { table: "hire", column: "hire.days" })
+    form.sample = { equipment: [{ "equipment.item": "Crane" }, { "equipment.item": "Lift" }], hire: [{ "hire.days": "1" }, { "hire.days": "2" }] }
+    loadForm(form)
+    renderBody("w_grid")
+    const item = (row: number) => screen.getByRole("textbox", { name: `Item row ${row}` })
+    const items = () => currentForm().sample.equipment.map((row) => row["equipment.item"] ?? "")
+    const days = () => currentForm().sample.hire.map((row) => row["hire.days"] ?? "")
+    const undoSteps = () => useWorkbenchFormStore.getState().undoStack.length
+
+    // Its menu at the right-click, Insert opening a menu of its own.
+    expect(fireEvent.contextMenu(item(2))).toBe(false)
+    const menu = screen.getByRole("menu", { name: "Row 2" })
+    expect(within(menu).getAllByRole("menuitem").map((entry) => entry.textContent)).toEqual(["Insert", "Delete Row"])
+    expect(within(menu).getByRole("menuitem", { name: "Insert" })).toHaveFocus()
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Insert" }))
+    expect(within(menu).getByRole("menuitem", { name: "Insert" })).toHaveAttribute("aria-expanded", "true")
+    expect(within(screen.getByRole("menu", { name: "Insert" })).getAllByRole("menuitem").map((entry) => entry.textContent)).toEqual([
+      "Insert Row Above",
+      "Insert Row Below",
+      "Insert Multiple Rows Above",
+      "Insert Multiple Rows Below",
+    ])
+    expect(screen.getByRole("menuitem", { name: "Insert Row Above" })).toHaveFocus()
+
+    // One row, above or below, in each table, empty.
+    fireEvent.click(screen.getByRole("menuitem", { name: "Insert Row Above" }))
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument()
+    expect(items()).toEqual(["Crane", "", "Lift"])
+    expect(days()).toEqual(["1", "", "2"])
+    expect(undoSteps()).toBe(1)
+    fromRowMenu(item(3), "Insert", "Insert Row Below")
+    expect(items()).toEqual(["Crane", "", "Lift", ""])
+    expect(days()).toEqual(["1", "", "2", ""])
+    expect(undoSteps()).toBe(2)
+
+    // As many as typed into the box it asks in, a whole number from 1.
+    fromRowMenu(item(1), "Insert", "Insert Multiple Rows Above")
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument()
+    const box = screen.getByRole("dialog", { name: "Insert Rows Above" })
+    const count = within(box).getByRole("spinbutton", { name: "Rows" })
+    const insert = within(box).getByRole("button", { name: "Insert" })
+    expect(count).toHaveFocus()
+    expect(insert).toBeDisabled()
+    for (const refused of ["0", "1.5"]) {
+      fireEvent.change(count, { target: { value: refused } })
+      expect(insert).toBeDisabled()
+    }
+    fireEvent.change(count, { target: { value: "2" } })
+    fireEvent.click(insert)
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    expect(items()).toEqual(["", "", "Crane", "", "Lift", ""])
+    expect(days()).toEqual(["", "", "1", "", "2", ""])
+    expect(undoSteps()).toBe(3)
+    fromRowMenu(item(5), "Insert", "Insert Multiple Rows Below")
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Rows" }), { target: { value: "3" } })
+    fireEvent.click(screen.getByRole("button", { name: "Insert" }))
+    expect(items()).toEqual(["", "", "Crane", "", "Lift", "", "", "", ""])
+    expect(screen.getAllByRole("row")).toHaveLength(10)
+
+    // Cancelled, the box inserts nothing.
+    fromRowMenu(item(1), "Insert", "Insert Multiple Rows Below")
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    expect(undoSteps()).toBe(4)
+
+    // Delete Row takes the row out of each table.
+    fromRowMenu(item(3), "Delete Row")
+    expect(items()).toEqual(["", "", "", "Lift", "", "", "", ""])
+    expect(days()).toEqual(["", "", "", "2", "", "", "", ""])
+    expect(undoSteps()).toBe(5)
+  })
+
+  it("moves through a row's menu from the keyboard, and closes it on Escape, giving the focus back, or on a press outside it", () => {
+    renderBody("w_grid")
+    const cell = screen.getByRole("textbox", { name: "Item row 1" })
+    const focused = () => document.activeElement as HTMLElement
+    cell.focus()
+    fireEvent.contextMenu(cell)
+    expect(screen.getByRole("menuitem", { name: "Insert" })).toHaveFocus()
+    fireEvent.keyDown(focused(), { key: "ArrowDown" })
+    expect(screen.getByRole("menuitem", { name: "Delete Row" })).toHaveFocus()
+    fireEvent.keyDown(focused(), { key: "ArrowDown" })
+    expect(screen.getByRole("menuitem", { name: "Insert" })).toHaveFocus()
+
+    // Right opens Insert's menu at its first entry, left closes it.
+    fireEvent.keyDown(focused(), { key: "ArrowRight" })
+    expect(screen.getByRole("menuitem", { name: "Insert Row Above" })).toHaveFocus()
+    fireEvent.keyDown(focused(), { key: "ArrowUp" })
+    expect(screen.getByRole("menuitem", { name: "Insert Multiple Rows Below" })).toHaveFocus()
+    fireEvent.keyDown(focused(), { key: "ArrowLeft" })
+    expect(screen.queryByRole("menu", { name: "Insert" })).not.toBeInTheDocument()
+    expect(screen.getByRole("menuitem", { name: "Insert" })).toHaveFocus()
+
+    fireEvent.keyDown(focused(), { key: "Escape" })
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument()
+    expect(cell).toHaveFocus()
+
+    fireEvent.contextMenu(cell)
+    fireEvent.pointerDown(document.body)
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument()
+    expect(currentForm().sample).toEqual({})
   })
 
   it("shows every row the values hold once they hold any, fewer than the grid starts with too, a grid of fixed rows never fewer than those", () => {
@@ -149,9 +266,9 @@ describe("WidgetBody", () => {
 
     expect(bodyRows().map((row) => row.children[1].textContent)).toEqual(["Crane", "Digger", "Lift", "Hoist"])
     expect(screen.getByRole("textbox", { name: "Value row 3" })).toHaveValue("3")
-    // Its values take no typing, and no row is added or deleted.
+    // Its values take no typing, and no row is inserted or deleted.
     expect(screen.queryByRole("textbox", { name: "Item row 1" })).not.toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: "Add row" })).not.toBeInTheDocument()
+    expectNoRowMenu(screen.getByRole("textbox", { name: "Value row 1" }))
     expect(screen.queryByRole("button", { name: "Delete row 1" })).not.toBeInTheDocument()
 
     const value = screen.getByRole("textbox", { name: "Value row 1" })
@@ -203,7 +320,7 @@ describe("WidgetBody", () => {
     expect(screen.getByRole("textbox", { name: "Days row 3" })).toHaveValue("3")
   })
 
-  it("draws a Table as its options say, and with its rows fixed shows every row typed but no Add row or delete", () => {
+  it("draws a Table as its options say, and with its rows fixed shows every row typed but no row menu or delete", () => {
     const bodyRows = () => screen.getAllByRole("row").slice(1)
     const cellOf = (name: string) => screen.getByRole("textbox", { name }).closest("td")
 
@@ -233,10 +350,10 @@ describe("WidgetBody", () => {
     // A line between the columns as well as the rows, but none at the grid's left edge.
     expect(cellOf("Value row 1")?.style.borderLeft).toBe("1px solid var(--border-subtle)")
     expect(cellOf("Item row 1")?.style.borderLeft).toBe("")
-    // Every row typed shows, one more than the grid's 3, though none can be added or deleted.
+    // Every row typed shows, one more than the grid's 3, though none can be inserted or deleted.
     expect(bodyRows()).toHaveLength(4)
     expect(screen.getByRole("textbox", { name: "Item row 4" })).toHaveValue("D")
-    expect(screen.queryByRole("button", { name: "Add row" })).not.toBeInTheDocument()
+    expectNoRowMenu(screen.getByRole("textbox", { name: "Item row 1" }))
     expect(screen.queryByRole("button", { name: "Delete row 1" })).not.toBeInTheDocument()
     cleanup()
 
@@ -267,17 +384,17 @@ describe("WidgetBody", () => {
     expect(frame.style.background).toBe("")
   })
 
-  it("draws a Table transposed, its fields down its side and its rows across, typed, added and deleted as its rows are", () => {
+  it("draws a Table transposed, its fields down its side and its rows across, typed, inserted and deleted as its rows are", () => {
     const form = updateWidget(toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premiums.premium" }), "w_grid", { transposed: true, header: "caps" })
     loadForm(form)
     renderBody("w_grid")
     const lines = () => screen.getAllByRole("row")
     const cellOf = (name: string) => screen.getByRole("textbox", { name }).closest("td")
 
-    // The rows' numbers across the top, with an add at their end; a line per field under
-    // them, labelled at its start in the header's look, holding the field's cell in each row.
+    // The rows' numbers across the top; a line per field under them, labelled at its start
+    // in the header's look, holding the field's cell in each row.
     expect(lines()).toHaveLength(4)
-    expect(within(lines()[0]).getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["#", "1", "2", "3", ""])
+    expect(within(lines()[0]).getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["#", "1", "2", "3"])
     expect(screen.getAllByRole("rowheader").map((header) => header.textContent)).toEqual(["Item", "Value", "Premium"])
     expect(screen.getAllByRole("rowheader")[0]).toHaveClass("uppercase")
     expect(within(lines()[1]).getAllByRole("textbox").map((box) => box.getAttribute("aria-label"))).toEqual(["Item row 1", "Item row 2", "Item row 3"])
@@ -287,15 +404,32 @@ describe("WidgetBody", () => {
     expect(screen.getByTestId("priced-premiums:premiums.premium-1").style.borderTop).toBe("1px solid var(--border)")
     expect(cellOf("Value row 1")?.style.borderTop).toBe("")
 
-    // Typed, added and deleted as its rows are, the add and the deletes saying what they do as drawn.
+    // Typed, inserted and deleted as its rows are, the menu and the deletes saying what they do as drawn.
     const item = screen.getByRole("textbox", { name: "Item row 2" })
     fireEvent.change(item, { target: { value: "Crane" } })
     fireEvent.keyDown(item, { key: "Enter" })
     expect(currentForm().sample.equipment).toEqual([{}, { "equipment.item": "Crane" }, {}])
-    expect(screen.getByRole("button", { name: "Add row" })).toHaveAttribute("title", "Add column")
-    fireEvent.click(screen.getByRole("button", { name: "Add row" }))
+    // The menu opens on a row's number as on its cells.
+    fromRowMenu(within(lines()[0]).getAllByRole("columnheader")[3], "Insert")
+    expect(within(screen.getByRole("menu", { name: "Column 3" })).getAllByRole("menuitem").map((entry) => entry.textContent)).toEqual([
+      "Insert",
+      "Insert Column Left",
+      "Insert Column Right",
+      "Insert Multiple Columns Left",
+      "Insert Multiple Columns Right",
+      "Delete Column",
+    ])
+    fireEvent.click(screen.getByRole("menuitem", { name: "Insert Column Right" }))
     expect(currentForm().sample.equipment).toEqual([{}, { "equipment.item": "Crane" }, {}, {}])
-    expect(within(lines()[0]).getAllByRole("columnheader")).toHaveLength(6)
+    expect(within(lines()[0]).getAllByRole("columnheader")).toHaveLength(5)
+    fromRowMenu(screen.getByTestId("priced-premiums:premiums.premium-1"), "Insert", "Insert Multiple Columns Left")
+    expect(screen.getByRole("dialog", { name: "Insert Columns Left" })).toBeInTheDocument()
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Columns" }), { target: { value: "2" } })
+    fireEvent.click(screen.getByRole("button", { name: "Insert" }))
+    expect(currentForm().sample.equipment).toEqual([{}, {}, {}, { "equipment.item": "Crane" }, {}, {}])
+    fromRowMenu(screen.getByRole("textbox", { name: "Item row 2" }), "Delete Column")
+    fromRowMenu(screen.getByRole("textbox", { name: "Item row 1" }), "Delete Column")
+    expect(currentForm().sample.equipment).toEqual([{}, { "equipment.item": "Crane" }, {}, {}])
     expect(screen.getByRole("button", { name: "Delete row 1" })).toHaveAttribute("title", "Delete column")
     fireEvent.click(screen.getByRole("button", { name: "Delete row 1" }))
     expect(currentForm().sample.equipment).toEqual([{ "equipment.item": "Crane" }, {}, {}])
@@ -305,7 +439,7 @@ describe("WidgetBody", () => {
     loadForm(updateWidget(form, "w_grid", { fixed_rows: true, row_numbers: false, gridlines: "all" }))
     renderBody("w_grid")
     expect(screen.queryAllByRole("columnheader")).toHaveLength(0)
-    expect(screen.queryByRole("button", { name: "Add row" })).not.toBeInTheDocument()
+    expectNoRowMenu(screen.getByRole("textbox", { name: "Item row 1" }))
     expect(screen.queryByRole("button", { name: "Delete row 1" })).not.toBeInTheDocument()
     expect(cellOf("Item row 1")?.style.borderLeft).toBe("")
     expect(cellOf("Item row 2")?.style.borderLeft).toBe("1px solid var(--border-subtle)")
@@ -950,7 +1084,7 @@ describe("WidgetBody", () => {
     // Nothing priced: its three starting rows, each cell a dash, so it reads as not yet connected.
     expect(cell("premium", 3)).toHaveTextContent("—")
     expect(cell("premium", 4)).toBeNull()
-    expect(screen.queryByRole("button", { name: "Add row" })).toBeNull()
+    expectNoRowMenu(cell("premium", 1) as HTMLElement)
     expect(screen.queryByRole("button", { name: "Delete row 1" })).toBeNull()
 
     // Priced: a row for each of the answer's, as a Chart of the same columns plots them.
@@ -1177,7 +1311,7 @@ describe("WidgetBody", () => {
     expect(screen.getByText("Type its text in the panel on the right")).toBeInTheDocument()
   })
 
-  it("shows the underwriter app's quote held read only with its cells taking no typing and no rows added or deleted", () => {
+  it("shows the underwriter app's quote held read only with its cells taking no typing and no rows inserted or deleted", () => {
     act(() => useWorkbenchPreviewStore.getState().open({ policy: [{ "policy.state": "NY" }], equipment: [{ "equipment.item": "Crane" }] }, null, true))
     const { unmount } = renderBody("w_boxes", "quote")
     expect(screen.getByRole("combobox", { name: "State" })).toBeDisabled()
@@ -1185,7 +1319,7 @@ describe("WidgetBody", () => {
 
     renderBody("w_grid", "quote")
     expect(screen.getByRole("textbox", { name: "Item row 1" })).toBeDisabled()
-    expect(screen.queryByRole("button", { name: "Add row" })).not.toBeInTheDocument()
+    expectNoRowMenu(screen.getByRole("textbox", { name: "Item row 1" }))
     expect(screen.queryByRole("button", { name: "Delete row 1" })).not.toBeInTheDocument()
     act(() => useWorkbenchPreviewStore.getState().setCell("policy", 0, "policy.state", "CA"))
     expect(useWorkbenchPreviewStore.getState().quote.policy[0]["policy.state"]).toBe("NY")

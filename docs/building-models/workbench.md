@@ -84,7 +84,7 @@ In a many-row input table, **Rows** under a column's allowed values gives the ta
 for each** of them, in their order. A `coverage` table whose `peril` column takes its values
 from `perils.csv` (AOP, EQ, NW, WD, SCS, FLD) then has exactly six rows, one for each peril,
 and the underwriter types the other columns on each. The Tables that show it have those rows
-and no Add row or delete; the peril cells show the peril and take no typing. A Table showing
+and no rows can be inserted or deleted; the peril cells show the peril and take no typing. A Table showing
 it beside another table whose rows differ shows every row of both and says their rows do
 not line up. Every row goes
 to the pipeline once the quote is priced, a peril with nothing else typed included, but the
@@ -188,7 +188,7 @@ sheets show, Preview and the underwriter app included.
 
 Select a component to open its properties on the right: its title, when it shows (see
 [Showing sheets, sections and components conditionally](#showing-sheets-sections-and-components-conditionally)), its layout (the rows a
-Table starts with, whether they are **fixed**, with no Add row or delete, and whether it is
+Table starts with, whether they are **fixed**, with no rows inserted or deleted, and whether it is
 **transposed**, or a Collection's columns across), a Table's **look** (see
 [A Table's look](#a-tables-look)), a Collection's **look** (see
 [A Collection's look](#a-collections-look)), the **order** of the fields it shows (drag, or
@@ -201,7 +201,7 @@ field, tables whose rows do not line up with it (keyed differently) are greyed o
 input table and an output table with the same key line up, so each row can show its
 premium. Output columns are shaded. A transposed Table turns its grid on its side: each
 field is a line, labelled at its left, and each row is a column, numbered along the top,
-with **+** at the end of the numbers to add one and a delete over each number; its stripes
+with a delete over each number; its stripes
 and gridlines follow the lines as drawn. With **groups** ticked, the columns side by side
 in one schema group share a heading over their labels, as merged cells over a table's
 headers would in Excel; a column in no group has none. Transposed, the groups sit in a
@@ -393,11 +393,15 @@ type the **sample**, a quote you key in as an underwriter would: it is saved wit
 sheets, and it is what the [Workbench Input](nodes/workbench-input.md)'s previews run on
 once saved.
 
-A Collection's boxes hold its tables' one row, and a Table's grid holds its tables' rows,
-with **Add row** and a delete on each row unless its rows are fixed (they add and delete
-the row in every input table the grid shows, so the cells stay side by side). A Table
+A Collection's boxes hold its tables' one row, and a Table's grid holds its tables' rows.
+Unless its rows are fixed, right-click a row for its menu: **Insert** opens **Insert Row
+Above**, **Insert Row Below**, **Insert Multiple Rows Above** and **Insert Multiple Rows
+Below**, the last two asking how many rows to insert, and **Delete Row** deletes it, as
+does the delete at the end of each row. On a transposed Table, right-click a column, or
+its number, and the menu inserts columns to the left or right. Rows are inserted and
+deleted in every input table the grid shows, so the cells stay side by side. A Table
 starts with its rows, empty; the first value you type keeps them, and from then on the
-rows are yours to add and delete, fewer than it started with too, though a Table of fixed
+rows are yours to insert and delete, fewer than it started with too, though a Table of fixed
 rows never shows fewer. Change a Table's rows while building and Preview shows it: empty
 rows after the last one you typed into go, or more are added. A Table showing a table that
 has a row for each value (see [Schema](#schema)) shows those rows whatever its own rows

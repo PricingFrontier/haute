@@ -33,7 +33,7 @@ export type FieldsWidget = Exclude<Widget, HeadingWidget>
 /** A column's type: the Quote Input's column types. */
 export type ColumnType = SchemaColumn["type"]
 /**
- * How a Table's grid looks, whether its rows are fixed: no Add row and no delete, whether it
+ * How a Table's grid looks, whether its rows are fixed: none inserted or deleted, whether it
  * is transposed: its fields down its side, its rows across, whether its fields' schema
  * groups head their labels, its text, its header, its lines and its frame, and its columns'
  * own looks.
