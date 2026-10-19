@@ -1189,7 +1189,7 @@ describe("WidgetBody", () => {
     expect(screen.getByTestId("priced-premiums:premiums.premium")).toHaveTextContent("777")
   })
 
-  it("keeps the rows the underwriter app's quote's grid starts with as the first value is typed into it", () => {
+  it("keeps the rows the underwriter app's quote's grid starts with as the first value is typed into it, and inserts and deletes its rows", () => {
     useWorkbenchViewStore.setState({ section: "preview" })
     renderBody("w_grid", "quote")
 
@@ -1198,6 +1198,11 @@ describe("WidgetBody", () => {
     fireEvent.keyDown(item, { key: "Enter" })
     expect(useWorkbenchPreviewStore.getState().quote).toEqual({ equipment: [{ "equipment.item": "Crane" }, {}, {}] })
     expect(screen.getAllByRole("row")).toHaveLength(4)
+
+    fromRowMenu(item, "Insert", "Insert Row Above")
+    expect(useWorkbenchPreviewStore.getState().quote).toEqual({ equipment: [{}, { "equipment.item": "Crane" }, {}, {}] })
+    fromRowMenu(screen.getByRole("textbox", { name: "Item row 3" }), "Delete Row")
+    expect(useWorkbenchPreviewStore.getState().quote).toEqual({ equipment: [{}, { "equipment.item": "Crane" }, {}] })
     expect(currentForm().sample).toEqual({})
   })
 
