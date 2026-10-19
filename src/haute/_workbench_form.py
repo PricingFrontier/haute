@@ -52,28 +52,29 @@ Density = Literal["compact", "comfortable"]
 #: column too, or none.
 TableGridlines = Literal["rows", "all", "none"]
 
-#: How a Table's header shows its labels: as written, or in capitals.
+#: How a Table's header, or a Collection, shows its labels: as written, or in capitals.
 TableHeader = Literal["caps", "plain"]
 
 #: Which way a Table's labels read: level, turned to read upwards or downwards, or their
 #: letters stacked one under another.
 HeaderOrientation = Literal["horizontal", "up", "down", "stacked"]
 
-#: How heavy a Table's lines or its frame are: 1, 2 or 3 pixels.
+#: How heavy a Table's lines, a Collection's boxes' borders or either's frame are: 1, 2 or
+#: 3 pixels.
 LineWeight = Literal["thin", "medium", "thick"]
 
-#: How a Table's gridlines are drawn.
+#: How a Table's gridlines, or a Collection's boxes' borders, are drawn.
 LineStyle = Literal["solid", "dashed", "dotted"]
 
-#: Where a Table column's values and label sit across it: as its type puts them, numbers on
-#: the right, or as chosen.
+#: Where a Table column's, or a Collection field's, values and label sit across it: as its
+#: type puts them, numbers on the right, or as chosen.
 ColumnAlign = Literal["auto", "left", "center", "right"]
 
-#: The sizes a Table's text is in, in pixels.
+#: The sizes a Table's or a Collection's text is in, in pixels.
 FontSize = Literal[10, 11, 12, 13, 14, 16, 18]
 
-#: How narrow and how wide a Table's column can be set, in pixels, as the view's properties
-#: panel takes them (``frontend/src/utils/workbenchForm.ts``).
+#: How narrow and how wide a Table's column, or a Collection's labels and boxes, can be set,
+#: in pixels, as the view's properties panel takes them (``frontend/src/utils/workbenchForm.ts``).
 COLUMN_WIDTH_MIN = 24
 COLUMN_WIDTH_MAX = 1000
 
@@ -181,13 +182,14 @@ class ShowWhen(_Strict):
 
 
 class ColumnLook(_Strict):
-    """How one of a Table's columns looks, its field by table and column id: each colour the
-    Table's own while None, its values and label placed as its type puts them while ``auto``,
-    and as wide as the grid makes it while ``width`` is None."""
+    """How one of a Table's columns, or one of a Collection's fields, looks, its field by table
+    and column id: each colour the component's own while None, its values and label placed as
+    its type puts them while ``auto``, and, while ``width`` is None, a Table's column as wide
+    as the grid makes it and a Collection's box as wide as the Collection makes it."""
 
     table: str
     column: str
-    #: Its label's fill and text, and its cells' fill and text.
+    #: Its label's fill and text, and its cells', or its box's, fill and text.
     header_color: Colour | None = None
     header_font_color: Colour | None = None
     cell_color: Colour | None = None
@@ -197,9 +199,29 @@ class ColumnLook(_Strict):
     width: int | None = Field(default=None, ge=COLUMN_WIDTH_MIN, le=COLUMN_WIDTH_MAX)
 
 
-#: A column look that changes nothing, which no Table holds: a column without a look of its
-#: own has none.
+#: A column look that changes nothing, which no Table or Collection holds: a column without a
+#: look of its own has none.
 _PLAIN_LOOK = ColumnLook(table="", column="").model_dump(exclude={"table", "column"})
+
+
+def _check_column_looks(widget_id: str, fields: list[FieldRef], looks: list[ColumnLook]) -> None:
+    """Refuse a component's look for a column it does not show, a second look for one column,
+    or a look that changes nothing."""
+    shown = {(field.table, field.column) for field in fields}
+    seen: set[tuple[str, str]] = set()
+    for look in looks:
+        at = (look.table, look.column)
+        name = f"{look.table}.{look.column}"
+        if at not in shown:
+            raise ValueError(f"widget {widget_id} has a look for {name}, which it does not show")
+        if at in seen:
+            raise ValueError(f"widget {widget_id} has two looks for {name}")
+        seen.add(at)
+        if look.model_dump(exclude={"table", "column"}) == _PLAIN_LOOK:
+            raise ValueError(
+                f"widget {widget_id}'s look for {name} changes nothing: a column without a "
+                "look of its own has none"
+            )
 
 
 class TableInputWidget(_Placed):
@@ -247,27 +269,14 @@ class TableInputWidget(_Placed):
 
     @model_validator(mode="after")
     def _looks_at_its_columns(self) -> TableInputWidget:
-        shown = {(field.table, field.column) for field in self.fields}
-        seen: set[tuple[str, str]] = set()
-        for look in self.column_looks:
-            at = (look.table, look.column)
-            name = f"{look.table}.{look.column}"
-            if at not in shown:
-                raise ValueError(f"widget {self.id} has a look for {name}, which it does not show")
-            if at in seen:
-                raise ValueError(f"widget {self.id} has two looks for {name}")
-            seen.add(at)
-            if look.model_dump(exclude={"table", "column"}) == _PLAIN_LOOK:
-                raise ValueError(
-                    f"widget {self.id}'s look for {name} changes nothing: a column without a "
-                    "look of its own has none"
-                )
+        _check_column_looks(self.id, self.fields, self.column_looks)
         return self
 
 
 class CollectionWidget(_Placed):
     """A Collection: boxes showing columns of one-row schema tables, ``columns`` across, with
-    a gap across it wherever one of its ``spacers`` sits among them."""
+    a gap across it wherever one of its ``spacers`` sits among them, each of its fields given
+    a look of its own looking as its ``column_looks`` entry says."""
 
     type: Literal["collection"]
     title: str = ""
@@ -278,6 +287,29 @@ class CollectionWidget(_Placed):
     labels: CollectionLabels = "above"
     density: Density = "comfortable"
     frame: bool = True
+    # Its text, its labels, its boxes and its frame, as a Table's are set: by default 12px
+    # text, its labels the same size, or a pixel smaller in capitals, as written, neither
+    # bold nor wrapped, unfilled, coloured as the sheets' theme says and, beside their
+    # boxes, two fifths of a field wide; its boxes' borders thin and solid, coloured as the
+    # theme says, and each box as wide as its label leaves; a thin frame, coloured as the
+    # theme says.
+    font_size: FontSize = 12
+    header: TableHeader = "plain"
+    header_font_size: FontSize | None = None
+    header_bold: bool = False
+    header_wrap: bool = False
+    header_color: Colour | None = None
+    header_font_color: Colour | None = None
+    label_width: int | None = Field(default=None, ge=COLUMN_WIDTH_MIN, le=COLUMN_WIDTH_MAX)
+    box_style: LineStyle = "solid"
+    box_weight: LineWeight = "thin"
+    box_color: Colour | None = None
+    box_width: int | None = Field(default=None, ge=COLUMN_WIDTH_MIN, le=COLUMN_WIDTH_MAX)
+    frame_color: Colour | None = None
+    frame_weight: LineWeight = "thin"
+    #: The looks of the fields given one of their own, each a column it shows, in no set
+    #: order.
+    column_looks: list[ColumnLook] = Field(default_factory=list)
     #: Each spacer the number of its fields before it, in order, two at one place a wider
     #: gap; the fields after one start a new row.
     spacers: list[Annotated[int, Field(ge=0)]] = Field(default_factory=list)
@@ -294,6 +326,7 @@ class CollectionWidget(_Placed):
                 f"widget {self.id} has a spacer after {self.spacers[-1]} fields, but shows "
                 f"{len(self.fields)}"
             )
+        _check_column_looks(self.id, self.fields, self.column_looks)
         return self
 
 

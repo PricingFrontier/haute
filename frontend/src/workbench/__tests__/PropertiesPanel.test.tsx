@@ -1,6 +1,6 @@
 /**
  * The properties panel (specs/workbench): the selected component's title, Show when and
- * layout, a Table's fixed rows and look, a Chart's chart, the order of its fields, and the
+ * layout, a Table's fixed rows and look, a Collection's look, a Chart's chart, the order of its fields, and the
  * fields ticked from the schema tables of its kind (a Chart's from every table, the columns
  * it cannot plot disabled), with tables whose rows do not line up greyed out; a Heading's
  * text, description, size, alignment and Show when; the showing sheet's own panel, its
@@ -126,7 +126,7 @@ describe("PropertiesPanel", () => {
     expect(screen.getByRole("tablist", { name: "Collection panes" })).toBeInTheDocument()
     expect(screen.getByRole("tab", { name: "Config" })).toHaveAttribute("aria-selected", "true")
     showPane("Display")
-    expect(regions()).toEqual(["Title", "Show when", "Layout", "Look"])
+    expect(regions()).toEqual(["Title", "Show when", "Layout", "Look", "Labels", "Boxes", "Frame", "Fields"])
     select("w_grid")
     rerender(<PropertiesPanel />)
     expect(screen.getByRole("tab", { name: "Display" })).toHaveAttribute("aria-selected", "true")
@@ -193,31 +193,126 @@ describe("PropertiesPanel", () => {
     })
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(9)
 
-    // A Collection's look is its labels, its density and its frame, none of a Table's own.
+    // A Collection's look has none of a Table's own: no rows, no grid and no turned labels.
     select("w_boxes")
     rerender(<PropertiesPanel />)
     showPane("Display")
     expect(screen.getByTestId("widget-columns")).toHaveValue("2")
     expect(screen.queryByRole("checkbox", { name: "Fixed rows" })).not.toBeInTheDocument()
     expect(screen.queryByRole("checkbox", { name: "Transposed" })).not.toBeInTheDocument()
-    const boxesLook = screen.getByRole("region", { name: "Look" })
-    expect(within(boxesLook).queryByRole("combobox", { name: "Gridlines" })).not.toBeInTheDocument()
-    expect(within(boxesLook).queryByRole("combobox", { name: "Case" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("combobox", { name: "Gridlines" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("combobox", { name: "Direction" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("checkbox", { name: "Row numbers" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("checkbox", { name: "Groups" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("checkbox", { name: "Striped rows" })).not.toBeInTheDocument()
     expect(screen.queryByRole("region", { name: "Header" })).not.toBeInTheDocument()
     expect(screen.queryByRole("region", { name: "Columns" })).not.toBeInTheDocument()
-    expect(within(boxesLook).queryByRole("checkbox", { name: "Groups" })).not.toBeInTheDocument()
-    const labels = within(boxesLook).getByRole("combobox", { name: "Labels" })
-    expect([...labels.querySelectorAll("option")].map((option) => [option.value, option.textContent])).toEqual([
+    const labels = within(screen.getByRole("region", { name: "Labels" })).getByRole("combobox", { name: "Position" })
+    expect(choices(labels)).toEqual([
       ["above", "Above"],
       ["beside", "Beside"],
     ])
     expect(labels).toHaveValue("above")
+    const boxesLook = screen.getByRole("region", { name: "Look" })
     expect(within(boxesLook).getByRole("combobox", { name: "Density" })).toHaveValue("comfortable")
     fireEvent.change(labels, { target: { value: "beside" } })
     fireEvent.change(within(boxesLook).getByRole("combobox", { name: "Density" }), { target: { value: "compact" } })
-    fireEvent.click(within(boxesLook).getByRole("checkbox", { name: "Frame" }))
+    fireEvent.click(within(screen.getByRole("region", { name: "Frame" })).getByRole("checkbox", { name: "Frame" }))
     expect(fieldsWidget(currentForm(), "w_boxes")).toMatchObject({ labels: "beside", density: "compact", frame: false })
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(12)
+  })
+
+  it("sets a Collection's text, its labels, its boxes, its frame and a field's own look as a Table's are set, each one undo step", () => {
+    select("w_boxes")
+    render(<PropertiesPanel />)
+    showPane("Display")
+    const region = (name: string) => screen.getByRole("region", { name })
+    const boxes = () => fieldsWidget(currentForm(), "w_boxes") as Extract<ReturnType<typeof grid>, { type: "collection" }>
+    const type = (testId: string, text: string) => {
+      fireEvent.change(screen.getByTestId(testId), { target: { value: text } })
+      fireEvent.blur(screen.getByTestId(testId))
+    }
+
+    fireEvent.change(within(region("Look")).getByRole("combobox", { name: "Text size" }), { target: { value: "14" } })
+
+    // A label's width is set only beside its box, in whole pixels from 24 to 1000.
+    const labels = region("Labels")
+    expect(screen.queryByTestId("label-width")).not.toBeInTheDocument()
+    fireEvent.change(within(labels).getByRole("combobox", { name: "Position" }), { target: { value: "beside" } })
+    expect(screen.getByTestId("label-width")).toHaveAttribute("placeholder", "Auto")
+    type("label-width", "10")
+    expect(screen.getByTestId("label-width-error")).toHaveTextContent("Enter a whole number from 24 to 1000.")
+    type("label-width", "160")
+    fireEvent.change(within(labels).getByRole("combobox", { name: "Case" }), { target: { value: "caps" } })
+    fireEvent.change(within(labels).getByRole("combobox", { name: "Size" }), { target: { value: "11" } })
+    fireEvent.click(within(labels).getByRole("button", { name: "Colour #4B5563 for the labels' fill" }))
+    fireEvent.click(within(labels).getByRole("button", { name: "Colour #FFFFFF for the labels' font" }))
+    fireEvent.click(within(labels).getByRole("checkbox", { name: "Bold" }))
+    fireEvent.click(within(labels).getByRole("checkbox", { name: "Wrap" }))
+
+    // Its boxes' borders and their width.
+    const boxRegion = region("Boxes")
+    fireEvent.change(within(boxRegion).getByRole("combobox", { name: "Style" }), { target: { value: "dotted" } })
+    fireEvent.change(within(boxRegion).getByRole("combobox", { name: "Weight" }), { target: { value: "medium" } })
+    fireEvent.click(within(boxRegion).getByRole("button", { name: "Colour #000000 for the boxes" }))
+    type("box-width", "96")
+
+    const frame = region("Frame")
+    fireEvent.change(within(frame).getByRole("combobox", { name: "Weight" }), { target: { value: "thick" } })
+    fireEvent.click(within(frame).getByRole("button", { name: "Colour #000000 for the frame" }))
+    expect(boxes()).toMatchObject({
+      font_size: 14,
+      labels: "beside",
+      label_width: 160,
+      header: "caps",
+      header_font_size: 11,
+      header_color: "#4B5563",
+      header_font_color: "#FFFFFF",
+      header_bold: true,
+      header_wrap: true,
+      box_style: "dotted",
+      box_weight: "medium",
+      box_color: "#000000",
+      box_width: 96,
+      frame_weight: "thick",
+      frame_color: "#000000",
+    })
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(15)
+
+    // A field's own look: its label's and its box's fills and fonts, its place, its box's width and bold.
+    const fields = region("Fields")
+    fireEvent.click(within(fields).getByRole("button", { name: "State" }))
+    const state = within(fields).getByRole("group", { name: "State's look" })
+    fireEvent.click(within(state).getByRole("button", { name: "Colour #2563EB for State's label fill" }))
+    fireEvent.click(within(state).getByRole("button", { name: "Colour #FFFFFF for State's label font" }))
+    fireEvent.click(within(state).getByRole("button", { name: "Colour #D1D5DB for State's fill" }))
+    fireEvent.click(within(state).getByRole("button", { name: "Colour #000000 for State's font" }))
+    fireEvent.change(within(state).getByRole("combobox", { name: "Align" }), { target: { value: "right" } })
+    type("column-width-policy:policy.state", "64")
+    fireEvent.click(within(state).getByRole("checkbox", { name: "Bold" }))
+    expect(boxes().column_looks).toEqual([
+      {
+        table: "policy",
+        column: "policy.state",
+        header_color: "#2563EB",
+        header_font_color: "#FFFFFF",
+        cell_color: "#D1D5DB",
+        font_color: "#000000",
+        bold: true,
+        align: "right",
+        width: 64,
+      },
+    ])
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(22)
+    expect(within(fields).getByRole("button", { name: "State, has a look of its own" })).toBeInTheDocument()
+    fireEvent.click(within(state).getByRole("button", { name: "Clear" }))
+    expect(boxes().column_looks).toEqual([])
+
+    // Blank again, a width is Auto; above its box, a label has no width to set.
+    type("box-width", "")
+    expect(boxes().box_width).toBeNull()
+    fireEvent.change(within(labels).getByRole("combobox", { name: "Position" }), { target: { value: "above" } })
+    expect(screen.queryByTestId("label-width")).not.toBeInTheDocument()
   })
 
   it("sets a Table's text, its header, its lines and its frame as a spreadsheet's are set, each one undo step", () => {

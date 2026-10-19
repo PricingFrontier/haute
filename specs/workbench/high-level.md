@@ -157,8 +157,17 @@ Out of scope:
   `left`, `center` or `right`) and `width` (24 to 1000 pixels, or null), one for each
   column at most, none for a column it does not show and none that changes nothing), a
   Collection (`collection`, boxes
-  showing columns of one-row tables, `columns` across, and its `spacers`, the gaps among
-  them, each the number of fields before it, in order and none past the last), a Chart (`chart`, plotting number
+  showing columns of one-row tables, `columns` across, its `spacers`, the gaps among
+  them, each the number of fields before it, in order and none past the last, and its
+  look: `labels` (`above` or `beside`), `density` and `frame`, and, as a Table's are
+  set, `font_size`, its labels' `header`, `header_font_size`, `header_bold`,
+  `header_wrap`, `header_color` (their fill) and `header_font_color`, and `label_width`,
+  how wide a label beside its box is; its boxes' borders' `box_style`, `box_weight` and
+  `box_color`, as a Table's gridlines' are, and `box_width`; its frame's `frame_color`
+  and `frame_weight`; and `column_looks`, its fields' own looks, as a Table's columns'
+  are, a field's label's `header_color` and `header_font_color`, its box's `cell_color`
+  and `font_color`, `bold`, `align` and its box's `width`, each width 24 to 1000 pixels
+  or null), a Chart (`chart`, plotting number
   columns, with what labels the rows of its many-row tables, `category`, a schema column
   named as a field is or null to number them, and how it draws: `chart_type` (`column`,
   `line`, `area` or `pie`), `orientation` (`vertical` or `horizontal`), `stacked`, `legend`
@@ -421,7 +430,19 @@ Out of scope:
   them or, while `labels` is `beside`, beside them, a tick box in a box as the other fields
   are, the boxes compact (28px) or comfortable (36px) as its `density` says, and each
   spacer a gap across its whole width where it sits among the fields, the fields after it
-  starting a new row below the gap; each of the two in a frame, a border round the panel's
+  starting a new row below the gap; and its look as a Table's is set: its values at its
+  `font_size`; its labels at their size, in capitals or as written, bold only while
+  `header_bold`, wrapping with whole words kept rather than cut off while `header_wrap`,
+  in their `header_font_color` and, given a fill, drawn as a cell, padded, and beside its
+  box as tall as it; a label beside its box `label_width` wide, else two fifths of its
+  field, or what its box leaves while the box has a width; its boxes' borders in their
+  `box_style`, `box_weight` and `box_color`, and each box `box_width` wide, else what its
+  label leaves, never wider than its field, a narrower box under its label sitting across
+  the field as its `align` says; its frame in its `frame_color` and `frame_weight`, the
+  rule under its title in that colour; and each field's own look over the Collection's:
+  its label's fill and font, its box's fill, over the input and output fills, font and
+  weight, where its label and value sit across it, as its type puts them while `auto`,
+  and its box's width; each of the two in a frame, a border round the panel's
   colour, unless `frame` is off, when it sits on the sheet as its title and fields alone,
   all in the sheets' colours (below);
   a Chart as its type draws the values it plots (Charts, below); a Heading as its
@@ -506,7 +527,16 @@ Out of scope:
   with Clear while it has a look, a column with one marked in the list; a colour picked
   as the sheets' colours are, shown as it is picked and one undo step, a pick that an undo
   or a redo made while its picker has the focus finishes first committing nothing more as
-  the picker is left, and a column that stops being shown losing its look), a Collection's look (its labels, Above or Beside, its density and its frame), a
+  the picker is left, and a column that stops being shown losing its look), a
+  Collection's look, set as a Table's is (its density and its text size; its Labels,
+  their Position, Above or Beside, while beside their Width, blank for Auto, a whole
+  number of pixels from 24 to 1000 otherwise refused at the field, their Case, Size, Fill
+  and Font, and whether they are Bold and wrap; its Boxes, their borders' Style, Weight
+  and Colour and their Width, as a label's; its Frame and, while framed, the frame's
+  Weight and Colour; and its Fields, each in its order opened in turn to its own look, its
+  label's Fill and Font, its box's Fill and Font, Align, Width and Bold, with Clear while
+  it has a look, a field with one marked in the list; its colours picked as a Table's are,
+  and a field that stops being shown losing its look), a
   Chart's chart (its type, Column, Line,
   Area or Pie; while it plots many-row tables, what labels its rows, "Row number" or a
   column of a table whose rows line up with its fields, other than an index, by table and
@@ -613,7 +643,8 @@ Out of scope:
   cells and boxes, in place of their shade. A Table's header strip takes the components'
   background while one is set, or the sheet's while the Table is unframed, else keeps its
   own; its stripes, a light shade, show whatever is under them. A Table's own colours, its
-  lines', its frame's, its header's and its columns', are drawn over the theme's.
+  lines', its frame's, its header's and its columns', are drawn over the theme's, as a
+  Collection's own are, its labels', its boxes', its frame's and its fields'.
 - **A new quote while building.** While building, the sheets are drawn as an underwriter's
   new quote opens: every input cell empty but those a column's default fills, every output
   a dash, every Chart with nothing but defaults to chart, each grid showing the rows it

@@ -161,7 +161,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // refused, text parsed into dates with a format, membership values typed by the kind of
 // number their column holds, a failing step located by its line with a remedy) and the
 // row order every join states bring it to 1,688.8 KiB; 1,690 KiB restores about 1.2 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1690
+// A Collection's look set as a Table's (its text, labels, boxes, frame and each field's own
+// look, the panel's Collection look and the form's validators for it, in the lazy workbench
+// chunks) brings it to 1,691.0 KiB; 1,692 KiB restores about 1 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1692
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

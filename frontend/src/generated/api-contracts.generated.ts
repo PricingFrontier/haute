@@ -2600,9 +2600,10 @@ export interface TableInputWidget {
   y: number;
 }
 /**
- * How one of a Table's columns looks, its field by table and column id: each colour the
- * Table's own while None, its values and label placed as its type puts them while ``auto``,
- * and as wide as the grid makes it while ``width`` is None.
+ * How one of a Table's columns, or one of a Collection's fields, looks, its field by table
+ * and column id: each colour the component's own while None, its values and label placed as
+ * its type puts them while ``auto``, and, while ``width`` is None, a Table's column as wide
+ * as the grid makes it and a Collection's box as wide as the Collection makes it.
  */
 export interface ColumnLook {
   align: 'auto' | 'left' | 'center' | 'right';
@@ -2624,15 +2625,31 @@ export interface FieldRef {
 }
 /**
  * A Collection: boxes showing columns of one-row schema tables, ``columns`` across, with
- * a gap across it wherever one of its ``spacers`` sits among them.
+ * a gap across it wherever one of its ``spacers`` sits among them, each of its fields given
+ * a look of its own looking as its ``column_looks`` entry says.
  */
 export interface CollectionWidget {
+  box_color: string | null;
+  box_style: 'solid' | 'dashed' | 'dotted';
+  box_weight: 'thin' | 'medium' | 'thick';
+  box_width: number | null;
+  column_looks: ColumnLook[];
   columns: number;
   density: 'compact' | 'comfortable';
   fields: FieldRef[];
+  font_size: 10 | 11 | 12 | 13 | 14 | 16 | 18;
   frame: boolean;
+  frame_color: string | null;
+  frame_weight: 'thin' | 'medium' | 'thick';
   h: number;
+  header: 'caps' | 'plain';
+  header_bold: boolean;
+  header_color: string | null;
+  header_font_color: string | null;
+  header_font_size: 10 | 11 | 12 | 13 | 14 | 16 | 18 | null;
+  header_wrap: boolean;
   id: string;
+  label_width: number | null;
   labels: 'above' | 'beside';
   show_when: ShowWhen;
   spacers: number[];

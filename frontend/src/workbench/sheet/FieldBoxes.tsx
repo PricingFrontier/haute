@@ -1,12 +1,47 @@
-/** A Collection on a sheet: its fields as labelled boxes, its columns across (specs/workbench). */
-import { Fragment } from "react"
+/** A Collection on a sheet: its fields as labelled boxes, its columns across, drawn as its look says (specs/workbench). */
+import { type CSSProperties, Fragment } from "react"
 import { cellKey } from "../../utils/sheetValues"
 import { columnKey } from "../../utils/sheetVisibility"
-import { type CollectionOptions, type ShownField } from "../../utils/workbenchForm"
+import { type CollectionOptions, type ColumnLookOptions, type ShownField } from "../../utils/workbenchForm"
 import { useSheetValues } from "../useSheetValues"
 import { Cell, FieldLabel } from "./Cell"
-import { BOX_GAPS, ROW_HEIGHT, SPACER_HEIGHT, fieldLabel, fieldTitle, fillable, labelColor, shown, typeHere } from "./fieldCells"
+import {
+  BOX_GAPS,
+  LINE_WIDTH,
+  ROW_HEIGHT,
+  SPACER_HEIGHT,
+  fieldLabel,
+  fieldTitle,
+  fillable,
+  headerText,
+  labelFont,
+  looksByKey,
+  shown,
+  typeHere,
+} from "./fieldCells"
 import { type SheetColours } from "./sheetColours"
+
+/** How much of its field a label beside its box takes, while neither sets a width. */
+const LABEL_SHARE = "40%"
+
+/** A label or a box beside the other taking what the other leaves of its field. */
+const TAKES_THE_REST: CSSProperties = { flexGrow: 1, flexBasis: 0, minWidth: 0 }
+
+/** Where a box narrower than its field sits under its label, by the field's alignment: at the field's start while it sets none. */
+const BOX_PLACE: Record<ColumnLookOptions["align"], CSSProperties> = {
+  auto: {},
+  left: {},
+  center: { marginLeft: "auto", marginRight: "auto" },
+  right: { marginLeft: "auto" },
+}
+
+/** Where an output's value sits across its box, by its field's alignment: on the right, as a number's does, while it sets none. */
+const VALUE_PLACE: Record<ColumnLookOptions["align"], CSSProperties["justifyContent"]> = {
+  auto: "flex-end",
+  left: "flex-start",
+  center: "center",
+  right: "flex-end",
+}
 
 /**
  * One-row columns as boxes, `columns` across and as many rows as it takes, each labelled
@@ -14,6 +49,15 @@ import { type SheetColours } from "./sheetColours"
  * gap across its whole width where each of its spacers sits, the fields after it starting a
  * new row. An output column shows what pricing gave its table's one row, dimmed while the
  * price is for other values, and a dash before the first answer or after pricing fails.
+ *
+ * Its look, as a Table's is set: its values' size; its labels' size, case, weight, wrapping,
+ * fill and colour, a filled label padded as a cell and, beside its box, as tall as it, and
+ * beside their boxes their width, else two fifths of a field, or what a box of a set width
+ * leaves; its boxes' borders' style, weight and colour, input and output boxes alike, and
+ * their width, never wider than the field, a narrower box under its label placed as its
+ * field aligns; and each field's own look over the Collection's: its label's fill and
+ * colour, its box's fill, over the input and output fills, its colour and weight, where its
+ * label and value sit across it, and its box's width.
  */
 export function FieldBoxes({
   fields,
@@ -30,6 +74,11 @@ export function FieldBoxes({
   const stale = price !== null && price.basis !== basis
   const height = ROW_HEIGHT[options.density]
   const beside = options.labels === "beside"
+  const label = headerText(options)
+  const lookOf = looksByKey(options)
+  // Its boxes' borders, in its own colour while it sets one, else the theme's.
+  const border = `${LINE_WIDTH[options.box_weight]}px ${options.box_style} ${options.box_color ?? colours.frame}`
+  const boxStyle = (fill: string | null): CSSProperties => ({ border, ...(fill === null ? {} : { background: fill }) })
   // The spacers before the field at `at`, or after the last field for the end.
   const spacersAt = (at: number) =>
     options.spacers.flatMap((place, n) =>
@@ -44,26 +93,48 @@ export function FieldBoxes({
     >
       {fields.map(({ key, found }, index) => {
         const priced = found !== null && found.table.role === "output" ? price?.tables[found.table.name]?.[0]?.[found.column.name] : undefined
+        const look = lookOf(key)
+        const fill = look.header_color ?? options.header_color
+        const across: CSSProperties = look.align === "auto" ? {} : { textAlign: look.align }
+        // Its box's width: its field's, else the Collection's, else what its label leaves.
+        const width = look.width ?? options.box_width
+        // Beside its box, a label is as wide as the Collection sets, else two fifths of its
+        // field while its box has no width, else what the box leaves.
+        const labelPlace: CSSProperties = !beside
+          ? {}
+          : options.label_width !== null
+            ? { width: options.label_width, flexShrink: 0 }
+            : width === null
+              ? { width: LABEL_SHARE, flexShrink: 0 }
+              : TAKES_THE_REST
+        // A box of a set width is exactly that wide, but never wider than its field.
+        const boxPlace: CSSProperties =
+          width === null ? (beside ? TAKES_THE_REST : {}) : { width, minWidth: 0, maxWidth: "100%", ...(beside ? {} : BOX_PLACE[look.align]) }
+        const valueText: CSSProperties = { fontSize: options.font_size, ...(look.bold ? { fontWeight: 600 } : {}), ...across }
         return (
           <Fragment key={key}>
             {spacersAt(index)}
             <div className={`flex min-w-0 ${beside ? "items-center gap-2" : "flex-col gap-1"}`} title={fieldTitle(found)}>
-              <span className={`truncate text-xs ${beside ? "w-2/5 shrink-0" : ""}`} style={{ color: labelColor(found, colours.font) }}>
-                <FieldLabel found={found} />
+              <span
+                data-testid={`label-${key}`}
+                className={`flex min-w-0 items-center ${fill === null ? "" : `rounded-md px-2.5 ${beside ? "self-stretch" : "py-1"}`}`}
+                style={{ ...labelPlace, ...(fill === null ? {} : { background: fill }), color: labelFont(found, look, options, colours.font) }}
+              >
+                <span className={`min-w-0 flex-1 ${label.className} ${options.header_wrap ? "break-words" : "truncate"}`} style={{ ...label.style, ...across }}>
+                  <FieldLabel found={found} />
+                </span>
               </span>
               {fillable(found) ? (
-                <div
-                  className={`pointer-events-auto ${beside ? "min-w-0 flex-1" : ""}`}
-                  onPointerDown={typeHere}
-                >
+                <div className="pointer-events-auto" style={boxPlace} onPointerDown={typeHere}>
                   <Cell
                     found={found}
                     value={rows[found.table.id]?.[0]?.[found.column.id]}
                     onChange={(value) => setCell(found.table.id, 0, found.column.id, value)}
                     label={fieldLabel(found)}
                     height={height}
-                    boxed
-                    colours={colours}
+                    box={boxStyle(look.cell_color ?? colours.input)}
+                    font={look.font_color ?? colours.font}
+                    textStyle={valueText}
                     problem={problems[cellKey(found.table.id, 0, found.column.id)] ?? null}
                     disabled={readOnly || locked.has(columnKey(found.table.id, found.column.id))}
                   />
@@ -72,11 +143,14 @@ export function FieldBoxes({
                 <div
                   data-testid={`priced-${key}`}
                   data-stale={stale && priced !== undefined ? "true" : undefined}
-                  className={`flex ${height} items-center justify-end rounded-md px-2.5 text-xs tabular-nums transition-opacity ${beside ? "min-w-0 flex-1" : ""}`}
+                  className={`flex ${height} items-center rounded-md px-2.5 tabular-nums transition-opacity`}
                   style={{
-                    border: `1px solid ${colours.frame}`,
-                    background: colours.output ?? "var(--bg-elevated)",
-                    color: priced === undefined || priced === null ? "var(--text-secondary)" : (colours.font ?? "var(--text-primary)"),
+                    ...boxPlace,
+                    ...boxStyle(look.cell_color ?? colours.output ?? "var(--bg-elevated)"),
+                    ...valueText,
+                    justifyContent: VALUE_PLACE[look.align],
+                    // The field's own font on anything it shows, a dash too.
+                    color: look.font_color ?? (priced === undefined || priced === null ? "var(--text-secondary)" : (colours.font ?? "var(--text-primary)")),
                     opacity: stale ? 0.5 : 1,
                   }}
                 >

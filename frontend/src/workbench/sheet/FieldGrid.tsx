@@ -4,7 +4,6 @@ import { type CSSProperties } from "react"
 import { cellKey, formattedNumber, presetColumn } from "../../utils/sheetValues"
 import { columnKey } from "../../utils/sheetVisibility"
 import {
-  PLAIN_COLUMN_LOOK,
   answeredOutputs,
   gridInputTables,
   linedUpOutputs,
@@ -18,7 +17,7 @@ import {
 import { isNumeric } from "../columnTypes"
 import { useSheetValues } from "../useSheetValues"
 import { Cell, FieldLabel } from "./Cell"
-import { type Fillable, type Found, LINE_WIDTH, ROW_HEIGHT, fieldLabel, fieldTitle, fillable, labelColor, shown, typeHere } from "./fieldCells"
+import { type Fillable, type Found, LINE_WIDTH, ROW_HEIGHT, fieldLabel, fieldTitle, fillable, headerText, labelFont, looksByKey, shown, typeHere } from "./fieldCells"
 import { type SheetColours } from "./sheetColours"
 
 /** How wide a transposed grid's column of groups is, so its labels stay in view beside it. */
@@ -158,13 +157,7 @@ export function FieldGrid({
   const rowClass = `transition-colors ${striped ? "even:bg-[var(--chip-rest)] " : ""}hover:bg-[var(--bg-hover)]`
   const headRule = `${weight}px solid ${ruleColour}`
   const headFill = options.header_color ?? (options.frame ? colours.componentFill : colours.sheetFill) ?? "var(--bg-elevated)"
-  // Its labels: as large as its text, or a pixel smaller in capitals, unless it sets their size.
-  const caps = options.header === "caps"
-  const headText = caps ? "tracking-wider uppercase" : ""
-  const headStyle: CSSProperties = {
-    fontSize: options.header_font_size ?? (caps ? options.font_size - 1 : options.font_size),
-    fontWeight: options.header_bold ? 600 : 400,
-  }
+  const { className: headText, style: headStyle } = headerText(options)
   const wrap = options.header_wrap
   const turn = options.header_orientation === "horizontal" ? null : TURNS[options.header_orientation]
   // A rule along the inner edge of a header that stays in view is its cells' shadow: a table's
@@ -173,17 +166,13 @@ export function FieldGrid({
   // The fields under their groups, while it shows them and a field it shows is in one.
   const runs = options.groups && fields.some(({ found }) => (found?.column.group ?? "") !== "") ? groupRuns(fields) : null
   const groupColour = options.header_font_color ?? colours.font ?? "var(--text-secondary)"
-  // Each column's own look, by its field's key, or the plain one.
-  const looks = new Map(options.column_looks.map((look) => [`${look.table}:${look.column}`, look]))
-  const lookOf = (key: string): ColumnLookOptions => looks.get(key) ?? PLAIN_COLUMN_LOOK
+  const lookOf = looksByKey(options)
   // Every column set to a width: the grid is as wide as they are, not its frame.
   const sized = !transposed && fields.length > 0 && fields.every(({ key }) => lookOf(key).width !== null)
   // A column of a set width, unless transposed: exactly that wide.
   const widthOf = (look: ColumnLookOptions): CSSProperties =>
     transposed || look.width === null ? {} : { width: look.width, minWidth: look.width, maxWidth: look.width }
-  // A field's label colour: the column's, else the Table's, else the theme's or its role's; amber while it is gone.
-  const labelColour = (found: Found, look: ColumnLookOptions): string =>
-    found === null ? labelColor(found, null) : (look.header_font_color ?? options.header_font_color ?? labelColor(found, colours.font))
+  const labelColour = (found: Found, look: ColumnLookOptions): string => labelFont(found, look, options, colours.font)
   // A field's label, turned as the header says: a turned label wraps only past a set length.
   const labelText = (found: Found) =>
     turn === null ? (
@@ -235,8 +224,8 @@ export function FieldGrid({
             onChange={(value) => setValue(found.table.id, at, found.column.id, value)}
             label={`${fieldLabel(found)} row ${row + 1}`}
             height={height}
-            boxed={false}
-            colours={look.font_color === null ? colours : { ...colours, font: look.font_color }}
+            box={null}
+            font={look.font_color ?? colours.font}
             textStyle={text}
             problem={problems[cellKey(found.table.id, at, found.column.id)] ?? null}
             disabled={readOnly || locked.has(columnKey(found.table.id, found.column.id))}

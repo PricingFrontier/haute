@@ -190,8 +190,8 @@ Select a component to open its properties on the right: its title, when it shows
 [Showing sheets, sections and components conditionally](#showing-sheets-sections-and-components-conditionally)), its layout (the rows a
 Table starts with, whether they are **fixed**, with no Add row or delete, and whether it is
 **transposed**, or a Collection's columns across), a Table's **look** (see
-[A Table's look](#a-tables-look)), a Collection's **look** (labels above or beside the boxes; compact or comfortable
-boxes; a frame or none), the **order** of the fields it shows (drag, or
+[A Table's look](#a-tables-look)), a Collection's **look** (see
+[A Collection's look](#a-collections-look)), the **order** of the fields it shows (drag, or
 Alt+Up and Alt+Down), and its **fields**, ticked from the schema tables of its kind. A
 Chart's settings are its **Type** (Column, Line, Area or Pie), **Rows** (what labels the
 rows of many-row tables, or Row number), its **Legend**, and whether it is **Stacked**,
@@ -292,6 +292,35 @@ toolbar; a colour you set on a Table, or on one of its columns, is drawn over th
 On a transposed Table, a column's look applies along its field's line: its header colours
 on the line's label and its cell colours across the line. Widths don't apply to a
 transposed Table, so **Width** is hidden there.
+
+### A Collection's look
+
+A Collection's **Display** pane sets its look the way a Table's does. Any colour you leave
+on **Automatic** follows the sheets' colours from **Display** in the toolbar; a colour you
+set on a Collection, or on one of its fields, is drawn over them.
+
+- **Look**: compact or comfortable boxes, and the **Text size** of the values in them.
+- **Labels**: their **Position**, **Above** or **Beside** the boxes; while beside, their
+  **Width** in pixels (blank for Auto, from 24 to 1000); **As written** or in **Capitals**,
+  their **Size** (**Auto** is the values' size, a pixel smaller in capitals), a **Fill** and
+  **Font** colour, **Bold**, and **Wrap**. A label with a fill is drawn as a shaded cell,
+  as tall as its box when it sits beside it. Wrapped labels break between words onto more
+  lines rather than being cut off.
+- **Boxes**: their borders' **Style** (solid, dashed or dotted), **Weight** (thin, medium or
+  thick) and **Colour**, and their **Width** in pixels (blank for Auto).
+- **Frame**: whether it is framed and, if so, the frame's **Weight** and **Colour** (the
+  rule under its title takes the colour too).
+- **Fields**: click a field to open its own look: its label's **Fill** and **Font**, its
+  box's **Fill** and **Font**, **Align** (Auto puts numbers on the right), its box's
+  **Width** in pixels (blank for the Collection's) and **Bold**. **Clear** takes the
+  field's look away; a dot marks a field that has one. A field's fill covers the output
+  shade in its box. When you stop showing a field, its look goes with it.
+
+With labels beside the boxes and both widths on Auto, each label takes two fifths of its
+field and its box the rest. Give the boxes a width and the labels take the rest instead:
+for a Collection of tick boxes in one column, set the boxes' **Width** to about 40 for wide
+labels and small boxes. A box never grows wider than its field. With labels above, a box
+narrower than its field sits at the field's left, or where the field's **Align** puts it.
 
 ## Showing sheets, sections and components conditionally
 

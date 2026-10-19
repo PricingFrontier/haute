@@ -1,7 +1,7 @@
 /**
  * A component's cells (specs/workbench): the sample typed into a Collection's boxes and a
  * Table's grid, rows added and deleted across the tables a grid shows, a grid drawn as its
- * Table's options say, an output box showing what pricing the sample gave, dimmed once the
+ * Table's options say and boxes as their Collection's look says, an output box showing what pricing the sample gave, dimmed once the
  * sample has moved on, a Table's output columns matched to its rows by key, the cells that
  * break their column's rules marked once anything is typed, while building a new quote's
  * cells, empty and inert, the underwriter app's quote typed apart from the sample, and a
@@ -406,6 +406,130 @@ describe("WidgetBody", () => {
     expect(screen.getByTestId("priced-premiums:premiums.premium")).toHaveClass("h-7")
     expect(field().parentElement).toHaveClass("gap-y-2")
     expect(framed.style.border).toBe("")
+  })
+
+  it("draws a Collection's own look over the sheets' colours, its text, its labels, its boxes and its frame, and a field's own look over the Collection's", () => {
+    const state = { table: "policy", column: "policy.state" }
+    const premium = { table: "premiums", column: "premiums.premium" }
+    let form = toggleField(sheetForm(), "w_boxes", premium)
+    form.theme = { ...BLANK_THEME, border_color: "#D97706", font_color: "#2563EB", input_cell_color: "#DC2626" }
+    form = updateWidget(form, "w_boxes", {
+      labels: "beside",
+      font_size: 14,
+      header: "caps",
+      header_font_size: 16,
+      header_bold: true,
+      header_wrap: true,
+      header_color: "#1E293B",
+      header_font_color: "#FFFFFF",
+      label_width: 160,
+      box_style: "dashed",
+      box_weight: "thick",
+      box_color: "#000000",
+      frame_color: "#9333EA",
+      frame_weight: "medium",
+    })
+    loadForm(form)
+    const { container } = renderBody("w_boxes")
+    const label = () => screen.getByTestId("label-policy:policy.state")
+    const box = () => screen.getByRole("combobox", { name: "State" })
+    const output = () => screen.getByTestId("priced-premiums:premiums.premium")
+
+    // Its frame in its own colour and weight, the rule under its title in its colour.
+    const root = container.firstElementChild as HTMLElement
+    expect(root.style.border).toBe("2px solid rgb(147, 51, 234)")
+    expect(screen.getByText("Policy").style.borderBottom).toBe("1px solid rgb(147, 51, 234)")
+    // Its labels filled, drawn as a cell as tall as the box beside it, in its font, its width,
+    // capitals, size and weight, wrapping rather than cut off.
+    expect(label()).toHaveStyle({ background: "#1E293B", color: "#FFFFFF", width: "160px" })
+    expect(label()).toHaveClass("rounded-md", "px-2.5", "self-stretch")
+    const labelText = label().firstElementChild as HTMLElement
+    expect(labelText).toHaveClass("uppercase", "break-words")
+    expect(labelText).not.toHaveClass("truncate")
+    expect(labelText).toHaveStyle({ fontSize: "16px", fontWeight: "600" })
+    // Its boxes, input and output alike, bordered in its own style, weight and colour over the
+    // theme's, their values at its size; an input box in the input cells' fill and the font.
+    expect(box().style.border).toBe("3px dashed rgb(0, 0, 0)")
+    expect(output().style.border).toBe("3px dashed rgb(0, 0, 0)")
+    expect(box()).toHaveStyle({ fontSize: "14px", background: "#DC2626", color: "#2563EB" })
+    expect(output()).toHaveStyle({ fontSize: "14px", justifyContent: "flex-end" })
+    cleanup()
+
+    // A field's own look over the Collection's: its label's fill and font, its box's fill, over
+    // the input and output fills, its font, weight and place.
+    form = setColumnLook(form, "w_boxes", state, {
+      header_color: "#DC2626",
+      header_font_color: "#000000",
+      cell_color: "#D1D5DB",
+      font_color: "#059669",
+      bold: true,
+      align: "right",
+    })
+    loadForm(setColumnLook(form, "w_boxes", premium, { cell_color: "#FFFFFF", font_color: "#000000", align: "left" }))
+    renderBody("w_boxes")
+    expect(label()).toHaveStyle({ background: "#DC2626", color: "#000000" })
+    expect(label().firstElementChild).toHaveStyle({ textAlign: "right" })
+    expect(box()).toHaveStyle({ background: "#D1D5DB", color: "#059669", fontWeight: "600", textAlign: "right" })
+    expect(output()).toHaveStyle({ background: "#FFFFFF", color: "#000000", justifyContent: "flex-start" })
+    cleanup()
+
+    // Unfilled, as by default, a label is its text alone, cut off, as written and not bold.
+    loadForm(sheetForm())
+    renderBody("w_boxes")
+    expect(label()).not.toHaveClass("rounded-md")
+    expect(label().style.background).toBe("")
+    expect(label().firstElementChild).toHaveClass("truncate")
+    expect(label().firstElementChild).toHaveStyle({ fontSize: "12px", fontWeight: "400" })
+  })
+
+  it("sets a Collection's labels and boxes to their widths: a box of a set width leaves the rest to its label, and sits under its label as its field aligns", () => {
+    const state = { table: "policy", column: "policy.state" }
+    const premium = { table: "premiums", column: "premiums.premium" }
+    const base = updateWidget(toggleField(sheetForm(), "w_boxes", premium), "w_boxes", { labels: "beside" })
+    const label = () => screen.getByTestId("label-policy:policy.state")
+    // The box an input's control sits in, and an output's box.
+    const box = () => screen.getByRole("combobox", { name: "State" }).parentElement as HTMLElement
+    const output = () => screen.getByTestId("priced-premiums:premiums.premium")
+    const draw = (patch: WidgetPatch, form = base) => {
+      cleanup()
+      loadForm(updateWidget(form, "w_boxes", patch))
+      renderBody("w_boxes")
+    }
+
+    // Neither set: two fifths of the field for its label, the rest for its box.
+    draw({})
+    expect(label().style.width).toBe("40%")
+    expect(box().style.width).toBe("")
+    expect(box().style.flexGrow).toBe("1")
+    // A box of a set width, an output's too, leaves the rest to its label.
+    draw({ box_width: 96 })
+    expect(box()).toHaveStyle({ width: "96px", maxWidth: "100%" })
+    expect(output()).toHaveStyle({ width: "96px" })
+    expect(label().style.width).toBe("")
+    expect(label().style.flexGrow).toBe("1")
+    // A label of a set width keeps it; a field's own width wins over the Collection's.
+    draw({ box_width: 96, label_width: 200 }, setColumnLook(base, "w_boxes", state, { width: 64 }))
+    expect(label().style.width).toBe("200px")
+    expect(box().style.width).toBe("64px")
+    expect(output().style.width).toBe("96px")
+
+    // Above its box, a narrower box sits at the field's start, else as its field aligns.
+    draw({ labels: "above", box_width: 96 })
+    expect(box().style.marginLeft).toBe("")
+    draw({ labels: "above", box_width: 96 }, setColumnLook(base, "w_boxes", state, { align: "right" }))
+    expect(box().style.marginLeft).toBe("auto")
+    expect(box().style.marginRight).toBe("")
+    draw({ labels: "above", box_width: 96 }, setColumnLook(base, "w_boxes", state, { align: "center" }))
+    expect(box()).toHaveStyle({ marginLeft: "auto", marginRight: "auto" })
+  })
+
+  it("places a Collection's tick box across its box as its field aligns", () => {
+    const cover = { table: "policy", column: "policy.cover" }
+    loadForm(setColumnLook(updateWidget(coverForm(), "w_boxes", { box_width: 48 }), "w_boxes", cover, { align: "center" }))
+    renderBody("w_boxes")
+    const tick = screen.getByRole("checkbox", { name: "Cover" })
+    expect(tick.parentElement).toHaveStyle({ justifyContent: "center" })
+    expect(tick.parentElement?.parentElement).toHaveStyle({ width: "48px" })
   })
 
   it("leaves a gap across a Collection's whole width where each of its spacers sits, the fields after it starting a new row", () => {

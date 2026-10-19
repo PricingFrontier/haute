@@ -23,9 +23,9 @@ export default function WidgetBody({ widget, fields }: { widget: Widget; fields:
   if (widget.type === "heading") return <HeadingBody widget={widget} colours={colours} />
   // A Table or a Collection without its frame sits on the sheet as its title and fields alone.
   const framed = widget.type === "chart" || widget.frame
-  // A Table's frame, and the rule under its title, in its own colour and weight while it sets them.
-  const frame = widget.type === "tableInput" ? (widget.frame_color ?? colours.frame) : colours.frame
-  const frameWidth = widget.type === "tableInput" ? LINE_WIDTH[widget.frame_weight] : 1
+  // A Table's or a Collection's frame, and the rule under its title, in its own colour and weight while it sets them.
+  const frame = widget.type === "chart" ? colours.frame : (widget.frame_color ?? colours.frame)
+  const frameWidth = widget.type === "chart" ? 1 : LINE_WIDTH[widget.frame_weight]
   return (
     <div
       className={`flex h-full flex-col overflow-hidden ${framed ? "rounded-lg" : ""}`}

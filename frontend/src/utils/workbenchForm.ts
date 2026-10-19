@@ -62,10 +62,37 @@ export type TableOptions = Pick<
   | "frame_weight"
   | "column_looks"
 >
-/** How one of a Table's columns looks: a `ColumnLook` without the field it is for. */
+/** How one of a Table's columns, or one of a Collection's fields, looks: a `ColumnLook` without the field it is for. */
 export type ColumnLookOptions = Omit<ColumnLook, "table" | "column">
-/** How a Collection's boxes look, and the gaps among them. */
-export type CollectionOptions = Pick<Extract<Widget, { type: "collection" }>, "labels" | "density" | "frame" | "spacers">
+/**
+ * How a Collection's boxes look, and the gaps among them: where its labels sit, how dense
+ * and whether framed, and, as a Table's are set, its text, its labels, its boxes' borders
+ * and widths, its frame and its fields' own looks.
+ */
+export type CollectionOptions = Pick<
+  Extract<Widget, { type: "collection" }>,
+  | "labels"
+  | "density"
+  | "frame"
+  | "font_size"
+  | "header"
+  | "header_font_size"
+  | "header_bold"
+  | "header_wrap"
+  | "header_color"
+  | "header_font_color"
+  | "label_width"
+  | "box_style"
+  | "box_weight"
+  | "box_color"
+  | "box_width"
+  | "frame_color"
+  | "frame_weight"
+  | "column_looks"
+  | "spacers"
+>
+/** The look a Table and a Collection share: its density, its frame, its text, its labels' and its columns' own looks. */
+export type SharedLook = Pick<TableOptions, keyof TableOptions & keyof CollectionOptions>
 /** A place in a component's order: one of its fields, or one of a Collection's spacers. */
 export type OrderItem = { kind: "field"; field: FieldRef } | { kind: "spacer" }
 /** What names a Chart's rows, and how it draws. */
@@ -645,7 +672,11 @@ export const TABLE_OPTIONS: Readonly<TableOptions> = {
   column_looks: [],
 }
 
-/** A Table column's look before any is given: the Table's own colours, bold off, placed as its type puts it and as wide as the grid makes it. */
+/**
+ * A Table column's or a Collection field's look before any is given: the component's own
+ * colours, bold off, placed as its type puts it and as wide as the grid, or the Collection,
+ * makes it.
+ */
 export const PLAIN_COLUMN_LOOK: Readonly<ColumnLookOptions> = {
   header_color: null,
   header_font_color: null,
@@ -657,35 +688,37 @@ export const PLAIN_COLUMN_LOOK: Readonly<ColumnLookOptions> = {
 }
 
 /**
- * How narrow and how wide a Table's column can be set, in pixels, as the server's form
- * takes them (`COLUMN_WIDTH_MIN` and `COLUMN_WIDTH_MAX` in `src/haute/_workbench_form.py`).
+ * How narrow and how wide a Table's column, or a Collection's labels and boxes, can be set,
+ * in pixels, as the server's form takes them (`COLUMN_WIDTH_MIN` and `COLUMN_WIDTH_MAX` in
+ * `src/haute/_workbench_form.py`).
  */
 export const COLUMN_WIDTH_MIN = 24
 export const COLUMN_WIDTH_MAX = 1000
 
-/** The look of a Table's column, its field's: its own, or the plain one while it has none. */
-export const columnLook = (widget: Pick<TableOptions, "column_looks">, field: FieldRef): ColumnLookOptions => {
+/** The look of a Table's column or a Collection's field: its own, or the plain one while it has none. */
+export const columnLook = (widget: Pick<SharedLook, "column_looks">, field: FieldRef): ColumnLookOptions => {
   const look = widget.column_looks.find((at) => at.table === field.table && at.column === field.column)
   if (look === undefined) return PLAIN_COLUMN_LOOK
   const { table: _table, column: _column, ...options } = look
   return options
 }
 
-/** Whether a column look changes nothing, so no Table holds it. */
+/** Whether a column look changes nothing, so no Table or Collection holds it. */
 const plainLook = (look: ColumnLookOptions): boolean =>
   (Object.keys(PLAIN_COLUMN_LOOK) as (keyof ColumnLookOptions)[]).every((key) => look[key] === PLAIN_COLUMN_LOOK[key])
 
 /**
- * The form with a Table's column, one it shows, looking as `patch` says over its look as it
- * was; a look that comes to change nothing is taken away, as `clear` takes it away whatever
- * it holds. A new look goes after the others, in the file's order.
+ * The form with a Table's column or a Collection's field, one it shows, looking as `patch`
+ * says over its look as it was; a look that comes to change nothing is taken away, as
+ * `clear` takes it away whatever it holds. A new look goes after the others, in the file's
+ * order.
  */
 export const setColumnLook = (spec: FormSpec, widgetId: string, field: FieldRef, patch: Partial<ColumnLookOptions> | "clear"): FormSpec =>
   edit(spec, (draft) => {
     const widget = widgetOf(draft, widgetId)
-    if (widget.type !== "tableInput") throw new Error("Only a Table has column looks")
+    if (widget.type !== "tableInput" && widget.type !== "collection") throw new Error("Only a Table or a Collection has column looks")
     if (!widget.fields.some((shown) => shown.table === field.table && shown.column === field.column)) {
-      throw new Error(`The Table does not show ${field.table}.${field.column}`)
+      throw new Error(`The ${widget.type === "collection" ? "Collection" : "Table"} does not show ${field.table}.${field.column}`)
     }
     const at = widget.column_looks.findIndex((look) => look.table === field.table && look.column === field.column)
     const next = patch === "clear" ? PLAIN_COLUMN_LOOK : { ...columnLook(widget, field), ...patch }
@@ -698,8 +731,34 @@ export const setColumnLook = (spec: FormSpec, widgetId: string, field: FieldRef,
     else widget.column_looks.push(look)
   })
 
-/** A new Collection's options: its labels above its boxes, comfortable, framed and with no spacers among them. */
-export const COLLECTION_OPTIONS: Readonly<CollectionOptions> = { labels: "above", density: "comfortable", frame: true, spacers: [] }
+/**
+ * A new Collection's options: its labels above its boxes, comfortable and framed; 12px
+ * text, its labels the same size, as written, neither bold nor wrapped, in the theme's
+ * colours and two fifths of a field wide beside their boxes; its boxes' borders thin, solid
+ * and in the theme's colour, each box as wide as its label leaves; a thin frame in the
+ * theme's colour; and no field with a look of its own and no spacers among them.
+ */
+export const COLLECTION_OPTIONS: Readonly<CollectionOptions> = {
+  labels: "above",
+  density: "comfortable",
+  frame: true,
+  font_size: 12,
+  header: "plain",
+  header_font_size: null,
+  header_bold: false,
+  header_wrap: false,
+  header_color: null,
+  header_font_color: null,
+  label_width: null,
+  box_style: "solid",
+  box_weight: "thin",
+  box_color: null,
+  box_width: null,
+  frame_color: null,
+  frame_weight: "thin",
+  column_looks: [],
+  spacers: [],
+}
 
 /** A new Chart's options: its rows numbered, columns, upright, unstacked, its legend at the bottom and no data labels. */
 export const CHART_OPTIONS: Readonly<ChartOptions> = {
@@ -723,8 +782,8 @@ export function createWidget(type: WidgetType, rect: Rect): Widget {
   const showing = { title: "", fields: [] as FieldRef[], show_when: alwaysShown() }
   switch (type) {
     case "collection":
-      // Spacers of its own, not the options' one list.
-      return { ...placed, type, ...showing, columns: 3, ...COLLECTION_OPTIONS, spacers: [] }
+      // Column looks and spacers of its own, not the options' one lists.
+      return { ...placed, type, ...showing, columns: 3, ...COLLECTION_OPTIONS, column_looks: [], spacers: [] }
     case "chart":
       return { ...placed, type, ...showing, ...CHART_OPTIONS }
     case "tableInput":
@@ -788,8 +847,8 @@ export function addWidgetInFreePlace(spec: FormSpec, sectionId: string, type: Wi
 
 /**
  * What any component can be given; `rows` and the Table's options are a Table's alone,
- * `columns` and the Collection's options a Collection's, but for the `density` and `frame`
- * the two share, the Chart's options a Chart's, and `text`, `description` and the
+ * `columns` and the Collection's options a Collection's, but for the look the two share
+ * (`SharedLook`), the Chart's options a Chart's, and `text`, `description` and the
  * Heading's options a Heading's, which has no `title` or `fields`.
  */
 export type WidgetPatch = Partial<Rect> & {
@@ -805,8 +864,8 @@ export type WidgetPatch = Partial<Rect> & {
   Partial<ChartOptions> &
   Partial<HeadingOptions>
 
-/** What a Table and a Collection both have: how dense they are, and whether they are framed. */
-const TABLE_OR_COLLECTION = ["density", "frame"]
+/** What a Table and a Collection both have: the keys both kinds' options hold (`SharedLook`). */
+const TABLE_OR_COLLECTION = Object.keys(TABLE_OPTIONS).filter((key) => key in COLLECTION_OPTIONS)
 const TABLE_ONLY = ["rows", ...Object.keys(TABLE_OPTIONS).filter((key) => !TABLE_OR_COLLECTION.includes(key))]
 const COLLECTION_ONLY = ["columns", ...Object.keys(COLLECTION_OPTIONS).filter((key) => !TABLE_OR_COLLECTION.includes(key))]
 const CHART_ONLY = Object.keys(CHART_OPTIONS)
@@ -1017,8 +1076,8 @@ function setOrder(widget: FieldsWidget, items: readonly OrderItem[]): void {
   }
   widget.fields = fields
   if (widget.type === "collection") widget.spacers = fields.length === 0 ? [] : spacers
-  // A column the Table stops showing loses its look.
-  if (widget.type === "tableInput") {
+  // A column the Table or the Collection stops showing loses its look.
+  if (widget.type === "tableInput" || widget.type === "collection") {
     widget.column_looks = widget.column_looks.filter((look) => fields.some((field) => field.table === look.table && field.column === look.column))
   }
 }

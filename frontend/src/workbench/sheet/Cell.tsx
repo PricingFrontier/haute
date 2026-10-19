@@ -6,7 +6,6 @@ import { formattedNumber } from "../../utils/sheetValues"
 import { type SampleValue } from "../../utils/workbenchForm"
 import { isNumeric } from "../columnTypes"
 import { BOX_CLASS, type Fillable, type Found, GRID_CELL_CLASS, PROBLEM_STYLE, fieldLabel } from "./fieldCells"
-import { type SheetColours } from "./sheetColours"
 
 /** A field's label, with a star when an input must be filled in and a mark naming its help. */
 export function FieldLabel({ found }: { found: Found }) {
@@ -24,6 +23,9 @@ export function FieldLabel({ found }: { found: Found }) {
   )
 }
 
+/** Where a tick box sits across its box, by its text's alignment: at the box's start while none is set. */
+const TICK_PLACE: Record<string, CSSProperties["justifyContent"]> = { center: "center", right: "flex-end" }
+
 /**
  * The control a field's type calls for, holding what the sheet has for it, or its
  * column's placeholder while empty. A number column's format shows a number while the
@@ -35,8 +37,8 @@ export function Cell({
   onChange,
   label,
   height,
-  boxed,
-  colours,
+  box,
+  font,
   textStyle,
   problem,
   disabled,
@@ -47,11 +49,11 @@ export function Cell({
   label: string
   /** Its height class: a Table's rows' or a Collection's boxes'. */
   height: string
-  /** In a Collection, a box of its own; in a Table, part of the grid. */
-  boxed: boolean
-  /** The sheets' colours: its text's and, in a box, the box's fill and border; a grid's cell takes the fill of the cell it is in. */
-  colours: SheetColours
-  /** How its value's text is set, in a Table: its size, its weight and where it sits across the cell. */
+  /** In a Collection, a box of its own, its border and its fill; in a Table, null: part of the grid, taking the fill of the cell it is in. */
+  box: CSSProperties | null
+  /** Its text's colour, or null for its own. */
+  font: string | null
+  /** How its value's text is set: its size, its weight and where it sits across its cell or its box. */
   textStyle?: CSSProperties
   /** What breaks the column's rules in the value, or null. */
   problem: string | null
@@ -61,11 +63,11 @@ export function Cell({
   const [typing, setTyping] = useState(false)
   const { column } = found
   const text = typeof value === "string" ? value : ""
+  const boxed = box !== null
   const className = `${boxed ? BOX_CLASS : GRID_CELL_CLASS} ${height}`
   const style = {
-    ...(boxed ? { ...INPUT_STYLE, border: `1px solid ${colours.frame}` } : {}),
-    ...(boxed && colours.input !== null ? { background: colours.input } : {}),
-    ...(colours.font === null ? {} : { color: colours.font }),
+    ...(boxed ? { ...INPUT_STYLE, ...box } : {}),
+    ...(font === null ? {} : { color: font }),
     ...textStyle,
     ...(problem === null ? {} : PROBLEM_STYLE),
   }
@@ -88,9 +90,9 @@ export function Cell({
         style={{ accentColor: "var(--accent)", ...(boxed || problem === null ? {} : PROBLEM_STYLE) }}
       />
     )
-    // In a Collection, in a box as the other fields are; in a grid, in its cell.
+    // In a Collection, in a box as the other fields are, placed across it as its text is; in a grid, in its cell.
     return boxed ? (
-      <div className={`flex w-full items-center rounded-md px-2.5 ${height}`} style={style}>
+      <div className={`flex w-full items-center rounded-md px-2.5 ${height}`} style={{ ...style, justifyContent: TICK_PLACE[String(textStyle?.textAlign)] }}>
         {tick}
       </div>
     ) : (

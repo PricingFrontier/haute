@@ -1,24 +1,19 @@
 /** A Table's, a Collection's or a Chart's panel, in its panes (specs/workbench). */
 import type { FormSpec } from "../../api/types"
-import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, LabelledRow, SelectRow, ValidatedTextField, wholeNumber } from "../../components/form"
+import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, LabelledRow, ValidatedTextField, wholeNumber } from "../../components/form"
 import useCollapsedSet from "../../hooks/useCollapsedSet"
 import PreviewPanelTabs, { type PreviewPanelTab } from "../../panels/PreviewPanelTabs"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { type WidgetPane } from "../../stores/useWorkbenchViewStore"
-import { chartGrain, COLLECTION_COLUMNS_MAX, fieldColumn, rowsShown, setTableRows, TABLE_ROWS_MAX, tableGrain, updateWidget, type CollectionOptions, type FieldsWidget } from "../../utils/workbenchForm"
+import { chartGrain, COLLECTION_COLUMNS_MAX, fieldColumn, rowsShown, setTableRows, TABLE_ROWS_MAX, tableGrain, updateWidget, type FieldsWidget } from "../../utils/workbenchForm"
 import ChartSettings from "../ChartSettings"
 import { ShowWhenEditor } from "../ShowWhenEditor"
 import { WIDGET_KINDS } from "../widgetKinds"
+import { CollectionLook } from "./CollectionLook"
 import { FieldOrder } from "./FieldOrder"
 import { Section } from "./Section"
 import { TableFields } from "./TableFields"
-import { DENSITIES } from "./lookChoices"
 import { TableLook } from "./TableLook"
-
-const LABEL_PLACES: ReadonlyArray<{ value: CollectionOptions["labels"]; label: string }> = [
-  { value: "above", label: "Above" },
-  { value: "beside", label: "Beside" },
-]
 
 /** A Table's and a Collection's panes: the data it shows and their order, and how it shows them. */
 const WIDGET_PANES = [
@@ -130,15 +125,7 @@ export function FieldsSettings({ form, widget }: { form: FormSpec; widget: Field
           </Section>
         )}
         {shows("display") && widget.type === "tableInput" && widget.fields.length > 0 && <TableLook form={form} widget={widget} />}
-        {shows("display") && widget.type === "collection" && widget.fields.length > 0 && (
-          <Section title="Look">
-            <SelectRow label="Labels" value={widget.labels} choices={LABEL_PLACES} onChange={(labels) => change((spec) => updateWidget(spec, widget.id, { labels }))} />
-            <SelectRow label="Density" value={widget.density} choices={DENSITIES} onChange={(density) => change((spec) => updateWidget(spec, widget.id, { density }))} />
-            <LabelledRow>
-              <ConfigCheckbox label="Frame" checked={widget.frame} onChange={(frame) => change((spec) => updateWidget(spec, widget.id, { frame }))} />
-            </LabelledRow>
-          </Section>
-        )}
+        {shows("display") && widget.type === "collection" && widget.fields.length > 0 && <CollectionLook form={form} widget={widget} />}
         {widget.type === "chart" && widget.fields.length > 0 && (
           <Section title="Chart">
             <ChartSettings form={form} widget={widget} />

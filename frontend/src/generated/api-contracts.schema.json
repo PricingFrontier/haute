@@ -732,8 +732,62 @@
     },
     "CollectionWidget": {
       "additionalProperties": false,
-      "description": "A Collection: boxes showing columns of one-row schema tables, ``columns`` across, with\na gap across it wherever one of its ``spacers`` sits among them.",
+      "description": "A Collection: boxes showing columns of one-row schema tables, ``columns`` across, with\na gap across it wherever one of its ``spacers`` sits among them, each of its fields given\na look of its own looking as its ``column_looks`` entry says.",
       "properties": {
+        "box_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Box Color"
+        },
+        "box_style": {
+          "default": "solid",
+          "enum": [
+            "solid",
+            "dashed",
+            "dotted"
+          ],
+          "title": "Box Style",
+          "type": "string"
+        },
+        "box_weight": {
+          "default": "thin",
+          "enum": [
+            "thin",
+            "medium",
+            "thick"
+          ],
+          "title": "Box Weight",
+          "type": "string"
+        },
+        "box_width": {
+          "anyOf": [
+            {
+              "maximum": 1000,
+              "minimum": 24,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Box Width"
+        },
+        "column_looks": {
+          "items": {
+            "$ref": "#/$defs/ColumnLook"
+          },
+          "title": "Column Looks",
+          "type": "array"
+        },
         "columns": {
           "default": 3,
           "maximum": 12,
@@ -757,19 +811,136 @@
           "title": "Fields",
           "type": "array"
         },
+        "font_size": {
+          "default": 12,
+          "enum": [
+            10,
+            11,
+            12,
+            13,
+            14,
+            16,
+            18
+          ],
+          "title": "Font Size",
+          "type": "integer"
+        },
         "frame": {
           "default": true,
           "title": "Frame",
           "type": "boolean"
+        },
+        "frame_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Frame Color"
+        },
+        "frame_weight": {
+          "default": "thin",
+          "enum": [
+            "thin",
+            "medium",
+            "thick"
+          ],
+          "title": "Frame Weight",
+          "type": "string"
         },
         "h": {
           "exclusiveMinimum": 0,
           "title": "H",
           "type": "integer"
         },
+        "header": {
+          "default": "plain",
+          "enum": [
+            "caps",
+            "plain"
+          ],
+          "title": "Header",
+          "type": "string"
+        },
+        "header_bold": {
+          "default": false,
+          "title": "Header Bold",
+          "type": "boolean"
+        },
+        "header_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Header Color"
+        },
+        "header_font_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Header Font Color"
+        },
+        "header_font_size": {
+          "anyOf": [
+            {
+              "enum": [
+                10,
+                11,
+                12,
+                13,
+                14,
+                16,
+                18
+              ],
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Header Font Size"
+        },
+        "header_wrap": {
+          "default": false,
+          "title": "Header Wrap",
+          "type": "boolean"
+        },
         "id": {
           "title": "Id",
           "type": "string"
+        },
+        "label_width": {
+          "anyOf": [
+            {
+              "maximum": 1000,
+              "minimum": 24,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label Width"
         },
         "labels": {
           "default": "above",
@@ -831,6 +1002,21 @@
         "labels",
         "density",
         "frame",
+        "font_size",
+        "header",
+        "header_font_size",
+        "header_bold",
+        "header_wrap",
+        "header_color",
+        "header_font_color",
+        "label_width",
+        "box_style",
+        "box_weight",
+        "box_color",
+        "box_width",
+        "frame_color",
+        "frame_weight",
+        "column_looks",
         "spacers"
       ],
       "title": "CollectionWidget",
@@ -856,7 +1042,7 @@
     },
     "ColumnLook": {
       "additionalProperties": false,
-      "description": "How one of a Table's columns looks, its field by table and column id: each colour the\nTable's own while None, its values and label placed as its type puts them while ``auto``,\nand as wide as the grid makes it while ``width`` is None.",
+      "description": "How one of a Table's columns, or one of a Collection's fields, looks, its field by table\nand column id: each colour the component's own while None, its values and label placed as\nits type puts them while ``auto``, and, while ``width`` is None, a Table's column as wide\nas the grid makes it and a Collection's box as wide as the Collection makes it.",
       "properties": {
         "align": {
           "default": "auto",

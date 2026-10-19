@@ -1,8 +1,16 @@
-/** What a component's fields and cells share on a sheet: the column each names, the input cells, their labels and titles, the rows' heights by density, and the values a field shows (specs/workbench). */
+/** What a component's fields and cells share on a sheet: the column each names, the input cells, their labels and titles, how labels are set, the rows' heights by density, and the values a field shows (specs/workbench). */
 import { type CSSProperties, type PointerEvent as ReactPointerEvent } from "react"
 import { formatValue } from "../../utils/formatValue"
 import { formattedNumber } from "../../utils/sheetValues"
-import { readableName, type CollectionOptions, type ShownField, type TableOptions } from "../../utils/workbenchForm"
+import {
+  PLAIN_COLUMN_LOOK,
+  readableName,
+  type CollectionOptions,
+  type ColumnLookOptions,
+  type SharedLook,
+  type ShownField,
+  type TableOptions,
+} from "../../utils/workbenchForm"
 
 export type Found = ShownField["found"]
 
@@ -18,6 +26,31 @@ export const fillable = (found: Found): found is Fillable => found !== null && f
  */
 export const labelColor = (found: Found, font: string | null): string =>
   found === null ? "var(--warning)" : (font ?? (found.table.role === "output" ? "var(--success)" : "var(--text-muted)"))
+
+/** A field's label colour: its column's own, else the component's, else the theme's or its role's (`labelColor`); amber while it is gone. */
+export const labelFont = (found: Found, look: ColumnLookOptions, options: Pick<SharedLook, "header_font_color">, font: string | null): string =>
+  found === null ? labelColor(found, null) : (look.header_font_color ?? options.header_font_color ?? labelColor(found, font))
+
+/**
+ * How a Table's header's, or a Collection's, labels are set: in capitals or as written, as
+ * large as its text, or a pixel smaller in capitals, unless it sets their size, and bold or not.
+ */
+export function headerText(options: Pick<SharedLook, "header" | "header_font_size" | "header_bold" | "font_size">): { className: string; style: CSSProperties } {
+  const caps = options.header === "caps"
+  return {
+    className: caps ? "tracking-wider uppercase" : "",
+    style: {
+      fontSize: options.header_font_size ?? (caps ? options.font_size - 1 : options.font_size),
+      fontWeight: options.header_bold ? 600 : 400,
+    },
+  }
+}
+
+/** Each field's own look, by its field's key (`ShownField`'s), or the plain one. */
+export function looksByKey(options: Pick<SharedLook, "column_looks">): (key: string) => ColumnLookOptions {
+  const looks = new Map(options.column_looks.map((look) => [`${look.table}:${look.column}`, look]))
+  return (key) => looks.get(key) ?? PLAIN_COLUMN_LOOK
+}
 
 export const fieldTitle = (found: Found): string =>
   found === null ? "This column is no longer in the schema" : `${found.table.name}.${found.column.name}`

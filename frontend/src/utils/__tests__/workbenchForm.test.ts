@@ -568,9 +568,37 @@ describe("what the sheets show", () => {
     // fixed, its header as written and framed; a Collection labelled above its boxes, comfortable
     // and framed.
     expect(grid).toMatchObject({ type: "tableInput", title: "", fields: [], rows: 3, row_numbers: true, density: "compact", gridlines: "rows", striped: true, fixed_rows: false, header: "plain", frame: true })
-    expect(boxes).toMatchObject({ type: "collection", title: "", fields: [], columns: 3, labels: "above", density: "comfortable", frame: true, spacers: [] })
-    // Spacers of its own, not the options' one list.
+    // Its look as the server's defaults have it too: 12px text, its labels the same size, as written,
+    // neither bold nor wrapped and Auto wide, its boxes' borders thin and solid and the boxes Auto wide,
+    // a thin frame, each colour the theme's, and no field with a look of its own.
+    expect(boxes).toMatchObject({
+      type: "collection",
+      title: "",
+      fields: [],
+      columns: 3,
+      labels: "above",
+      density: "comfortable",
+      frame: true,
+      font_size: 12,
+      header: "plain",
+      header_font_size: null,
+      header_bold: false,
+      header_wrap: false,
+      header_color: null,
+      header_font_color: null,
+      label_width: null,
+      box_style: "solid",
+      box_weight: "thin",
+      box_color: null,
+      box_width: null,
+      frame_color: null,
+      frame_weight: "thin",
+      column_looks: [],
+      spacers: [],
+    })
+    // Column looks and spacers of its own, not the options' one lists.
     expect(boxes.spacers).not.toBe(COLLECTION_OPTIONS.spacers)
+    expect(boxes.column_looks).not.toBe(COLLECTION_OPTIONS.column_looks)
     expect(grid).not.toHaveProperty("columns")
     expect(boxes).not.toHaveProperty("gridlines")
     // In the file's order, so a component the view made compares equal to it saved.
@@ -610,7 +638,37 @@ describe("what the sheets show", () => {
     ])
     // Column looks of its own, not the options' one list.
     expect(grid.column_looks).not.toBe(TABLE_OPTIONS.column_looks)
-    expect(Object.keys(boxes)).toEqual(["id", "x", "y", "w", "h", "type", "title", "fields", "show_when", "columns", "labels", "density", "frame", "spacers"])
+    expect(Object.keys(boxes)).toEqual([
+      "id",
+      "x",
+      "y",
+      "w",
+      "h",
+      "type",
+      "title",
+      "fields",
+      "show_when",
+      "columns",
+      "labels",
+      "density",
+      "frame",
+      "font_size",
+      "header",
+      "header_font_size",
+      "header_bold",
+      "header_wrap",
+      "header_color",
+      "header_font_color",
+      "label_width",
+      "box_style",
+      "box_weight",
+      "box_color",
+      "box_width",
+      "frame_color",
+      "frame_weight",
+      "column_looks",
+      "spacers",
+    ])
 
     spec = addWidget(addWidget(spec, "s", grid), "s", boxes)
     spec = updateWidget(spec, grid.id, { title: "Equipment", rows: 5, x: 16, gridlines: "all", fixed_rows: true })
@@ -622,15 +680,35 @@ describe("what the sheets show", () => {
     })
     expect(() => updateWidget(spec, grid.id, { columns: 2 })).toThrow("Only a Collection has columns")
     expect(() => updateWidget(spec, boxes.id, { rows: 2 })).toThrow("Only a Table has rows")
-    // A Collection takes its own look, the density and the frame a Table has too, and none of a Table's own.
-    spec = updateWidget(spec, boxes.id, { labels: "beside", density: "compact", frame: false })
-    expect(findWidget(spec, boxes.id)?.widget).toMatchObject({ labels: "beside", density: "compact", frame: false })
-    expect(() => updateWidget(spec, boxes.id, { header: "caps" })).toThrow("Only a Table has header")
+    // A Collection takes its own look, the look a Table has too, and none of a Table's own.
+    const look = {
+      labels: "beside",
+      density: "compact",
+      frame: false,
+      font_size: 14,
+      header: "caps",
+      header_font_size: 11,
+      header_bold: true,
+      header_wrap: true,
+      header_color: "#F1F5F9",
+      header_font_color: "#1E293B",
+      label_width: 160,
+      box_style: "dashed",
+      box_weight: "medium",
+      box_color: "#DC2626",
+      box_width: 96,
+      frame_color: "#000000",
+      frame_weight: "thick",
+    } as const
+    spec = updateWidget(spec, boxes.id, look)
+    expect(findWidget(spec, boxes.id)?.widget).toMatchObject(look)
+    expect(() => updateWidget(spec, boxes.id, { header_orientation: "up" })).toThrow("Only a Table has header_orientation")
     expect(() => updateWidget(spec, boxes.id, { transposed: true })).toThrow("Only a Table has transposed")
     expect(() => updateWidget(spec, boxes.id, { groups: true })).toThrow("Only a Table has groups")
     expect(() => updateWidget(spec, boxes.id, { grid_color: "#2563EB" })).toThrow("Only a Table has grid_color")
-    expect(() => updateWidget(spec, boxes.id, { column_looks: [] })).toThrow("Only a Table has column_looks")
     expect(() => updateWidget(spec, grid.id, { labels: "beside" })).toThrow("Only a Collection has labels")
+    expect(() => updateWidget(spec, grid.id, { label_width: 160 })).toThrow("Only a Collection has label_width")
+    expect(() => updateWidget(spec, grid.id, { box_style: "dashed" })).toThrow("Only a Collection has box_style")
     expect(() => updateWidget(spec, "missing", { title: "x" })).toThrow("No sheet has a component missing")
 
     const copied = duplicateWidget(spec, grid.id)
@@ -665,6 +743,8 @@ describe("what the sheets show", () => {
     expect(() => updateWidget(spec, chart.id, { columns: 2 })).toThrow("Only a Collection has columns")
     expect(() => updateWidget(spec, chart.id, { frame: false })).toThrow("Only a Table or a Collection has frame")
     expect(() => updateWidget(spec, chart.id, { density: "compact" })).toThrow("Only a Table or a Collection has density")
+    expect(() => updateWidget(spec, chart.id, { header: "caps" })).toThrow("Only a Table or a Collection has header")
+    expect(() => updateWidget(spec, chart.id, { column_looks: [] })).toThrow("Only a Table or a Collection has column_looks")
 
     const copied = duplicateWidget(spec, chart.id)
     expect(findWidget(copied.spec, copied.id)).toMatchObject({ index: 1, widget: { type: "chart", title: "Premiums", x: 16, y: 16, ...options } })
@@ -761,9 +841,19 @@ describe("what the sheets show", () => {
     expect(grid(removeSchemaColumn(spec, "equipment", "equipment.item")).column_looks.map((look) => look.column)).toEqual(["equipment.value"])
     expect(grid(removeSchemaTable(spec, "equipment")).column_looks).toEqual([])
 
-    // Only a Table's columns have looks, and only those it shows.
-    expect(() => setColumnLook(spec, "w_boxes", { table: "policy", column: "policy.state" }, { bold: true })).toThrow("Only a Table has column looks")
+    // A Collection's fields have looks as a Table's columns do, dropped as the field goes.
+    const state = { table: "policy", column: "policy.state" }
+    const boxes = (form: FormSpec) => widgetsOf(form)[0] as Extract<Widget, { type: "collection" }>
+    const boxed = setColumnLook(spec, "w_boxes", state, { header_color: "#2563EB", width: 64 })
+    expect(boxes(boxed).column_looks).toEqual([{ ...state, ...PLAIN_COLUMN_LOOK, header_color: "#2563EB", width: 64 }])
+    expect(boxes(setColumnLook(boxed, "w_boxes", state, "clear")).column_looks).toEqual([])
+    expect(boxes(toggleField(boxed, "w_boxes", state)).column_looks).toEqual([])
+
+    // Only a Table's columns and a Collection's fields have looks, and only those it shows.
+    const charted = addWidget(spec, "s", { ...createWidget("chart", { x: 0, y: 400, w: 480, h: 280 }), id: "w_chart", fields: [value] })
+    expect(() => setColumnLook(charted, "w_chart", value, { bold: true })).toThrow("Only a Table or a Collection has column looks")
     expect(() => setColumnLook(unticked, "w_grid", value, { bold: true })).toThrow("The Table does not show equipment.equipment.value")
+    expect(() => setColumnLook(spec, "w_boxes", value, { bold: true })).toThrow("The Collection does not show equipment.equipment.value")
   })
 
   it("puts spacers among a Collection's fields, moves and removes them, and keeps their places as fields come and go", () => {
