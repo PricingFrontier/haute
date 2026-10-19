@@ -1,5 +1,7 @@
 # price-contour on Polars 2
 
+**Status (19 October 2026):** stages 1 and 2 shipped in price-contour 0.7.0, and Haute pins it (`price-contour>=0.7.0,<0.8`). Stage 3 waits for Polars' own 2.0 Rust crates.
+
 This is a handover specification for the price-contour project, written from Haute's side on 18 October 2026. It says what price-contour's next release changes so that it declares and tests Polars 2, and what Haute changes when it moves to that release. It owns no Haute work: `PL2-20` in the [Polars 2 roadmap](polars-2.md) carries Haute's side.
 
 Paths are price-contour's, at v0.6.0 (`cd3aac8`), unless they start with `src/haute/`, `tests/test_` or `scripts/benchmarks/`, which are Haute's.

@@ -29,7 +29,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Name collisions](name-collisions.md) | Input-binding editors showing their name violations inline | `NAME-09` |
 | [Optimiser validation](optimiser-validation.md) | Per-point convergence traces from price_contour's frontier sweep; a calibrated solve-memory forecast in the Solve panel; the optimiser result workspace's open robustness and CSV questions | `OPT-PC04` |
 | [Pipeline config](pipeline-config.md) | Project context, typed configs, editor state, node specification | `PCFG-R04` |
-| [Polars 2](polars-2.md) | Moving to Polars 2.0: caches computed under Polars 1, new dtypes, deploy parity, generated and teaching code, the operation registry and the tests; then the operator memory evidence, worker baselines and the price_contour boundary | `PL2-15` |
+| [Polars 2](polars-2.md) | Moving to Polars 2.0: caches computed under Polars 1, new dtypes, deploy parity, generated and teaching code, the operation registry and the tests; then the operator memory evidence and worker baselines | `PL2-15` |
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
 | [Sandbox security](sandbox-security.md) | Every containment comparison through the one check | `SBX-R01` |
 | [Server API](server-api.md) | Domain errors, generated browser contract | `API-R02` |
@@ -94,8 +94,9 @@ change now:
 - moving to pyo3-polars 0.28.
 
 It also says what Haute changes when it moves to that release. It is a supporting
-report and owns no Haute work; `PL2-20` in the [Polars 2 roadmap](polars-2.md)
-carries Haute's side.
+report and owns no Haute work. price-contour 0.7.0 shipped stages 1 and 2 on
+19 October 2026, and Haute pins it; stage 3 (Polars' own 2.0 Rust crates) waits
+for those crates.
 
 ## Working protocol
 

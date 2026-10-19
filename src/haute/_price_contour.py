@@ -7,9 +7,9 @@ the module agree on a version, that version satisfies haute's pinned specifier
 (prereleases rejected), every symbol haute calls exists, every keyword haute
 passes to a Python wrapper is still accepted, the native extension loads, and a
 one-row frame passes through it and back. The native module moves frames
-through Polars' private Python methods (``Series._import_arrow_from_c`` among
-them), which no public API pins, so a Polars that renames one fails here rather
-than with a Rust panic mid-solve.
+through Polars' private Python methods (``Series._s._export`` into Rust,
+``Series._import`` back), which no public API pins, so a Polars that renames
+one fails here rather than mid-solve.
 Any failure raises one :class:`PriceContourCompatibilityError` that lists
 **every** problem together with where the package was installed from and how to
 fix it, rather than an ``AttributeError`` or ``TypeError`` deep inside a solve.
@@ -46,7 +46,7 @@ NATIVE_MODULE = "price_contour._price_contour"
 
 # Must equal the ``price-contour`` specifier in pyproject.toml exactly
 # (``tests/test_dependency_contracts.py`` pins the equality).
-REQUIRED_SPECIFIER = ">=0.6.0,<0.7"
+REQUIRED_SPECIFIER = ">=0.7.0,<0.8"
 
 # Prereleases (``0.4.2rc1``, ``0.4.2.dev0``) are rejected even inside the
 # specifier: haute is only verified against released builds.

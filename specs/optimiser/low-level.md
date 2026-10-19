@@ -171,7 +171,7 @@ its native extension `price_contour._price_contour` and collects **every** probl
 - the module's `__version__` differs from the distribution metadata (a stale or shadowing
   build, such as `0.0.0+local`);
 - the version is outside `REQUIRED_SPECIFIER`, which equals `pyproject.toml`'s
-  `price-contour` specifier exactly (`>=0.6.0,<0.7`, pinned by
+  `price-contour` specifier exactly (`>=0.7.0,<0.8`, pinned by
   `tests/test_dependency_contracts.py`); prereleases are rejected even inside the range;
 - a missing entry of `REQUIRED_SYMBOLS` (every class, function and method haute calls,
   including 0.6.0's `CancelToken`, `CancelToken.cancel` and `Cancelled`);
@@ -182,11 +182,12 @@ its native extension `price_contour._price_contour` and collects **every** probl
 - a failed import, chained as the error's cause;
 - when nothing above failed, a one-row frame that does not pass through the native module
   and back (`ApplyOptimiser.apply` on one quote with one scenario). The native module moves
-  frames through Polars' private Python methods (`Series._import_arrow_from_c` among them),
-  which no public API pins, so a Polars that renames one is refused here, by name, rather
-  than ending a solve in a Rust panic (a `BaseException`, caught as one; an interrupt still
-  propagates). A test removes that method in a fresh process, since the native module keeps
-  the method once it has used it.
+  frames through Polars' private Python methods (`Series._s._export` into Rust,
+  `Series._import` back; pyo3-polars 0.28), which no public API pins, so a Polars that
+  renames one is refused here, by name, rather than failing a solve. The failure is caught as
+  a `BaseException`, since it can be a Python error raised through PyO3 or a Rust panic; an
+  interrupt still propagates. A test removes `Series._import` in a fresh process, since the
+  native module keeps the method once it has used it.
 
 The message names the installed version, the required specifier, the module path, the install
 source (`editable checkout <path>` or `direct URL <url>` from PEP 610 `direct_url.json`, else
