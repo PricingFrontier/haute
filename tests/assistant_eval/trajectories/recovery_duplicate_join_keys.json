@@ -51,6 +51,7 @@
                     "name": "loaded_quotes",
                     "config": {
                       "how": "left",
+                      "maintainOrder": "left_right",
                       "on": [
                         "region"
                       ],
@@ -105,6 +106,7 @@
                     "name": "loaded_quotes",
                     "config": {
                       "how": "left",
+                      "maintainOrder": "left_right",
                       "on": [
                         "region",
                         "cover_type"

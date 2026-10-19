@@ -17,7 +17,7 @@ import polars as pl
 
 import haute.execution as execution_facade
 import haute.projection as projection_planner
-from haute._builders import _passthrough_fn
+from haute._builders import StepFailure, _passthrough_fn
 from haute._chunked_writes import (
     ChunkedWrite,
     JoinRecipe,
@@ -1638,21 +1638,21 @@ def _extract_error_line(exc: Exception) -> int | None:
     return None
 
 
-def _located_step_line(
+def _located_step(
     fn: Callable[..., Any], inputs: Sequence[_Frame], exc: Exception
-) -> int | None:
-    """The line of the step a recorded plan failure came from, when the node can name it.
+) -> StepFailure | None:
+    """The step a recorded failure came from, and what to change, when the node can say.
 
     Only a Polars transform authored as closed-vocabulary steps carries
-    ``failed_step_line`` (``_builders._build_transform``), and only a Polars
-    error can be its plan failing to resolve. The builder replays the steps on
-    *inputs*, the frames the run gave the node; the exception is not touched.
+    ``failed_step`` (``_builders._build_transform``), and only a Polars error can
+    be its steps failing. The builder replays the steps' schemas on *inputs*, the
+    frames the run gave the node, reading no rows; the exception is not touched.
     """
-    locate = getattr(fn, "failed_step_line", None)
+    locate = getattr(fn, "failed_step", None)
     if locate is None or not isinstance(exc, pl.exceptions.PolarsError):
         return None
-    line: int | None = locate(*inputs)
-    return line
+    located: StepFailure | None = locate(*inputs)
+    return located
 
 
 def _declared_api_input_frame_schema_items(

@@ -96,6 +96,25 @@ def _fixture_rows(count: int = 2) -> list[dict[str, Any]]:
     return frame.to_dicts()
 
 
+def _quotes_input_config() -> dict[str, Any]:
+    """A JSON Quote Input: a request is read into its one table, the quotes."""
+    column = {"type": "str", "selected": True}
+    return {
+        "path": "quotes.json",
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": "quotes",
+                "emit": True,
+                "columns": [
+                    {**column, "name": "segment", "path": "$[:].segment"},
+                    {**column, "name": "premium", "path": "$[:].premium", "type": "float"},
+                ],
+            }
+        ],
+    }
+
+
 def _conservative_graph() -> PipelineGraph:
     """An apiInput graph whose group-by estimate is genuinely unavailable.
 
@@ -111,7 +130,7 @@ def _conservative_graph() -> PipelineGraph:
                     "data": {
                         "label": "quotes",
                         "nodeType": "apiInput",
-                        "config": {"path": "quotes.json"},
+                        "config": _quotes_input_config(),
                     },
                 },
                 {
@@ -172,7 +191,7 @@ def _provable_group_by_graph() -> PipelineGraph:
                     "data": {
                         "label": "quotes",
                         "nodeType": "apiInput",
-                        "config": {"path": "quotes.json"},
+                        "config": _quotes_input_config(),
                     },
                 },
                 {
@@ -243,6 +262,7 @@ def _load_app(
         "pruned_graph": PipelineGraph().model_dump(mode="json"),
         "input_node_ids": ["quotes"],
         "output_node_id": "quotes",
+        "request_rows": {"multi_quote": "in_request_order", "refusals": [], "checked_lookups": []},
         "artifacts": {},
         "output_fields": None,
     }

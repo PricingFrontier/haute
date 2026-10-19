@@ -17,6 +17,7 @@ import polars as pl
 from haute._execution_context import ExecutionProfile
 from haute._hashing import content_hash
 from haute._logging import get_logger
+from haute._map_columns import map_column_names
 from haute._polars_dtypes import parse_dtype
 from haute._polars_utils import (
     is_bounded_execution_profile,
@@ -398,6 +399,12 @@ def read_user_text(path: str | Path) -> str:
 _OBJECT_CACHE_MAX_SIZE = 32
 
 
+#: The strictness Haute's CSV reads pass explicitly: an empty file and a row with more
+#: fields than the header fail loudly. Polars 2 leaves both arguments unset by default and
+#: resolves them from the other arguments, so they are never left to it.
+CSV_STRICTNESS: dict[str, Any] = {"raise_if_empty": True, "truncate_ragged_lines": False}
+
+
 def read_source(
     path: str | Path,
     *,
@@ -436,9 +443,12 @@ def read_source(
             columns=projection_columns,
         )
         if source_schema_overrides is None:
-            lf = pl.scan_csv(path_string)
+            lf = pl.scan_csv(path_string, **CSV_STRICTNESS)
         else:
-            scan_kwargs: dict[str, Any] = {"schema_overrides": source_schema_overrides}
+            scan_kwargs: dict[str, Any] = {
+                "schema_overrides": source_schema_overrides,
+                **CSV_STRICTNESS,
+            }
             if _is_bounded_csv_profile(normalised_profile):
                 scan_kwargs["infer_schema"] = False
             lf = pl.scan_csv(path_string, **scan_kwargs)
@@ -472,6 +482,15 @@ def read_source(
         return _select_columns(lf, projection_columns)
 
     lf = pl.scan_parquet(path_string)
+    maps = map_column_names(lf.collect_schema())
+    if maps:
+        raise SchemaMismatchError(
+            f"The Parquet file has map column(s) {maps}, which Polars reads "
+            'keeping only the last value of a repeated key. A Data Input in mode "read" '
+            "reads such a file with every entry; anywhere else, write the file with each map "
+            "a list of key-value structs.",
+            path=path_string,
+        )
     _validate_declared_schema(lf, source_schema_overrides, path=path_string)
     return _select_columns(lf, projection_columns)
 

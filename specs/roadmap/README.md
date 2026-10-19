@@ -29,6 +29,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Name collisions](name-collisions.md) | Input-binding editors showing their name violations inline | `NAME-09` |
 | [Optimiser validation](optimiser-validation.md) | Per-point convergence traces from price_contour's frontier sweep; a calibrated solve-memory forecast in the Solve panel; the optimiser result workspace's open robustness and CSV questions | `OPT-PC04` |
 | [Pipeline config](pipeline-config.md) | Project context, typed configs, editor state, node specification | `PCFG-R04` |
+| [Polars 2](polars-2.md) | Moving to Polars 2.0: caches computed under Polars 1, new dtypes, deploy parity, generated and teaching code, the operation registry and the tests; then the operator memory evidence, worker baselines and the price_contour boundary | `PL2-15` |
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
 | [Sandbox security](sandbox-security.md) | Every containment comparison through the one check | `SBX-R01` |
 | [Server API](server-api.md) | Domain errors, generated browser contract | `API-R02` |
@@ -63,6 +64,15 @@ made for it: `WB-14` to `WB-22`, `BUG-32` to `BUG-36` and `FSH-R04`. It is a
 dated supporting report and owns no work; the packages in the component
 roadmaps above carry the plans.
 
+## Polars 2 review — 17 October 2026
+
+The [Polars 2 review](polars-2-review-2026-10-17.md) records what moving Haute
+from Polars 1.44.2 to Polars 2.0 breaks, changes silently, makes redundant and
+makes possible, made at `5c184d8d`: its sources, side-by-side probes of both
+versions, bounded test runs under Polars 2.0.0, a row-order audit and an
+API-surface audit. It is a dated supporting report and owns no work; the
+[Polars 2 roadmap](polars-2.md) carries the packages.
+
 ## t-boost improvements — 4 October 2026
 
 The [t-boost improvements](t-boost-improvements.md) are a handover
@@ -71,6 +81,21 @@ with ensemble-level early stopping, reported round counts, a metrics callback,
 a metadata slot, offsets, an unknown-category policy and smaller items) that
 would let Haute integrate t-boost exactly like its other boosted families, with
 their status at t-boost 0.8.0. It is a supporting report and owns no Haute work.
+
+## price-contour on Polars 2 — 18 October 2026
+
+The [price-contour on Polars 2](price-contour-polars-2.md) plan is a handover
+specification for the price-contour project. No Rust Polars or pyo3-polars
+release matches Python Polars 2.0.0 yet. So it says what price-contour 0.7.0 can
+change now:
+- declaring and testing Polars 2;
+- stating the row order of four joins;
+- sending only the columns a native call reads;
+- moving to pyo3-polars 0.28.
+
+It also says what Haute changes when it moves to that release. It is a supporting
+report and owns no Haute work; `PL2-20` in the [Polars 2 roadmap](polars-2.md)
+carries Haute's side.
 
 ## Working protocol
 

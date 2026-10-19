@@ -15,6 +15,8 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from haute.modelling._row_order import frame_row_order
+
 #: Rows SHAP is computed on, whatever the size of the diagnostics partition.
 SHAP_SAMPLE_ROWS = 5_000
 #: The leading sampled rows the beeswarm plots.
@@ -41,13 +43,20 @@ class ShapViews:
     curves: list[dict[str, Any]]
 
 
-def shap_sample(df: pl.DataFrame) -> pl.DataFrame:
+def shap_sample(df: pl.DataFrame, row_order: np.ndarray | None = None) -> pl.DataFrame:
     """At most ``SHAP_SAMPLE_ROWS`` rows of *df* in a seeded random order.
 
     Shuffled even when *df* is under the cap, so the beeswarm's leading rows are a
     uniform sample rather than the partition's first (on a temporal split, oldest) rows.
+    The positions are drawn over *row_order*, the rows' canonical order (the frame's own
+    when not given), so the same rows come in the same order whatever order *df* holds
+    them in.
     """
-    return df.sample(n=min(df.height, SHAP_SAMPLE_ROWS), seed=_SAMPLE_SEED, shuffle=True)
+    order = frame_row_order(df) if row_order is None else row_order
+    chosen = np.random.default_rng(_SAMPLE_SEED).choice(
+        df.height, size=min(df.height, SHAP_SAMPLE_ROWS), replace=False, shuffle=True
+    )
+    return df[order[chosen]]
 
 
 def require_feature_order(model_features: Sequence[str], features: Sequence[str]) -> None:

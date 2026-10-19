@@ -1535,7 +1535,8 @@ class _DataCheckQueries:
             plan.refused = exc
             plan.factors, plan.tables, plan.join = [], [], None
             return counted
-        return pl.concat([counted, *parts], how="horizontal", strict=True)
+        # A horizontal concat already refuses inputs of unequal heights.
+        return pl.concat([counted, *parts], how="horizontal")
 
     def _structured_parts(self, node: GraphNode, measured: MeasuredInput) -> list[pl.LazyFrame]:
         node_type = node.data.nodeType
@@ -1605,13 +1606,14 @@ class _DataCheckQueries:
             key_columns = list(built.key_columns)
             keys = frame.select(built.frame_key_exprs())
             missed = (
-                keys.join(built.lookup.lazy(), on=key_columns, how="left")
+                # Counted, so no join here needs an order.
+                keys.join(built.lookup.lazy(), on=key_columns, how="left", maintain_order="none")
                 .select(pl.col(built.lookup_value_column).is_null().sum())
                 .select(pl.all().alias(f"rating_{index}_missed"))
             )
             unused = (
                 built.keyed_entries.lazy()
-                .join(keys.unique(), on=key_columns, how="anti")
+                .join(keys.unique(), on=key_columns, how="anti", maintain_order="none")
                 .select(pl.len().alias(f"rating_{index}_unused"))
             )
             parts.extend((missed, unused))
@@ -1682,6 +1684,7 @@ class _DataCheckQueries:
                 left_on=join["base"],
                 right_on=join["join"],
                 how="semi",
+                maintain_order="none",
             )
             .select(pl.len().alias("matched_base_rows"))
         )

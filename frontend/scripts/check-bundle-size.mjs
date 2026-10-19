@@ -157,7 +157,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // A Table's look set as a spreadsheet's (its text, header, lines, frame and each column's
 // own look, the panel's Table look and the form's validators for it, in the lazy workbench
 // chunks) brings it to 1,685.4 KiB; 1,687 KiB restores about 1.6 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1687
+// Polars 2 in the step editor (the casts a column's type accepts and why another is
+// refused, text parsed into dates with a format, membership values typed by the kind of
+// number their column holds, a failing step located by its line with a remedy) and the
+// row order every join states bring it to 1,688.8 KiB; 1,690 KiB restores about 1.2 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1690
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

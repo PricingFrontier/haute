@@ -33,6 +33,8 @@ import inspect
 import json
 import re
 import sys
+import types
+import typing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -190,12 +192,43 @@ def default_repr(value: Any) -> str:
     return _MEM_ADDR.sub("", repr(value))
 
 
+# Modules a class is defined in under one Python and not another: Python 3.13 defines
+# ``pathlib.Path`` in ``pathlib._local``. The interface names the public module.
+_PUBLIC_MODULES = {"pathlib._local": "pathlib", "builtins": "", "typing": ""}
+
+
+def _canonical_annotation(ann: Any) -> str:
+    """*ann*, an evaluated annotation, spelled the same on every supported Python.
+
+    Python 3.14 spells a union ``X | Y`` and earlier ones ``Union[X, Y]``, and a class's
+    module can move, so the spelling is built from the annotation's parts: a union as
+    ``Union[...]``, a forward reference by its name, a class by its public module.
+    """
+    if ann is None or ann is type(None):
+        return "None"
+    if isinstance(ann, typing.ForwardRef):
+        return ann.__forward_arg__
+    origin = typing.get_origin(ann)
+    args = typing.get_args(ann)
+    if origin is typing.Union or origin is types.UnionType:
+        return "Union[" + ", ".join(_canonical_annotation(arg) for arg in args) + "]"
+    if origin is not None:
+        name = _canonical_annotation(origin)
+        if not args:
+            return name
+        return f"{name}[" + ", ".join(_canonical_annotation(arg) for arg in args) + "]"
+    if isinstance(ann, type):
+        module = _PUBLIC_MODULES.get(ann.__module__, ann.__module__)
+        return f"{module}.{ann.__qualname__}" if module else ann.__qualname__
+    return inspect.formatannotation(ann)
+
+
 def annotation_str(ann: Any) -> str | None:
     if ann is inspect.Parameter.empty:
         return None
     if isinstance(ann, str):
         return ann
-    return inspect.formatannotation(ann)
+    return _canonical_annotation(ann)
 
 
 def extract_function(owner: str, name: str, func: Any) -> dict[str, Any]:
@@ -355,7 +388,8 @@ def main() -> None:
     out_path = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_OUTPUT
 
     payload = extract_schema()
-    out_path.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n", encoding="utf-8")
+    # Bytes, so the file keeps the repository's LF endings on Windows too.
+    out_path.write_bytes((json.dumps(payload, indent=2, sort_keys=False) + "\n").encode("utf-8"))
 
     functions = payload["functions"]
     n_undoc = sum(1 for f in functions for a in f["arguments"] if a["undocumented"])

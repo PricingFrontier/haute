@@ -28,7 +28,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import IO, Any, Literal, cast
+from typing import Any, Literal
 
 import polars as pl
 import pyarrow.parquet as pq
@@ -36,8 +36,8 @@ import pyarrow.parquet as pq
 from haute._edge_join import build_edge_join_kwargs
 from haute._execution_context import ExecutionContext, current_execution_context
 from haute._file_ops import ensure_disk_headroom
-from haute._hashing import HashingWriter
 from haute._logging import get_logger
+from haute._polars_dtypes import refuse_wide_integers
 from haute._polars_utils import (
     atomic_write,
     bounded_hashed_sink,
@@ -52,7 +52,11 @@ logger = get_logger(component="chunked_writes")
 PART_PREFIX = "part-"
 PART_SUFFIX = ".parquet"
 SINGLE_FILE_ROW_GROUP_SIZE = 100_000
-_SUPPORTED_IR_MAJOR = 14
+# The optimiser IR major whose node attributes ``sliceable`` and the optimiser's
+# projected-parquet borrow read through Polars' private plan visitor; checked
+# attribute by attribute on Polars 2.0's IR (15, 2) and pinned to the installed
+# Polars by a test, so a release that moves it fails loudly there.
+_SUPPORTED_IR_MAJOR = 15
 _SLICEABLE_SCAN_TYPES = frozenset({"parquet", "ipc"})
 # Row-count-preserving plan nodes a slice passes through unchanged. Anything
 # else — notably Distinct, GroupBy and Sort, which absorb a slice into their
@@ -153,7 +157,11 @@ def sliceable(lf: pl.LazyFrame) -> bool:
 
 
 def row_count(lf: pl.LazyFrame, *, execution_context: ExecutionContext | None = None) -> int:
-    return int(execution_collect(lf.select(pl.len()), execution_context=execution_context).item())
+    return int(
+        execution_collect(
+            lf.select(pl.len()), execution_context=execution_context, engine="streaming"
+        ).item()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -269,8 +277,6 @@ def _join_shape(recipe: JoinRecipe) -> tuple[_JoinShape | None, str | None]:
         base_keys = _keys(kwargs.get("left_on"))
         join_keys = _keys(kwargs.get("right_on"))
     base_drives = how != "right" and not (how == "cross" and order in {"right", "right_left"})
-    if how == "full" and order is not None:
-        return None, "full_join_ordered"
     if order is not None:
         driving_order = {"left", "left_right"} if base_drives else {"right", "right_left"}
         if order not in driving_order:
@@ -324,12 +330,14 @@ class _Parts:
         fast_checkpoint: bool,
         execution_context: ExecutionContext | None,
         node_id: str | None,
+        internal: bool,
     ) -> None:
         self.directory = directory
         self.schema = schema
         self.fast_checkpoint = fast_checkpoint
         self.execution_context = execution_context
         self.node_id = node_id
+        self.internal = internal
         self.names: list[str] = []
         self.digests: dict[str, str] = {}
 
@@ -347,54 +355,16 @@ class _Parts:
             self.directory, (self.directory / self.names[-1]).stat().st_size if self.names else 0
         )
         digest = bounded_hashed_sink(
-            lf, self.directory / name, fast_checkpoint=self.fast_checkpoint
+            lf, self.directory / name, fast_checkpoint=self.fast_checkpoint, internal=self.internal
         )
         self.names.append(name)
         self.digests[name] = digest
         if self.execution_context is not None:
             self.execution_context.record_chunk()
-
-    def collect_and_write(self, lf: pl.LazyFrame) -> None:
-        """Compute a bounded part in memory and write it.
-
-        Used for ordered joins: the in-memory engine is the reference for a
-        join's documented ``maintain_order``, and a part is bounded by
-        construction. Unordered parts are sunk natively, which is faster.
-        """
-        frame = execution_collect(
-            lf.select(
-                [pl.col(name).cast(dtype, strict=True) for name, dtype in self.schema.items()]
-            ),
-            execution_context=self.execution_context,
-            engine="in-memory",
-        )
-        if self.execution_context is not None:
-            self.execution_context.checkpoint(label="chunked_write", node_id=self.node_id)
-        name = part_name(len(self.names))
-        path = self.directory / name
-        ensure_disk_headroom(self.directory, int(frame.estimated_size()))
-        with atomic_write(path) as tmp:
-            with HashingWriter(open(tmp, "wb")) as writer:
-                frame.write_parquet(
-                    cast("IO[bytes]", writer),
-                    compression="lz4" if self.fast_checkpoint else "zstd",
-                )
-            digest = writer.hexdigest()
-        self.names.append(name)
-        self.digests[name] = digest
-        if self.execution_context is not None:
-            self.execution_context.record_bytes_written(path.stat().st_size)
-            self.execution_context.record_chunk()
-
-    def write_join_part(self, lf: pl.LazyFrame, *, ordered: bool) -> None:
-        if ordered:
-            self.collect_and_write(lf)
-        else:
-            self.sink(lf)
 
     def ensure_one(self) -> None:
         if not self.names:
-            self.collect_and_write(pl.DataFrame(schema=self.schema).lazy())
+            self.sink(pl.DataFrame(schema=self.schema).lazy())
 
 
 def _chunk_rows(chunk_rows: int | None) -> int:
@@ -420,7 +390,9 @@ def _budgeted_rows(
     sample_rows = min(512, requested_rows)
     widths = tuple(
         decoded_frame_row_width_bytes(
-            execution_collect(frame.slice(0, sample_rows), execution_context=execution_context)
+            execution_collect(
+                frame.slice(0, sample_rows), execution_context=execution_context, engine="streaming"
+            )
         )
         for frame in inputs
     )
@@ -445,9 +417,13 @@ def _budgeted_recipe_rows(
     if remaining is None:
         return requested_rows
     sample = execution_collect(
-        recipe.input.slice(0, min(512, requested_rows)), execution_context=execution_context
+        recipe.input.slice(0, min(512, requested_rows)),
+        execution_context=execution_context,
+        engine="streaming",
     )
-    output = execution_collect(recipe.apply(sample.lazy()), execution_context=execution_context)
+    output = execution_collect(
+        recipe.apply(sample.lazy()), execution_context=execution_context, engine="streaming"
+    )
     width = decoded_frame_row_width_bytes(sample) + decoded_frame_row_width_bytes(output)
     if width <= 0:
         return requested_rows
@@ -496,7 +472,6 @@ def _join_within_memory_budget(
         not isinstance(execution_context, ExecutionContext)
         or recipe.finish is not _identity
         or shape.how == "cross"
-        or shape.kwargs.get("maintain_order") not in (None, "none")
         or not sliceable(recipe.base)
         or not sliceable(recipe.join)
     ):
@@ -515,7 +490,9 @@ def _join_within_memory_budget(
     widths = tuple(
         decoded_frame_row_width_bytes(
             execution_collect(
-                input_frame.slice(0, sample_rows), execution_context=execution_context
+                input_frame.slice(0, sample_rows),
+                execution_context=execution_context,
+                engine="streaming",
             )
         )
         for input_frame in (recipe.base, recipe.join)
@@ -546,6 +523,7 @@ def write_parts(
     fast_checkpoint: bool = True,
     execution_context: ExecutionContext | None = None,
     node_id: str | None = None,
+    internal: bool = False,
 ) -> ChunkedWrite:
     """Write ``frame`` into ``directory`` as ordered part files.
 
@@ -554,7 +532,9 @@ def write_parts(
     ``recipe``, when given, is the write recipe ``frame`` was built from;
     the write is then performed a slice of its input at a time when chunk-local.
     The directory must exist and hold no parts yet. Inputs the write stages are
-    kept in a private subdirectory and removed before returning.
+    kept in a private subdirectory and removed before returning. A 128-bit
+    integer is refused, since pyarrow cannot open a file holding one, unless the
+    parts are *internal*: a staging copy only Polars reads back.
     """
     rows = _chunk_rows(chunk_rows)
     execution_context = execution_context or current_execution_context()
@@ -563,12 +543,15 @@ def write_parts(
     # A join's own schema resolution runs first: Polars rejects some
     # validate/how combinations there, and the write must raise exactly that.
     schema = (join.native() if join is not None else frame).collect_schema()
+    if not internal:
+        refuse_wide_integers(schema, **({"node": node_id} if node_id is not None else {}))
     parts = _Parts(
         directory,
         schema=schema,
         fast_checkpoint=fast_checkpoint,
         execution_context=execution_context,
         node_id=node_id,
+        internal=internal,
     )
     native_reason: str | None = None
     if join is not None:
@@ -776,7 +759,9 @@ def _sink_slices(
                 if execution_context is not None:
                     execution_context.checkpoint(label="chunked_write", node_id=node_id)
                 slice_df = execution_collect(
-                    apply(source.slice(offset, rows)), execution_context=execution_context
+                    apply(source.slice(offset, rows)),
+                    execution_context=execution_context,
+                    engine="streaming",
                 )
                 if slice_df.height == 0:
                     continue
@@ -899,7 +884,9 @@ def _staged(
     target = staging / f"input-{counter[0]}"
     counter[0] += 1
     target.mkdir(parents=True)
-    write_parts(target, lf, execution_context=execution_context, fast_checkpoint=True)
+    write_parts(
+        target, lf, execution_context=execution_context, fast_checkpoint=True, internal=True
+    )
     return scan_parts(part_paths(target))
 
 
@@ -962,13 +949,19 @@ def _write_chunked_join(
         lookup_chunk_rows = min(rows, lookup_total)
         per_chunk = max(1, rows // lookup_chunk_rows)
         small_lookup = (
-            execution_collect(lookup.slice(0, lookup_total), execution_context=execution_context)
+            execution_collect(
+                lookup.slice(0, lookup_total),
+                execution_context=execution_context,
+                engine="streaming",
+            )
             if lookup_total <= rows
             else None
         )
         for offset in range(0, total, per_chunk):
             chunk = execution_collect(
-                driving.slice(offset, per_chunk), execution_context=execution_context
+                driving.slice(offset, per_chunk),
+                execution_context=execution_context,
+                engine="streaming",
             )
             for lookup_offset in range(0, lookup_total, lookup_chunk_rows):
                 lookup_chunk = (
@@ -977,12 +970,11 @@ def _write_chunked_join(
                     else execution_collect(
                         lookup.slice(lookup_offset, lookup_chunk_rows),
                         execution_context=execution_context,
+                        engine="streaming",
                     )
                 )
                 left, right = (chunk, lookup_chunk) if shape.base_drives else (lookup_chunk, chunk)
-                parts.write_join_part(
-                    finish(left.lazy().join(right.lazy(), **kwargs)), ordered=keep_lookup_order
-                )
+                parts.sink(finish(left.lazy().join(right.lazy(), **kwargs)))
         return counter[0]
 
     driving, lookup = (base, join) if shape.base_drives else (join, base)
@@ -1005,16 +997,21 @@ def _write_chunked_join(
     total = row_count(driving, execution_context=execution_context)
     for offset in range(0, total, rows):
         chunk_join.write(
-            execution_collect(driving.slice(offset, rows), execution_context=execution_context)
+            execution_collect(
+                driving.slice(offset, rows), execution_context=execution_context, engine="streaming"
+            )
         )
 
     if shape.how == "full":
-        # Lookup rows no driving row matched, once each: the full join of an
-        # empty base with them has exactly the full join's shape for them.
+        # Lookup rows no driving row matched, once each and in the lookup's
+        # order, after every driving row, as an ordered full join places them:
+        # the full join of an empty base with them has exactly its shape.
         empty_base = pl.DataFrame(schema=base.collect_schema()).lazy()
         lookup_total = row_count(join, execution_context=execution_context)
         for offset in range(0, lookup_total, rows):
-            chunk = execution_collect(join.slice(offset, rows), execution_context=execution_context)
+            chunk = execution_collect(
+                join.slice(offset, rows), execution_context=execution_context, engine="streaming"
+            )
             present = execution_collect(
                 _semi(
                     base.select(shape.base_keys),
@@ -1024,12 +1021,14 @@ def _write_chunked_join(
                     keep_order=False,
                 ).unique(),
                 execution_context=execution_context,
+                engine="streaming",
             )
             unmatched = chunk.lazy().join(
                 present.lazy(),
                 left_on=shape.join_keys,
                 right_on=shape.base_keys,
                 how="anti",
+                maintain_order="left" if keep_lookup_order else "none",
             )
             parts.sink(finish(empty_base.join(unmatched, **kwargs)))
     return counter[0]
@@ -1095,7 +1094,7 @@ class _ChunkJoin:
             joined = frame.lazy().join(matched, **self.shape.kwargs)
         else:
             joined = matched.join(frame.lazy(), **self.shape.kwargs)
-        self.parts.write_join_part(self.finish(joined), ordered=self.keep_lookup_order)
+        self.parts.sink(self.finish(joined))
 
     def write(self, chunk: pl.DataFrame) -> None:
         if self.shape.how in {"semi", "anti"}:
@@ -1232,6 +1231,7 @@ def _unique_key_violation(
             .filter(pl.col(matches_column) > 1)
             .head(1),
             execution_context=execution_context,
+            engine="streaming",
         )
         if duplicates.height:
             return True

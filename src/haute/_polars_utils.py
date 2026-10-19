@@ -8,7 +8,6 @@ import shutil
 import tempfile
 import threading
 import time
-import uuid
 from collections.abc import Callable, Collection, Generator, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -25,15 +24,18 @@ from haute._execution_context import (
 from haute._file_ops import atomic_path, ensure_disk_headroom
 from haute._hashing import HashingWriter
 from haute._logging import get_logger
-from haute._lru_cache import LRUCache
 from haute._pipeline_settings import (
     DEFAULT_STREAMING_CHUNK_SIZE as DEFAULT_STREAMING_CHUNK_SIZE,
 )
 from haute._pipeline_settings import (
     MAX_STREAMING_CHUNK_SIZE as MAX_STREAMING_CHUNK_SIZE,
 )
+from haute._polars_dtypes import refuse_wide_integers
 
 logger = get_logger(component="polars_utils")
+
+#: The engines a Haute collect names; Polars' ``auto`` is never left to choose.
+CollectEngine = Literal["streaming", "in-memory"]
 
 BOUNDED_MEMORY_EXEMPT_PROFILES = frozenset(
     {
@@ -91,7 +93,7 @@ def _cancellable_collect(
     lf: pl.LazyFrame,
     *,
     execution_context: ExecutionContext,
-    engine: Literal["auto", "streaming", "in-memory"],
+    engine: CollectEngine,
     poll_seconds: float = 0.01,
 ) -> pl.DataFrame:
     """Collect in the background while propagating request cancellation."""
@@ -105,18 +107,16 @@ def _cancellable_collect(
         raise ValueError("poll_seconds must be a positive finite number")
 
     checkpoint_label = (
-        "streaming_collect_before_native" if engine == "streaming" else "auto_collect_before_native"
+        "streaming_collect_before_native"
+        if engine == "streaming"
+        else "in_memory_collect_before_native"
     )
-    poll_label = "streaming_collect_poll" if engine == "streaming" else "auto_collect_poll"
+    poll_label = "streaming_collect_poll" if engine == "streaming" else "in_memory_collect_poll"
     execution_context.checkpoint(label=checkpoint_label)
     execution_context.record_collect()
     query = lf.collect(engine=engine, background=True)
     while True:
-        try:
-            result = query.fetch()
-        except pl.exceptions.ComputeError as exc:
-            _reraise_python_scan_failure(exc)
-            raise
+        result = query.fetch()
         if result is not None:
             return result
         try:
@@ -152,20 +152,20 @@ def cancellable_streaming_collect(
 def execution_collect(
     lf: pl.LazyFrame,
     *,
+    engine: CollectEngine,
     execution_context: ExecutionContext | None = None,
-    engine: Literal["auto", "streaming", "in-memory"] = "auto",
     poll_seconds: float = 0.01,
 ) -> pl.DataFrame:
-    """Collect with native cancellation whenever an execution context is active."""
-    if engine not in {"auto", "streaming", "in-memory"}:
-        raise ValueError("engine must be 'auto', 'streaming' or 'in-memory'")
+    """Collect on *engine* with native cancellation whenever an execution context is active.
+
+    The engine is the caller's to name: Polars' ``auto`` resolves differently by version
+    and by ``POLARS_ENGINE_AFFINITY`` (specs/io-layer).
+    """
+    if engine not in {"streaming", "in-memory"}:
+        raise ValueError("engine must be 'streaming' or 'in-memory'")
     context = execution_context or current_execution_context()
     if context is None:
-        try:
-            return lf.collect(engine=engine)
-        except pl.exceptions.ComputeError as exc:
-            _reraise_python_scan_failure(exc)
-            raise
+        return lf.collect(engine=engine)
     return _cancellable_collect(
         lf,
         execution_context=context,
@@ -230,6 +230,8 @@ def bounded_collect_batches(
                 fast_checkpoint=True,
                 execution_context=metrics_context,
                 node_id=node_id,
+                # Read back here by Polars alone, which reads a 128-bit integer.
+                internal=True,
             )
             source = scan_parts(part_paths(staging))
         chunk_size, _, _ = _budgeted_rows(
@@ -238,51 +240,26 @@ def bounded_collect_batches(
             execution_context=metrics_context,
         )
         total = int(
-            execution_collect(source.select(pl.len()), execution_context=metrics_context).item()
+            execution_collect(
+                source.select(pl.len()), execution_context=metrics_context, engine="streaming"
+            ).item()
         )
         for offset in range(0, total, chunk_size):
             if metrics_context is not None:
                 with metrics_context.stage(stage_name, node_id=node_id):
                     batch = execution_collect(
-                        source.slice(offset, chunk_size), execution_context=metrics_context
+                        source.slice(offset, chunk_size),
+                        execution_context=metrics_context,
+                        engine="streaming",
                     )
             else:
-                batch = execution_collect(source.slice(offset, chunk_size))
+                batch = execution_collect(source.slice(offset, chunk_size), engine="streaming")
             if metrics_context is not None:
                 metrics_context.checkpoint(label="after_collect_batch", node_id=node_id)
             yield batch
     finally:
         if staging is not None:
             shutil.rmtree(staging, ignore_errors=True)
-
-
-# Polars reports an exception raised inside a Python scan source as a
-# ``ComputeError`` carrying only its text, which would turn a typed Haute error
-# (feature mismatch, cancellation, memory limit) into an anonymous engine error.
-# The source parks the original under a token named in the message, and every
-# collect helper above hands the original back to its caller.
-_PYTHON_SCAN_FAILURE_MARKER = "haute-python-scan-failure:"
-_PYTHON_SCAN_FAILURE_LIMIT = 64
-_python_scan_failures: LRUCache[str, BaseException] = LRUCache(max_size=_PYTHON_SCAN_FAILURE_LIMIT)
-
-
-def _park_python_scan_failure(exc: BaseException) -> str:
-    token = uuid.uuid4().hex
-    _python_scan_failures.put(token, exc)
-    return f"{_PYTHON_SCAN_FAILURE_MARKER}{token}"
-
-
-def _reraise_python_scan_failure(exc: pl.exceptions.ComputeError) -> None:
-    """Re-raise the original exception a Python scan source parked, if any."""
-    message = str(exc)
-    start = message.find(_PYTHON_SCAN_FAILURE_MARKER)
-    if start < 0:
-        return
-    token_start = start + len(_PYTHON_SCAN_FAILURE_MARKER)
-    token = message[token_start : token_start + 32]
-    original = _python_scan_failures.pop(token)
-    if original is not None:
-        raise original
 
 
 def row_local_python_scan(
@@ -518,7 +495,11 @@ def _register_python_scan(
     schema: pl.Schema,
     caller_context: contextvars.Context,
 ) -> pl.LazyFrame:
-    """Register *frames* as a Polars IO source run in the caller's context."""
+    """Register *frames* as a Polars IO source run in the caller's context.
+
+    An exception the source raises reaches the caller as itself: Polars hands
+    it to every collect, batch and sink seam unchanged.
+    """
 
     def io_source(
         with_columns: list[str] | None,
@@ -535,10 +516,6 @@ def _register_python_scan(
                 frame = run_context.run(next, iterator)
             except StopIteration:
                 return
-            except BaseException as exc:
-                raise RuntimeError(
-                    f"{_park_python_scan_failure(exc)} {type(exc).__name__}: {exc}"
-                ) from exc
             yield frame
 
     return register_io_source(io_source, schema=schema)
@@ -626,10 +603,14 @@ def _streaming_sink_to_path(
     *,
     fmt: str,
     compression: Literal["lz4", "zstd"],
+    internal: bool = False,
 ) -> None:
     if fmt == "csv":
         sink_plan = lf.sink_csv(target, lazy=True, engine="streaming")
     else:
+        # A staging copy only Polars reads back (*internal*) may hold a 128-bit integer.
+        if not internal:
+            refuse_wide_integers(lf.collect_schema())
         sink_plan = lf.sink_parquet(
             target,
             compression=compression,
@@ -642,19 +623,6 @@ def _streaming_sink_to_path(
         sink_plan,
         engine="streaming",
     )
-
-
-def _eager_write_to_path(
-    df: pl.DataFrame,
-    target: Path,
-    *,
-    fmt: str,
-    compression: Literal["lz4", "zstd"],
-) -> None:
-    if fmt == "csv":
-        df.write_csv(target)
-    else:
-        df.write_parquet(target, compression=compression)
 
 
 _T = TypeVar("_T")
@@ -674,13 +642,16 @@ def _write_atomically_if_possible(path: Path, writer: Callable[[Path], _T]) -> _
 _streaming_chunk_lock = threading.Lock()
 _streaming_chunk_setting: int | None = None
 _streaming_chunk_caps: dict[object, int] = {}
+# The variable ``pl.Config.set_streaming_chunk_size`` writes and a spawned
+# worker inherits: Polars 2 calls its streaming chunk the ideal morsel size.
+STREAMING_CHUNK_SIZE_ENV = "POLARS_IDEAL_MORSEL_SIZE"
 # A worker spawned while a cap is active reads its setting from here rather
-# than from ``POLARS_STREAMING_CHUNK_SIZE``, which holds the parent's cap.
+# than from ``STREAMING_CHUNK_SIZE_ENV``, which holds the parent's cap.
 SPAWN_STREAMING_CHUNK_SIZE_ENV = "HAUTE_SPAWN_STREAMING_CHUNK_SIZE"
 
 
 def _configured_streaming_chunk_size() -> int | None:
-    raw = pl.Config.state(if_set=True).get("POLARS_STREAMING_CHUNK_SIZE")
+    raw = pl.Config.state(if_set=True).get(STREAMING_CHUNK_SIZE_ENV)
     try:
         value = int(raw) if raw else 0
     except (TypeError, ValueError):
@@ -701,7 +672,7 @@ def set_streaming_chunk_size(chunk_size: int) -> None:
     """Set the editor's streaming chunk size for this process.
 
     Polars keeps the value as process-wide configuration: it writes the
-    ``POLARS_STREAMING_CHUNK_SIZE`` environment variable, which a worker
+    :data:`STREAMING_CHUNK_SIZE_ENV` environment variable, which a worker
     spawned afterwards inherits. The value changes memory use and speed, never
     results. An active :func:`streaming_chunk_size_cap` keeps applying below it.
     """
@@ -734,7 +705,7 @@ def streaming_chunk_size_for_spawn() -> Iterator[dict[str, str]]:
     """Hold the chunk size steady while a child spawns; yield what it must inherit.
 
     While a cap is active the child inherits the parent's capped
-    ``POLARS_STREAMING_CHUNK_SIZE``, which this process keeps using, so the
+    :data:`STREAMING_CHUNK_SIZE_ENV`, which this process keeps using, so the
     setting travels under :data:`SPAWN_STREAMING_CHUNK_SIZE_ENV` instead (the
     default when none was ever configured) and the child applies it with
     :func:`apply_spawned_streaming_chunk_size`. With no cap there is nothing to
@@ -852,10 +823,15 @@ def _sink_parquet_hashing(
     target: Path,
     *,
     compression: Literal["lz4", "zstd"],
+    internal: bool,
 ) -> str:
     with HashingWriter(open(target, "wb")) as writer:
         _streaming_sink_to_path(
-            lf, cast("IO[bytes]", writer), fmt="parquet", compression=compression
+            lf,
+            cast("IO[bytes]", writer),
+            fmt="parquet",
+            compression=compression,
+            internal=internal,
         )
     return writer.hexdigest()
 
@@ -865,13 +841,20 @@ def hashed_streaming_sink(
     path: str | Path,
     *,
     fast_checkpoint: bool = False,
+    internal: bool = False,
 ) -> str:
-    """Sink a LazyFrame with write-time hashing and Polars streaming."""
+    """Sink a LazyFrame with write-time hashing and Polars streaming.
+
+    A 128-bit integer is refused, unless the file is *internal*: a staging copy
+    only Polars reads back.
+    """
     path = Path(path)
     compression = _checkpoint_compression(fast_checkpoint)
     return _write_atomically_if_possible(
         path,
-        lambda target: _sink_parquet_hashing(lf, target, compression=compression),
+        lambda target: _sink_parquet_hashing(
+            lf, target, compression=compression, internal=internal
+        ),
     )
 
 
@@ -880,12 +863,13 @@ def bounded_hashed_sink(
     path: str | Path,
     *,
     fast_checkpoint: bool = False,
+    internal: bool = False,
 ) -> str:
     """Sink a LazyFrame through the native streaming API, hashing during write."""
     path = Path(path)
     return _bounded_sink_execute(
         path,
-        lambda: hashed_streaming_sink(lf, path, fast_checkpoint=fast_checkpoint),
+        lambda: hashed_streaming_sink(lf, path, fast_checkpoint=fast_checkpoint, internal=internal),
     )
 
 
@@ -933,6 +917,14 @@ def read_parquet_metadata(path: Path) -> dict[str, Any]:
     import pyarrow.parquet as pq
 
     stat = path.stat()
+    # pyarrow cannot read the footer of a file holding a 128-bit integer, nor name it. A
+    # file Polars cannot read as Parquet is pyarrow's to report, as it always has.
+    try:
+        schema = pl.read_parquet_schema(path)
+    except pl.exceptions.PolarsError:
+        schema = None
+    if schema is not None:
+        refuse_wide_integers(schema, path=str(path))
     meta = pq.read_metadata(str(path))
     arrow_schema = pq.read_schema(str(path))
     columns = {name: str(arrow_schema.field(name).type) for name in arrow_schema.names}
@@ -969,44 +961,23 @@ def read_parquet_metadata(path: Path) -> dict[str, Any]:
 
 
 def _malloc_trim() -> None:
-    """Ask the OS to return freed heap pages.
+    """Return the C heap's freed pages to the operating system, on Linux.
 
-    After ``del df``, Python's allocator keeps the pages mapped — RSS
-    stays high even though the memory is logically free.
-
-    Platform strategies:
-
-    - **Linux**: ``malloc_trim(0)`` via glibc forces arena release.
-    - **Windows**: ``HeapCompact`` on the process default heap.  This
-      compacts the heap where Rust/Polars allocations live (via
-      ``HeapAlloc``).  The previous ``_heapmin()`` call only affected
-      the CRT heap which Polars does not use.
-    - **macOS**: no direct API — callers should ``gc.collect()`` beforehand.
+    glibc keeps pages freed beneath a later allocation that still holds its heap's
+    top (NumPy buffers, a model's, Python's own large objects) until ``malloc_trim``
+    releases them. It does not reach Polars, which allocates through jemalloc on
+    Linux. Elsewhere it does nothing: on Windows ``HeapCompact`` returned none of a
+    freed Polars frame, NumPy buffers or Python objects (PL2-17), and macOS has no
+    such call.
     """
     import sys
 
-    platform = sys.platform
-    if platform == "linux":
-        try:
-            import ctypes
+    if sys.platform != "linux":
+        return
+    try:
+        import ctypes
 
-            ctypes.CDLL("libc.so.6").malloc_trim(0)
-        except (OSError, AttributeError):
-            logger.debug("malloc_trim_unavailable", platform=platform)
-    elif platform == "win32":
-        try:
-            import ctypes
-            import ctypes.wintypes
-
-            kernel32 = cast(Any, ctypes).windll.kernel32
-            # GetProcessHeap returns a HANDLE (void*) — must declare
-            # the return type explicitly or ctypes truncates it to
-            # c_int (32-bit) on 64-bit Python, causing access violations.
-            kernel32.GetProcessHeap.restype = ctypes.wintypes.HANDLE
-            kernel32.HeapCompact.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD]
-            kernel32.HeapCompact.restype = ctypes.c_size_t
-            heap = kernel32.GetProcessHeap()
-            kernel32.HeapCompact(heap, 0)
-        except (OSError, AttributeError):
-            logger.debug("heap_compact_unavailable", platform=platform)
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        logger.debug("malloc_trim_unavailable", platform=sys.platform)
     # macOS / other: no native heap compaction API available

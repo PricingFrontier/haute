@@ -16,7 +16,9 @@ def quotes(): ...
 def claims(): ...
 
 
-@pipeline.edge_join(how="left", on=["policy_id"], validate="m:1")
+@pipeline.edge_join(
+    how="left", on=["policy_id"], validate="m:1", maintain_order="left_right"
+)
 def quote_claims(quotes, claims): ...
 
 

@@ -65,24 +65,27 @@ class NativePyfuncModel:
         import polars as pl
 
         from haute._model_scorer import score_frame
+        from haute._polars_utils import streaming_collect
 
         del params
         frame = (
             model_input if isinstance(model_input, pl.DataFrame) else pl.from_pandas(model_input)
         )
-        scored = score_frame(
-            model=self._scoring.raw_model,
-            lf=frame.lazy(),
-            features=list(self._scoring.feature_names),
-            cat_feature_names=self._scoring.cat_feature_names,
-            flavor=self._scoring.flavor,
-            task=self._task,
-            output_col=_PREDICTION_COLUMN,
-            batch=False,
-            categorical_levels=self._categorical_levels or None,
-            offset_column=self._scoring.offset_column,
-            offset_link=self._scoring.offset_link,
-        ).collect()
+        scored = streaming_collect(
+            score_frame(
+                model=self._scoring.raw_model,
+                lf=frame.lazy(),
+                features=list(self._scoring.feature_names),
+                cat_feature_names=self._scoring.cat_feature_names,
+                flavor=self._scoring.flavor,
+                task=self._task,
+                output_col=_PREDICTION_COLUMN,
+                batch=False,
+                categorical_levels=self._categorical_levels or None,
+                offset_column=self._scoring.offset_column,
+                offset_link=self._scoring.offset_link,
+            )
+        )
         if self._task == "classification":
             return pl.DataFrame(
                 {

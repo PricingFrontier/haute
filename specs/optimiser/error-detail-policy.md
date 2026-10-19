@@ -25,6 +25,7 @@ Python exception class:
 | --- | --- | --- |
 | Explicit configuration, schema, projection, bounded-memory, or versioned public-contract validation | Existing 4xx / `contract_error` | The stable actionable validation detail or structured public payload. |
 | Unknown pipeline catch-all | 500 / `error` | `Pipeline execution failed. Check the server logs for details.` |
+| Solver input whose quotes are not one after another (checked once the grid builder refuses the file) | 400 / `contract_error` | Names the quote column, the scenario index column and the first quote out of place. |
 | Unknown grid-construction catch-all | 500 / `error` | `Grid construction failed. Check the server logs for details.` |
 | Invalid server-owned apply/ratebook artifact handle | 500 | A fixed “artifact reference is invalid; re-run the solve” detail. |
 | Valid handle whose artifact is absent | 410 | A fixed “artifact is no longer available; re-run the solve” detail. |

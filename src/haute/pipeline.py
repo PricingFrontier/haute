@@ -564,14 +564,12 @@ def _collect_standalone_output(result: Any) -> pl.DataFrame:
     """Collect a lazy standalone output through Haute's collect seam.
 
     Collecting inside ``run()``/``score()`` keeps the scenario context active
-    while the plan executes and restores typed errors raised inside Haute's
-    Python scans, which a caller's own ``.collect()`` would see as Polars
-    ``ComputeError``.
+    while the plan executes, so Haute's Python scans see it.
     """
     if isinstance(result, pl.LazyFrame):
         from haute._polars_utils import execution_collect
 
-        return execution_collect(result)
+        return execution_collect(result, engine="streaming")
     return cast(pl.DataFrame, result)
 
 

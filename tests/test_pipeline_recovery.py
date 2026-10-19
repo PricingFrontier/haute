@@ -1568,6 +1568,157 @@ def test_missing_submodel_preserves_occurrence_and_unrelated_root_nodes(
     )
 
 
+def test_a_refusal_no_element_shows_is_listed_beside_other_problems(tmp_path: Path) -> None:
+    """The parse refuses the constants path first; a broken join elsewhere no longer hides it."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "global_constants.json").write_text('{"constants": []}')
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        import polars as pl
+
+        PATH = "config/global_constants.json"
+        pipeline = haute.Pipeline("p", global_constants=PATH)
+
+        @pipeline.polars
+        def quotes():
+            return pl.LazyFrame({"id": [1]})
+
+        @pipeline.polars
+        def rates():
+            return pl.LazyFrame({"id": [1]})
+
+        @pipeline.edge_join(how="left", on=["id"])
+        def joined(quotes, rates): ...
+
+        pipeline.connect("quotes", "joined", target_port="base")
+        pipeline.connect("rates", "joined", target_port="join")
+        """,
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    by_code = {diagnostic.code: diagnostic for diagnostic in document.diagnostics}
+    assert "node_config_invalid" in by_code
+    assert "global_constants must be a string literal" in by_code["pipeline_parse_invalid"].message
+
+
+def test_a_pipeline_name_that_is_not_a_literal_degrades_without_blanking_the_canvas(
+    tmp_path: Path,
+) -> None:
+    """It failed the whole document as an internal error; the nodes now load around it."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+
+        NAME = "motor"
+        pipeline = haute.Pipeline(NAME)
+
+        @pipeline.polars
+        def quotes():
+            return None
+        """,
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "degraded"
+    assert document.pipeline_name == "main"
+    assert [node.availability for node in document.nodes] == ["ready"]
+    (diagnostic,) = document.diagnostics
+    assert diagnostic.code == "pipeline_constructor_invalid"
+    assert "pipeline name must be a string literal" in diagnostic.message
+
+
+def test_a_refusal_shown_element_by_element_is_not_listed_again(tmp_path: Path) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("p")
+
+        @pipeline.polars
+        def quotes():
+            return None
+
+        pipeline.connect("ghost", "quotes")
+        """,
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert [diagnostic.code for diagnostic in document.diagnostics] == [
+        "connection_endpoint_missing"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("output_ports", "message"),
+    [
+        pytest.param(
+            '[{"name": "out", "source": {"nodeId": "ghost", "handleId": None}}]',
+            "missing child nodes: ['ghost']",
+            id="missing-node",
+        ),
+        pytest.param(
+            '[{"name": "out", "source": {"nodeId": "quotes", "handleId": None}}, '
+            '{"name": "out", "source": {"nodeId": "quotes", "handleId": None}}]',
+            "duplicate public port names: ['out']",
+            id="duplicate-name",
+        ),
+    ],
+)
+def test_a_submodel_whose_ports_break_its_interface_is_unavailable_on_its_own(
+    tmp_path: Path, output_ports: str, message: str
+) -> None:
+    """Its own parse refuses it; the definition model refusing it failed the whole document."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "modules").mkdir()
+    _write(
+        tmp_path / "modules" / "inputs.py",
+        "import haute\nimport polars as pl\n\n"
+        'submodel = haute.Submodel("inputs", definition_id="inputs", input_ports=[], '
+        f'output_ports={output_ports}, pipeline_dir="..")\n\n'
+        "@submodel.polars\ndef quotes():\n"
+        '    df = pl.LazyFrame({"quote_id": [1]})\n    return df\n',
+    )
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("ports")
+
+        @pipeline.polars
+        def healthy():
+            return None
+
+        pipeline.submodel("modules/inputs.py", "inputs")
+        """,
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "degraded"
+    by_id = {node.authored_id: node for node in document.nodes}
+    assert by_id["healthy"].availability == "ready"
+    assert by_id["inputs"].availability == "unavailable"
+    reasons = [
+        diagnostic.message
+        for diagnostic in document.diagnostics
+        if diagnostic.diagnostic_id in by_id["inputs"].diagnostic_ids
+    ]
+    assert any(message in reason for reason in reasons)
+
+
 def test_unknown_submodel_decorator_is_rejected_strictly_and_conserved(
     tmp_path: Path,
 ) -> None:
@@ -2320,6 +2471,557 @@ def _remove_repair_request(
         "target_recovery_id": target.recovery_id,
         "delete_config": False,
     }
+
+
+def _connection_request(document: PipelineEditorDocument, code: str) -> dict[str, object]:
+    """The banner's Remove connection request for the first diagnostic of *code*."""
+    diagnostic = next(item for item in document.diagnostics if item.code == code)
+    return {
+        "source_file": document.source_file,
+        "source_revision": document.source_revision,
+        "target_source_file": diagnostic.source_file,
+        "target_connection_id": diagnostic.element_id,
+    }
+
+
+_CONNECTED = """
+    import haute
+    pipeline = haute.Pipeline("connections")
+
+    @pipeline.polars
+    def quotes():
+        return None
+
+    @pipeline.polars
+    def priced(quotes):
+        return quotes
+
+    pipeline.connect("quotes", "priced")
+"""
+
+
+@pytest.mark.parametrize(
+    ("extra", "code"),
+    [
+        pytest.param(
+            'pipeline.connect("ghost", "priced")\n', "connection_endpoint_missing", id="dangling"
+        ),
+        pytest.param(
+            'pipeline.connect("quotes", "priced")\n', "connection_duplicate", id="duplicate"
+        ),
+    ],
+)
+def test_remove_connection_deletes_only_the_broken_connect_line(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    extra: str,
+    code: str,
+) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(tmp_path / "main.py", _CONNECTED + "    " + extra)
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    assert document.load_status == "degraded"
+
+    response = client.post(
+        "/api/pipeline/repair/connection/remove/apply",
+        json=_connection_request(document, code),
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["repair_kind"] == "remove_connection"
+    assert payload["document"]["load_status"] == "ready"
+    source = pipeline_file.read_text(encoding="utf-8")
+    assert source.count("pipeline.connect(") == 1
+    assert 'pipeline.connect("quotes", "priced")' in source
+    assert [node.id for node in parse_pipeline_file(pipeline_file).nodes] == ["quotes", "priced"]
+
+
+def test_remove_connection_takes_out_one_duplicate_at_a_time(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recovery ids renumber once a declaration is gone, so the removal is judged by name."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(
+        tmp_path / "main.py", _CONNECTED + '    pipeline.connect("quotes", "priced")\n' * 2
+    )
+    monkeypatch.chdir(tmp_path)
+
+    for remaining in (2, 1):
+        document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+        response = client.post(
+            "/api/pipeline/repair/connection/remove/apply",
+            json=_connection_request(document, "connection_duplicate"),
+        )
+        assert response.status_code == 200, response.text
+        assert pipeline_file.read_text(encoding="utf-8").count("pipeline.connect(") == remaining
+
+    assert response.json()["document"]["load_status"] == "ready"
+
+
+def test_a_quote_input_named_after_its_table_keeps_its_connected_consumer(
+    tmp_path: Path,
+) -> None:
+    """An input may name a table after itself; a connect() binding that table is no mistake."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    config = tmp_path / "config" / "quote_input" / "quotes.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        '{"path": "data/request.json", "tables": [{"path": "$[:]", "label": "quotes", '
+        '"emit": true, "columns": [{"name": "id", "path": "$[:].id", "type": "int", '
+        '"status": "Confirmed", "selected": true}]}]}',
+        encoding="utf-8",
+    )
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("frames")
+
+        @pipeline.api_input(config="config/quote_input/quotes.json")
+        def quotes(): ...
+
+        @pipeline.polars
+        def priced(quotes):
+            return quotes
+
+        @pipeline.polars
+        def rates():
+            return None
+
+        @pipeline.edge_join(how="left", on=["id"])
+        def joined(priced, rates): ...
+
+        pipeline.connect("quotes", "priced", source_port="quotes")
+        pipeline.connect("priced", "joined", target_port="base")
+        pipeline.connect("rates", "joined", target_port="join")
+        """,
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    by_id = {node.authored_id: node for node in document.nodes}
+    assert by_id["priced"].availability == "ready"
+    assert by_id["joined"].availability == "unavailable"
+    assert [diagnostic.code for diagnostic in document.diagnostics] == ["node_config_invalid"]
+
+
+def test_remove_connection_refuses_a_stale_document_or_an_unknown_connection(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Planned against the document the editor showed, it never writes over a newer one."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(
+        tmp_path / "main.py", _CONNECTED + '    pipeline.connect("ghost", "priced")\n'
+    )
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    request = _connection_request(document, "connection_endpoint_missing")
+
+    unknown = client.post(
+        "/api/pipeline/repair/connection/remove/apply",
+        json={**request, "target_connection_id": "edge:not-in-this-file"},
+    )
+    assert unknown.status_code == 409
+    assert unknown.json()["detail"]["code"] == "repair_target_not_unique"
+
+    _write_bytes(pipeline_file, pipeline_file.read_bytes() + b"\n# concurrent external edit\n")
+    externally_edited = pipeline_file.read_bytes()
+    stale = client.post("/api/pipeline/repair/connection/remove/apply", json=request)
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "repair_revision_conflict"
+    assert pipeline_file.read_bytes() == externally_edited
+
+
+def test_remove_connection_reaches_a_broken_connection_inside_a_submodel(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "modules").mkdir()
+    child = _write(
+        tmp_path / "modules" / "inputs.py",
+        "import haute\nimport polars as pl\n\n"
+        'submodel = haute.Submodel("inputs", definition_id="inputs", input_ports=[], '
+        'output_ports=[{"name": "out", "source": {"nodeId": "quotes", "handleId": None}}], '
+        'pipeline_dir="..")\n\n'
+        "@submodel.polars\ndef quotes():\n    return None\n\n"
+        'submodel.connect("ghost", "quotes")\n',
+    )
+    # The parent reads the submodel's output: once the definition loads, that
+    # edge is shown without its port, which is no change the removal made.
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("connections")
+
+        @pipeline.polars
+        def priced(out):
+            return out
+
+        pipeline.submodel("modules/inputs.py", "inputs")
+        pipeline.connect("inputs", "priced", source_port="out")
+        """,
+    )
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    request = _connection_request(document, "connection_endpoint_missing")
+    assert request["target_source_file"] == "modules/inputs.py"
+
+    response = client.post("/api/pipeline/repair/connection/remove/apply", json=request)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["document"]["load_status"] == "ready"
+    assert "submodel.connect(" not in child.read_text(encoding="utf-8")
+
+
+def test_remove_connection_mends_a_submodel_with_no_nodes(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keyed by its path while it fails and by its id once it loads, it is one definition."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "modules").mkdir()
+    child = _write(
+        tmp_path / "modules" / "empty.py",
+        "import haute\n\n"
+        'submodel = haute.Submodel("empty", definition_id="empty", input_ports=[], '
+        'output_ports=[], pipeline_dir="..")\n\n'
+        'submodel.connect("gone_a", "gone_b")\n',
+    )
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("connections")
+
+        @pipeline.polars
+        def quotes():
+            return None
+
+        pipeline.submodel("modules/empty.py", "empty")
+        """,
+    )
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    assert document.submodels is not None
+    assert list(document.submodels) == ["modules/empty.py"]
+
+    response = client.post(
+        "/api/pipeline/repair/connection/remove/apply",
+        json=_connection_request(document, "connection_endpoint_missing"),
+    )
+
+    assert response.status_code == 200, response.text
+    repaired = response.json()["document"]
+    assert repaired["load_status"] == "ready"
+    assert list(repaired["submodels"]) == ["empty"]
+    assert "submodel.connect(" not in child.read_text(encoding="utf-8")
+
+
+_PRICING = (
+    "import haute\nimport polars as pl\n\n"
+    'submodel = haute.Submodel("pricing", definition_id="pricing", input_ports=[], '
+    'output_ports=[{"name": "out", "source": {"nodeId": "rates", "handleId": None}}], '
+    'pipeline_dir="..")\n\n'
+    "@submodel.polars\ndef rates():\n    return None\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("child_extra", "parent_extra"),
+    [
+        pytest.param("", 'pipeline.connect("ghost", "quotes")\n', id="in-the-pipeline"),
+        pytest.param('\nsubmodel.connect("ghost", "rates")\n', "", id="in-the-definition"),
+    ],
+)
+def test_remove_connection_beside_one_file_registered_under_two_spellings(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    child_extra: str,
+    parent_extra: str,
+) -> None:
+    """Recovery groups registrations by the file they resolve to and names it by the first."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "modules").mkdir()
+    _write(tmp_path / "modules" / "pricing.py", _PRICING + child_extra)
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        "import haute\n"
+        'pipeline = haute.Pipeline("connections")\n\n'
+        "@pipeline.polars\ndef quotes():\n    return None\n\n"
+        'pipeline.submodel("modules/pricing.py", "pricing")\n'
+        'pipeline.submodel("./modules/pricing.py", "pricing_copy", instance_of="pricing")\n'
+        + parent_extra,
+    )
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    assert document.load_status == "degraded"
+    assert document.submodels is not None
+    assert [definition.file for definition in document.submodels.values()] == ["modules/pricing.py"]
+
+    response = client.post(
+        "/api/pipeline/repair/connection/remove/apply",
+        json=_connection_request(document, "connection_endpoint_missing"),
+    )
+
+    assert response.status_code == 200, response.text
+    repaired = response.json()["document"]
+    assert repaired["load_status"] == "ready"
+    assert {key: value["file"] for key, value in repaired["submodels"].items()} == {
+        "pricing": "modules/pricing.py"
+    }
+
+
+@pytest.mark.parametrize(
+    ("source", "code", "refusal"),
+    [
+        pytest.param(
+            _CONNECTED.replace(
+                'pipeline.connect("quotes", "priced")',
+                'pipeline.connect("quotes", "priced").connect("ghost", "priced")',
+            ),
+            "connection_endpoint_missing",
+            "repair_connection_chain_mixed",
+            id="chained",
+        ),
+        pytest.param(
+            _CONNECTED.replace(
+                "@pipeline.polars\n    def priced",
+                "@pipeline.polars\n    def quotes():\n        return None\n\n"
+                "    @pipeline.polars\n    def priced",
+            ).replace('    pipeline.connect("quotes", "priced")\n', ""),
+            "implicit_binding_ambiguous",
+            "repair_connection_not_declared",
+            id="parameter-name",
+        ),
+        pytest.param(
+            _CONNECTED
+            + '    pipeline.submodel("modules/inputs.py", "inputs").connect("ghost", "priced")\n',
+            "connection_endpoint_missing",
+            "repair_connection_chain_mixed",
+            id="chained-after-a-registration",
+        ),
+    ],
+)
+def test_remove_connection_refuses_what_is_not_one_connect_line_without_writing(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    code: str,
+    refusal: str,
+) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(tmp_path / "main.py", source)
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    before = pipeline_file.read_bytes()
+
+    response = client.post(
+        "/api/pipeline/repair/connection/remove/apply",
+        json=_connection_request(document, code),
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == refusal
+    assert pipeline_file.read_bytes() == before
+
+
+def _submodel_project(root: Path, *, input_ports: str, body: str, parent_extra: str = "") -> Path:
+    """A pipeline registering modules/inputs.py, whose ports and nodes are given."""
+    (root / "modules").mkdir()
+    _write(
+        root / "modules" / "inputs.py",
+        "import haute\nimport polars as pl\n\n"
+        f'submodel = haute.Submodel("inputs", definition_id="inputs", input_ports={input_ports}, '
+        'output_ports=[{"name": "out", "source": {"nodeId": "quotes", "handleId": None}}], '
+        'pipeline_dir="..")\n\n'
+        "@submodel.polars\ndef quotes():\n    return None\n\n" + body,
+    )
+    return _write(
+        root / "main.py",
+        "import haute\n"
+        'pipeline = haute.Pipeline("shapes")\n\n'
+        'pipeline.submodel("modules/inputs.py", "inputs")\n' + parent_extra,
+    )
+
+
+def test_an_explore_with_no_input_inside_a_submodel_is_listed_in_it(tmp_path: Path) -> None:
+    """Checked by the submodel's own parse, the failure is attributed to its node."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _submodel_project(
+        tmp_path, input_ports="[]", body="@submodel.explore\ndef look(): ...\n"
+    )
+    with pytest.raises(ParseError, match="exactly one incoming edge") as refused:
+        parse_pipeline_file(pipeline_file)
+    assert refused.value.context["source_file"].endswith("inputs.py")
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.submodels is not None
+    (definition,) = document.submodels.values()
+    look = next(node for node in definition.graph.nodes if node.authored_id == "look")
+    assert look.availability == "unavailable"
+    codes = {
+        item.code for item in document.diagnostics if item.diagnostic_id in look.diagnostic_ids
+    }
+    assert codes == {"node_topology_invalid"}
+
+
+def test_an_explore_a_port_feeds_is_not_flagged_in_an_unavailable_submodel(
+    tmp_path: Path,
+) -> None:
+    """The port is its input: recovery counts it, as the parse does."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _submodel_project(
+        tmp_path,
+        input_ports='[{"name": "records", "targets": [{"nodeId": "look", "handleId": None}]}]',
+        body="@submodel.explore\ndef look(records): ...\n\n"
+        "@submodel.polars\ndef rates():\n    return None\n\n"
+        '@submodel.edge_join(how="left", on=["id"])\ndef joined(quotes, rates): ...\n\n'
+        'submodel.connect("quotes", "joined", target_port="base")\n'
+        'submodel.connect("rates", "joined", target_port="join")\n',
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.submodels is not None
+    (definition,) = document.submodels.values()
+    by_id = {node.authored_id: node for node in definition.graph.nodes}
+    assert by_id["joined"].availability == "unavailable"
+    assert by_id["look"].availability == "ready"
+
+
+def test_a_submodel_copy_naming_a_missing_original_is_its_own_to_remove(
+    tmp_path: Path,
+) -> None:
+    """The copy breaks the rule, so its card is unavailable, and Remove takes it out."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute._pipeline_repair import apply_remove_unavailable_node_plan
+    from haute.schemas import PipelineRepairRemoveRequest
+
+    pipeline_file = _submodel_project(
+        tmp_path,
+        input_ports="[]",
+        body="",
+        parent_extra='pipeline.submodel("modules/inputs.py", "copy", instance_of="ghost")\n',
+    )
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    by_id = {node.authored_id: node for node in document.nodes}
+    assert by_id["inputs"].availability == "ready"
+    assert by_id["copy"].availability == "unavailable"
+    assert [item.code for item in document.diagnostics] == ["submodel_instance_invalid"]
+
+    result = apply_remove_unavailable_node_plan(
+        project_root=tmp_path,
+        request=PipelineRepairRemoveRequest(
+            source_file=document.source_file,
+            source_revision=document.source_revision,
+            target_source_file=by_id["copy"].source_file,
+            target_recovery_id=by_id["copy"].recovery_id,
+        ),
+    )
+
+    assert result.document.load_status == "ready"
+    assert "copy" not in pipeline_file.read_text(encoding="utf-8")
+
+
+def _quote_input_project(root: Path, consumer: str, connect: str) -> Path:
+    """A Quote Input with one table, `quotes`, and a consumer written as given."""
+    config = root / "config" / "quote_input" / "request.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        '{"path": "data/request.json", "tables": [{"path": "$[:]", "label": "quotes", '
+        '"emit": true, "columns": [{"name": "id", "path": "$[:].id", "type": "int", '
+        '"status": "Confirmed", "selected": true}]}]}',
+        encoding="utf-8",
+    )
+    return _write(
+        root / "main.py",
+        "import haute\n"
+        'pipeline = haute.Pipeline("frames")\n\n'
+        '@pipeline.api_input(config="config/quote_input/request.json")\n'
+        "def request(): ...\n\n" + consumer + "\n" + connect,
+    )
+
+
+def test_a_quote_input_connection_naming_no_table_is_a_connection_to_remove(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It failed the whole document; now the connection is broken, and removable."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _quote_input_project(
+        tmp_path,
+        "@pipeline.polars\ndef consume(quotes):\n    return quotes\n",
+        'pipeline.connect("request", "consume")\n',
+    )
+    with pytest.raises(ParseError, match="does not name the table it takes") as refused:
+        parse_pipeline_file(pipeline_file)
+    assert refused.value.context["frame_missing_edges"] == ["request -> consume"]
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    assert document.load_status == "degraded"
+    assert [diagnostic.code for diagnostic in document.diagnostics] == ["connection_frame_missing"]
+
+    response = client.post(
+        "/api/pipeline/repair/connection/remove/apply",
+        json=_connection_request(document, "connection_frame_missing"),
+    )
+
+    assert response.status_code == 200, response.text
+    assert "pipeline.connect(" not in pipeline_file.read_text(encoding="utf-8")
+
+
+def test_a_parameter_named_after_a_quote_input_is_its_nodes_to_recover(tmp_path: Path) -> None:
+    """The parameter binds no table: its node is unavailable, and Recover rebinds it."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute._pipeline_repair import apply_recover_unavailable_node_plan
+    from haute.schemas import PipelineRepairRecoverRequest
+
+    pipeline_file = _quote_input_project(
+        tmp_path, "@pipeline.polars\ndef consume(request):\n    return request\n", ""
+    )
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    consume = next(node for node in document.nodes if node.authored_id == "consume")
+    assert consume.availability == "unavailable"
+    assert [diagnostic.code for diagnostic in document.diagnostics] == ["node_input_frame_missing"]
+
+    result = apply_recover_unavailable_node_plan(
+        project_root=tmp_path,
+        request=PipelineRepairRecoverRequest(
+            source_file=document.source_file,
+            source_revision=document.source_revision,
+            target_source_file=consume.source_file,
+            target_recovery_id=consume.recovery_id,
+            action="recover",
+        ),
+    )
+
+    assert result.document.load_status == "ready"
 
 
 def test_remove_unavailable_node_rejects_implicit_consumers_without_writing(

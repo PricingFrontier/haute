@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 import pytest
 
-from haute.errors import FeatureMismatchError
+from haute.errors import FeatureMismatchError, SchemaMismatchError
 from haute.modelling._feature_contract import (
     CONTRACT_FILENAME,
     build_contract,
@@ -42,7 +42,9 @@ class TestCanonicalDtype:
 
         assert contract_dtype_name(pl.Boolean) == "Boolean"
 
-    @pytest.mark.parametrize("dtype", [pl.Utf8, pl.String, pl.Categorical])
+    @pytest.mark.parametrize(
+        "dtype", [pl.Utf8, pl.String, pl.Categorical, pl.Categorical("lexical")], ids=str
+    )
     def test_string_family(self, dtype):
         from haute._polars_dtypes import contract_dtype_name
 
@@ -138,6 +140,23 @@ class TestAssertRuntimeContractMatches:
         lf = pl.DataFrame({"age": [25, 30]}).lazy()
 
         with pytest.raises(FeatureMismatchError):
+            _assert_runtime_contract_matches(lf, path, "regression")
+
+    def test_a_live_128_bit_feature_is_refused_with_the_cast(self, tmp_path):
+        """A scoring frame whose integer feature arrives as Int128 (Polars 2's
+        Int64 + UInt64) is refused by name before any model converts it."""
+        from haute.deploy._scorer import _assert_runtime_contract_matches
+
+        path = self._save(
+            tmp_path,
+            feature_types={"policy_key": "Int64"},
+            categorical_features=[],
+        )
+        lf = pl.LazyFrame({"a": [1, 2], "b": pl.Series([3, 4], dtype=pl.UInt64)}).select(
+            policy_key=pl.col("a") + pl.col("b")
+        )
+
+        with pytest.raises(SchemaMismatchError, match="Column 'policy_key' is Int128"):
             _assert_runtime_contract_matches(lf, path, "regression")
 
     def test_dtype_drift_raises(self, tmp_path):

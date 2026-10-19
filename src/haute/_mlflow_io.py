@@ -2153,6 +2153,18 @@ def _prepare_predict_frame(
             f"Unknown model flavor {flavor!r} for predict-frame preparation. "
             f"Expected one of: {sorted(f.flavor for f in model_families())}."
         )
+    from haute._polars_dtypes import wide_integer_column, wide_integer_message
+    from haute.errors import SchemaMismatchError
+
+    # ``to_numpy`` panics on a 128-bit integer, a BaseException no handler
+    # catches, and Arrow has no type for one: name the column instead.
+    schema = df_eager.schema
+    wide = wide_integer_column(
+        {column: schema[column] for column in features or schema.names() if column in schema}
+    )
+    if wide is not None:
+        raise SchemaMismatchError(wide_integer_message(*wide), column=wide[0])
+
     predict_frame = model_family(flavor).predict_frame
     if predict_frame == "polars":
         return df_eager.select(features) if features else df_eager

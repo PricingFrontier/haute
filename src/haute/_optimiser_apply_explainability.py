@@ -12,6 +12,7 @@ from haute._builders import (
     _select_optimiser_apply_input,
     _split_ratebook_level,
     has_ratio_constraint,
+    online_apply_read_columns,
 )
 from haute._json_safe import to_json_safe
 from haute._logging import get_logger
@@ -181,7 +182,7 @@ def _explain_online(
         scenario_index=step_col,
         scenario_value=value_col,
     )
-    explained = applier.with_explainer_columns(df)
+    explained = _explained(applier, df, online_apply_read_columns(artifact))
 
     quote_rows = explained.filter(pl.col(qid_col).cast(pl.Utf8) == str(quote_id_value)).sort(
         step_col
@@ -256,6 +257,42 @@ def _explain_online(
     }
     _add_effective_constraints(detail, artifact)
     return detail
+
+
+# The row number that carries a candidate's unread columns across the explanation.
+_EXPLAINED_ROW = "__haute_explained_row__"
+
+
+def _explained(applier: Any, frame: pl.DataFrame, read_columns: tuple[str, ...]) -> pl.DataFrame:
+    """*frame* with price-contour's explainer columns, handing it only *read_columns*.
+
+    price-contour converts every column it is handed and fails on some types the
+    apply never reads, so it explains the read columns and a row number, and the
+    frame's other columns join back on that number, in their places. A frame
+    column the explainer would append is refused, as price-contour refuses it.
+    """
+    numbered = frame.with_row_index(_EXPLAINED_ROW)
+    explained: pl.DataFrame = applier.with_explainer_columns(
+        numbered.select(_EXPLAINED_ROW, *read_columns)
+    )
+    appended = [
+        column for column in explained.columns if column not in {_EXPLAINED_ROW, *read_columns}
+    ]
+    clashing = sorted(column for column in frame.columns if column in appended)
+    if clashing:
+        # price-contour's own refusal, which a frame of only the read columns cannot reach.
+        raise ValueError(
+            f"Input DataFrame already contains column(s) {clashing} that "
+            "with_explainer_columns would append. Rename or drop them before calling "
+            "this method."
+        )
+    unread = [column for column in frame.columns if column not in read_columns]
+    return explained.join(
+        numbered.select(_EXPLAINED_ROW, *unread),
+        on=_EXPLAINED_ROW,
+        how="left",
+        maintain_order="left",
+    ).select(*frame.columns, *appended)
 
 
 def _online_candidate_payload(

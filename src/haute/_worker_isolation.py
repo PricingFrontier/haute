@@ -25,6 +25,7 @@ from haute._native_memory_limit import (
     native_memory_caps_supported,
 )
 from haute._parent_watch import PARENT_PID_ENV, exit_with_parent
+from haute._polars_environment import release_polars_spill_dir
 from haute._process_memory import (
     current_process_rss_bytes,
     current_process_thread_count,
@@ -818,6 +819,7 @@ def run_isolated_worker(
                 pid = getattr(process, "pid", None)
                 if pid is not None and not process.is_alive():
                     cleanup_private_cgroups_for_pid(pid)
+                    release_polars_spill_dir(pid)
             except BaseException as exc:
                 record_finalization_error(exc, step="native memory resource cleanup")
         try:

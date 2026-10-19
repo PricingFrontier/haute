@@ -804,6 +804,17 @@ def test_grid_borrows_only_unmodified_single_parquet(tmp_path, change):
     assert _projected_parquet_input_path(frame) is None
 
 
+def test_grid_borrows_an_unmodified_single_parquet_scan(tmp_path) -> None:
+    """The borrow reads the installed Polars' plan, so an unchanged scan is borrowed."""
+    from haute.routes._optimiser_input import _projected_parquet_input_path
+
+    path = tmp_path / "part.parquet"
+    pl.DataFrame({"a": [1, 2], "b": [3, 4]}).write_parquet(path)
+
+    assert _projected_parquet_input_path(pl.scan_parquet(path)) == path
+    assert _projected_parquet_input_path(pl.scan_parquet(path).select("b", "a")) == path
+
+
 def test_setup_steps_raise_typed_failures_without_touching_a_job_store() -> None:
     """The extracted setup steps carry what the job records; the service records it."""
     from haute.routes._optimiser_input import (

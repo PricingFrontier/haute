@@ -1139,9 +1139,8 @@ Out of scope:
     own) and its dry run read the request through the same reader, one quote per request,
     each table under its name, from the records as they were sent (a frame built from them
     by inference would type them first, and refuse a misfit as Polars does rather than as
-    the input does), so a deployed Workbench Input gives each port its table where a
-    deployed Quote Input still hands every port the whole request
-    ([BUG-31](../roadmap/bugs.md#bug-31--a-deployed-quote-input-splits-a-request-into-its-tables)).
+    the input does), so a deployed Workbench Input gives each port its table, as a
+    deployed Quote Input with tables does ([deploy](../deploy/high-level.md)).
     The memory estimate of a deployed run sizes each consumer from the table that feeds it,
     not from the one-row request that holds them all. None of them reads the sample. Haute calls the two the request inputs and decides this
     once, from one set holding both types; tests fail when a check in the code names the Quote
@@ -1254,7 +1253,9 @@ Out of scope:
     their declared types, and nothing else of the frames it was given. A column fits its
     declared type when it is of that type or null throughout, when it is any integer for an
     Integer column or any number for a Decimal one, and when it is categorical for a Text one.
-    A one-row table holds exactly one row; a many-row table holds any number. Clicking the node
+    A one-row table holds exactly one row; a many-row table holds any number, in the order
+    its frame delivers them, so a step upstream that leaves row order to Polars can list
+    them differently from one run to the next. Clicking the node
     previews its tables as dataframes, one at a time, chosen from the preview's table picker
     when there are several, the first table first. Clicking a value in them traces it from
     the node connected to its table: the same row of that node's frame, and the column that

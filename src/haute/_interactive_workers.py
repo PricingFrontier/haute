@@ -29,6 +29,7 @@ from haute._native_memory_limit import (
     native_memory_caps_supported,
 )
 from haute._parent_watch import exit_with_parent
+from haute._polars_environment import release_polars_spill_dir
 from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
 from haute._process_memory import process_rss_bytes
 from haute._step_progress import ProgressCell, StepProgress, bind_job_progress
@@ -1179,6 +1180,7 @@ class InteractiveWorkerPool:
             pid = getattr(slot.process, "pid", None)
             if pid is not None and not slot.process.is_alive():
                 cleanup_private_cgroups_for_pid(pid)
+                release_polars_spill_dir(pid)
         except BaseException as exc:
             if primary is None:
                 primary = exc

@@ -27,6 +27,16 @@ from haute.server import app
 from tests._property_budget import pr_budget
 
 _case_counter = itertools.count(1)
+# Each external edit appends a numbered line, so its bytes are never ones a revision has
+# named before: revisions are byte-true, and the model mints a generation per edit.
+_edit_counter = itertools.count(1)
+
+
+def _external_edit(py_path: Path) -> None:
+    py_path.write_text(
+        py_path.read_text(encoding="utf-8") + f"\n# external edit {next(_edit_counter)}\n",
+        encoding="utf-8",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +158,16 @@ _seq_strategy = st.lists(_op_strategy, min_size=1, max_size=6)
 @pr_budget(25)
 @example(ops=[("save", "A", "b"), ("save", "A", "b")])
 @example(ops=[("save", "A", "c"), ("reload", "B"), ("save", "A", "c"), ("save", "B", "b")])
+# A save returning the file to bytes an external edit then repeats (found 18 October 2026).
+@example(
+    ops=[
+        ("save", "A", "b"),
+        ("external_edit",),
+        ("reload", "A"),
+        ("reload", "B"),
+        ("save", "B", "b"),
+    ]
+)
 @given(ops=_seq_strategy)
 def test_saves_follow_the_revision_model_and_stale_writes_never_replace_accepted_generations(
     tmp_path: Path,
@@ -213,10 +233,7 @@ def test_saves_follow_the_revision_model_and_stale_writes_never_replace_accepted
         elif op[0] == "external_edit":
             model.external_edit()
             if py_path.is_file():
-                py_path.write_text(
-                    py_path.read_text(encoding="utf-8") + "\n# external edit\n",
-                    encoding="utf-8",
-                )
+                _external_edit(py_path)
                 invalidate_pipeline_index()
         elif op[0] == "reload":
             _, client_id = op
@@ -238,10 +255,7 @@ def test_saves_follow_the_revision_model_and_stale_writes_never_replace_accepted
 
         # After an external edit a save by a client that has not reloaded
         # is rejected and a save after reload succeeds.
-        py_path.write_text(
-            py_path.read_text(encoding="utf-8") + "\n# external edit\n",
-            encoding="utf-8",
-        )
+        _external_edit(py_path)
         invalidate_pipeline_index()
         stale_resp = client.post(
             "/api/pipeline/save",
@@ -332,10 +346,7 @@ def test_omitted_revision_comparison_is_detected(
                     elif op[0] == "external_edit":
                         model.external_edit()
                         if py_path.is_file():
-                            py_path.write_text(
-                                py_path.read_text(encoding="utf-8") + "\n# external edit\n",
-                                encoding="utf-8",
-                            )
+                            _external_edit(py_path)
                             invalidate_pipeline_index()
                     elif op[0] == "reload":
                         _, c = op

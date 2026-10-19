@@ -36,7 +36,7 @@ from haute._frame_profile import (
     numeric_finite_mask,
 )
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
-from haute._polars_utils import cancellable_streaming_collect
+from haute._polars_utils import cancellable_streaming_collect, streaming_collect
 from haute.routes._node_data_service import NodeDataService, node_data_project_root
 from haute.routes._synchronous_analysis import run_synchronous_analysis
 from haute.schemas import (
@@ -375,13 +375,11 @@ class ExploreRelationshipsService:
     @staticmethod
     def _between(grouped: pl.LazyFrame | pl.DataFrame) -> float:
         """Σ S_l²/W_l over every group with weight, before any truncation."""
-        value = (
+        value = streaming_collect(
             grouped.lazy()
             .filter(pl.col("W") > 0)
             .select((pl.col("S") ** 2 / pl.col("W")).sum().alias("between"))
-            .collect()
-            .item(0, "between")
-        )
+        ).item(0, "between")
         return float(value or 0.0)
 
     def _numeric_levels(

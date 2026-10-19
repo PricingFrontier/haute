@@ -17,6 +17,7 @@ import {
   isSubmodelInstanceConfig,
   type HauteNodeData,
   type LoadAvailability,
+  type PipelineGraph,
 } from "../types/node"
 import type { PipelineDiagnostic } from "../types/pipelineDocument"
 import useUIStore, { type ExplorePane, type ModellingPane, type OptimiserPane } from "../stores/useUIStore"
@@ -936,24 +937,146 @@ type RecoveryNodePanelProps = {
   node: SimpleNode
   availability: Exclude<LoadAvailability, "ready">
   diagnostics: PipelineDiagnostic[]
+  submodels: Record<string, unknown> | undefined
   canRepair: boolean
   onClose: () => void
   onRemoveUnavailableNode?: NodePanelProps["onRemoveUnavailableNode"]
+}
+
+type RecoveryNode = { type?: string | null; data: Record<string, unknown> }
+
+function diagnosticsFor(data: HauteNodeData, diagnostics: PipelineDiagnostic[]): PipelineDiagnostic[] {
+  const diagnosticIds = new Set(data._loadDiagnosticIds ?? [])
+  return diagnostics.filter((diagnostic) => diagnosticIds.has(diagnostic.diagnostic_id))
+}
+
+/** Recover and Reset rebuild a known ordinary node: never a submodel, its port or an instance. */
+function rebuildsSettings(node: RecoveryNode): boolean {
+  const data = node.data as HauteNodeData
+  const nodeType = effectiveNodeType(node)
+  return Object.hasOwn(NODE_TYPE_META, nodeType)
+    && nodeType !== NODE_TYPES.SUBMODEL
+    && nodeType !== NODE_TYPES.SUBMODEL_PORT
+    && !(typeof data.config?.instanceOf === "string")
+    && data._authoredDecorator !== "instance"
+}
+
+/** Reset writes a new node's settings; a new Edge Join has no keys, and cannot be written. */
+function resettable(node: RecoveryNode): boolean {
+  return rebuildsSettings(node) && effectiveNodeType(node) !== NODE_TYPES.EDGE_JOIN
+}
+
+/** Wrong connections, which rebuilding the settings cannot mend: only removal helps. */
+function connectionsBroken(data: HauteNodeData, diagnostics: PipelineDiagnostic[]): boolean {
+  return diagnosticsFor(data, diagnostics).some((diagnostic) => diagnostic.code === "node_topology_invalid")
+}
+
+/** An unavailable submodel's own unavailable nodes: the editor does not open its definition. */
+function unavailableDefinitionNodes(
+  node: SimpleNode,
+  submodels: Record<string, unknown> | undefined,
+): PipelineGraph["nodes"] {
+  const config = (node.data as HauteNodeData).config
+  if (effectiveNodeType(node) !== NODE_TYPES.SUBMODEL || !isSubmodelInstanceConfig(config)) return []
+  const definition = submodels?.[config.definitionId]
+  if (!isSubmodelDefinition(definition, config.definitionId)) return []
+  return definition.graph.nodes.filter((inner) => (
+    (inner.data as HauteNodeData)._loadAvailability === "unavailable"
+  ))
+}
+
+type UnavailableDefinitionNodeProps = {
+  node: PipelineGraph["nodes"][number]
+  diagnostics: PipelineDiagnostic[]
+  canRepair: boolean
+  onRemoveUnavailableNode?: NodePanelProps["onRemoveUnavailableNode"]
+}
+
+/** One unavailable node of an unavailable submodel, recovered by its own identity in the submodel's file. */
+function UnavailableDefinitionNode({
+  node,
+  diagnostics,
+  canRepair,
+  onRemoveUnavailableNode,
+}: UnavailableDefinitionNodeProps) {
+  const data = node.data as HauteNodeData
+  const label = String(data.label)
+  const repair = onRemoveUnavailableNode
+  const target = canRepair
+    && typeof data._sourceFile === "string"
+    && typeof data._recoveryId === "string"
+    ? { sourceFile: data._sourceFile, recoveryId: data._recoveryId }
+    : null
+  // An unknown decorator, an instance or a node with wrong connections has
+  // nothing a rebuild can mend, but can still be removed.
+  const rebuilds = target !== null && rebuildsSettings(node) && !connectionsBroken(data, diagnostics)
+  return (
+    <li
+      className="rounded-lg p-3 text-[11px] leading-relaxed"
+      style={{ background: "var(--danger-soft)", border: "1px solid var(--danger-border)" }}
+    >
+      <div className="font-semibold" style={{ color: "var(--text-primary)" }}>{label}</div>
+      {diagnosticsFor(data, diagnostics).map((diagnostic) => (
+        <div key={diagnostic.diagnostic_id} className="mt-1" style={{ color: "var(--danger-text)" }}>
+          {diagnostic.message}
+        </div>
+      ))}
+      {target && repair && (
+        <div className="mt-2 flex gap-2">
+          {rebuilds && (
+            <>
+              <button
+                type="button"
+                aria-label={`Recover settings for ${label}`}
+                onClick={() => repair({ ...target, action: "recover" })}
+                className="flex-1 rounded px-3 py-1.5 font-semibold"
+                style={{ color: "var(--text-on-accent)", background: "var(--accent)" }}
+              >
+                Recover settings
+              </button>
+              {resettable(node) && (
+                <button
+                  type="button"
+                  aria-label={`Reset node ${label}`}
+                  onClick={() => repair({ ...target, action: "reset" })}
+                  className="flex-1 rounded px-3 py-1.5 font-semibold"
+                  style={{ color: "var(--text-on-accent)", background: "var(--accent)" }}
+                >
+                  Reset node
+                </button>
+              )}
+            </>
+          )}
+          <button
+            type="button"
+            aria-label={`Remove node ${label}`}
+            onClick={() => repair(target)}
+            className="flex-1 rounded px-3 py-1.5 font-semibold"
+            style={{
+              color: "var(--danger-text)",
+              background: "var(--danger-soft)",
+              border: "1px solid var(--danger-border)",
+            }}
+          >
+            Remove node
+          </button>
+        </div>
+      )}
+    </li>
+  )
 }
 
 function RecoveryNodePanel({
   node,
   availability,
   diagnostics,
+  submodels,
   canRepair,
   onClose,
   onRemoveUnavailableNode,
 }: RecoveryNodePanelProps) {
   const recoveryData = node.data as HauteNodeData
-  const diagnosticIds = new Set(recoveryData._loadDiagnosticIds ?? [])
-  const nodeDiagnostics = diagnostics.filter((diagnostic) => (
-    diagnosticIds.has(diagnostic.diagnostic_id)
-  ))
+  const nodeDiagnostics = diagnosticsFor(recoveryData, diagnostics)
   const sourceLocation = recoveryData._sourceFile
     ? `${recoveryData._sourceFile}${
       recoveryData._sourceSpan ? `:${recoveryData._sourceSpan.start_line}` : ""
@@ -965,15 +1088,12 @@ function RecoveryNodePanel({
   const canRemove = availability === "unavailable"
     && canRepair
     && hasRecoveryTarget
-  const nodeType = effectiveNodeType(node)
-  const canReset = canRemove
-    && Object.hasOwn(NODE_TYPE_META, nodeType)
-    && nodeType !== NODE_TYPES.SUBMODEL
-    && nodeType !== NODE_TYPES.SUBMODEL_PORT
-    && !(typeof recoveryData.config?.instanceOf === "string")
-    && recoveryData._authoredDecorator !== "instance"
-  // Recover and Reset share eligibility: unavailable, known ordinary, owned.
-  const canRecover = canReset
+  // Recover and Reset share eligibility (unavailable, known ordinary, owned,
+  // connections sound), except that an Edge Join cannot be reset.
+  const settingsMendable = canRemove && !connectionsBroken(recoveryData, diagnostics)
+  const canRecover = settingsMendable && rebuildsSettings(node)
+  const canReset = settingsMendable && resettable(node)
+  const innerNodes = availability === "unavailable" ? unavailableDefinitionNodes(node, submodels) : []
 
   return (
     <PanelShell testId="node-panel">
@@ -1075,6 +1195,24 @@ function RecoveryNodePanel({
             </ul>
           )}
         </section>
+        {innerNodes.length > 0 && (
+          <section aria-label="Unavailable nodes in this submodel">
+            <h2 className="text-[10px] font-semibold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+              Unavailable nodes in this submodel
+            </h2>
+            <ul className="mt-2 space-y-3">
+              {innerNodes.map((inner) => (
+                <UnavailableDefinitionNode
+                  key={inner.id}
+                  node={inner}
+                  diagnostics={diagnostics}
+                  canRepair={canRepair}
+                  onRemoveUnavailableNode={onRemoveUnavailableNode}
+                />
+              ))}
+            </ul>
+          </section>
+        )}
         {(canRemove || canRecover) && (
           <div className="space-y-2">
             {canRecover && (
@@ -1569,6 +1707,7 @@ function NodePanelContent({
         node={node}
         availability={recoveryAvailability}
         diagnostics={documentDiagnostics}
+        submodels={submodels}
         canRepair={canRepair}
         onClose={onClose}
         onRemoveUnavailableNode={onRemoveUnavailableNode}

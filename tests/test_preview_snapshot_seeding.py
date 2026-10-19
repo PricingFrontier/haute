@@ -18,6 +18,7 @@ from haute._data_points import DataPointResolver
 from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
 from haute._graph_walker import CollectPolicy, WalkResult, walk_graph
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
+from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
 from haute._seed_plans import SeedPlan, SeedPlanRequest, open_seed_plan
 from haute._source_cache import SourceCacheIdentity
 from haute._step_progress import StepProgress
@@ -1172,6 +1173,22 @@ def test_stale_join_is_not_seeded_and_is_recaptured(project: Path, api: Any) -> 
     assert _rows(body)["band"].to_list() == [10, 12]
 
 
+def test_results_another_polars_computed_are_neither_seeded_nor_served(
+    project: Path, api: Any, builds: Counter[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After an upgrade (simulated), a run recomputes rather than mix in old results."""
+    graph = _join_graph(project)
+    first = _post_preview(api, graph, "banding")["seed_plan"][0]
+    builds.clear()
+    monkeypatch.setattr(pl, "__version__", "9.9.9")
+
+    body = _post_preview(api, graph, "banding")
+
+    assert _plan_of(body) == [("join", "captured")]
+    assert body["seed_plan"][0]["identity_digest"] != first["identity_digest"]
+    assert {"policies", "claims", "join", "banding"} <= set(builds)
+
+
 def test_capture_then_clear_never_serves_the_cached_response(
     project: Path, api: Any, store: NodeSnapshotStore, builds: Counter[str]
 ) -> None:
@@ -1809,6 +1826,7 @@ def _renamed_edge_join(project: Path, selected: list[str] | None) -> PipelineGra
     pl.DataFrame({"_id": [1, 2]}).write_parquet(project / "keys.parquet")
     config: dict[str, Any] = {
         "how": "left",
+        "maintainOrder": "left_right",
         "on": ["_id"],
         "column_renames": {"_id": "identifier", "segment": "region"},
     }
@@ -1946,6 +1964,7 @@ def test_preview_join_capture_is_chunked_into_parts_and_downstream_reads_them(
 
     join_config: dict[str, Any] = {
         "how": "left",
+        "maintainOrder": "left_right",
         "on": ["_id"],
         "selected_columns": ["_id", "premium", "segment"],
         "column_renames": {"_id": "identifier", "segment": "region"},
@@ -1975,7 +1994,7 @@ def test_preview_join_capture_is_chunked_into_parts_and_downstream_reads_them(
 
     from haute._polars_utils import set_streaming_chunk_size
 
-    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
     set_streaming_chunk_size(2)
     first_body = _post_preview(api, graph, "banding")
 

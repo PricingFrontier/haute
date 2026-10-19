@@ -231,7 +231,7 @@ def _seeded_graph(project: Path) -> PipelineGraph:
             _node(
                 "with_regions",
                 "edgeJoin",
-                {"how": "left", "on": "region"},
+                {"how": "left", "maintainOrder": "left_right", "on": "region"},
             ),
         ],
         [
@@ -311,7 +311,11 @@ def test_a_many_to_one_join_on_duplicate_keys_reports_its_validation(project: Pa
         [
             _parquet("quotes"),
             _parquet("regions"),
-            _node("joined", "edgeJoin", {"how": "left", "on": "region", "validate": "m:1"}),
+            _node(
+                "joined",
+                "edgeJoin",
+                {"how": "left", "maintainOrder": "left_right", "on": "region", "validate": "m:1"},
+            ),
         ],
         [_edge("quotes", "joined", role="base"), _edge("regions", "joined", role="join")],
     )
@@ -1383,8 +1387,16 @@ def test_the_remaining_finding_kinds_compare_exact_ratios(project: Path) -> None
                     ]
                 },
             ),
-            _node("fans_out", "edgeJoin", {"how": "left", "on": "region"}),
-            _node("unmatched", "edgeJoin", {"how": "inner", "on": "region"}),
+            _node(
+                "fans_out",
+                "edgeJoin",
+                {"how": "left", "maintainOrder": "left_right", "on": "region"},
+            ),
+            _node(
+                "unmatched",
+                "edgeJoin",
+                {"how": "inner", "maintainOrder": "left_right", "on": "region"},
+            ),
             _code(
                 "sparse",
                 "df = quotes.with_columns(flag=pl.when(pl.col('region').is_in(['north', 'south']))"
@@ -2063,7 +2075,11 @@ def _loaded_graph(project: Path) -> PipelineGraph:
         [
             _parquet("quotes"),
             _parquet("regions"),
-            _node("with_regions", "edgeJoin", {"how": "left", "on": "region", "validate": "m:1"}),
+            _node(
+                "with_regions",
+                "edgeJoin",
+                {"how": "left", "maintainOrder": "left_right", "on": "region", "validate": "m:1"},
+            ),
             _code(
                 "loaded",
                 "df = with_regions.with_columns(loaded=pl.col('premium') * pl.col('loading'))",

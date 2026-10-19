@@ -542,6 +542,29 @@ def test_categorical_truncation_counts_null_bucket_as_a_group(
     assert len(profile.values) == 50
 
 
+def test_categorical_value_counts_cut_equal_counts_by_value(
+    explore_execution_context,
+) -> None:
+    """60 values of two rows each: the 50 kept are the first 50 by value, null last."""
+
+    from haute._frame_profile import _build_frame_stats
+
+    values = [f"s{i:03d}" for i in reversed(range(59))] + [None]
+    lf = pl.DataFrame({"segment": [value for value in values for _ in range(2)]}).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    [profile] = frame_stats.overview_summary.categorical_summary
+    assert profile.values_truncated is True
+    assert [(item.value, item.count) for item in profile.values] == [
+        (f"s{i:03d}", 2) for i in range(50)
+    ]
+
+
 def test_build_frame_stats_includes_backend_overview_summary(
     explore_execution_context,
 ) -> None:

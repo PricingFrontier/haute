@@ -120,7 +120,7 @@ export function analyzeEdgeJoinNode({
   const rightKeys = readKeyList(config.rightOn, "rightOn", diagnostics)
   const coalesce = readCoalesce(config.coalesce, diagnostics)
   const validate = readAdvancedString(config.validate, "validate", diagnostics)
-  const maintainOrder = readAdvancedString(config.maintainOrder, "maintainOrder", diagnostics)
+  const maintainOrder = readMaintainOrder(config.maintainOrder, diagnostics)
 
   addRoleDiagnostics({
     diagnostics,
@@ -235,6 +235,14 @@ function readAdvancedString(value: unknown, field: string, diagnostics: string[]
   if (typeof value === "string") return value
   diagnostics.push(`${field} must be a string.`)
   return ""
+}
+
+const MAINTAIN_ORDER_VALUES = ["none", "left", "right", "left_right", "right_left"]
+
+function readMaintainOrder(value: unknown, diagnostics: string[]): string {
+  if (typeof value === "string" && MAINTAIN_ORDER_VALUES.includes(value)) return value
+  diagnostics.push("Choose the joined rows' order under Maintain Order.")
+  return typeof value === "string" ? value : ""
 }
 
 function readCoalesce(value: unknown, diagnostics: string[]): string {

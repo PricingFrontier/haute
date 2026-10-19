@@ -32,19 +32,29 @@ arguments decode via the struct-capable codec in ``_polars_dtypes``.
 
 from __future__ import annotations
 
+import codecs
 import importlib.util
-from collections.abc import Mapping
+import io
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
 if TYPE_CHECKING:
+    import pyarrow as pa
+
     from haute._chunked_writes import WriteRecipe
     from haute._execution_context import ExecutionContext
 
 import polars as pl
 
 from haute._execution_context import ExecutionProfile
-from haute._polars_dtypes import parse_schema_mapping
+from haute._map_columns import (
+    iter_parquet_map_entries,
+    map_column_names,
+    parquet_map_column_names,
+)
+from haute._polars_dtypes import parse_schema_mapping, refuse_wide_integers
 from haute._polars_io_schema import (
     installed_provides_callable,
     retired_argument_names,
@@ -105,6 +115,7 @@ class IoFormat:
     needs_schema_when_bounded: bool = False
     # True -> the source is a table folder, not a file, so pickers select a folder.
     source_is_folder: bool = False
+    # True -> Polars marks every callable of the format unstable (``@unstable()``).
     unstable: bool = False
     # Engine packages (import names): reading/writing needs at least one
     # importable. Empty = polars-native, always available.
@@ -206,6 +217,8 @@ FORMATS: tuple[IoFormat, ...] = (
         writer="write_avro",
         extensions=(".avro",),
         bounded_read=False,
+        # Polars 2 marks read_avro and write_avro unstable.
+        unstable=True,
         source_owned_args=frozenset({"source", "file"}),
     ),
     IoFormat(
@@ -296,22 +309,46 @@ FORMATS_BY_NAME: dict[str, IoFormat] = {fmt.name: fmt for fmt in FORMATS}
 # Argument-name classes excluded from node configs: remote-IO arguments ride
 # the retained local-path posture; execution-owned sink arguments belong to
 # haute's execution discipline, not per-node config.
-REMOTE_IO_ARGUMENTS: frozenset[str] = frozenset(
-    {"storage_options", "credential_provider", "retries", "file_cache_ttl"}
-)
+REMOTE_IO_ARGUMENTS: frozenset[str] = frozenset({"storage_options", "credential_provider"})
 _OBJECT_VALUED_ARGUMENTS: frozenset[str] = frozenset(
     {
         "with_column_names",
         "delta_merge_options",
         "pyarrow_options",
-        "credentials",
         "sinked_paths_callback",
     }
 )
 _SINK_EXECUTION_OWNED: frozenset[str] = frozenset({"lazy", "engine", "optimizations"})
 
-_DTYPE_MAPPING_ARGUMENTS: frozenset[str] = frozenset(
-    {"schema", "schema_overrides", "hive_schema", "dtypes"}
+_DTYPE_MAPPING_ARGUMENTS: frozenset[str] = frozenset({"schema", "schema_overrides", "hive_schema"})
+
+#: Arguments a format's reader takes from Haute rather than from Polars: removed before
+#: the call and applied after it (``_invoke_polars_input``). No spreadsheet engine Polars
+#: uses names a header-less sheet's columns, so Haute names them by position.
+HAUTE_READ_ARGUMENTS: Mapping[str, frozenset[str]] = {
+    "excel": frozenset({"new_columns"}),
+    "ods": frozenset({"new_columns"}),
+}
+#: The formats whose reader reads a header row (``has_header``).
+_HEADED_FORMATS: frozenset[str] = frozenset({"csv", "excel", "ods"})
+#: The CSV arguments that decide where a file's first line is and how it splits, so the
+#: header check reads the line the scan will.
+_CSV_DIALECT_ARGUMENTS: frozenset[str] = frozenset(
+    {
+        "separator",
+        "quote_char",
+        "comment_prefix",
+        "skip_rows",
+        "skip_lines",
+        "eol_char",
+        "encoding",
+        "decimal_comma",
+        "glob",
+    }
+)
+_UNNAMED_COLUMNS_REASON = (
+    "Polars 2 calls unnamed columns column_0, column_1, ... where Polars 1 began at "
+    "column_1, so a pipeline must not rely on those names."
 )
 
 
@@ -740,6 +777,8 @@ def allowed_arguments(fmt: IoFormat, owner: str, callable_name: str) -> frozense
     names -= fmt.source_owned_args
     if callable_name.startswith("sink_"):
         names -= _SINK_EXECUTION_OWNED
+    if callable_name == fmt.reader:
+        names |= HAUTE_READ_ARGUMENTS.get(fmt.name, frozenset())
     return frozenset(names)
 
 
@@ -781,7 +820,112 @@ def validate_arguments(
             decoded[name] = parse_schema_mapping(value, argument=name)
         else:
             decoded[name] = value
+    if fmt.name in _HEADED_FORMATS and callable_name in {fmt.reader, fmt.scanner}:
+        _check_column_naming(fmt, decoded)
     return decoded
+
+
+def _check_column_naming(fmt: IoFormat, arguments: Mapping[str, Any]) -> None:
+    """Refuse a header-less input that leaves Polars to name its columns."""
+    names = arguments.get("new_columns")
+    if names is not None and (
+        not isinstance(names, list)
+        or not names
+        or not all(isinstance(name, str) and name for name in names)
+        or len(set(names)) != len(names)
+    ):
+        raise PolarsIoConfigError("new_columns must list each column's name once, in order.")
+    if arguments.get("has_header") is not False or names is not None:
+        return
+    if fmt.name == "csv" and _declares_full_schema(arguments):
+        return
+    how = "with new_columns, or a full schema" if fmt.name == "csv" else "with new_columns"
+    raise PolarsIoConfigError(
+        f"A {fmt.label} file without a header must name every column, in order, {how}: "
+        f"{_UNNAMED_COLUMNS_REASON}"
+    )
+
+
+def _check_csv_header(source: Any, arguments: Mapping[str, Any]) -> None:
+    """Refuse CSV names that do not fit the file's first line, before Polars reads it.
+
+    Reads only that line, with the configuration's dialect: a ``new_columns`` list
+    must name every field, and a headed file's ``schema`` must name exactly its
+    header's columns, which Polars 2 matches by name where Polars 1 renamed by
+    position.
+    """
+    names = arguments.get("new_columns")
+    schema = arguments.get("schema")
+    has_header = arguments.get("has_header", True) is not False
+    if names is None and (schema is None or not has_header):
+        return
+    dialect = {name: value for name, value in arguments.items() if name in _CSV_DIALECT_ARGUMENTS}
+    first_line = _csv_first_line_names(source, has_header=has_header, dialect=dialect)
+    if names is not None:
+        if len(names) != len(first_line):
+            raise PolarsIoConfigError(
+                f"The file has {len(first_line)} columns and new_columns names {len(names)}: "
+                "name every column, in order."
+            )
+        return
+    if schema is None:
+        return
+    declared = list(schema)
+    if sorted(declared) == sorted(first_line):
+        return
+    unknown = [name for name in declared if name not in first_line]
+    unnamed = [name for name in first_line if name not in declared]
+    raise PolarsIoConfigError(
+        f"The schema names {unknown or 'no column'} the header does not have, and leaves "
+        f"out {unnamed or 'no column'} it does: Polars 2 matches a CSV schema to the header "
+        "by name. To rename columns use new_columns; to set some columns' types use "
+        "schema_overrides."
+    )
+
+
+# The bytes a non-UTF-8 CSV file is decoded in at a time for its header check.
+_CSV_DECODE_CHUNK_BYTES = 1024 * 1024
+
+
+def _csv_first_line_names(
+    source: Any, *, has_header: bool, dialect: Mapping[str, Any]
+) -> list[str]:
+    """The column names Polars reads from a CSV file's first line, in its dialect.
+
+    Polars reads the header alone, parsing no data row, so the read's row options
+    never apply to the check. The scanner decodes only UTF-8; for another encoding
+    the eager reader decodes the whole file in Python before it parses, so the check
+    decodes the whole file the same way (a ``-lossy`` codec replacing what it cannot
+    decode), a chunk at a time into one UTF-8 buffer: where a header ends depends on
+    every quote before it, which no prefix proves. The buffer is the text the read
+    itself decodes and then holds beside the file's bytes and its frame.
+    """
+    encoding = str(dialect.get("encoding", "utf8"))
+    if encoding in {"utf8", "utf8-lossy"}:
+        return (
+            pl.scan_csv(source, has_header=has_header, infer_schema=False, **dialect)
+            .collect_schema()
+            .names()
+        )
+    codec, errors = (
+        (encoding.removesuffix("-lossy"), "replace")
+        if encoding.endswith("-lossy")
+        else (encoding, "strict")
+    )
+    # The decoded text is one buffer: nothing to glob.
+    as_utf8 = {**{k: v for k, v in dialect.items() if k != "glob"}, "encoding": "utf8"}
+    decoder = codecs.getincrementaldecoder(codec)(errors=errors)
+    text = io.BytesIO()
+    with Path(source).open("rb") as handle:
+        while chunk := handle.read(_CSV_DECODE_CHUNK_BYTES):
+            text.write(decoder.decode(chunk).encode("utf-8"))
+    text.write(decoder.decode(b"", final=True).encode("utf-8"))
+    text.seek(0)
+    return (
+        pl.scan_csv(text, has_header=has_header, infer_schema=False, **as_utf8)
+        .collect_schema()
+        .names()
+    )
 
 
 def missing_engines(engines: tuple[str, ...]) -> list[str]:
@@ -883,15 +1027,32 @@ def _invoke_polars_input(
     _require_engines(fmt, fmt.read_engines, operation="read")
 
     source_args = _resolve_input_source(fmt, config)
+    haute_owned = (
+        HAUTE_READ_ARGUMENTS.get(fmt.name, frozenset())
+        if callable_name == fmt.reader
+        else frozenset()
+    )
+    polars_arguments = {name: value for name, value in arguments.items() if name not in haute_owned}
+    if fmt.name == "csv":
+        _check_csv_header(source_args[0], polars_arguments)
     fn = getattr(pl, callable_name)
     try:
-        result = fn(*source_args, **arguments)
+        result = fn(*source_args, **polars_arguments)
     except (ImportError, ModuleNotFoundError) as exc:
         raise PolarsIoConfigError(
             f"Reading format {fmt.name!r} needs an engine package this haute install "
             f"lacks ({exc}). Candidates: {list(fmt.read_engines)}."
         ) from exc
 
+    if isinstance(result, pl.DataFrame) and "new_columns" in haute_owned:
+        names = arguments.get("new_columns")
+        if names is not None:
+            if result.width != len(names):
+                raise PolarsIoConfigError(
+                    f"The {fmt.label} sheet has {result.width} columns and new_columns names "
+                    f"{len(names)}: name every column, in order."
+                )
+            result = result.rename(dict(zip(result.columns, names, strict=True)))
     if isinstance(result, pl.LazyFrame):
         return result
     if isinstance(result, pl.DataFrame):
@@ -970,6 +1131,144 @@ def read_polars_input_for_snapshot(
     if fmt.needs_schema_when_bounded and not _declares_full_schema(arguments):
         arguments["infer_schema_length"] = None
     return _invoke_polars_input(fmt, callable_name, config, arguments), warning_code
+
+
+# The arguments that choose which files a Parquet source names: the only ones a read of
+# the files' own schema passes on.
+_PARQUET_FILE_SELECTION_ARGUMENTS = frozenset(
+    {"glob", "hidden_file_prefix", "storage_options", "credential_provider"}
+)
+
+
+def parquet_source_map_columns(source: str, arguments: Mapping[str, Any]) -> list[str]:
+    """The columns of the Parquet files *source* names that hold a map, by their own schema.
+
+    Polars' Parquet reader keeps only the last value of a key a map repeats, and so
+    does a ``schema`` argument naming the map a list of key-value structs, which would
+    hide it. The files' schema is therefore read with only the arguments that choose
+    the files. It comes from a footer, so no row is read.
+    """
+    selection = {
+        name: value
+        for name, value in arguments.items()
+        if name in _PARQUET_FILE_SELECTION_ARGUMENTS
+    }
+    return map_column_names(pl.scan_parquet(source, **selection).collect_schema())
+
+
+def refuse_direct_map_columns(config: Mapping[str, Any], *, label: str) -> None:
+    """Refuse a direct Parquet scan (*config*, anchored) whose files hold a map column.
+
+    A direct scan would change the data without a word, whatever schema the
+    configuration declares; a snapshot build reads such a file through pyarrow
+    instead (``haute._map_columns``). *label* is the path as configured.
+    """
+    fmt = format_for_config(config)
+    maps = parquet_source_map_columns(
+        _resolve_input_source(fmt, config)[0], config.get("arguments") or {}
+    )
+    if maps:
+        raise PolarsIoConfigError(
+            f"The Parquet file {label!r} has map column(s) {maps}, which a direct scan would "
+            "read keeping only the last value of a repeated key. Give the Data Input mode "
+            '"read" in the pipeline file: Haute then copies the file into a snapshot through '
+            "pyarrow, which keeps every entry, each map a list of key-value structs."
+        )
+
+
+# A Parquet file with a map column is snapshotted through pyarrow, which applies
+# these arguments itself.
+_PARQUET_MAP_READ_ARGUMENTS = frozenset({"columns", "n_rows"})
+# Arguments that change only how fast Polars reads one file, not what it returns.
+_PARQUET_MAP_READ_NEUTRAL_ARGUMENTS = frozenset(
+    {"cache", "glob", "low_memory", "memory_map", "parallel", "use_pyarrow", "use_statistics"}
+)
+
+
+def _parquet_map_read_columns(path: Path, requested: Any) -> list[str] | None:
+    """The configured ``columns`` as the file's column names, in the order given."""
+    if requested is None:
+        return None
+    if isinstance(requested, str) or not isinstance(requested, list | tuple):
+        raise PolarsIoConfigError("columns must list column names or positions.")
+    names = list(pl.read_parquet_schema(path))
+    resolved: list[str] = []
+    for item in requested:
+        if isinstance(item, int) and not isinstance(item, bool):
+            if not 0 <= item < len(names):
+                raise PolarsIoConfigError(
+                    f"columns position {item} is outside the file's {len(names)} columns."
+                )
+            resolved.append(names[item])
+        elif isinstance(item, str):
+            if item not in names:
+                raise PolarsIoConfigError(f"columns names {item!r}, which the file does not have.")
+            resolved.append(item)
+        else:
+            raise PolarsIoConfigError("columns must list column names or positions.")
+    if len(set(resolved)) != len(resolved):
+        raise PolarsIoConfigError("columns names a column more than once.")
+    return resolved
+
+
+def read_parquet_map_entries_for_snapshot(
+    config: Mapping[str, Any],
+) -> Iterator[pa.Table] | None:
+    """A Parquet file input's rows through pyarrow when the file holds a map column.
+
+    Returns ``None`` for any other input, which a snapshot build reads with
+    :func:`read_polars_input_for_snapshot`. pyarrow keeps every entry of a map
+    that repeats a key, where Polars' Parquet reader keeps the last, and reads
+    one row group at a time (``haute._map_columns``). It applies ``columns`` and
+    ``n_rows`` itself; any other argument that changes the rows is refused by
+    name, since this read cannot apply it. A source of several files (a folder or
+    a glob) holding a map is refused: pyarrow reads one file at a time, without
+    the hive partitioning and file expansion Polars applies to such a source.
+    """
+    fmt = format_for_config(config)
+    if fmt.name != "parquet":
+        return None
+    source = _resolve_input_source(fmt, config)[0]
+    path = Path(source)
+    if not path.is_file():
+        maps = parquet_source_map_columns(source, config.get("arguments") or {})
+        if maps:
+            raise PolarsIoConfigError(
+                f"The Parquet source {config['path']!r} names several files and has map "
+                f"column(s) {maps}. Polars reads a map keeping only the last value of a "
+                "repeated key, and Haute keeps every entry only when it reads one file "
+                "through pyarrow: give each file its own Data Input, or write the files with "
+                "each map a list of key-value structs."
+            )
+        return None
+    if not parquet_map_column_names(path):
+        return None
+    mode, _build_class, _warning_code = snapshot_input_plan(fmt, config)
+    owner, callable_name = input_callable_key(fmt, mode)
+    arguments = validate_arguments(fmt, owner, callable_name, config.get("arguments") or {})
+    refused = sorted(
+        name
+        for name, value in arguments.items()
+        if name not in _PARQUET_MAP_READ_ARGUMENTS | _PARQUET_MAP_READ_NEUTRAL_ARGUMENTS
+        and value is not None
+        and value is not False
+    )
+    if refused:
+        raise PolarsIoConfigError(
+            f"The Parquet file {config['path']!r} has a map column, so Haute reads it through "
+            "pyarrow to keep every entry, and that read applies only columns and n_rows: "
+            f"remove {refused}, or do their work in a later node."
+        )
+    n_rows = arguments.get("n_rows")
+    if n_rows is not None and (
+        not isinstance(n_rows, int) or isinstance(n_rows, bool) or n_rows < 0
+    ):
+        raise PolarsIoConfigError("n_rows must be a whole number of rows, 0 or more.")
+    return iter_parquet_map_entries(
+        path,
+        columns=_parquet_map_read_columns(path, arguments.get("columns")),
+        n_rows=n_rows,
+    )
 
 
 # Rows a schema-only resolution reads to infer column types when an input has
@@ -1078,6 +1377,11 @@ def _sliced_sink_taken(
     return True
 
 
+# Formats whose files are written as, or read back through, Arrow: pyarrow cannot
+# hold a 128-bit integer, so a Data Output refuses one in them by name.
+_ARROW_WRITTEN_FORMATS = frozenset({"parquet", "delta", "iceberg"})
+
+
 def write_polars_output(
     lf: pl.LazyFrame,
     config: Mapping[str, Any],
@@ -1107,6 +1411,10 @@ def write_polars_output(
     target = _resolve_output_target(fmt, config)
 
     _require_engines(fmt, fmt.write_engines, operation="write")
+    if fmt.name in _ARROW_WRITTEN_FORMATS:
+        refuse_wide_integers(
+            lf.collect_schema(), **({"node": node_id} if node_id is not None else {})
+        )
 
     try:
         if fmt.source_kind == "database":

@@ -22,6 +22,7 @@ from price_contour import PerFactorRecord
 
 from haute._config_builder import _build_node_config
 from haute._execution_context import ExecutionProfile
+from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
 from haute._sandbox import set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.graph_utils import NodeType
@@ -12494,7 +12495,7 @@ class TestExecutePipelineExtended:
         def fake_execute_lazy(*args, **kwargs):
             import polars as pl
 
-            captured_chunk_sizes.append(pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE"))
+            captured_chunk_sizes.append(pl.Config.state().get(STREAMING_CHUNK_SIZE_ENV))
             return ({"opt": MagicMock()}, [], {}, {})
 
         with (

@@ -91,7 +91,8 @@ _POSITIONAL_KINDS = frozenset({"POSITIONAL_ONLY", "POSITIONAL_OR_KEYWORD", "VAR_
 # a node config may carry — so they need naming here or a rename inside the cap
 # turns into a TypeError at execution. Keep in step with the call sites:
 #   haute.executor._output_row_count_scan_kwargs()  — exact artifact row counts
-#   haute._io.read_source()                         — declared-dtype CSV scans
+#   haute._io.read_source()                         — CSV scans (CSV_STRICTNESS)
+#   haute._workbench_params                         — parameter-file CSV reads
 #   haute._polars_utils                             — bounded/atomic sink writes
 _LITERAL_KEYWORDS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
@@ -107,7 +108,13 @@ _LITERAL_KEYWORDS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "raise_if_empty",
             "schema_overrides",
             "separator",
+            "truncate_ragged_lines",
         ),
+    ),
+    (
+        "polars",
+        "read_csv",
+        ("columns", "infer_schema", "n_rows", "raise_if_empty", "truncate_ragged_lines"),
     ),
     ("DataFrame", "write_parquet", ("compression",)),
     ("LazyFrame", "sink_parquet", ("compression",)),
@@ -135,9 +142,7 @@ _RELIED_ON_DEFAULTS: tuple[tuple[str, str, str, str], ...] = (
     ("polars", "scan_csv", "empty_string_is_null", "True"),
     ("polars", "scan_csv", "quote_char", "'\"'"),
     ("polars", "scan_csv", "decimal_comma", "False"),
-    ("polars", "scan_csv", "truncate_ragged_lines", "False"),
     ("polars", "scan_csv", "skip_rows", "0"),
-    ("polars", "scan_csv", "raise_if_empty", "True"),
 )
 
 
@@ -243,6 +248,32 @@ class TestNoBreakingDriftAcrossTheCap:
             f"haute passes literally: {problems}. Those call sites will raise TypeError; fix "
             "them, and keep _LITERAL_KEYWORDS in step with the call sites it names."
         )
+
+    def test_csv_scans_pass_the_strictness_polars_leaves_unset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Polars 2 resolves ``raise_if_empty`` and ``truncate_ragged_lines`` from the
+        other arguments when they are unset, so ``read_source`` passes both, with and
+        without declared types (``CSV_STRICTNESS``)."""
+        from haute import _io
+
+        path = tmp_path / "rows.csv"
+        path.write_bytes(b"id,amount\n1,10\n")
+        calls: list[dict[str, Any]] = []
+        scan_csv = polars.scan_csv
+
+        def recording_scan_csv(source: Any, **kwargs: Any) -> polars.LazyFrame:
+            calls.append(kwargs)
+            return scan_csv(source, **kwargs)
+
+        monkeypatch.setattr(polars, "scan_csv", recording_scan_csv)
+        _io.read_source(path)
+        _io.read_source(path, schema_overrides={"id": "Int64"})
+
+        assert len(calls) == 2
+        assert _io.CSV_STRICTNESS == {"raise_if_empty": True, "truncate_ragged_lines": False}
+        for kwargs in calls:
+            assert {name: kwargs.get(name) for name in _io.CSV_STRICTNESS} == _io.CSV_STRICTNESS
 
     def test_defaults_the_bare_csv_scan_relies_on_still_hold(self) -> None:
         """A cap-range contract on the INSTALLED signature, not the committed JSON.

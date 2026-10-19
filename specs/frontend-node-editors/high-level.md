@@ -341,7 +341,8 @@ as "Int64 (whole number)"); secondary actions are quiet text buttons ("+ Add con
 and options the simple case never needs sit behind a "More options" disclosure that opens
 by itself when the saved step uses one (the type-wide selection on select and drop, the
 per-aggregation row filters, and a join's key check, row order and suffix, where "used"
-means differing from a new step's value, so a suffix other than `_right`). Column pickers
+means differing from a new step's value, so a suffix other than `_right` or a row order other
+than the join kind's own). Column pickers
 offer the start input's columns (for an edge from a multi-output producer such as a
 submodel, the columns of that output handle as recorded by the last preview; in `frame`
 mode, the pane's code columns) plus columns derived by earlier steps, never another
@@ -380,7 +381,13 @@ left joins drop the right keys, a right join drops this frame's keys, full and c
 keep both, semi and anti joins add nothing, and any other clashing name takes the suffix);
 with one input connected a new join's input starts unset with the note "Connect the table
 to join on the canvas"; and it offers an optional key-cardinality check on inner, left
-and full joins (cleared when the kind changes to any other) and an output row order.
+and full joins (cleared when the kind changes to any other) and a required output row order.
+A new join keeps its inputs' order (`left_right` for inner, left, full and cross joins,
+`right_left` for a right join and `left` for semi and anti joins, the renderer's
+`DEFAULT_JOIN_ORDER`, which the editor's `DEFAULT_JOIN_ORDER` mirrors under a parity test), and
+changing the kind moves a default order to the new kind's while keeping one the analyst chose;
+"any order" (`none`) stays an explicit choice. A sort is rendered stable (`maintain_order=True`):
+tied rows keep the order they arrived in.
 Unique can drop every duplicate. The forms accept the renderer's own shorthand for a
 persisted step (a null literal without a value, a columnless window aggregate without
 a column, an order key without a direction, a text join without a separator) and
@@ -457,7 +464,8 @@ aggregation's row filter offers no nested expressions. The Combine group also of
 one row per output column pairing a typed value with a name the value suggests, all
 rows sharing the first row's type) and "Unpivot to rows" (stacked columns, index
 chips that exclude them, name and value column fields, and a note that row order is
-not guaranteed). Select and drop take column types beside named columns, and an
+not guaranteed: ordering an unpivot's rows costs three times its time and memory, so a sort
+step after it orders them where that matters). Select and drop take column types beside named columns, and an
 aggregation row can target every column of a type through an `every <type> column` entry
 after the names in its column box, which turns the row into `*<suffix> = <function> of
 every <type> column` with the suffix `_<function>` to start (row count and row filters are
@@ -491,7 +499,11 @@ execution-error line. A run that failed on a step's lines names that step the sa
 its card's badge giving the first line of the run's own error message in the warning
 tone. A Polars transform's lazy-plan failure (a missing column, a type mismatch) also
 arrives with an error line: the run reports the first line of the step whose plan failed,
-so that card is badged even though Polars raised the error after the code ran. A data-only
+so that card is badged even though Polars raised the error after the code ran. A step
+Polars 2 refuses only once rows arrive (a cast it does not make, such as text to a date
+without a format or a category to a number, or std or var of a duration) is found from
+the column types before each step, without reading a row, and the run's message starts
+with what to change before Polars' own words. A data-only
 error (a strict cast meeting a bad value), a transform with a Free code step, and the steps
 of a frame-mode surface still arrive without a line. Renders are tagged with
 the steps revision they were requested for, a response for an older revision never
@@ -528,6 +540,33 @@ Numeric controls parse the complete value, including scientific notation (`1e3`
 commits as 1000). Integer controls reject fractional values instead of truncating;
 empty, non-finite and below-minimum values never replace the committed value and
 report a visible validation error.
+
+A step says what it does, so the same step runs the same way whatever arrives upstream,
+and the editor offers only what Polars 2 runs on the column types it knows. Polars 2
+casts text to neither a date nor a date and time: where Change types turns a text
+column into a `Date` or `Datetime` it records the text's format (a required "Format"
+field, starting at `%Y-%m-%d`, or `%Y-%m-%d %H:%M:%S` for a date and time) and the step
+parses with it (`str.to_date(format)`, `str.to_datetime(format)`); left empty where the
+column's type is unknown, the entry is a plain cast. Formulas parse text with
+`to_date`, `to_datetime`, `try_to_date` and `try_to_datetime`, each taking a required
+format, the `try_` forms giving null where a value does not parse. Change types offers
+each column only the types Polars 2 casts it to (a category becomes text or a
+category, a duration a number, binary data text, text anything but true/false, and no
+number or date becomes a category directly), the same table the renderer holds
+(`CAST_REFUSALS`, checked against Polars by a test); a formula casting a known text
+column to a date, or a category to anything but text, is refused with the function to
+use instead; std and var are not offered for a duration, and log and exp only for
+numbers and true/false. A numeric "is one of" records the kind of number its column
+holds, from the column's type: `integer` renders its values as whole numbers
+(`[100, 300]`), `float` as floats (`[100.0, 300.0]`), and `decimal` as exact decimals
+parsed from their text, so a list of whole numbers matches a float column and `0.1`
+stays exact for a `Decimal` one. The editor refuses a fraction for a whole-number
+column and a value with more decimal places than a `Decimal` column's scale, neither of
+which can match; where the column's type is unknown the list offers the kind as a
+"Number type" select. Removing a value keeps the kind while the list holds one, and so
+does switching between "is one of" and "is not one of", which keeps the values. Date values in a list are passed to Polars as one list
+(`implode()`). Where the editor does not know a column's type it offers everything, and
+a step Polars refuses fails the run on that step (see the error line below).
 
 The Add step chooser also offers **Free code** in a Code section. Its card embeds
 the shared Python code editor, starts empty, and has no explanatory text below
@@ -644,8 +683,8 @@ to the parent node and never a normal-looking entry. WebSocket-synchronised grap
 null-handle API-input edge so the user can repair the source file without silently losing
 topology. Such an edge is displayed with the explicit `<unresolved>` marker and warning state;
 it never crashes the panel or aliases the API input's sole emitted table.
-An Edge Join with missing/ambiguous role edges, an unknown join mode, or invalid key shape remains
-visibly invalid and blocks save; the editor never infers a role or silently substitutes join
+An Edge Join with missing/ambiguous role edges, an unknown join mode, a missing or unknown row
+order, or invalid key shape remains visibly invalid and blocks save; the editor never infers a role or silently substitutes join
 keys. Edge Join diagnostics use the danger/error treatment rather than warning colours. Empty or
 otherwise invalid visible join-key controls expose `aria-invalid` and a red border; when a
 non-cross join has no keys, this applies to the required control or controls in the active key
@@ -662,7 +701,9 @@ spelling instead of coercing the node to a supported type.
 
 Selecting an unavailable or blocked node opens a read-only diagnostic inspector rather than its
 normal configuration editor. The inspector shows attributed messages, remediation, source/config
-location, incident id, and blocking path where present. Ready siblings in a degraded document may
+location, incident id, and blocking path where present. The editor does not open an unavailable
+submodel's definition, so that submodel's inspector also lists the definition's unavailable
+nodes, each with its diagnostics and its own recovery actions. Ready siblings in a degraded document may
 be inspected through a static read-only configuration view. Normal editors are not mounted in
 that state, so editor effects cannot start schema, preview, training, cache, or publication work
 behind disabled controls. Selection, panning, zooming, recovery preview, and diagnostic inspection

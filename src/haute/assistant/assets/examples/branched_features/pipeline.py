@@ -2,7 +2,10 @@
 
 The two feature branches start from the same live input.  Explicit connection
 statements make the topology unambiguous even when a future edit changes a
-function parameter name.
+function parameter name.  Joining two branches of the same quotes back together
+makes a deployment answer one quote per request, since the deploy check cannot
+tell that each branch kept its quotes' keys; a pipeline deployed to price several
+quotes per request adds its columns along one chain instead.
 """
 
 import polars as pl
@@ -38,7 +41,9 @@ def customer_features(quote: pl.LazyFrame) -> pl.LazyFrame:
 def combined(vehicle_features: pl.LazyFrame, customer_features: pl.LazyFrame) -> pl.LazyFrame:
     """Join the two feature branches on their shared quote id."""
 
-    return vehicle_features.join(customer_features, on="quote_id", suffix="_customer")
+    return vehicle_features.join(
+        customer_features, on="quote_id", how="left", suffix="_customer", maintain_order="left"
+    )
 
 
 @pipeline.output(config="config/output.json")

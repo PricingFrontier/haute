@@ -74,6 +74,11 @@ def test_local_performance_docs_describe_scheduled_polars_scale_workflow() -> No
     assert "--polars-scale 1m" in doc
     assert "--polars-scale 10m" in doc
     assert "Generated scale fixtures are never committed." in doc
+    assert "pytest.mark.perf_evidence" in doc
+    assert "perf and not perf_evidence" in doc
+    assert "perf and not perf_evidence" in (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
     assert "semantic evidence and product metrics" in doc
     assert "independent runner RSS baseline" in doc
     assert "Numeric thresholds are calibrated only against a baseline" in doc
@@ -138,6 +143,8 @@ def test_performance_workflow_certifies_scales_and_execution_platforms() -> None
         in workflow
     )
     assert "name: python-performance-${{ env.HAUTE_POLARS_PERF_SCALE }}" in workflow
+    # The artifact folder's name starts with a dot, which the upload skips by default.
+    assert "include-hidden-files: true" in workflow
     assert "os: [ubuntu-latest, windows-latest, macos-latest]" in workflow
     for test_path in (
         "tests/test_process_memory.py",

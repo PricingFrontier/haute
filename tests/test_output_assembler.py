@@ -1167,6 +1167,53 @@ def test_limited_assembly_of_a_synthesised_root_is_complete() -> None:
     assert _assemble_document(field_frames, row_limit=1) == _assemble_document(field_frames)
 
 
+def test_a_deployed_batch_keeps_one_top_level_object_per_row() -> None:
+    """Each row answers its own quote, so equal answers stay two objects; nesting holds."""
+    field_frames = {
+        "quotes": pl.LazyFrame({"$[:].id": [1, 1, 2], "$[:].premium": [9.0, 9.0, 7.0]}),
+        "drivers": pl.LazyFrame({"$[:].id": [1, 2], "$[:].drivers[:].age": [30, 40]}),
+    }
+    first = {"id": 1, "premium": 9.0, "drivers": [{"age": 30}]}
+    second = {"id": 2, "premium": 7.0, "drivers": [{"age": 40}]}
+    context = FaultInjectingExecutionContext(
+        operation="test_output_assembly",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_sampler=lambda: 1,
+        fault_injector=lambda point: None,
+    )
+
+    assert _assemble_document(field_frames) == [first, second]
+    assert _assemble_document(field_frames, top_level_per_row=True) == [first, first, second]
+    with context.stage("output_assembly"):
+        per_row = _assemble_document(field_frames, top_level_per_row=True)
+    assert per_row == [first, first, second]
+    # A top level built from deeper rows has no rows of its own to keep: it groups as before.
+    nested_only = {"drivers": field_frames["drivers"]}
+    assert _assemble_document(nested_only, top_level_per_row=True) == _assemble_document(
+        nested_only
+    )
+
+
+def test_the_deploy_scorer_s_key_keeps_the_output_node_s_rows_apart() -> None:
+    from haute._output_assembler import DEPLOY_ANSWER_PER_ROW_CONFIG_KEY
+
+    mapping = [
+        {"source_port": "quotes", "source_column": "id", "output_path": "$[:].id", "enabled": True}
+    ]
+    quotes = pl.LazyFrame({"id": [1, 1]})
+
+    def assembled(config: dict[str, object]) -> list[dict[str, object]]:
+        frame = assemble_output_from_config(quotes, config=config, source_names=["quotes"])
+        # The in-memory engine runs the assembly's scan on this thread.
+        return frame.collect(engine="in-memory").to_dicts()
+
+    assert assembled({"outputMapping": mapping}) == [{"id": 1}]
+    assert assembled({"outputMapping": mapping, DEPLOY_ANSWER_PER_ROW_CONFIG_KEY: True}) == [
+        {"id": 1},
+        {"id": 1},
+    ]
+
+
 def test_limited_assembly_collapses_duplicate_root_rows() -> None:
     field_frames = {"root": pl.LazyFrame({"$[:].id": ["A", "A", "B"]})}
 
@@ -1234,8 +1281,41 @@ def test_limited_level_semi_joins_on_every_own_key_of_its_ancestor() -> None:
         },
     )
 
-    assert sorted(limited.collect()["$[:].a[:].b[:].v"].to_list()) == [10, 30]
+    assert limited.collect()["$[:].a[:].b[:].v"].to_list() == [10, 30]
     assert "SEMI" in limited.explain().upper()
+
+
+def test_limited_assembly_of_a_level_nested_by_two_keys_equals_the_unlimited_one() -> None:
+    """A level selected by two keys keeps its rows' order over many streaming morsels."""
+    policies, per_cover = 4, 30_000
+    covers = pl.DataFrame(
+        {
+            "$[:].id": [policy for policy in range(policies) for _ in range(2)],
+            "$[:].covers[:].k1": [policy for policy in range(policies) for _ in range(2)],
+            "$[:].covers[:].k2": ["x", "y"] * policies,
+        }
+    )
+    rows = policies * 2 * per_cover
+    # Each cover's items interleave with every other cover's.
+    cover_of_row = [index % (policies * 2) for index in range(rows)]
+    items = pl.DataFrame(
+        {
+            "$[:].id": [cover // 2 for cover in cover_of_row],
+            "$[:].covers[:].k1": [cover // 2 for cover in cover_of_row],
+            "$[:].covers[:].k2": ["xy"[cover % 2] for cover in cover_of_row],
+            "$[:].covers[:].items[:].n": list(range(rows)),
+        }
+    )
+    frames = {
+        "root": pl.LazyFrame({"$[:].id": list(range(policies))}),
+        "covers": covers.lazy(),
+        "items": items.lazy(),
+    }
+
+    limited = _assemble_document(frames, row_limit=2)
+
+    assert limited == _assemble_document(frames)[:2]
+    assert [item["n"] for item in limited[1]["covers"][0]["items"][:3]] == [2, 10, 18]
 
 
 def test_limited_level_without_ancestor_keys_reads_every_row() -> None:

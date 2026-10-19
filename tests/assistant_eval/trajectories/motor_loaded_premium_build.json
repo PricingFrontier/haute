@@ -61,6 +61,7 @@
                     "name": "loaded_quotes",
                     "config": {
                       "how": "left",
+                      "maintainOrder": "left_right",
                       "leftOn": [
                         "region_code"
                       ],

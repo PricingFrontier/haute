@@ -548,7 +548,9 @@ must apply exactly as it would to any other read of those rows — collects one 
 prefix (`_MAX_PROFILE_ROWS`, reported as `rows_scanned`/`scan_bounded`), and summarises
 each column: `null_count` always; `distinct_count` whenever the dtype can be counted; for
 string, categorical, enum and boolean columns with at most `_MAX_PROFILE_LEVELS` distinct
-values, those values with their counts; for numeric and temporal columns, `min` and `max`;
+values, those values with their counts, most frequent first and equal counts in value
+order, so the profile reads the same on every run; for numeric and temporal columns,
+`min` and `max`;
 otherwise `values_withheld`. The cardinality bound reduces disclosure for high-cardinality
 strings, while low-cardinality strings — including repeated names, addresses, dates of
 birth, or registrations — can be emitted. The explicit `allow_row_samples` grant is the

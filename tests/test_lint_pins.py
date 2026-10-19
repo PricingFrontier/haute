@@ -488,7 +488,9 @@ def test_removing_a_real_cap_is_caught(tmp_path):
     # test must not go red for a floor bump that leaves the cap in place.
     match = re.search(r'"polars>=[^",<]+(,<[^"]+)"', live)
     assert match, "fixture assumption broken: polars is no longer declared with a floor and a cap"
-    (tmp_path / "pyproject.toml").write_text(live.replace(match.group(1), "", 1), encoding="utf-8")
+    # Cut polars' own cap by position: the same text (",<3") can cap another dependency.
+    start, end = match.span(1)
+    (tmp_path / "pyproject.toml").write_text(live[:start] + live[end:], encoding="utf-8")
 
     violations = lint_pins.collect(tmp_path)
 

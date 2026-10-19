@@ -11,7 +11,7 @@ A Workbench Output has no outputs. Each table of the workbench's schema that has
 
 Each table is filled from the frame connected to it. Each of the table's columns is filled from the frame's column of the same name, unless you pick another in the panel (see below); the frame's other columns are left out. A column that nothing fills, because the frame has no column of its name and you picked none, is left empty: its values are null, and the panel flags it. Each column takes the type the workbench declares. An integer column can fill a Decimal one, and a categorical column a Text one; a column of another type stops the run with a message naming the table and the column, so convert it upstream or pick another. A pick of a column the frame doesn't have stops the run too.
 
-A table with one row per quote takes exactly one row from its frame; a table with many rows per quote takes all of its frame's rows.
+A table with one row per quote takes exactly one row from its frame; a table with many rows per quote takes all of its frame's rows, in the order the frame delivers them. A step before it that leaves row order to Polars, such as an [Edge Join](edge-join.md) with **Order** set to **None**, can list them in a different order from one run to the next.
 
 Click the node to preview its tables, filled for the workbench's sample quote: each table is a dataframe, with the table picker at the top of the preview choosing which one shows when there are several. Click a value to trace it back through the pipeline: it is traced from the node connected to its table, through the column that fills it.
 

@@ -516,6 +516,29 @@ _SHAPES: tuple[tuple[str, str | None, str | None, str | None, str, str, str], ..
         _GROUP_BY_PREMIUM,
         "premium",
     ),
+    # ------------------------------------------------ map and ext namespaces
+    # No source holds a map or an extension column (each is converted where it
+    # enters), so these build one in the shape's own code.
+    (
+        "map_len",
+        "namespace",
+        "map",
+        "len",
+        "df = df.with_columns(pl.col('l').list.eval(pl.struct(key=pl.element().cast(pl.String), "
+        "value=pl.element())).cast(pl.Map(pl.String, pl.Int64)).map.len().alias('entries'))",
+        _GROUP_BY_PREMIUM,
+        "premium",
+    ),
+    (
+        "ext_storage",
+        "namespace",
+        "ext",
+        "storage",
+        "df = df.with_columns(pl.col('extra').ext.to(pl.Extension('haute.corpus', pl.Int64))"
+        ".ext.storage().alias('stored'))",
+        _GROUP_BY_PREMIUM,
+        "premium",
+    ),
     # ------------------------------------------------------- pl functions
     (
         "fn_sum_horizontal",

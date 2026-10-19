@@ -13,13 +13,13 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, runtime_checkable
 
 import polars as pl
 
-from haute._cache import CacheConsumer, canonical_json, checked_cache_inputs
+from haute._cache import CacheConsumer, canonical_json, checked_cache_inputs, polars_version
 from haute._chunked_writes import is_part_name, part_name, part_paths, scan_parts, write_parts
 from haute._credential_security import is_credential_name, validate_credential_free_uri
 from haute._env import float_env
@@ -34,8 +34,16 @@ from haute._file_lock import (
 from haute._file_ops import atomic_write_text, ensure_disk_headroom
 from haute._hashing import content_hash
 from haute._logging import get_logger
+from haute._map_columns import (
+    arrow_holds_map,
+    iter_parquet_map_entries,
+    map_entries_frame,
+    map_entries_table,
+)
 
 if TYPE_CHECKING:
+    import pyarrow as pa
+
     from haute._execution_context import ExecutionContext
 
 BuildClass = Literal["bounded", "admitted_eager", "unsupported"]
@@ -83,6 +91,24 @@ class SourceCacheGenerationMissingError(SourceCacheCorruptError):
 
 class SourceCacheLegacyLayoutError(SourceCacheGenerationMissingError):
     """A generation in the retired single-file layout: absent, never corruption."""
+
+
+class _MapPartsNeedReencoding(Exception):  # noqa: N818 - a signal, not an error
+    """An input generation another Polars described holds a physical Parquet map column.
+
+    Polars 2's Parquet reader would keep only the last value of a key the map
+    repeats while the parts' digests still matched, so the generation is
+    re-encoded rather than read (see :meth:`SourceCacheStore.open_generation`).
+    """
+
+
+class _Superseded(Exception):  # noqa: N818 - a signal, not an error
+    """The generation a build was to replace is no longer current, so it publishes nothing.
+
+    A re-encoded copy holds the data of the generation it copied; once another
+    build has published, possibly in another process, the copy would replace
+    newer data with older (see :meth:`SourceCacheStore._reencoded`).
+    """
 
 
 class SourceCacheBuildError(SourceCacheError):
@@ -350,6 +376,9 @@ class SourceCacheMetadata:
     # metadata: how long caching this actually took. Absent on a generation
     # published before it was recorded, which reads as unknown rather than zero.
     build_seconds: float | None = None
+    # The Polars version whose scan described ``columns``. Absent on a generation
+    # published before it was recorded, which reads as another version.
+    polars_version: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -367,12 +396,26 @@ class SourceCacheMetadata:
             "created_at": self.created_at,
             "profile": self.profile,
             "build_class": self.build_class,
+            "polars_version": self.polars_version,
         }
         if self.node_output is not None:
             payload["node_output"] = dict(self.node_output)
         if self.build_seconds is not None:
             payload["build_seconds"] = self.build_seconds
         return payload
+
+
+@dataclass(frozen=True, slots=True)
+class _MapEntriesCopy:
+    """A generation's own parts, read through pyarrow with every map as entries."""
+
+    parts: tuple[Path, ...]
+    build_class: BuildClass = "bounded"
+
+    def build(self, context: SourceCacheBuildContext) -> Iterator[pa.Table]:
+        for part in self.parts:
+            context.checkpoint()
+            yield from iter_parquet_map_entries(part)
 
 
 @dataclass(frozen=True, slots=True)
@@ -670,6 +713,13 @@ class SourceCacheStore:
     def _pointer_path(self, identity: SourceCacheIdentity) -> Path:
         return self.identity_path(identity) / "current.json"
 
+    def _pointed_generation_id(self, identity: SourceCacheIdentity) -> str | None:
+        """The current generation's id, or None without a pointer."""
+        try:
+            return self._read_pointer(identity)
+        except FileNotFoundError:
+            return None
+
     def _read_pointer(self, identity: SourceCacheIdentity) -> str:
         path = self._pointer_path(identity)
         if not path.exists():
@@ -734,6 +784,7 @@ class SourceCacheStore:
                     and not isinstance(raw.get("build_seconds"), bool)
                     else None
                 ),
+                polars_version=raw.get("polars_version"),
             )
             part_stats = tuple(path.stat() for path in data_paths)
             if (
@@ -757,6 +808,10 @@ class SourceCacheStore:
                 or metadata.column_count != len(metadata.columns)
                 or not isinstance(metadata.created_at, (int, float))
                 or (metadata.node_output is not None and not isinstance(metadata.node_output, dict))
+                or (
+                    metadata.polars_version is not None
+                    and not isinstance(metadata.polars_version, str)
+                )
             ):
                 raise ValueError("metadata does not match snapshot")
             verification_key = _verification_key(identity.digest, generation_id, parts, part_stats)
@@ -771,28 +826,126 @@ class SourceCacheStore:
             # Read every footer/schema before exposing the scan; corrupt data never falls back.
             import pyarrow.parquet as pq
 
-            expected_columns = metadata.columns
+            # An input snapshot is a copy of its source, so another Polars only
+            # describes it again (its digests proved the bytes above); a node
+            # output's identity names the Polars that computed it.
+            redescribe = (
+                identity.provider != NODE_OUTPUT_PROVIDER
+                and metadata.polars_version != polars_version()
+            )
+            expected_columns: dict[str, str] | None = None if redescribe else metadata.columns
             for part, path in zip(parts, data_paths, strict=True):
                 parquet_metadata = pq.read_metadata(path)
                 arrow_schema = pq.read_schema(path)
+                if redescribe and any(arrow_holds_map(field.type) for field in arrow_schema):
+                    raise _MapPartsNeedReencoding(generation_id)
                 polars_schema = pl.scan_parquet(path).collect_schema()
+                columns = {name: str(dtype) for name, dtype in polars_schema.items()}
+                if expected_columns is None:
+                    expected_columns = columns
                 if (
                     parquet_metadata.num_rows != part.row_count
                     or arrow_schema.names != polars_schema.names()
-                    or {name: str(dtype) for name, dtype in polars_schema.items()}
-                    != expected_columns
+                    or columns != expected_columns
                 ):
                     raise ValueError("metadata schema or row count does not match snapshot")
+            if redescribe:
+                assert expected_columns is not None
+                metadata = self._redescribed(metadata_path, metadata, expected_columns)
         except FileNotFoundError as exc:
             raise SourceCacheCorruptError("source-cache generation is corrupt") from exc
         except OSError:
             raise
         except Exception as exc:
             # Polars/PyArrow use implementation-specific exception types.
-            if isinstance(exc, SourceCacheCorruptError):
+            if isinstance(exc, SourceCacheCorruptError | _MapPartsNeedReencoding):
                 raise
             raise SourceCacheCorruptError("source-cache generation is corrupt") from exc
         return SourceCacheGeneration(generation_id, data_paths, metadata_path, metadata)
+
+    @staticmethod
+    def _redescribed(
+        metadata_path: Path,
+        metadata: SourceCacheMetadata,
+        columns: dict[str, str],
+    ) -> SourceCacheMetadata:
+        """Record this Polars' description of a generation another Polars described.
+
+        Its data and part digests are unchanged; the column descriptions are this
+        Polars' scan of them, so the generation is re-described, never corrupt.
+        """
+        redescribed = replace(
+            metadata,
+            columns=columns,
+            column_count=len(columns),
+            polars_version=polars_version(),
+        )
+        atomic_write_text(metadata_path, canonical_json(redescribed.to_dict()))
+        logger.info(
+            "source_cache_generation_redescribed",
+            identity_digest=metadata.identity_digest,
+            generation_id=metadata.generation_id,
+            described_by=metadata.polars_version,
+            polars_version=redescribed.polars_version,
+            changed_columns=sorted(
+                name
+                for name in set(columns) | set(metadata.columns)
+                if columns.get(name) != metadata.columns.get(name)
+            ),
+        )
+        return redescribed
+
+    def _reencoded(
+        self, identity: SourceCacheIdentity, generation_id: str
+    ) -> SourceCacheGeneration | None:
+        """Publish a copy of the current generation, whose parts hold a physical Parquet map.
+
+        pyarrow reads the generation's own parts one row group at a time, every map
+        becoming a list of key-value structs with all its entries, so nothing is
+        fetched from the provider. The old generation is leased from the moment it
+        is found current until the copy is published, then retired like any
+        superseded generation. The copy is published only while the old generation
+        is still current, checked under the lease lock every process shares, so a
+        generation another build published meanwhile is never replaced by older
+        data. Returns None when the old generation is no longer current.
+        """
+        if not self._acquire_input_lease(identity, generation_id, require_current=True):
+            return None
+        try:
+            from haute._execution_context import ExecutionProfile
+
+            generation_dir = self.identity_path(identity) / "generations" / generation_id
+            raw = json.loads((generation_dir / "meta.json").read_text(encoding="utf-8"))
+            parts = tuple(
+                generation_dir / SourceCachePart.from_dict(part).name for part in raw["parts"]
+            )
+            generation = self.build(
+                identity,
+                _MapEntriesCopy(parts),
+                context=SourceCacheBuildContext(
+                    profile=ExecutionProfile.LAZY_SINK, build_class="bounded"
+                ),
+                source_signature=raw.get("source_signature"),
+                refresh=True,
+                replacing=generation_id,
+            )
+        except _Superseded:
+            logger.info(
+                "source_cache_reencoding_superseded",
+                identity_digest=identity.digest,
+                generation_id=generation_id,
+            )
+            return None
+        finally:
+            self._release_input_lease(identity, generation_id)
+        logger.info(
+            "source_cache_generation_reencoded",
+            identity_digest=identity.digest,
+            generation_id=generation_id,
+            reencoded_as=generation.generation_id,
+            described_by=raw.get("polars_version"),
+        )
+        return generation
 
     def open_generation(self, identity: SourceCacheIdentity) -> SourceCacheGeneration:
         with self._identity_lock(identity):
@@ -807,6 +960,9 @@ class SourceCacheStore:
                 raise FileNotFoundError(
                     f"source-cache generation {generation_id} uses the retired layout"
                 ) from exc
+            except _MapPartsNeedReencoding:
+                # None when another build published meanwhile: open that one.
+                return self._reencoded(identity, generation_id) or self.open_generation(identity)
 
     def _write_output(
         self,
@@ -815,8 +971,10 @@ class SourceCacheStore:
         context: SourceCacheBuildContext,
     ) -> Mapping[str, str]:
         if isinstance(output, pl.LazyFrame):
-            # Sliced a chunk at a time where the source can be sliced.
-            written = write_parts(directory, output, fast_checkpoint=True)
+            # Sliced a chunk at a time where the source can be sliced. A map
+            # column becomes a list of key-value structs with the entries Polars
+            # read (see haute._map_columns).
+            written = write_parts(directory, map_entries_frame(output), fast_checkpoint=True)
             return written.digests
         path = directory / part_name(0)
         if isinstance(output, pl.DataFrame) or not isinstance(output, Iterable):
@@ -836,6 +994,9 @@ class SourceCacheStore:
                     raise SourceCacheBuildError(
                         "builder iterator must yield Arrow RecordBatch or Table"
                     )
+                # Every map entry survives as a list of key-value structs; Polars'
+                # Parquet reader would keep only a repeated key's last value.
+                table = map_entries_table(table)
                 if writer is None:
                     writer = pq.ParquetWriter(path, table.schema)
                 ensure_disk_headroom(directory, table.nbytes)
@@ -856,7 +1017,13 @@ class SourceCacheStore:
         context: SourceCacheBuildContext,
         source_signature: str | None = None,
         refresh: bool = False,
+        replacing: str | None = None,
     ) -> SourceCacheGeneration:
+        """Build a generation of *identity* and publish it as current.
+
+        With *replacing*, the build publishes only while that generation is current,
+        and raises :class:`_Superseded` otherwise, having published nothing.
+        """
         if context.build_class == "unsupported":
             raise SourceCacheBuildError("unsupported source-cache build class")
         if identity.provider == NODE_OUTPUT_PROVIDER:
@@ -914,12 +1081,15 @@ class SourceCacheStore:
                     getattr(context.profile, "value", str(context.profile)),
                     context.build_class,
                     build_seconds=time.monotonic() - build_started,
+                    polars_version=polars_version(),
                 )
                 metadata_path = staging / "meta.json"
                 atomic_write_text(metadata_path, canonical_json(metadata.to_dict()))
                 context.checkpoint()
                 # Self-validate the staged directory using the same strict validator after rename.
                 with self._lease_lock:
+                    if replacing is not None and self._pointed_generation_id(identity) != replacing:
+                        raise _Superseded(replacing)
                     if not context.defer_retirement:
                         self._retire_unleased_locked(identity)
                     final_dir = generations_dir / generation_id
@@ -959,17 +1129,25 @@ class SourceCacheStore:
         with self._identity_lock(identity):
             while True:
                 generation_id = self._read_pointer(identity)
-                if self._acquire_input_lease(identity, generation_id, require_current=True):
-                    break
-            try:
-                generation = self._metadata_from_path(identity, generation_id)
-            except BaseException as exc:
-                self._release_input_lease(identity, generation_id)
-                if isinstance(exc, SourceCacheLegacyLayoutError):
-                    raise FileNotFoundError(
-                        f"source-cache generation {generation_id} uses the retired layout"
-                    ) from exc
-                raise
+                if not self._acquire_input_lease(identity, generation_id, require_current=True):
+                    continue
+                try:
+                    generation = self._metadata_from_path(identity, generation_id)
+                except _MapPartsNeedReencoding:
+                    # Still leased while it is copied; the loop then leases what is current.
+                    try:
+                        self._reencoded(identity, generation_id)
+                    finally:
+                        self._release_input_lease(identity, generation_id)
+                    continue
+                except BaseException as exc:
+                    self._release_input_lease(identity, generation_id)
+                    if isinstance(exc, SourceCacheLegacyLayoutError):
+                        raise FileNotFoundError(
+                            f"source-cache generation {generation_id} uses the retired layout"
+                        ) from exc
+                    raise
+                break
         try:
             yield generation
         finally:
@@ -991,6 +1169,12 @@ class SourceCacheStore:
             self._acquire_input_lease(identity, generation_id, require_current=False)
             try:
                 generation = self._metadata_from_path(identity, generation_id)
+            except _MapPartsNeedReencoding as exc:
+                # Superseded: opening the identity publishes its re-encoded copy.
+                self._release_input_lease(identity, generation_id)
+                raise SourceCacheGenerationMissingError(
+                    "source-cache generation is re-encoded when its identity is opened"
+                ) from exc
             except BaseException:
                 self._release_input_lease(identity, generation_id)
                 raise

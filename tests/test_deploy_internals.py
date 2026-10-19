@@ -28,6 +28,7 @@ import polars as pl
 import pytest
 
 from haute._types import PipelineGraph
+from haute.deploy._request_rows import RequestRows
 from haute.errors import DeployError
 from tests._deploy_helpers import FIXTURE_DIR
 from tests._deploy_helpers import make_resolved_deploy as _make_resolved
@@ -126,9 +127,15 @@ class TestHauteModelLoadContext:
 
         # Write a valid manifest
         manifest = {
+            "polars_version": pl.__version__,
             "pruned_graph": {"nodes": [], "edges": []},
             "input_node_ids": ["api_src"],
             "output_node_id": "out",
+            "request_rows": {
+                "multi_quote": "in_request_order",
+                "refusals": [],
+                "checked_lookups": [],
+            },
             "output_fields": ["premium"],
             "artifacts": {"model.pkl": "/tmp/model.pkl"},
         }
@@ -159,9 +166,15 @@ class TestHauteModelLoadContext:
         from haute.deploy._model_code import HauteModel
 
         manifest = {
+            "polars_version": pl.__version__,
             "pruned_graph": {"nodes": [], "edges": []},
             "input_node_ids": ["src"],
             "output_node_id": "out",
+            "request_rows": {
+                "multi_quote": "in_request_order",
+                "refusals": [],
+                "checked_lookups": [],
+            },
             "artifacts": {},
         }
         manifest_path = tmp_path / "deploy_manifest.json"
@@ -180,9 +193,15 @@ class TestHauteModelLoadContext:
         from haute.deploy._model_code import HauteModel
 
         manifest = {
+            "polars_version": pl.__version__,
             "pruned_graph": {"nodes": [], "edges": []},
             "input_node_ids": ["src"],
             "output_node_id": "out",
+            "request_rows": {
+                "multi_quote": "in_request_order",
+                "refusals": [],
+                "checked_lookups": [],
+            },
             "artifacts": {"missing.pkl": "/original/path.pkl"},
         }
         manifest_path = tmp_path / "deploy_manifest.json"
@@ -194,6 +213,24 @@ class TestHauteModelLoadContext:
 
         with pytest.raises(RuntimeError, match="missing.pkl"):
             model.load_context(ctx)
+
+    def test_load_context_refuses_a_polars_other_than_the_deployed_one(self, tmp_path):
+        """A Polars release can change a pipeline's results, so the model refuses to load."""
+        from haute.deploy._model_code import HauteModel
+
+        manifest_path = tmp_path / "deploy_manifest.json"
+        manifest_path.write_text(json.dumps({"polars_version": "1.44.2"}))
+        ctx = MagicMock()
+        ctx.artifacts = {"deploy_manifest": str(manifest_path)}
+
+        with pytest.raises(RuntimeError) as exc_info:
+            HauteModel().load_context(ctx)
+
+        message = str(exc_info.value)
+        assert f"deployed with Polars 1.44.2 and is loading under Polars {pl.__version__}" in (
+            message
+        )
+        assert "polars==1.44.2" in message
 
 
 class TestHauteModelPredict:
@@ -216,6 +253,7 @@ class TestHauteModelPredict:
         model._output_node_id = "out"
         model._artifact_paths = {}
         model._output_fields = None
+        model._request_rows = RequestRows("in_request_order")
 
         input_pd = pd.DataFrame({"x": [1.0, 2.0], "y": [3.0, 4.0]})
         expected_result = pl.DataFrame({"x": [1.0, 2.0], "result": [10.0, 20.0]})
@@ -251,6 +289,7 @@ class TestHauteModelPredict:
         model._output_node_id = "out"
         model._artifact_paths = {}
         model._output_fields = None
+        model._request_rows = RequestRows("in_request_order")
         admission_error = ExecutionAdmissionError(
             "deploy_pyfunc_predict",
             profile=ExecutionProfile.DEPLOY_BATCH,
@@ -297,6 +336,7 @@ class TestHauteModelPredict:
         model._output_node_id = "out"
         model._artifact_paths = {}
         model._output_fields = None
+        model._request_rows = RequestRows("in_request_order")
 
         monkeypatch.setattr(
             "haute.deploy._scorer.admit_deploy_execution",
@@ -332,6 +372,7 @@ class TestHauteModelPredict:
         model._output_node_id = "out"
         model._artifact_paths = {}
         model._output_fields = None
+        model._request_rows = RequestRows("in_request_order")
 
         class Result:
             def to_pandas(self):
@@ -363,6 +404,7 @@ class TestHauteModelPredict:
         model._output_node_id = "out"
         model._artifact_paths = {}
         model._output_fields = ["premium"]
+        model._request_rows = RequestRows("in_request_order")
 
         input_pd = pd.DataFrame({"x": [1.0]})
         mock_result = pl.DataFrame({"premium": [100.0]})
@@ -388,6 +430,7 @@ class TestHauteModelPredict:
         model._output_node_id = "out"
         model._artifact_paths = {"model.pkl": "/served/model.pkl"}
         model._output_fields = None
+        model._request_rows = RequestRows("in_request_order")
 
         input_pd = pd.DataFrame({"x": [1.0]})
         mock_result = pl.DataFrame({"x": [1.0]})
@@ -416,6 +459,7 @@ class TestHauteModelPredict:
         model._input_node_ids = ["quotes"]
         model._output_node_id = "output"
         model._output_fields = output_fields
+        model._request_rows = RequestRows("in_request_order")
         model._artifact_paths = {}
         return model
 
@@ -4522,6 +4566,10 @@ class TestResolveConfigEdgeCases:
                 return_value=_STUB_EXECUTION_POLICY,
             ),
             patch("haute.deploy._schema.infer_output_schema", return_value={"out": "Float64"}),
+            patch(
+                "haute.deploy._request_rows.request_rows",
+                return_value=RequestRows("in_request_order"),
+            ),
         ):
             resolved = resolve_config(config)
 
@@ -4927,7 +4975,10 @@ class TestBuildSignature:
         type_map = self._input_type_map(sig)
         assert type_map["ts"] == DataType.datetime, "Parameterized Datetime must map to datetime"
 
-    @pytest.mark.parametrize("dtype", ["Categorical", "Enum(categories=['a', 'b'])"])
+    @pytest.mark.parametrize(
+        "dtype",
+        ["Categorical", 'Categorical(Categories("lexical"))', "Enum(categories=['a', 'b'])"],
+    )
     def test_categorical_types_map_to_string(self, dtype):
         from mlflow.types import DataType
 
@@ -4957,6 +5008,24 @@ class TestBuildSignature:
             _build_signature(resolved)
 
         assert dtype in str(exc_info.value)
+
+    @pytest.mark.parametrize("schema", ["input_schema", "output_schema"])
+    @pytest.mark.parametrize(
+        "dtype", ["Int128", "UInt128", "List(Int128)", "Struct({'a': UInt128})"]
+    )
+    def test_a_column_holding_a_128_bit_integer_fails_with_the_cast(self, schema, dtype):
+        """No MLflow type or Arrow conversion takes a 128-bit integer, at any depth."""
+        from haute.deploy._mlflow import _build_signature
+        from haute.errors import DeployError
+
+        schemas = {"input_schema": {"x": "Float64"}, "output_schema": {"val": "Float64"}}
+        schemas[schema] = {"policy_key": dtype}
+        resolved = _make_resolved(**schemas)
+
+        with pytest.raises(DeployError, match="Column 'policy_key' is ") as exc_info:
+            _build_signature(resolved)
+
+        assert "cast it upstream to Int64" in str(exc_info.value)
 
     def test_a_workbench_pipelines_tables_are_maps_and_arrays_of_them(self):
         """A one-row table is a map of anything and a many-row table an array of them, a
@@ -5173,13 +5242,16 @@ class TestBuildSignature:
 class TestCondaEnvAndPipRequirements:
     """Tests for _conda_env() and _pip_requirements()."""
 
-    def test_pip_requirements_includes_haute_and_polars(self):
+    def test_pip_requirements_pin_the_editors_haute_and_polars(self):
+        import polars
+
+        import haute
         from haute.deploy._mlflow import _pip_requirements
 
         reqs = _pip_requirements()
 
-        assert any("haute==" in r for r in reqs)
-        assert "polars>=1.44.2" in reqs
+        assert f"haute=={haute.__version__}" in reqs
+        assert f"polars=={polars.__version__}" in reqs
 
     def test_pip_requirements_add_no_model_engine(self):
         """The pinned Haute brings its own engines; no node adds one."""

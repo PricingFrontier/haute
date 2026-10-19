@@ -33,7 +33,7 @@ When a CI runner invokes `haute deploy`, Haute:
 2. **Prunes to the scoring path** - removes training steps, data exports, and anything not needed for live scoring
 3. **Collects artifacts** - finds all the model files (e.g. `.cbm`, `.pkl`) your pipeline references and bundles them, together with your pipeline's `utility/` package
 4. **Validates** - runs your test quotes through the pruned pipeline to make sure it works. Your preamble can import from `utility/`; an import of any other file in your project is refused, because the deployed pipeline would not have it, so keep shared helpers in `utility/`
-5. **Packages and uploads** - wraps everything into the format the selected target expects and uploads it where supported
+5. **Packages and uploads** - wraps everything into the format the selected target expects and uploads it where supported. The package pins the exact Haute and Polars versions the deploy ran, because a Polars release can change a pipeline's results, and a Databricks model refuses to load under another Polars
 6. **Dispatches by target** - Databricks creates or updates Model Serving; `container` returns the image for a separate hosting step; the Azure, ECS, and GCP targets build and push the image and finish there, because their service-update integrations are not implemented
 
 ---
@@ -202,6 +202,37 @@ The smoke test sends each `input` to the deployed staging endpoint as a request 
     The `tests/quotes/example.json` that `haute init` writes is a placeholder in the shape above, with made-up fields and no `expected` output. Replace it with your own quotes, and the prices you expect for them, before your first deploy.
 
 This catches problems early: schema mismatches, missing model files, runtime errors, and prices that drift from the ones you expect. Think of it as a sanity check that runs automatically before every deploy.
+
+---
+
+## Requests with several quotes
+
+A request to a deployed pipeline can hold several quotes, sent as a JSON array. The answer then has one row per quote, in the order the quotes were sent, so the first row answers the first quote. `haute impact` sends quotes this way, in batches.
+
+Every deployment answers such a request, in one of two ways. When you deploy, Haute checks every node between the Quote Input and the Quote Response to make sure each quote keeps exactly one row, in its place, and that no quote's answer depends on the other quotes sent with it. `haute deploy` prints the result.
+
+- **When the check passes**, the quotes run through the pipeline together, which is fast. Two quotes whose answers come out identical are still answered with a row each.
+- **When it doesn't**, the deployment answers the quotes one at a time, each exactly as if it had been sent on its own, so the answer is the same either way and only slower. The deploy output names each node that stopped the check and what it does:
+
+| In a node | Why it stops the check |
+|---|---|
+| **Filter rows**, **Limit rows**, **Remove duplicates**, or an inner, semi or anti join | It can drop a quote |
+| **Sort rows**, or a join whose order is not the quotes' (see below) | It can reorder the quotes |
+| **Unpivot to rows**, **Append inputs**, a full join, or an [Expander](../building-models/nodes/scenario-expander.md) | It can repeat a quote or add rows |
+| A join that starts from another input instead of the quotes | It answers with that input's rows |
+| **Group and aggregate**, **Pivot to columns**, a **Fill missing values** strategy that reads other rows, or a formula that does (a total, an average, a rank, a running total, the previous row's value) | One quote's answer would depend on the others |
+| An [Apply Optimisation](../building-models/nodes/optimiser-apply.md) node in online mode, or one that loads its result from MLflow | Online mode answers in quote-id order; an MLflow result can't be checked before it is loaded |
+| A [Quote Response](../building-models/nodes/output.md) that nests a quote's own rows, such as its drivers, under it | Run together, each driver would go under every quote holding its key, so two quotes sharing a key would share drivers |
+| Code the check can't follow, or a [Submodel](../building-models/nodes/submodel.md) | It can't be checked yet |
+
+A join keeps each quote's row when it starts from the quotes, is a left join (or a cross join with a single-row [Constant](../building-models/nodes/constant.md)), and keeps the quotes' order: **left input order** or **left, then right** in a **Join another input** step, **Left** or **Left then right** in an [Edge Join](../building-models/nodes/edge-join.md). The table it joins must also hold each key once:
+
+- **A lookup the deployment carries** (a [Data Input](../building-models/nodes/data-input.md)) is checked when you deploy, after its post-load code runs. If a key appears twice, the deploy fails naming the lookup, the join and the key: remove the repeated rows. If a quote is meant to match several rows, set the join's validation to **many to many** (**m:m** in an Edge Join); the deployment then answers the quotes one at a time.
+- **A table built from the quotes themselves**, such as a node's result joined back to the quotes it came from, can pair one quote with another's rows, so the deployment answers the quotes one at a time. Add columns along one chain of nodes instead of splitting the quotes and joining them back.
+
+Answered one at a time, each quote must still give one row, so that the answers line up with the quotes. A quote that gives no row or several (one a filter drops, say) fails the request with HTTP 422 (error code `quote_answer_rows`), naming its place in the request; sent on its own, it is answered with every row it gives. To decline a quote, keep its row and add a column saying so, for example `declined` set to true, instead of filtering the quote out.
+
+A deployment that answers the quotes one at a time scores its test quotes one request each. A [Workbench Input](../building-models/nodes/workbench-input.md) reads one quote per request, so its deployment refuses a request holding several.
 
 ---
 

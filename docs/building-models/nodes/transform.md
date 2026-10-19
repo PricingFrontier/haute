@@ -69,25 +69,36 @@ Each card reads as a sentence or a short form. The column boxes suggest the colu
 
 | Step | What it does | What you fill in |
 |---|---|---|
-| **Filter rows** | Keeps rows that match conditions (`filter`) | "Keep rows where", then one condition per row: a column, a test (**equals**, **is greater than**, **is one of**, **is missing**, **contains text**, **matches pattern (regex)** and more) and a value. **Add condition** adds a row; with several, choose whether **all** or **any** of them must be true. |
+| **Filter rows** | Keeps rows that match conditions (`filter`) | "Keep rows where", then one condition per row: a column, a test (**equals**, **is greater than**, **is one of**, **is missing**, **contains text**, **matches pattern (regex)** and more) and a value. **Add condition** adds a row; with several, choose whether **all** or **any** of them must be true. An **is one of** list of numbers is written as the kind of number its column holds (see [Column types](#column-types)). |
 | **Add column** | Computes a new or replaced column (`with_columns`) | **Column name**, then **Computed as**: **Value**, **Formula**, **Function**, **If-then**, **Window** or **Join text**. A formula is typed as text, e.g. `(premium + commission) * tax / 12`, and the box completes column names, earlier variables, [global constants](constant.md#global-constants) and function names. |
 | **Keep columns** | Keeps only the listed columns (`select`) | The columns to keep; **More options** adds **And every other column of type**. |
 | **Drop columns** | Removes the listed columns (`drop`) | The columns to drop; **More options** adds **And every other column of type**. |
 | **Rename columns** | Gives columns new names (`rename`) | "Rename *column* to *new name*"; **Add rename** adds another. |
-| **Change types** | Casts columns to another data type (`cast`) | "Change *column* to *type*", for example **Int64 (whole number)**, **Float64 (decimal number)**, **String (text)** or **Date (date)**. |
-| **Sort rows** | Orders rows by one or more columns (`sort`) | "Sort by *column*", "then by" further columns (**Add sort column**), each ascending or descending, and **Missing values last**. |
+| **Change types** | Casts columns to another data type (`cast`) | "Change *column* to *type*", for example **Int64 (whole number)**, **Float64 (decimal number)**, **String (text)** or **Date (date)**. A text column becoming a date also takes the **format** its dates are written in (see [Column types](#column-types)). |
+| **Sort rows** | Orders rows by one or more columns (`sort`) | "Sort by *column*", "then by" further columns (**Add sort column**), each ascending or descending, and **Missing values last**. Rows that tie on every sort column keep the order they arrived in. |
 | **Remove duplicates** | Keeps one row per key (`unique`) | **Rows are duplicates when they match on** (empty means every column), and which row to keep: **the first row**, **the last row**, **any one row** or **no row (drop every duplicate)**. |
 | **Group and aggregate** | Summarises rows per group (`group_by().agg()`) | **Group by** (empty summarises the whole table) and **Aggregations**: a name, a function (sum, mean, count of values, row count and more) and a column each. **More options** adds a row filter per aggregation (**Only rows where…**). |
-| **Join another input** | Combines columns from another input (`join`) | The join kind (for example **left: every row here, with matches added**) and the input to join, then **Match on** pairs ("a column here = a column there"). **More options** holds **Check key cardinality**, **Output row order** and **Suffix for clashing column names**. |
+| **Join another input** | Combines columns from another input (`join`) | The join kind (for example **left: every row here, with matches added**) and the input to join, then **Match on** pairs ("a column here = a column there"). **More options** holds **Check key cardinality**, **Output row order** and **Suffix for clashing column names**. A new join keeps its inputs' order (**left, then right**; **right, then left** for a right join; **left input order** for a semi or anti join), and changing the join kind moves the order with it unless you chose another. |
 | **Append inputs** | Stacks rows from other inputs (`pl.concat`) | **Append rows from**: tick the inputs. **Columns** either **must match exactly** or **may differ (fill missing with null)**. |
 | **Fill missing values** | Replaces nulls with a value or strategy (`fill_null`) | **Fill missing values in** (empty means every column), then **With** a value or a strategy such as **the previous row's value (forward)** or **the column's mean (mean)**. |
 | **Limit rows** | Keeps the first N rows (`head`) | "Keep the first *100* rows". |
 | **Define variable** | Names a value for later steps | "*name* = *value*"; later steps and Free code can use the name. |
 | **Pivot to columns** | Makes one column per value of a category (`pivot`) | **One row per** (index columns), "Spread the values of", "Each cell is the *function* of *column*", and the **New columns**, one per value. |
-| **Unpivot to rows** | Stacks several columns into name/value rows (`unpivot`) | **Stack these columns**, **Keep as index**, and the two new column names ("Into … and …"). |
+| **Unpivot to rows** | Stacks several columns into name/value rows (`unpivot`) | **Stack these columns**, **Keep as index**, and the two new column names ("Into … and …"). The stacked rows come out in no set order; add a **Sort rows** step after it when a later step or your output depends on the order. |
 | **Free code** | Runs Python statements against the current table | A code box: see [Free code](#free-code). |
 
 A **Join another input** card on a node with a single input says "Connect the table to join on the canvas.": connect the other table to the node first.
+
+### Column types
+
+Where the editor knows a column's type, which it learns once the input has been previewed, it offers only what Polars can do with that type, so a step that would fail never gets built.
+
+- **Text that holds dates.** **Change types** turns a text column into a **Date** or **Datetime** by reading it with a format: a **format** box appears beside the type, starting at `%Y-%m-%d` (`2024-01-31`), or `%Y-%m-%d %H:%M:%S` for a date and time. Change it to match your data: `%d/%m/%Y` reads `31/01/2024`. `%Y` is the four-digit year, `%m` the month, `%d` the day, `%H`, `%M` and `%S` the hour, minute and second. In a formula, `to_date(start, '%d/%m/%Y')` and `to_datetime(...)` read text the same way and stop the run on a value that doesn't match; `try_to_date(...)` and `try_to_datetime(...)` give a missing value instead. `cast` and `try_cast` can't turn text into a date.
+- **Which types a column can change to.** A category column changes only to **String (text)** or **Categorical (category)**: to make a number or a date of it, change it to **String (text)** first. A text column can't become **Boolean (true/false)**: compare it with a value in a condition instead. A number or a date can't become **Categorical (category)** directly.
+- **Numbers in "is one of".** A list of numbers is written the way its column holds numbers: whole numbers for a whole-number column (a fraction can never match, so the list refuses one), numbers with a decimal point for a decimal column, and exact decimals for a **Decimal** column, which also refuses a value with more decimal places than the column has. Where the column's type isn't known yet, a **Number type** select chooses.
+- **Functions and aggregations.** `log` and `exp` are for numbers, and **std** and **var** aren't offered for a duration: turn it into days first with `total_days`.
+
+Where the editor doesn't know a column's type it offers everything. A step that then fails on its column's type stops the run on that step's card, and the message starts with what to change.
 
 ### Free code
 
@@ -154,7 +165,7 @@ After **Switch to code**, the **TRANSFORM** tab holds a code box, **POLARS CODE*
 - After a failed run, the code box highlights the line that failed.
 
 ```python
-df = policies.join(claims, on="policy_id", how="left")
+df = policies.join(claims, on="policy_id", how="left", maintain_order="left_right")
 df = df.with_columns(
     (pl.col("claim_amount") / pl.col("premium")).alias("loss_ratio")
 )
@@ -236,6 +247,7 @@ df = df.join(
     right_on=["policy_id"],
     how="left",
     suffix="_right",
+    maintain_order="left_right",
 )
 df = df.with_columns(
     (pl.col("claim_amount") / pl.col("premium")).alias("loss_ratio")

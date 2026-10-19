@@ -35,20 +35,39 @@ def _request(
 ) -> DeployInput:
     """The request as the pipeline's request input takes it.
 
-    A Workbench Input reads its quotes as their records, each value as it was sent: a
-    frame inferred from the request would type a column the tables do not name, and fail
-    on one of mixed types, before the reader could leave it unread, where the signature
-    lets any value through (specs/workbench). Any other request input takes the frame.
+    A Workbench Input, and a Quote Input with tables, read their quotes as their records,
+    each value as it was sent: a frame inferred from the request would type a column the
+    tables do not name, and fail on one of mixed types, before the reader could leave it
+    unread, where the signature lets any value through (specs/workbench). Any other
+    request input takes the frame.
     """
     import polars as pl
 
-    from haute.deploy._scorer import QuoteRequest, reads_one_quote_per_request
+    from haute.deploy._scorer import QuoteRequest, reads_records
 
-    if reads_one_quote_per_request(graph, input_node_ids):
+    if reads_records(graph, input_node_ids):
         return QuoteRequest(
             tuple(_plain(record) for record in model_input.to_dict(orient="records"))
         )
     return pl.from_pandas(model_input)
+
+
+def _require_deployed_polars(deployed: str) -> None:
+    """Refuse to serve under a Polars other than the one the pipeline was deployed with.
+
+    A Polars release can change what a pipeline computes and the memory it takes,
+    and the deploy's checks measured this one. The logged requirements pin it, so
+    another means the serving environment did not install them.
+    """
+    import polars
+
+    if polars.__version__ != deployed:
+        raise RuntimeError(
+            f"This model was deployed with Polars {deployed} and is loading under Polars "
+            f"{polars.__version__}. A Polars release can change a pipeline's results, so the "
+            f"model serves only under the Polars it was deployed with: serve it where "
+            f"polars=={deployed} is installed, or deploy it again from this environment."
+        )
 
 
 class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
@@ -58,10 +77,15 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
         """Called once when the model is loaded for serving."""
         manifest_path = Path(context.artifacts["deploy_manifest"])
         self._manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        _require_deployed_polars(self._manifest["polars_version"])
         self._graph = PipelineGraph.model_validate(self._manifest["pruned_graph"])
         self._input_node_ids = self._manifest["input_node_ids"]
         self._output_node_id = self._manifest["output_node_id"]
         self._output_fields = self._manifest.get("output_fields")
+        # Whether a request of several quotes is answered in request order, or refused.
+        from haute.deploy._request_rows import RequestRows
+
+        self._request_rows = RequestRows.from_manifest(self._manifest["request_rows"])
 
         manifest_artifacts = set(self._manifest.get("artifacts", {}))
         missing_artifacts = sorted(manifest_artifacts - set(context.artifacts))
@@ -102,6 +126,7 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
                 output_fields=self._output_fields,
                 execution_context=execution_context,
                 retain_admission_on_success=True,
+                request_rows=self._request_rows,
             )
             with execution_context.stage("deploy_to_pandas"):
                 pandas_result = result.to_pandas()

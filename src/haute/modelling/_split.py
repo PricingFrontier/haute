@@ -6,6 +6,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any, Literal
 
+import numpy as np
 import polars as pl
 
 from haute.errors import HauteValidationError
@@ -56,31 +57,6 @@ DEFAULT_SPLIT_DICT: dict[str, Any] = {
 }
 
 
-def split_data(
-    df: pl.DataFrame,
-    config: SplitConfig,
-) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Split a DataFrame into train and test (validation) sets.
-
-    Returns (train_df, test_df).  Does not handle holdout — use
-    :func:`split_mask` for the full 3-way partition.
-    """
-    if len(df) == 0:
-        raise HauteValidationError("Cannot split an empty DataFrame")
-
-    if config.strategy == "random":
-        return _random_split(df, config.validation_size, config.seed)
-    elif config.strategy == "temporal":
-        assert config.date_column is not None
-        assert config.cutoff_date is not None
-        return _temporal_split(df, config.date_column, config.cutoff_date)
-    elif config.strategy == "group":
-        assert config.group_column is not None
-        return _group_split(df, config.group_column, config.validation_size, config.seed)
-    else:
-        raise HauteValidationError(f"Unknown split strategy: {config.strategy}")
-
-
 # Partition constants
 PARTITION_TRAIN = 0
 PARTITION_VALIDATION = 1
@@ -91,10 +67,24 @@ PARTITION_HOLDOUT = 2
 PARTITION_UNUSED = 3
 
 
+def needs_row_order(config: SplitConfig) -> bool:
+    """Whether *config*'s mask selects rows by position, and so takes the canonical order.
+
+    A random mask selects positions; a temporal mask does too when a holdout takes the
+    most recent rows, at the boundary date the holdout ends inside. A temporal mask
+    without a holdout, and a group mask, decide each row by its own values.
+    """
+    return config.strategy == "random" or (
+        config.strategy == "temporal" and config.holdout_size > 0
+    )
+
+
 def split_mask(
     n_rows: int,
     config: SplitConfig,
     df: pl.DataFrame | None = None,
+    *,
+    row_order: np.ndarray | None = None,
 ) -> pl.Series:
     """Return an Int8 Series with partition labels.
 
@@ -103,23 +93,51 @@ def split_mask(
     corresponding partition is simply absent (all rows are train).
 
     ``df`` is only required for ``temporal`` and ``group`` strategies
-    (which inspect column values).
+    (which inspect column values). A strategy that selects by position
+    (:func:`needs_row_order`) requires *row_order*, the rows' source positions
+    in canonical order (``haute.modelling._row_order``): the mask is drawn over
+    that order and each label returned to its row's source position, so the
+    same rows get the same partitions whatever order they arrive in.
     """
     if n_rows == 0:
         raise HauteValidationError("Cannot split an empty DataFrame")
+    if not needs_row_order(config):
+        if row_order is not None:
+            raise HauteValidationError(
+                f"A {config.strategy} split decides each row by its values and needs no row order"
+            )
+    elif row_order is None:
+        raise HauteValidationError(
+            f"A {config.strategy} split selects rows by position and needs the canonical row order"
+        )
+    elif len(row_order) != n_rows:
+        raise HauteValidationError(
+            f"The canonical row order holds {len(row_order)} rows; the split has {n_rows}"
+        )
 
     if config.strategy == "random":
-        return _random_mask(n_rows, config.validation_size, config.holdout_size, config.seed)
+        assert row_order is not None  # checked above
+        canonical = _random_mask(n_rows, config.validation_size, config.holdout_size, config.seed)
+        return _in_source_order(canonical, row_order)
     elif config.strategy == "temporal":
         if df is None or config.date_column is None or config.cutoff_date is None:
             raise HauteValidationError("Temporal split requires df, date_column, and cutoff_date")
-        return _temporal_mask(
-            df,
+        if row_order is None:
+            return _temporal_mask(
+                df,
+                config.date_column,
+                config.cutoff_date,
+                config.validation_size,
+                config.holdout_size,
+            )
+        canonical = _temporal_mask(
+            df[row_order],
             config.date_column,
             config.cutoff_date,
             config.validation_size,
             config.holdout_size,
         )
+        return _in_source_order(canonical, row_order)
     elif config.strategy == "group":
         if df is None or config.group_column is None:
             raise HauteValidationError("Group split requires df and group_column")
@@ -134,31 +152,13 @@ def split_mask(
         raise HauteValidationError(f"Unknown split strategy: {config.strategy}")
 
 
-def _random_split(
-    df: pl.DataFrame,
-    validation_size: float,
-    seed: int,
-) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Split by random sampling with seed for reproducibility."""
-    n = len(df)
-    train_n = int(n * (1 - validation_size))
-
-    # Add row index, sample train indices, derive test via anti-join
-    indexed = df.with_row_index("__split_idx__")
-    train = indexed.sample(n=train_n, seed=seed).sort("__split_idx__")
-    test = indexed.join(train.select("__split_idx__"), on="__split_idx__", how="anti").sort(
-        "__split_idx__"
-    )
-    return train.drop("__split_idx__"), test.drop("__split_idx__")
-
-
 def _require_no_null_dates(df: pl.DataFrame, date_column: str) -> None:
     """Fail loud when the temporal date column contains nulls.
 
     A null date cannot be ordered against the cutoff, so there is no
     correct partition for the row. The previous behaviour silently routed
-    null-date rows into validation (mask path) or dropped them (split
-    path) — both bias the split because nulls cluster. The explicit
+    null-date rows into validation, which biases the split because nulls
+    cluster. The explicit
     policy is a contract error naming the column and the null count;
     callers must filter or impute null dates upstream.
     """
@@ -172,78 +172,16 @@ def _require_no_null_dates(df: pl.DataFrame, date_column: str) -> None:
         )
 
 
-def _temporal_split(
-    df: pl.DataFrame,
-    date_column: str,
-    cutoff_date: str,
-) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Split by date column: train before cutoff, test on or after.
-
-    Raises ``ValueError`` if the date column contains nulls — see
-    :func:`_require_no_null_dates`.
-    """
-    if date_column not in df.columns:
-        raise HauteValidationError(f"Date column '{date_column}' not found in DataFrame")
-    _require_no_null_dates(df, date_column)
-
-    cutoff = pl.lit(cutoff_date).str.to_date()
-    date_col = pl.col(date_column)
-
-    # Cast to Date if needed for comparison
-    if df[date_column].dtype == pl.Utf8:
-        date_col = date_col.str.to_date()
-
-    train = df.filter(date_col < cutoff)
-    test = df.filter(date_col >= cutoff)
-    return train, test
-
-
-def _assign_group_split(
-    unique_groups: list,
-    validation_size: float,
-    seed: int,
-) -> set[str]:
-    """Deterministically assign groups to the test set via MD5 hashing.
-
-    Returns the set of group values (as strings) assigned to test.
-    """
-    test_groups: set[str] = set()
-    for g in sorted(str(v) for v in unique_groups):
-        h = hashlib.md5(f"{seed}:{g}".encode()).hexdigest()
-        # Use first 8 hex chars as a fraction
-        frac = int(h[:8], 16) / 0x100000000
-        if frac < validation_size:
-            test_groups.add(g)
-
-    # If no groups assigned to test (small dataset), force at least one
-    if not test_groups and len(unique_groups) > 1:
-        test_groups.add(str(sorted(str(v) for v in unique_groups)[0]))
-
-    return test_groups
-
-
-def _group_split(
-    df: pl.DataFrame,
-    group_column: str,
-    validation_size: float,
-    seed: int,
-) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Split by hashing group values — all rows in a group go to the same set."""
-    if group_column not in df.columns:
-        raise HauteValidationError(f"Group column '{group_column}' not found in DataFrame")
-
-    unique_groups = df[group_column].unique().to_list()
-    test_groups = _assign_group_split(unique_groups, validation_size, seed)
-
-    is_test = pl.col(group_column).cast(pl.Utf8).is_in(list(test_groups))
-    train = df.filter(~is_test)
-    test = df.filter(is_test)
-    return train, test
-
-
 # ---------------------------------------------------------------------------
 # Mask-only helpers (return Int8 Series: 0=train, 1=validation, 2=holdout)
 # ---------------------------------------------------------------------------
+
+
+def _in_source_order(canonical: pl.Series, row_order: np.ndarray) -> pl.Series:
+    """Move labels drawn over the canonical order back to their rows' source positions."""
+    labels = np.empty(len(canonical), dtype=np.int8)
+    labels[row_order] = canonical.to_numpy()
+    return pl.Series("_partition", labels)
 
 
 def _random_mask(
@@ -253,8 +191,6 @@ def _random_mask(
     seed: int,
 ) -> pl.Series:
     """Int8 partition mask via random shuffle."""
-    import numpy as np
-
     rng = np.random.default_rng(seed)
     indices = rng.permutation(n_rows)
 
@@ -284,7 +220,8 @@ def _temporal_mask(
     For temporal splits, holdout = most recent data, validation = next most
     recent, train = oldest.  The cutoff_date separates train from the rest;
     validation and holdout are then split proportionally within the post-cutoff
-    data.
+    data. Rows of the date the holdout ends inside keep their order in *df*
+    (a stable sort), which the caller makes the canonical order.
 
     Raises ``ValueError`` if the date column contains nulls — see
     :func:`_require_no_null_dates`.
@@ -302,8 +239,6 @@ def _temporal_mask(
     n_train = int(is_train.sum())
     n_non_train = n_total - n_train
 
-    import numpy as np
-
     partition = np.where(is_train.to_numpy(), PARTITION_TRAIN, PARTITION_VALIDATION).astype(np.int8)
 
     # Split the non-train portion into validation and holdout
@@ -317,7 +252,7 @@ def _temporal_mask(
         if dates.dtype == pl.Utf8:
             dates = dates.str.to_date()
         non_train_dates = dates.gather(non_train_indices.tolist())
-        sort_order = non_train_dates.arg_sort().to_numpy()
+        sort_order = np.argsort(non_train_dates.to_numpy(), kind="stable")
         sorted_non_train = non_train_indices[sort_order]
         n_holdout = int(len(sorted_non_train) * holdout_frac)
         if n_holdout > 0:
@@ -340,8 +275,6 @@ def _group_mask(
     """Int8 partition mask by group hashing."""
     if group_column not in df.columns:
         raise HauteValidationError(f"Group column '{group_column}' not found in DataFrame")
-
-    import numpy as np
 
     unique_groups = sorted(str(v) for v in df[group_column].unique().to_list())
     total_frac = validation_size + holdout_size

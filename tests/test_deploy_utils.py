@@ -156,6 +156,9 @@ _EXPECTED_KEYS = {
     "nodes_skipped",
     "nodes_skipped_names",
     "execution_policy",
+    "request_rows",
+    "artifact_digests",
+    "polars_version",
 }
 
 
@@ -166,6 +169,11 @@ class TestBuildManifest:
         resolved = _make_resolved()
         manifest = build_manifest(resolved)
         assert set(manifest.keys()) == _EXPECTED_KEYS
+
+    def test_the_editor_s_polars_version_is_recorded(self) -> None:
+        import polars
+
+        assert build_manifest(_make_resolved())["polars_version"] == polars.__version__
 
     def test_pipeline_name_from_pruned_graph(self) -> None:
         resolved = _make_resolved(pipeline_name="graph_pipeline")

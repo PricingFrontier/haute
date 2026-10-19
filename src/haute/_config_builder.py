@@ -27,12 +27,13 @@ from haute._config_validation import (
     validate_node_config,
 )
 from haute._contracts import Contract, get_column_contract
-from haute._edge_join import normalise_edge_join_decorator_kwargs
+from haute._edge_join import normalise_edge_join_decorator_kwargs, require_edge_join_order
 from haute._explore_charts import validate_explore_charts
 from haute._explore_overview import validate_explore_overview
 from haute._explore_pivots import validate_explore_pivot_state
 from haute._logging import get_logger
 from haute._polars_steps import (
+    JOIN_MAINTAIN_ORDER,
     STEPPED_NODE_TYPES,
     STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
     PolarsStepError,
@@ -326,7 +327,17 @@ def _validate_user_contract(
     concrete ``outputs`` even when the builder's ``referenced`` side is
     opaque (MODEL_SCORE is the canonical example).
     """
-    declared = Contract.from_user_declared(user_declared)
+    try:
+        declared = Contract.from_user_declared(user_declared)
+    except ValueError as exc:
+        # The node's own failure, so the editor offers it Recover settings,
+        # which regenerates the annotation, rather than an error the whole
+        # document fails on.
+        raise ConfigError(
+            f"Node {func_name!r} has a contract= that cannot be read: {exc}",
+            node_id=func_name,
+            node_type=node_type.value,
+        ) from exc
     if declared is None:
         return
 
@@ -641,6 +652,15 @@ def _resolve_node_config(
     # "Carry over the user's declared contract" below).
     user_contract = decorator_kwargs.pop("contract", None)
     config_ref = decorator_kwargs.pop("config", None)
+    if config_ref is not None and not isinstance(config_ref, str):
+        # The node's own failure, so the editor offers it Reset, rather than an
+        # error the whole document fails on.
+        raise ConfigError(
+            f"Node {func_name!r} has config={config_ref!r}; config= takes the path of its JSON "
+            "config file as a string.",
+            func_name=func_name,
+            node_type=node_type.value,
+        )
     if config_ref:
         normalised_ref = config_ref.replace("\\", "/")
         base = base_dir or Path.cwd()
@@ -704,6 +724,22 @@ def _resolve_node_config(
                 str(exc),
                 func_name=func_name,
                 node_type=node_type.value,
+            ) from exc
+
+    if node_type == NodeType.EDGE_JOIN:
+        # The order has no incomplete form (a new join carries its type's), so
+        # a file without one predates the rule: the editor opens it for
+        # recovery, and Recover settings gives the join its type's order.
+        try:
+            require_edge_join_order(config)
+        except ConfigError as exc:
+            orders = ", ".join(repr(order) for order in JOIN_MAINTAIN_ORDER)
+            raise ConfigError(
+                f"Edge Join {func_name!r} does not state its joined rows' order: set "
+                f"maintain_order on its decorator to one of {orders}.",
+                func_name=func_name,
+                node_type=node_type.value,
+                maintainOrder=exc.context["maintainOrder"],
             ) from exc
 
     # Cross-check a user-declared contract against the builder's.  A

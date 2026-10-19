@@ -490,6 +490,7 @@ def _edge_join_graph(*, keys: dict[str, object], base_outputs, join_outputs):
     """Build a base/join edge-join graph with concrete-contract parents."""
     join_config: dict[str, object] = {
         "how": "left",
+        "maintainOrder": "left_right",
         "contract": "opaque",
         **keys,
     }
@@ -729,6 +730,7 @@ def test_edge_join_projection_keeps_full_width_when_a_parent_is_opaque():
                                 "nodeType": "edgeJoin",
                                 "config": {
                                     "how": "left",
+                                    "maintainOrder": "left_right",
                                     "on": ["quote_id"],
                                     "contract": "opaque",
                                 },
@@ -791,6 +793,7 @@ def test_edge_join_projection_keeps_parallel_frames_from_one_source_distinct():
                         "nodeType": "edgeJoin",
                         "config": {
                             "how": "left",
+                            "maintainOrder": "left_right",
                             "on": ["quote_id"],
                             "contract": "opaque",
                         },
@@ -3440,8 +3443,8 @@ _SCANNED_SOURCE_COLUMNS = ("quote_id", "segment", "unused")
         pytest.param(
             "df = df.drop('quote_id').with_columns(SaleFlag=pl.lit(1))",
             {"SaleFlag"},
-            {"quote_id", "segment"},
-            id="dropping-every-demanded-column-keeps-a-row-carrier",
+            {"quote_id"},
+            id="dropping-every-demanded-column-keeps-its-rows",
         ),
         pytest.param("df = helper(df)", {"quote_id"}, None, id="outside-lineage-model"),
     ],

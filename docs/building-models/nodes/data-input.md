@@ -66,6 +66,14 @@ Every provider's fields end with **ARGUMENTS**: extra keyword arguments for the 
 
 A **CONFIGURATION ERRORS** box at the top of the fields lists anything in the node's settings that the tab cannot use, such as "Select a valid format for this provider." or "Databricks batch_size must be a positive integer."
 
+#### Column names
+
+A file's columns take their names from its header row, or from **ARGUMENTS**, never from Polars:
+
+- **A file without a header row.** A CSV, Excel or ODS file with `has_header` set to `false` must name every column, in order, with `new_columns`, for example `["policy_id", "region", "premium"]`. A CSV can instead declare a full `schema`, whose names are given to the columns in order. Without either, the node reports "A CSV file without a header must name every column, in order, with new_columns, or a full schema". Polars would otherwise call the columns `column_0`, `column_1` and so on, and a pipeline that relied on those names would read the wrong column after an upgrade. A `new_columns` list must name every column the file has: one naming fewer or more is refused with both counts.
+- **A CSV `schema`.** The names in a `schema` are matched to the CSV's header by name, so you can list the columns in any order. A `schema` must name exactly the header's columns: to rename columns, use `new_columns`; to set the type of some columns, use `schema_overrides`, which may name any of them.
+- **Several files at once.** A path matching several CSV files takes its column types from the first ten files.
+
 ## The TRANSFORM tab
 
 See [Transform](transform.md#building-the-node-from-steps).
@@ -77,6 +85,8 @@ The **COLUMNS** tab chooses which of the loaded columns the node passes on (see 
 ## In the data preview
 
 A parquet file is read directly. Every other source - another file format, a database, a lakehouse or Databricks table, inline records - is first copied into a cached parquet snapshot, and the pipeline reads the snapshot. Haute refreshes a snapshot when it detects that the source has changed.
+
+A map column, such as a Databricks `MAP` column or a map in a parquet or Arrow file, arrives as a list of key-value structs, `[{key, value}, ...]`, holding every entry, including a key the map repeats. A parquet file with a map column cannot be read directly, because that read would keep only the last value of a repeated key, whatever schema the node declares: the node reports "has map column(s)" and names them, and the file must be copied into a snapshot instead (`mode` `"read"`, set in the pipeline file, as **In the pipeline file** below describes). A folder or glob of parquet files with a map column is refused too: give each file its own Data Input. A lakehouse table's maps keep only the last value of a repeated key; the tools that write lakehouse tables keep a map's keys unique.
 
 For a snapshot source, **Import** sits beside **Refresh** in the node's data preview. It re-reads the source and caches it as a new snapshot, and its tooltip shows when the source was last imported. Haute cannot detect changes to a database, lakehouse or Databricks table, so for those sources **Import** is the only way to pick up new data. To delete cached snapshots, use **Cached data** in Pipeline settings.
 
@@ -134,6 +144,6 @@ A Databricks table:
     | `"database"` | `"database"` (SQLite in this release) |
     | `"inline"` | `"records"` |
 
-    With no editor control: `mode`, for file, lakehouse and inline sources, is `"scan"` (lazy) or `"read"` (eager). Choosing a format sets it to the format's usual mode, and a format offers only the modes Polars supports for it. A parquet file with `mode` `"read"` is copied into a snapshot like the other sources. Database and Databricks inputs have no `mode`.
+    With no editor control: `mode`, for file, lakehouse and inline sources, is `"scan"` (lazy) or `"read"` (eager). Choosing a format sets it to the format's usual mode, and a format offers only the modes Polars supports for it. A parquet file with `mode` `"read"` is copied into a snapshot like the other sources; a parquet file with a map column needs it. Such a file's snapshot applies only the `columns` and `n_rows` arguments, and refuses any other argument that changes which rows or columns it holds. Database and Databricks inputs have no `mode`.
 
 **See also:** [Transform](transform.md) for steps and code. Sharing pipelines across operating systems, WSL, or network mounts? See [Filesystem Portability](../filesystem-portability.md).

@@ -441,10 +441,12 @@ def _children_of(
 MANY_TO_MANY_JOIN_DETAIL = "join_cardinality_many_to_many"
 """Estimator detail for a join whose only row bound is the many-to-many product."""
 
+# A diagnostic's remediation is capped at 512 characters, and this is appended to a
+# message about the run, so it stays short: the execution strategy guide explains.
 _MANY_TO_MANY_JOIN_REMEDIATION = (
-    "The join has no declared validate= contract, so only the many-to-many row "
-    "product bounds it; declare validate='m:1', '1:m', or '1:1' where a key side "
-    "is unique to get a real estimate."
+    "A many-to-many product bounds this join: validate='m:1', '1:m' or '1:1' on a "
+    "unique key gives an estimate, but Polars then holds both inputs in memory, up to "
+    "76% more peak."
 )
 
 

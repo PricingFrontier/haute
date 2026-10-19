@@ -128,6 +128,11 @@ _EXPECTED_DEBT_IDS = {
     # tests/test_routes_error_handling.py::TestApiWsNotFoundReturnsJson
     # ::test_spa_still_served_for_non_api_routes.
     "3594921e8a8526c3",
+    # PL2-07 — Haute names a headerless Excel sheet's columns; the sheet is written
+    # with openpyxl, which dev installs carry through the databricks extra but core
+    # haute does not require, as TestExcelLeg in test_data_io_roundtrips.py. See
+    # tests/test_polars_io_registry.py::TestColumnsAreNamedByTheHeaderOrTheConfig.
+    "593386ddd3718589",
     # Multi-frame review follow-up — the atomic-write reader-contention tests
     # are win32-specific by design: POSIX rename(2) succeeds under a concurrent
     # reader, while Windows MoveFileExW raises. Skipped on non-win32. See

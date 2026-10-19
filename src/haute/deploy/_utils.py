@@ -77,9 +77,13 @@ def build_manifest(resolved: ResolvedDeploy) -> dict[str, Any]:
     are the canonical manifest schema; runtime consumers (_model_code.py
     and the generated container app.py) must use these same keys.
     """
+    import polars
+
     config = resolved.config
     return {
         "haute_version": get_haute_version(),
+        # A served model runs only under the Polars it was deployed with.
+        "polars_version": polars.__version__,
         "pipeline_name": resolved.pruned_graph.pipeline_name or config.model_name,
         "pipeline_file": config.pipeline_file.as_posix(),
         "target": config.target,
@@ -98,4 +102,6 @@ def build_manifest(resolved: ResolvedDeploy) -> dict[str, Any]:
         "nodes_deployed": len(resolved.pruned_graph.nodes),
         "nodes_skipped": len(resolved.removed_node_ids),
         "nodes_skipped_names": resolved.removed_node_ids,
+        "request_rows": resolved.request_rows.to_manifest(),
+        "artifact_digests": dict(resolved.artifact_digests),
     }

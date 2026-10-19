@@ -120,6 +120,39 @@ class TestItem18ConfigPathFailsLoudly:
                 explicit_node_type=NodeType.DATA_INPUT,
             )
 
+    @pytest.mark.parametrize("reference", [1, ["config/banding/b.json"]])
+    def test_a_config_reference_that_is_not_a_path_is_the_nodes_own_error(
+        self, tmp_path: Path, reference: object
+    ) -> None:
+        """A ``ConfigError`` naming the node, which the editor attributes to it, not a crash."""
+        with pytest.raises(ConfigError, match="config= takes the path") as refused:
+            _resolve_node_config(
+                {"config": reference},
+                body="...",
+                param_names=["upstream"],
+                n_params=1,
+                base_dir=tmp_path,
+                func_name="banded",
+                explicit_node_type=NodeType.BANDING,
+            )
+        assert refused.value.context["func_name"] == "banded"
+
+    @pytest.mark.parametrize("contract", ["none", 123, {"inputs": ["a"]}])
+    def test_an_unreadable_contract_is_the_nodes_own_error(
+        self, tmp_path: Path, contract: object
+    ) -> None:
+        with pytest.raises(ConfigError, match="contract= that cannot be read") as refused:
+            _resolve_node_config(
+                {"contract": contract},
+                body="    df = upstream\n    return df\n",
+                param_names=["upstream"],
+                n_params=1,
+                base_dir=tmp_path,
+                func_name="later",
+                explicit_node_type=NodeType.POLARS,
+            )
+        assert refused.value.context["node_id"] == "later"
+
     def test_missing_config_error_names_original_path(self, tmp_path: Path) -> None:
         """The raised ``ConfigError`` must surface the original (possibly
         mangled) path so the user can see what was actually referenced."""

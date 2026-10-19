@@ -597,7 +597,8 @@ candidate, with the error toast.
 - **Recovery canvas rendering and minimal repair.** Unavailable and blocked nodes
   remain selectable and expose their diagnostics, source/config location, and
   deterministic blocking path instead of a normal editor. The recovery banner
-  contains an accessible issues navigator. Unresolved connections render as
+  contains an accessible issues navigator, where a broken `connect()` line offers
+  Remove connection. Unresolved connections render as
   non-interactive dashed overlays only when the server supplies two unambiguous
   recovery endpoints. Selection, pan, zoom, and diagnostic navigation remain
   available while every mutation is fenced. Minimal repair is the one deliberate

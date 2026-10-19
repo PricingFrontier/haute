@@ -5,7 +5,11 @@ Every runtime use of ``price_contour`` in ``src/haute`` goes through
 that the installed build is one haute can drive: the distribution metadata and
 the module agree on a version, that version satisfies haute's pinned specifier
 (prereleases rejected), every symbol haute calls exists, every keyword haute
-passes to a Python wrapper is still accepted, and the native extension loads.
+passes to a Python wrapper is still accepted, the native extension loads, and a
+one-row frame passes through it and back. The native module moves frames
+through Polars' private Python methods (``Series._import_arrow_from_c`` among
+them), which no public API pins, so a Polars that renames one fails here rather
+than with a Rust panic mid-solve.
 Any failure raises one :class:`PriceContourCompatibilityError` that lists
 **every** problem together with where the package was installed from and how to
 fix it, rather than an ``AttributeError`` or ``TypeError`` deep inside a solve.
@@ -214,6 +218,41 @@ def _missing_parameters(module: ModuleType) -> list[str]:
     return missing
 
 
+def _round_trip_failure(module: ModuleType) -> str | None:
+    """Pass a one-row frame through the native module and back; the problem if it fails.
+
+    A Rust panic surfaces as ``PanicException``, a ``BaseException``, so it is caught
+    as one; an interrupt still propagates.
+    """
+    import polars as pl
+
+    frame = pl.DataFrame(
+        {"quote_id": ["q"], "scenario_index": [0], "scenario_value": [1.0], "objective": [1.0]},
+        schema={
+            "quote_id": pl.String,
+            "scenario_index": pl.Int32,
+            "scenario_value": pl.Float32,
+            "objective": pl.Float32,
+        },
+    )
+    try:
+        result = module.ApplyOptimiser(lambdas={}, objective="objective", constraints={}).apply(
+            frame
+        )
+        returned = result.dataframe
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as exc:  # noqa: BLE001 - a Rust panic is a BaseException
+        return (
+            f"a one-row frame round trip through the native module failed "
+            f"({type(exc).__name__}: {exc}); it moves frames through Polars "
+            f"{pl.__version__}'s private API, so it needs a build for this Polars"
+        )
+    if not isinstance(returned, pl.DataFrame) or returned.height != 1:
+        return "a one-row frame round trip through the native module did not return one row"
+    return None
+
+
 def _module_path(module: ModuleType | None) -> str:
     if module is None:
         return "<not importable>"
@@ -280,6 +319,10 @@ def _verify() -> tuple[ModuleType, PriceContourInstall]:
         problems.append(f"missing symbol price_contour.{symbol}")
     for parameter in _missing_parameters(module):
         problems.append(f"missing parameter {parameter}")
+    if not problems:
+        failure = _round_trip_failure(module)
+        if failure is not None:
+            problems.append(failure)
 
     if problems:
         raise _error(problems, installed=installed, module=module, source=source)

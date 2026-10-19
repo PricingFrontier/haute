@@ -100,6 +100,7 @@ def _load_generated_app(
         ).model_dump(mode="json"),
         "input_node_ids": ["quotes"],
         "output_node_id": "quotes",
+        "request_rows": {"multi_quote": "in_request_order", "refusals": [], "checked_lookups": []},
         "artifacts": artifacts or {},
         "output_fields": None,
     }
@@ -284,7 +285,7 @@ class TestGenerateAppSource:
         for name in (
             "QuoteRequest",
             "admit_deploy_execution",
-            "reads_one_quote_per_request",
+            "reads_records",
             "score_graph",
             "score_graph_lazy",
         ):
@@ -968,6 +969,13 @@ class TestGenerateDockerfile:
         df = _generate_dockerfile("python:3.11-slim", 8080, _make_resolved())
 
         assert "ENV HAUTE_EXECUTION_MEMORY_POLICY=strict_server" in df
+
+    def test_keeps_polars_spilling_off_and_inside_the_container(self) -> None:
+        df = _generate_dockerfile("python:3.11-slim", 8080, _make_resolved())
+
+        assert "ENV POLARS_OOC_MEMORY_BUDGET_FRACTION=1000000\n" in df
+        assert "ENV POLARS_OOC_SPILL_DIR=/app/.haute_cache/polars-spill\n" in df
+        assert "ENV POLARS_UNKNOWN_EXTENSION_TYPE_BEHAVIOR=load_as_storage\n" in df
 
     def test_default_base_image(self) -> None:
         resolved = _make_resolved()

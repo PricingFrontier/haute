@@ -40,6 +40,7 @@ from haute._graph_walker import CollectPolicy, walk_graph
 from haute._pipeline_recovery import pipeline_document_fingerprint
 from haute._pipeline_settings import PipelineSettings
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
+from haute.deploy._request_rows import RequestRows
 from haute.errors import ContractMismatchError, SchemaMismatchError
 from haute.execution import execute_lazy_graph
 from haute.graph_utils import NodeType
@@ -6033,6 +6034,7 @@ def test_deploy_pyfunc_predict_creates_admitted_live_context(monkeypatch) -> Non
     model._output_node_id = "out"
     model._artifact_paths = {}
     model._output_fields = None
+    model._request_rows = RequestRows("in_request_order")
     expected_result = pl.DataFrame({"score": [0.25]})
 
     with patch("haute.deploy._scorer.score_graph", return_value=expected_result) as score:

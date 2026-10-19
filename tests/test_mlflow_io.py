@@ -2223,6 +2223,27 @@ class TestLoadPyfuncModel:
 class TestPreparePredictFrameEdgeCases:
     """Edge cases for _prepare_predict_frame."""
 
+    @pytest.mark.parametrize("flavor", ["catboost", "pyfunc", "rustystats"])
+    def test_a_128_bit_feature_is_refused_by_name_not_by_a_panic(self, flavor):
+        """``to_numpy`` panics on Int128 (a BaseException no handler catches) and
+        Arrow has no type for it; every flavour names the column instead."""
+        from haute.errors import SchemaMismatchError
+
+        df = pl.DataFrame(
+            {"a": [1, 2], "b": pl.Series([3, 4], dtype=pl.UInt64), "x": [0.5, 1.5]}
+        ).with_columns(policy_key=pl.col("a") + pl.col("b"))
+
+        with pytest.raises(SchemaMismatchError, match="Column 'policy_key' is Int128"):
+            _prepare_predict_frame(df, ["x", "policy_key"], frozenset(), flavor)
+
+    def test_a_128_bit_column_that_is_not_a_feature_is_left_alone(self):
+        df = pl.DataFrame({"x": [0.5, 1.5], "key": pl.Series([1, 2], dtype=pl.Int128)})
+
+        result = _prepare_predict_frame(df, ["x"], frozenset(), "catboost")
+
+        assert isinstance(result, np.ndarray)
+        assert result.shape == (2, 1)
+
     def test_rustystats_empty_features_returns_full_df(self):
         """RustyStats with empty features list returns the full DataFrame."""
         df = pl.DataFrame({"a": [1.0], "b": [2.0]})

@@ -176,7 +176,11 @@ def test_structured_contract_is_accepted() -> None:
             None,
         ),
         (NodeType.POLARS, {"code": "result = df"}, None),
-        (NodeType.EDGE_JOIN, {"how": "left", "on": "id", "suffix": "_right"}, None),
+        (
+            NodeType.EDGE_JOIN,
+            {"how": "left", "maintainOrder": "left_right", "on": "id", "suffix": "_right"},
+            None,
+        ),
         (
             NodeType.MODEL_SCORE,
             {
@@ -358,6 +362,31 @@ def test_recover_gives_a_field_added_since_the_save_its_palette_default() -> Non
     assert result.config == {**raw, "stepCount": 21}
     assert ("/stepCount", "defaulted") in {(c.path, c.outcome) for c in result.changes}
     assert not [issue for issue in result.issues if issue.severity == "error"]
+
+
+@pytest.mark.parametrize(
+    ("how", "order"), [("left", "left_right"), ("right", "right_left"), ("semi", "left")]
+)
+def test_recover_gives_an_edge_join_saved_without_its_order_the_order_for_its_type(
+    how: str, order: str
+) -> None:
+    """Polars 2 keeps a join's order only when told to, so Edge Join's order is required."""
+    raw = {"how": how, "on": ["policy_id"], "suffix": "_right"}
+
+    assert ("maintainOrder", "required") in {
+        (issue.path, issue.code) for issue in validate_recovery_config(NodeType.EDGE_JOIN, raw)
+    }
+    result = reconcile_config(NodeType.EDGE_JOIN, dict(raw))
+    assert result.config == {**raw, "maintainOrder": order}
+    assert ("/maintainOrder", "defaulted") in {(c.path, c.outcome) for c in result.changes}
+    assert not [issue for issue in result.issues if issue.severity == "error"]
+
+
+def test_an_unknown_edge_join_order_is_reported() -> None:
+    raw = {"how": "left", "on": ["policy_id"], "maintainOrder": "sideways"}
+    assert ("maintainOrder", "invalid_value") in {
+        (issue.path, issue.code) for issue in validate_recovery_config(NodeType.EDGE_JOIN, raw)
+    }
 
 
 @pytest.mark.parametrize(

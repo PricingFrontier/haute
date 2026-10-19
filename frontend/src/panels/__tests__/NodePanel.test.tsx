@@ -498,6 +498,181 @@ describe("NodePanel", () => {
     expect(onRemoveUnavailableNode).toHaveBeenCalledWith({ sourceFile: "main.py", recoveryId: "broken@1", action: "reset" })
   })
 
+  describe("an unavailable submodel lists its own unavailable nodes", () => {
+    const innerNode = (id: string, nodeType: string, availability: string, extra: Record<string, unknown> = {}) => ({
+      id,
+      position: { x: 0, y: 0 },
+      data: {
+        label: id,
+        description: "",
+        nodeType,
+        config: {},
+        _loadAvailability: availability,
+        _sourceFile: "rating/modules/data_inputs.py",
+        _recoveryId: id,
+        ...extra,
+      },
+    })
+    const definition = (nodes: ReturnType<typeof innerNode>[]) => ({
+      "modules/data_inputs.py": {
+        definitionId: "modules/data_inputs.py",
+        file: "modules/data_inputs.py",
+        graph: { nodes, edges: [] },
+        inputPorts: [],
+        outputPorts: [{ name: "source_switch", source: { nodeId: "source_switch", handleId: null } }],
+      },
+    })
+    const card = makeNode({
+      id: "data_inputs",
+      data: {
+        label: "data_inputs",
+        description: "",
+        nodeType: "submodel",
+        config: { definitionId: "modules/data_inputs.py", alias: "data_inputs" },
+        _loadAvailability: "unavailable",
+        _sourceFile: "rating/main.py",
+        _recoveryId: "data_inputs",
+      },
+    })
+    const orderDiagnostic = {
+      diagnostic_id: "claim-join-order",
+      code: "node_config_invalid",
+      severity: "error" as const,
+      scope: "node" as const,
+      message: "Edge Join 'claim_join' does not state its joined rows' order.",
+      element_id: "claim_join",
+      source_file: "rating/modules/data_inputs.py",
+      source_span: null,
+      remediation: null,
+      incident_id: null,
+    }
+
+    it("recovers, resets or removes each one by its own identity in the submodel's file", () => {
+      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+        load_status: "degraded",
+        capabilities: { can_repair: true },
+        diagnostics: [orderDiagnostic],
+      }))
+      const onRemoveUnavailableNode = vi.fn()
+      renderPanel({
+        onRemoveUnavailableNode,
+        node: card,
+        submodels: definition([
+          innerNode("claims", "polars", "ready"),
+          innerNode("claim_join", "edgeJoin", "unavailable", { _loadDiagnosticIds: ["claim-join-order"] }),
+          innerNode("banded", "banding", "unavailable"),
+          innerNode("source_switch", "liveSwitch", "blocked"),
+        ]),
+      })
+
+      const listed = within(screen.getByRole("region", { name: "Unavailable nodes in this submodel" }))
+      const [join, banded] = listed.getAllByRole("listitem")
+      expect(listed.getAllByRole("listitem")).toHaveLength(2)
+      expect(join).toHaveTextContent("claim_join")
+      expect(join).toHaveTextContent(orderDiagnostic.message)
+      // A new Edge Join has no keys to write, so the join is never reset.
+      expect(within(join).queryByRole("button", { name: "Reset node claim_join" })).not.toBeInTheDocument()
+      fireEvent.click(within(join).getByRole("button", { name: "Recover settings for claim_join" }))
+      fireEvent.click(within(join).getByRole("button", { name: "Remove node claim_join" }))
+      fireEvent.click(within(banded).getByRole("button", { name: "Reset node banded" }))
+      expect(onRemoveUnavailableNode.mock.calls).toEqual([
+        [{ sourceFile: "rating/modules/data_inputs.py", recoveryId: "claim_join", action: "recover" }],
+        [{ sourceFile: "rating/modules/data_inputs.py", recoveryId: "claim_join" }],
+        [{ sourceFile: "rating/modules/data_inputs.py", recoveryId: "banded", action: "reset" }],
+      ])
+      // The submodel itself is still only removed, never rebuilt.
+      expect(screen.queryByRole("button", { name: "Recover settings" })).not.toBeInTheDocument()
+      expect(screen.getByRole("button", { name: "Remove unavailable node" })).toBeInTheDocument()
+    })
+
+    it("only removes a node recovery cannot rebuild, and offers nothing without repair capability", () => {
+      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+        load_status: "degraded",
+        capabilities: { can_repair: true },
+      }))
+      const onRemoveUnavailableNode = vi.fn()
+      const { unmount } = renderPanel({
+        onRemoveUnavailableNode,
+        node: card,
+        submodels: definition([
+          innerNode("copied", "polars", "unavailable", { config: { instanceOf: "claims" } }),
+          innerNode("legacy", "removedDecorator", "unavailable"),
+        ]),
+      })
+      const listed = within(screen.getByRole("region", { name: "Unavailable nodes in this submodel" }))
+      expect(listed.getAllByRole("listitem")).toHaveLength(2)
+      expect(listed.getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
+        "Remove node copied",
+        "Remove node legacy",
+      ])
+      fireEvent.click(listed.getByRole("button", { name: "Remove node legacy" }))
+      expect(onRemoveUnavailableNode).toHaveBeenCalledWith({
+        sourceFile: "rating/modules/data_inputs.py",
+        recoveryId: "legacy",
+      })
+      unmount()
+
+      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+        load_status: "degraded",
+        capabilities: { can_repair: false },
+      }))
+      renderPanel({
+        onRemoveUnavailableNode: vi.fn(),
+        node: card,
+        submodels: definition([innerNode("claim_join", "edgeJoin", "unavailable")]),
+      })
+      const unrepairable = within(screen.getByRole("region", { name: "Unavailable nodes in this submodel" }))
+      expect(unrepairable.getByRole("listitem")).toHaveTextContent("claim_join")
+      expect(unrepairable.queryByRole("button")).not.toBeInTheDocument()
+    })
+  })
+
+  it("recovers an unavailable Edge Join but never resets it: a new join has no keys to write", () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded",
+      capabilities: { can_repair: true },
+    }))
+    renderPanel({
+      onRemoveUnavailableNode: vi.fn(),
+      node: makeNode({ data: {
+        label: "joined", description: "", nodeType: "edgeJoin", _loadAvailability: "unavailable",
+        _sourceFile: "main.py", _recoveryId: "joined@3",
+      } }),
+    })
+    expect(screen.getByRole("button", { name: "Recover settings" })).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Reset node" })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Remove unavailable node" })).toBeInTheDocument()
+  })
+
+  it("only removes a node whose connections are wrong: rebuilding its settings cannot mend them", () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded",
+      capabilities: { can_repair: true },
+      diagnostics: [{
+        diagnostic_id: "explore-topology",
+        code: "node_topology_invalid",
+        severity: "error",
+        scope: "node",
+        message: "Explore nodes must have exactly one incoming edge.",
+        element_id: "look@3",
+        source_file: "main.py",
+        source_span: null,
+        remediation: null,
+        incident_id: null,
+      }],
+    }))
+    renderPanel({
+      onRemoveUnavailableNode: vi.fn(),
+      node: makeNode({ data: {
+        label: "look", description: "", nodeType: "explore", _loadAvailability: "unavailable",
+        _loadDiagnosticIds: ["explore-topology"], _sourceFile: "main.py", _recoveryId: "look@3",
+      } }),
+    })
+    expect(screen.queryByRole("button", { name: "Recover settings" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Reset node" })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Remove unavailable node" })).toBeInTheDocument()
+  })
+
   it("does not offer reset for an unavailable node instance", () => {
     useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
       load_status: "degraded",

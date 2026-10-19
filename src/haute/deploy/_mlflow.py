@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import importlib.resources
 import json
+import shutil
+import tempfile
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from haute._logging import get_logger
@@ -18,8 +20,15 @@ from haute._mlflow_utils import (
     search_versions,
     set_tracking_uri_preserving_env,
 )
-from haute._polars_dtypes import parse_rendered_dtype, rendered_dtype_mlflow_type_name
+from haute._polars_dtypes import (
+    holds_wide_integer,
+    parse_rendered_dtype,
+    rendered_dtype_mlflow_type_name,
+    wide_integer_message,
+)
+from haute._polars_environment import polars_process_environment, polars_spill_root
 from haute.deploy._config import ResolvedDeploy
+from haute.deploy._request_rows import copy_verified
 from haute.deploy._utils import build_manifest, model_source_line
 from haute.errors import DeployError, SchemaMismatchError
 
@@ -132,8 +141,13 @@ def _deploy_to_mlflow(
         manifest_path = build_dir / "deploy_manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2))
 
-        # 3. The model to log: code, artefacts, project modules, signature, environment
-        model_arguments = _pyfunc_model_arguments(resolved, manifest_path)
+        # 3. The model to log: code, artefacts, project modules, signature, environment.
+        # Its artefacts are staged under the digests resolution recorded, so MLflow
+        # copies the bytes the build checked.
+        staging = Path(tempfile.mkdtemp(prefix="haute_mlflow_artifacts_", dir=build_dir))
+        model_arguments = _pyfunc_model_arguments(
+            resolved, manifest_path, _stage_artifacts(resolved, staging)
+        )
 
         for node_id, source in resolved.model_sources.items():
             _log(model_source_line(node_id, source))
@@ -163,6 +177,7 @@ def _deploy_to_mlflow(
             status = "FINISHED"
         finally:
             client.set_terminated(run_id, status)
+            shutil.rmtree(staging, ignore_errors=True)
 
         _log(f"Model logged. Fetching registered version for {uc_model_name}...")
         # 6. Get the registered model version
@@ -202,8 +217,6 @@ def _deploy_to_mlflow(
             manifest_path=manifest_path,
         )
     except BaseException:
-        import shutil
-
         shutil.rmtree(build_dir, ignore_errors=True)
         raise
 
@@ -248,15 +261,33 @@ def get_deploy_status(
     }
 
 
-def _pyfunc_model_arguments(resolved: ResolvedDeploy, manifest_path: Path) -> dict[str, Any]:
+def _stage_artifacts(resolved: ResolvedDeploy, staging: Path) -> dict[str, Path]:
+    """Copy each bundled artefact into *staging* under the digest resolution recorded."""
+    staged: dict[str, Path] = {}
+    for artifact_name, artifact_path in resolved.artifacts.items():
+        dest = staging / artifact_name
+        copy_verified(
+            artifact_path,
+            dest,
+            digest=resolved.artifact_digests[artifact_name],
+            name=artifact_name,
+        )
+        staged[artifact_name] = dest
+    return staged
+
+
+def _pyfunc_model_arguments(
+    resolved: ResolvedDeploy, manifest_path: Path, staged_artifacts: Mapping[str, Path]
+) -> dict[str, Any]:
     """The pyfunc model a deploy logs: code, artefacts, project modules, signature, env.
 
+    *staged_artifacts* are the bundled artefacts as ``_stage_artifacts`` copied them.
     The bundled ``utility`` package is the model's only code path; MLflow copies
     it under the model's ``code/`` directory and puts that on ``sys.path`` when
     the model loads, so the served preamble imports the validated files.
     """
     artifacts: dict[str, str] = {"deploy_manifest": str(manifest_path)}
-    for artifact_name, artifact_path in resolved.artifacts.items():
+    for artifact_name, artifact_path in staged_artifacts.items():
         artifacts[artifact_name] = str(artifact_path)
     utility = resolved.project_modules.utility
     return {
@@ -311,6 +342,10 @@ def _build_signature(resolved: ResolvedDeploy) -> object:
                 dtype = parse_rendered_dtype(dtype_str, column=col_name)
             except SchemaMismatchError as exc:
                 raise unsupported(col_name, dtype_str) from exc
+            if holds_wide_integer(dtype):
+                raise DeployError(
+                    wide_integer_message(col_name, dtype), column=col_name, dtype=dtype_str
+                )
             kind = mlflow_type(dtype, col_name=col_name, dtype_str=dtype_str)
             table = isinstance(dtype, pl.Struct | pl.List)
             specs.append(ColSpec(type=kind, name=col_name, required=not table))
@@ -324,13 +359,17 @@ def _build_signature(resolved: ResolvedDeploy) -> object:
 def _pip_requirements() -> list[str]:
     """Build pip requirements for the deployed model.
 
-    The pinned Haute brings its own model engines, so no node adds one.
+    Haute and Polars are pinned to the editor's own versions: a Polars release can
+    change the results a pipeline gives and the memory it takes. The pinned Haute
+    brings its own model engines, so no node adds one.
     """
+    import polars
+
     import haute
 
     return [
         f"haute=={haute.__version__}",
-        "polars>=1.44.2",
+        f"polars=={polars.__version__}",
     ]
 
 
@@ -356,6 +395,19 @@ def _conda_env() -> dict:
         ],
         "name": "mlflow-env",
     }
+
+
+# Where a served model's Polars would spill. Spilling stays off, as in every process
+# Haute starts, and Model Serving's /tmp is writable.
+_SERVED_PROJECT_ROOT = PurePosixPath("/tmp/haute")
+
+
+def _served_polars_environment() -> dict[str, str]:
+    """The Polars settings a served model runs under: those of every process Haute starts.
+
+    Set on the endpoint, so they apply before the model's process imports Polars.
+    """
+    return polars_process_environment(polars_spill_root(_SERVED_PROJECT_ROOT))
 
 
 def _create_or_update_serving_endpoint(
@@ -404,6 +456,7 @@ def _create_or_update_serving_endpoint(
         entity_version=str(model_version),
         workload_size=config.databricks.serving_workload_size,
         scale_to_zero_enabled=config.databricks.serving_scale_to_zero,
+        environment_vars=_served_polars_environment(),
     )
 
     try:

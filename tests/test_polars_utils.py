@@ -23,6 +23,7 @@ from haute._hashing import content_hash
 from haute._polars_utils import (
     BOUNDED_MEMORY_EXEMPT_PROFILES,
     DEFAULT_STREAMING_CHUNK_SIZE,
+    STREAMING_CHUNK_SIZE_ENV,
     _malloc_trim,
     _streaming_sink_to_path,
     atomic_write,
@@ -67,7 +68,7 @@ def test_current_streaming_chunk_size_uses_default_for_invalid_truthy_config(raw
     with patch.object(
         pl.Config,
         "state",
-        return_value={"POLARS_STREAMING_CHUNK_SIZE": raw},
+        return_value={STREAMING_CHUNK_SIZE_ENV: raw},
     ):
         assert current_streaming_chunk_size() == DEFAULT_STREAMING_CHUNK_SIZE
 
@@ -113,7 +114,7 @@ def test_streaming_collect_uses_polars_streaming_engine() -> None:
 
 
 def test_execution_collect_rejects_unknown_engine() -> None:
-    with pytest.raises(ValueError, match="engine must be 'auto', 'streaming' or 'in-memory'"):
+    with pytest.raises(ValueError, match="engine must be 'streaming' or 'in-memory'"):
         execution_collect(pl.LazyFrame({"x": [1]}), engine="gpu")  # type: ignore[arg-type]
 
 
@@ -132,17 +133,23 @@ def test_streaming_sink_requires_polars_to_return_a_lazy_plan(tmp_path: Path) ->
 
 
 def test_set_streaming_chunk_size_is_applied_and_read_back(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
     set_streaming_chunk_size(12_345)
     assert current_streaming_chunk_size() == 12_345
-    assert pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE") == "12345"
+    assert pl.Config.state().get(STREAMING_CHUNK_SIZE_ENV) == "12345"
+
+
+def test_a_chunk_size_set_through_polars_own_setter_reads_back_through_haute() -> None:
+    """The key Polars' setter writes and the key Haute reads cannot drift apart."""
+    pl.Config.set_streaming_chunk_size(23_456)
+    assert current_streaming_chunk_size() == 23_456
 
 
 @pytest.mark.parametrize("invalid", [0, -1, 10_000_001, True, 1.5])
 def test_set_streaming_chunk_size_rejects_invalid_values(
     invalid: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
     with pytest.raises(ValueError):
         set_streaming_chunk_size(invalid)  # type: ignore[arg-type]
 
@@ -150,7 +157,7 @@ def test_set_streaming_chunk_size_rejects_invalid_values(
 def test_current_streaming_chunk_size_falls_back_to_default_when_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
     assert current_streaming_chunk_size() == DEFAULT_STREAMING_CHUNK_SIZE
 
 
@@ -679,7 +686,7 @@ def test_staged_batches_remove_staging_on_close_and_exhaustion(
     assert not staged[1].exists()
 
 
-def test_bounded_collect_batches_restores_a_parked_python_scan_failure() -> None:
+def test_bounded_collect_batches_raises_a_python_scan_failure_as_itself() -> None:
     class TransformFailedError(RuntimeError):
         pass
 
@@ -1013,34 +1020,24 @@ class TestMallocTrimDispatch:
         mock_cdll.assert_called_once_with("libc.so.6")
         mock_cdll.return_value.malloc_trim.assert_called_once_with(0)
 
-    def test_windows_calls_heap_compact(self, monkeypatch):
+    @pytest.mark.parametrize("platform", ["win32", "darwin"])
+    def test_other_platforms_do_nothing(self, monkeypatch, platform):
+        """Windows' heap compaction returned nothing measured (PL2-17); macOS has none."""
         import ctypes
         from unittest.mock import MagicMock
 
-        mock_kernel32 = MagicMock()
-        mock_kernel32.GetProcessHeap.return_value = 12345
-        mock_windll = MagicMock(kernel32=mock_kernel32)
-        monkeypatch.setattr("sys.platform", "win32")
-        if not hasattr(ctypes, "windll"):
-            monkeypatch.setattr(ctypes, "windll", mock_windll, raising=False)
-        else:
-            monkeypatch.setattr("ctypes.windll", mock_windll)
+        windll = MagicMock()
+        cdll_cls = MagicMock()
+        cdll_inst = MagicMock()
+        # Installed on every platform, so a call into the Windows heap API shows here.
+        monkeypatch.setattr(ctypes, "windll", windll, raising=False)
+        monkeypatch.setattr("ctypes.CDLL", cdll_cls)
+        monkeypatch.setattr("ctypes.cdll", cdll_inst)
+        monkeypatch.setattr("sys.platform", platform)
         _malloc_trim()
-        mock_kernel32.GetProcessHeap.assert_called_once()
-        mock_kernel32.HeapCompact.assert_called_once_with(12345, 0)
-
-    def test_macos_is_noop(self, monkeypatch):
-        """macOS has no native heap compaction — verify no ctypes calls."""
-        from unittest.mock import MagicMock
-
-        mock_cdll_cls = MagicMock()
-        mock_cdll_inst = MagicMock()
-        monkeypatch.setattr("sys.platform", "darwin")
-        monkeypatch.setattr("ctypes.CDLL", mock_cdll_cls)
-        monkeypatch.setattr("ctypes.cdll", mock_cdll_inst)
-        _malloc_trim()
-        mock_cdll_cls.assert_not_called()
-        mock_cdll_inst.assert_not_called()
+        assert windll.mock_calls == []
+        cdll_cls.assert_not_called()
+        cdll_inst.assert_not_called()
 
     def test_linux_graceful_on_oserror(self, monkeypatch):
         """If libc.so.6 can't be loaded, _malloc_trim must not raise."""
@@ -1048,20 +1045,6 @@ class TestMallocTrimDispatch:
 
         monkeypatch.setattr("sys.platform", "linux")
         monkeypatch.setattr("ctypes.CDLL", MagicMock(side_effect=OSError))
-        _malloc_trim()  # should not raise
-
-    def test_windows_graceful_on_attribute_error(self, monkeypatch):
-        """If kernel32.HeapCompact is missing, _malloc_trim must not raise."""
-        import ctypes
-        from unittest.mock import MagicMock, PropertyMock
-
-        mock_windll = MagicMock()
-        type(mock_windll).kernel32 = PropertyMock(side_effect=AttributeError)
-        monkeypatch.setattr("sys.platform", "win32")
-        if not hasattr(ctypes, "windll"):
-            monkeypatch.setattr(ctypes, "windll", mock_windll, raising=False)
-        else:
-            monkeypatch.setattr("ctypes.windll", mock_windll)
         _malloc_trim()  # should not raise
 
 
@@ -1559,11 +1542,21 @@ class TestRowLocalPythonScan:
         assert result["x"].to_list() == [2, 3]
         assert sum(batch.height for batch in seen) == 3
 
-    def test_original_exception_survives_every_haute_collect_seam(self, tmp_path: Path) -> None:
-        from haute.errors import ConfigError
+    @pytest.mark.parametrize("base", [Exception, BaseException], ids=["exception", "base"])
+    def test_original_exception_reaches_every_collect_seam_as_itself(
+        self, base: type[BaseException], tmp_path: Path
+    ) -> None:
+        class ScanFailedError(base):  # type: ignore[misc, valid-type]
+            def __init__(self, message: str, *, node_id: str) -> None:
+                super().__init__(message)
+                self.node_id = node_id
+
+        raised: list[BaseException] = []
 
         def failing(batch: pl.DataFrame) -> pl.DataFrame:
-            raise ConfigError("scan transform failed", node_id="scorer")
+            error = ScanFailedError("scan transform failed", node_id="scorer")
+            raised.append(error)
+            raise error
 
         def scan() -> pl.LazyFrame:
             frame = pl.LazyFrame({"x": [1, 2]})
@@ -1584,16 +1577,53 @@ class TestRowLocalPythonScan:
         )
         seams = [
             lambda: streaming_collect(scan()),
-            lambda: execution_collect(scan()),
-            lambda: execution_collect(scan(), execution_context=context),
+            lambda: execution_collect(scan(), engine="in-memory"),
+            lambda: execution_collect(scan(), execution_context=context, engine="streaming"),
             lambda: list(bounded_collect_batches(scan(), chunk_size=10)),
             lambda: bounded_sink(scan(), tmp_path / "out.parquet"),
+            lambda: scan().collect(engine="in-memory"),
+            lambda: scan().collect(engine="streaming"),
+            lambda: scan().sink_parquet(tmp_path / "direct.parquet"),
         ]
         for seam in seams:
-            with pytest.raises(ConfigError, match="scan transform failed"):
+            with pytest.raises(ScanFailedError, match="scan transform failed") as caught:
                 seam()
-        with pytest.raises(pl.exceptions.ComputeError, match="ConfigError"):
-            scan().collect()
+            assert caught.value is raised[-1]
+            assert caught.value.node_id == "scorer"
+
+    def test_a_cancellation_raised_inside_a_scan_ends_the_run_as_cancelled(self) -> None:
+        from haute._execution_context import ExecutionCancellationToken
+        from haute._graph_walker import _is_execution_control
+
+        token = ExecutionCancellationToken()
+        context = ExecutionContext(
+            operation="preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            job_id="job-1",
+            cancellation_token=token,
+            memory_sampler=lambda: 1,
+        )
+
+        def cancelled_mid_batch(batch: pl.DataFrame) -> pl.DataFrame:
+            token.cancel()
+            context.checkpoint(label="inside-scan", node_id="scorer")
+            return batch
+
+        frame = pl.LazyFrame({"x": [1, 2]})
+        scan = row_local_python_scan(
+            frame,
+            cancelled_mid_batch,
+            schema=frame.collect_schema(),
+            generated_columns=(),
+            required_input_columns=None,
+            input_predicates_allowed=False,
+            elide_transform_when_unused=False,
+        )
+
+        with pytest.raises(ExecutionCancelledError) as caught:
+            execution_collect(scan, execution_context=context, engine="streaming")
+        assert caught.value.job_id == "job-1"
+        assert _is_execution_control(caught.value)
 
     def test_caller_context_variables_reach_streaming_engine_threads(self) -> None:
         import contextvars
@@ -1756,18 +1786,6 @@ class TestRowLocalPythonScan:
 
         assert_frame_equal(scan.head(1).collect(), pl.DataFrame(schema=schema))
         assert applied == []
-
-    def test_the_parked_failure_registry_evicts_its_oldest_failure(self) -> None:
-        from haute import _polars_utils
-
-        oldest = _polars_utils._park_python_scan_failure(ValueError("oldest"))
-        newest = oldest
-        for index in range(_polars_utils._PYTHON_SCAN_FAILURE_LIMIT):
-            newest = _polars_utils._park_python_scan_failure(ValueError(f"failure {index}"))
-
-        _polars_utils._reraise_python_scan_failure(pl.exceptions.ComputeError(oldest))
-        with pytest.raises(ValueError, match="failure 63"):
-            _polars_utils._reraise_python_scan_failure(pl.exceptions.ComputeError(newest))
 
 
 # ---------------------------------------------------------------------------

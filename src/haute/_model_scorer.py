@@ -28,6 +28,7 @@ from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute._model_flavors import is_registered_flavor, model_families, model_family
 from haute._model_source import BoundModel, ModelSource, require_model_source
+from haute._polars_dtypes import refuse_wide_integers
 from haute._polars_utils import bounded_collect_batches
 from haute._types import _Frame
 from haute.errors import ConfigError
@@ -1968,6 +1969,8 @@ def _batch_score_to_parquet(
     part_schema: pl.Schema | None = None
 
     def write_part(frame: pl.DataFrame) -> None:
+        # A part pyarrow cannot open is never written (specs/io-layer).
+        refuse_wide_integers(frame.schema)
         path = out_dir / part_name(len(written))
         written.append(path)
         ensure_disk_headroom(out_dir, int(frame.estimated_size()))
@@ -1998,8 +2001,11 @@ def _batch_score_to_parquet(
         # Closed in ``finally``: an open reader keeps the input file locked on
         # Windows, and the caller's cleanup would then mask a scoring refusal.
         if isinstance(input_path, str):
-            pf = reader = pq.ParquetFile(input_path)
+            # pyarrow cannot read the footer of a file holding a 128-bit integer, and its
+            # error names no column: refuse one first, by name.
             input_schema = pl.read_parquet_schema(input_path)
+            refuse_wide_integers(input_schema, path=input_path)
+            pf = reader = pq.ParquetFile(input_path)
             batch_rows, _, _ = _budgeted_rows(
                 _SCORE_BATCH_SIZE,
                 (pl.scan_parquet(input_path),),

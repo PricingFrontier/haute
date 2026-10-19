@@ -1002,7 +1002,10 @@ reconciliation rather than dropping them or committing a second mutation.
     sole recovery-to-React-Flow adapter. Unresolved declarations become
     `selectable: false` dashed presentation edges only when both recovery endpoint ids
     are non-null. `PipelineRecoveryBanner` exposes the bounded diagnostic list as an
-    accessible navigator, while `NodePanel` resolves unavailable/blocked node diagnostic
+    accessible navigator; a diagnostic of a declared connection (every connection code
+    but `implicit_binding_ambiguous`, which a parameter name makes) carries a
+    `Remove connection` button that opens `PipelineRepairDialog` with the
+    `remove_connection` action for its `source_file` and `element_id`, while `NodePanel` resolves unavailable/blocked node diagnostic
     ids through `useDocumentStatusStore`. `usePipelineAPI` exposes the same validated
     document-adoption transition used by initial load for a successful repair response.
     `PipelineRepairDialog` performs no local node deletion: App adopts the returned

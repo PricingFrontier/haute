@@ -676,7 +676,7 @@ class TestLimitedPreviewTrace:
         pl.DataFrame(
             {"id": list(range(100)), "premium": [float(i) * 10 for i in range(100)]}
         ).write_parquet(lookup_path)
-        config: dict[str, object] = {"how": "left", "on": ["id"]}
+        config: dict[str, object] = {"how": "left", "maintainOrder": "left_right", "on": ["id"]}
         if maintain_order is not None:
             config["maintainOrder"] = maintain_order
         return _g(
@@ -866,7 +866,7 @@ class TestLimitedPreviewTrace:
                         data=NodeData(
                             label="join",
                             nodeType=NodeType.EDGE_JOIN,
-                            config={"how": "left", "on": ["id"]},
+                            config={"how": "left", "maintainOrder": "left_right", "on": ["id"]},
                         ),
                     ),
                     _transform_node("after", code),
@@ -936,11 +936,22 @@ class TestLimitedPreviewTrace:
     @pytest.mark.parametrize(
         ("join_config", "transfers"),
         [
-            pytest.param({"how": "left", "on": ["id"]}, True, id="left"),
-            pytest.param({"how": "inner", "on": ["id"]}, True, id="inner"),
-            pytest.param({"how": "right", "on": ["id"]}, False, id="right"),
             pytest.param(
-                {"how": "left", "on": ["id"], "column_renames": {"premium": "cost"}},
+                {"how": "left", "maintainOrder": "left_right", "on": ["id"]}, True, id="left"
+            ),
+            pytest.param(
+                {"how": "inner", "maintainOrder": "left_right", "on": ["id"]}, True, id="inner"
+            ),
+            pytest.param(
+                {"how": "right", "maintainOrder": "right_left", "on": ["id"]}, False, id="right"
+            ),
+            pytest.param(
+                {
+                    "how": "left",
+                    "maintainOrder": "left_right",
+                    "on": ["id"],
+                    "column_renames": {"premium": "cost"},
+                },
                 False,
                 id="renamed",
             ),
@@ -1041,7 +1052,7 @@ class TestLimitedPreviewTrace:
                         data=NodeData(
                             label="join",
                             nodeType=NodeType.EDGE_JOIN,
-                            config={"how": "left", "on": ["id"]},
+                            config={"how": "left", "maintainOrder": "left_right", "on": ["id"]},
                         ),
                     ),
                     _transform_node("after", "df = join.sort('id')"),
@@ -1148,7 +1159,7 @@ class TestLimitedPreviewTrace:
                     data=NodeData(
                         label=join_id,
                         nodeType=NodeType.EDGE_JOIN,
-                        config={"how": "left", "on": ["id"]},
+                        config={"how": "left", "maintainOrder": "left_right", "on": ["id"]},
                     ),
                 )
             )
@@ -1254,7 +1265,7 @@ class TestLimitedPreviewTrace:
                         data=NodeData(
                             label="join",
                             nodeType=NodeType.EDGE_JOIN,
-                            config={"how": "left", "on": ["id"]},
+                            config={"how": "left", "maintainOrder": "left_right", "on": ["id"]},
                         ),
                     ),
                 ],
@@ -1365,6 +1376,7 @@ class TestLimitedPreviewTrace:
         # The right-only row keeps a null base key, and its own key is dropped.
         config = {
             "how": "full",
+            "maintainOrder": "left_right",
             "on": ["id"],
             "coalesce": False,
             "selected_columns": ["id", "premium"],

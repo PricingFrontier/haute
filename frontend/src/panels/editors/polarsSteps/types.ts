@@ -31,11 +31,16 @@ export type ConditionOperator =
   | "is_in" | "not_in"
   | "contains" | "starts_with" | "ends_with" | "matches"
 
+/** The kind of number a membership list holds, recorded from its column's type. */
+export type NumberType = "integer" | "float" | "decimal"
+
 export type Condition = {
   column: string
   operator: ConditionOperator
   value?: Operand
   values?: LiteralOperand[]
+  /** A membership list of numbers says which kind: Polars 2 compares a column only with its own kind. */
+  numberType?: NumberType
 }
 
 export type MatchMode = "all" | "any"
@@ -62,7 +67,7 @@ export type FunctionName =
   | "upper" | "lower" | "strip" | "length"
   | "replace" | "replace_all" | "replace_regex" | "slice" | "split_part" | "extract"
   | "year" | "month" | "day" | "weekday" | "offset_by" | "total_days"
-  | "try_cast"
+  | "try_cast" | "to_date" | "to_datetime" | "try_to_date" | "try_to_datetime"
 
 export type OrderKey = { column: string; descending: boolean }
 export type ConditionGroup = { match: MatchMode; conditions: Condition[] }
@@ -96,7 +101,9 @@ export type WithColumnStep = StepBase & { kind: "with_column"; name: string; exp
 export type SelectStep = StepBase & { kind: "select"; columns: string[]; dtypes?: CastDtype[] }
 export type DropStep = StepBase & { kind: "drop"; columns: string[]; dtypes?: CastDtype[] }
 export type RenameStep = StepBase & { kind: "rename"; renames: Array<{ from: string; to: string }> }
-export type CastStep = StepBase & { kind: "cast"; casts: Array<{ column: string; dtype: CastDtype }> }
+/** One column's new type; a text column becoming a Date or Datetime records its text's `format`. */
+export type CastEntry = { column: string; dtype: CastDtype; format?: string }
+export type CastStep = StepBase & { kind: "cast"; casts: CastEntry[] }
 export type SortStep = StepBase & {
   kind: "sort"
   keys: OrderKey[]
@@ -135,8 +142,8 @@ export type JoinStep = StepBase & {
   suffix: string
   /** Key cardinality Polars checks at run time; absent means unchecked. */
   validate?: JoinValidate
-  /** Output row order; absent means the engine default. */
-  maintainOrder?: JoinMaintainOrder
+  /** Output row order, always stated: Polars 2 keeps a join's order only when told to. */
+  maintainOrder: JoinMaintainOrder
 }
 export type ConcatStep = StepBase & { kind: "concat"; inputs: string[]; how: "vertical" | "diagonal" }
 export type FillNullStep = StepBase & {

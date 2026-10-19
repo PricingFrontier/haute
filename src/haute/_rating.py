@@ -36,7 +36,11 @@ from haute._rating_step_config import (
 )
 from haute._types import _Frame
 from haute._validation_error import ConfigSettingError, HauteValidationError
-from haute.errors import RatingExtremaUndefinedError, RatingFactorMissingError
+from haute.errors import (
+    RatingExtremaUndefinedError,
+    RatingFactorMissingError,
+    SchemaMismatchError,
+)
 
 logger = get_logger(component="rating")
 
@@ -760,12 +764,22 @@ class RatingTableMissError(HauteValidationError):
 
 
 def rating_dtype_descriptor(dtype: pl.DataType) -> dict[str, Any]:
-    """Return the stable JSON descriptor for a supported rating-factor dtype."""
-    spec = dtype_to_spec(dtype)
+    """Return the stable JSON descriptor for a supported rating-factor dtype.
+
+    A categorical factor is looked up by its text, so its category pool is not
+    part of the descriptor: a categorical of any pool is ``{"kind": "Categorical"}``.
+    """
+    if isinstance(dtype, pl.Categorical):
+        return {"kind": "Categorical"}
+    try:
+        spec: Any = dtype_to_spec(dtype)
+    except SchemaMismatchError:
+        # A map or an extension column has no spec, and no rating factor is one.
+        spec = None
     if isinstance(spec, str):
         if spec in _RATING_PRIMITIVE_DESCRIPTOR_KINDS:
             return {"kind": spec}
-    elif spec["type"] in _RATING_PARAMETRIC_DESCRIPTOR_KINDS:
+    elif spec is not None and spec["type"] in _RATING_PARAMETRIC_DESCRIPTOR_KINDS:
         return {
             _RATING_DESCRIPTOR_KEY_BY_SPEC_KEY.get(key, key): value for key, value in spec.items()
         }

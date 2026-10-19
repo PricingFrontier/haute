@@ -228,6 +228,7 @@ def _extract_decorated_nodes(
                 f"decorated node function must have a unique name because the name "
                 f"becomes the graph node id.",
                 line=skeleton.start_line,
+                duplicate_name=func_name,
             )
         seen_func_names.add(func_name)
         raw_nodes.append(_resolve_node_skeleton(skeleton, base_dir))

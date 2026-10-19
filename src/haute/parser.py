@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Callable
-from os.path import normcase
 from pathlib import Path
 
 from haute._ast_helpers import (
@@ -40,7 +39,7 @@ from haute._graph_builders import (
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._io import read_user_text
 from haute._logging import get_logger
-from haute._parser_bindings import assert_polars_parameters_bound
+from haute._parser_bindings import assert_polars_parameters_bound, assert_request_frames_named
 from haute._parser_conservation import (
     assert_parser_structure_conserved,
     missing_submodel_error,
@@ -54,7 +53,7 @@ from haute._parser_submodels import (
 from haute._parser_submodels import merge_submodels as _merge_submodels
 from haute._parser_submodels import parse_submodel_source as _parse_submodel_source
 from haute._project import get_project_root
-from haute._submodel_paths import resolve_submodel_reference
+from haute._submodel_paths import resolve_submodel_reference, submodel_source_key
 from haute._support_code_names import UtilityReader, support_code_violations, utility_reader
 from haute._types import GLOBAL_CONSTANTS_FILE, GlobalConstant
 from haute.errors import ConfigError, ParseError
@@ -358,7 +357,7 @@ def parse_pipeline_source_with_name_violations(
             if not sm_filepath.is_file():
                 missing_paths.append(registration.path)
                 continue
-            source_key = normcase(str(sm_filepath.resolve()))
+            source_key = submodel_source_key(sm_filepath)
             resolved.append((registration, sm_filepath, sm_base_dir, source_key))
 
         if missing_paths:
@@ -442,6 +441,7 @@ def parse_pipeline_source_with_name_violations(
         submodel_occurrence_paths=submodel_occurrence_paths,
         submodel_aliases=submodel_names,
     )
+    assert_request_frames_named(graph)
     assert_polars_parameters_bound(graph, raw_nodes)
 
     validate_pipeline_graph_shape_contracts(

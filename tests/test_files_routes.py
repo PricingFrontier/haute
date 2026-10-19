@@ -277,6 +277,21 @@ class TestGetSchemaParquet:
         assert body["preview"] == []
         assert body["column_count"] == 2
 
+    def test_a_parquet_file_with_a_map_column_is_refused_with_the_reason(
+        self, client: TestClient, work_dir: Path
+    ):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        maps = pa.array([[("a", 1), ("a", 2)]], type=pa.map_(pa.string(), pa.int64()))
+        pq.write_table(pa.table({"m": maps}), work_dir / "maps.parquet")
+
+        resp = client.get("/api/schema", params={"path": "maps.parquet"})
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"].startswith("The Parquet file has map column(s) ['m']")
+        assert str(work_dir) not in resp.json()["detail"]
+
     def test_many_columns(self, client: TestClient, work_dir: Path):
         data = {f"col_{i}": [i] for i in range(50)}
         pl.DataFrame(data).write_parquet(work_dir / "wide.parquet")

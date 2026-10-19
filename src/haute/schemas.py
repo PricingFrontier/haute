@@ -1491,6 +1491,17 @@ class PipelineRepairRecoverRequest(BaseModel):
     action: Literal["reset", "recover"]
 
 
+class PipelineRepairRemoveConnectionRequest(BaseModel):
+    """One confirmed removal of a broken ``connect()`` statement, by its recovery identity."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_file: str = Field(min_length=1)
+    source_revision: RevisionToken
+    target_source_file: str = Field(min_length=1)
+    target_connection_id: str = Field(min_length=1)
+
+
 class PipelineNodeSaveRequest(BaseModel):
     """Node-scoped settings/code save for one `scoped_editable` node."""
 
@@ -1530,9 +1541,9 @@ class PipelineRepairPlanResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    repair_kind: Literal["remove_unavailable_node", "reset_node", "recover_node"] = (
-        "remove_unavailable_node"
-    )
+    repair_kind: Literal[
+        "remove_unavailable_node", "reset_node", "recover_node", "remove_connection"
+    ] = "remove_unavailable_node"
     source_file: str = Field(min_length=1)
     source_revision: RevisionToken
     target_source_file: str = Field(min_length=1)
@@ -1550,9 +1561,9 @@ class PipelineRepairApplyResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    repair_kind: Literal["remove_unavailable_node", "reset_node", "recover_node"] = (
-        "remove_unavailable_node"
-    )
+    repair_kind: Literal[
+        "remove_unavailable_node", "reset_node", "recover_node", "remove_connection"
+    ] = "remove_unavailable_node"
     applied_artifacts: list[str] = Field(min_length=1)
     changes: list[PipelineRepairChange] = Field(min_length=1)
     document: PipelineEditorDocument

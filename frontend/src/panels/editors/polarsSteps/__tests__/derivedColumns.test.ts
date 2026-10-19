@@ -11,6 +11,7 @@ import {
   type ColumnInfo,
   type ColumnSource,
 } from "../derivedColumns"
+import { DEFAULT_JOIN_ORDER } from "../catalogue"
 import type { JoinHow, Step } from "../types"
 import joinOutputs from "./fixtures/joinOutputs.json"
 
@@ -154,7 +155,7 @@ describe("completeness", () => {
     expect(withStep({ id: "c", kind: "free_code", code: "df = df" }).complete).toBe(false)
     expect(withStep({ id: "a", kind: "concat", inputs: ["claims"], how: "diagonal" }).complete).toBe(false)
     expect(withStep({ id: "g", kind: "group_by", keys: [], aggregations: [{ dtype: "Float64", agg: "sum", suffix: "_sum" }] }).complete).toBe(false)
-    expect(withStep({ id: "j", kind: "join", input: "claims", how: "left", leftOn: ["k"], rightOn: ["k"], suffix: "_right" }).complete).toBe(false)
+    expect(withStep({ id: "j", kind: "join", input: "claims", how: "left", leftOn: ["k"], rightOn: ["k"], suffix: "_right", maintainOrder: "left_right" }).complete).toBe(false)
   })
 
   it("keeps a type-wide keep or drop complete but no longer exact", () => {
@@ -175,7 +176,7 @@ describe("join output columns", () => {
   it("follow the joined input's columns through the step list, complete once both inputs are known", () => {
     const inputs: ColumnSource = { inputs: { quotes: joinOutputs.left, claims: joinOutputs.right }, frame: [], freeCode: new Map() }
     for (const c of joinOutputs.cases) {
-      const list: Step[] = [source("quotes"), { id: "j", kind: "join", input: "claims", how: c.how as JoinHow, leftOn: c.leftOn, rightOn: c.rightOn, suffix: joinOutputs.suffix }]
+      const list: Step[] = [source("quotes"), { id: "j", kind: "join", input: "claims", how: c.how as JoinHow, leftOn: c.leftOn, rightOn: c.rightOn, suffix: joinOutputs.suffix, maintainOrder: DEFAULT_JOIN_ORDER[c.how as JoinHow] }]
       const after = columnsBeforeStep(inputs, list, 2)
       expect(columnNames(after)).toEqual(c.output)
       expect(after.complete).toBe(true)
@@ -215,7 +216,7 @@ describe("unknown columns", () => {
 
   it("checks a join's right keys against the joined input", () => {
     const inputs: ColumnSource = { inputs: { quotes: QUOTES, claims: [{ name: "claim_region", dtype: "String" }] }, frame: [], freeCode: new Map() }
-    const join: Step = { id: "j", kind: "join", input: "claims", how: "left", leftOn: ["region"], rightOn: ["region"], suffix: "_right" }
+    const join: Step = { id: "j", kind: "join", input: "claims", how: "left", leftOn: ["region"], rightOn: ["region"], suffix: "_right", maintainOrder: "left_right" }
     expect(unknownColumnsOf(join, columnsBeforeStep(inputs, [source("quotes"), join], 1), inputs)).toEqual(["region"])
   })
 

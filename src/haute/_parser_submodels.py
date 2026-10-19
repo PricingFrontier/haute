@@ -31,7 +31,12 @@ from haute._graph_builders import (
     _build_rf_nodes,
     _extract_decorated_nodes,
 )
+from haute._graph_shape import definition_boundary_topology, validate_graph_shape_contracts
 from haute._graph_utils import _edge_id, _sanitize_func_name
+from haute._parser_bindings import (
+    assert_definition_parameters_bound,
+    assert_request_frames_named,
+)
 from haute._parser_conservation import assert_parser_structure_conserved
 from haute._submodel_instances import rewrite_submodel_alias_references
 from haute._submodel_paths import is_pipeline_dir
@@ -44,6 +49,7 @@ from haute._types import (
     SubmodelDefinition,
     SubmodelInputPort,
     SubmodelOutputPort,
+    check_submodel_interface,
 )
 from haute.errors import ParseError
 
@@ -475,6 +481,38 @@ def parse_submodel_source(
         graph._parser_input_ports,
         graph._parser_output_ports,
     ) = _extract_definition_contract(tree)
+    assert_request_frames_named(graph, source_file=source_file)
+    if graph._parser_input_ports is not None and graph._parser_output_ports is not None:
+        try:
+            check_submodel_interface(graph, graph._parser_input_ports, graph._parser_output_ports)
+        except ValueError as exc:
+            # Refused here, the failure is this submodel's own; refused when the
+            # definition is built, it would fail the whole document.
+            raise ParseError(
+                str(exc),
+                source_file=source_file,
+                remediation=(
+                    "Point each port of the submodel at one of its nodes, with no port "
+                    "name used twice, or remove the submodel."
+                ),
+            ) from exc
+        assert_definition_parameters_bound(
+            graph, graph._parser_input_ports, source_file=source_file
+        )
+        incoming, outgoing = definition_boundary_topology(
+            graph._parser_input_ports, graph._parser_output_ports
+        )
+        try:
+            validate_graph_shape_contracts(
+                graph,
+                graph_label=f"definition:{source_file}",
+                extra_incoming_by_node=incoming,
+                extra_outgoing_by_node=outgoing,
+            )
+        except ParseError as exc:
+            # Located, the failure is this submodel's own, which the editor
+            # attributes to the node inside it.
+            raise ParseError(exc.message, source_file=source_file, **exc.context) from exc
     _validate_pipeline_dir(tree, source_file, _base_dir)
     return graph
 

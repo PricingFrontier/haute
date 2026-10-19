@@ -159,6 +159,7 @@ class TestDryRun:
                 {
                     "joinInput": "lookup",
                     "how": "left",
+                    "maintainOrder": "left_right",
                     "on": ["x"],
                 },
                 "unknown config key",
@@ -168,6 +169,7 @@ class TestDryRun:
                     "baseInput": "quotes",
                     "joinInput": "lookup",
                     "how": "left",
+                    "maintainOrder": "left_right",
                     "on": ["x"],
                     "leftOn": ["x"],
                     "rightOn": ["x"],

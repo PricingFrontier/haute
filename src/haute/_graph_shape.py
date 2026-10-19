@@ -5,7 +5,14 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 
 from haute._submodel_instances import resolve_submodel_instances
-from haute._types import REQUEST_INPUT_NODE_TYPES, RESPONSE_NODE_TYPES, NodeType, PipelineGraph
+from haute._types import (
+    REQUEST_INPUT_NODE_TYPES,
+    RESPONSE_NODE_TYPES,
+    NodeType,
+    PipelineGraph,
+    SubmodelInputPort,
+    SubmodelOutputPort,
+)
 from haute.errors import ParseError
 
 #: Node-type groups a pipeline holds at most one node of: it reads one quote
@@ -108,6 +115,22 @@ def validate_pipeline_graph_shape_contracts(
         )
 
 
+def definition_boundary_topology(
+    input_ports: Sequence[SubmodelInputPort],
+    output_ports: Sequence[SubmodelOutputPort],
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """The edges a definition's public ports add to its nodes: incoming, then outgoing."""
+    incoming: dict[str, list[str]] = {}
+    outgoing: dict[str, list[str]] = {}
+    for input_port in input_ports:
+        public_source = f"public:{input_port.name}"
+        for target in input_port.targets:
+            incoming.setdefault(target.node_id, []).append(public_source)
+    for output_port in output_ports:
+        outgoing.setdefault(output_port.source.node_id, []).append(f"public:{output_port.name}")
+    return incoming, outgoing
+
+
 def _iter_submodel_definition_contexts(
     graph: PipelineGraph,
     *,
@@ -124,14 +147,9 @@ def _iter_submodel_definition_contexts(
             continue
         seen_definitions.add(definition_id)
 
-        incoming: dict[str, list[str]] = {}
-        outgoing: dict[str, list[str]] = {}
-        for input_port in instance.definition.input_ports:
-            public_source = f"public:{input_port.name}"
-            for target in input_port.targets:
-                incoming.setdefault(target.node_id, []).append(public_source)
-        for output_port in instance.definition.output_ports:
-            outgoing.setdefault(output_port.source.node_id, []).append(f"public:{output_port.name}")
+        incoming, outgoing = definition_boundary_topology(
+            instance.definition.input_ports, instance.definition.output_ports
+        )
         contexts.append(
             (
                 definition_id,

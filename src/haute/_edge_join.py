@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 import polars as pl
 
 from haute._cardinality import normalise_join_validation
 from haute._config_validation import reject_removed_config_keys
+from haute._polars_steps import JOIN_MAINTAIN_ORDER
 from haute._polars_utils import execution_collect
 from haute._types import COLUMN_CONFIG_KEYS, EDGE_JOIN_CONFIG_KEYS, NodeType
 from haute.errors import ConfigError
@@ -143,14 +144,32 @@ def build_edge_join_kwargs(config: dict[str, Any]) -> dict[str, Any]:
                 supported=["1:1", "1:m", "m:1", "m:m"],
             ) from exc
 
-    for config_key, polars_key in (
-        ("coalesce", "coalesce"),
-        ("maintainOrder", "maintain_order"),
-    ):
-        if config_key in config and config[config_key] is not None and config[config_key] != "":
-            kwargs[polars_key] = config[config_key]
+    coalesce = config.get("coalesce")
+    if coalesce is not None and coalesce != "":
+        kwargs["coalesce"] = coalesce
+
+    require_edge_join_order(config)
+    kwargs["maintain_order"] = config["maintainOrder"]
 
     return kwargs
+
+
+def require_edge_join_order(config: Mapping[str, Any]) -> None:
+    """Refuse an Edge Join config that does not state its joined rows' order.
+
+    The order is stated, never left to the engine: Polars 2's streaming engine
+    keeps a join's input order only when told to. The parse, save and execution
+    all run this check.
+    """
+    maintain_order = config.get("maintainOrder")
+    if maintain_order not in JOIN_MAINTAIN_ORDER:
+        raise ConfigError(
+            "edgeJoin maintainOrder must state the joined rows' order: one of "
+            + ", ".join(repr(order) for order in JOIN_MAINTAIN_ORDER)
+            + ".",
+            maintainOrder=maintain_order,
+            supported=list(JOIN_MAINTAIN_ORDER),
+        )
 
 
 def edge_join_key_columns_by_role(config: dict[str, Any]) -> tuple[frozenset[str], frozenset[str]]:
@@ -263,7 +282,7 @@ def execute_edge_join(
         join_lf = join.lazy()
     result = base_lf.join(join_lf, **build_edge_join_kwargs(config))
     if collect_eager and not base_is_lazy and not join_is_lazy:
-        return execution_collect(result)
+        return execution_collect(result, engine="streaming")
     return result
 
 

@@ -7,7 +7,6 @@ disagree about where a value falls.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
 import polars as pl
@@ -128,26 +127,23 @@ def equal_width_bins(
     edges = _distinct(edges)
     # Placed against the published edges themselves — `[e0, e1)`, …, `[e(n-1), ∞)`
     # — so the largest value is inside the last bin and no value can land in a
-    # bin whose lower edge is above it.
+    # bin whose lower edge is above it. Each value's bin is its position among
+    # the edges, which is the published bin's position.
     placed = cancellable_streaming_collect(
         frame.filter(finite)
-        .select(value.cut(breaks=edges[1:], left_closed=True, include_breaks=True).alias("cut"))
-        .unnest("cut")
-        .group_by("breakpoint")
+        .select(value.bin_intervals(edges[1:], labels=False).alias("bin"))
+        .group_by("bin")
         .agg(pl.len().alias("count")),
         execution_context=execution_context,
     )
-    # `include_breaks` reports the upper break of each value's interval, which
-    # is the next edge, or infinity for the last bin.
-    counts = {float(row["breakpoint"]): int(row["count"]) for row in placed.iter_rows(named=True)}
-    uppers = [*edges[1:], math.inf]
+    counts = {int(row["bin"]): int(row["count"]) for row in placed.iter_rows(named=True)}
     last = len(edges) - 1
     return Histogram(
         bins=tuple(
             HistogramBin(
                 lower=edge,
                 upper=high if position == last else edges[position + 1],
-                count=counts.get(uppers[position], 0),
+                count=counts.get(position, 0),
             )
             for position, edge in enumerate(edges)
         ),

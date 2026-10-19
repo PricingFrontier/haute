@@ -45,14 +45,14 @@ from haute._edge_join import (
 )
 from haute._graph_utils import (
     build_parents_of,
+    code_input_bindings,
     edge_input_name,
-    resolve_input_mapping_names,
 )
 from haute._host_memory import available_ram_bytes, require_positive_available_ram
 from haute._logging import get_logger
 from haute._polars_operations import materialisation_factor_basis_points
 from haute._polars_selectors import preamble_selector_aliases
-from haute._polars_utils import read_parquet_metadata
+from haute._polars_utils import read_parquet_metadata, streaming_collect
 from haute._types import (
     REQUEST_INPUT_NODE_TYPES,
     GraphEdge,
@@ -644,7 +644,9 @@ def _probe_expanded_variable_widths(
     ]
     if not variable_columns:
         return MappingProxyType({})
-    probe = pl.scan_parquet(path).select(variable_columns).head(min(row_count, max_rows)).collect()
+    probe = streaming_collect(
+        pl.scan_parquet(path).select(variable_columns).head(min(row_count, max_rows))
+    )
     if probe.height == 0:
         return MappingProxyType({})
     return MappingProxyType(
@@ -719,7 +721,7 @@ def _workbench_input_port_metadata(node: GraphNode, port: str) -> _DetailedSourc
     if port not in labels:
         return None
     frame = workbench_table_frames(config, port_columns={port: None})[port]
-    return _detailed_dataframe_metadata(frame.collect(), node.id)
+    return _detailed_dataframe_metadata(streaming_collect(frame), node.id)
 
 
 def _json_api_input_port_metadata(node: GraphNode, port: str) -> _DetailedSourceMetadata | None:
@@ -923,75 +925,20 @@ def _cardinality_name_bindings(
 ) -> Mapping[str, str] | None:
     """Map every name the node's code can see to the edge id it binds.
 
-    This is the single authority for the runtime naming rules — the edge input
-    name, then ``inputMapping`` aliases, then the ``df`` alias for the first
-    input — so the cardinality inputs and the estimator's operand accounting
-    cannot disagree about which edge an alias refers to.
-
-    The alias relation itself is validated by the same canonical resolver the
-    executor uses, so a mapping the runtime would reject (a stale value, two
-    logical names sharing one edge, or two edges collapsing onto one logical
-    name) raises here rather than yielding a plausible-looking estimate for a
-    graph that cannot run.
+    The runtime naming rules are :func:`code_input_bindings`', so the
+    cardinality inputs and the estimator's operand accounting cannot disagree
+    about which edge an alias refers to. A mapping the runtime would reject
+    raises here rather than yielding a plausible-looking estimate for a graph
+    that cannot run; one not even shaped like a mapping leaves nothing to
+    analyse, so the estimate is unavailable rather than an error.
     """
-
-    by_name: dict[str, str] = {}
-    source_names: list[str] = []
-    for edge in edges:
-        try:
-            name = edge_input_name(
-                edge,
-                index.node_map[edge.source],
-                submodels=index.graph.submodels,
-            )
-        except (KeyError, ValueError):
-            return None
-        source_names.append(name)
-        previous = by_name.get(name)
-        if previous is not None and previous != edge.id:
-            return None
-        by_name[name] = edge.id
-
-    raw_mapping = node.data.config.get("inputMapping")
-    # Every non-``None`` value is validated, exactly as runtime code generation
-    # does: a falsey non-mapping (``[]``, ``""``, ``0``) is malformed, not absent.
-    if raw_mapping is not None:
-        # A mapping that is not even shaped like one leaves nothing to analyse,
-        # so the estimate is unavailable rather than an error: planning must
-        # stay able to describe a graph it cannot measure.
-        if not isinstance(raw_mapping, Mapping) or any(
-            not isinstance(logical, str)
-            or not logical
-            or not isinstance(current, str)
-            or not current
-            for logical, current in raw_mapping.items()
-        ):
-            return None
-        # The *relation* is the runtime's contract, and
-        # ``resolve_input_mapping_names`` owns it: a stale value, two logical
-        # names sharing one edge, or two edges collapsing onto one logical name
-        # raise here exactly as they do in the executor. Estimating such a graph
-        # would put a confident number on a run that cannot start.
-        for logical, edge in zip(
-            resolve_input_mapping_names(source_names, dict(raw_mapping)),
-            edges,
-            strict=True,
-        ):
-            existing = by_name.get(logical)
-            if existing is not None and existing != edge.id:
-                return None
-            by_name[logical] = edge.id
-
-    if alias_first_as_df:
-        if not edges:
-            return None
-        first_edge = edges[0]
-        existing = by_name.get("df")
-        if existing is not None and existing != first_edge.id:
-            return None
-        by_name["df"] = first_edge.id
-
-    return by_name
+    return code_input_bindings(
+        node,
+        edges,
+        node_map=index.node_map,
+        submodels=index.graph.submodels,
+        alias_first_as_df=alias_first_as_df,
+    )
 
 
 def _named_cardinality_inputs(

@@ -190,6 +190,70 @@ def test_online_execute_trace_attaches_candidate_explanation(tmp_path):
     assert detail["baseline"]["is_baseline"] is True
 
 
+def test_online_trace_hands_price_contour_only_the_columns_the_apply_reads(tmp_path):
+    """price-contour cannot convert a Decimal or a Struct, so the trace hands it the read
+    columns and a row number; every candidate row still carries the other columns."""
+    artifact_path = _write_json(tmp_path / "online.json", _online_artifact())
+    scored_path = tmp_path / "scored.parquet"
+    _scored_online_df().with_columns(
+        note=pl.col("scenario_value").cast(pl.Decimal(10, 2)),
+        meta=pl.struct(k=pl.col("scenario_index")),
+    ).write_parquet(scored_path)
+    graph = _g(
+        {
+            "nodes": [
+                _source_node("scored", str(scored_path)),
+                _optimiser_apply_node({"sourceType": "file", "artifact_path": artifact_path}),
+            ],
+            "edges": [_edge("scored", "apply")],
+        }
+    )
+
+    result = execute_trace(
+        graph, row_index=0, target_node_id="apply", column="optimal_scenario_value"
+    )
+
+    detail = _step_by_id(result, "apply").node_detail
+    assert detail is not None
+    assert detail["status"] == "ok"
+    candidates = detail["candidates"]
+    assert [
+        (row["scenario_index"], row["row"]["note"], row["row"]["meta"]) for row in candidates
+    ] == [(0, "0.90", {"k": 0}), (1, "1.00", {"k": 1}), (2, "1.10", {"k": 2})]
+    assert list(candidates[0]["row"])[:7] == [
+        "quote_id",
+        "scenario_index",
+        "scenario_value",
+        "predicted_income",
+        "predicted_volume",
+        "note",
+        "meta",
+    ]
+    assert detail["selected"]["scenario_index"] == 2
+    assert detail["baseline"]["scenario_index"] == 1
+
+
+def test_online_trace_refuses_a_column_the_explainer_would_append(tmp_path):
+    """price-contour refuses to overwrite an input column; the trace refuses it too,
+    although the column itself never reaches price-contour."""
+    from haute._trace_enrichment import enrich_optimiser_apply
+
+    artifact_path = _write_json(tmp_path / "online.json", _online_artifact())
+
+    detail = enrich_optimiser_apply(
+        {"sourceType": "file", "artifact_path": artifact_path},
+        input_row={},
+        output_row={"quote_id": "q1", "optimal_scenario_value": 1.1},
+        input_frames=[_scored_online_df().with_columns(decision_score=pl.lit(0.0))],
+        source_names=["scored"],
+    )
+
+    assert detail["status"] == "error"
+    assert detail["error_type"] == "ValueError"
+    assert "['decision_score']" in detail["error"]
+    assert "with_explainer_columns would append" in detail["error"]
+
+
 def test_online_trace_prefers_artifact_configured_quote_id_column(tmp_path):
     from haute._trace_enrichment import enrich_optimiser_apply
 

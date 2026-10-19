@@ -14,6 +14,7 @@ __all__ = [
     "is_literal_collection",
     "is_literal_scalar",
     "is_pl_dtype_reference",
+    "is_typed_literal_list",
     "replace_call_has_literal_mapping",
     "replace_strict_call_has_literal_mapping",
 ]
@@ -28,6 +29,53 @@ def is_literal_scalar(node: ast.expr) -> bool:
 def is_literal_collection(node: ast.expr) -> bool:
     return isinstance(node, ast.List | ast.Tuple) and all(
         is_literal_scalar(element) for element in node.elts
+    )
+
+
+def is_typed_literal_list(node: ast.expr) -> bool:
+    """The typed list the step renderer passes to ``is_in``: it holds no column.
+
+    ``pl.Series([<literals>]).str.to_date().implode()`` or
+    ``pl.Series([<literals>]).str.to_decimal(scale=<int>).implode()``: literal values
+    parsed into the column's kind and passed as one list, as Polars 2 asks.
+    """
+    if not (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "implode"
+        and not node.args
+        and not node.keywords
+    ):
+        return False
+    parse = node.func.value
+    if not (
+        isinstance(parse, ast.Call)
+        and isinstance(parse.func, ast.Attribute)
+        and parse.func.attr in {"to_date", "to_decimal"}
+        and not parse.args
+        and isinstance(parse.func.value, ast.Attribute)
+        and parse.func.value.attr == "str"
+    ):
+        return False
+    series = parse.func.value.value
+    if not (
+        isinstance(series, ast.Call)
+        and isinstance(series.func, ast.Attribute)
+        and series.func.attr == "Series"
+        and isinstance(series.func.value, ast.Name)
+        and series.func.value.id == "pl"
+        and len(series.args) == 1
+        and not series.keywords
+        and is_literal_collection(series.args[0])
+    ):
+        return False
+    if parse.func.attr == "to_date":
+        return not parse.keywords
+    return (
+        len(parse.keywords) == 1
+        and parse.keywords[0].arg == "scale"
+        and isinstance(parse.keywords[0].value, ast.Constant)
+        and type(parse.keywords[0].value.value) is int
     )
 
 

@@ -40,6 +40,10 @@ carries as its remediation. The author rewrites it, or removes the node.
   submodels and ambiguous/shared artifacts cannot be reset. Resetting an empty Polars
   node produces the normal explicit incomplete-code template; it never invents a
   passthrough. The confirmation explains that configuration/code may be needed before running.
+  The reset node's `contract=` annotation is derived offline, as Recover settings derives
+  it, so a reset Model Score, which has no model yet, never loads one. An Edge Join cannot
+  be reset (`repair_action_unsupported`): a new join has no keys, and a join without keys
+  cannot be written; Recover settings keeps its keys.
   Palette defaults with declared-incomplete required values (for example a file input's
   empty path) persist as loadable incomplete configurations reported through the
   document's completeness list; reset is never blocked by completeness, only by unknown
@@ -79,16 +83,50 @@ carries as its remediation. The author rewrites it, or removes the node.
   scaffolding: recover derives it from the recovered settings exactly as the parse-time check does (never loading an
   external model artifact), and a declared contract supplies only the sides that
   derivation leaves opaque, so an annotation left stale by a settings edit is replaced
-  rather than carried forward. The recovered sidecar holds no `contract` key; the
-  annotation lives on the decorator. The applied node must load (available, or blocked only by an upstream
+  rather than carried forward. An annotation that cannot be read at all is dropped and
+  reported as `/contract` removed, so the regenerated decorator derives it the same way.
+  The recovered sidecar holds no `contract` key; the annotation lives on the decorator. The applied node must load (available, or blocked only by an upstream
   failure) — completeness and execution-readiness are explicitly not plan gates.
+  A node inside a submodel's file is a target like any other, named by that file and its
+  recovery id, also when its definition fails to load: the target resolves from the
+  definition's recovered graph, and the action rewrites the submodel's file. Its inputs are
+  its edges in that graph and the definition's public input ports that target it, each bound
+  by the port's name (and an Edge Join's role by the port target's handle).
   Identity, description, position, connections, and exclusively owned config references
   follow the Reset rules, so a damaged chain recovers in any order and the applied node
   may remain blocked solely by an unrepaired upstream. An unreadable
   configuration sidecar (malformed JSON, duplicate keys, bad encoding) refuses the
   action with a manual-repair error and changes no bytes — there is no draft archive,
-  and Reset is the explicit destructive replacement. Unknown types, node instances,
+  and Reset is the explicit destructive replacement. Settings with no provider the node
+  can keep (a Data Input or Data Output whose config file is missing, or whose `inputType`
+  or `outputType` is unknown) are refused with `repair_action_unsupported`, naming Reset.
+  An `async def` node function, which the parser refuses, is a node function to Recover
+  and Reset alike, and both regenerate it as a plain `def`. Unknown types, node instances,
   submodels, and ambiguous or shared artifacts cannot be recovered by this action.
+
+## Remove connection
+
+A connection the recovery pass cannot resolve (a `connect()` naming a node that does not
+exist or is ambiguous, a duplicate declaration, a non-literal argument, an undeclared
+submodel port, a Quote or Workbench Input connection that names no frame) is an unresolved
+connection: there is no node to recover, and it blocks Reset and Recover settings on the
+nodes it touches. **Remove connection** deletes that one `connect()` statement, found by the
+connection's recovery id and the file it is in. The statement must be a bare top-level
+`pipeline.connect(...)` (or `submodel.connect(...)` in a submodel file), on lines of its own:
+a chained statement, which can also hold another connection or a call such as a submodel
+registration, is refused (`repair_connection_chain_mixed`), and so is a connection made by a
+parameter name rather than by a `connect()` statement (`repair_connection_not_declared`).
+Planning previews the edit and refuses it (`repair_connection_removal_unsafe`) unless the
+file then recovers with the same nodes and edges and one fewer such connection, compared by
+authored identity, since a recovery id carries an ordinal that renumbers once a declaration
+is gone; the commit holds the write to that preview. A removal can mend a submodel
+definition, so a definition is compared by its file's first registration path (the
+document keys it by that path while it fails to load and by its id once it loads), and an
+edge by its two ends (an edge from a submodel's output port carries the port only while the
+definition fails to load). The revision checks and rollback are the removal's. The nodes it
+joined are untouched. A parameter named after a Quote or Workbench Input itself, which no
+`connect()` binds to one of its tables, is its node's failure instead
+(`node_input_frame_missing`), which Recover settings rebinds.
 
 ## Consumer error attribution
 
@@ -106,7 +144,10 @@ document. Recover responses additionally carry the engine's field-outcome report
 (`field_changes`: path, `outcome: retained | defaulted | needs_input | removed`, reason),
 the target's completeness entries, and the exact previous configuration
 (`previous_config`) for optional display. The removal route shares this contract with
-its explicit `delete_config` choice. No request accepts replacement bytes or source spans.
+its explicit `delete_config` choice. `POST /api/pipeline/repair/connection/remove/apply`
+accepts source file/revision, target source file and `target_connection_id`, and responds
+with `repair_kind: remove_connection` in the same shape. No request accepts replacement
+bytes or source spans.
 
 ## Engine coverage and limits
 

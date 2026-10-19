@@ -634,6 +634,20 @@ class TestPdpFailureSurfacing:
         assert hollow["grid"] == []
         assert hollow["error_type"] == "empty_column"
 
+    def test_nan_values_are_left_out_of_a_numeric_grid(self):
+        values = np.arange(20, dtype=float)
+        values[::4] = np.nan
+        df = pl.DataFrame({"x": values, "only_nan": np.full(20, np.nan)})
+
+        result = compute_pdp(MagicMock(), _OnesAlgo(), df, ["x", "only_nan"], [], n_grid=5)
+
+        grid = [point["value"] for point in result[0]["grid"]]
+        assert grid == sorted(grid)
+        assert not any(np.isnan(grid))
+        assert grid[0] == 1.0 and grid[-1] == 19.0
+        assert result[1]["grid"] == []
+        assert result[1]["error_type"] == "empty_column"
+
     def test_categorical_failure_entry_carries_categorical_type(self):
         """The failure entry's type reflects the declared feature kind so the
         payload stays frontend-guard compatible and self-describing."""

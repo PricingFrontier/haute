@@ -177,7 +177,7 @@ def _exactly_one_row(table: WorkbenchTable, selection: pl.LazyFrame) -> pl.LazyF
     """*selection*, failing when it is read with other than exactly one row."""
 
     def produce(_row_limit: int | None) -> pl.DataFrame:
-        rows = execution_collect(selection)
+        rows = execution_collect(selection, engine="streaming")
         if rows.height != 1:
             held = "no rows" if rows.height == 0 else f"{rows.height} rows"
             raise WorkbenchOutputError(
@@ -202,7 +202,7 @@ def workbench_response(filled: WorkbenchOutputTables) -> pl.LazyFrame:
     def produce(_row_limit: int | None) -> pl.DataFrame:
         document: dict[str, Any] = {}
         for table in tables:
-            rows = execution_collect(filled[table.name])
+            rows = execution_collect(filled[table.name], engine="streaming")
             # A one-row table has been read with exactly its one row.
             document[table.name] = rows.row(0, named=True) if table.one_row else rows.to_dicts()
         return pl.DataFrame([document], schema=schema)

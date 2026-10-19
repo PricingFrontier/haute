@@ -20,6 +20,7 @@ def regions(): ...
     left_on=["region"],
     right_on=["region"],
     validate="m:1",
+    maintain_order="left_right",
 )
 def joined(quotes, regions): ...
 

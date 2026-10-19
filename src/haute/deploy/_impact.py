@@ -367,7 +367,12 @@ def _segment_breakdown(
                 pl.len().alias("n"),
             )
             .filter(pl.col("n") >= 10)
-            .sort(pl.col("mean_chg").abs(), descending=True)
+            # Equal changes ordered by segment value, so the cut is the same on every run.
+            .sort(
+                [pl.col("mean_chg").abs(), "seg"],
+                descending=[True, False],
+                nulls_last=True,
+            )
             .head(top_n)
         )
         rows = [

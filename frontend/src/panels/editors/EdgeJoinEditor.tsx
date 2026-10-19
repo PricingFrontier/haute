@@ -13,6 +13,8 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import { useGraph } from "../useGraph"
 import { INPUT_STYLE, SELECT_STYLE } from "./_shared"
 import type { OnUpdateConfig, SimpleEdge, SimpleNode } from "./_shared"
+import { joinOrderAfterHowChange } from "./polarsSteps/catalogue"
+import type { JoinHow } from "./polarsSteps/types"
 
 type KeyMode = "same" | "paired"
 
@@ -37,7 +39,6 @@ const VALIDATE_OPTIONS = [
 ] as const
 
 const MAINTAIN_ORDER_OPTIONS = [
-  { value: "", label: "Not set" },
   { value: "none", label: "None" },
   { value: "left", label: "Left" },
   { value: "right", label: "Right" },
@@ -230,11 +231,12 @@ export default function EdgeJoinEditor({
             aria-label="Join Type"
             value={how}
             onChange={(event) => {
-              const nextHow = event.target.value
+              const nextHow = event.target.value as JoinHow
+              const nextOrder = joinOrderAfterHowChange(maintainOrder, how, nextHow)
               if (nextHow === "cross") {
-                onUpdate({ how: nextHow, on: [], leftOn: [], rightOn: [] })
+                onUpdate({ how: nextHow, maintainOrder: nextOrder, on: [], leftOn: [], rightOn: [] })
               } else {
-                onUpdate("how", nextHow)
+                onUpdate({ how: nextHow, maintainOrder: nextOrder })
               }
             }}
             className="focus-ring w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono"
@@ -380,7 +382,7 @@ export default function EdgeJoinEditor({
               id="edge-join-maintain-order"
               aria-label="Maintain Order"
               value={maintainOrder}
-              onChange={(event) => onUpdate("maintainOrder", event.target.value || null)}
+              onChange={(event) => onUpdate("maintainOrder", event.target.value)}
               className="focus-ring w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono"
               style={{ ...SELECT_STYLE, ...focusVars }}
             >

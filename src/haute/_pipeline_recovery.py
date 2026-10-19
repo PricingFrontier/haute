@@ -38,7 +38,8 @@ from haute._graph_builders import (
     _extract_decorated_node_skeletons,
     _resolve_node_skeleton,
 )
-from haute._graph_utils import edge_input_name, executable_input_name
+from haute._graph_shape import definition_boundary_topology
+from haute._graph_utils import REQUEST_INPUT_KINDS, edge_input_name, executable_input_name
 from haute._hashing import content_hash_bytes
 from haute._io import read_user_bytes_and_text, read_user_text
 from haute._logging import get_logger
@@ -54,7 +55,7 @@ from haute._sidecar import (
     _normalise_sidecar_sources,
     read_sidecar_state,
 )
-from haute._submodel_paths import resolve_submodel_reference
+from haute._submodel_paths import resolve_submodel_reference, submodel_source_key
 from haute._submodel_recovery import submodel_registration_evidence
 from haute._types import (
     GLOBAL_CONSTANTS_FILE,
@@ -667,6 +668,8 @@ def _build_recovery_graph(
     positions: dict[str, dict[str, float]],
     diagnostics: list[PipelineRecoveryDiagnostic],
     initial_unresolved: list[RecoveryUnresolvedConnection] | None = None,
+    boundary_incoming: Mapping[str, Sequence[str]] | None = None,
+    boundary_outgoing: Mapping[str, Sequence[str]] | None = None,
 ) -> tuple[
     list[RecoveryPipelineNode],
     list[RecoveryPipelineEdge],
@@ -778,6 +781,22 @@ def _build_recovery_graph(
                 continue
             source_port = connection.source_port
             source_handle = f"out__{connection.source_port}"
+        if str(source_candidate.node_type) in REQUEST_INPUT_KINDS and not connection.source_port:
+            # A Quote or Workbench Input emits a frame per table; a connect()
+            # naming none has no frame to carry.
+            unresolved.append(
+                _unresolved_connection(
+                    connection,
+                    ordinal=ordinal,
+                    code="connection_frame_missing",
+                    message="This connection does not name the table it takes from the input.",
+                    source_file=source_file,
+                    diagnostics=diagnostics,
+                    source_recovery_id=source_candidate.recovery_id,
+                    target_recovery_id=target_candidate.recovery_id,
+                )
+            )
+            continue
         if target_candidate.node_type == NodeType.SUBMODEL:
             if connection.target_port not in target_candidate.submodel_input_ports:
                 unresolved.append(
@@ -854,6 +873,31 @@ def _build_recovery_graph(
             pair = (sources[0].recovery_id, target_candidate.recovery_id)
             if pair in explicit_pairs or pair in seen_implicit:
                 continue
+            if (
+                str(sources[0].node_type) in REQUEST_INPUT_KINDS
+                and source_id == sources[0].authored_id
+            ):
+                # The parameter names the input, not one of its tables, and no
+                # connect() binds it (an input may name a table after itself), so
+                # it binds no frame: the consumer's own failure, which Recover
+                # settings rebinds to its connected inputs.
+                if target_candidate.availability == "ready":
+                    diagnostic = _diagnostic(
+                        code="node_input_frame_missing",
+                        scope="node",
+                        message=(
+                            f"Parameter {source_id!r} names the input itself, not one of its "
+                            "tables."
+                        ),
+                        source_file=source_file,
+                        element_id=target_candidate.recovery_id,
+                        source_span=target_candidate.span,
+                        remediation="Name the parameter after the table it takes.",
+                    )
+                    diagnostics.append(diagnostic)
+                    target_candidate.diagnostic_ids.append(diagnostic.diagnostic_id)
+                    target_candidate.availability = "unavailable"
+                continue
             seen_implicit.add(pair)
             edge_specs.append(
                 _ResolvedRecoveryEdge(
@@ -874,16 +918,21 @@ def _build_recovery_graph(
     # Graph-shape validation is currently node-local (Explore is the only
     # topology-constrained canonical type).  Attribute the failure to that
     # node and continue validating independent siblings.
+    # In a submodel, its public ports add edges of their own (*boundary_*).
     for candidate in candidates:
         if candidate.availability != "ready" or candidate.node_type != NodeType.EXPLORE:
             continue
-        incoming = [edge for edge in edge_specs if edge.target is candidate]
-        outgoing = [edge for edge in edge_specs if edge.source is candidate]
-        if len(incoming) == 1 and not outgoing:
+        incoming_count = sum(1 for edge in edge_specs if edge.target is candidate) + len(
+            (boundary_incoming or {}).get(candidate.authored_id, ())
+        )
+        outgoing_count = sum(1 for edge in edge_specs if edge.source is candidate) + len(
+            (boundary_outgoing or {}).get(candidate.authored_id, ())
+        )
+        if incoming_count == 1 and not outgoing_count:
             continue
         message = (
             "Explore nodes must have exactly one incoming edge."
-            if len(incoming) != 1
+            if incoming_count != 1
             else "Explore nodes cannot have outgoing edges."
         )
         diagnostic = _diagnostic(
@@ -1200,6 +1249,114 @@ def _port_names(ports: list[dict[str, Any]]) -> tuple[str, ...]:
     )
 
 
+#: Strict refusals the recovery pass reports element by element in its own
+#: words: the context key that marks the refusal, and the diagnostic codes that
+#: already show it on screen.
+_STRICT_FAILURE_SHOWN_AS: dict[str, frozenset[str]] = {
+    "decorator": frozenset({"node_decorator_unknown"}),
+    "duplicate_name": frozenset({"node_identity_duplicate"}),
+    "dangling_edges": frozenset({"connection_endpoint_missing", "connection_endpoint_ambiguous"}),
+    "duplicate_edges": frozenset({"connection_duplicate"}),
+    "missing_paths": frozenset({"submodel_file_missing"}),
+    "frame_missing_edges": frozenset({"connection_frame_missing", "node_input_frame_missing"}),
+}
+
+
+def _strict_failure_shown(
+    failure: BaseException | None, diagnostics: Sequence[PipelineRecoveryDiagnostic]
+) -> bool:
+    """Whether a diagnostic already shows the strict parse's refusal."""
+    message = _exception_message(failure or ParseError("Pipeline parsing failed."))
+    if any(diagnostic.message == message for diagnostic in diagnostics):
+        return True
+    if not isinstance(failure, HauteError):
+        return False
+    codes = {diagnostic.code for diagnostic in diagnostics}
+    return any(
+        key in failure.context and not codes.isdisjoint(shown)
+        for key, shown in _STRICT_FAILURE_SHOWN_AS.items()
+    )
+
+
+def _attribute_binding_failure(
+    failure: BaseException | None,
+    candidates: Sequence[_RecoveredCandidate],
+    *,
+    source_file: str,
+    diagnostics: list[PipelineRecoveryDiagnostic],
+    definition: bool,
+) -> None:
+    """Mark the node a parameter-binding failure names unavailable, with that failure.
+
+    The binding gate checks a whole graph, so no node fails it on its own; the
+    failure names its node, and a definition file's failure names that file
+    too, so it is never taken for a parent node of the same name.
+    """
+    if not (isinstance(failure, ParseError) and "unbound_parameters" in failure.context):
+        return
+    if ("source_file" in failure.context) != definition:
+        return
+    failed_node_id = failure.context.get("node_id")
+    matching = [candidate for candidate in candidates if candidate.authored_id == failed_node_id]
+    if len(matching) != 1 or matching[0].availability != "ready":
+        return
+    failed = matching[0]
+    diagnostic = _diagnostic(
+        code="node_parse_invalid",
+        scope="node",
+        message=failure.message,
+        source_file=source_file,
+        element_id=failed.recovery_id,
+        source_span=failed.span,
+        remediation=failure.context.get("remediation", "Correct this node's source or reset it."),
+    )
+    diagnostics.append(diagnostic)
+    failed.diagnostic_ids.append(diagnostic.diagnostic_id)
+    failed.availability = "unavailable"
+
+
+def _attribute_instance_failure(
+    failure: BaseException | None,
+    candidates: Sequence[_RecoveredCandidate],
+    *,
+    source_file: str,
+    diagnostics: list[PipelineRecoveryDiagnostic],
+) -> None:
+    """Mark the submodel occurrences a copy rule names unavailable, with that rule.
+
+    Each occurrence registers fine on its own; only together do they break a
+    rule (a copy naming a missing original, a definition with no owner or two),
+    so the failure names the occurrences, and each can then be removed.
+    """
+    if not isinstance(failure, ParseError) or "definition_id" not in failure.context:
+        return
+    named = failure.context.get("instance_ids") or (
+        [failure.context["instance_id"]] if "instance_id" in failure.context else []
+    )
+    for candidate in candidates:
+        if (
+            candidate.node_type != NodeType.SUBMODEL
+            or candidate.authored_id not in named
+            or candidate.availability != "ready"
+        ):
+            continue
+        diagnostic = _diagnostic(
+            code="submodel_instance_invalid",
+            scope="node",
+            message=failure.message,
+            source_file=source_file,
+            element_id=candidate.recovery_id,
+            source_span=candidate.span,
+            remediation=(
+                "Remove the occurrence, or give it instance_of naming the definition's "
+                "one owner occurrence."
+            ),
+        )
+        diagnostics.append(diagnostic)
+        candidate.diagnostic_ids.append(diagnostic.diagnostic_id)
+        candidate.availability = "unavailable"
+
+
 def _recover_submodel_snapshot(
     child_path: Path,
     *,
@@ -1207,8 +1364,13 @@ def _recover_submodel_snapshot(
     config_base: Path,
     diagnostics: list[PipelineRecoveryDiagnostic],
     captures: _SourceCaptures,
+    failure: BaseException | None = None,
 ) -> tuple[RecoveryGraphSnapshot, list[dict[str, Any]], list[dict[str, Any]]]:
-    """Best-effort child graph recovery without making it canonical."""
+    """Best-effort child graph recovery without making it canonical.
+
+    *failure* is the strict parse's refusal of the file, attributed to the node
+    it names when the binding gate raised it.
+    """
     child_source_file = _wire_path(child_path, project_root)
     try:
         _raw, source = captures.read(child_path)
@@ -1250,6 +1412,26 @@ def _recover_submodel_snapshot(
         source_file=child_source_file,
         diagnostics=diagnostics,
     )
+    _attribute_binding_failure(
+        failure,
+        candidates,
+        source_file=child_source_file,
+        diagnostics=diagnostics,
+        definition=True,
+    )
+    try:
+        _definition_id, input_ports, output_ports = _extract_definition_contract(tree)
+    except HauteError:
+        input_payload: list[dict[str, Any]] = []
+        output_payload: list[dict[str, Any]] = []
+        boundary_incoming: dict[str, list[str]] = {}
+        boundary_outgoing: dict[str, list[str]] = {}
+    else:
+        input_payload = [port.model_dump(mode="json", by_alias=True) for port in input_ports]
+        output_payload = [port.model_dump(mode="json", by_alias=True) for port in output_ports]
+        boundary_incoming, boundary_outgoing = definition_boundary_topology(
+            input_ports, output_ports
+        )
     nodes, edges, unresolved = _build_recovery_graph(
         candidates,
         connections,
@@ -1257,15 +1439,9 @@ def _recover_submodel_snapshot(
         positions=positions,
         diagnostics=diagnostics,
         initial_unresolved=initially_unresolved,
+        boundary_incoming=boundary_incoming,
+        boundary_outgoing=boundary_outgoing,
     )
-    try:
-        _definition_id, input_ports, output_ports = _extract_definition_contract(tree)
-    except HauteError:
-        input_payload: list[dict[str, Any]] = []
-        output_payload: list[dict[str, Any]] = []
-    else:
-        input_payload = [port.model_dump(mode="json", by_alias=True) for port in input_ports]
-        output_payload = [port.model_dump(mode="json", by_alias=True) for port in output_ports]
     return (
         RecoveryGraphSnapshot(
             nodes=nodes,
@@ -1311,6 +1487,7 @@ def _recover_unavailable_submodel_definition(
     message: str,
     remediation: str,
     incident_id: str | None = None,
+    failure: BaseException | None = None,
 ) -> RecoverySubmodelDefinition:
     """Recover a child snapshot while keeping its definition non-canonical."""
     def_id = definition_id or registration.path
@@ -1321,6 +1498,7 @@ def _recover_unavailable_submodel_definition(
         config_base=config_base,
         diagnostics=diagnostics,
         captures=captures,
+        failure=failure,
     )
     diagnostic = _diagnostic(
         code=code,
@@ -1363,6 +1541,9 @@ def _recover_registered_submodels(
 
     path_to_def_id: dict[str, str] = {}
     definition_sources: dict[str, str] = {}
+    # Registrations that resolve to one file share its definition, named by the
+    # first of them, as the parser groups them; also while it fails to load.
+    source_definitions: dict[str, str] = {}
 
     for registration in registrations:
         if registration.path in path_to_def_id:
@@ -1419,6 +1600,11 @@ def _recover_registered_submodels(
             )
             continue
 
+        source_key = submodel_source_key(child_path)
+        if source_key in source_definitions:
+            path_to_def_id[registration.path] = source_definitions[source_key]
+            continue
+
         try:
             _child_raw, child_source = captures.read(child_path)
             child_graph = parse_submodel_source(
@@ -1429,6 +1615,7 @@ def _recover_registered_submodels(
         except (HauteError, OSError, UnicodeError) as exc:
             def_id = registration.path
             path_to_def_id[registration.path] = def_id
+            source_definitions[source_key] = def_id
             code = (
                 "submodel_syntax_invalid"
                 if isinstance(exc, ParseError) and isinstance(exc.__cause__, SyntaxError)
@@ -1452,11 +1639,13 @@ def _recover_registered_submodels(
                     if isinstance(exc, HauteError)
                     else "Open the submodel source and correct the diagnosed definition."
                 ),
+                failure=exc,
             )
             continue
         except Exception:  # noqa: BLE001 - named submodel recovery isolation boundary
             def_id = registration.path
             path_to_def_id[registration.path] = def_id
+            source_definitions[source_key] = def_id
             incident_id = uuid4().hex
             logger.error(
                 "pipeline_recovery_submodel_unexpected",
@@ -1482,7 +1671,7 @@ def _recover_registered_submodels(
 
         def_id = child_graph._parser_definition_id or registration.path
         path_to_def_id[registration.path] = def_id
-        source_key = str(child_path.resolve()).casefold()
+        source_definitions[source_key] = def_id
 
         if def_id in definition_sources and definition_sources[def_id] != source_key:
             diagnostic = _diagnostic(
@@ -1987,7 +2176,24 @@ def _load_readable_pipeline_editor_document(
             pipeline_description = ""
             preserved_blocks = _extract_preserved_blocks(source)
         else:
-            pipeline_name, pipeline_description = _extract_pipeline_meta(tree)
+            try:
+                pipeline_name, pipeline_description = _extract_pipeline_meta(tree)
+            except ParseError as exc:
+                # A name or description that is not a literal belongs to the
+                # constructor, not to any node; the rest of the file recovers.
+                diagnostics.append(
+                    _diagnostic(
+                        code="pipeline_constructor_invalid",
+                        scope="pipeline",
+                        message=_exception_message(exc),
+                        source_file=source_file,
+                        remediation=(
+                            "Give haute.Pipeline(...) its name and description as plain "
+                            'strings, such as haute.Pipeline("motor").'
+                        ),
+                    )
+                )
+                pipeline_name, pipeline_description = None, ""
             pipeline_name = pipeline_name or path.stem
             preamble = _extract_preamble(source, tree=tree)
             preserved_blocks = _extract_preserved_blocks(source)
@@ -2059,30 +2265,16 @@ def _load_readable_pipeline_editor_document(
                     )
                 )
             candidates.extend(unavailable_registrations)
-            if (
-                isinstance(strict_failure, ParseError)
-                and "unbound_parameters" in strict_failure.context
-            ):
-                failed_node_id = strict_failure.context.get("node_id")
-                matching = [
-                    candidate for candidate in candidates if candidate.authored_id == failed_node_id
-                ]
-                if len(matching) == 1 and matching[0].availability == "ready":
-                    failed = matching[0]
-                    diagnostic = _diagnostic(
-                        code="node_parse_invalid",
-                        scope="node",
-                        message=strict_failure.message,
-                        source_file=source_file,
-                        element_id=failed.recovery_id,
-                        source_span=failed.span,
-                        remediation=strict_failure.context.get(
-                            "remediation", "Correct this node's source or reset it."
-                        ),
-                    )
-                    diagnostics.append(diagnostic)
-                    failed.diagnostic_ids.append(diagnostic.diagnostic_id)
-                    failed.availability = "unavailable"
+            _attribute_binding_failure(
+                strict_failure,
+                candidates,
+                source_file=source_file,
+                diagnostics=diagnostics,
+                definition=False,
+            )
+            _attribute_instance_failure(
+                strict_failure, candidates, source_file=source_file, diagnostics=diagnostics
+            )
             nodes, edges, unresolved = _build_recovery_graph(
                 candidates,
                 connections,
@@ -2091,7 +2283,10 @@ def _load_readable_pipeline_editor_document(
                 diagnostics=diagnostics,
                 initial_unresolved=initially_unresolved,
             )
-            if not diagnostics:
+            # The recovery pass re-checks each element, but not every refusal
+            # belongs to one: unless a diagnostic already shows it, the parse's
+            # own refusal is shown, so no other problem on screen can hide it.
+            if not _strict_failure_shown(strict_failure, diagnostics):
                 diagnostics.append(
                     _diagnostic(
                         code="pipeline_parse_invalid",

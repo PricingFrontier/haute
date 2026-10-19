@@ -130,9 +130,9 @@ running heavy work in a child process the parent can kill on timeout or memory l
   sources stored in different key orders previews the rows the full run joins. Opaque
   row-local Python steps — eager model scoring, the rating miss guard, sum-constraint online
   optimiser apply, and OUTPUT assembly — run as Python scans that honour the limit,
-  projection, and predicate Polars pushes into them, and their exceptions keep their types at
-  every Haute collect, batch-collect, and sink seam (a direct Polars `.collect()` receives a
-  `ComputeError` naming the original). Native Polars node plans are never wrapped. A
+  projection, and predicate Polars pushes into them, and their exceptions reach the caller as
+  themselves, class and attributes intact, at every Haute collect, batch-collect, and sink
+  seam and at a direct Polars `.collect()` alike. Native Polars node plans are never wrapped. A
   preview's row count is the height of the limited target output, and trace follows the
   limited preview. Deploy live scoring, batched parquet scoring, sink/batch execution, and
   user-authored Python UDFs keep their execution; Explore reports, training, and optimiser
@@ -145,7 +145,7 @@ running heavy work in a child process the parent can kill on timeout or memory l
   result DataFrame before writing; it still refuses Polars' non-streaming broad-collect
   fallback for bounded profiles.
 - **The streaming chunk size is one editor setting.** Polars keeps its streaming chunk
-  size as process-wide configuration (`POLARS_STREAMING_CHUNK_SIZE`). The editor server
+  size as process-wide configuration (`POLARS_IDEAL_MORSEL_SIZE`). The editor server
   holds one value, the pipeline settings' `chunk_rows` (500,000 when unset), applies it at
   start-up, applies a new value at once when the pipeline settings pane changes it
   (`PATCH /api/pipeline-settings`), and applies a hand edit of the settings file at the
@@ -160,6 +160,26 @@ running heavy work in a child process the parent can kill on timeout or memory l
   never changes results, only memory use and speed, so a change reaches executions
   started afterwards and may reach one in flight at its next collect. Requests carry
   no chunk size, and deployed scoring runs with the default.
+- **Polars' out-of-core spilling stays off, and inside Haute's storage.** Polars 2 spills
+  an operation's state to disk by default. On Polars 2.0 a spill budget did not dependably
+  lower resident memory and cost several times the time, a worker capped below the host
+  never reaches Polars' default threshold, and an out-of-disk abort fails every later
+  query in the process, so every process Haute starts runs with spilling off (decided by
+  memory first, then speed). It also points Polars' spill directory at the project's
+  runtime storage with a small disk budget, so anything that does spill lands where Haute
+  removes it, and loads an Arrow extension column Polars does not know as its storage
+  type. The CLI (and so the editor server and every command) applies these settings
+  before Polars is imported, its workers inherit them, and the scoring container and a
+  served model carry them ([deploy](../deploy/high-level.md)). A pipeline run in a user's
+  own Python process keeps that process's Polars settings. Turning spilling on is a
+  measured decision for capped workers only, never a shared process, and on Polars 2.0
+  capped workers keep it off: measured with each boundary operator in a fresh process,
+  spilling off and then at budgets of a half and a quarter of its own peak, a budget
+  raised some operator's peak on both platforms. On Linux `over`'s rose 47% to 77% and
+  `join`'s 28% to 33% at a quarter, although `sort`'s fell 70% without writing a file; on
+  Windows nothing spilled at a half, and at a quarter `sort`'s rose 24% at ten times the
+  time. Spilling would be turned on only if no operator's peak rose and one fell
+  materially (memory first), so it stays off.
 - **`dataInput` and `dataOutput` are the sole tabular I/O node types.** A file-backed
   Parquet Data Input is scanned directly. Every other data input executes from a
   validated leased snapshot generation. Graph execution may schedule a missing or stale
@@ -305,6 +325,12 @@ running heavy work in a child process the parent can kill on timeout or memory l
   boundary, which is conservative for a single lag or difference column; the
   same-named methods of an expression namespace (`list.shift`, `list.diff`,
   `arr.shift`) work within each row's value and never create a boundary.
+  Polars 2's quantile and rank binning (`bin_quantiles`, `bin_ranks`) and an
+  `approx_quantile` set beside every row hold the frame until the whole column is
+  read: at four times the rows their extra memory over the passthrough control grows
+  13 to 23 times, so they are boundaries recorded at the expression level too. An
+  `approx_quantile` reduced to one row needs only its sketch, which makes its
+  boundary the conservative side.
   `unpivot`, `rolling`, `group_by_dynamic`, `merge_sorted`,
   `interpolate`, and `filter` were measured at or below the streaming control
   matched to what they read rather than what they emit — a full-width passthrough
@@ -338,7 +364,12 @@ running heavy work in a child process the parent can kill on timeout or memory l
   (`join_cardinality_many_to_many`) rather than an over-run, so a capped surface
   runs `full-width-conservative` with status `warned` and an uncapped one is
   refused, both with the remediation to declare `validate='m:1'`, `'1:m'`, or
-  `'1:1'` where a key side is unique. The certification lane measured a
+  `'1:1'` on a unique key and naming what the contract costs: Polars runs a
+  validated join in its in-memory join node, at 39% to 76% more peak memory than an
+  undeclared one, and the estimate counts both inputs held in memory. The execution
+  strategy guide adds that a deployed lookup needs no contract, because a deployment
+  checks the lookup's keys itself ([deploy](../deploy/high-level.md)). The
+  certification lane measured a
   three-times fan-out join above the input-sized figure, which is why input
   sizing is reserved for declared joins. The joined row count is recorded
   separately and carried to the next boundary downstream. `explode` is the one
@@ -586,10 +617,11 @@ successful run does no extra work.
   A full preview-cache hit also reuses the immutable strategy result that produced the
   cached frame, so it retains projection warnings and provenance without repeating
   footer estimation. Any miss or cache extension plans afresh before materialisation.
-- **Materialise only at capture points.** Polars duplicates the upstream plan for
-  every downstream branch of a lazy frame (a known upstream limitation —
-  pola-rs/polars#24206); materialising *every* node would erase the benefit of staying
-  lazy at all, so a planned run writes only its capture points — a node with more than
+- **Materialise only at capture points.** A lazy frame read by several branches
+  carries its whole upstream plan into each, and Polars' streaming engine accumulates
+  memory across a chain of joins run as one query (pola-rs/polars#24206, open at
+  Polars 2.0, whose own workaround is to sink each stage and read it back);
+  materialising *every* node would erase the benefit of staying lazy at all, so a planned run writes only its capture points — a node with more than
   one parent or child along effective edges or that feeds a join, a materialising
   operation, a batch Model Score, and the producer a caller consumes — through the
   bounded sink into the shared snapshot store, and continues from what it wrote. A run

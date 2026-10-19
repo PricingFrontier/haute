@@ -22,6 +22,7 @@ import pytest
 from haute._mlflow_io import _artifact_cache_path
 from haute.deploy._config import DeployConfig, ResolvedDeploy
 from haute.deploy._project_modules import ProjectModules
+from haute.deploy._request_rows import RequestRows
 from haute.errors import DeployError, FeatureMismatchError
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.modelling._feature_contract import (
@@ -31,6 +32,7 @@ from haute.modelling._feature_contract import (
     load_contract,
     save_contract,
 )
+from tests._deploy_helpers import artifact_digests
 from tests.conftest import make_output_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
@@ -103,6 +105,8 @@ def _make_resolved(
         input_schema=input_schema or {"col": "Int64"},
         output_schema=output_schema or {"result": "Float64"},
         project_modules=ProjectModules(utility=None, unbundled_imports=()),
+        request_rows=RequestRows(multi_quote="in_request_order"),
+        artifact_digests=artifact_digests(artifacts or {}),
     )
 
 

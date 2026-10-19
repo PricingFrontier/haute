@@ -1,6 +1,7 @@
 import { useRef, useState } from "react"
 import {
   applyRecoverUnavailableNode,
+  applyRemoveBrokenConnection,
   applyRemoveUnavailableNode,
 } from "../api/client"
 import type { PipelineEditorDocument } from "../types/pipelineDocument"
@@ -11,7 +12,8 @@ import { useRecoverySummaryStore } from "../stores/useRecoverySummaryStore"
 export interface PipelineRepairTarget {
   sourceFile: string
   recoveryId: string
-  action?: "remove" | "reset" | "recover"
+  /** ``remove_connection`` targets a broken connection by its recovery id. */
+  action?: "remove" | "reset" | "recover" | "remove_connection"
 }
 
 interface PipelineRepairDialogProps {
@@ -32,10 +34,13 @@ function PipelineRepairDialogContent({
   const action = target.action ?? "remove"
   const isRemoval = action === "remove"
   const isRecover = action === "recover"
+  const isConnection = action === "remove_connection"
   const actionTitle = action === "reset" ? "Reset node"
-    : isRecover ? "Recover settings" : "Remove unavailable node"
+    : isRecover ? "Recover settings"
+      : isConnection ? "Remove connection" : "Remove unavailable node"
   const applyLabel = action === "reset" ? "Reset node"
-    : isRecover ? "Recover settings" : "Remove node"
+    : isRecover ? "Recover settings"
+      : isConnection ? "Remove connection" : "Remove node"
   const [deleteConfig, setDeleteConfig] = useState(false)
   const [applying, setApplying] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -47,7 +52,7 @@ function PipelineRepairDialogContent({
     setApplying(true)
     setError(null)
     try {
-      const response = isRemoval
+      const response = action === "remove"
         ? await applyRemoveUnavailableNode({
             sourceFile,
             sourceRevision,
@@ -55,13 +60,20 @@ function PipelineRepairDialogContent({
             targetRecoveryId: target.recoveryId,
             deleteConfig,
           })
-        : await applyRecoverUnavailableNode({
-            sourceFile,
-            sourceRevision,
-            targetSourceFile: target.sourceFile,
-            targetRecoveryId: target.recoveryId,
-            action,
-          })
+        : action === "remove_connection"
+          ? await applyRemoveBrokenConnection({
+              sourceFile,
+              sourceRevision,
+              targetSourceFile: target.sourceFile,
+              targetConnectionId: target.recoveryId,
+            })
+          : await applyRecoverUnavailableNode({
+              sourceFile,
+              sourceRevision,
+              targetSourceFile: target.sourceFile,
+              targetRecoveryId: target.recoveryId,
+              action,
+            })
       if (isRecover) {
         // Transient session record for the panel's dismissible summary.
         useRecoverySummaryStore.getState().recordSummary({
@@ -95,7 +107,9 @@ function PipelineRepairDialogContent({
             ? "Replace this node's settings and code while preserving its identity and connections. Configuration may be needed before running."
             : isRecover
               ? `Rebuild ${target.recoveryId} against the current definitions. Valid settings and code are retained; a function body the node never runs, such as one written before node declarations, is replaced and listed in the summary. Anything missing stays highlighted in the normal editor afterwards.`
-              : `Remove ${target.recoveryId} and its connection declarations.`}
+              : isConnection
+                ? "Remove the connect() line that declares this connection. The nodes it joined stay."
+                : `Remove ${target.recoveryId} and its connection declarations.`}
         </p>
       </div>
       <div className="max-h-[60vh] space-y-4 overflow-y-auto px-5 py-4 text-xs">
@@ -117,7 +131,7 @@ function PipelineRepairDialogContent({
           onClick={() => void apply()}
           disabled={applying}
           className="rounded px-3 py-1.5"
-          style={{ color: "var(--text-on-accent)", background: isRemoval ? "var(--danger)" : "var(--accent)" }}
+          style={{ color: "var(--text-on-accent)", background: isRemoval || isConnection ? "var(--danger)" : "var(--accent)" }}
         >
           {applying ? "Applying…" : applyLabel}
         </button>

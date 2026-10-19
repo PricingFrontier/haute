@@ -14,10 +14,12 @@ import pytest
 from haute._workbench_form import FormSpec
 from haute.deploy._config import DeployConfig, ResolvedDeploy
 from haute.deploy._project_modules import ProjectModules
+from haute.deploy._request_rows import RequestRows
 from haute.deploy._scorer import QuoteRequest
 from haute.deploy._validators import load_test_quote_file, score_test_quotes, validate_deploy
 from haute.errors import DeployError
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from tests._deploy_helpers import artifact_digests
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -57,6 +59,8 @@ def _resolved_with_quotes(
         input_schema=input_schema or {"VehPower": "Int64", "Area": "String"},
         output_schema=output_schema or {"premium": "Float64"},
         project_modules=ProjectModules(utility=None, unbundled_imports=()),
+        request_rows=RequestRows(multi_quote="in_request_order"),
+        artifact_digests=artifact_digests({}),
     )
 
 

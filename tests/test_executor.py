@@ -1276,7 +1276,11 @@ class TestTargetPreviewRowLimit:
                             "data": {
                                 "label": "join",
                                 "nodeType": "edgeJoin",
-                                "config": {"how": "left", "on": ["id"]},
+                                "config": {
+                                    "how": "left",
+                                    "maintainOrder": "left_right",
+                                    "on": ["id"],
+                                },
                             },
                         }
                     ),
@@ -4802,7 +4806,7 @@ class TestTargetPreviewDiagnosticReplan:
                 data=NodeData(
                     label=node_id,
                     nodeType=NodeType.EDGE_JOIN,
-                    config={"how": "left", "on": ["id"]},
+                    config={"how": "left", "maintainOrder": "left_right", "on": ["id"]},
                 ),
             )
 

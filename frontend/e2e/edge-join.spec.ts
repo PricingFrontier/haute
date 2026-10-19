@@ -322,7 +322,7 @@ function seedColumnSettingsPipeline(nodeType: "polars" | "edgeJoin" | "dataInput
   // edits preserve them across saves and reloads.
   const metadataArgs = `column_renames=${JSON.stringify(columnMetadata.column_renames)}, categorical_levels=${JSON.stringify(columnMetadata.categorical_levels)}, contract="opaque"`
   const subjectFunction = nodeType === "dataInput" ? inputFunction("subject") : nodeType === "edgeJoin" ? [
-    `@pipeline.edge_join(how="left", on=["_id"], ${metadataArgs})`,
+    `@pipeline.edge_join(how="left", maintain_order="left_right", on=["_id"], ${metadataArgs})`,
     "def subject(raw_rows, lookup_rows): ...", "",
   ] : [
     `@pipeline.polars(${metadataArgs})`,

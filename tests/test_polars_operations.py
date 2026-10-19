@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
+import polars as pl
 import pytest
 
 from haute._column_lineage import (
@@ -40,6 +44,13 @@ from haute.chunking import (
     _ROW_LOCAL_NAMESPACE_METHOD_NAMES,
     _ROW_LOCAL_POLARS_FUNCTIONS,
     classify_chunk_local_polars_code,
+    classify_row_local_expression,
+)
+from tests._polars_operation_samples import sample_expression
+from tests._polars_operation_surface import (
+    operation_exists,
+    public_operations,
+    registered_operations,
 )
 
 
@@ -296,13 +307,12 @@ def test_lineage_unbounded_expansion_set_is_pinned_to_literal_names() -> None:
             "deserialize",
             "explode",
             "extend_constant",
-            "flatten",
-            "from_json",
             "gather",
             "hist",
             "map_batches",
             "pipe",
-            "register_plugin",
+            "pipe_with_dtype",
+            "reshape",
             "sample",
             "search_sorted",
         }
@@ -315,7 +325,6 @@ def test_materialisation_boundary_frame_methods_are_the_measured_global_operatio
         "bottom_k",
         "explode",
         "group_by",
-        "groupby",
         "join",
         "join_asof",
         "reverse",
@@ -330,7 +339,6 @@ def test_measured_streaming_global_operations_are_not_boundaries() -> None:
     """Operations measured at or below the streaming floor keep streaming."""
     for name in (
         "unpivot",
-        "melt",
         "rolling",
         "group_by_dynamic",
         "merge_sorted",
@@ -347,8 +355,16 @@ def test_measured_streaming_global_operations_are_not_boundaries() -> None:
         assert entry.policy is not OperationPolicy.MATERIALISATION_BOUNDARY, name
 
 
-def test_windows_and_neighbouring_row_methods_are_the_boundary_expression_methods() -> None:
-    assert materialising_expression_methods() == {"over", "shift", "diff", "pct_change"}
+def test_windows_neighbouring_rows_and_whole_column_bins_are_the_boundary_expressions() -> None:
+    assert materialising_expression_methods() == {
+        "over",
+        "shift",
+        "diff",
+        "pct_change",
+        "bin_quantiles",
+        "bin_ranks",
+        "approx_quantile",
+    }
 
 
 def test_expression_namespace_names_are_polars_expression_namespaces() -> None:
@@ -374,7 +390,7 @@ def test_boundary_operator_memory_factors_are_pinned_to_the_evidence() -> None:
             *materialising_expression_methods(),
         )
     } == {
-        "sort": 300,
+        "sort": 450,
         "unique": 350,
         "join": 200,
         "join_asof": 250,
@@ -385,8 +401,10 @@ def test_boundary_operator_memory_factors_are_pinned_to_the_evidence() -> None:
         "shift": 100,
         "diff": 100,
         "pct_change": 150,
+        "bin_quantiles": 150,
+        "bin_ranks": 150,
+        "approx_quantile": 150,
         "group_by": 100,
-        "groupby": 100,
         # explode's estimate is unavailable, so its factor is never applied.
         "explode": 100,
     }
@@ -404,7 +422,6 @@ def test_streaming_frame_methods_record_evidence_or_its_absence() -> None:
     """Every global operation EXEC-P07 measured cites its evidence class."""
     for name in (
         "unpivot",
-        "melt",
         "rolling",
         "group_by_dynamic",
         "merge_sorted",
@@ -421,11 +438,7 @@ def test_streaming_frame_methods_record_evidence_or_its_absence() -> None:
         assert entry.policy is OperationPolicy.STREAMING or entry.policy is (
             OperationPolicy.ROW_LOCAL
         ), name
-        assert (
-            "streams:" in entry.note
-            or "no evidence, streaming kept" in entry.note
-            or "measured as unpivot" in entry.note
-        ), entry.name
+        assert "streams:" in entry.note or "no evidence, streaming kept" in entry.note, entry.name
 
 
 def test_unregistered_operator_carries_no_memory_surcharge() -> None:
@@ -477,6 +490,123 @@ def test_row_expanding_expression_method_makes_cardinality_unavailable() -> None
     assert analysis.reason == "row_expansion_unbounded"
 
 
+@pytest.mark.parametrize(
+    "code",
+    [
+        # Polars 2's dtype-aware pipe: its callback can change the row count.
+        "df = df.select(pl.col('a').pipe_with_dtype(lambda e, dtype: e.repeat_by(2).explode()))",
+        "df = df.select(pl.pipe_with_dtype(pl.col('a'), lambda e, dtype: e))",
+        # Reshaping an array column to one dimension flattens its elements into rows.
+        "df = df.select(pl.col('a').reshape((-1,)))",
+        # A fold-family callback receives whole Series: reduce turned 2 rows into 6.
+        "df = df.select(pl.reduce(lambda acc, x: (acc + x).repeat_by(3).explode(), ['a', 'b']))",
+        "df = df.select(pl.fold(pl.lit(0), lambda acc, x: acc + x, ['a', 'b']))",
+    ],
+)
+def test_an_operation_that_can_grow_the_frame_makes_cardinality_unavailable(code: str) -> None:
+    analysis = analyze_polars_cardinality(code, {"df": 10})
+
+    assert not analysis.supported
+    assert analysis.output_upper_bound is None
+
+
+def test_a_map_namespace_method_is_read_in_its_namespace() -> None:
+    """``pl.col(m).map.len()`` is the map's length per row, not the column's ``len``."""
+    entry = operation(OperationReceiver.NAMESPACE, "len", namespace="map")
+    assert entry is not None
+    assert entry.operation_class is OperationClass.ROW_LOCAL
+
+    assert classify_row_local_expression("pl.col('m').map.len()").eligible
+    assert not classify_row_local_expression("pl.col('m').len()").eligible
+    decision = classify_chunk_local_polars_code(
+        "df = df.with_columns(n=pl.col('m').map.len())", frame_names=["df"]
+    )
+    assert decision.blocking_operator == "map.len"
+
+
+def _missing(operations: dict[tuple[str, str | None, str], object]) -> list[object]:
+    return sorted(key for key in operations if not operation_exists(*key))
+
+
+def test_every_registered_operation_exists_on_the_installed_polars() -> None:
+    assert _missing(dict(POLARS_OPERATIONS)) == []
+
+
+def test_the_measured_policies_rest_on_the_installed_polars_release() -> None:
+    """An upgrade fails here until the certification lane has measured the registry again."""
+    from haute._polars_operations import MEMORY_EVIDENCE_POLARS
+
+    assert MEMORY_EVIDENCE_POLARS == ".".join(pl.__version__.split(".")[:2])
+
+
+def test_an_entry_naming_an_operation_polars_removed_is_reported() -> None:
+    removed = {
+        ("expr", None, "flatten"): None,
+        ("frame", None, "melt"): None,
+        ("namespace", "str", "concat"): None,
+    }
+
+    assert _missing({**POLARS_OPERATIONS, **removed}) == sorted(removed)
+
+
+_UNREGISTERED_PATH = Path(__file__).with_name("polars_unregistered_operations.json")
+
+
+def test_every_public_polars_operation_is_registered_or_deliberately_left_unregistered() -> None:
+    """A Polars upgrade that adds or removes a public operation fails until it is reviewed.
+
+    An unregistered expression method is read as row-bounded, so a new one that can
+    change the row count must be registered; the rest are recorded here.
+    """
+    recorded = json.loads(_UNREGISTERED_PATH.read_text(encoding="utf-8"))["unregistered"]
+    registered = registered_operations(POLARS_OPERATIONS)
+    surfaces = public_operations()
+
+    assert set(recorded) == set(surfaces)
+    for surface, names in surfaces.items():
+        unregistered = names - registered.get(surface, frozenset())
+        listed = set(recorded[surface])
+        assert unregistered == listed, (
+            f"{surface}: classify or list {sorted(unregistered - listed)}; "
+            f"remove {sorted(listed - unregistered)}"
+        )
+
+
+# Polars builds these from the column's dtype, which an expression alone does not
+# carry, so ``meta`` cannot judge them.
+_UNJUDGED_BY_POLARS = {
+    ("expr", None, "approx_quantile"),
+    ("expr", None, "bin_intervals"),
+    ("expr", None, "bin_quantiles"),
+    ("expr", None, "bin_ranks"),
+    ("polars_function", None, "cum_sum_horizontal"),
+}
+
+
+def test_polars_agrees_which_registered_operations_are_row_separable() -> None:
+    """Every row-local entry builds a row-separable expression; no fan-in or
+    order-dependent one does. An oracle for drift in Polars' own semantics."""
+    wrong: list[tuple[str, str | None, str]] = []
+    unjudged: set[tuple[str, str | None, str]] = set()
+    for key, entry in POLARS_OPERATIONS.items():
+        if entry.receiver is OperationReceiver.FRAME or entry.operation_class in (
+            OperationClass.OPAQUE,
+            OperationClass.ROW_EXPANDING,
+        ):
+            continue
+        expression = eval(sample_expression(*key), {"pl": pl})  # noqa: S307 - test data
+        try:
+            separable = expression.meta.is_row_separable()
+        except pl.exceptions.ColumnNotFoundError:
+            unjudged.add(key)
+            continue
+        if separable != (entry.operation_class is OperationClass.ROW_LOCAL):
+            wrong.append(key)
+
+    assert wrong == []
+    assert unjudged == _UNJUDGED_BY_POLARS
+
+
 def test_opaque_method_is_chunk_rejected_and_lineage_unsupported() -> None:
     entry = operation(OperationReceiver.FRAME, "collect")
     assert entry is not None
@@ -513,14 +643,15 @@ def test_every_measured_operation_is_named_by_the_evidence_accessor() -> None:
         "interpolate",
         "filter",
         "group_by",
-        "groupby",
-        "melt",
     }
     assert measured_operation_names(OperationReceiver.EXPR) == {
         "over",
         "shift",
         "diff",
         "pct_change",
+        "bin_quantiles",
+        "bin_ranks",
+        "approx_quantile",
     }
 
 

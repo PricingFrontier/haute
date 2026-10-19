@@ -74,7 +74,12 @@ every table of the node stale. A build shreds the source once and publishes ever
 table it was asked for; tables already fresh are skipped, but the source is still
 parsed in full. Automatic preparation builds the missing and stale tables before an
 admitted execution reads them, and canvas execution reads only the published
-generations, projected to the columns it demands, never the raw source. Generated
+generations, projected to the columns it demands, never the raw source. A deployed
+Quote Input shreds each served request the same way, in memory
+(`_shred.py::shred_request`), and refuses the request where a build would count a
+skip: a quote that is not an object or an array element whose shape does not fit its
+table raises `ApiInputSchemaError` naming the table, since a deployed answer must not
+lose a quote's rows silently ([deploy](../deploy/high-level.md)). Generated
 standalone code runs without a project store and shreds its source in-process
 through the same parsed table specs, type checks, skip accounting and conservation
 guards, into private spill-backed lazy frames.
@@ -210,7 +215,10 @@ specification defines it.
    first-occurrence order; an object's identity is the tuple of its own leaf
    values, container values canonicalised to hashable tuples. A level no frame
    emits at is synthesised from the rows of the frames below it, grouped the same
-   way by the ancestor values those rows carry.
+   way by the ancestor values those rows carry. A deployed batch answered as one frame
+   keeps one top-level object per row instead, since each row answers its own quote
+   ([deploy](../deploy/high-level.md)): two quotes whose answers coincide are two
+   objects.
 5. *Nesting.* Assembly descends the level tree carrying a *scope* of relation
    keys. Under each parent object, the parent level's own fields that the child's
    subtree carries (the *relation keys* of that parent and child) join the scope
@@ -320,11 +328,9 @@ strict build and raises a specific, column-named error instead.
 - The eager executor and generated code consume the same runtime loader:
   canvas execution reads the published table snapshots, generated standalone code
   shreds in-process — see [execution-engine](../execution-engine/high-level.md)
-  and [codegen](../codegen/high-level.md). Deployed scoring does not: it hands the
-  request to every Quote Input port as one frame ([deploy](../deploy/high-level.md)).
-
-> NOTE: A deployed multi-table Quote Input therefore gives each port the whole request
-> rather than its table ([BUG-31](../roadmap/bugs.md#bug-31--a-deployed-quote-input-splits-a-request-into-its-tables)).
+  and [codegen](../codegen/high-level.md). Deployed scoring shreds each served request
+  through the same table specs in memory, strictly (`shred_request`), so each port
+  receives its own table ([deploy](../deploy/high-level.md)).
 
 - Demand-scoped execution is an optional argument to that shared loader, not a
   second executor-only codec. Generated code that does not pass a demand

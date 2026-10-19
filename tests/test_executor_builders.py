@@ -477,6 +477,26 @@ class TestBuildBanding:
 # ---------------------------------------------------------------------------
 
 
+class TestInputLessNodes:
+    """A node built without an input starts from a frame with no rows and returns none."""
+
+    @pytest.mark.parametrize(
+        ("node_type", "config"),
+        [
+            ("banding", {"factors": []}),
+            (
+                "scenarioExpander",
+                {"column_name": "sv", "min_value": 0.9, "max_value": 1.1, "stepCount": 3},
+            ),
+        ],
+    )
+    def test_an_unconnected_node_returns_no_rows(self, node_type: str, config: dict) -> None:
+        _, fn, is_source = _build(node_type, config)
+
+        assert is_source is False
+        assert fn().collect().height == 0
+
+
 class TestBuildScenarioExpander:
     """Tests for the scenario expander node builder.
 

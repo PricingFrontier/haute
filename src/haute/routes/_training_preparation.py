@@ -33,6 +33,7 @@ from haute._execution_context import (
 )
 from haute._graph_utils import upstream_node_ids
 from haute._logging import get_logger
+from haute._polars_dtypes import wide_integer_column, wide_integer_message
 from haute._ram_estimate import RamEstimate
 from haute._seed_plans import (
     SeedPlan,
@@ -817,6 +818,12 @@ def _execute_and_sink_training_frame(
 
                     recipe = recipe.then(_drop_unselected_columns)
                 _mem_checkpoint(f"projected: dropped {len(drop_cols)} unselected columns")
+
+        # No model takes a 128-bit integer, and pyarrow cannot open the Parquet
+        # file the job reads if one is written into it: refuse it by name first.
+        wide = wide_integer_column(target_lf.collect_schema())
+        if wide is not None:
+            raise HTTPException(status_code=422, detail=wide_integer_message(*wide))
 
         _mem_checkpoint("before sink_parquet")
         execution_context.checkpoint(label="before_training_sink_write", node_id=node_id)

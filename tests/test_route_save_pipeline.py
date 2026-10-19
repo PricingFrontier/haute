@@ -860,7 +860,7 @@ class TestSaveSimpleGraph:
         nodes = [source, _make_node("result", "result", node_type, config)]
         edges = [GraphEdge(id="input", source="source", target="result")]
         if node_type == "edgeJoin":
-            config.update({"how": "left", "on": ["_id"]})
+            config.update({"how": "left", "maintainOrder": "left_right", "on": ["_id"]})
             nodes.append(
                 _make_node(
                     "lookup",

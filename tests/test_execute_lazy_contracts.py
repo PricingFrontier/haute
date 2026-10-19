@@ -22,6 +22,7 @@ from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_walker import CollectPolicy, walk_graph
 from haute._native_memory_limit import native_memory_backend_scope
+from haute._polars_steps import DEFAULT_JOIN_ORDER
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import (
     ConfigError,
@@ -1075,6 +1076,7 @@ def test_bounded_lazy_execution_runtime_projects_builtin_edge_join_and_final_dia
                         "nodeType": "edgeJoin",
                         "config": {
                             "how": "left",
+                            "maintainOrder": "left_right",
                             "on": ["quote_id"],
                             "suffix": "_right",
                             "contract": "opaque",
@@ -1161,6 +1163,7 @@ def test_eager_preview_runtime_projects_builtin_edge_join_and_final_diagnostic()
                         "nodeType": "edgeJoin",
                         "config": {
                             "how": "left",
+                            "maintainOrder": "left_right",
                             "on": ["quote_id"],
                             "suffix": "_right",
                             "contract": "opaque",
@@ -1323,7 +1326,9 @@ def test_bounded_lazy_execution_runtime_projects_left_on_right_on_join_keys() ->
         (
             "left",
             ["quote_id", "right_value"],
-            lambda left, right: left.join(right, on="quote_id", how="left"),
+            lambda left, right: left.join(
+                right, on="quote_id", how="left", maintain_order="left_right"
+            ),
             ["quote_id"],
             ["quote_id", "right_value"],
             {"quote_id": ["q1", "q2"], "right_value": [20, None]},
@@ -1331,7 +1336,9 @@ def test_bounded_lazy_execution_runtime_projects_left_on_right_on_join_keys() ->
         (
             "right",
             ["quote_id", "right_value"],
-            lambda left, right: left.join(right, on="quote_id", how="right"),
+            lambda left, right: left.join(
+                right, on="quote_id", how="right", maintain_order="right_left"
+            ),
             ["quote_id", "left_value", "left_unused"],
             ["quote_id", "right_value", "right_unused"],
             {"quote_id": ["q1"], "right_value": [20]},
@@ -1339,7 +1346,9 @@ def test_bounded_lazy_execution_runtime_projects_left_on_right_on_join_keys() ->
         (
             "full",
             ["quote_id_right", "right_value"],
-            lambda left, right: left.join(right, on="quote_id", how="full"),
+            lambda left, right: left.join(
+                right, on="quote_id", how="full", maintain_order="left_right"
+            ),
             ["quote_id", "left_value", "left_unused"],
             ["quote_id", "right_value", "right_unused"],
             {"quote_id_right": ["q1", None], "right_value": [20, None]},
@@ -1347,7 +1356,7 @@ def test_bounded_lazy_execution_runtime_projects_left_on_right_on_join_keys() ->
         (
             "semi",
             ["quote_id", "left_value"],
-            lambda left, right: left.join(right, on="quote_id", how="semi"),
+            lambda left, right: left.join(right, on="quote_id", how="semi", maintain_order="left"),
             ["quote_id", "left_value"],
             ["quote_id"],
             {"quote_id": ["q1"], "left_value": [10]},
@@ -1355,7 +1364,7 @@ def test_bounded_lazy_execution_runtime_projects_left_on_right_on_join_keys() ->
         (
             "anti",
             ["quote_id", "left_value"],
-            lambda left, right: left.join(right, on="quote_id", how="anti"),
+            lambda left, right: left.join(right, on="quote_id", how="anti", maintain_order="left"),
             ["quote_id", "left_value"],
             ["quote_id"],
             {"quote_id": ["q2"], "left_value": [11]},
@@ -1371,7 +1380,10 @@ def test_bounded_lazy_execution_runtime_projects_common_join_hows(
     expected_output: dict[str, list[object]],
 ) -> None:
     outputs, seen_join_schemas = _execute_contract_free_join(
-        code=f"df = left.join(right, on='quote_id', how='{how}')",
+        code=(
+            f"df = left.join(right, on='quote_id', how='{how}', "
+            f"maintain_order='{DEFAULT_JOIN_ORDER[how]}')"
+        ),
         join_fn=join_fn,
         fields=fields,
         left_df=pl.DataFrame(

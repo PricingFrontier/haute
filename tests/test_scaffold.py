@@ -870,7 +870,9 @@ class TestDockerfileStructure:
         from haute.deploy._config import DeployConfig, ResolvedDeploy
         from haute.deploy._container import _generate_dockerfile
         from haute.deploy._project_modules import ProjectModules
+        from haute.deploy._request_rows import RequestRows
         from haute.graph_utils import PipelineGraph
+        from tests._deploy_helpers import artifact_digests
 
         resolved = ResolvedDeploy(
             config=DeployConfig(pipeline_file=Path("main.py"), model_name="test"),
@@ -882,6 +884,8 @@ class TestDockerfileStructure:
             input_schema={},
             output_schema={},
             project_modules=ProjectModules(utility=None, unbundled_imports=()),
+            request_rows=RequestRows(multi_quote="in_request_order"),
+            artifact_digests=artifact_digests({}),
         )
         df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
         lines = df.strip().splitlines()

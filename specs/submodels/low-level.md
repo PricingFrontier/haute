@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/_submodel_instances.py` | Canonical reusable-instance resolver and validator, qualified-id expansion, schema-led reference rewriting, public-port binding, create-instance alias allocation, and targeted occurrence flattening. |
-| `src/haute/_submodel_paths.py` | Validate route-level names, resolve recorded submodel references relative to the active pipeline directory, enforce project containment, and return typed malformed/outside-project errors plus the directory used as config base; `definition_pipeline_dir` turns a registration path into a definition file's `pipeline_dir` and `is_pipeline_dir` validates one. |
+| `src/haute/_submodel_paths.py` | Validate route-level names, resolve recorded submodel references relative to the active pipeline directory, enforce project containment, and return typed malformed/outside-project errors plus the directory used as config base; `submodel_source_key` is the resolved-file identity by which the parser and recovery group registrations; `definition_pipeline_dir` turns a registration path into a definition file's `pipeline_dir` and `is_pipeline_dir` validates one. |
 | `src/haute/_pipeline_revision.py` | Build deterministic canonical-graph revisions and the separate raw-artifact editor-document revision used by recovery-aware compare-and-swap. |
 | `src/haute/_flatten.py` | Public flatten/dissolve entry point: validates and expands canonical occurrences through `_submodel_instances.py`. `flatten_executable_graph` is the entry every route running a browser graph uses: it refuses a graph with an executable-name violation (codegen naming rule) before flattening, while internal flattening (a staged dissolve, save) uses `flatten_graph`, since a partly dissolved graph repeats a shared definition's child names. |
 | `src/haute/routes/_submodel_ops.py` | Pure (no I/O) graph transform: extract selected nodes out of a `PipelineGraph` into a new submodel, producing the updated parent graph and submodel metadata. |
@@ -81,7 +81,17 @@ Public handles are constructed only as `in__<name>` and `out__<name>`.
 Port names are canonical identifiers; internal node ids and labels are not public
 port names. Inputs fan out to their ordered targets, outputs have exactly one
 source, port names are unique across both input and output ports in the definition, and every endpoint must
-refer to a node in the definition graph.
+refer to a node in the definition graph. Parsing a submodel file checks these rules
+(`check_submodel_interface`, which the definition model shares) and refuses a file that
+breaks them with a `ParseError` naming it, so the editor shows that submodel unavailable
+with the reason instead of failing the whole document. It checks the definition's node
+topology there too (an Explore node takes exactly one input and feeds nothing), counting
+the edges its public ports add (`definition_boundary_topology`, which the merge-time check
+shares), so the failure is the submodel's own and the editor lists that node inside it.
+A copy rule broken between occurrences (a copy naming a missing original or another
+copy, a definition with no owner or two, an input port bound twice) marks the
+occurrences it names unavailable (`submodel_instance_invalid`), each of which can be
+removed.
 
 The source form persists identity on both sides of the relationship:
 
@@ -369,7 +379,9 @@ Acquires `save_lock` and runs the body in a threadpool:
 Registrations that resolve to the same contained source file share one definition,
 including equivalent dot-segment spellings and filesystem-normalized casing.
 The parser carries this resolved association into occurrence construction rather
-than matching the authored path strings a second time.
+than matching the authored path strings a second time. The editor's recovery loader
+groups registrations by the same key (`submodel_source_key`), also while the definition
+fails to load, and both record the first registration's path as the definition's file.
 
 Changing a definition's output count across the one/multiple boundary recomputes
 parent edge names for every occurrence. Existing consumer bindings are reconciled

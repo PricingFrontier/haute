@@ -31,11 +31,12 @@ import { getDtypeColor } from "../../../utils/dtypeColors"
 import { INPUT_STYLE } from "../_shared"
 import type { GlobalConstantType } from "../../../utils/globalConstants"
 import { ALL_CONSTANT_TYPES, useFittingConstants } from "./useFittingConstants"
-import { CONDITION_OPERATORS, LIST_LITERAL_TYPES, LITERAL_TYPES, defaultCondition, defaultExpr, defaultLiteral, literal } from "./catalogue"
+import { CONDITION_OPERATORS, LIST_LITERAL_TYPES, LITERAL_TYPES, NUMBER_TYPES, defaultCondition, defaultExpr, defaultLiteral, literal, numberTypeOf } from "./catalogue"
+import { decimalScale } from "../../../utils/polarsDtypes"
 import { completionMatches } from "./completion"
 import { useStepSchema } from "./stepSchema"
 import { namesAsCompletions, useCompletionList, type Completion } from "./useCompletionList"
-import type { Condition, ConstantOperand, Expr, LiteralOperand, LiteralType, MatchMode, Operand } from "./types"
+import type { Condition, ConstantOperand, Expr, LiteralOperand, LiteralType, MatchMode, NumberType, Operand } from "./types"
 
 export const CONTROL_CLASS = "focus-ring w-full min-w-0 px-2 py-1.5 text-xs rounded-md"
 const CHIP_STYLE = { background: "var(--chrome-hover)", color: "var(--text-primary)", border: "1px solid var(--border)" }
@@ -1000,27 +1001,53 @@ export function ArgumentField({
   )
 }
 
-/** Membership values: one type for the whole list, then plain values as chips. */
+/** The decimal places a number is written with: 2.5 has one, 1e-7 seven. */
+function decimalPlaces(value: number): number {
+  const [mantissa, exponent] = String(value).toLowerCase().split("e")
+  return Math.max(0, (mantissa.split(".")[1] ?? "").length - Number(exponent ?? 0))
+}
+
+/**
+ * Membership values: one type for the whole list, then plain values as chips.
+ * Numbers carry the kind of number their column holds (`numberType`), taken
+ * from the column's type, or chosen while that type is unknown; a value that
+ * kind can never match (a fraction for whole numbers, more decimal places than
+ * a Decimal column's scale) is refused.
+ */
 export function LiteralListField({
   values,
   onChange,
   ariaLabel,
+  numberType,
+  columnType = null,
 }: {
   values: LiteralOperand[]
-  onChange: (next: LiteralOperand[]) => void
+  onChange: (next: LiteralOperand[], numberType?: NumberType) => void
   ariaLabel: string
+  numberType?: NumberType
+  /** The type of the column the values are compared with, when known. */
+  columnType?: string | null
 }) {
   // The list's type is the first value's type; while the list is empty the
   // chosen type lives here so switching type does not snap back to text.
   const [chosenType, setChosenType] = useState<LiteralType>(values[0]?.type ?? "text")
   const type: LiteralType = values[0]?.type ?? chosenType
   const [draft, setDraft] = useState<LiteralOperand>(defaultLiteral(type))
+  const [refusal, setRefusal] = useState<string | null>(null)
   const current = draft.type === type ? draft : defaultLiteral(type)
+  const knownNumberType = numberTypeOf(columnType)
+  const kind: NumberType | undefined = type === "number" ? (knownNumberType ?? numberType ?? "float") : undefined
+  const scale = kind === "decimal" ? decimalScale(columnType) : null
   // Every type keeps a draft and adds through the explicit action, so the
   // default of a select (true, today's date) can be added like any other.
   const add = () => {
     if (type === "text" && String(current.value).length === 0) return
-    onChange([...values, current])
+    if (scale !== null && typeof current.value === "number" && decimalPlaces(current.value) > scale) {
+      setRefusal(`${current.value} has more decimal places than the column's ${scale}, so it can never match.`)
+      return
+    }
+    setRefusal(null)
+    onChange([...values, current], kind)
     setDraft(defaultLiteral(type))
   }
   return (
@@ -1031,26 +1058,42 @@ export function LiteralListField({
         onChange={(next) => {
           setChosenType(next)
           setDraft(defaultLiteral(next))
+          setRefusal(null)
           if (values.length > 0) onChange([])
         }}
         ariaLabel={`${ariaLabel} type`}
       />
+      {type === "number" && knownNumberType === null && (
+        <Field label="Number type">
+          <SelectField
+            value={kind ?? "float"}
+            options={NUMBER_TYPES}
+            onChange={(next) => onChange(values, next)}
+            ariaLabel={`${ariaLabel} number type`}
+          />
+        </Field>
+      )}
       <div className="flex flex-wrap items-center gap-1.5">
         {values.map((item, index) => (
           <Chip
             key={`${index}-${String(item.value)}`}
             label={String(item.value)}
             removeLabel={`Remove ${String(item.value)}`}
-            onRemove={() => onChange(values.filter((_, i) => i !== index))}
+            onRemove={() => onChange(values.filter((_, i) => i !== index), kind)}
           />
         ))}
         <div className="flex-1 basis-28 min-w-0 flex items-center gap-1">
-          <LiteralValueInput value={current} onChange={setDraft} ariaLabel={`${ariaLabel} new value`} />
+          <LiteralValueInput value={current} onChange={setDraft} ariaLabel={`${ariaLabel} new value`} integer={kind === "integer"} />
           <button type="button" onClick={add} aria-label={`${ariaLabel}: add value`} className="add-row-btn focus-ring p-1 rounded" style={ADD_BUTTON_STYLE}>
             <Plus size={12} aria-hidden="true" />
           </button>
         </div>
       </div>
+      {refusal && (
+        <p role="alert" className="m-0 text-[11px]" style={{ color: "var(--warning)" }}>
+          {refusal}
+        </p>
+      )}
     </div>
   )
 }
@@ -1105,10 +1148,13 @@ export function ConditionRow({
   const takes = CONDITION_OPERATORS.find((o) => o.value === condition.operator)?.takes ?? "value"
   const textOnly = isStringOperator(condition.operator)
   // A fresh condition's value follows the chosen column's type; a value the
-  // analyst has edited, or a text operator's value, is left alone.
+  // analyst has edited, or a text operator's value, is left alone. A list of
+  // numbers takes the new column's kind of number when that type is known.
   const setColumn = (column: string) => {
     const typed = takes === "value" && !textOnly && isUntouchedValue(condition.value) ? valueForType(schema.typeOf(column)) : null
-    onChange(typed ? { ...condition, column, value: typed } : { ...condition, column })
+    const next = typed ? { ...condition, column, value: typed } : { ...condition, column }
+    const numberType = numberTypeOf(schema.typeOf(column))
+    onChange(next.numberType !== undefined && numberType !== null ? { ...next, numberType } : next)
   }
   const setOperator = (operator: Condition["operator"]) => {
     const nextTakes = CONDITION_OPERATORS.find((o) => o.value === operator)?.takes ?? "value"
@@ -1118,7 +1164,11 @@ export function ConditionRow({
       const textOk = keep && (keep.kind !== "literal" || keep.type === "text")
       next.value = isStringOperator(operator) ? (textOk ? keep : literal("text", "")) : (keep ?? literal("number", 0))
     }
-    if (nextTakes === "values") next.values = condition.values ?? []
+    if (nextTakes === "values") {
+      // One membership list to another keeps its values and the kind of number they are.
+      next.values = condition.values ?? []
+      if (next.values.length > 0 && condition.numberType !== undefined) next.numberType = condition.numberType
+    }
     onChange(next)
   }
   return (
@@ -1154,7 +1204,12 @@ export function ConditionRow({
       {takes === "values" && (
         <LiteralListField
           values={condition.values ?? []}
-          onChange={(values) => onChange({ ...condition, values })}
+          numberType={condition.numberType}
+          columnType={condition.column ? schema.typeOf(condition.column) : null}
+          onChange={(values, numberType) => {
+            const { numberType: _previous, ...rest } = condition
+            onChange(numberType && values.length > 0 ? { ...rest, values, numberType } : { ...rest, values })
+          }}
           ariaLabel={`${ariaLabel} values`}
         />
       )}

@@ -8,7 +8,7 @@ lets callers import utilities without pulling the full model module.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from hashlib import blake2b
 from typing import TYPE_CHECKING, Any
 
@@ -549,3 +549,70 @@ def resolve_orig_source_names(
         for edge in incoming_edges_by_target.get(node.id, [])
     ]
     return resolve_input_mapping_names(source_names, input_mapping)
+
+
+def code_input_bindings(
+    node: GraphNode,
+    edges: Sequence[GraphEdge],
+    *,
+    node_map: Mapping[str, GraphNode],
+    submodels: Mapping[str, Any] | None,
+    alias_first_as_df: bool = False,
+) -> dict[str, str] | None:
+    """Map every name *node*'s code can see to the id of the edge it binds.
+
+    The single authority for the runtime naming rules a code analysis mirrors:
+    the edge input name, then ``inputMapping`` aliases, then the ``df`` alias
+    for the first input, so two analyses cannot disagree about which edge an
+    alias refers to. The alias relation is validated by the canonical resolver
+    the executor uses, so a mapping the runtime would reject (a stale value, two
+    logical names sharing one edge, or two edges collapsing onto one logical
+    name) raises. ``None`` means the names cannot be derived (an edge with no
+    executable name, two edges with one name, or a mapping not shaped like one),
+    which leaves nothing to analyse.
+    """
+    by_name: dict[str, str] = {}
+    source_names: list[str] = []
+    for edge in edges:
+        try:
+            name = edge_input_name(edge, node_map[edge.source], submodels=submodels)
+        except (KeyError, ValueError):
+            return None
+        source_names.append(name)
+        previous = by_name.get(name)
+        if previous is not None and previous != edge.id:
+            return None
+        by_name[name] = edge.id
+
+    raw_mapping = node.data.config.get("inputMapping")
+    # Every non-``None`` value is validated, exactly as runtime code generation
+    # does: a falsey non-mapping (``[]``, ``""``, ``0``) is malformed, not absent.
+    if raw_mapping is not None:
+        if not isinstance(raw_mapping, Mapping) or any(
+            not isinstance(logical, str)
+            or not logical
+            or not isinstance(current, str)
+            or not current
+            for logical, current in raw_mapping.items()
+        ):
+            return None
+        for logical, edge in zip(
+            resolve_input_mapping_names(source_names, dict(raw_mapping)),
+            edges,
+            strict=True,
+        ):
+            existing = by_name.get(logical)
+            if existing is not None and existing != edge.id:
+                return None
+            by_name[logical] = edge.id
+
+    if alias_first_as_df:
+        if not edges:
+            return None
+        first_edge = edges[0]
+        existing = by_name.get("df")
+        if existing is not None and existing != first_edge.id:
+            return None
+        by_name["df"] = first_edge.id
+
+    return by_name

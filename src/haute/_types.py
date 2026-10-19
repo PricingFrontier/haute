@@ -317,7 +317,7 @@ class EdgeJoinConfig(TypedDict, total=False):
     suffix: str
     coalesce: bool
     validate: str
-    maintainOrder: str
+    maintainOrder: Required[str]
     selected_columns: list[str]
     column_renames: dict[str, str]
     categorical_levels: dict[str, list[str | None]]
@@ -1226,28 +1226,39 @@ class SubmodelDefinition(BaseModel):
 
     @model_validator(mode="after")
     def _validate_interface(self) -> Self:
-        if self.graph.submodels:
-            raise ValueError("Nested submodels are not supported in a definition graph.")
-
-        port_names = [
-            *(port.name for port in self.input_ports),
-            *(port.name for port in self.output_ports),
-        ]
-        duplicates = sorted(name for name in set(port_names) if port_names.count(name) > 1)
-        if duplicates:
-            raise ValueError(
-                f"Submodel definition has duplicate public port names: {duplicates!r}."
-            )
-
-        graph_node_ids = {node.id for node in self.graph.nodes}
-        endpoint_ids = [target.node_id for port in self.input_ports for target in port.targets]
-        endpoint_ids.extend(port.source.node_id for port in self.output_ports)
-        missing = sorted(set(endpoint_ids) - graph_node_ids)
-        if missing:
-            raise ValueError(
-                f"Submodel public port endpoint references missing child nodes: {missing!r}."
-            )
+        check_submodel_interface(self.graph, self.input_ports, self.output_ports)
         return self
+
+
+def check_submodel_interface(
+    graph: PipelineGraph,
+    input_ports: Sequence[SubmodelInputPort],
+    output_ports: Sequence[SubmodelOutputPort],
+) -> None:
+    """Raise ``ValueError`` unless a definition's ports are unique and name its own nodes.
+
+    The definition model and the submodel parse share this check, so a file
+    that breaks it is refused as that submodel's own failure.
+    """
+    if graph.submodels:
+        raise ValueError("Nested submodels are not supported in a definition graph.")
+
+    port_names = [
+        *(port.name for port in input_ports),
+        *(port.name for port in output_ports),
+    ]
+    duplicates = sorted(name for name in set(port_names) if port_names.count(name) > 1)
+    if duplicates:
+        raise ValueError(f"Submodel definition has duplicate public port names: {duplicates!r}.")
+
+    graph_node_ids = {node.id for node in graph.nodes}
+    endpoint_ids = [target.node_id for port in input_ports for target in port.targets]
+    endpoint_ids.extend(port.source.node_id for port in output_ports)
+    missing = sorted(set(endpoint_ids) - graph_node_ids)
+    if missing:
+        raise ValueError(
+            f"Submodel public port endpoint references missing child nodes: {missing!r}."
+        )
 
 
 GLOBAL_CONSTANTS_NAME = "global_constants"

@@ -530,6 +530,9 @@ class TrainService:
                 target_values=target_values,
                 group_values=group_values,
                 date_values=date_values,
+                # The preview reports row counts, which no order of a random plan's
+                # rows changes, so the frame's own order serves.
+                row_order=range(frame.height) if evaluation.strategy == "random" else None,
             )
             return _evaluation_preview_payload(
                 plan,

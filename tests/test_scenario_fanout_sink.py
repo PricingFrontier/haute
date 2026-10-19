@@ -23,6 +23,7 @@ from haute._model_scorer import ModelScorer
 from haute._node_apply import expand_scenarios_from_config
 from haute._polars_utils import (
     DEFAULT_STREAMING_CHUNK_SIZE,
+    STREAMING_CHUNK_SIZE_ENV,
     current_streaming_chunk_size,
     set_streaming_chunk_size,
     streaming_chunk_size_cap,
@@ -32,7 +33,7 @@ from tests.test_model_scorer import _make_scoring_model, _run_source
 
 
 def _polars_chunk() -> int | None:
-    raw = pl.Config.state(if_set=True).get("POLARS_STREAMING_CHUNK_SIZE")
+    raw = pl.Config.state(if_set=True).get(STREAMING_CHUNK_SIZE_ENV)
     return int(raw) if raw else None
 
 

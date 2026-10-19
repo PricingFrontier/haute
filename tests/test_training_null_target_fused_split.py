@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import polars as pl
 import pytest
 
@@ -68,7 +69,8 @@ def test_null_target_filter_is_fused_into_split_sink_for_parquet_input(
         assert len(split_df) == 4
         assert split_df["target"].null_count() == 0
 
-        expected_mask = split_mask(4, job.split_config)
+        # The counts, not the positions, are compared: any order gives them.
+        expected_mask = split_mask(4, job.split_config, row_order=np.arange(4))
         assert split.n_train == int((expected_mask == PARTITION_TRAIN).sum())
         assert split.n_validation == int((expected_mask == PARTITION_VALIDATION).sum())
         assert split.n_holdout == int((expected_mask == PARTITION_HOLDOUT).sum())

@@ -24,6 +24,7 @@ from types import MappingProxyType
 from typing import Literal
 
 __all__ = [
+    "MEMORY_EVIDENCE_POLARS",
     "POLARS_OPERATIONS",
     "POLARS_SELECTORS_MODULE_FUNCTIONS",
     "POLARS_SELECTOR_CONSTRUCTORS",
@@ -57,7 +58,7 @@ __all__ = [
 # through one (``pl.col("l").list.shift()``) works within each row's value, so it
 # is never the same-named expression-level method.
 EXPRESSION_NAMESPACE_NAMES = frozenset(
-    {"str", "dt", "list", "arr", "struct", "cat", "bin", "name", "meta"}
+    {"str", "dt", "list", "arr", "struct", "cat", "bin", "name", "meta", "map", "ext"}
 )
 
 
@@ -112,6 +113,13 @@ MemoryEvidence = Literal["measured", "none"]
 peak RSS against the streaming floor and the policy below records that result.
 ``none`` means the policy is inherited, not measured, and must not be read as
 evidence of anything."""
+
+#: The Polars release (major.minor) every ``measured`` entry was certified on: the
+#: certification lane re-measured each on Polars 2.0 on 18 October 2026 on the Linux
+#: reference runner (CI perf runs 39099589384, 39099036905 and 39099038828; the binning
+#: entries in 39121069339 and 39121207008). A test holds it to the installed Polars, so
+#: an upgrade fails until the lane has measured the registry again.
+MEMORY_EVIDENCE_POLARS = "2.0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +236,21 @@ def _admitted_ns(namespace: str, name: str) -> PolarsOperation:
         namespace=namespace,
         chunk_admitted=True,
     )
+
+
+def _unproven_expr(name: str, note: str) -> PolarsOperation:
+    """An expression method whose every output row depends only on its input row."""
+    return _op(
+        _EXPR,
+        name,
+        _ROW_LOCAL,
+        _P_ROW_LOCAL,
+        f"{note}; not chunk-admitted: no chunked==full proof yet",
+    )
+
+
+def _callback_expr(receiver: OperationReceiver, name: str, note: str) -> PolarsOperation:
+    return _op(receiver, name, _OPAQUE_CLASS, _P_OPAQUE, note, expansion="unbounded")
 
 
 def _unproven_ns(namespace: str, name: str) -> PolarsOperation:
@@ -437,10 +460,11 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         _P_BOUNDARY,
         "global ordering; lineage keeps the schema and demands the sort keys. "
         "materialises: certified by the fresh-process lane against the scan control and "
-        "witnessed above the scan_head floor; the certified observed/(width x 3.0) ratio "
-        "needs 300 basis points of margin",
+        "witnessed above the scan_head floor; on Polars 2.0 the certified "
+        "observed/(width x 3.0) ratio reaches 4.33 on the Linux reference runner, so it "
+        "needs 450 basis points of margin",
         lineage_supported=True,
-        materialisation_factor_basis_points=300,
+        materialisation_factor_basis_points=450,
         memory_evidence="measured",
     ),
     _op(
@@ -537,15 +561,6 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         lineage_supported=True,
         memory_evidence="measured",
     ),
-    _op(
-        _FRAME,
-        "melt",
-        _ROW_EXPANDING,
-        _P_STREAMING,
-        "alias of unpivot; measured as unpivot by the certification lane",
-        expansion="unbounded",
-        memory_evidence="measured",
-    ),
     # Fan-in / stateful frame methods.
     _op(
         _FRAME,
@@ -553,16 +568,6 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         _FAN_IN,
         _P_BOUNDARY,
         "aggregation state spans the whole frame; valid only at a materialisation boundary",
-        lineage_supported=True,
-        memory_evidence="measured",
-    ),
-    _op(
-        _FRAME,
-        "groupby",
-        _FAN_IN,
-        _P_BOUNDARY,
-        "legacy group_by spelling; same materialisation boundary; measured as group_by by "
-        "the fresh-process lane against the scan control",
         lineage_supported=True,
         memory_evidence="measured",
     ),
@@ -663,7 +668,6 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
     # Opaque frame methods.
     _opaque_frame("collect"),
     _opaque_frame("collect_batches"),
-    _opaque_frame("fetch"),
     _opaque_frame("pipe"),
     _opaque_frame("map_batches"),
     _opaque_frame("lazy"),
@@ -674,7 +678,6 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
     _opaque_frame("iter_rows"),
     _opaque_frame("rows"),
     _opaque_frame("partition_by"),
-    _opaque_frame("with_context"),
     # ----------------------------------------------------------------- expr
     _row_local_expr("abs", "proof: expr_abs"),
     _row_local_expr("alias", "proof: expr_alias"),
@@ -806,10 +809,10 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
     _expanding_expr("deserialize"),
     _expanding_expr("explode"),
     _expanding_expr("extend_constant"),
-    _expanding_expr("flatten"),
-    _expanding_expr("from_json"),
     _expanding_expr("gather"),
     _expanding_expr("hist"),
+    # Reshaping an array column to one dimension flattens its elements into rows.
+    _expanding_expr("reshape"),
     _expanding_expr("sample"),
     _expanding_expr("search_sorted"),
     _op(
@@ -828,13 +831,54 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         "user callback receives the expression: arbitrary result",
         expansion="unbounded",
     ),
+    _callback_expr(
+        _EXPR,
+        "pipe_with_dtype",
+        "user callback receives the expression and its dtype: arbitrary result, "
+        "and it may change the row count",
+    ),
+    _unproven_expr("bin_intervals", "per-row interval label from fixed breaks"),
+    _unproven_expr("erf", "per-row error function"),
+    _unproven_expr("erfc", "per-row complementary error function"),
     _op(
         _EXPR,
-        "register_plugin",
-        _OPAQUE_CLASS,
-        _P_OPAQUE,
-        "external plugin kernel: arbitrary length and arbitrary effect",
-        expansion="unbounded",
+        "bin_quantiles",
+        _FAN_IN,
+        _P_BOUNDARY,
+        "bins by quantiles of the whole column. materialises: a decile column over the "
+        "full-width fact holds the frame until its quantiles are known, certified by the "
+        "fresh-process lane against the scan control and witnessed by growth at four times "
+        "the rows; the certified observed/(width x 3.0) ratio needs 150 basis points of "
+        "margin",
+        materialisation_factor_basis_points=150,
+        memory_evidence="measured",
+    ),
+    _op(
+        _EXPR,
+        "bin_ranks",
+        _FAN_IN,
+        _P_BOUNDARY,
+        "bins by ranks across the whole column. materialises: a rank-band column over the "
+        "full-width fact holds the frame until its ranks are known, certified by the "
+        "fresh-process lane against the scan control and witnessed by growth at four times "
+        "the rows; the certified observed/(width x 3.0) ratio needs 150 basis points of "
+        "margin",
+        materialisation_factor_basis_points=150,
+        memory_evidence="measured",
+    ),
+    _op(
+        _EXPR,
+        "approx_quantile",
+        _FAN_IN,
+        _P_BOUNDARY,
+        "approximate quantile of the whole column. materialises: set beside every row, as "
+        "a column, it holds the frame until the quantile is known (a reduction to one row "
+        "needs only its sketch, so this is the conservative side), certified by the "
+        "fresh-process lane against the scan control and witnessed by growth at four times "
+        "the rows; the certified observed/(width x 3.0) ratio needs 150 basis points of "
+        "margin",
+        materialisation_factor_basis_points=150,
+        memory_evidence="measured",
     ),
     _op(
         _EXPR,
@@ -901,6 +945,14 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
     _unproven_ns("dt", "replace_time_zone"),
     _unproven_ns("dt", "round"),
     _unproven_ns("dt", "total_days"),
+    _unproven_ns("map", "contains_key"),
+    _unproven_ns("map", "entries"),
+    _unproven_ns("map", "get"),
+    _unproven_ns("map", "keys"),
+    _unproven_ns("map", "len"),
+    _unproven_ns("map", "values"),
+    _unproven_ns("ext", "storage"),
+    _unproven_ns("ext", "to"),
     _op(
         _NS,
         "explode",
@@ -913,14 +965,6 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
     _op(
         _NS,
         "join",
-        _FAN_IN,
-        _P_STREAMING,
-        "reduces the whole column to one value",
-        namespace="str",
-    ),
-    _op(
-        _NS,
-        "concat",
         _FAN_IN,
         _P_STREAMING,
         "reduces the whole column to one value",
@@ -953,11 +997,25 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         "returns the positions of true values across the whole column",
     ),
     _fan_in_fn("len", "counts the rows of the whole context down to one value"),
+    _callback_expr(
+        _FN,
+        "pipe_with_dtype",
+        "user callback receives the expression and its dtype: arbitrary result, "
+        "and it may change the row count",
+    ),
     _row_local_fn("business_day_count", "per-row business-day difference of two date columns"),
     _row_local_fn("concat_arr", "per-row horizontal concatenation into a fixed-width array"),
     _row_local_fn("concat_list", "per-row horizontal concatenation into a list"),
-    _row_local_fn("cum_fold", "per-row horizontal cumulative fold across the given columns"),
-    _row_local_fn("cum_reduce", "per-row horizontal cumulative reduction across the given columns"),
+    _callback_expr(
+        _FN,
+        "cum_fold",
+        "user callback over whole Series: arbitrary result, and it may change the row count",
+    ),
+    _callback_expr(
+        _FN,
+        "cum_reduce",
+        "user callback over whole Series: arbitrary result, and it may change the row count",
+    ),
     _row_local_fn("cum_sum_horizontal", "per-row horizontal cumulative sum"),
     _row_local_fn("date", "per-row Date constructor from year/month/day columns"),
     _row_local_fn("date_ranges", "per-row start/end pair to one list of dates"),
@@ -965,12 +1023,20 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
     _row_local_fn("datetime_ranges", "per-row start/end pair to one list of datetimes"),
     _row_local_fn("duration", "per-row Duration constructor from component columns"),
     _row_local_fn("element", "the per-element placeholder inside list.eval"),
-    _row_local_fn("fold", "per-row horizontal fold across the given columns"),
+    _callback_expr(
+        _FN,
+        "fold",
+        "user callback over whole Series: arbitrary result, and it may change the row count",
+    ),
     _row_local_fn("format", "per-row string formatting of the given columns"),
     _row_local_fn("from_epoch", "per-row epoch offset to a temporal value"),
     _row_local_fn("int_ranges", "per-row start/end pair to one list of integers"),
     _row_local_fn("linear_spaces", "per-row start/end pair to one list of evenly spaced values"),
-    _row_local_fn("reduce", "per-row horizontal reduction across the given columns"),
+    _callback_expr(
+        _FN,
+        "reduce",
+        "user callback over whole Series: arbitrary result, and it may change the row count",
+    ),
     _row_local_fn("struct", "per-row struct constructor from the given columns"),
     _row_local_fn("time", "per-row Time constructor from component columns"),
     _row_local_fn("time_ranges", "per-row start/end pair to one list of times"),
@@ -1038,16 +1104,17 @@ _RECOMPUTE_COST_DECLARATIONS: Mapping[tuple[OperationReceiver, str | None, str],
             (OperationReceiver.FRAME, None, "shift"): False,
             (OperationReceiver.FRAME, None, "with_row_index"): False,
             (OperationReceiver.POLARS_FUNCTION, None, "arg_where"): False,
-            # Fan-in costly: expr over, median, mode, quantile; frame agg, group_by,
-            # groupby, group_by_dynamic, join, join_asof, join_where, merge_sorted,
-            # pivot, rolling, upsample.
+            # Fan-in costly: expr over, median, mode, quantile, bin_quantiles, bin_ranks;
+            # frame agg, group_by, group_by_dynamic, join, join_asof, join_where,
+            # merge_sorted, pivot, rolling, upsample.
             (OperationReceiver.EXPR, None, "over"): True,
             (OperationReceiver.EXPR, None, "median"): True,
             (OperationReceiver.EXPR, None, "mode"): True,
             (OperationReceiver.EXPR, None, "quantile"): True,
+            (OperationReceiver.EXPR, None, "bin_quantiles"): True,
+            (OperationReceiver.EXPR, None, "bin_ranks"): True,
             (OperationReceiver.FRAME, None, "agg"): True,
             (OperationReceiver.FRAME, None, "group_by"): True,
-            (OperationReceiver.FRAME, None, "groupby"): True,
             (OperationReceiver.FRAME, None, "group_by_dynamic"): True,
             (OperationReceiver.FRAME, None, "join"): True,
             (OperationReceiver.FRAME, None, "join_asof"): True,
@@ -1057,7 +1124,7 @@ _RECOMPUTE_COST_DECLARATIONS: Mapping[tuple[OperationReceiver, str | None, str],
             (OperationReceiver.FRAME, None, "rolling"): True,
             (OperationReceiver.FRAME, None, "upsample"): True,
             # Fan-in cheap: expr sum, mean, min, max, count, len, std, var, arg_max,
-            # arg_min; frame interpolate; namespace str concat, namespace str join;
+            # arg_min, approx_quantile; frame interpolate; namespace str join;
             # polars_function len.
             (OperationReceiver.EXPR, None, "sum"): False,
             (OperationReceiver.EXPR, None, "mean"): False,
@@ -1069,22 +1136,21 @@ _RECOMPUTE_COST_DECLARATIONS: Mapping[tuple[OperationReceiver, str | None, str],
             (OperationReceiver.EXPR, None, "var"): False,
             (OperationReceiver.EXPR, None, "arg_max"): False,
             (OperationReceiver.EXPR, None, "arg_min"): False,
+            (OperationReceiver.EXPR, None, "approx_quantile"): False,
             (OperationReceiver.FRAME, None, "interpolate"): False,
-            (OperationReceiver.NAMESPACE, "str", "concat"): False,
             (OperationReceiver.NAMESPACE, "str", "join"): False,
             (OperationReceiver.POLARS_FUNCTION, None, "len"): False,
-            # Opaque costly: expr map_elements, map_batches, pipe, register_plugin,
-            # rolling_map; frame collect, collect_batches, fetch, iter_rows, lazy,
-            # map_batches, partition_by, pipe, rows, sink_csv, sink_parquet, to_numpy,
-            # to_pandas, with_context.
+            # Opaque costly: expr map_elements, map_batches, pipe, pipe_with_dtype,
+            # rolling_map; frame collect, collect_batches, iter_rows, lazy, map_batches,
+            # partition_by, pipe, rows, sink_csv, sink_parquet, to_numpy, to_pandas;
+            # polars_function pipe_with_dtype, fold, reduce, cum_fold, cum_reduce.
             (OperationReceiver.EXPR, None, "map_elements"): True,
             (OperationReceiver.EXPR, None, "map_batches"): True,
             (OperationReceiver.EXPR, None, "pipe"): True,
-            (OperationReceiver.EXPR, None, "register_plugin"): True,
+            (OperationReceiver.EXPR, None, "pipe_with_dtype"): True,
             (OperationReceiver.EXPR, None, "rolling_map"): True,
             (OperationReceiver.FRAME, None, "collect"): True,
             (OperationReceiver.FRAME, None, "collect_batches"): True,
-            (OperationReceiver.FRAME, None, "fetch"): True,
             (OperationReceiver.FRAME, None, "iter_rows"): True,
             (OperationReceiver.FRAME, None, "lazy"): True,
             (OperationReceiver.FRAME, None, "map_batches"): True,
@@ -1095,7 +1161,11 @@ _RECOMPUTE_COST_DECLARATIONS: Mapping[tuple[OperationReceiver, str | None, str],
             (OperationReceiver.FRAME, None, "sink_parquet"): True,
             (OperationReceiver.FRAME, None, "to_numpy"): True,
             (OperationReceiver.FRAME, None, "to_pandas"): True,
-            (OperationReceiver.FRAME, None, "with_context"): True,
+            (OperationReceiver.POLARS_FUNCTION, None, "pipe_with_dtype"): True,
+            (OperationReceiver.POLARS_FUNCTION, None, "fold"): True,
+            (OperationReceiver.POLARS_FUNCTION, None, "reduce"): True,
+            (OperationReceiver.POLARS_FUNCTION, None, "cum_fold"): True,
+            (OperationReceiver.POLARS_FUNCTION, None, "cum_reduce"): True,
             # Opaque cheap: polars_function all, exclude, first, last, nth, selectors.
             (OperationReceiver.POLARS_FUNCTION, None, "all"): False,
             (OperationReceiver.POLARS_FUNCTION, None, "exclude"): False,

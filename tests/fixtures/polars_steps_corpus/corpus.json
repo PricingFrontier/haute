@@ -289,7 +289,7 @@
       "quotes",
       "rates"
     ],
-    "code": "scenarios = rates.rename({'region': 'scenario_region'})\ndf = quotes.select('quote_id', 'region', 'premium').join(scenarios, how='cross')\ndf = df.with_columns((pl.col('base_rate') * pl.col('factor')).round(2).alias('scenario_premium')).sort(['quote_id', 'scenario_region'])"
+    "code": "scenarios = rates.rename({'region': 'scenario_region'})\ndf = quotes.select('quote_id', 'region', 'premium').join(scenarios, how='cross', maintain_order='left_right')\ndf = df.with_columns((pl.col('base_rate') * pl.col('factor')).round(2).alias('scenario_premium')).sort(['quote_id', 'scenario_region'], maintain_order=True)"
   },
   {
     "id": "combined_quote_review_queue",

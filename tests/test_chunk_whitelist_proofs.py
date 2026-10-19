@@ -659,6 +659,10 @@ WHITELIST_PROOF_CASES: dict[str, WhitelistProofCase] = {
     "expr_is_in_literal": _expr_case(
         "r=pl.col('i').is_in([1, 2, -3])", ("expr", "is_in", "literal_collection")
     ),
+    "expr_is_in_typed_literal_list": _expr_case(
+        "r=pl.col('i').is_in(pl.Series(['1', '-3']).str.to_decimal(scale=0).implode())",
+        ("expr", "is_in", "typed_literal_list"),
+    ),
     "expr_is_infinite": _expr_case("r=pl.col('f').is_infinite()", ("expr", "is_infinite")),
     "expr_is_nan": _expr_case("r=pl.col('f').is_nan()", ("expr", "is_nan")),
     "expr_is_not_nan": _expr_case("r=pl.col('f').is_not_nan()", ("expr", "is_not_nan")),

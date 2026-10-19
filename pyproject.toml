@@ -31,7 +31,7 @@ dependencies = [
     "uvicorn[standard]>=0.40.0,<0.41",
     "websockets>=16.0,<17",
     "pydantic>=2.12.5,<3",
-    "polars>=1.44.2,<2",
+    "polars>=2.0,<3",
     # Direct dependency, not just transitive: parquet metadata reads, the
     # parquet writer in _json_shred, the model scorer and _database_io all
     # import pyarrow themselves. Cap: pyarrow 25.0.0 segfaults in
@@ -266,6 +266,7 @@ xfail_strict = true
 markers = [
     "slow: marks tests as slow but still part of the default suite",
     "perf: marks benchmark-style tests excluded from default pytest runs",
+    "perf_evidence: perf measurements that inform a decision and assert none of their figures; the Performance workflow runs them, the pull-request perf job does not",
     "sandbox_strict: opts a test into the strict write-sandbox (see tests/_write_sandbox.py)",
     "meta: repo-health checks that read files rather than exercise behaviour, so their result cannot vary by interpreter; deselected from the compatibility lanes (see .github/workflows/ci.yml)",
 ]

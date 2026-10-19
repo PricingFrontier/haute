@@ -1,7 +1,8 @@
 """Node code is trusted project code; the exec guard is an accident guard (ENG-T04, F1).
 
 The 5 September 2026 review showed node text reaching the operating system
-through the injected Polars module (``pl.io.csv.functions.os``). The product
+through the injected Polars module (``pl.io.csv.functions.os``; on Polars 2,
+``pl.config.os``). The product
 decision of 6 September 2026 is that project code (node text, preambles,
 utility modules, training scripts) is trusted first-party code: it runs with
 the privileges of the process that runs haute, and haute does not contain it.
@@ -213,7 +214,7 @@ class TestNodeCodeIsTrustedProjectCode:
 
         code = (
             "df = rows.with_columns(\n"
-            f'    pl.lit(pl.io.csv.functions.os.environ["{MARKER}"]).alias("marker")\n'
+            f'    pl.lit(pl.config.os.environ["{MARKER}"]).alias("marker")\n'
             ")\n"
             f"rows.collect().write_csv({str(target)!r})\n"
         )

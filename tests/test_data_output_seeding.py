@@ -18,6 +18,7 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from haute._node_snapshots import NodeSnapshotStore
+from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
 from haute._sandbox import set_project_root
 from haute._types import PipelineGraph
 from haute.routes import pipeline as pipeline_route
@@ -214,7 +215,7 @@ def test_data_output_over_a_chunk_local_recipe_is_written_input_sliced(
 
     from haute._polars_utils import set_streaming_chunk_size
 
-    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
     set_streaming_chunk_size(40)
     write = _write(monkeypatch, graph)
 

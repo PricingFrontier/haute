@@ -51,6 +51,7 @@
                     "name": "vehicle_rated_quotes",
                     "config": {
                       "how": "left",
+                      "maintainOrder": "left_right",
                       "on": [
                         "vehicle_group"
                       ],
@@ -105,6 +106,7 @@
                     "name": "vehicle_rated_quotes",
                     "config": {
                       "how": "left",
+                      "maintainOrder": "left_right",
                       "leftOn": [
                         "vehicle_group"
                       ],

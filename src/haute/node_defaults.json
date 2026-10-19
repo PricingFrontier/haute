@@ -10,7 +10,7 @@
   "externalFile": {"path": "", "fileType": "pickle", "steps": []},
   "constant": {"values": [{"name": "constant_1", "value": "1.0"}]},
   "polars": {"steps": []},
-  "edgeJoin": {"how": "left", "suffix": "_right"},
+  "edgeJoin": {"how": "left", "suffix": "_right", "maintainOrder": "left_right"},
   "banding": {"factors": [{"banding": "breakpoints", "column": "", "outputColumn": "", "rules": [], "default": null}]},
   "scenarioExpander": {"stepCount": 21, "steps": []},
   "ratingStep": {"tables": [{"factors": [], "outputColumn": "", "entries": []}], "combinedOutputs": [], "steps": []},

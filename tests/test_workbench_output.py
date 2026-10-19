@@ -26,7 +26,7 @@ from haute._builders import _build_node_fn
 from haute._execution_admission import create_admitted_execution_context
 from haute._node_apply import assemble_workbench_output_from_config
 from haute._output_assembler import render_output_document
-from haute._polars_utils import execution_collect
+from haute._polars_utils import CollectEngine, execution_collect
 from haute._sandbox import _get_project_root, set_project_root
 from haute._source_cache import new_staging_token
 from haute._types import (
@@ -198,7 +198,9 @@ def _response(graph: PipelineGraph) -> list[Any]:
 
 def _collected(frame: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame:
     # Collected as Haute collects, so a failure inside a table's scan is raised as itself.
-    return execution_collect(frame) if isinstance(frame, pl.LazyFrame) else frame
+    return (
+        execution_collect(frame, engine="streaming") if isinstance(frame, pl.LazyFrame) else frame
+    )
 
 
 def test_a_workbench_output_fills_its_tables_from_their_frames(project: Path) -> None:
@@ -760,11 +762,38 @@ def test_a_workbench_outputs_tables_are_read_lazily() -> None:
     assert list(tables["pricing"].collect_schema()) == ["premium", "limit", "referral"]
     assert list(as_response(tables).collect_schema()) == ["pricing", "item_prices"]
     with pytest.raises(WorkbenchOutputError, match="has 2 rows"):
-        execution_collect(tables["pricing"])
+        execution_collect(tables["pricing"], engine="streaming")
     with pytest.raises(WorkbenchOutputError, match="runs only where its connections are known"):
         assemble_workbench_output_from_config(
             pricing, items, config={"tables": copy.deepcopy(_RESPONSE_TABLES)}
         )
+
+
+@pytest.mark.parametrize("engine", ["streaming", "in-memory"])
+def test_a_workbench_outputs_tables_read_the_same_on_either_engine(engine: CollectEngine) -> None:
+    """A table is read inside a Python scan, which the two engines run on different threads."""
+    pricing = pl.LazyFrame({"premium": [1.0], "limit": [1], "referral": ["a"]})
+    items = pl.LazyFrame({"item_id": ["A", "B"], "premium": [3.0, 4.0]})
+    tables = assemble_workbench_output_from_config(
+        pricing,
+        items,
+        config={"tables": copy.deepcopy(_RESPONSE_TABLES)},
+        ports=["pricing", "item_prices"],
+    )
+
+    pricing_rows = execution_collect(tables["pricing"], engine=engine)
+    response = execution_collect(as_response(tables), engine=engine)
+
+    assert pricing_rows.to_dicts() == [{"premium": 1.0, "limit": 1.0, "referral": "a"}]
+    assert response.to_dicts() == [
+        {
+            "pricing": {"premium": 1.0, "limit": 1.0, "referral": "a"},
+            "item_prices": [
+                {"item_id": "A", "premium": 3.0},
+                {"item_id": "B", "premium": 4.0},
+            ],
+        }
+    ]
 
 
 def test_the_editor_holds_the_same_response_nodes() -> None:

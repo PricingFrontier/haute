@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import datetime as dt
 import json
 import pickle
 import re
@@ -11,7 +12,9 @@ import subprocess
 import sys
 import textwrap
 import time
+import warnings
 from collections.abc import Iterator
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -32,9 +35,13 @@ from haute._flatten import flatten_graph
 from haute._graph_utils import _sanitize_func_name as _sanitize_label
 from haute._polars_io_registry import validate_data_input_config
 from haute._polars_steps import (
+    CAST_DTYPES,
+    CAST_FAMILIES,
+    CAST_REFUSALS,
     PolarsStepError,
     RenderedSteps,
     SteppedSurface,
+    cast_family,
     is_stepped_config,
     rename_step_inputs,
     render_polars_steps,
@@ -146,6 +153,7 @@ GOLDEN_STEPS: list[dict[str, Any]] = [
         "join",
         input="rates",
         how="left",
+        maintainOrder="left_right",
         leftOn=["region"],
         rightOn=["region"],
         suffix="_rate",
@@ -181,6 +189,7 @@ GOLDEN_CODE = "\n".join(
         '    right_on=["region"],',
         '    how="left",',
         '    suffix="_rate",',
+        '    maintain_order="left_right",',
         ")",
         'df = df.group_by("band", maintain_order=True).agg(',
         '    pl.col("gross").sum().alias("gross_total"),',
@@ -191,7 +200,7 @@ GOLDEN_CODE = "\n".join(
 #: Each golden step's inclusive line range: a statement that would pass 88
 #: columns in the node body (84 at column 0) is laid out over several lines,
 #: as ``ruff format`` lays it out there.
-GOLDEN_STEP_LINES = ((1, 1), (2, 2), (3, 5), (6, 6), (7, 12), (13, 19), (20, 23))
+GOLDEN_STEP_LINES = ((1, 1), (2, 2), (3, 5), (6, 6), (7, 12), (13, 20), (21, 24))
 
 
 def step_text(rendered: RenderedSteps, index: int) -> str:
@@ -254,6 +263,7 @@ LONG_STEPS: list[dict[str, Any]] = [
         "join",
         input="rates",
         how="left",
+        maintainOrder="left_right",
         leftOn=["region"],
         rightOn=["region"],
         suffix="_rates",
@@ -284,6 +294,7 @@ LONG_CODE = "\n".join(
         '    right_on=["region"],',
         '    how="left",',
         '    suffix="_rates",',
+        '    maintain_order="left_right",',
         ")",
         "df = df.head(5)",
     ]
@@ -293,7 +304,7 @@ LONG_CODE = "\n".join(
 def test_long_statements_break_one_argument_per_line() -> None:
     rendered = render_polars_steps(LONG_STEPS, ["quotes", "rates"], start="input")
     assert rendered.code == LONG_CODE
-    assert rendered.step_lines == ((1, 1), (2, 11), (12, 15), (16, 22), (23, 23))
+    assert rendered.step_lines == ((1, 1), (2, 11), (12, 15), (16, 23), (24, 24))
     # The node body holds 88 columns four columns in: 84 at column 0 still fits,
     # 85 breaks.
     fits = f'df = df.filter(pl.col("{"a" * 54}") > 1)'
@@ -464,7 +475,7 @@ def test_free_code_validation_never_executes_the_snippet(tmp_path: Path) -> None
         ),
         (
             step("x", "sort", keys=[{"column": "a", "descending": True}], nullsLast=True),
-            'df = df.sort("a", descending=True, nulls_last=True)',
+            'df = df.sort("a", descending=True, nulls_last=True, maintain_order=True)',
         ),
         (
             step("x", "unique", columns=[], keep="any"),
@@ -475,8 +486,17 @@ def test_free_code_validation_never_executes_the_snippet(tmp_path: Path) -> None
             'df = df.unique(subset=["a"], keep="last", maintain_order=True)',
         ),
         (
-            step("x", "join", input="rates", how="cross", leftOn=[], rightOn=[], suffix="_r"),
-            'df = df.join(rates, how="cross", suffix="_r")',
+            step(
+                "x",
+                "join",
+                input="rates",
+                how="cross",
+                maintainOrder="left_right",
+                leftOn=[],
+                rightOn=[],
+                suffix="_r",
+            ),
+            'df = df.join(rates, how="cross", suffix="_r", maintain_order="left_right")',
         ),
         (
             step("x", "concat", inputs=["rates"], how="diagonal"),
@@ -496,9 +516,32 @@ def test_free_code_validation_never_executes_the_snippet(tmp_path: Path) -> None
                 "x",
                 "filter",
                 match="any",
-                conditions=[cond("a", "is_null"), cond("b", "not_in", values=[num(1), num(2)])],
+                conditions=[
+                    cond("a", "is_null"),
+                    cond("b", "not_in", values=[num(1), num(2)], numberType="integer"),
+                ],
             ),
             'df = df.filter(pl.col("a").is_null() | ~pl.col("b").is_in([1, 2]))',
+        ),
+        (
+            step(
+                "x",
+                "filter",
+                match="all",
+                conditions=[cond("p", "is_in", values=[num(100), num(300)], numberType="float")],
+            ),
+            'df = df.filter(pl.col("p").is_in([100.0, 300.0]))',
+        ),
+        (
+            step(
+                "x",
+                "filter",
+                match="all",
+                conditions=[cond("m", "is_in", values=[num(1.5), num(2)], numberType="decimal")],
+            ),
+            "df = df.filter(\n"
+            '    pl.col("m").is_in(pl.Series(["1.5", "2"]).str.to_decimal(scale=1).implode())\n'
+            ")",
         ),
         (
             step(
@@ -545,7 +588,9 @@ def test_free_code_validation_never_executes_the_snippet(tmp_path: Path) -> None
                 ],
             ),
             "df = df.filter(\n"
-            '    pl.col("d").is_in(pl.Series(["2026-01-01", "2026-02-01"]).str.to_date())\n'
+            '    pl.col("d").is_in(\n'
+            '        pl.Series(["2026-01-01", "2026-02-01"]).str.to_date().implode()\n'
+            "    )\n"
             ")",
         ),
         (
@@ -738,7 +783,16 @@ INVALID_PAYLOADS: list[tuple[str, list[Any] | object, int | None, str]] = [
         "cross join with keys",
         [
             source(),
-            step("j", "join", input="rates", how="cross", leftOn=["a"], rightOn=[], suffix="_r"),
+            step(
+                "j",
+                "join",
+                input="rates",
+                how="cross",
+                maintainOrder="left_right",
+                leftOn=["a"],
+                rightOn=[],
+                suffix="_r",
+            ),
         ],
         1,
         "no key columns",
@@ -747,7 +801,16 @@ INVALID_PAYLOADS: list[tuple[str, list[Any] | object, int | None, str]] = [
         "unequal keys",
         [
             source(),
-            step("j", "join", input="rates", how="left", leftOn=["a"], rightOn=[], suffix="_r"),
+            step(
+                "j",
+                "join",
+                input="rates",
+                how="left",
+                maintainOrder="left_right",
+                leftOn=["a"],
+                rightOn=[],
+                suffix="_r",
+            ),
         ],
         1,
         "same length",
@@ -842,7 +905,16 @@ def test_validate_polars_steps_skips_input_name_checks() -> None:
 def test_rename_step_inputs_rewrites_every_reference_and_rejects_collisions() -> None:
     steps = [
         source("a"),
-        step("j", "join", input="b", how="left", leftOn=["k"], rightOn=["k"], suffix="_b"),
+        step(
+            "j",
+            "join",
+            input="b",
+            how="left",
+            maintainOrder="left_right",
+            leftOn=["k"],
+            rightOn=["k"],
+            suffix="_b",
+        ),
         step("c", "concat", inputs=["b", "d"], how="vertical"),
     ]
     renamed = rename_step_inputs(steps, {"a": "A", "b": "B"})
@@ -1248,6 +1320,7 @@ def test_window_quantile_renders() -> None:
                 "join",
                 input="rates",
                 how="cross",
+                maintainOrder="left_right",
                 leftOn=[],
                 rightOn=[],
                 suffix="_r",
@@ -1262,6 +1335,7 @@ def test_window_quantile_renders() -> None:
                 "join",
                 input="rates",
                 how="left",
+                maintainOrder="left_right",
                 leftOn=["r"],
                 rightOn=["r"],
                 suffix="_r",
@@ -1311,6 +1385,7 @@ def test_window_quantile_renders() -> None:
                 "join",
                 input="rates",
                 how="semi",
+                maintainOrder="left",
                 leftOn=["region"],
                 rightOn=["region"],
                 suffix="_r",
@@ -1325,6 +1400,7 @@ def test_window_quantile_renders() -> None:
                 "join",
                 input="rates",
                 how="cross",
+                maintainOrder="left_right",
                 leftOn=[],
                 rightOn=[],
                 suffix="_r",
@@ -2659,6 +2735,7 @@ def test_join_validation_fails_loudly_on_duplicate_keys(tmp_path: Path) -> None:
                 "join",
                 input="dup",
                 how="left",
+                maintainOrder="left_right",
                 leftOn=["region"],
                 rightOn=["region"],
                 suffix="_r",
@@ -3116,7 +3193,7 @@ def test_a_plan_error_is_located_on_the_step_that_caused_it(
 
     # Only the line is added: without the locator the run reports the same message.
     _preview_cache.clear()
-    monkeypatch.setattr(_graph_walker, "_located_step_line", lambda *_args: None)
+    monkeypatch.setattr(_graph_walker, "_located_step", lambda *_args: None)
     unlocated = execute_graph(graph, target_node_id="t", execution_context=_capped_context())["t"]
     assert unlocated.error == located.error
     assert unlocated.error_line is None
@@ -3129,17 +3206,23 @@ def test_the_step_locator_resolves_the_whole_plan_before_any_prefix(
     _name, fn, _is_source = _build_node_fn(
         _stepped("t", MISSING_COLUMN_STEPS), source_names=["quotes"], source_ids=["quotes"]
     )
-    assert fn.failed_step_line(frame) == 7
-    # A strict cast meeting a bad value fails only on data: its plan resolves.
+    located = fn.failed_step(frame)
+    assert located is not None
+    assert (located.line, located.remedy) == (7, None)
+    # A strict cast meeting a bad value fails only on data: its plan resolves, and each
+    # step's schema shows nothing Polars 2 refuses, so no step is named.
     cast = [source(), step("c", "cast", casts=[{"column": "region", "dtype": "Int64"}])]
     _name, fn, _is_source = _build_node_fn(
         _stepped("c", cast), source_names=["quotes"], source_ids=["quotes"]
     )
     replays["rendered"].clear()
     replays["run"].clear()
-    assert fn.failed_step_line(frame) is None
-    assert replays["rendered"] == [len(cast)]
-    assert replays["run"] == [render_polars_steps(cast, start="input").code]
+    assert fn.failed_step(frame) is None
+    assert replays["rendered"] == [len(cast), 1]
+    assert replays["run"] == [
+        render_polars_steps(cast, start="input").code,
+        render_polars_steps(cast[:1], start="input").code,
+    ]
 
 
 def test_a_strict_cast_data_error_keeps_no_line(
@@ -3152,7 +3235,8 @@ def test_a_strict_cast_data_error_keeps_no_line(
     assert result.status == "error"
     assert "region" in str(result.error)
     assert result.error_line is None
-    assert _no_prefix_ran(replays, steps, render_polars_steps(steps, start="input").code)
+    # A data error: the locator finds nothing Polars 2 refuses, so the message is its own.
+    assert str(result.error).startswith("conversion from `str` to `i64` failed")
 
 
 def test_a_free_code_step_keeps_the_failure_unlocated(
@@ -3334,7 +3418,8 @@ EARLIER_GOLDEN_CODE = "\n".join(
         "df = df.with_columns((pl.col('premium') * ipt_rate).alias('gross'))",
         "df = df.with_columns((pl.when((pl.col('gross') >= 500)).then(pl.lit('high'))"
         ".otherwise(pl.lit('low'))).alias('band'))",
-        "df = df.join(rates, left_on=['region'], right_on=['region'], how='left', suffix='_rate')",
+        "df = df.join(rates, left_on=['region'], right_on=['region'], how='left', suffix='_rate', "
+        "maintain_order='left_right')",
         "df = df.group_by(['band'], maintain_order=True).agg([pl.col('gross').sum()"
         ".alias('gross_total'), pl.len().alias('rows')])",
     ]
@@ -3358,6 +3443,35 @@ def test_parse_keeps_steps_saved_by_an_earlier_renderer(tmp_path: Path) -> None:
     assert node.data.config["steps"] == GOLDEN_STEPS
     assert "_steps_discarded" not in node.data.config
     assert node.data.config["code"] == GOLDEN_CODE
+
+
+def test_parse_reads_a_sort_saved_before_sorts_kept_their_ties_order_as_free_code(
+    tmp_path: Path,
+) -> None:
+    """Canonical only: a body whose sort predates the stable sort is not the steps' body."""
+    quotes, rates = _frames(tmp_path)
+    steps = [
+        source(),
+        step("o", "sort", keys=[{"column": "premium", "descending": True}], nullsLast=False),
+    ]
+    graph = PipelineGraph(
+        nodes=[quotes, rates, _stepped("t", steps)],
+        edges=[make_edge("quotes", "t"), make_edge("rates", "t")],
+    )
+    code = graph_to_code(graph, pipeline_name="main")
+    _write_sidecars(tmp_path, graph)
+    stable = 'df = df.sort("premium", descending=True, maintain_order=True)'
+    assert stable in code
+    unordered = code.replace(stable, 'df = df.sort("premium", descending=True)')
+
+    parsed = parse_pipeline_source(unordered, _base_dir=tmp_path)
+    node = next(n for n in parsed.nodes if n.id == "t")
+    assert "steps" not in node.data.config
+    assert node.data.config["_steps_discarded"] == (
+        "Steps were discarded because the function body no longer matches the rendered steps."
+    )
+    assert 'df = df.sort("premium", descending=True)' in node.data.config["code"]
+    assert stable not in node.data.config["code"]
 
 
 @pytest.mark.parametrize(
@@ -4169,7 +4283,14 @@ def test_frame_start_renders_without_a_source_step() -> None:
     assert refused.value.message == "This node starts from df; remove the start step."
 
     join = step(
-        "j", "join", input="rates", how="inner", leftOn=["region"], rightOn=["region"], suffix="_r"
+        "j",
+        "join",
+        input="rates",
+        how="inner",
+        maintainOrder="left_right",
+        leftOn=["region"],
+        rightOn=["region"],
+        suffix="_r",
     )
     with pytest.raises(PolarsStepError, match="Unknown input 'rates'; connected inputs: none"):
         render_polars_steps([join], [], start="frame")
@@ -4225,7 +4346,14 @@ def test_node_data_materialises_data_input_steps() -> None:
     # A Data Input has no eligible input names, so a reference to one is an
     # error at materialisation, not only at build time.
     join = step(
-        "j", "join", input="rates", how="inner", leftOn=["region"], rightOn=["region"], suffix="_r"
+        "j",
+        "join",
+        input="rates",
+        how="inner",
+        maintainOrder="left_right",
+        leftOn=["region"],
+        rightOn=["region"],
+        suffix="_r",
     )
     joined = node([join])
     assert joined.data.config["code"] == ""
@@ -4301,7 +4429,14 @@ def test_data_input_steps_execute_and_round_trip(tmp_path: Path) -> None:
 def test_data_input_incomplete_steps_fail_on_every_path(tmp_path: Path) -> None:
     quotes, _rates = _frames(tmp_path)
     join = step(
-        "j", "join", input="rates", how="inner", leftOn=["region"], rightOn=["region"], suffix="_r"
+        "j",
+        "join",
+        input="rates",
+        how="inner",
+        maintainOrder="left_right",
+        leftOn=["region"],
+        rightOn=["region"],
+        suffix="_r",
     )
     unknown = _stepped_input(quotes, [join])
     # Materialisation already refuses the reference (no eligible inputs).
@@ -4663,7 +4798,14 @@ def _reparsed(tmp_path: Path, graph: PipelineGraph, node_id: str) -> tuple[str, 
 def test_external_file_steps_reach_the_other_inputs_and_obj(tmp_path: Path) -> None:
     quotes, rates = _frames(tmp_path)
     join = step(
-        "j", "join", input="rates", how="inner", leftOn=["region"], rightOn=["region"], suffix="_r"
+        "j",
+        "join",
+        input="rates",
+        how="inner",
+        maintainOrder="left_right",
+        leftOn=["region"],
+        rightOn=["region"],
+        suffix="_r",
     )
     steps = [join, step("l", "limit", n=2)]
     graph = PipelineGraph(
@@ -4707,6 +4849,7 @@ def test_external_file_unknown_input_and_input_mapping_fail_loudly(tmp_path: Pat
         "join",
         input="policies",
         how="inner",
+        maintainOrder="left_right",
         leftOn=["region"],
         rightOn=["region"],
         suffix="_r",
@@ -4740,7 +4883,14 @@ def test_instance_of_stepped_external_file_executes_with_mapping(tmp_path: Path)
     pl.DataFrame({"premium": [100.0], "region": ["north"]}).write_parquet(alt_q)
     pl.DataFrame({"region": ["north"], "rate": [5.0]}).write_parquet(alt_r)
     join = step(
-        "j", "join", input="rates", how="inner", leftOn=["region"], rightOn=["region"], suffix="_r"
+        "j",
+        "join",
+        input="rates",
+        how="inner",
+        maintainOrder="left_right",
+        leftOn=["region"],
+        rightOn=["region"],
+        suffix="_r",
     )
     original = _external_file(tmp_path, [join, step("l", "limit", n=1)])
     instance = GraphNode(
@@ -4802,7 +4952,16 @@ def test_flatten_rewrites_a_stepped_external_file_input() -> None:
             config={"definitionId": "definition_scoring", "alias": "score"},
         ),
     )
-    join = step("j", "join", input="results", how="inner", leftOn=["k"], rightOn=["k"], suffix="_r")
+    join = step(
+        "j",
+        "join",
+        input="results",
+        how="inner",
+        maintainOrder="left_right",
+        leftOn=["k"],
+        rightOn=["k"],
+        suffix="_r",
+    )
     consumer = GraphNode(
         id="consumer",
         data=NodeData(
@@ -5852,3 +6011,317 @@ def test_save_refuses_a_step_constant_of_the_wrong_type(project_root: Path) -> N
     assert refused.value.detail == (
         "Node 't', step 3: Global constant 'floor' is float; this value takes integer."
     )
+
+
+# ---------------------------------------------------------------------------
+# Polars 2: text dates, typed membership, and what Polars 2 refuses (PL2-06)
+# ---------------------------------------------------------------------------
+
+
+def _run_steps(steps: list[dict[str, Any]], frame: pl.DataFrame) -> pl.DataFrame:
+    """Render *steps* over an input named ``quotes`` and run the code on *frame*."""
+    code = render_polars_steps(steps, ["quotes"], start="input").code
+    scope: dict[str, Any] = {"pl": pl, "quotes": frame.lazy()}
+    exec(code, scope)
+    result = scope["df"]
+    assert isinstance(result, pl.LazyFrame)
+    return result.collect(engine="streaming")
+
+
+def _members(*values: float) -> list[dict[str, Any]]:
+    return [num(value) for value in values]
+
+
+def _filter(*conditions: dict[str, Any]) -> list[dict[str, Any]]:
+    return [source(), step("f", "filter", match="all", conditions=list(conditions))]
+
+
+def test_change_types_parses_text_dates_with_their_format() -> None:
+    steps = [
+        source(),
+        step(
+            "c",
+            "cast",
+            casts=[
+                {"column": "start", "dtype": "Date", "format": "%d/%m/%Y"},
+                {"column": "stamp", "dtype": "Datetime", "format": "%Y-%m-%d %H:%M"},
+            ],
+        ),
+    ]
+    code = render_polars_steps(steps, ["quotes"], start="input").code
+
+    assert 'pl.col("start").str.to_date("%d/%m/%Y")' in code
+    assert 'pl.col("stamp").str.to_datetime("%Y-%m-%d %H:%M")' in code
+    out = _run_steps(steps, pl.DataFrame({"start": ["02/01/2024"], "stamp": ["2024-01-02 03:04"]}))
+    assert out["start"].to_list() == [dt.date(2024, 1, 2)]
+    assert out["stamp"].to_list() == [dt.datetime(2024, 1, 2, 3, 4)]
+
+
+def test_formulas_parse_text_dates_strictly_or_to_null() -> None:
+    frame = pl.DataFrame({"start": ["2024-01-02", "not a date"]})
+    lenient = [
+        source(),
+        step("w", "with_column", name="d", expr=fn("try_to_date", col("start"), text("%Y-%m-%d"))),
+        step(
+            "t", "with_column", name="t", expr=fn("try_to_datetime", col("start"), text("%Y-%m-%d"))
+        ),
+    ]
+    out = _run_steps(lenient, frame)
+    assert out["d"].to_list() == [dt.date(2024, 1, 2), None]
+    assert out["t"].to_list() == [dt.datetime(2024, 1, 2), None]
+
+    strict = [
+        source(),
+        step("w", "with_column", name="d", expr=fn("to_date", col("start"), text("%Y-%m-%d"))),
+    ]
+    with pytest.raises(pl.exceptions.PolarsError):
+        _run_steps(strict, frame)
+    assert _run_steps(strict, frame.head(1))["d"].to_list() == [dt.date(2024, 1, 2)]
+
+
+@pytest.mark.parametrize(
+    ("steps", "message"),
+    [
+        (
+            [
+                source(),
+                step("c", "cast", casts=[{"column": "a", "dtype": "Int64", "format": "%Y"}]),
+            ],
+            "only a Date or Datetime cast parses with",
+        ),
+        (
+            [
+                source(),
+                step("c", "cast", casts=[{"column": "a", "dtype": "Date", "format": "Y-m-d"}]),
+            ],
+            "must be a date format such as '%Y-%m-%d'",
+        ),
+        (
+            [
+                source(),
+                step("w", "with_column", name="d", expr=fn("to_date", col("a"), text("2024"))),
+            ],
+            "must be a date format such as '%Y-%m-%d'",
+        ),
+        (_filter(cond("a", "is_in", values=_members(1))), "number type must be one of"),
+        (
+            _filter(cond("a", "is_in", values=_members(1, 2.5), numberType="integer")),
+            "must be whole numbers to match a whole-number column",
+        ),
+        (
+            _filter(cond("a", "is_in", values=[text("x")], numberType="float")),
+            "are not numbers, so they take no number type",
+        ),
+        (
+            _filter(cond("a", "gt", value=num(1), numberType="float")),
+            "takes no number type",
+        ),
+    ],
+    ids=[
+        "format-on-a-number",
+        "format-without-a-directive",
+        "parse-function-without-a-directive",
+        "numbers-without-their-type",
+        "fraction-for-whole-numbers",
+        "number-type-on-text",
+        "number-type-on-a-comparison",
+    ],
+)
+def test_steps_polars_2_cannot_run_as_written_are_refused(
+    steps: list[dict[str, Any]], message: str
+) -> None:
+    with pytest.raises(PolarsStepError, match=re.escape(message)):
+        render_polars_steps(steps, ["quotes"], start="input")
+
+
+@pytest.mark.parametrize(
+    ("dtype", "number_type", "data", "members", "kept"),
+    [
+        (pl.Int8, "integer", [1, 100, 3], (100, 3), [100, 3]),
+        (pl.UInt16, "integer", [1, 100, 3], (100, 3), [100, 3]),
+        (pl.Int64, "integer", [1, 100, 3], (100, 3.0), [100, 3]),
+        (pl.Float32, "float", [1.0, 100.0, 2.5], (100, 2.5), [100.0, 2.5]),
+        (pl.Float64, "float", [1.0, 100.0, 2.5], (100, 2.5), [100.0, 2.5]),
+        (pl.Decimal(10, 2), "decimal", ["1.00", "100.00", "2.50"], (100, 2.5), ["100.00", "2.50"]),
+        (
+            pl.Decimal(38, 3),
+            "decimal",
+            ["1.000", "100.000", "2.500"],
+            (100, 2.5),
+            ["100.000", "2.500"],
+        ),
+    ],
+    ids=["Int8", "UInt16", "Int64", "Float32", "Float64", "Decimal(10,2)", "Decimal(38,3)"],
+)
+def test_a_numeric_membership_matches_by_value_on_every_width(
+    dtype: pl.DataType,
+    number_type: str,
+    data: list[Any],
+    members: tuple[float, ...],
+    kept: list[Any],
+) -> None:
+    if isinstance(dtype, pl.Decimal):
+        column = pl.Series("x", data).str.to_decimal(scale=dtype.scale).cast(dtype)
+        expected: list[Any] = [Decimal(value) for value in kept]
+    else:
+        column = pl.Series("x", data, dtype=dtype)
+        expected = kept
+    frame = pl.DataFrame({"x": column})
+
+    def kept_by(operator: str) -> list[Any]:
+        condition = cond("x", operator, values=_members(*members), numberType=number_type)
+        return _run_steps(_filter(condition), frame)["x"].to_list()
+
+    assert kept_by("is_in") == expected
+    assert kept_by("not_in") == [value for value in frame["x"].to_list() if value not in expected]
+
+
+def test_decimal_members_stay_exact() -> None:
+    column = pl.Series("x", ["0.1", "0.2", "0.3", "0.0000001"]).str.to_decimal(scale=7)
+    steps = _filter(cond("x", "is_in", values=_members(0.1, 0.3, 1e-07), numberType="decimal"))
+
+    code = render_polars_steps(steps, ["quotes"], start="input").code
+    assert 'pl.Series(["0.1", "0.3", "0.0000001"]).str.to_decimal(scale=7).implode()' in code
+    assert _run_steps(steps, pl.DataFrame({"x": column}))["x"].to_list() == [
+        Decimal("0.1000000"),
+        Decimal("0.3000000"),
+        Decimal("0.0000001"),
+    ]
+
+
+def test_date_members_pass_as_one_list_without_a_warning() -> None:
+    values = [{"kind": "literal", "type": "date", "value": "2024-01-01"}]
+    frame = pl.DataFrame({"d": [dt.date(2024, 1, 1), dt.date(2024, 2, 1)]})
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        out = _run_steps(_filter(cond("d", "is_in", values=values)), frame)
+
+    assert out["d"].to_list() == [dt.date(2024, 1, 1)]
+
+
+def test_the_cast_table_is_what_polars_refuses() -> None:
+    samples = {
+        "integer": pl.Series([1], dtype=pl.Int32),
+        "float": pl.Series([1.0], dtype=pl.Float32),
+        "decimal": pl.Series([Decimal("1.00")], dtype=pl.Decimal(10, 2)),
+        "boolean": pl.Series([True]),
+        "text": pl.Series(["1"]),
+        "category": pl.Series(["1"], dtype=pl.Categorical),
+        "date": pl.Series([dt.date(2024, 1, 2)]),
+        "datetime": pl.Series([dt.datetime(2024, 1, 2, 3)]),
+        "duration": pl.Series([dt.timedelta(days=1)]),
+        "time": pl.Series([dt.time(3)]),
+        "binary": pl.Series([b"1"]),
+        "null": pl.Series([None], dtype=pl.Null),
+    }
+    assert tuple(samples) == CAST_FAMILIES
+    assert cast_family(pl.Enum(["1"])) == "category"
+    assert cast_family(pl.List(pl.Int64)) is None
+    for family, series in samples.items():
+        assert cast_family(series.dtype) == family
+        refused = set()
+        for target in CAST_DTYPES:
+            try:
+                pl.DataFrame({"x": series}).select(
+                    pl.col("x").cast(getattr(pl, target), strict=False)
+                )
+            except pl.exceptions.PolarsError:
+                refused.add(target)
+        assert refused == CAST_REFUSALS[family], family
+
+
+@pytest.mark.parametrize(
+    ("steps", "frame", "remedy"),
+    [
+        (
+            [source(), step("c", "cast", casts=[{"column": "start", "dtype": "Date"}])],
+            pl.LazyFrame({"start": ["2024-01-02"]}),
+            "'start' is text, which Polars 2 does not cast to Date: give the Change types "
+            "entry the Format its dates are written in.",
+        ),
+        (
+            [source(), step("c", "cast", casts=[{"column": "band", "dtype": "Int64"}])],
+            pl.LazyFrame({"band": pl.Series(["1"], dtype=pl.Categorical)}),
+            "'band' is a category, which Polars 2 casts only to text: change it to String "
+            "first, then to Int64.",
+        ),
+        (
+            [
+                source(),
+                step("w", "with_column", name="d", expr=fn("try_cast", col("start"), text("Date"))),
+            ],
+            pl.LazyFrame({"start": ["2024-01-02"]}),
+            "'start' is text, which Polars 2 does not cast to Date: parse it with "
+            "try_to_date(start, '%Y-%m-%d'), giving the format its dates are written in.",
+        ),
+        (
+            [
+                source(),
+                step(
+                    "g",
+                    "group_by",
+                    keys=["k"],
+                    aggregations=[{"column": "wait", "agg": "std", "name": "spread"}],
+                ),
+            ],
+            # Two rows: Polars answers one value with null before checking its type.
+            pl.LazyFrame({"k": ["a", "a"], "wait": [dt.timedelta(days=1), dt.timedelta(days=3)]}),
+            "std takes numbers, and 'wait' is a duration, which Polars 2 refuses: turn it "
+            "into days first, as total_days(wait).",
+        ),
+    ],
+    ids=["text-to-date", "category-to-number", "formula-try-cast-to-date", "std-of-a-duration"],
+)
+def test_a_refusal_polars_2_makes_only_on_rows_names_its_step(
+    steps: list[dict[str, Any]], frame: pl.LazyFrame, remedy: str
+) -> None:
+    rendered = render_polars_steps(steps, ["quotes"], start="input")
+    _name, transform, _is_source = _build_node_fn(
+        _stepped("t", steps), source_names=["quotes"], source_ids=["quotes"]
+    )
+    # The plan resolves: Polars refuses only once rows arrive.
+    transform(frame).collect_schema()
+    with pytest.raises(pl.exceptions.PolarsError):
+        transform(frame).collect(engine="streaming")
+
+    located = transform.failed_step(frame)
+
+    assert located is not None
+    assert located.line == rendered.step_lines[1][0]
+    assert located.remedy == remedy
+
+
+def test_a_failed_run_starts_with_what_to_change(tmp_path: Path) -> None:
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"start": ["2024-01-02"], "premium": [1.0]}).write_parquet(path)
+    quotes = _ready_source("quotes", path)
+    steps = [
+        source(),
+        step("l", "limit", n=5),
+        step("c", "cast", casts=[{"column": "start", "dtype": "Date"}]),
+    ]
+    graph = PipelineGraph(nodes=[quotes, _stepped("t", steps)], edges=[make_edge("quotes", "t")])
+
+    result = execute_graph(graph, target_node_id="t", execution_context=_capped_context())["t"]
+
+    assert result.status == "error"
+    first, rest = str(result.error).split("\n", 1)
+    assert first.startswith("'start' is text, which Polars 2 does not cast to Date")
+    assert "casting from string to date is not supported" in rest
+    assert result.error_line == render_polars_steps(steps, start="input").step_lines[2][0]
+
+
+def test_a_membership_whose_column_changes_kind_fails_naming_its_step(tmp_path: Path) -> None:
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"premium": [100.0, 2.5]}).write_parquet(path)
+    quotes = _ready_source("quotes", path)
+    # Recorded for whole numbers, the column is now a float column.
+    steps = _filter(cond("premium", "is_in", values=_members(100), numberType="integer"))
+    graph = PipelineGraph(nodes=[quotes, _stepped("t", steps)], edges=[make_edge("quotes", "t")])
+
+    result = execute_graph(graph, target_node_id="t", execution_context=_capped_context())["t"]
+
+    assert result.status == "error"
+    assert "'is_in' cannot check for Float64 values in List(Int64) data" in str(result.error)
+    assert result.error_line == render_polars_steps(steps, start="input").step_lines[1][0]

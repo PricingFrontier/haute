@@ -45,7 +45,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
-from haute._polars_utils import bounded_sink, streaming_collect
+from haute._polars_utils import bounded_sink, execution_collect, streaming_collect
 from haute._ram_estimate import decoded_frame_row_width_bytes, estimate_choice_query_peak_bytes
 from haute.routes import _optimiser_artifacts
 from haute.routes._job_store import ArtifactHandleUnavailableError, JobStore
@@ -224,9 +224,10 @@ def write_quote_analysis(
                 .unique()
                 .select(pl.col(quote_id).cast(pl.String))
             )
-            table = solved.join(reduced, on=quote_id, how="left").with_columns(
-                pl.col(ANALYSIS_ROW_PRESENT_COLUMN).fill_null(False)
-            )
+            # A table keyed by quote id, its rows in no order (a group-by built it).
+            table = solved.join(
+                reduced, on=quote_id, how="left", maintain_order="none"
+            ).with_columns(pl.col(ANALYSIS_ROW_PRESENT_COLUMN).fill_null(False))
         bounded_sink(
             table.select(quote_id, *analysis_columns, ANALYSIS_ROW_PRESENT_COLUMN),
             handle["path"],
@@ -632,7 +633,7 @@ class ScenarioHistogram:
             schema={"optimal_step": pl.Int32, "scenario_value": pl.Float64},
         )
         rows = frames.collect(
-            grid.join(per_step, on="optimal_step", how="left")
+            grid.join(per_step, on="optimal_step", how="left", maintain_order="none")
             .with_columns(pl.col(counted_columns).fill_null(0))
             .sort("optimal_step")
         )
@@ -655,12 +656,12 @@ def histogram_of_frame(frame: pl.LazyFrame, spec: ChoiceFrameSpec) -> ChoiceQuer
     import polars as pl
 
     choice = _choice_frame(frame, spec)
-    row_count = int(choice.select(pl.len()).collect().item())
+    row_count = int(_estimate_read(choice.select(pl.len())).item())
     frames = ChoiceFrames(
         choice=choice,
         analysis=None,
         analysis_key=CHOICE_QUOTE_ID,
-        collect=lambda plan: plan.collect(),
+        collect=streaming_collect,
     )
     return ScenarioHistogram().run(frames, spec, row_count)
 
@@ -860,9 +861,18 @@ def lease_apply_frame(
         yield _optimiser_artifacts._scan_apply_result_artifact(handle)
 
 
+def _estimate_read(frame: pl.LazyFrame) -> pl.DataFrame:
+    """One of the small reads a choice query's estimate rests on (a row count, a sample).
+
+    It runs before anything is admitted; ``streaming_collect`` runs the plans the
+    estimate admits.
+    """
+    return execution_collect(frame, engine="streaming")
+
+
 def _sample_width(frame: pl.LazyFrame) -> float:
     """The decoded width of one row, from a bounded sample of the first rows."""
-    return decoded_frame_row_width_bytes(frame.head(_SAMPLE_ROWS).collect())
+    return decoded_frame_row_width_bytes(_estimate_read(frame.head(_SAMPLE_ROWS)))
 
 
 def _choice_frame(apply: pl.LazyFrame, spec: ChoiceFrameSpec) -> pl.LazyFrame:
@@ -998,7 +1008,7 @@ class ChoiceQueryService:
                     )
                 )
                 choice = _choice_frame(apply, spec)
-                row_count = int(choice.select(pl.len()).collect().item())
+                row_count = int(_estimate_read(choice.select(pl.len())).item())
                 analysis: pl.LazyFrame | None = None
                 factors: pl.LazyFrame | None = None
                 side_widths: list[float] = []

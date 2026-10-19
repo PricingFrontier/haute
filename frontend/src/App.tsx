@@ -1996,7 +1996,10 @@ function FlowEditor() {
         </div>
 
         <main className="flex-1 flex flex-col min-w-0">
-          <PipelineRecoveryBanner onSelectElement={handleSelectRecoveryElement} />
+          <PipelineRecoveryBanner
+            onSelectElement={handleSelectRecoveryElement}
+            onRemoveConnection={(target) => setPipelineRepairTarget({ ...target, action: "remove_connection" })}
+          />
           <NameViolationsBanner onSelectViolation={handleSelectNameViolation} />
           {sessionExpired && (
             <div

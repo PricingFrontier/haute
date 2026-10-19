@@ -6,6 +6,10 @@ measurement starts from a clean interpreter and a clean Polars thread pool.
 The plan is sunk through Haute's own ``bounded_sink`` — the same streaming
 entry point execution uses — so a materialising operator shows up as peak RSS
 above the streaming floor rather than as a difference in collection strategy.
+
+The process runs with spilling off, as every Haute process does. ``--spill-budget-mb``
+turns it on at that budget instead, for the spilling measurement, and records the
+most the process held in its spill folder.
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ import argparse
 import gc
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -71,6 +76,9 @@ OPERATIONS = (
     "shift_expr",
     "diff_expr",
     "pct_change_expr",
+    "bin_quantiles_expr",
+    "bin_ranks_expr",
+    "approx_quantile_expr",
 )
 
 #: Probes that certify an expression-level registry entry whose name is also
@@ -81,11 +89,10 @@ EXPRESSION_PROBES = {
     "shift_expr": "shift",
     "diff_expr": "diff",
     "pct_change_expr": "pct_change",
+    "bin_quantiles_expr": "bin_quantiles",
+    "bin_ranks_expr": "bin_ranks",
+    "approx_quantile_expr": "approx_quantile",
 }
-
-#: Registered spellings that are the same operation as another registered name,
-#: so one measurement certifies both.
-ALIASES = {"groupby": "group_by", "melt": "unpivot"}
 
 #: Operations whose plan is two columns wide, and whose streaming ceiling is
 #: therefore a narrow control rather than the full-width passthrough.
@@ -180,6 +187,12 @@ def build_plan(operation: str, fact_path: Path, dim_path: Path, multi_path: Path
         return fact.with_columns(pl.col("v1").diff().alias("v1_diff"))
     if operation == "pct_change_expr":
         return fact.with_columns(pl.col("v1").pct_change().alias("v1_pct_change"))
+    if operation == "bin_quantiles_expr":
+        return fact.with_columns(pl.col("v1").bin_quantiles(10, labels=False).alias("v1_decile"))
+    if operation == "bin_ranks_expr":
+        return fact.with_columns(pl.col("v1").bin_ranks(10, labels=False).alias("v1_rank_band"))
+    if operation == "approx_quantile_expr":
+        return fact.with_columns(pl.col("v1").approx_quantile(0.5).alias("v1_median"))
     raise ValueError(f"unknown operation {operation!r}")
 
 
@@ -195,7 +208,68 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Leave the sunk parquet in place so the parent can verify it.",
     )
+    parser.add_argument(
+        "--spill-budget-mb",
+        type=int,
+        help="Spill once Polars' own allocations pass this many megabytes.",
+    )
     return parser.parse_args()
+
+
+def _turn_spilling_on(budget_mb: int) -> None:
+    """Spill past *budget_mb*, with room on disk to finish rather than abort."""
+    pl.Config.load(
+        json.dumps(
+            {
+                "environment": {
+                    "POLARS_OOC_MEMORY_BUDGET_MB": str(budget_mb),
+                    "POLARS_OOC_DISK_BUDGET_MB": "65536",
+                }
+            }
+        )
+    )
+
+
+def _folder_bytes(folder: Path) -> tuple[int, int]:
+    total = files = 0
+    for root, _dirs, names in os.walk(folder):
+        for name in names:
+            try:
+                total += (Path(root) / name).stat().st_size
+            except FileNotFoundError:
+                continue
+            files += 1
+    return total, files
+
+
+class _SpillSampler:
+    """The most this process holds in its spill folder, sampled while it runs."""
+
+    def __init__(self, folder: Path) -> None:
+        self.folder = folder
+        self.peak_bytes = 0
+        self.peak_files = 0
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._poll, name="spill-sampler", daemon=True)
+
+    def _poll(self) -> None:
+        while not self._stop.is_set():
+            self._sample()
+            self._stop.wait(0.02)
+
+    def _sample(self) -> None:
+        size, files = _folder_bytes(self.folder)
+        self.peak_bytes = max(self.peak_bytes, size)
+        self.peak_files = max(self.peak_files, files)
+
+    def __enter__(self) -> _SpillSampler:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._stop.set()
+        self._thread.join()
+        self._sample()
 
 
 def main() -> int:
@@ -206,6 +280,10 @@ def main() -> int:
     )
 
     args = _parse_args()
+    if args.spill_budget_mb is not None:
+        _turn_spilling_on(args.spill_budget_mb)
+    # Polars spills into a folder named after the process, inside the spill root.
+    spill_folder = Path(os.environ.get("POLARS_OOC_SPILL_DIR", ".")) / str(os.getpid())
     sampler = StdlibMemorySampler()
     gc.collect()
     rss_before = sampler.process_rss_bytes(os.getpid())
@@ -215,7 +293,8 @@ def main() -> int:
     sink_path = args.output.with_suffix(".sink.parquet")
     set_streaming_chunk_size(DEFAULT_STREAMING_CHUNK_SIZE)
     started = time.perf_counter()
-    bounded_sink(plan, sink_path)
+    with _SpillSampler(spill_folder) as spilled:
+        bounded_sink(plan, sink_path)
     elapsed_seconds = time.perf_counter() - started
     rows_out = pl.scan_parquet(sink_path).select(pl.len()).collect().item()
     rss_after = sampler.process_rss_bytes(os.getpid())
@@ -232,6 +311,9 @@ def main() -> int:
         "rss_before_bytes": rss_before,
         "rss_after_bytes": rss_after,
         "explain_streaming": explain_streaming,
+        "spill_budget_mb": args.spill_budget_mb,
+        "spill_peak_bytes": spilled.peak_bytes,
+        "spill_peak_files": spilled.peak_files,
     }
     # ``--output`` is supplied from pytest's tmp_path by the parent harness.
     args.output.write_text(  # write-sandbox: deliberate

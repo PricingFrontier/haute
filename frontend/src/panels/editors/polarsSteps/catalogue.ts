@@ -17,6 +17,7 @@ import type {
   JoinValidate,
   LiteralOperand,
   LiteralType,
+  NumberType,
   Operand,
   Step,
   StepKind,
@@ -24,6 +25,7 @@ import type {
   WindowOnlyAggregation,
 } from "./types"
 import type { StepStart } from "../../../utils/polarsStepInputs"
+import { castFamily, type CastFamily } from "../../../utils/polarsDtypes"
 
 /**
  * A kind the `Add step` menu offers: its plain-English label, what it does,
@@ -174,6 +176,23 @@ export const JOIN_MAINTAIN_ORDER: Array<{ value: JoinMaintainOrder; label: strin
   { value: "left_right", label: "left, then right" },
   { value: "right_left", label: "right, then left" },
 ]
+const JOIN_MAINTAIN_ORDER_VALUES: ReadonlySet<string> = new Set(JOIN_MAINTAIN_ORDER.map((o) => o.value))
+/** The row order a new join of each kind gets (the renderer's `DEFAULT_JOIN_ORDER`). */
+export const DEFAULT_JOIN_ORDER: Record<JoinHow, JoinMaintainOrder> = {
+  inner: "left_right",
+  left: "left_right",
+  full: "left_right",
+  cross: "left_right",
+  right: "right_left",
+  semi: "left",
+  anti: "left",
+}
+/** A join's row order after its kind changes: a default follows the kind; a choice stays. */
+export function joinOrderAfterHowChange(order: string, from: string, to: JoinHow): JoinMaintainOrder {
+  const previousDefault = DEFAULT_JOIN_ORDER[from as JoinHow]
+  if (order === previousDefault || !JOIN_MAINTAIN_ORDER_VALUES.has(order)) return DEFAULT_JOIN_ORDER[to]
+  return order as JoinMaintainOrder
+}
 export const FILL_STRATEGIES: FillStrategy[] = ["forward", "backward", "min", "max", "mean", "zero", "one"]
 /** Fill strategies in plain words, each with its Polars name where it has one. */
 export const FILL_STRATEGY_OPTIONS: Array<{ value: FillStrategy; label: string }> = [
@@ -202,9 +221,10 @@ export const LIST_LITERAL_TYPES = LITERAL_TYPES.filter((t) => t.value !== "null"
 
 /**
  * Function argument shapes: what each argument must be, in order. `integer`
- * is zero or more; `int` may be negative (a slice start counting from the end).
+ * is zero or more; `int` may be negative (a slice start counting from the end);
+ * `format` is a date format such as `%Y-%m-%d`.
  */
-export type FunctionArg = "integer" | "int" | "number" | "scalar" | "dtype" | "text"
+export type FunctionArg = "integer" | "int" | "number" | "scalar" | "dtype" | "text" | "format"
 export const FUNCTIONS: Array<{ value: FunctionName; label: string; args: FunctionArg[] }> = [
   { value: "abs", label: "absolute value", args: [] },
   { value: "round", label: "round", args: ["integer"] },
@@ -233,7 +253,131 @@ export const FUNCTIONS: Array<{ value: FunctionName; label: string; args: Functi
   { value: "offset_by", label: "shift date by", args: ["text"] },
   { value: "total_days", label: "duration in days", args: [] },
   { value: "try_cast", label: "cast to type (null on failure)", args: ["dtype"] },
+  { value: "to_date", label: "text to date", args: ["format"] },
+  { value: "to_datetime", label: "text to date and time", args: ["format"] },
+  { value: "try_to_date", label: "text to date (null on failure)", args: ["format"] },
+  { value: "try_to_datetime", label: "text to date and time (null on failure)", args: ["format"] },
 ]
+
+/** The format a text column's dates start from: ISO dates, and ISO date and time. */
+export const DATE_FORMAT_DEFAULTS: Record<"Date" | "Datetime", string> = {
+  Date: "%Y-%m-%d",
+  Datetime: "%Y-%m-%d %H:%M:%S",
+}
+/** Whether a cast target is reached from text by parsing it with a format. */
+export const parsesText = (dtype: CastDtype): dtype is "Date" | "Datetime" => dtype === "Date" || dtype === "Datetime"
+
+/** The source column types the cast table tells apart (the renderer's `CAST_FAMILIES`). */
+export const CAST_FAMILIES: CastFamily[] = [
+  "integer", "float", "decimal", "boolean", "text", "category",
+  "date", "datetime", "duration", "time", "binary", "null",
+]
+/**
+ * The Change types targets Polars 2 refuses for each source column type, even
+ * with `strict=False` (the renderer's `CAST_REFUSALS`): a text column reaches
+ * Date and Datetime only by parsing with a format.
+ */
+export const CAST_REFUSALS: Record<CastFamily, CastDtype[]> = {
+  integer: ["Categorical"],
+  float: ["Categorical"],
+  decimal: ["Date", "Datetime", "Categorical"],
+  boolean: ["Categorical"],
+  text: ["Boolean", "Date", "Datetime"],
+  category: ["Int8", "Int16", "Int32", "Int64", "UInt8", "UInt16", "UInt32", "UInt64", "Float32", "Float64", "Boolean", "Date", "Datetime"],
+  date: ["Boolean", "Categorical"],
+  datetime: ["Boolean", "Categorical"],
+  duration: ["String", "Boolean", "Date", "Datetime", "Categorical"],
+  time: ["Boolean", "Date", "Datetime", "Categorical"],
+  binary: ["Int8", "Int16", "Int32", "Int64", "UInt8", "UInt16", "UInt32", "UInt64", "Float32", "Float64", "Boolean", "Date", "Datetime", "Categorical"],
+  null: [],
+}
+
+/** The types Change types offers a column of `dtype`: all of them while its type is unknown. */
+export function castTargetsFor(dtype: string | null): CastDtype[] {
+  const family = castFamily(dtype)
+  if (family === null) return CAST_DTYPES
+  const refused = new Set(CAST_REFUSALS[family])
+  // Text reaches a date by parsing it, which the entry's format says how.
+  return CAST_DTYPES.filter((target) => !refused.has(target) || (family === "text" && parsesText(target)))
+}
+
+/** Whether `agg` takes a column of `dtype`: Polars 2 refuses std and var of a duration. */
+export function aggregationTakes(agg: string, dtype: string | null): boolean {
+  return !((agg === "std" || agg === "var") && castFamily(dtype) === "duration")
+}
+
+const NUMERIC_FAMILIES: ReadonlySet<CastFamily> = new Set<CastFamily>(["integer", "float", "decimal", "boolean", "null"])
+
+/** Whether `fn` takes a receiver of `dtype`: log and exp take numbers, the parses text. */
+export function functionTakes(fn: FunctionName, dtype: string | null): boolean {
+  const family = castFamily(dtype)
+  if (family === null) return true
+  if (fn === "log" || fn === "exp") return NUMERIC_FAMILIES.has(family)
+  if (fn === "to_date" || fn === "to_datetime" || fn === "try_to_date" || fn === "try_to_datetime") return family === "text"
+  return true
+}
+
+/**
+ * What Polars 2 refuses in `expr` where the editor knows a column's type, or
+ * null: a cast it does not make (text to a date, which a parse function does
+ * instead; a category to anything but text), log or exp of something that is
+ * not a number, and a parse of something that is not text.
+ */
+export function exprTypeProblem(expr: Expr, typeOf: (name: string) => string | null): string | null {
+  const operandProblem = (operand: Operand): string | null => (operand.kind === "expr" ? exprTypeProblem(operand.expr, typeOf) : null)
+  switch (expr.type) {
+    case "function": {
+      const inner = operandProblem(expr.operand)
+      if (inner) return inner
+      if (expr.operand.kind !== "column") return null
+      const name = expr.operand.name
+      const dtype = typeOf(name)
+      const family = castFamily(dtype)
+      if (family === null || dtype === null) return null
+      if (!functionTakes(expr.fn, dtype)) {
+        return expr.fn === "log" || expr.fn === "exp"
+          ? `${expr.fn}() takes numbers, and ${name} is ${dtype}.`
+          : `${expr.fn}() parses text, and ${name} is ${dtype}.`
+      }
+      const target = expr.args[0]
+      if ((expr.fn === "cast" || expr.fn === "try_cast") && target?.kind === "literal" && typeof target.value === "string") {
+        const dtypeTarget = target.value as CastDtype
+        if (!CAST_REFUSALS[family].includes(dtypeTarget)) return null
+        if (family === "text" && parsesText(dtypeTarget)) {
+          const parse = `${expr.fn === "try_cast" ? "try_" : ""}${dtypeTarget === "Date" ? "to_date" : "to_datetime"}`
+          return `${name} is text, which Polars 2 does not cast to ${dtypeTarget}: parse it with ${parse}(${name}, '${DATE_FORMAT_DEFAULTS[dtypeTarget]}').`
+        }
+        if (family === "category") return `${name} is a category, which Polars 2 casts only to text: cast it to String first.`
+        return `Polars 2 does not cast ${name} from ${dtype} to ${dtypeTarget}.`
+      }
+      return null
+    }
+    case "operand":
+      return operandProblem(expr.operand)
+    case "binary":
+      return operandProblem(expr.left) ?? operandProblem(expr.right)
+    case "conditional":
+      return operandProblem(expr.then) ?? operandProblem(expr.otherwise)
+    case "concat":
+      return expr.parts.map(operandProblem).find((problem) => problem !== null) ?? null
+    case "window":
+      return aggregationTakes(expr.agg, expr.column ? typeOf(expr.column) : null)
+        ? null
+        : `${expr.agg} takes numbers, and ${expr.column} is a duration: turn it into days first (total_days).`
+  }
+}
+
+/** The kinds of number a membership list holds (the renderer's `NUMBER_TYPES`). */
+export const NUMBER_TYPES: Array<{ value: NumberType; label: string }> = [
+  { value: "integer", label: "whole numbers (integer)" },
+  { value: "float", label: "numbers (float)" },
+  { value: "decimal", label: "exact decimals (decimal)" },
+]
+/** The kind of number a column of `dtype` holds, or null when its type is unknown or not a number. */
+export function numberTypeOf(dtype: string | null): NumberType | null {
+  const family = castFamily(dtype)
+  return family === "integer" || family === "float" || family === "decimal" ? family : null
+}
 
 export function literal(type: LiteralType, value: number | string | boolean | null): LiteralOperand {
   return { kind: "literal", type, value }
@@ -270,6 +414,8 @@ export function defaultArgFor(arg: FunctionArg): LiteralOperand {
       return literal("text", "Float64")
     case "text":
       return literal("text", "")
+    case "format":
+      return literal("text", DATE_FORMAT_DEFAULTS.Date)
   }
 }
 
@@ -320,7 +466,7 @@ export function createStep(kind: Exclude<StepKind, "source">, id: string): Step 
     case "group_by":
       return { id, kind, keys: [], aggregations: [{ column: "", agg: "sum", name: "" }] }
     case "join":
-      return { id, kind, input: "", how: "left", leftOn: [], rightOn: [], suffix: "_right" }
+      return { id, kind, input: "", how: "left", leftOn: [], rightOn: [], suffix: "_right", maintainOrder: DEFAULT_JOIN_ORDER.left }
     case "concat":
       return { id, kind, inputs: [], how: "vertical" }
     case "fill_null":
@@ -416,6 +562,9 @@ function conditionsProblem(value: unknown, where: string, depth = 1): string | n
       const problem = operandProblem(condition.value, `${where} condition ${index + 1}`, depth)
       if (problem) return problem
     }
+    if (condition.numberType !== undefined && !NUMBER_TYPES.some((t) => t.value === condition.numberType)) {
+      return `${where} condition ${index + 1} has an unknown number type.`
+    }
     if (condition.values !== undefined) {
       if (!Array.isArray(condition.values)) return `${where} condition ${index + 1} has malformed values.`
       for (const entry of condition.values) {
@@ -510,7 +659,7 @@ const REQUIRED_FIELDS: Record<StepKind, Array<[string, Shape]>> = {
   sort: [["keys", "array"], ["nullsLast", "boolean"]],
   unique: [["columns", "array"], ["keep", "string"]],
   group_by: [["keys", "array"], ["aggregations", "array"]],
-  join: [["input", "string"], ["how", "string"], ["leftOn", "array"], ["rightOn", "array"], ["suffix", "string"]],
+  join: [["input", "string"], ["how", "string"], ["leftOn", "array"], ["rightOn", "array"], ["suffix", "string"], ["maintainOrder", "string"]],
   concat: [["inputs", "array"], ["how", "string"]],
   fill_null: [["columns", "array"], ["fill", "object"]],
   limit: [["n", "number"]],
@@ -557,7 +706,12 @@ export function stepProblem(step: unknown): string | null {
     case "rename":
       return rowsProblem(record.renames, [["from", "string"], ["to", "string"]], where)
     case "cast":
-      return rowsProblem(record.casts, [["column", "string"], ["dtype", "string"]], where)
+      return (
+        rowsProblem(record.casts, [["column", "string"], ["dtype", "string"]], where)
+        ?? ((record.casts as Array<Record<string, unknown>>).some((entry) => entry.format !== undefined && typeof entry.format !== "string")
+          ? `${where} has a malformed format.`
+          : null)
+      )
     case "sort":
       return rowsProblem(record.keys, [["column", "string"], ["descending", "boolean"]], where)
     case "group_by":
@@ -579,7 +733,7 @@ export function stepProblem(step: unknown): string | null {
       return stringListProblem(record.on, `${where} columns`) ?? stringListProblem(record.index, `${where} index`)
     case "join":
       if (record.validate !== undefined && typeof record.validate !== "string") return `${where} has a malformed validation.`
-      if (record.maintainOrder !== undefined && typeof record.maintainOrder !== "string") return `${where} has a malformed row order.`
+      if (!JOIN_MAINTAIN_ORDER_VALUES.has(record.maintainOrder as string)) return `${where} has an unknown row order.`
       return stringListProblem(record.leftOn, `${where} left keys`) ?? stringListProblem(record.rightOn, `${where} right keys`)
     case "concat":
       return stringListProblem(record.inputs, `${where} inputs`)

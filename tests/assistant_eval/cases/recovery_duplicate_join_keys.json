@@ -39,6 +39,7 @@
           },
           "loaded_quotes": {
             "how": "left",
+            "maintainOrder": "left_right",
             "validate": "m:1"
           }
         },

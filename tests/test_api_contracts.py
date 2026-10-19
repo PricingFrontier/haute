@@ -741,6 +741,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/PipelineRepairApplyResponse"},
         },
     },
+    "/api/pipeline/repair/connection/remove/apply": {
+        "POST": {
+            "request_ref": "#/components/schemas/PipelineRepairRemoveConnectionRequest",
+            "success_schema": {"$ref": "#/components/schemas/PipelineRepairApplyResponse"},
+        },
+    },
     "/api/pipeline/output-destination": {
         "POST": {
             "request_ref": "#/components/schemas/OutputDestinationRequest",

@@ -77,11 +77,7 @@ def test_join_headroom_rejection_mentions_the_validate_contract() -> None:
         headroom_bytes=10,
         estimate_detail=f"join-node:{MANY_TO_MANY_JOIN_DETAIL}",
     )
-    assert rejection.remediation.endswith(
-        "The join has no declared validate= contract, so only the many-to-many row "
-        "product bounds it; declare validate='m:1', '1:m', or '1:1' where a key side "
-        "is unique to get a real estimate."
-    )
+    assert rejection.remediation.endswith(_MANY_TO_MANY_JOIN_REMEDIATION)
     # A rejection with a bounded estimate has no contract to declare.
     bounded = _materialisation_rejection(
         node_id="join-node",
@@ -1008,6 +1004,7 @@ def test_strategy_diagnostic_reports_edge_join_keys_as_join_key_provenance() -> 
                         "nodeType": "edgeJoin",
                         "config": {
                             "how": "left",
+                            "maintainOrder": "left_right",
                             "leftOn": ["base_key"],
                             "rightOn": ["lookup_key"],
                             "contract": "opaque",
@@ -1072,7 +1069,12 @@ def _joined_then_code_parts(code: str, suffix: str = ""):
             "data": {
                 "label": joined,
                 "nodeType": "edgeJoin",
-                "config": {"how": "left", "leftOn": ["quote_id"], "rightOn": ["quote_id"]},
+                "config": {
+                    "how": "left",
+                    "maintainOrder": "left_right",
+                    "leftOn": ["quote_id"],
+                    "rightOn": ["quote_id"],
+                },
             },
         },
         {
@@ -2474,6 +2476,21 @@ _NEW_BOUNDARY_SHAPES: tuple[tuple[str, str, str], ...] = (
         "pct_change",
         "df = df.with_columns(pl.col('premium').pct_change().alias('change_rate'))",
     ),
+    (
+        "bin_quantiles",
+        "bin_quantiles",
+        "df = df.with_columns(pl.col('premium').bin_quantiles(4, labels=False).alias('band'))",
+    ),
+    (
+        "bin_ranks",
+        "bin_ranks",
+        "df = df.with_columns(pl.col('premium').bin_ranks(4, labels=False).alias('band'))",
+    ),
+    (
+        "approx_quantile",
+        "approx_quantile",
+        "df = df.with_columns(pl.col('premium').approx_quantile(0.5).alias('median'))",
+    ),
 )
 
 
@@ -2712,9 +2729,9 @@ def test_cross_join_is_conservative_under_a_cap_and_rejected_without_one(
 
 
 _MANY_TO_MANY_JOIN_REMEDIATION = (
-    "The join has no declared validate= contract, so only the many-to-many row "
-    "product bounds it; declare validate='m:1', '1:m', or '1:1' where a key side "
-    "is unique to get a real estimate."
+    "A many-to-many product bounds this join: validate='m:1', '1:m' or '1:1' on a "
+    "unique key gives an estimate, but Polars then holds both inputs in memory, up to "
+    "76% more peak."
 )
 
 

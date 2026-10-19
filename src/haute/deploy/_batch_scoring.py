@@ -39,9 +39,14 @@ from haute._execution_context import (
     ExecutionProfile,
 )
 from haute._logging import get_logger
-from haute._polars_utils import bounded_sink
+from haute._polars_utils import bounded_sink, streaming_collect
 from haute._types import PipelineGraph
 from haute._worker_isolation import IsolatedWorkerConfig, worker_config_for_memory_policy
+from haute.deploy._request_rows import (
+    RequestRows,
+    answers_quote_by_quote,
+    check_answer_rows,
+)
 from haute.errors import BoundedMemoryUnsupportedError
 from haute.routes._contract_errors import PUBLIC_CONTRACT_ERROR_TYPES
 
@@ -73,6 +78,8 @@ class BatchScoreRequest:
     # The bundle's schema dry run sends its sample's schema, so a sample whose values
     # are all null (a Workbench Input's) keeps its types; a served request sends none.
     input_schema: dict[str, pl.DataType] | None = None
+    # The deployment's record of how it answers several quotes; None for the dry run.
+    request_rows: RequestRows | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,7 +139,7 @@ class BatchScoreResult:
 
 def _parquet_row_count(path: str | Path) -> int:
     """Return the row count of a sunk parquet without materialising its rows."""
-    return int(pl.scan_parquet(path).select(pl.len()).collect().item())
+    return int(streaming_collect(pl.scan_parquet(path).select(pl.len())).item())
 
 
 def _remove_batch_temp_dir(temp_dir: str, *, primary_error: BaseException | None) -> None:
@@ -187,17 +194,43 @@ def score_batch_scoring_request(
     execution_context: ExecutionContext,
 ) -> BatchScoreOutcome:
     """Score one batch under an already-constructed worker-local context."""
-    from haute.deploy._scorer import QuoteRequest, reads_one_quote_per_request, score_graph_lazy
+    from haute.deploy._scorer import (
+        QuoteRequest,
+        reads_records,
+        score_graph_lazy,
+        score_quote_by_quote,
+    )
 
     execution_context.checkpoint(label="before_deploy_batch_dataframe")
     rows = json.loads(Path(request.input_path).read_text(encoding="utf-8"))
-    # A Workbench Input reads its quote from the records as sent, typing each value itself.
+    # A Workbench Input, and a Quote Input with tables, read the quotes from the records
+    # as sent, typing each value themselves.
     input_df = (
         QuoteRequest(tuple(rows))
-        if reads_one_quote_per_request(request.graph, request.input_node_ids)
+        if reads_records(request.graph, request.input_node_ids)
         else pl.DataFrame(rows, schema=request.input_schema)
     )
     execution_context.checkpoint(label="after_deploy_batch_dataframe")
+
+    if answers_quote_by_quote(request.request_rows, input_df.height):
+        # Each quote scored alone under this worker's context, which the worker entrypoint
+        # releases once.
+        answers = score_quote_by_quote(
+            graph=request.graph,
+            input_df=input_df,
+            input_node_ids=list(request.input_node_ids),
+            output_node_id=request.output_node_id,
+            artifact_paths=dict(request.artifact_paths),
+            output_fields=list(request.output_fields) if request.output_fields else None,
+            execution_context=execution_context,
+            retain_admission_on_success=True,
+        )
+        with execution_context.stage("deploy_batch_sink", node_id=request.output_node_id):
+            bounded_sink(answers.lazy(), request.result_path)
+        return BatchScoreOutcome(
+            row_count=answers.height,
+            execution_metrics=execution_context.metrics_payload(status="completed"),
+        )
 
     plan = score_graph_lazy(
         graph=request.graph,
@@ -207,11 +240,14 @@ def score_batch_scoring_request(
         artifact_paths=dict(request.artifact_paths),
         output_fields=list(request.output_fields) if request.output_fields else None,
         execution_context=execution_context,
+        request_rows=request.request_rows,
     )
     preserve_primary_error = False
     try:
         with execution_context.stage("deploy_batch_sink", node_id=request.output_node_id):
             bounded_sink(plan.lazy_frame, request.result_path)
+        row_count = _parquet_row_count(request.result_path)
+        check_answer_rows(request.request_rows, input_df.height, row_count)
     except BaseException:
         preserve_primary_error = True
         raise
@@ -223,7 +259,7 @@ def score_batch_scoring_request(
             release_admission=False,
         )
     return BatchScoreOutcome(
-        row_count=_parquet_row_count(request.result_path),
+        row_count=row_count,
         execution_metrics=execution_context.metrics_payload(status="completed"),
     )
 
@@ -297,11 +333,14 @@ def prepare_batch_scoring(
     output_fields: list[str] | None,
     operation: str = "deploy_quote",
     input_schema: Mapping[str, pl.DataType] | None = None,
+    request_rows: RequestRows | None = None,
 ) -> BatchScorePlan:
     """Admit the parent batch context and stage the child's inputs on disk.
 
     *input_schema*, when given, types the rows the child reads: the bundle's
     schema dry run passes its sample's, which JSON alone would lose for nulls.
+    A request the deployment's *request_rows* does not cover is refused before
+    anything is admitted.
     """
     from haute.deploy._scorer import admit_deploy_execution
 
@@ -328,6 +367,7 @@ def prepare_batch_scoring(
                 input_path=str(input_path),
                 result_path=str(Path(temp_dir) / "result.parquet"),
                 input_schema=dict(input_schema) if input_schema is not None else None,
+                request_rows=request_rows,
             )
             worker_config = worker_config_for_memory_policy(
                 memory_limit_bytes=budget.memory_limit_bytes,

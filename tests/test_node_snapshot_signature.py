@@ -30,6 +30,7 @@ _SIGNATURE_FIELDS = (
     "enforce_contracts",
     "preamble_supplied",
     "execution_semantics_version",
+    "polars_version",
 )
 
 
@@ -136,7 +137,19 @@ def test_signature_is_deterministic(project: Path) -> None:
     graph = _graph(project)
 
     assert _signature(graph) == _signature(_graph(project))
-    assert _signature(graph).startswith("node-snapshot:v2:")
+    assert _signature(graph).startswith("node-snapshot:v3:")
+
+
+def test_another_polars_version_signs_another_snapshot(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A release can change what the same pipeline computes, so its results never mix."""
+    graph = _graph(project)
+    current = _signature(graph)
+
+    monkeypatch.setattr(pl, "__version__", "9.9.9")
+
+    assert _signature(graph) != current
 
 
 @pytest.mark.parametrize(

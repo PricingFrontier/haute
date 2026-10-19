@@ -16,6 +16,7 @@ from haute._polars_call_shapes import (
     is_literal_collection,
     is_literal_scalar,
     is_pl_dtype_reference,
+    is_typed_literal_list,
     replace_call_has_literal_mapping,
     replace_strict_call_has_literal_mapping,
 )
@@ -152,7 +153,8 @@ def _cast_call_is_chunk_local(call: ast.Call) -> bool:
 
 
 def _is_in_call_is_chunk_local(call: ast.Call) -> bool:
-    """Admit only membership against a literal collection: ``is_in([<literals>])``.
+    """Admit only membership against literals: ``is_in([<literals>])``, or the typed
+    literal list the step renderer builds (``is_typed_literal_list``).
 
     ``is_in(pl.col(...))`` / ``is_in(frame[...])`` use the FULL column as the
     haystack; inside a chunk the haystack silently shrinks to the chunk's rows.
@@ -162,6 +164,8 @@ def _is_in_call_is_chunk_local(call: ast.Call) -> bool:
     if call.keywords or len(call.args) != 1:
         return False
     collection = call.args[0]
+    if is_typed_literal_list(collection):
+        return True
     if not isinstance(collection, ast.List | ast.Tuple | ast.Set):
         return False
     return all(is_literal_scalar(element) for element in collection.elts)
@@ -223,7 +227,7 @@ _ADMITTED_CALL_SHAPES: Mapping[str, frozenset[str]] = MappingProxyType(
         "expr.cast": frozenset({"non_categorical"}),
         "df.fill_null": frozenset({"value"}),
         "expr.fill_null": frozenset({"value"}),
-        "expr.is_in": frozenset({"literal_collection"}),
+        "expr.is_in": frozenset({"literal_collection", "typed_literal_list"}),
         "expr.replace": frozenset({"mapping", "old_new"}),
         **{
             f"expr.str.{method}": frozenset({"explicit_format_lenient", "explicit_format_strict"})
@@ -511,8 +515,14 @@ def _row_local_call_is_supported(
     if shape_validator is not None and not shape_validator(call):
         trace.record("unsupported_call_shape", method_name, call)
         return False, False
+    # A typed literal list is a constant: its own calls build values, not rows.
+    arguments = tuple(
+        argument
+        for argument in (*call.args, *(keyword.value for keyword in call.keywords))
+        if not (method_name == "is_in" and is_typed_literal_list(argument))
+    )
     args_supported = _row_local_subexprs_are_supported(
-        (*call.args, *(keyword.value for keyword in call.keywords)),
+        arguments,
         allowed_frames=allowed_frames,
         local_frames=local_frames,
         trace=trace,

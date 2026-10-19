@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 import {
+  parseRemoveBrokenConnectionApplyResponse,
   parseRemoveUnavailableNodeApplyResponse,
   parseRecoverUnavailableNodeApplyResponse,
 } from "../pipelineRepair"
@@ -42,6 +43,13 @@ describe("pipeline repair response parsers", () => {
     expect(() => parseRemoveUnavailableNodeApplyResponse(applied({
       changes: [{ ...change, diff: "x".repeat(131_073) }],
     }))).toThrow("diff")
+  })
+
+  it("accepts a connection removal response and only that discriminator", () => {
+    expect(parseRemoveBrokenConnectionApplyResponse(applied({ repair_kind: "remove_connection" })).repair_kind)
+      .toBe("remove_connection")
+    expect(() => parseRemoveBrokenConnectionApplyResponse(applied())).toThrow("repair_kind")
+    expect(() => parseRemoveUnavailableNodeApplyResponse(applied({ repair_kind: "remove_connection" }))).toThrow("repair_kind")
   })
 
   it("accepts reset recovery responses and rejects the removal and retired update discriminators", () => {

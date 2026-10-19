@@ -81,7 +81,9 @@ _ROWS = pl.LazyFrame(
 def test_lookup_probes_by_join_key_then_matches_every_carried_value_in_memory(
     collected_plans: list[str],
 ) -> None:
-    resolver = _resolver(_ROWS, join_config={"how": "left", "on": ["quote_id"]})
+    resolver = _resolver(
+        _ROWS, join_config={"how": "left", "maintainOrder": "left_right", "on": ["quote_id"]}
+    )
 
     found = resolver.lookup("rows", None, {"quote_id": "q2", "premium": 5.0, "region": "b"})
 
@@ -107,7 +109,12 @@ def test_lookup_probe_uses_either_role_of_a_left_on_right_on_join(
     rows = _ROWS.with_columns(policy=pl.Series(["p1", "p2", "p2", "p3"]))
     resolver = _resolver(
         rows,
-        join_config={"how": "left", "leftOn": ["policy"], "rightOn": ["quote_id"]},
+        join_config={
+            "how": "left",
+            "maintainOrder": "left_right",
+            "leftOn": ["policy"],
+            "rightOn": ["quote_id"],
+        },
     )
 
     found = resolver.lookup("rows", None, {key: value, "premium": 3.0})
@@ -141,7 +148,9 @@ def test_lookup_keeps_two_rows_sharing_every_carried_value(
     collected_plans: list[str],
 ) -> None:
     rows = pl.LazyFrame({"quote_id": ["q1", "q1", "q1"], "region": ["a", "a", "a"]})
-    resolver = _resolver(rows, join_config={"how": "inner", "on": "quote_id"})
+    resolver = _resolver(
+        rows, join_config={"how": "inner", "maintainOrder": "left_right", "on": "quote_id"}
+    )
 
     found = resolver.lookup("rows", None, {"quote_id": "q1", "region": "a"})
 
@@ -152,7 +161,9 @@ def test_lookup_keeps_two_rows_sharing_every_carried_value(
 def test_lookup_finds_no_row_when_a_carried_non_key_value_differs(
     collected_plans: list[str],
 ) -> None:
-    resolver = _resolver(_ROWS, join_config={"how": "left", "on": ["quote_id"]})
+    resolver = _resolver(
+        _ROWS, join_config={"how": "left", "maintainOrder": "left_right", "on": ["quote_id"]}
+    )
 
     found = resolver.lookup("rows", None, {"quote_id": "q2", "premium": 99.0})
 
@@ -165,7 +176,9 @@ def test_lookup_falls_back_to_the_full_filter_when_the_probe_reaches_its_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(trace_correlation, "_ROW_SCOPE_PROBE_LIMIT", 1)
-    resolver = _resolver(_ROWS, join_config={"how": "left", "on": ["quote_id"]})
+    resolver = _resolver(
+        _ROWS, join_config={"how": "left", "maintainOrder": "left_right", "on": ["quote_id"]}
+    )
 
     found = resolver.lookup("rows", None, {"quote_id": "q2", "premium": 2.0})
 
@@ -181,16 +194,20 @@ def test_lookup_falls_back_to_the_full_filter_when_the_probe_reaches_its_limit(
     [
         pytest.param(None, {"quote_id": "q2", "premium": 2.0}, id="no-edge-join"),
         pytest.param(
-            {"how": "left", "on": ["policy"]},
+            {"how": "left", "maintainOrder": "left_right", "on": ["policy"]},
             {"quote_id": "q2", "premium": 2.0},
             id="key-not-carried",
         ),
         pytest.param(
-            {"how": "left", "on": ["quote_id"]},
+            {"how": "left", "maintainOrder": "left_right", "on": ["quote_id"]},
             {"quote_id": None, "premium": 2.0},
             id="null-key",
         ),
-        pytest.param({"how": "cross"}, {"quote_id": "q2", "premium": 2.0}, id="cross-join"),
+        pytest.param(
+            {"how": "cross", "maintainOrder": "left_right"},
+            {"quote_id": "q2", "premium": 2.0},
+            id="cross-join",
+        ),
     ],
 )
 def test_lookup_without_a_probe_column_filters_on_every_carried_value(
@@ -228,7 +245,10 @@ def test_lookup_returns_the_rows_the_full_filter_returns(
         {"quote_id": "q1", "region": "a"},
     ]
     for values in candidates:
-        resolver = _resolver(rows.lazy(), join_config={"how": "left", "on": ["quote_id"]})
+        resolver = _resolver(
+            rows.lazy(),
+            join_config={"how": "left", "maintainOrder": "left_right", "on": ["quote_id"]},
+        )
         found = resolver.lookup("rows", None, values)
         expected = rows.filter(
             pl.all_horizontal(
@@ -254,7 +274,9 @@ def test_repeated_lookups_read_a_plan_schema_once(monkeypatch: pytest.MonkeyPatc
         return real_collect_schema(self)
 
     monkeypatch.setattr(pl.LazyFrame, "collect_schema", counting_collect_schema)
-    resolver = _resolver(plan, join_config={"how": "left", "on": ["quote_id"]})
+    resolver = _resolver(
+        plan, join_config={"how": "left", "maintainOrder": "left_right", "on": ["quote_id"]}
+    )
 
     first = resolver.lookup("rows", None, {"quote_id": "q1"})
     second = resolver.lookup("rows", None, {"quote_id": "q3", "region": "c"})

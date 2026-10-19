@@ -34,6 +34,7 @@
       "intent": "Attach each policy's region relativity by region code.",
       "config": {
         "how": "left",
+        "maintainOrder": "left_right",
         "leftOn": ["region_code"],
         "rightOn": ["code"]
       },
@@ -44,6 +45,7 @@
       "intent": "Attach region relativities, checking each policy matches at most one region.",
       "config": {
         "how": "left",
+        "maintainOrder": "left_right",
         "leftOn": ["region_code"],
         "rightOn": ["code"],
         "validate": "m:1",

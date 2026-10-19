@@ -28,6 +28,7 @@ def driver_rows(drivers: pl.LazyFrame) -> pl.LazyFrame:
     how="left",
     on=["driver_id"],
     validate="1:1",
+    maintain_order="left_right",
 )
 def joined(quote_rows, driver_rows): ...
 

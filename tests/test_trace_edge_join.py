@@ -111,7 +111,7 @@ class TestInnerJoinRightParentCorrelation:
             tmp_path,
             left,
             right,
-            {"how": "inner", "leftOn": "policy", "rightOn": "ref"},
+            {"how": "inner", "maintainOrder": "left_right", "leftOn": "policy", "rightOn": "ref"},
         )
 
         result = execute_trace(graph, row_index=0, target_node_id=JOIN_ID)
@@ -200,7 +200,7 @@ class TestInnerJoinRightParentCorrelation:
             tmp_path,
             left,
             right,
-            {"how": "inner", "leftOn": "policy", "rightOn": "ref"},
+            {"how": "inner", "maintainOrder": "left_right", "leftOn": "policy", "rightOn": "ref"},
         )
 
         result = execute_trace(graph, row_index=0, target_node_id=JOIN_ID)
@@ -217,7 +217,9 @@ class TestInnerJoinRightParentCorrelation:
 def _single_row_inner_graph(tmp_path):
     left = pl.DataFrame({"key": ["k1"], "premium": [100], "left_only": ["L"]})
     right = pl.DataFrame({"key": ["k1"], "premium": [999], "tier": ["gold"]})
-    return _edge_join_graph(tmp_path, left, right, {"how": "inner", "on": "key"})
+    return _edge_join_graph(
+        tmp_path, left, right, {"how": "inner", "maintainOrder": "left_right", "on": "key"}
+    )
 
 
 class TestColumnTraces:
@@ -324,7 +326,9 @@ class TestLeftJoin:
                 "tier": pl.Series("tier", [None], dtype=pl.Utf8),
             }
         )
-        graph = _edge_join_graph(tmp_path, left, right, {"how": "left", "on": "key"})
+        graph = _edge_join_graph(
+            tmp_path, left, right, {"how": "left", "maintainOrder": "left_right", "on": "key"}
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id=JOIN_ID)
 
@@ -402,7 +406,7 @@ class TestEdgeOrderIndependence:
             tmp_path,
             left,
             right,
-            {"how": "inner", "leftOn": "policy", "rightOn": "ref"},
+            {"how": "inner", "maintainOrder": "left_right", "leftOn": "policy", "rightOn": "ref"},
             reverse_edges=True,
         )
 

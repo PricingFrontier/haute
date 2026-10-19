@@ -4,8 +4,8 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/_io.py` | API-input flat-file adapters, source/schema validation, direct CSV/JSON/NDJSON/Parquet reads, and external-object loading. |
-| `src/haute/_polars_io_registry.py` | Canonical Data Input/Output format registry, strict config and argument validation, capability publication, and Polars invocation. |
+| `src/haute/_io.py` | API-input flat-file adapters, source/schema validation, direct CSV/JSON/NDJSON/Parquet reads (a Parquet file with a map column refused), and external-object loading. |
+| `src/haute/_polars_io_registry.py` | Canonical Data Input/Output format registry, strict config and argument validation, capability publication, and Polars invocation; `parquet_source_map_columns` finds a Parquet source's map columns in its files' own schema, `refuse_direct_map_columns` refuses a direct Parquet scan whose files hold a map, and `read_parquet_map_entries_for_snapshot` reads such a file for its snapshot through pyarrow and refuses a map in a source of several files (*Map columns* under Edge cases and invariants). |
 | `src/haute/_input_providers.py` | Provider dispatch, source identity/signature construction, explicit snapshot build, and leased snapshot resolution. |
 | `src/haute/_input_preparation.py` | Automatic snapshot preparation planned before execution: freshness check, cap gate, in-process or worker build, per-process single-flight, preparation records, and staging-token cleanup. |
 | `src/haute/_database_io.py` | Credential-free database locator/query validation and bounded read-only SQLite snapshot batches. |
@@ -14,7 +14,8 @@
 | `src/haute/_node_snapshots.py` | Node-output snapshots in the shared store: slot and signature identity, class mappings, slot index, column sets and dependencies, cross-process publication and lease locks, lease markers, retention, clear, and pin; also the per-owner inventory (`inventory`, `CacheInventory`, `CacheOwnerUsage`) the cache endpoints serve. |
 | `src/haute/_polars_io_schema.py` | Cached index over the committed Polars callable schema, live introspection of the installed Polars, and the intersection of the two. |
 | `src/haute/_polars_io_arguments.json` | Generated Polars callable signature data checked against the pinned Polars version. |
-| `src/haute/_polars_dtypes.py` | The one dtype vocabulary. `parse_dtype`/`dtype_to_spec` are the struct-capable JSON codec used by registry schema arguments, declared API-input source dtypes and, with renamed keys, rating descriptors; a name it does not define is rejected, never looked up as an arbitrary Polars attribute. Named coarser views serve the consumers that need one: `contract_dtype_name` (a model's feature contract, shared by training and deploy scoring), `contract_mlflow_type_name` (that contract's MLflow projection) and `rendered_dtype_mlflow_type_name` (the MLflow type of a rendered Polars dtype, as a deploy manifest records it). `parse_rendered_dtype` rebuilds a dtype from polars' own rendering (`str(dtype)`, as a preview reports a column's type) by reading it as a Python expression tree whose names must be Polars dtypes and whose arguments are literals, lists, tuples, dicts or nested dtypes; it never evaluates the text. |
+| `src/haute/_polars_dtypes.py` | The one dtype vocabulary. `parse_dtype`/`dtype_to_spec` are the struct-capable JSON codec used by registry schema arguments, declared API-input source dtypes and, with renamed keys, rating descriptors; a name it does not define is rejected, never looked up as an arbitrary Polars attribute. Named coarser views serve the consumers that need one: `contract_dtype_name` (a model's feature contract, shared by training and deploy scoring), `contract_mlflow_type_name` (that contract's MLflow projection) and `rendered_dtype_mlflow_type_name` (the MLflow type of a rendered Polars dtype, as a deploy manifest records it). `parse_rendered_dtype` rebuilds a dtype from polars' own rendering (`str(dtype)`, as a preview reports a column's type) by reading it as a Python expression tree whose names must be Polars dtypes and whose arguments are literals, lists, tuples, dicts or nested dtypes; it never evaluates the text. `is_string_or_categorical` tests for text by base type, and `WIDE_INTEGER_DTYPES`, `holds_wide_integer`, `wide_integer_column` and `wide_integer_message` find and refuse a 128-bit integer; *Polars 2 dtypes* under Edge cases and invariants gives the rules. |
+| `src/haute/_map_columns.py` | How a map column reaches a pipeline: as a list of `{key, value}` structs holding every entry. `map_entries_table` casts Arrow tables with pyarrow, sharing the map's buffers; `iter_parquet_map_entries` reads a Parquet file through pyarrow one row group at a time; `map_entries_frame` casts a frame Polars read; `parquet_map_column_names` finds a Parquet file's map columns from its footer. |
 | `src/haute/_polars_utils.py` | Shared context-aware automatic/streaming collection, bounded/atomic sink, Parquet metadata, chunk-size scope, and allocator trim helpers. |
 | `src/haute/_file_ops.py` | The one atomic-write primitive (`atomic_path`) and the byte/text writers built on it, used for pointer and metadata publication and, through `_polars_utils.atomic_write`, for every Parquet/CSV write-then-rename; `publish_staged_file` publishes a caller's staging file, replacing the target or only while none exists. |
 | `src/haute/_path_resolution.py` | Shared runtime path containment/resolution owned by [sandbox-security](../sandbox-security/low-level.md) and consumed by I/O. |
@@ -382,19 +383,21 @@ generations to their owners when readable. Inventory takes no lock and mutates n
   error under each. A projected read is the full read restricted to those columns, dtypes
   included.
 
-  Row order, however, belongs to the *seam*, not to the profile. When this was measured a
-  generation was what `bounded_sink` wrote, and the same join sank in the same order on
-  every run; a generation is now what `write_parts` wrote, whose chunked join keeps only its
-  driving chunks' order. Neither of the other two materialisation seams promised it either. Concatenating
-  `bounded_collect_batches(..., maintain_order=True)` for a 20,000-row `1:1` join produced
-  a frame beginning at `q1820` on one run and `q0` on the next — the seam the chunked,
-  deploy-container and optimiser-apply paths consume — and the interactive preview reordered
-  a five-row join from run to run. Both carry the same rows and the same schema.
+  Row order, however, belongs to the *query*, not to the profile or the seam. A query that
+  defines its order keeps it through every seam: on Polars 2 a join states its order
+  (`maintainOrder` is required on the Join step and the Edge Join) and a Sort rows step is
+  stable, and a collect, `bounded_sink`, `bounded_collect_batches` and `write_parts`' chunked
+  join (whose parts read back as the native join row for row) all return such a query's rows
+  in its order. A query that leaves its order undefined (a join stated `none`, an unpivot, a
+  join in user code without `maintain_order`) has none: Polars 2's streaming engine returns
+  its rows in an order that can change from run to run, as Polars 1 already did for
+  unordered joins (a 20,000-row `1:1` join read through `bounded_collect_batches` began at
+  `q1820` on one run and `q0` on the next).
 
-  That is the measurement. The policy over it is that row order is not part of the snapshot
-  contract: rows carry the meaning here and their order does not, so a preview's captures
-  are admitted to the `bounded` class and a run may seed from them, with nothing gated on
-  which execution wrote a generation.
+  The policy over that is that row order is not part of the snapshot contract: rows carry
+  the meaning here and their order does not, so a preview's captures are admitted to the
+  `bounded` class and a run may seed from them, with nothing gated on which execution wrote
+  a generation.
 
   A capture must still be *sunk* rather than published from collected batches, whatever
   profile performed it, so that a generation's contents are the ones its writer computed.
@@ -625,8 +628,13 @@ worker starts, so an automatic snapshot build happens in the parent, within the 
 
 ### Streaming collection
 
-`execution_collect()` is the one context-aware collection seam. With no active context it
-performs one native collect using the requested automatic or streaming engine. With an
+`execution_collect()` is the one context-aware collection seam. Its engine, `streaming` or
+`in-memory`, is a required argument: Polars' `auto` engine resolves to streaming for a lazy
+query on 2.0 and follows `POLARS_ENGINE_AFFINITY`, so a collect that left it to Polars
+would change engine with the version or the host. Every collect in `src/haute/`, direct or
+through the seam, names its engine (`streaming` for a bounded or run-sized
+materialisation, which is every site today), held by `tests/test_collect_engines.py`. With
+no active context it performs one native collect on that engine. With an
 active context it starts one native background query, polls `InProcessQuery.fetch()` at a
 validated positive interval, and checkpoints between polls. A checkpoint failure cancels
 the native query before propagating; query `fetch()` failures propagate unchanged, and a
@@ -697,18 +705,123 @@ is no eager dataframe or collect-then-write fallback.
   callable therefore costs the editor that one mode rather than the whole format catalogue;
   configuring or executing such a format raises `PolarsIoConfigError` from
   `haute._polars_io_registry.allowed_arguments()` rather than a bare `AttributeError`, and
-  the interface contract test fails on the same condition in CI.
+  the interface contract test fails on the same condition in CI. A format's `unstable`
+  flag, which the editor shows as "(unstable)", says Polars marks every callable of the
+  format unstable (its `@unstable()` wrapper), held to the installed Polars by a test:
+  Avro (Polars 2), Text lines and Iceberg.
 - The intersection governs node-config arguments only. Keyword names haute itself writes as
   literals — `haute.executor._output_row_count_scan_kwargs()` for exact artifact row counts,
   `haute._io.read_source()` for declared-dtype CSV scans, and the compression argument in
   `src/haute/_polars_utils.py` — carry no such protection and are held instead by
   `tests/test_polars_io_interface_contracts.py`'s `_LITERAL_KEYWORDS` inventory.
+- Header-less inputs and CSV schemas (`_polars_io_registry`). `validate_arguments`
+  refuses an input callable's arguments that set `has_header: false` without naming the
+  columns (`new_columns`, or a non-null `schema` for a CSV), and a `new_columns` that is
+  not a non-empty list of distinct non-empty names. Excel and ODS take `new_columns` as a
+  Haute-owned argument (`HAUTE_READ_ARGUMENTS`), published with the format's arguments:
+  `_invoke_polars_input` removes it before calling Polars and renames the sheet's columns
+  by position, refusing a list whose length is not the sheet's width. For a CSV,
+  `_invoke_polars_input` reads the file's first line with the configuration's dialect
+  arguments (`_CSV_DIALECT_ARGUMENTS`, `infer_schema=False`): a header-less file whose
+  `new_columns` length differs from that line's field count, and a headed file whose
+  `schema` names are not exactly its header's, are refused with `PolarsIoConfigError`
+  before Polars resolves the scan. The scanner decodes only UTF-8, and the eager reader
+  decodes another `encoding` in Python before it parses, so for such a file
+  `_csv_first_line_names` decodes the whole file the same way (a `-lossy` codec replacing
+  what it cannot decode), a megabyte at a time into one UTF-8 buffer, and has Polars read
+  the header from it as the scanner reads a UTF-8 file's, parsing no data row, so the
+  read's row options (`truncate_ragged_lines`, `skip_rows_after_header`) never apply to the
+  check. No prefix proves where a header ends, which depends on every quote before it; the
+  buffer is the text the read decodes anyway and holds beside the file's bytes and frame.
 - Argument *defaults* are Polars'. haute forwards what a node config sets and takes the
   installed Polars' behaviour for everything else, so a default that moves inside the
   specifier moves haute's results with it. That is reported by
   `scripts/extract_polars_io.py --diff` rather than gated: pinning every default haute does
   not set would be a promise of result-stability across the specifier that haute has never
   made.
+
+### Polars 2 dtypes
+
+- Polars 2 names a categorical's category pool in its dtype: `Categorical("lexical")`,
+  1.x's ordering spelling, makes a pool called `lexical`, and a pooled categorical is not
+  equal to `pl.Categorical`. The codec writes the default pool as
+  `{"type": "Categorical"}` and any other as
+  `{"type": "Categorical", "categories": {"name": ..., "namespace": ..., "physical": ...}}`;
+  `parse_rendered_dtype` reads the `Categorical(Categories(...))` rendering; and every
+  check for a categorical tests the base type, so a pooled categorical is text wherever a
+  categorical is.
+- A `Map` or `Extension` column has no spec, and `dtype_to_spec` refuses one: Haute reads
+  a map as a list of key-value structs and an unknown extension as its storage type before
+  a pipeline sees it.
+- `Int128` and `UInt128`, which Polars 2 produces from `Int64` or `Int32` combined with
+  `UInt64`, have no model, MLflow or Arrow form, alone or nested in a list, array, struct or
+  map's keys or values: `to_numpy` panics on one (a
+  `BaseException` that escapes `except Exception`), and pyarrow cannot open a Parquet file
+  that holds one. The consumers that convert one refuse it by name with
+  `wide_integer_message`, which gives the cast that fixes it (`Int64`, or `Float64` if the
+  values can exceed it): the feature contract (`contract_dtype_name` refuses one rather
+  than recording it as `Int64`), the training job and the train route before they write or
+  convert anything, the predict frame and a deploy's MLflow signature. pyarrow cannot even
+  read the footer of a Parquet file holding one (`pq.read_metadata` fails), so it names no
+  column, and Haute refuses one first wherever it can name it (`refuse_wide_integers`):
+  - at the node whose output holds it, wherever the walk resolves that output's schema: a
+    preview, which reports every node's schema, and a node with an output contract, whose
+    columns are checked; the refusal names the node, the column and the cast;
+  - at every Parquet write another reader opens: Haute's part writer (`write_parts`: every
+    snapshot, source cache and chunked write), a streaming Parquet sink (`_polars_utils`),
+    a batched Model Score's scored parts (and its Parquet input, before pyarrow opens it),
+    and a Data Output writing Parquet, Delta or Iceberg, the formats written through Arrow,
+    so Haute never writes a file pandas, Spark or Haute's own metadata read cannot open. A
+    staging copy only Polars reads back keeps the column: `bounded_collect_batches` and a
+    chunked join's staged input pass `internal=True` to `write_parts`, which hands it on to
+    the hashed part sink;
+  - at `read_parquet_metadata`, which reads the file's schema through Polars before
+    pyarrow reads its footer, for a file another program wrote; a file Polars cannot read
+    as Parquet is left to pyarrow, which reports it as before (a `ValueError`, which the
+    RAM estimate's metadata reader treats as an unknown source).
+
+  A CSV, JSON or IPC write keeps such a column where no node check met it first (a run
+  through nodes without output contracts), since Polars reads it back.
+- Under Polars 2, `round`, `floor`, `ceil` and `sign` widen a `Decimal`'s precision by
+  one, so the recorded dtype of such a column differs from the one Polars 1 recorded for
+  the same pipeline.
+
+### Map columns
+
+- Polars 2 reads an Arrow or Parquet map as its `Map` dtype, and its Parquet reader keeps
+  only the last value of a key a map repeats, even when a scan asks for a list of
+  key-value structs, and when a `schema` argument names the map one. Haute's dtype
+  vocabularies have no `Map`, and Polars 1 read every map as a list of `{key, value}`
+  structs holding every entry, so a pipeline receives that shape on every path a source
+  takes. A Parquet source's map columns are found in its files' own schema
+  (`parquet_source_map_columns`), read from a footer with only the arguments that choose
+  the files (`glob`, `hidden_file_prefix`, `storage_options`, `credential_provider`), so
+  a configured `schema` cannot hide one:
+  - A provider's Arrow batches (a Databricks fetch, a database query) are cast with
+    pyarrow before the snapshot part is written. The cast shares the map's buffers and
+    keeps the schema's and every field's metadata.
+  - A Parquet file input with a map column, found from its footer, is copied into its
+    snapshot through pyarrow, one row group at a time, so Polars' Parquet reader never
+    reads it. That read applies `columns` (names or positions, in the order given) and
+    `n_rows` itself, accepts the arguments that only change how fast a read runs, and
+    refuses any other argument that is set, by name. A file that yields no rows still
+    writes its schema. A source naming several files (a folder or a glob) whose files hold
+    a map is refused by name: pyarrow keeps every entry one file at a time, without the
+    file expansion and hive partitioning Polars applies to such a source.
+  - A frame Polars read from any other source is cast in Polars before its parts are
+    written. An Arrow IPC file keeps every entry this way; a lakehouse table, which
+    Polars' Parquet reader reads, keeps the last value of a repeated key, and lakehouse
+    writers keep a map's keys unique.
+  - A direct Parquet scan whose files hold a map is refused before any row is read,
+    whatever `schema` it declares, naming the map columns and the snapshot route (`mode`
+    `"read"`). So is a Parquet file `_io.read_source` reads, the flat-file reader behind a
+    flat Quote Input, a training file, the deploy input schema and the file routes
+    (`SchemaMismatchError`).
+  - Schema-only resolution of an input with no snapshot reports the shape its snapshot
+    will hold.
+- An Arrow extension column Polars does not know loads as its storage type on every path,
+  through the Polars settings every process Haute starts; a provider's batches keep the
+  extension's field metadata, so the snapshot part loads the same way.
 
 ## Error handling
 
@@ -786,7 +899,8 @@ failure sections above are the maintained answers.
 - `tests/test_external_file_nested_relative_path.py` verifies project-root relative external-file loading, absolute passthrough, and project-escape rejection.
 - `tests/test_pipeline_runtime_path_validation.py` verifies runtime path/graph validation, HTTP status mapping, sidecar/codegen case-collision and reserved-name protections, and safe rename/delete semantics.
 - `tests/test_read_user_text.py` verifies robust text/config/pipeline decoding across encodings and malformed inputs.
-- `tests/test_polars_dtypes.py` pins the one dtype vocabulary: a Polars attribute that is not a dtype is rejected with the column and name, a rating descriptor is the shared codec's spec under rating's key names (and rejects dtypes the codec knows but rating does not support), and the feature-contract view, its MLflow projection and the rendered-dtype MLflow view map representative dtypes exactly, `parse_rendered_dtype` rebuilds scalar, parametric and nested dtypes from their rendering and rejects a name that is not a dtype or an expression that is not a literal; `tests/test_io.py` pins that declared API-input source dtypes accept the same vocabulary and reject anything else.
+- `tests/test_map_columns.py` pins the map policy: Polars' Parquet reader drops a repeated key (the reason for it); the Arrow cast keeps every entry, shares the map's buffers, reaches maps nested in structs, lists and maps, and keeps metadata; the Parquet read holds one row group at a time (counted reads at each yield), applies `columns` and `n_rows`, and yields an empty file's schema; a provider's batches, a Polars frame and a Parquet snapshot keep every entry, a Parquet snapshot refuses arguments its read cannot apply, a direct scan of a map-bearing file is refused (also when its configured schema names the map a list of key-value structs, which a test shows reads it the same lossy way), so is a flat Quote Input's map-bearing file and a snapshot of a folder or glob of them (a folder without a map is unaffected), schema-only resolution reports the snapshot's shape, and an unknown extension column loads as its storage type on the direct, frame and Arrow paths in a process started with Haute's Polars settings.
+- `tests/test_polars_dtypes.py` pins the one dtype vocabulary: a Polars attribute that is not a dtype is rejected with the column and name, a rating descriptor is the shared codec's spec under rating's key names (and rejects dtypes the codec knows but rating does not support), and the feature-contract view, its MLflow projection and the rendered-dtype MLflow view map representative dtypes exactly, `parse_rendered_dtype` rebuilds scalar, parametric and nested dtypes from their rendering and rejects a name that is not a dtype or an expression that is not a literal; every dtype class Polars exports is covered by one sample at least, each of which round-trips exactly through the spec codec and its rendering, or (`Map`, `Extension`) is refused by `dtype_to_spec`, so a dtype a later Polars adds fails the test until the codec handles it; a categorical in a named pool round-trips with its pool, trains as categorical and is the rating descriptor `{"kind": "Categorical"}`; `tests/test_io.py` pins that declared API-input source dtypes accept the same vocabulary and reject anything else.
 - `tests/test_sink.py` verifies sink execution errors, parquet/CSV output, directory creation, scenario handling, compute failures, and response metadata.
 - `tests/test_data_output_seeding.py` drives writes through the write-output route with the sink worker in process: a second write seeds the producer the first captured and builds nothing; a write after a batch training run builds its producer, because a training capture holds only the columns training reads and a write reads them all, and captures it in full, which the next training run seeds; an in-process `write_data_output` seeds and captures too; no `haute_sink_` directory is written; a worker stopped, timed out, or killed at its cap leaves no capture staging and publishes nothing; the worker stages under the parent's token; the response metrics keep the parent's input preparation; a superseded capture is read from the run's own staging through the write, with the plan held until the write completes under the process chunk size; preparation that ends past the sink timeout — returning or failing — is a 504 that starts no worker, and otherwise the worker gets the remainder; a request cancelled during preparation stops it, and one cancelled while preparation still succeeds starts no worker; and a parent plan-opening failure (contract, corrupt cache, admission) starts no worker.
 

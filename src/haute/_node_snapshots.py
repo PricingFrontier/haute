@@ -47,6 +47,7 @@ from haute._cache import (
     canonical_json,
     checked_cache_inputs,
     graph_fingerprint,
+    polars_version,
 )
 from haute._chunked_writes import part_name, part_paths, scan_parts
 from haute._execution_context import ExecutionProfile
@@ -575,6 +576,7 @@ def node_snapshot_signature(
             "enforce_contracts": enforce_contracts,
             "preamble_supplied": bool(canonical.preamble),
             "execution_semantics_version": NODE_SNAPSHOT_EXECUTION_SEMANTICS_VERSION,
+            "polars_version": polars_version(),
         },
     )
     digest = hashlib.sha256(inputs.canonical_bytes).hexdigest()
@@ -1637,6 +1639,7 @@ class NodeSnapshotStore(SourceCacheStore):
             profile=ExecutionProfile(profile).value,
             build_class="bounded",
             build_seconds=time.monotonic() - artifact.started_at,
+            polars_version=polars_version(),
             node_output={
                 "metadata_version": NODE_SNAPSHOT_METADATA_VERSION,
                 "slot": slot.descriptor,

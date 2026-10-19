@@ -124,7 +124,12 @@ export function summaryParts(step: Step): SummaryPart[] {
       return list(step.renames, (r) => [column(r.from), op("→"), column(r.to, "name")])
     case "cast":
       if (step.casts.every((c) => !c.column)) return prompt("Choose a column…")
-      return list(step.casts, (c) => [column(c.column), op("→"), text(c.dtype)])
+      return list(step.casts, (c) => [
+        column(c.column),
+        op("→"),
+        text(c.dtype),
+        ...(c.format ? [op("from"), { kind: "value", text: `'${c.format}'`, tone: "string" } as SummaryPart] : []),
+      ])
     case "sort":
       if (step.keys.every((k) => !k.column)) return prompt("Choose a column…")
       return list(step.keys, (k) => [column(k.column), ...(k.descending ? [op("desc")] : [])])

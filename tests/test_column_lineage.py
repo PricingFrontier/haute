@@ -1038,7 +1038,8 @@ def test_dynamic_operations_and_control_flow_fail_closed(code: str) -> None:
         ),
         (
             (
-                "df = left.join(middle, on='id').join(right, on='id')"
+                "df = left.join(middle, on='id', maintain_order='left_right')"
+                ".join(right, on='id', maintain_order='left_right')"
                 ".select(['left_value', 'middle_value', 'right_value'])"
             ),
             {
@@ -2555,11 +2556,12 @@ def test_dynamic_cast_and_shift_arguments_fail_closed(
     assert result.unsupported_operation == operation
 
 
-def test_a_root_demand_consumed_by_drops_still_carries_the_rows() -> None:
-    """Every demanded root column is dropped before the row index, so a carrier is added.
+def test_a_root_demand_consumed_by_drops_keeps_its_rows_without_a_carrier() -> None:
+    """Every demanded root column is dropped before the row index; Polars keeps the height.
 
-    Falsified by the projected-versus-full property test: the projected run
-    reached a zero-column frame and produced no rows.
+    On Polars 1 the projected run reached a zero-column frame and produced no
+    rows (the projected-versus-full property test falsified it), so a carrier
+    was added; Polars 2 keeps a frame's height through a ``drop``.
     """
     code = (
         "df = rows\n"
@@ -2581,10 +2583,10 @@ def test_a_root_demand_consumed_by_drops_still_carries_the_rows() -> None:
         }
     )
     # Only the generated column is wanted downstream, so the backward demand is
-    # exactly the dropped columns and nothing survives to carry the rows.
+    # exactly the dropped columns, and the zero-column frame still has its rows.
     result = analyze_polars_lineage(code, {"rows": frozenset(frame.columns)}, {"index_0"})
     assert result.supported, result
-    assert result.demands_by_input["rows"] == frozenset({"a", "b", "c", "d", "s"})
+    assert result.demands_by_input["rows"] == frozenset({"a", "b", "c", "d"})
 
     full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
     projected = _exec_user_code(
@@ -2651,24 +2653,48 @@ def test_df_input_names_the_frame_df_holds_before_the_code_assigns_it() -> None:
         ),
     ],
 )
-def test_without_a_root_schema_a_program_that_can_drop_its_last_column_fails_closed(
+def test_without_a_root_schema_a_program_that_drops_its_last_column_keeps_its_rows(
     code: str, narrowed: list[str]
 ) -> None:
-    """No carrier can be chosen without the schema, so the narrowed frame would lose its rows."""
+    """A ``drop`` of the last column keeps the frame's height, so no carrier is needed."""
     frame = pl.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6], "keep": [7, 8, 9]})
     full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
     assert full.height == 3
-    assert _exec_user_code(code, ["rows"], (frame.select(narrowed).lazy(),)).collect().height == 0
+    narrowed_run = _exec_user_code(code, ["rows"], (frame.select(narrowed).lazy(),)).collect()
+    assert_frame_equal(narrowed_run.select("x"), full.select("x"))
 
-    result = analyze_polars_lineage(code, {"rows": None}, {"x"})
+    for schema in (None, frozenset(frame.columns)):
+        result = analyze_polars_lineage(code, {"rows": schema}, {"x"})
+        assert result.supported, result
+        projected = _exec_user_code(
+            code,
+            ["rows"],
+            (frame.select(sorted(result.demands_by_input["rows"]) or ["a"]).lazy(),),
+        ).collect()
+        assert_frame_equal(projected.select("x"), full.select("x"))
 
-    assert not result.supported
-    assert result.reason == "row_carrier_schema_unknown"
-    assert result.unsupported_operation == "drop"
-    known = analyze_polars_lineage(code, {"rows": frozenset(frame.columns)}, {"x"})
-    assert known.supported, known
+
+def test_a_select_left_with_no_column_still_needs_a_carrier() -> None:
+    """A ``select`` with no output column has no rows, so the carrier rule still applies."""
+    code = "df = rows.select(cs.starts_with('n')).with_columns(x=pl.int_range(pl.len()))"
+    frame = pl.DataFrame({"s": ["p", "q", "r"], "n": [1, 2, 3]})
+    namespace = {"cs": cs}
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),), namespace).collect()
+    assert full.height == 3
+    narrowed = _exec_user_code(code, ["rows"], (frame.select("s").lazy(),), namespace)
+    assert narrowed.collect().height == 0
+
+    result = analyze_polars_lineage(
+        code, {"rows": frozenset(frame.columns)}, {"x"}, selector_aliases=_SELECTORS
+    )
+
+    assert result.supported, result
+    assert "n" in result.demands_by_input["rows"]
     projected = _exec_user_code(
-        code, ["rows"], (frame.select(sorted(known.demands_by_input["rows"])).lazy(),)
+        code,
+        ["rows"],
+        (frame.select(sorted(result.demands_by_input["rows"])).lazy(),),
+        namespace,
     ).collect()
     assert_frame_equal(projected.select("x"), full.select("x"))
 
@@ -2716,11 +2742,6 @@ def test_a_projected_program_that_cannot_be_evaluated_is_unsupported(
     result = analyze_polars_lineage("df = rows.select('a')", {"rows": frozenset({"a", "b"})})
     assert not result.supported
     assert result.reason == "carrier_unresolvable"
-
-    calls.clear()
-    schema_less = analyze_polars_lineage("df = rows.select('a')", {"rows": None}, {"a"})
-    assert not schema_less.supported
-    assert schema_less.reason == "carrier_unresolvable"
 
 
 @pytest.mark.parametrize(

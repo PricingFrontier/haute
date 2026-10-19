@@ -62,6 +62,28 @@ rather than their raw values. `dataOutput` configurations select a registered fi
 lakehouse, or database sink. Unknown fields, unsupported arguments, unavailable engines,
 ambiguous locators, and invalid mode/provider combinations fail before provider access.
 
+A file's columns are named by its header, or by the configuration, never by Polars.
+A header-less CSV, Excel or ODS input (`has_header: false`) must name every column, in
+order, with `new_columns` (or, for a CSV, a full `schema`, which binds a header-less file
+by position), and one that names none is refused when its configuration is validated:
+Polars 2 calls unnamed columns `column_0`, `column_1`, … where Polars 1 began at
+`column_1`, so a pipeline that relied on those names would silently read the next
+column. A `new_columns` list that names fewer or more columns than the file has is
+refused with the two counts. For a spreadsheet Haute applies `new_columns` itself,
+since no spreadsheet engine Polars uses takes it. A CSV `schema` is matched to the
+header by name, as Polars 2 does: declared in another order it reads each column by
+name, and one naming columns the header does not have, which renamed columns by
+position under Polars 1, is refused with Haute's message pointing at `new_columns` (to
+rename) and `schema_overrides` (to set types), never Polars' own hint
+(`extra_columns='ignore'`), which would drop the mismatched columns. These checks read
+the configuration and the file's first line, decoded as the read decodes it (a prefix
+of a file in another encoding than UTF-8), and cost nothing beyond the scan. Haute's
+own CSV reads pass `raise_if_empty=True` and `truncate_ragged_lines=False`, so an empty
+file and a row with more fields than the header fail as they did. A scan of several
+files infers its schema from the first ten (`infer_schema_files`), and a
+`schema_overrides` list must cover every column; Haute's configurations give
+`schema_overrides` as a mapping, which may name some.
+
 Raw database URIs are permitted only when credential-free. URI userinfo and recognised
 secret-bearing query parameters are rejected by one shared validator before a sidecar,
 cache identity, metadata document, or connector can receive the value. Named connection

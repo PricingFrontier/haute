@@ -35,6 +35,7 @@ from haute._execution_context import (
 )
 from haute._interactive_workers import InteractiveWorkerError
 from haute._logging import get_logger
+from haute._polars_utils import streaming_collect
 from haute._price_contour import price_contour
 from haute._ram_estimate import decoded_frame_row_width_bytes, estimate_point_apply_peak_bytes
 from haute._ratebook_collar import COMBINED_FACTOR_BOUNDS_KEY
@@ -1187,8 +1188,8 @@ class OptimiserFrontierService:
             _APPLY_RESULT_HANDLE_KEY,
             unavailable_detail=APPLY_RESULT_UNAVAILABLE_DETAIL,
         ) as as_solved:
-            row_count = int(as_solved.select(pl.len()).collect().item())
-            sample = as_solved.head(512).collect()
+            row_count = int(streaming_collect(as_solved.select(pl.len())).item())
+            sample = streaming_collect(as_solved.head(512))
         return estimate_point_apply_peak_bytes(
             row_count=row_count, row_width_bytes=decoded_frame_row_width_bytes(sample)
         )

@@ -19,7 +19,11 @@ import polars as pl
 import pytest
 from pydantic import BaseModel
 
-from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
+from haute._polars_utils import (
+    STREAMING_CHUNK_SIZE_ENV,
+    current_streaming_chunk_size,
+    set_streaming_chunk_size,
+)
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from tests.conftest import make_ready_file_input_config
 
@@ -29,7 +33,7 @@ pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 @pytest.fixture(autouse=True)
 def _start_from_default_chunk_size(monkeypatch: pytest.MonkeyPatch) -> None:
     # Start from the default; the conftest fixture restores the process value.
-    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
 
 
 def _report_chunk_size() -> int:

@@ -71,7 +71,16 @@ context without the resolved value rather than silently resetting elapsed-time a
   `pipeline_chunk_size` (the setting) and `n_steps`. `scenario_step_count` reads `n_steps` as one
   past the largest `scenario_index` in one scan of that column, and the builder receives it
   explicitly instead of auto-detecting it from its first chunk (which fails below
-  `n_steps + 1` rows). The ratebook factor artifact has one row per quote, so its contexts take
+  `n_steps + 1` rows). The builder reads each quote's `n_steps` rows together, in
+  `scenario_index` order, one quote after another, and refuses a file laid out otherwise
+  with a `ValueError`. `build_quote_grid` then checks the layout itself
+  (`quote_layout_fault`: block `row // n_steps` holds one quote, row `row` holds step
+  `row % n_steps`, and every quote holds `n_steps` rows, in two streaming group-bys over
+  the quote and scenario-index columns) and, when the quotes are mixed, raises an
+  `OptimiserSetupError` 400 `contract_error` naming the quote column, the scenario index
+  column and the first quote out of place; any other refusal stays the sanitised 500.
+  The check runs only after a refusal, so a well-formed input pays nothing for it.
+  The ratebook factor artifact has one row per quote, so its contexts take
   the setting as it is.
 - `FrontierAutoRangeContext` (`src/haute/routes/_optimiser_service.py`, frozen) — per-job bundle
   of the reducer's batch rows (`chunk_size`, defaulting to `current_streaming_chunk_size()`)
@@ -170,7 +179,14 @@ its native extension `price_contour._price_contour` and collects **every** probl
   (`REQUIRED_PARAMETERS`, checked with `inspect.signature`, including `cancel` on
   `apply_from_grid` and `RatebookOptimiser.evaluate`; PyO3 classes are covered by the symbol
   check only);
-- a failed import, chained as the error's cause.
+- a failed import, chained as the error's cause;
+- when nothing above failed, a one-row frame that does not pass through the native module
+  and back (`ApplyOptimiser.apply` on one quote with one scenario). The native module moves
+  frames through Polars' private Python methods (`Series._import_arrow_from_c` among them),
+  which no public API pins, so a Polars that renames one is refused here, by name, rather
+  than ending a solve in a Rust panic (a `BaseException`, caught as one; an interrupt still
+  propagates). A test removes that method in a fresh process, since the native module keeps
+  the method once it has used it.
 
 The message names the installed version, the required specifier, the module path, the install
 source (`editable checkout <path>` or `direct URL <url>` from PEP 610 `direct_url.json`, else
@@ -529,7 +545,7 @@ these as arguments and never recompute them.
   carries it as String and the constraints as Float32 (`_frontier_range_batch_columns`).
   `_estimate_scenario_frontier_ranges` reads the frame through `bounded_collect_batches` in
   batches of `current_streaming_chunk_size()` rows (the Pipeline Settings streaming chunk size; a
-  worker inherits it through `POLARS_STREAMING_CHUNK_SIZE`, and optimiser config has no auto-range
+  worker inherits it through `POLARS_IDEAL_MORSEL_SIZE`, and optimiser config has no auto-range
   size key), with `maintain_order=True` so the frame's quote order (the expander emits a quote's
   scenarios together and captures keep order) reaches `_reduce_frontier_range_batches`, which
   reduces every batch into `_ScenarioFrontierRangeAccumulator` and calls `finish()`. The
@@ -998,7 +1014,13 @@ the neutral-miss path.
 ### Runtime online apply (`_apply_online` in `src/haute/_builders.py`)
 
 `_apply_online` applies an online artifact through `price_contour.ApplyOptimiser` on the frame
-`_prepare_online_apply_frame` materialises (null quote ids dropped, apply dtypes cast). The
+`_prepare_online_apply_frame` materialises (null quote ids dropped, apply dtypes cast) from only
+the columns the artifact reads (`online_apply_read_columns`): the quote id, scenario index and
+value, and objective, then the constraint columns (a ratio constraint's numerator and
+denominator). price-contour's native module converts every column it is handed and fails on
+some types the apply never reads: a Struct, Decimal, Int128 or Map column. So no other column
+reaches it, whichever walk runs the apply. A sink walk's planned demand narrows the input
+already; a display walk's (a preview, `haute run`) does not. The
 apply emits one row per quote in ascending order of the `Utf8` quote id, with the literal id
 column `quote_id` whatever the artifact names its input quote-id column. How the result is
 exposed depends on the artifact's constraints (`has_ratio_constraint`):
@@ -1079,7 +1101,12 @@ emits; filters the parent frame to that quote unless the artifact has a ratio co
 linearisation baseline is the whole input); raises `OptimiserApplyTraceError` when no input row
 remains; builds the online apply input frame
 (`_prepare_online_apply_frame`), constructs a `price_contour.ApplyOptimiser` with the artifact's
-lambdas/constraints/column names, and calls `applier.with_explainer_columns(df)` — the
+lambdas/constraints/column names, and calls `applier.with_explainer_columns`. It hands that
+call only the frame's read columns (`online_apply_read_columns`) and a private row number,
+then joins the frame's other columns back on that number. The native module therefore never
+sees a column the apply does not read (see the runtime online apply above), while every
+candidate row keeps every column. A frame column the explainer would append is refused with
+the `ValueError` price-contour raises for it. `with_explainer_columns` is the
 `price-contour` API documented in full in
 [`with_explainer_columns` contract](#withexplainercolumns-contract) below. It filters to the
 clicked quote's rows, asserts exactly one `selected` and exactly one `is_baseline` candidate, and

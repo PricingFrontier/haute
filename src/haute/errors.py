@@ -286,6 +286,33 @@ class DeployError(HauteError):
     """Deploy validation or bundling failure."""
 
 
+class QuoteAnswerRowsError(DeployError):
+    """A quote of a batch answered quote by quote gave no row or several.
+
+    A batch is answered with one row per quote, so answer *i* is quote *i*'s.
+    ``position`` counts the quote from one; sent alone, it is answered with every row it
+    gives (specs/deploy).
+    """
+
+    error_code = "quote_answer_rows"
+    public_fields = ("quotes", "position", "rows")
+
+    def __init__(self, message: str, *, quotes: int, position: int, rows: int) -> None:
+        self.quotes = quotes
+        self.position = position
+        self.rows = rows
+        super().__init__(message)
+
+
+class RequestRowCountError(ExecutionError):
+    """A deployment proved to answer each quote with one row answered with another count."""
+
+    def __init__(self, message: str, *, quotes: int, rows: int) -> None:
+        self.quotes = quotes
+        self.rows = rows
+        super().__init__(message, quotes=quotes, rows=rows)
+
+
 class FeatureMismatchError(HauteError):
     """Feature or categorical train-vs-score contract mismatch."""
 

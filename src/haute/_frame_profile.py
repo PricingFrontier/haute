@@ -455,12 +455,21 @@ def categorical_label_expr(name: str, dtype: pl.DataType) -> pl.Expr:
 
 
 def _categorical_value_counts_expr(name: str, dtype: pl.DataType) -> pl.Expr:
+    count = pl.element().struct.field(CATEGORICAL_COUNT_FIELD)
+    value = pl.element().struct.field(_CATEGORICAL_VALUE_FIELD)
+    # Most frequent first, equal counts by value with null last, so the cut is the
+    # same on every run. One struct key: a sort by several keys fails on an empty list.
+    order = pl.struct(
+        (-count.cast(pl.Int64)).alias("count"),
+        value.is_null().alias("missing"),
+        value.alias("value"),
+    )
     return (
         categorical_label_expr(name, dtype)
-        .value_counts(sort=True, name=CATEGORICAL_COUNT_FIELD)
+        .value_counts(name=CATEGORICAL_COUNT_FIELD)
         .struct.rename_fields([_CATEGORICAL_VALUE_FIELD, CATEGORICAL_COUNT_FIELD])
-        .head(_CATEGORICAL_VALUE_COUNT_LIMIT)
         .implode()
+        .list.eval(pl.element().sort_by(order).head(_CATEGORICAL_VALUE_COUNT_LIMIT))
     )
 
 

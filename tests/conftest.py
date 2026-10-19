@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+# Haute's Polars settings go into the environment before Polars is imported.
+import tests._polars_settings  # noqa: F401
+
+# isort: split
+
 import functools
 import hashlib
 import os
@@ -20,6 +25,7 @@ from hypothesis import settings as hypothesis_settings
 from haute._config_io import config_path_for_node
 from haute._execution_context import ExecutionProfile
 from haute._pipeline_settings import PipelineSettings
+from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
 from haute._ram_estimate import RamEstimate
 from haute._sandbox import _get_project_root, set_project_root
 from haute.executor import _preview_cache
@@ -169,11 +175,11 @@ def _restore_streaming_chunk_size() -> Iterator[None]:
     ``set_streaming_chunk_size`` (directly or through ``PATCH
     /api/pipeline-settings``) sets it for the whole process, so a test's tiny
     chunk size would otherwise reach whichever test runs next on the same
-    worker. Polars caches the value and rereads ``POLARS_STREAMING_CHUNK_SIZE``
+    worker. Polars caches the value and rereads ``STREAMING_CHUNK_SIZE_ENV``
     only through its ``Config`` API, so editing the environment (as
     ``monkeypatch.delenv`` does) cannot restore it.
     """
-    before = os.environ.get("POLARS_STREAMING_CHUNK_SIZE")
+    before = os.environ.get(STREAMING_CHUNK_SIZE_ENV)
     yield
     pl.Config.set_streaming_chunk_size(None if before is None else int(before))
 

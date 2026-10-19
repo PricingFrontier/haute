@@ -429,7 +429,7 @@ separates three roles:
 
 | Field | What it does |
 |---|---|
-| **Row limit** | Trains on a seeded random sample of at most this many rows. Blank (**All rows**) uses every row. |
+| **Row limit** | Trains on a seeded random sample of at most this many rows, taken in the order the pipeline delivers them. Blank (**All rows**) uses every row. |
 | **Split strategy** | **Random split** (the default), **Group split** or **Time-based split**. |
 | **Group column** | Group split: the column whose rows must stay together, such as a customer, policyholder, household, or claim identifier. |
 | **Date column** | Time-based split: the date the split boundaries apply to. |
@@ -457,6 +457,12 @@ How the strategies split the rows:
 - **Time-based split**: explicit date boundaries, and a later date never appears in a
   validation fit's training data. Equal dates always stay together; null or invalid dates
   fail with an actionable error.
+
+Every strategy puts the same rows in the same sets on every run, whatever order the rows
+arrive in, and so do the samples the charts draw from. A **Row limit** sample is the
+exception: it follows the order the pipeline delivers the rows in, so a step before the
+node that leaves row order to Polars, such as an [Edge Join](edge-join.md) with **Order**
+set to **None**, can sample different rows from one run to the next.
 
 With **No validation**, Haute performs one final fit and tuning is unavailable. The pane shows
 the reason when the split cannot be used: **Validation and test must total below 100% so

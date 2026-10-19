@@ -87,6 +87,32 @@ class TestDeploy:
         assert "dry run" in result.output.lower()
         resolved.close.assert_called_once_with()
 
+    def test_a_deployment_answering_quote_by_quote_is_marked_with_its_reasons(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute.deploy._request_rows import RequestRows, RowRefusal
+
+        monkeypatch.chdir(tmp_path)
+        _make_toml(tmp_path)
+        resolved = _mock_resolved()
+        resolved.request_rows = RequestRows(
+            "quote_by_quote", (RowRefusal("calc", "calc", "sort", "reorders"),)
+        )
+        with (
+            patch("haute.deploy._config.resolve_config", return_value=resolved),
+            patch("haute.deploy._validators.validate_deploy", return_value=[]),
+        ):
+            result = runner.invoke(cli, ["deploy", "--dry-run"])
+
+        assert result.exit_code == 0, result.output
+        assert (
+            "! Answers several quotes per request one quote at a time: 'calc' (sort) can "
+            "change the quotes' order" in result.output
+        )
+
     def test_toml_pipeline_uses_shared_resolver(
         self,
         runner: CliRunner,

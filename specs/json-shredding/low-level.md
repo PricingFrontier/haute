@@ -222,10 +222,15 @@ derived schema and never assembles; otherwise it returns a `limited_python_scan`
 scan reaches `assemble_output_from_mapping(..., row_limit=n)` and
 `_assemble_document`: an emitting root level reads only its first `n` rows, and
 every deeper emitting level reads only the rows whose keys match its nearest
-collected ancestor level (`is_in` for one key, a semi join for several), so each
+collected ancestor level (`is_in` for one key, a semi join for several, ordered
+`maintain_order="left"` so the level keeps its rows' order), so each
 returned top-level object equals the unlimited assembly's object for the same
 root rows. Root rows sharing their own-field values collapse, so fewer than `n`
-objects may return. A root synthesised from descendants has no rows of its own
+objects may return, unless the OUTPUT node's config carries the deploy scorer's private
+`DEPLOY_ANSWER_PER_ROW_CONFIG_KEY` (a deployed batch answered as one frame):
+`assemble_output_from_config` then passes `top_level_per_row=True`, and an emitting root
+level's objects are its rows, one each, in order, deeper levels nested under each as
+before. A root synthesised from descendants has no rows of its own
 to limit and is assembled in full. Without a limit assembly reads every row. Declaring the schema is rendering-neutral —
 `render_output_document` prunes the null padding a uniform schema introduces —
 and an empty document keeps the typed schema instead of losing its columns.
@@ -889,7 +894,8 @@ V2 schema codec and OUTPUT shape:
   non-participating frame, and limited assembly (the first documents read only
   their own children's rows, a synthesised root is complete, duplicate root rows collapse, and a limited level
   filters on its nearest collected ancestor's own key with `is_in`, semi-joins on
-  several, and reads every row when it carries none);
+  several in the level's own order, and reads every row when it carries none; a level
+  nested by two keys over 240,000 rows equals the unlimited assembly's);
   `tests/test_output_nest_example_contract.py`
   pins the fixture-level nested-document contract, while
   `tests/test_executor_builders.py` and `tests/test_codegen_builders.py` own the

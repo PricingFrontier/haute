@@ -223,7 +223,7 @@ def test_an_edge_join_declaration_joins_its_base_and_join_inputs(tmp_path: Path)
         "@pipeline.polars\n"
         "def factors() -> pl.LazyFrame:\n"
         '    return pl.LazyFrame({"region": ["N"], "factor": [1.5]})\n\n\n'
-        '@pipeline.edge_join(how="left", on=["region"])\n'
+        '@pipeline.edge_join(how="left", on=["region"], maintain_order="left_right")\n'
         "def priced(quotes, factors): ...\n\n\n"
         'pipeline.connect("quotes", "priced", target_port="base")\n'
         'pipeline.connect("factors", "priced", target_port="join")\n',

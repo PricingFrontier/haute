@@ -369,7 +369,11 @@ def _make_joined_modelling_graph(tmp_path, rows: int, validate: str | None) -> d
     competitor = tmp_path / "competitor.parquet"
     pl.DataFrame({"quote_id": range(rows), "x1": rng.randn(rows)}).write_parquet(quotes)
     pl.DataFrame({"quote_id": range(rows), "y": rng.rand(rows) * 10}).write_parquet(competitor)
-    join_config: dict[str, object] = {"how": "left", "on": ["quote_id"]}
+    join_config: dict[str, object] = {
+        "how": "left",
+        "maintainOrder": "left_right",
+        "on": ["quote_id"],
+    }
     if validate is not None:
         join_config["validate"] = validate
     model = _make_modelling_graph(str(quotes), feature_columns=["x1"])["nodes"][1]

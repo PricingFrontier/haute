@@ -123,7 +123,11 @@ class TestAddNode:
         node = _get(out, expected_id)
         assert node.data.label == "My_Step"
         assert node.data.nodeType == "edgeJoin"
-        assert node.data.config == {"how": "left", "suffix": "_lookup"}
+        assert node.data.config == {
+            "how": "left",
+            "maintainOrder": "left_right",
+            "suffix": "_lookup",
+        }
 
     def test_a_data_input_starts_from_the_palette_config(self):
         out = _apply(
@@ -1089,7 +1093,13 @@ class TestEditSteps:
 # ---------------------------------------------------------------------------
 
 
-_JOIN = {"how": "left", "leftOn": ["k"], "rightOn": ["k"], "suffix": "_right"}
+_JOIN = {
+    "how": "left",
+    "maintainOrder": "left_right",
+    "leftOn": ["k"],
+    "rightOn": ["k"],
+    "suffix": "_right",
+}
 
 
 class TestRenameNode:

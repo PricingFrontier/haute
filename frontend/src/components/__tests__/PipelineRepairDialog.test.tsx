@@ -4,15 +4,17 @@ import { ApiError } from "../../api/client"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 import PipelineRepairDialog from "../PipelineRepairDialog"
 
-const { applyRemoveUnavailableNode, applyRecoverUnavailableNode } = vi.hoisted(() => ({
+const { applyRemoveUnavailableNode, applyRecoverUnavailableNode, applyRemoveBrokenConnection } = vi.hoisted(() => ({
   applyRemoveUnavailableNode: vi.fn(),
   applyRecoverUnavailableNode: vi.fn(),
+  applyRemoveBrokenConnection: vi.fn(),
 }))
 
 vi.mock("../../api/client", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../api/client")>(),
   applyRemoveUnavailableNode,
   applyRecoverUnavailableNode,
+  applyRemoveBrokenConnection,
 }))
 
 function applied(overrides: Record<string, unknown> = {}) {
@@ -28,7 +30,7 @@ function applied(overrides: Record<string, unknown> = {}) {
   }
 }
 
-function renderDialog(action?: "reset" | "recover") {
+function renderDialog(action?: "reset" | "recover" | "remove_connection") {
   const onClose = vi.fn()
   const onApplied = vi.fn()
   render(<PipelineRepairDialog target={{ sourceFile: "target.py", recoveryId: "target@1", action }} sourceFile="root.py" sourceRevision="root-rev" onClose={onClose} onApplied={onApplied} />)
@@ -80,6 +82,23 @@ describe("PipelineRepairDialog", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/^Reload before repairing.$/)
     expect(screen.getByTestId("pipeline-repair-dialog")).toBeInTheDocument()
     expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it("removes a broken connection by its recovery id and adopts the document", async () => {
+    const document = makePipelineEditorDocument({ source_file: "authoritative.py" })
+    applyRemoveBrokenConnection.mockResolvedValueOnce(applied({ repair_kind: "remove_connection", document }))
+    const { onApplied } = renderDialog("remove_connection")
+    expect(screen.getByRole("heading", { name: "Remove connection" })).toBeInTheDocument()
+    expect(screen.queryByRole("checkbox", { name: "Also delete config" })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove connection" }))
+
+    await waitFor(() => expect(onApplied).toHaveBeenCalledWith(document))
+    expect(applyRemoveBrokenConnection).toHaveBeenCalledWith({
+      sourceFile: "root.py", sourceRevision: "root-rev", targetSourceFile: "target.py", targetConnectionId: "target@1",
+    })
+    expect(applyRemoveUnavailableNode).not.toHaveBeenCalled()
+    expect(applyRecoverUnavailableNode).not.toHaveBeenCalled()
   })
 
   it("applies reset with the dialog's action, keeping a conflict open", async () => {

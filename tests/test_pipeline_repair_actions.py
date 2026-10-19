@@ -719,6 +719,88 @@ def test_recover_never_moves_a_body_its_decorator_never_calls_into_a_hook(tmp_pa
     assert "SaleFlag" in main_diff
 
 
+_ORDERLESS_JOIN = (
+    "@OWNER.polars\ndef quotes():\n"
+    '    df = pl.LazyFrame({"quote_id": [1]})\n    return df\n\n'
+    "@OWNER.polars\ndef rates():\n"
+    '    df = pl.LazyFrame({"quote_id": [1], "rate": [2.0]})\n    return df\n\n'
+    '@OWNER.edge_join(how="HOW", on=["quote_id"])\n'
+    "def joined(quotes, rates): ...\n\n"
+    'OWNER.connect("quotes", "joined", target_port="base")\n'
+    'OWNER.connect("rates", "joined", target_port="join")\n'
+)
+
+
+def test_recover_gives_a_join_saved_without_its_order_the_order_for_its_type(tmp_path):
+    # A join saved before its order was required fails the strict parse, so
+    # it opens unavailable; recover writes its type's order into the decorator
+    # (a right join's is right_left, not the palette's left_right).
+    from haute.parser import parse_pipeline_file
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n\n'
+        + _ORDERLESS_JOIN.replace("OWNER", "pipeline").replace("HOW", "right")
+    )
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    assert next(n for n in document.nodes if n.authored_id == "joined").availability == (
+        "unavailable"
+    )
+
+    result = _apply(tmp_path, _request(tmp_path, "joined", "recover"))
+
+    assert ("/maintainOrder", "defaulted") in {
+        (change.path, change.outcome) for change in result.field_changes
+    }
+    assert result.document.load_status == "ready"
+    assert 'maintain_order="right_left"' in (tmp_path / "main.py").read_text()
+    joined = parse_pipeline_file(tmp_path / "main.py").node_map["joined"]
+    assert joined.data.config["maintainOrder"] == "right_left"
+
+
+def test_recover_reaches_a_join_saved_without_its_order_inside_a_submodel(tmp_path):
+    # The submodel's definition fails the strict parse, so its join opens
+    # unavailable inside the definition, and recover rewrites the submodel file.
+    from haute.schemas import PipelineRepairRecoverRequest
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    child = tmp_path / "modules" / "Inputs.py"
+    child.parent.mkdir()
+    child.write_text(
+        "import haute\nimport polars as pl\n\n"
+        'submodel = haute.Submodel("Inputs", definition_id="Inputs", input_ports=[], '
+        'output_ports=[{"name": "joined", "source": {"nodeId": "joined", "handleId": None}}], '
+        'pipeline_dir="..")\n\n'
+        + _ORDERLESS_JOIN.replace("OWNER", "submodel").replace("HOW", "left"),
+        encoding="utf-8",
+    )
+    parent = tmp_path / "main.py"
+    parent.write_text(
+        'import haute\nimport polars as pl\n\npipeline = haute.Pipeline("demo")\n\n'
+        'pipeline.submodel("modules/Inputs.py", "Inputs")\n',
+        encoding="utf-8",
+    )
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+    assert document.submodels is not None
+    (definition,) = document.submodels.values()
+    target = next(n for n in definition.graph.nodes if n.authored_id == "joined")
+    assert target.availability == "unavailable"
+
+    result = _apply(
+        tmp_path,
+        PipelineRepairRecoverRequest(
+            source_file=document.source_file,
+            source_revision=document.source_revision,
+            target_source_file=target.source_file,
+            target_recovery_id=target.recovery_id,
+            action="recover",
+        ),
+    )
+
+    assert result.document.load_status == "ready"
+    assert 'maintain_order="left_right"' in child.read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize(("action", "sink_path"), [("recover", "out.parquet"), ("reset", "")])
 def test_repair_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path, action, sink_path):
     # Recovering or resetting a damaged downstream node must not require
@@ -777,3 +859,310 @@ def test_repair_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path, a
     assert (tmp_path / "a.json").read_bytes() == upstream_bytes
     sibling = next(item for item in result.document.nodes if item.authored_id == "source_a")
     assert sibling.availability == "unavailable"
+
+
+@pytest.mark.parametrize(
+    ("reference", "content"),
+    [
+        pytest.param("missing.json", None, id="config-file-missing"),
+        pytest.param(
+            "in.json",
+            {"inputType": "carrier-pigeon", "path": "quotes.parquet", "arguments": {}},
+            id="unknown-provider",
+        ),
+    ],
+)
+def test_recover_refuses_settings_with_no_provider_and_reset_replaces_them(
+    tmp_path, reference, content
+):
+    # Nothing is left for Recover to keep: it refuses naming Reset, where it
+    # used to fail with a server error, and Reset starts the node afresh.
+    from haute._pipeline_repair import PipelineRepairError, build_recover_unavailable_node_plan
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n'
+        f'@pipeline.data_input(config="{reference}")\ndef source(): ...\n'
+    )
+    if content is not None:
+        (tmp_path / reference).write_text(json.dumps(content))
+
+    with pytest.raises(PipelineRepairError) as refused:
+        build_recover_unavailable_node_plan(
+            project_root=tmp_path, request=_request(tmp_path, "source", "recover")
+        )
+    assert refused.value.code == "repair_action_unsupported"
+    assert "Reset node" in refused.value.message
+
+    assert _apply(tmp_path, _request(tmp_path, "source", "reset")).document.load_status == "ready"
+
+
+@pytest.mark.parametrize("action", ["recover", "reset"])
+def test_an_async_node_is_rewritten_as_a_plain_function(tmp_path, action):
+    # The parser refuses an async node; both actions find it and write a plain
+    # def, and Recover keeps its body.
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n\n'
+        "@pipeline.polars\ndef quotes():\n"
+        '    df = pl.LazyFrame({"quote_id": [1]})\n    return df\n\n'
+        "@pipeline.polars\nasync def later(quotes):\n    df = quotes.head(1)\n    return df\n"
+    )
+
+    result = _apply(tmp_path, _request(tmp_path, "later", action))
+
+    assert result.document.load_status == "ready"
+    source = (tmp_path / "main.py").read_text()
+    assert "async def" not in source
+    assert ("df = quotes.head(1)" in source) is (action == "recover")
+
+
+def _submodel_with_an_unbound_node(root: Path, *, parent_node: str) -> Path:
+    """A submodel whose `uses` names an input it does not have; the parent's node is named."""
+    (root / "haute.toml").write_text('[project]\nname="demo"\n')
+    child = root / "modules" / "Inputs.py"
+    child.parent.mkdir()
+    child.write_text(
+        "import haute\nimport polars as pl\n\n"
+        'submodel = haute.Submodel("Inputs", definition_id="Inputs", input_ports=[], '
+        'output_ports=[{"name": "out", "source": {"nodeId": "quotes", "handleId": None}}], '
+        'pipeline_dir="..")\n\n'
+        "@submodel.polars\ndef quotes():\n"
+        '    df = pl.LazyFrame({"quote_id": [1]})\n    return df\n\n'
+        "@submodel.polars\ndef uses(ghost: pl.LazyFrame) -> pl.LazyFrame:\n"
+        "    df = ghost\n    return df\n",
+        encoding="utf-8",
+    )
+    parent = root / "main.py"
+    parent.write_text(
+        'import haute\nimport polars as pl\n\npipeline = haute.Pipeline("demo")\n\n'
+        f"@pipeline.polars\ndef {parent_node}(out: pl.LazyFrame) -> pl.LazyFrame:\n"
+        "    df = out\n    return df\n\n"
+        'pipeline.submodel("modules/Inputs.py", "Inputs")\n'
+        f'pipeline.connect("Inputs", "{parent_node}", source_port="out")\n',
+        encoding="utf-8",
+    )
+    return parent
+
+
+def test_a_binding_failure_inside_a_submodel_is_that_nodes_to_recover(tmp_path):
+    # The submodel file's own parse refuses the node, so its definition is
+    # unavailable with the node in it, where Recover rebinds it.
+    from haute.schemas import PipelineRepairRecoverRequest
+
+    parent = _submodel_with_an_unbound_node(tmp_path, parent_node="priced")
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+    assert next(n for n in document.nodes if n.authored_id == "Inputs").availability == (
+        "unavailable"
+    )
+    assert document.submodels is not None
+    (definition,) = document.submodels.values()
+    inner = next(n for n in definition.graph.nodes if n.authored_id == "uses")
+    assert inner.availability == "unavailable"
+
+    result = _apply(
+        tmp_path,
+        PipelineRepairRecoverRequest(
+            source_file=document.source_file,
+            source_revision=document.source_revision,
+            target_source_file=inner.source_file,
+            target_recovery_id=inner.recovery_id,
+            action="recover",
+        ),
+    )
+
+    assert result.document.load_status == "ready"
+    # It has no connected input, so it takes no parameter.
+    assert "def uses() -> pl.LazyFrame:" in (tmp_path / "modules" / "Inputs.py").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_a_binding_failure_inside_a_submodel_never_blames_a_parent_node_of_its_name(tmp_path):
+    parent = _submodel_with_an_unbound_node(tmp_path, parent_node="uses")
+
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+
+    root_uses = next(n for n in document.nodes if n.authored_id == "uses")
+    assert root_uses.availability == "blocked"
+    assert document.submodels is not None
+    (definition,) = document.submodels.values()
+    assert next(n for n in definition.graph.nodes if n.authored_id == "uses").availability == (
+        "unavailable"
+    )
+
+
+_TWO_SOURCES = (
+    'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n\n'
+    "@pipeline.polars\ndef quotes():\n"
+    '    df = pl.LazyFrame({"quote_id": [1]})\n    return df\n\n'
+)
+
+
+def test_a_config_reference_that_is_not_a_path_leaves_only_its_node_to_reset(tmp_path):
+    # It failed the whole document; now its node is unavailable and Reset
+    # writes the node afresh with a config file of its own.
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        _TWO_SOURCES + "@pipeline.banding(config=1)\ndef banded(quotes): ...\n"
+    )
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    assert document.load_status == "degraded"
+    by_id = {node.authored_id: node for node in document.nodes}
+    assert by_id["quotes"].availability == "ready"
+    assert by_id["banded"].availability == "unavailable"
+
+    result = _apply(tmp_path, _request(tmp_path, "banded", "reset"))
+
+    assert result.document.load_status == "ready"
+    assert "config=1" not in (tmp_path / "main.py").read_text()
+
+
+def test_recover_drops_an_unreadable_contract_and_keeps_the_code(tmp_path):
+    # It failed the whole document; Recover derives the annotation again from
+    # the settings, as for a stale one, and the code survives (Reset would not).
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        _TWO_SOURCES + '@pipeline.polars(contract="none")\ndef later(quotes):\n'
+        "    df = quotes.head(1)\n    return df\n"
+    )
+
+    result = _apply(tmp_path, _request(tmp_path, "later", "recover"))
+
+    assert result.document.load_status == "ready"
+    assert ("/contract", "removed") in {
+        (change.path, change.outcome) for change in result.field_changes
+    }
+    source = (tmp_path / "main.py").read_text()
+    assert 'contract="none"' not in source
+    assert "df = quotes.head(1)" in source
+
+
+def test_reset_writes_a_model_score_without_loading_a_model(tmp_path):
+    # Reset derived the annotation as a save does, resolving the model; a new
+    # Model Score has none yet, so every Reset of one was refused.
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    sidecar = tmp_path / "config" / "model_scoring" / "scored.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(json.dumps({"frobnicate": 1}))
+    (tmp_path / "main.py").write_text(
+        _TWO_SOURCES + '@pipeline.model_score(config="config/model_scoring/scored.json")\n'
+        "def scored(quotes): ...\n"
+        'pipeline.connect("quotes", "scored")\n'
+    )
+
+    result = _apply(tmp_path, _request(tmp_path, "scored", "reset"))
+
+    assert result.document.load_status == "ready"
+    assert "frobnicate" not in sidecar.read_text()
+
+
+def test_reset_refuses_an_edge_join_and_recover_keeps_its_keys(tmp_path):
+    # A new join has no keys, and a join without keys cannot be written.
+    from haute._pipeline_repair import PipelineRepairError, build_recover_unavailable_node_plan
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n\n'
+        + _ORDERLESS_JOIN.replace("OWNER", "pipeline").replace("HOW", "left")
+    )
+
+    with pytest.raises(PipelineRepairError, match="cannot be reset") as refused:
+        build_recover_unavailable_node_plan(
+            project_root=tmp_path, request=_request(tmp_path, "joined", "reset")
+        )
+    assert refused.value.code == "repair_action_unsupported"
+
+    assert _apply(tmp_path, _request(tmp_path, "joined", "recover")).document.load_status == (
+        "ready"
+    )
+    assert 'on=["quote_id"]' in (tmp_path / "main.py").read_text()
+
+
+def test_recover_commits_in_a_file_a_stray_statement_keeps_degraded(tmp_path):
+    # The file parses once the node is recovered, but a statement a save would
+    # drop keeps it degraded; the commit took that for a failed repair and
+    # rolled every repair in such a file back.
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n\n'
+        + _ORDERLESS_JOIN.replace("OWNER", "pipeline").replace("HOW", "left")
+        + "\nrate = 1.5\n"
+    )
+
+    result = _apply(tmp_path, _request(tmp_path, "joined", "recover"))
+
+    assert result.document.load_status == "degraded"
+    assert [diagnostic.code for diagnostic in result.document.diagnostics] == [
+        "unkept_module_statement"
+    ]
+    assert 'maintain_order="left_right"' in (tmp_path / "main.py").read_text()
+
+
+_PORT_FED = {
+    "edge-join": (
+        '{"nodeId": "result", "handleId": "base"}',
+        "@submodel.polars\ndef rates():\n"
+        '    df = pl.LazyFrame({"quote_id": [1], "rate": [2.0]})\n    return df\n\n'
+        '@submodel.edge_join(how="left", on=["quote_id"])\ndef result(records, rates): ...\n\n'
+        'submodel.connect("rates", "result", target_port="join")\n',
+        'maintain_order="left_right"',
+    ),
+    "polars": (
+        '{"nodeId": "result", "handleId": None}',
+        '@submodel.polars(contract="none")\ndef result(records):\n'
+        "    df = records.head(1)\n    return df\n",
+        "df = records.head(1)",
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_PORT_FED))
+def test_recover_keeps_the_input_a_submodel_port_feeds(tmp_path, kind):
+    # A node inside a submodel is fed by the definition's public input port as
+    # well as by its edges; regenerated from the edges alone, it lost that
+    # input (a join without its base, a Polars node without its parameter).
+    from haute.schemas import PipelineRepairRecoverRequest
+
+    port_target, child_body, kept = _PORT_FED[kind]
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    child = tmp_path / "modules" / "Inputs.py"
+    child.parent.mkdir()
+    child.write_text(
+        "import haute\nimport polars as pl\n\n"
+        'submodel = haute.Submodel("Inputs", definition_id="Inputs", '
+        f'input_ports=[{{"name": "records", "targets": [{port_target}]}}], '
+        'output_ports=[{"name": "out", "source": {"nodeId": "result", "handleId": None}}], '
+        'pipeline_dir="..")\n\n' + child_body,
+        encoding="utf-8",
+    )
+    parent = tmp_path / "main.py"
+    parent.write_text(
+        'import haute\nimport polars as pl\n\npipeline = haute.Pipeline("demo")\n\n'
+        "@pipeline.polars\ndef quotes():\n"
+        '    df = pl.LazyFrame({"quote_id": [1]})\n    return df\n\n'
+        'pipeline.submodel("modules/Inputs.py", "Inputs")\n'
+        'pipeline.connect("quotes", "Inputs", target_port="records")\n',
+        encoding="utf-8",
+    )
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+    assert document.submodels is not None
+    (definition,) = document.submodels.values()
+    inner = next(n for n in definition.graph.nodes if n.authored_id == "result")
+    assert inner.availability == "unavailable"
+
+    result = _apply(
+        tmp_path,
+        PipelineRepairRecoverRequest(
+            source_file=document.source_file,
+            source_revision=document.source_revision,
+            target_source_file=inner.source_file,
+            target_recovery_id=inner.recovery_id,
+            action="recover",
+        ),
+    )
+
+    assert result.document.load_status == "ready"
+    source = child.read_text(encoding="utf-8")
+    assert "records" in source.split("def result(", 1)[1].split(")", 1)[0]
+    assert kept in source

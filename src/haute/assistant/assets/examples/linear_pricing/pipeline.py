@@ -26,7 +26,11 @@ def enriched(quotes: pl.LazyFrame) -> pl.LazyFrame:
 
     return quotes.with_columns(
         vehicle_age=(2026 - pl.col("vehicle_year")).cast(pl.Int64),
-        driver_band=pl.col("driver_age").cut([25, 40, 65]),
+        driver_band=pl.col("driver_age").bin_intervals(
+            [25, 40, 65],
+            labels=["(-inf, 25]", "(25, 40]", "(40, 65]", "(65, inf]"],
+            right_closed=True,
+        ),
     )
 
 

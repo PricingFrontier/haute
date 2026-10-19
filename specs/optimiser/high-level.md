@@ -299,6 +299,11 @@ parquet file under a dedicated temp-directory root instead of being kept in memo
 in-memory dataframe reference is explicitly cleared once that happens. This bounds worker
 memory for long solve sessions without forcing every result to be re-solved on each interaction.
 
+The grid builder reads each quote's scenario rows together, one quote after another, in
+scenario order, as the Scenario Expander writes them. A step between the Expander and the
+optimiser that leaves row order to Polars can mix quotes' rows; such an input fails setup
+with a 400 naming the quote column, and never becomes a grid.
+
 Grid construction itself avoids materialising the scored dataframe twice in Python. `_build_grid`
 (`_optimiser_service.py`) sinks the scored lazy frame to a temporary Parquet file via
 `bounded_sink` rather than collecting an eager `DataFrame` and handing it to the Rust grid

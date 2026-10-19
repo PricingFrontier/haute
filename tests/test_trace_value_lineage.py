@@ -30,7 +30,11 @@ def _node(node_id: str, node_type: NodeType, config: dict) -> GraphNode:
 
 
 def _left_join(node_id: str) -> GraphNode:
-    return _node(node_id, NodeType.EDGE_JOIN, {"how": "left", "on": ["quote_id"]})
+    return _node(
+        node_id,
+        NodeType.EDGE_JOIN,
+        {"how": "left", "maintainOrder": "left_right", "on": ["quote_id"]},
+    )
 
 
 def _pricing_graph(tmp_path) -> object:
@@ -647,7 +651,7 @@ def test_a_multi_frame_base_is_read_through_the_frame_its_edge_names(join_unreso
         ("rates", None): {"quote_id", "read"},
     }
     lineage = _join_lineage(
-        {"how": "left", "on": ["quote_id"]},
+        {"how": "left", "maintainOrder": "left_right", "on": ["quote_id"]},
         frames=frames,
         base=("api", "policies"),
         join=("rates", None),
@@ -666,7 +670,13 @@ def test_a_multi_frame_base_is_read_through_the_frame_its_edge_names(join_unreso
 def test_a_coalesced_full_join_key_leads_to_both_sides_under_their_own_names():
     frames = {("left", None): {"read", "x"}, ("right", None): {"right_key", "z"}}
     lineage = _join_lineage(
-        {"how": "full", "leftOn": "read", "rightOn": "right_key", "coalesce": True},
+        {
+            "how": "full",
+            "maintainOrder": "left_right",
+            "leftOn": "read",
+            "rightOn": "right_key",
+            "coalesce": True,
+        },
         frames=frames,
         base=("left", None),
         join=("right", None),

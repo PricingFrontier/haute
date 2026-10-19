@@ -1186,14 +1186,14 @@ def test_a_deployed_pipeline_reads_the_request_into_the_tables(project: Path) ->
         WorkbenchInputError, match="reads one quote per request, and this request holds 2"
     ):
         deployed(QuoteRequest((quote, quote)))
-    # The records are a Workbench Input's alone: a Quote Input takes its request as a frame.
-    with pytest.raises(ValueError, match="read by a Workbench Input alone"):
-        score_graph(
-            graph=_pricing(project, NodeType.API_INPUT),
-            input_df=QuoteRequest((quote,)),
-            input_node_ids=["request"],
-            output_node_id="listed",
-        )
+    # A Quote Input with tables reads the records as they were sent too, through its tables.
+    quote_input = score_graph(
+        graph=_pricing(project, NodeType.API_INPUT),
+        input_df=QuoteRequest((quote,)),
+        input_node_ids=["request"],
+        output_node_id="listed",
+    )
+    assert quote_input["name"].to_list() == ["TX", "Z", "2.0"]
 
 
 def test_a_deployed_request_is_sized_per_table_for_the_memory_estimate(project: Path) -> None:
@@ -1241,6 +1241,7 @@ def test_the_containers_quote_route_reads_the_request_as_sent(project: Path) -> 
         "pruned_graph": shipped_graph(graph),
         "input_node_ids": ["request"],
         "output_node_id": "listed",
+        "request_rows": {"multi_quote": "in_request_order", "refusals": [], "checked_lookups": []},
         "artifacts": {},
         "output_fields": None,
     }

@@ -312,6 +312,11 @@ class Parser {
       case "text":
         if (value.kind !== "string" || negative) throw new FormulaError(`${fn}() expects quoted text here.`, value.start)
         return literal("text", value.value)
+      case "format":
+        if (value.kind !== "string" || negative || !value.value.includes("%")) {
+          throw new FormulaError(`${fn}() expects a date format such as '%Y-%m-%d' here.`, value.start)
+        }
+        return literal("text", value.value)
       case "dtype": {
         const dtype = value.kind === "string" ? value.value : value.kind === "name" ? value.value : ""
         if (negative || !(CAST_DTYPES as string[]).includes(dtype)) throw new FormulaError(`${fn}() expects a type such as ${CAST_DTYPES.slice(0, 3).join(", ")}.`, value.start)

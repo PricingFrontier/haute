@@ -174,10 +174,13 @@ const optimiserValidators = () => import("../generated/api-contracts.optimiser.v
 const sessionValidators = () => import("../generated/api-contracts.session.validators.mjs")
 const utilityValidators = () => import("../generated/api-contracts.utility.validators.mjs")
 import {
+  parseRemoveBrokenConnectionApplyResponse,
   parseRemoveUnavailableNodeApplyResponse,
   parseRecoverUnavailableNodeApplyResponse,
   type RecoverUnavailableNodeApplyResponse,
   type RecoverUnavailableNodeRequest,
+  type RemoveBrokenConnectionApplyResponse,
+  type RemoveBrokenConnectionRequest,
   type RemoveUnavailableNodeApplyResponse,
   type RemoveUnavailableNodeRequest,
 } from "../types/pipelineRepair"
@@ -750,6 +753,18 @@ export function applyRecoverUnavailableNode(
     target_recovery_id: args.targetRecoveryId,
     action: args.action,
   }, options).then(parseRecoverUnavailableNodeApplyResponse)
+}
+
+export function applyRemoveBrokenConnection(
+  args: RemoveBrokenConnectionRequest,
+  options?: MutationOptions,
+): Promise<RemoveBrokenConnectionApplyResponse> {
+  return post<unknown>("/api/pipeline/repair/connection/remove/apply", {
+    source_file: args.sourceFile,
+    source_revision: args.sourceRevision,
+    target_source_file: args.targetSourceFile,
+    target_connection_id: args.targetConnectionId,
+  }, options).then(parseRemoveBrokenConnectionApplyResponse)
 }
 
 export interface ScopedNodeSaveRequest {

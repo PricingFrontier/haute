@@ -194,10 +194,25 @@ def test_every_consumer_totally_classifies_the_closed_logical_input_set() -> Non
 def test_checked_contract_versions_advance_with_changed_byte_layouts() -> None:
     assert ALGO_VERSION == 9
     assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.GRAPH_STRUCTURE].version == 2
-    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.PREVIEW_TRACE].version == 4
+    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.PREVIEW_TRACE].version == 5
     assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.RUNTIME_GRAPH_INPUT].version == 4
-    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.DEPLOY_SCHEMA].version == 2
-    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.NODE_SNAPSHOT_SIGNATURE].version == 2
+    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.DEPLOY_SCHEMA].version == 3
+    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.NODE_SNAPSHOT_SIGNATURE].version == 3
+
+
+def test_every_identity_of_polars_computed_contents_signs_the_polars_version() -> None:
+    signed = {
+        CacheConsumer.PREVIEW_TRACE,
+        CacheConsumer.DEPLOY_SCHEMA,
+        CacheConsumer.NODE_SNAPSHOT_SIGNATURE,
+    }
+    for consumer, contract in CACHE_CONSUMER_CONTRACTS.items():
+        disposition = contract.input_classes[CacheInputClass.ENGINE_VERSION]
+        if consumer in signed:
+            assert disposition.fields == ("polars_version",), consumer
+        else:
+            assert disposition.fields == (), consumer
+            assert disposition.exclusion_reason, consumer
 
 
 def test_global_constants_are_signed_by_every_result_identity_and_excluded_elsewhere() -> None:

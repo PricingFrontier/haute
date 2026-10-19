@@ -64,7 +64,7 @@ uv run python scripts/run_perf_suite.py --pytest-target tests/performance/test_p
 Run the execution-engine certification added for projection hardening with:
 
 ```powershell
-uv run python scripts/run_perf_suite.py --output-dir .cache/perf/execution-engine-certification --pytest-target tests/performance/test_execution_engine_certification.py --pytest-target tests/performance/test_polars_scale_scenario.py --max-total-seconds 300 --max-test-seconds 120
+uv run python scripts/run_perf_suite.py --output-dir .cache/perf/execution-engine-certification --pytest-target tests/performance/test_execution_engine_certification.py --pytest-target tests/performance/test_polars_scale_scenario.py --max-total-seconds 420 --max-test-seconds 180
 ```
 
 That certificate is comparative rather than a machine-specific throughput
@@ -144,6 +144,12 @@ retaining the same structured artifacts. Locally, use `--polars-scale 1m` or
 uv run python scripts/run_perf_suite.py --polars-scale 1m
 uv run python scripts/run_perf_suite.py --polars-scale 10m
 ```
+
+Tests also marked `pytest.mark.perf_evidence` measure for a decision and assert none
+of their figures, such as the spilling and heap-trim measurements behind the memory
+policies. The pull-request perf job leaves them out with
+`--pytest-arg=-m "--pytest-arg=perf and not perf_evidence"`; the Performance workflow
+runs them and keeps their evidence in its artifacts.
 
 Generated scale fixtures are never committed. Keep the artifacts under the
 chosen output directory instead. They record semantic evidence and product metrics

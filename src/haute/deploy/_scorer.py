@@ -11,7 +11,7 @@ node types for live scoring:
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 import haute.projection as projection
+from haute._api_input_schema import quote_input_reads_tables
 from haute._cache import canonical_json
 from haute._contracts import (
     _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY,
@@ -50,6 +51,7 @@ from haute.execution import (
 from haute.executor import _build_node_fn
 
 if TYPE_CHECKING:
+    from haute.deploy._request_rows import RequestRows
     from haute.modelling._feature_contract import FeatureContract
 
 _RUNTIME_PATH_NODE_TYPES = REQUEST_INPUT_NODE_TYPES | frozenset(
@@ -100,12 +102,13 @@ def _clear_deploy_artifact_caches() -> None:
 
 @dataclass(frozen=True, slots=True)
 class QuoteRequest:
-    """A Workbench Input's request as it was sent: its quotes, one record each, untyped.
+    """A request as it was sent: its quotes, one record each, untyped.
 
-    A deployed Workbench Input reads its request itself, each value as its column's type
-    holds it, and refuses a misfit naming the spot (specs/workbench). A frame built from the
-    records by inference would type them first, and refuse a misfit as Polars does, so a
-    request bound for a Workbench Input is handed over as its records.
+    A deployed Workbench Input, and a Quote Input with tables, read their request
+    themselves, each value as its column's type holds it, and refuse a misfit naming the
+    spot (specs/workbench, specs/json-shredding). A frame built from the records by
+    inference would type them first, and flatten nested quotes, so such a request is
+    handed over as its records.
     """
 
     records: tuple[Mapping[str, Any], ...]
@@ -116,8 +119,8 @@ class QuoteRequest:
         return len(self.records)
 
 
-#: A deployed request: the rows of a Quote Input's or a Data Input's request as a frame,
-#: or a Workbench Input's quotes as their records.
+#: A deployed request: the rows of a flat Quote Input's or a Data Input's request as a
+#: frame, or the quotes as their records for an input that reads them (``reads_records``).
 DeployInput = pl.DataFrame | QuoteRequest
 
 
@@ -127,6 +130,30 @@ def reads_one_quote_per_request(graph: PipelineGraph, input_node_ids: Sequence[s
     return any(
         node.data.nodeType is NodeType.WORKBENCH_INPUT for node in graph.nodes if node.id in inputs
     )
+
+
+def quote_input_with_tables(node: GraphNode) -> bool:
+    """Whether *node* is a Quote Input that reads its quotes into tables."""
+    quote_input = node.data.nodeType is NodeType.API_INPUT  # the Quote Input alone
+    return quote_input and quote_input_reads_tables(node.data.config)
+
+
+def reads_records(graph: PipelineGraph, input_node_ids: Sequence[str]) -> bool:
+    """Whether the request input reads the quotes as their records (``QuoteRequest``).
+
+    A Workbench Input does, and so does a Quote Input with tables, which shreds them.
+    """
+    inputs = set(input_node_ids)
+    return any(
+        node.data.nodeType is NodeType.WORKBENCH_INPUT or quote_input_with_tables(node)
+        for node in graph.nodes
+        if node.id in inputs
+    )
+
+
+def request_records(input_df: DeployInput) -> tuple[Mapping[str, Any], ...]:
+    """The request's quotes as records, whichever form the request came in."""
+    return input_df.records if isinstance(input_df, QuoteRequest) else tuple(input_df.to_dicts())
 
 
 @dataclass(slots=True)
@@ -548,7 +575,7 @@ def _assert_runtime_contract_matches(
             # placeholder so the diff names the missing column.
             feature_types[name] = "MISSING"
             continue
-        canonical = contract_dtype_name(dtype)
+        canonical = contract_dtype_name(dtype, column=name)
         feature_types[name] = canonical
     for name in runtime_features:
         if feature_types.get(name) == "String":
@@ -612,6 +639,7 @@ def score_graph_lazy(
     artifact_paths: dict[str, str] | None = None,
     output_fields: list[str] | None = None,
     execution_context: ExecutionContext | None = None,
+    request_rows: RequestRows | None = None,
 ) -> DeployScorePlan:
     """Build a lazy deployed scoring plan with injected input data.
 
@@ -630,10 +658,27 @@ def score_graph_lazy(
         artifact_paths: Optional remapped artifact paths
             (``artifact_name → local_path``).
         output_fields: Optional list of columns to select from output.
+        request_rows: The deployment's record of how it answers a request of several
+            quotes; ``None`` for a dry run. A request it answers as one frame keeps one
+            top-level answer object per quote; one it answers quote by quote is scored
+            through :func:`score_graph` or the batch child, one quote at a time.
 
     Returns:
         A lazy output plan and execution context.
     """
+    from haute.deploy._request_rows import answers_quote_by_quote
+
+    if answers_quote_by_quote(request_rows, input_df.height):
+        raise ValueError(
+            "A request answered quote by quote is scored one quote at a time "
+            "(score_quote_by_quote), not as one lazy plan."
+        )
+    if (
+        request_rows is not None
+        and request_rows.multi_quote == "in_request_order"
+        and input_df.height > 1
+    ):
+        graph = _with_answer_per_row(graph, output_node_id)
     if execution_context is None:
         execution_context = admit_deploy_execution(
             operation="deploy_score_graph",
@@ -652,6 +697,75 @@ def score_graph_lazy(
     except BaseException:
         execution_context.release_admission(preserve_primary_error=True)
         raise
+
+
+def _with_answer_per_row(graph: PipelineGraph, output_node_id: str) -> PipelineGraph:
+    """*graph* with its response keeping one top-level object per row: a batch answered as
+    one frame, each row answering its own quote, even where two answers coincide."""
+    from haute._output_assembler import DEPLOY_ANSWER_PER_ROW_CONFIG_KEY
+
+    nodes = [
+        node.with_config({**node.data.config, DEPLOY_ANSWER_PER_ROW_CONFIG_KEY: True})
+        if node.id == output_node_id
+        else node
+        for node in graph.nodes
+    ]
+    return graph.model_copy(update={"nodes": nodes})
+
+
+def _quotes_of(input_df: DeployInput) -> Iterator[DeployInput]:
+    """Each quote of a request as a request of its own: its record, or the frame's row."""
+    if isinstance(input_df, QuoteRequest):
+        for record in input_df.records:
+            yield QuoteRequest((record,))
+    else:
+        for index in range(input_df.height):
+            yield input_df.slice(index, 1)
+
+
+def score_quote_by_quote(
+    *,
+    graph: PipelineGraph,
+    input_df: DeployInput,
+    input_node_ids: list[str],
+    output_node_id: str,
+    artifact_paths: dict[str, str] | None,
+    output_fields: list[str] | None,
+    execution_context: ExecutionContext | None,
+    retain_admission_on_success: bool,
+) -> pl.DataFrame:
+    """A request's quotes scored one at a time, each alone, and answered one row each.
+
+    Each quote runs through :func:`score_graph` as a request of its own, under the
+    caller's execution context when there is one, whose admission is kept between quotes
+    and released at the end unless *retain_admission_on_success*; a failure releases it.
+    A quote answered with no row or several fails the request (``check_quote_answer``).
+    """
+    from haute.deploy._request_rows import check_quote_answer
+
+    quotes = input_df.height
+    answers: list[pl.DataFrame] = []
+    try:
+        for position, quote in enumerate(_quotes_of(input_df), start=1):
+            answer = score_graph(
+                graph=graph,
+                input_df=quote,
+                input_node_ids=input_node_ids,
+                output_node_id=output_node_id,
+                artifact_paths=artifact_paths,
+                output_fields=output_fields,
+                execution_context=execution_context,
+                retain_admission_on_success=execution_context is not None,
+            )
+            check_quote_answer(quotes, position, answer.height)
+            answers.append(answer)
+    except BaseException:
+        if execution_context is not None:
+            execution_context.release_admission(preserve_primary_error=True)
+        raise
+    if execution_context is not None and not retain_admission_on_success:
+        execution_context.release_admission()
+    return pl.concat(answers, how="vertical")
 
 
 def _reject_incomplete_stepped_nodes(graph: PipelineGraph, relevant_node_ids: set[str]) -> None:
@@ -721,9 +835,10 @@ def _score_graph_lazy(
             # dynamic model contract can fail with a lower-level config error.
             _validate_deploy_model_score_source(node, remap)
     input_set = set(input_node_ids)
-    # A Workbench Input's quote is read once, here, into a frame per port: the walk hands
-    # each edge its table, and the memory estimate sizes each consumer from the table
-    # that feeds it rather than from the one-row request that holds them all.
+    # A Workbench Input's quote, and a Quote Input's quotes, are read once, here, into a
+    # frame per port, as the editor reads them: the walk hands each edge its table, and
+    # the memory estimate sizes each consumer from the table that feeds it rather than
+    # from the request that holds them all.
     quote_tables: dict[str, dict[str, pl.DataFrame]] = {}
     runtime_source_frames_by_node: dict[str, pl.DataFrame | Mapping[str, pl.DataFrame]] = {}
     # The input nodes are the request input or the promoted Data Input, nothing else.
@@ -731,19 +846,24 @@ def _score_graph_lazy(
         if node.id not in input_set:
             continue
         if node.data.nodeType is NodeType.WORKBENCH_INPUT:
-            records = (
-                input_df.records if isinstance(input_df, QuoteRequest) else input_df.to_dicts()
+            quote_tables[node.id] = workbench_request_frames(
+                node.data.config, request_records(input_df)
             )
-            quote_tables[node.id] = workbench_request_frames(node.data.config, records)
+            runtime_source_frames_by_node[node.id] = quote_tables[node.id]
+            continue
+        if quote_input_with_tables(node):
+            from haute._json_shred._shred import shred_request
+
+            quote_tables[node.id] = shred_request(request_records(input_df), node.data.config)
             runtime_source_frames_by_node[node.id] = quote_tables[node.id]
             continue
         if isinstance(input_df, QuoteRequest):
             raise ValueError(
-                f"A QuoteRequest is read by a Workbench Input alone; {node.id!r} is a "
-                f"{node.data.nodeType.value} and takes a frame."
+                f"A QuoteRequest is read by a Workbench Input or a Quote Input with tables; "
+                f"{node.id!r} is a {node.data.nodeType.value} and takes a frame."
             )
         runtime_source_frames_by_node[node.id] = input_df
-    # A Workbench Input's quote was read above; any other input takes the frame. With a
+    # The request read into tables above; any other input takes the frame. With a
     # QuoteRequest there is no other input (the loop refused one), so this is never read.
     input_lf = pl.LazyFrame() if isinstance(input_df, QuoteRequest) else input_df.lazy()
     model_score_temp_paths: list[str] = []
@@ -763,18 +883,18 @@ def _score_graph_lazy(
         # code boxes see beside their own, exactly as the editor builders give them.
         _preamble_names: dict[str, Any] = dict(build_kwargs.get("preamble_ns") or {})
 
-        # Intercept: the request input → inject the live DataFrame directly; a
-        # Workbench Input's request was read into its tables above.
+        # Intercept: the request input → inject the live DataFrame directly; a request
+        # read into its tables above is injected as them.
         if node_type in REQUEST_INPUT_NODE_TYPES and nid in input_set:
-            if node_type is NodeType.WORKBENCH_INPUT:
+            if nid in quote_tables:
                 # A frame per port, as a multi-frame source gives, which the walk
                 # hands each edge by its handle.
-                def inject_workbench_request(
+                def inject_request_tables(
                     _tables: dict[str, pl.DataFrame] = quote_tables[nid],
                 ) -> Any:
                     return {port: table.lazy() for port, table in _tables.items()}
 
-                return func_name, inject_workbench_request, True
+                return func_name, inject_request_tables, True
 
             def inject_input() -> _Frame:
                 return input_lf
@@ -1178,16 +1298,32 @@ def score_graph(
     output_fields: list[str] | None = None,
     execution_context: ExecutionContext | None = None,
     retain_admission_on_success: bool = False,
+    request_rows: RequestRows | None = None,
 ) -> pl.DataFrame:
     """Execute a pruned graph and collect output, optionally retaining admission.
 
     ``retain_admission_on_success`` is for callers that must perform one final
     materialising conversion under the same reservation. Plan resources are still
     cleaned immediately; the caller must release ``execution_context`` in ``finally``.
-    Failures always release here.
+    Failures always release here. Under *request_rows* a request of several quotes is
+    answered as one frame, its row count checked, or quote by quote
+    (:func:`score_quote_by_quote`).
     """
+    from haute.deploy._request_rows import answers_quote_by_quote, check_answer_rows
+
     if retain_admission_on_success and execution_context is None:
         raise ValueError("retain_admission_on_success requires a caller-owned execution_context")
+    if answers_quote_by_quote(request_rows, input_df.height):
+        return score_quote_by_quote(
+            graph=graph,
+            input_df=input_df,
+            input_node_ids=input_node_ids,
+            output_node_id=output_node_id,
+            artifact_paths=artifact_paths,
+            output_fields=output_fields,
+            execution_context=execution_context,
+            retain_admission_on_success=retain_admission_on_success,
+        )
     plan = score_graph_lazy(
         graph=graph,
         input_df=input_df,
@@ -1196,6 +1332,7 @@ def score_graph(
         artifact_paths=artifact_paths,
         output_fields=output_fields,
         execution_context=execution_context,
+        request_rows=request_rows,
     )
     preserve_primary_error = False
     succeeded = False
@@ -1213,6 +1350,7 @@ def score_graph(
             label="after_deploy_collect",
             node_id=output_node_id,
         )
+        check_answer_rows(request_rows, input_df.height, result.height)
         succeeded = True
         return result
     except BaseException:

@@ -10,12 +10,13 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as metadata_version
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from haute._git_core import _run_git_ok, git_binary_available
 from haute._logging import get_logger
 from haute._model_flavors import XGBOOST_DISTRIBUTION, family_for_suffix
+from haute._polars_environment import polars_process_environment, polars_spill_root
 from haute._price_contour import DISTRIBUTION as PRICE_CONTOUR_DISTRIBUTION
 from haute._price_contour import PriceContourCompatibilityError, price_contour_install
 from haute._types import NodeType
@@ -25,6 +26,7 @@ from haute.deploy._project_modules import UTILITY_PACKAGE
 from haute.deploy._request_limits import (
     DEFAULT_DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES,
 )
+from haute.deploy._request_rows import copy_verified
 from haute.deploy._utils import build_manifest, model_source_line
 from haute.errors import DeployError
 
@@ -109,9 +111,14 @@ def write_bundle(
     manifest_path = build_dir / "deploy_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
+    # Each artefact is copied under the digest resolution recorded before checking it.
     for artifact_name, artifact_path in resolved.artifacts.items():
-        dest = artifacts_dir / artifact_name
-        shutil.copy2(artifact_path, dest)
+        copy_verified(
+            artifact_path,
+            artifacts_dir / artifact_name,
+            digest=resolved.artifact_digests[artifact_name],
+            name=artifact_name,
+        )
 
     # A reused build directory must not keep an earlier build's utility code:
     # a stale package would shadow the module this build validated.
@@ -373,7 +380,7 @@ from haute._execution_admission import (
 )
 from haute._execution_context import ExecutionCancelledError, ExecutionMemoryLimitExceededError
 from haute._output_assembler import render_output_document
-from haute._polars_utils import bounded_collect_batches
+from haute._polars_utils import bounded_collect_batches, streaming_collect
 from haute._types import PipelineGraph
 from haute.errors import HauteError, BoundedMemoryUnsupportedError, is_public_contract_error
 from haute.deploy._request_limits import (
@@ -403,10 +410,11 @@ from haute.deploy._batch_scoring import (
     prepare_batch_scoring,
     score_batch_worker,
 )
+from haute.deploy._request_rows import RequestRows
 from haute.deploy._scorer import (
     QuoteRequest,
     admit_deploy_execution,
-    reads_one_quote_per_request,
+    reads_records,
     score_graph,
     score_graph_lazy,
 )
@@ -419,10 +427,12 @@ _manifest = json.loads(_MANIFEST_PATH.read_text())
 
 _pruned_graph = PipelineGraph.model_validate(_manifest["pruned_graph"])
 _input_node_ids = _manifest["input_node_ids"]
-# A Workbench Input reads its quote from the records as sent, typing each value itself;
-# any other request input takes the rows as a frame.
-_reads_quotes = reads_one_quote_per_request(_pruned_graph, _input_node_ids)
+# A Workbench Input, and a Quote Input with tables, read the quotes from the records as
+# sent, typing each value themselves; any other request input takes the rows as a frame.
+_reads_quotes = reads_records(_pruned_graph, _input_node_ids)
 _output_node_id = _manifest["output_node_id"]
+# Whether a request of several quotes is answered in request order, or refused.
+_request_rows = RequestRows.from_manifest(_manifest["request_rows"])
 
 
 def _resolve_manifest_artifact_path(raw_path):
@@ -510,6 +520,7 @@ def health() -> dict:
         # Multi-row batches run in a spawn worker with a hard RSS cap.
         "batch_memory_enforcement": resolve_worker_memory_enforcement(),
         "execution_policy": _manifest.get("execution_policy"),
+        "request_rows": _manifest["request_rows"],
     }}
 
 
@@ -576,7 +587,7 @@ def _quote_ndjson_chunks(spool):
 def _batch_response_content(result):
     row_count = result.row_count
     returned_rows = min(row_count, _QUOTE_RESPONSE_ROW_LIMIT)
-    frame = pl.scan_parquet(result.result_path).head(returned_rows).collect()
+    frame = streaming_collect(pl.scan_parquet(result.result_path).head(returned_rows))
     return {{
         "rows": render_output_document(frame),
         "row_count": row_count,
@@ -662,6 +673,7 @@ async def _quote_batch(request: Request, rows: list):
             output_node_id=_output_node_id,
             artifact_paths=_artifact_paths,
             output_fields=_output_fields,
+            request_rows=_request_rows,
         )
         outcome = await run_isolated_worker_async(
             score_batch_worker,
@@ -846,6 +858,7 @@ async def quote(request: Request) -> JSONResponse:
                 artifact_paths=_artifact_paths,
                 output_fields=_output_fields,
                 execution_context=execution_context,
+                request_rows=_request_rows,
             )
             spool = await run_in_threadpool(_materialize_quote_ndjson, plan)
             return StreamingResponse(
@@ -860,6 +873,7 @@ async def quote(request: Request) -> JSONResponse:
             artifact_paths=_artifact_paths,
             output_fields=_output_fields,
             execution_context=execution_context,
+            request_rows=_request_rows,
         )
         return JSONResponse(content=_quote_response_content(result, execution_context))
     except ExecutionAdmissionError as exc:
@@ -936,6 +950,8 @@ def _generate_dockerfile(
     else:
         copy_utility = f"COPY {UTILITY_PACKAGE}.py .\n"
     copy_extra = "".join(f"COPY {name} .\n" for name in extra_files)
+    polars_settings = polars_process_environment(polars_spill_root(PurePosixPath("/app")))
+    polars_env = "".join(f"ENV {name}={value}\n" for name, value in sorted(polars_settings.items()))
 
     return f"""\
 FROM {base_image}
@@ -946,6 +962,9 @@ WORKDIR /app
 # enforcement; the hosting platform owns any outer hard container cap.
 ENV HAUTE_EXECUTION_MEMORY_POLICY=strict_server
 
+# Keep Polars' out-of-core spilling off and inside the container's storage,
+# and load an unknown Arrow extension column as its storage type.
+{polars_env}
 # Install the pinned scoring runtime, then haute itself without its
 # dependencies: they include the editor, assistant, training and tuning
 # stacks, which a scoring container never runs.

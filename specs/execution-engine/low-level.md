@@ -8,7 +8,7 @@
 | `src/haute/executor.py` | GUI-facing eager entry point: `execute_graph()` (preview, with the `_preview_cache` `LRUCache`), `write_data_output()` (batch/data-output writes), preamble compilation + single-flight cache (`_compile_preamble`), preview-column projection/schema-warning assembly, and output-destination containment. |
 | `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers; directly owns strategy-planner entry points (and `plan_projection`, the projection half of `plan_execution_strategy`, for a caller that needs another execution's per-node column demand without planning or admitting it), runtime-input fingerprints, `preview_lineage_cache_key`, and `PREVIEW_EXECUTION_SEMANTICS_VERSION`. It is the stable application import boundary, but is not currently a thin re-export module. |
 | `src/haute/_path_resolution.py` | Cross-component dependency owned by [sandbox-security](../sandbox-security/low-level.md); canonical local-runtime-path resolution: separator normalization, project/pipeline candidate choice, symlink-aware containment, selected-external-pipeline root inference, and the context-local root used by eager/lazy builders. |
-| `src/haute/_execute_lazy.py` | Node-boundary machinery the graph walker uses: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), and `_PlannedCaptures` (seed-plan closures and captures), with the contract, column-shaping, recipe and runtime-demand helpers each node step uses, and the recorded-failure line helpers `_extract_error_line` and `_located_step_line`. |
+| `src/haute/_execute_lazy.py` | Node-boundary machinery the graph walker uses: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), and `_PlannedCaptures` (seed-plan closures and captures), with the contract, column-shaping, recipe and runtime-demand helpers each node step uses, and the recorded-failure line helpers `_extract_error_line` and `_located_step`. |
 | `src/haute/_graph_walker.py` | The graph walker: `walk_graph(graph, build_node_fn, *, policy: CollectPolicy, ...)` walks a graph once and returns a `WalkResult` (each built node's frame, the prepared order, parents, names, and the join and write recipes and pre-shaping frames it built). `WalkRequest` holds the execution-independent inputs, `CollectPolicy` what the walk collects, at which row and column limits, whether it records node failures, and its purpose (`WalkPurpose.SINK` hands lazy frames to a sink; `WalkPurpose.DISPLAY` reports schemas and collects for a person; `WalkPurpose.CHUNK` walks a chain one start frame at a time and has no production caller since the chunked runner was deleted; `WalkPurpose.MEASURE` builds a lineage as a display walk does but, at each checked node, collects the caller's `MeasurementQueries` over its input frames and then its output ports, each cut to a row bound, and returns one `NodeMeasurement` per checked node, never a frame, with each failure an `AttributedFailure` naming the node it is attributed to). The Data Output sink, every lazy execution through the execution facade, the preview, the trace and the assistant's data check walk through it. `prepare_walk(...)` prepares a chunk walk once and `PreparedWalk.run(start_frames)` walks it per start frame; `project_output` narrows a node's output to a demand in schema order. No function in the module exceeds a cyclomatic complexity of 15, held by ruff's C901 rule scoped to this module alone. |
 | `src/haute/_contracts.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution consumes the shared column-contract model and registry lookup. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution reads the canonical node registry. |
@@ -22,9 +22,10 @@
 | `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (the pipeline settings' preview memory / fixed default / explicit env override / adaptive fraction of available RAM above the settings' kept-free memory), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
 | `src/haute/_pipeline_settings.py` | The per-clone pipeline settings file `.haute/pipeline-settings.json`: the `PipelineSettings` keys and their validation, stat-gated reads (`read_pipeline_settings`), locked atomic updates (`update_pipeline_settings`), the current automatic figures (`automatic_pipeline_settings`), the time limits and byte sizes its consumers read, `PipelineSettingsError`, and the server process following the file's chunk rows (`follow_chunk_rows`). See "Pipeline settings" below. |
 | `src/haute/_chunked_writes.py` | Bounded chunked writes: `sliceable` (positive proof on Polars' optimised IR that slicing a frame equals slicing its single Parquet/IPC scan or in-memory input), `write_parts` (a node output as ordered `part-NNNNN.parquet` files: a chunked edge join, one native sink per slice, an input-sliced write, or one native sink), `JoinRecipe`, `WriteRecipe`, `part_paths`/`scan_parts`. |
-| `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` selects `auto` or streaming execution and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract. All three preserve checkpoint, collect-count, and typed-error telemetry. `bounded_collect_batches` streams batches from a query run on a dedicated thread, so an engine panic raises instead of ending the stream early. It also owns the Python scans that expose opaque Python steps to Polars pushdown (`row_local_python_scan`, `fanout_python_scan`, `limited_python_scan`, `key_prefix_python_scan`) and the parked scan-failure registry every collect seam re-raises from. |
+| `src/haute/_polars_environment.py` | The Polars settings every process Haute starts runs under (see "Polars process settings" below): `polars_process_environment`, `polars_spill_root`, `apply_polars_process_environment`, `release_polars_spill_dir`, which every worker path calls beside its private-cgroup cleanup once the child has ended, and `reap_polars_spill_dirs`, which removes the folders of ended processes. |
+| `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` collects on the engine its caller names, `streaming` or `in-memory` (a required argument; every collect in `src/haute/` names one), and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract. All three preserve checkpoint, collect-count, and typed-error telemetry. `bounded_collect_batches` streams batches from a query run on a dedicated thread, so an engine panic raises instead of ending the stream early. It also owns the Python scans that expose opaque Python steps to Polars pushdown (`row_local_python_scan`, `fanout_python_scan`, `limited_python_scan`, `key_prefix_python_scan`), whose exceptions reach every seam as themselves. |
 | `src/haute/_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion (`expand_scenarios_from_config`, and `expand_scenarios_bounded` for the interactive form a preview row limit reaches through), `optimiserApply` artifact dispatch, and output response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
-| `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`, declaring every type's recompute cost (`recompute_cost=`); owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component, and `pass_through_selected_edge` / `PASS_THROUGH_NODE_TYPES`, which state the incoming edge a pass-through node's built function returns. It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). A stepped Polars transform's function carries `transform_fn.failed_step_line`, which replays the steps' prefixes on the run's input frames to name the step whose lazy plan failed (`_failed_step_line`). |
+| `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`, declaring every type's recompute cost (`recompute_cost=`); owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component, and `pass_through_selected_edge` / `PASS_THROUGH_NODE_TYPES`, which state the incoming edge a pass-through node's built function returns. A node built without an input (an unconnected Rating Step, Banding, Scenario Expander, Model Score or Optimiser Apply, an unsaved Data Input, and the deploy scorer's external and model placeholders) starts from `pl.LazyFrame()`, which has no rows, and so returns none: a constant it adds gives no row either (Polars 1 invented one). It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). A stepped Polars transform's function carries `transform_fn.failed_step`, which replays the schemas of the steps' prefixes on the run's input frames to name the step a run failed on and, for something Polars 2 refuses only on rows, what to change (`_failed_step`, `StepFailure`). |
 | `src/haute/_node_builder.py` | `NodeBuildHooks` and `wrap_builder`, the interception seam used by deploy scoring while preserving the canonical runtime builders. |
 | `src/haute/_topo.py` | Strict `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), explicit `topo_sort_ids_filtered` (opt-in subset traversal returning both the order and every dropped edge/endpoint), `canonical_topological_order` (the same graphlib sorter driven lexically: the smallest ready node id always comes next, so it is independent of input order; projection diagnostics rank nodes by it), and `ancestors` (a node and its ancestors over reversed edges, walked by `upstream_node_ids`). The default sorter never silently ignores an unknown endpoint. It is the one topological sort; `_find_cycle_nodes` peels in-degrees only to report every node in a cycle. |
 | `src/haute/graph_utils.py` | Canonical outward re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. Low-level engine modules import canonical graph models from `_types.py` and pure helpers from `_graph_utils.py` directly; importing back through this heavyweight facade would re-enter `_execute_lazy.py` and create an execution/RAM-estimation cycle. |
@@ -505,7 +506,7 @@ refused, which is the run exceeding its budget rather than a fault of the node t
 allocate. Under a context with a memory limit and a working sampler it ends the walk as
 `ExecutionMemoryLimitExceededError` naming the budget; otherwise it propagates as it is.
 
-A recorded failure's error line (`WalkResult.error_lines`, which the preview response carries as `error_line`) is what `_extract_error_line` finds: a `SyntaxError`'s line, the `<string>` frame line `_exec_user_code` stashes on an exception raised while the code runs, or a `line N` in the message. A stepped Polars transform's plan error (a missing column, a type mismatch) carries none of these, because its lazy plan fails only when the walker resolves the node's schema, after the code ran. For that case the walker keeps a node's input frames when the node fails while it is built and shaped, where a display walk resolves every node's schema, and when the recorded failure has no line and is a Polars error, `_located_step_line` asks the node's function for the step. Only `_builders._build_transform` gives a function that locator (`failed_step_line`): an input-mode `polars` transform whose steps contain no `free_code` step, since free code can replace the frame and replaying it would run authored code a second time. The frame-mode surfaces (Data Input, External File, Rating Step, Model Score, Scenario Expander, Explore) have none: their steps start from a frame the node builds itself, which replaying would rebuild. `_builders._failed_step_line` first resolves the schema of the node's full plan, executing the rendering through the same `_exec_user_code` call the transform made, on the same input frames. When that resolves, the failure was not the steps' plan (a strict cast meeting a bad value fails only on data) and no line is added. Otherwise it renders each prefix of the steps with `render_polars_steps`, executes it the same way and resolves its schema, which reads no rows; the first prefix that fails names its last step, and the error line is the first line of that step's range in the node's code. The exception and its message are unchanged; only the line is added. A failure while collecting comes after the node's schema resolved, so it is a data error and keeps no line without any replay, and a successful run renders and executes nothing more.
+A recorded failure's error line (`WalkResult.error_lines`, which the preview response carries as `error_line`) is what `_extract_error_line` finds: a `SyntaxError`'s line, the `<string>` frame line `_exec_user_code` stashes on an exception raised while the code runs, or a `line N` in the message. A stepped Polars transform's plan error (a missing column, a type mismatch) carries none of these, because its lazy plan fails only when the walker resolves the node's schema, after the code ran. For that case the walker keeps a stepped transform's input frames until it has collected: when the node fails while it is built and shaped, where a display walk resolves every node's schema, and on its `_NodeFrame` (`inputs`) through its collect, where a step Polars 2 refuses only on rows fails. When the recorded failure has no line and is a Polars error, `_located_step` asks the node's function for the step. Only `_builders._build_transform` gives a function that locator (`failed_step`, which returns a `StepFailure`: the step's first line and, when Haute knows it, what to change): an input-mode `polars` transform whose steps contain no `free_code` step, since free code can replace the frame and replaying it would run authored code a second time. The frame-mode surfaces (Data Input, External File, Rating Step, Model Score, Scenario Expander, Explore) have none: their steps start from a frame the node builds itself, which replaying would rebuild. `_builders._failed_step` first resolves the schema of the node's full plan, executing the rendering through the same `_exec_user_code` call the transform made, on the same input frames. When it does not resolve, it renders each prefix of the steps with `render_polars_steps`, executes it the same way and resolves its schema, which reads no rows; the first prefix that fails names its last step, and the error line is the first line of that step's range in the node's code. When it resolves, the failure came once rows arrived: each step is checked against the schema before it (`_polars_steps.step_refusal`), and the first that does something Polars 2 refuses only on rows (a cast in `CAST_REFUSALS`, a parse of a column that is not text, std or var of a duration) is named with what to change; otherwise the failure was the data's (a strict cast meeting a bad value) and no line is added. The exception is unchanged: the walker records what to change on the first line of the node's error and Polars' own message after it, so the card's badge shows what to change. A successful run renders and executes nothing more.
 
 `selected_columns` has exactly one interpreter: this shared post-call filter, applied to
 every node's output in every execution profile. Source builders never push it into the
@@ -524,7 +525,7 @@ projection planning").
 A target-only preview therefore limits only the target with SQL `LIMIT` semantics — Polars
 pushes the slice upstream only where the result is unchanged — a full materialisation
 gives every node its own limited output, and trace passes its head-frame prefixes.
-The Polars floor (`polars>=1.44.2`) is part of this contract: earlier releases (measured on
+The Polars floor (`polars>=2.0`) keeps this contract: releases before 1.43 (measured on
 1.39.3) buffer a left join's entire probe side before a downstream slice stops it, so a
 100-row preview below a join on a 10-million-row input held about 8 GB, where 1.43.2 and
 later stream it in under 1 GB.
@@ -578,17 +579,15 @@ predicate, then the projection.
   pushed limit `n` reads only the key column to pick the first `n` keys and applies to those
   keys' rows (sum-constraint online optimiser apply).
 - `_register_python_scan` runs every source in the caller's copied context variables on
-  engine threads and hands it the pushed predicate unchanged. The `polars>=1.44.2` floor
-  guarantees that predicate is evaluable: earlier releases also pushed a sort-limit's
+  engine threads and hands it the pushed predicate unchanged. The `polars>=2.0` floor
+  guarantees that predicate is evaluable: releases before 1.44.2 also pushed a sort-limit's
   engine-only `dynamic_pred` bound into IO sources, which panicked when evaluated.
-- An exception raised while producing a batch is parked under a token in a bounded process
-  registry (64 entries, oldest evicted) and re-raised as `RuntimeError` carrying the token,
-  the original type name, and message. `execution_collect`, the background cancellable
-  collect, `bounded_collect_batches`, and every sink routed through them re-raise the
-  parked original for a `ComputeError` naming a live token, so typed errors (including
-  cancellation and memory-limit signals raised by nested checkpoints) keep their types; an
-  evicted or foreign token leaves the `ComputeError` unchanged, and a direct Polars
-  `.collect()` receives a `ComputeError` naming the original type and message.
+- An exception raised while producing a batch propagates as itself. Polars hands a source's
+  own exception, class and attributes intact (a `BaseException` such as a cancellation, or a
+  `MemoryError` subclass, included), to `execution_collect`, the background cancellable
+  collect, `bounded_collect_batches`, every sink, and a direct `.collect()`, under every
+  engine, so typed errors (including cancellation and memory-limit signals raised by nested
+  checkpoints) keep their types with no translation by Haute.
 
 **Chunked writes (`_chunked_writes.py`).** Polars' streaming engine does not bound the
 memory of one long query over a large input: a single native sink's peak grows with the
@@ -609,8 +608,14 @@ and handed to the capture's artifact before publication; a prewritten scored cap
 digests, one per part, come from its `ScoreOutputDestination`; an explicit node-data build
 hands over its write's digests the same way:
 
-- **`sliceable(lf)`** walks Polars' optimised IR of `lf.slice(1, 1)` (`LazyFrame._ldf.visit()`,
-  IR major version 14; another version answers False). It is True only for one chain of
+- **`sliceable(lf)`** walks Polars' optimised IR of `lf.slice(1, 1)` through Polars' private
+  plan visitor (`LazyFrame._ldf.visit()`), at the IR major version `_SUPPORTED_IR_MAJOR` names
+  (15, Polars 2's); another version answers False, so an unread plan costs a staging write but
+  never a wrong row. It reads each node's kind, a `MapFunction`'s function name, a `Scan`'s
+  `scan_type` and `file_options.n_rows` (an `(offset, length)` pair once the slice reaches
+  it); the optimiser's projected-parquet borrow reads the same visitor, gated on the same
+  major. A test pins the gate to the installed Polars' IR major, so a Polars release that
+  moves it fails that test instead of silently staging every write. It is True only for one chain of
   `HStack`, `Select`, `SimpleProjection`, or `rename`/`unnest` map nodes down to one leaf that
   received the slice — a Parquet/IPC `Scan` whose `n_rows` is set, or a `DataFrameScan`. Polars
   pushes a slice through a projection only when its expressions are row-local and otherwise
@@ -637,10 +642,20 @@ hands over its write's digests the same way:
   raises `RuntimeError` naming the expected and written counts if they disagree, so a short or
   over-long read fails loudly instead of publishing a wrong part.
   A `semi`/`anti` join reads only the lookup's distinct keys. A `full` join adds the lookup
-  rows no driving row matched, once each, as the full join of an empty base with them.
-  `maintain_order` naming the driving side keeps Polars' order (ordered parts are collected
-  with the in-memory engine, the reference for join order); a `full` join with an order, or
-  an order led by the lookup side, is written natively (`native_reason`).
+  rows no driving row matched, once each and in the lookup's order, after every driving
+  row, as the full join of an empty base with them: where an ordered full join places them.
+  Every join states its order (`maintainOrder` is required), and so does every frame join
+  in `src/haute/`, the assistant's examples included: `"none"` where nothing reads the
+  order (a count, a table keyed by id, a sort after it), held by `tests/test_join_orders.py`.
+  An order naming the driving side keeps Polars' order: each part is sunk on the streaming engine, which keeps a
+  `maintain_order` join's order on Polars 2, its matches read in the lookup's order, so the
+  parts read back as the native join row for row and in order; an order led by the lookup
+  side is written natively (`native_reason="ordered_by_lookup_side"`). Measured on Polars
+  2.0 with 500,000-row parts: sinking an ordered part instead of collecting it in memory
+  peaked 13% to 21% lower at the same time (four million rows against 1.2 million), and
+  chunking an ordered full join peaked 29% to 36% lower than one native sink at 2.2 to 2.6
+  times the time (five and twenty million rows against 2.4 million), the trade this
+  writer makes. The whole-join native path below applies to ordered joins too.
 - **Sliced**: a sliceable frame is written one `slice(offset, chunk_rows)` per part.
 - **Input-sliced** (`recipe=WriteRecipe(input, fn, finish, reason, blocking_operator)`): when the frame itself is not sliceable, but the node is proven chunk-local, the recipe applies its builder function and post-shaping to each `slice(offset, chunk_rows)` of `recipe.input`. Before writing, equivalence between `recipe.native()` and `frame` is verified by schema and `explain(optimized=False)` (two in-memory frames of equal schema being indistinguishable this way). If `recipe.input` is not sliceable, the write falls back to native with `input_not_sliceable`. A rejected recipe (no function) falls back to native carrying the decision's reason and blocking operator.
 - **Native**: anything else is one native sink into `part-00000.parquet`.
@@ -700,8 +715,8 @@ caller's thread and context, under one strategy fixed before the first batch:
   is removed on exhaustion, close, or failure.
 
 Batches follow the frame's order under every strategy (`maintain_order` is always
-honoured). An engine failure is never a short result: it raises, with a parked Python-scan
-original restored as above. Each batch query of a sliced or staged frame runs inside the
+honoured). An engine failure is never a short result: it raises, a Python-scan exception
+as itself. Each batch query of a sliced or staged frame runs inside the
 execution stage `stage_name`; checkpoints run before the first batch and after each one.
 
 Before `_build_funcs()` constructs a JSON `apiInput`, eager and lazy execution
@@ -733,9 +748,10 @@ through the proof's `source_revision_unavailable` warning. The strategy planner 
 runtime loader read the published table generations, never the source.
 
 An exact empty edge demand means that the consumer needs row cardinality but no
-user column (for example `select(pl.len())`). Polars cannot preserve non-zero row
-cardinality in a zero-column frame, so source, edge, and capture projection
-retain exactly one deterministic schema-ordered carrier column. The carrier is a
+user column (for example `select(pl.len())`). A projection is a `select`, and a
+`select` with no column has no rows (Polars 2 keeps the height only of a frame a
+`drop` leaves with no column), so source, edge, and capture projection retain
+exactly one deterministic schema-ordered carrier column. The carrier is a
 physical execution detail, not a logical demand: it is removed naturally by the
 consumer and must never broaden to the whole source or collapse the row count.
 
@@ -991,11 +1007,30 @@ The cross-platform CI smoke job includes CPU-policy unit/startup coverage and
 Windows-only native spawn tests, which first reset the child's execution-speed
 policy to automatic and verify HighQoS from within the actual worker workload.
 
+**Polars process settings (`_polars_environment.py`).** `polars_process_environment(spill_root)`
+turns Polars' out-of-core spilling off with `POLARS_OOC_MEMORY_BUDGET_FRACTION` set to
+1,000,000 and `POLARS_OOC_MEMORY_BUDGET_MB` alongside (the threshold is the smaller of the
+MB value and the fraction times total memory, so the MB value alone does not turn it off,
+and an MB value of 0 spills everything); sets `POLARS_OOC_DISK_BUDGET_MB` to 1,024, so
+anything that does spill aborts its query rather than filling the disk; points
+`POLARS_OOC_SPILL_DIR` at `polars_spill_root(project)`, the project's
+`.haute_cache/polars-spill`, where Polars makes one folder per process id; and sets
+`POLARS_UNKNOWN_EXTENSION_TYPE_BEHAVIOR=load_as_storage`. `apply_polars_process_environment`
+writes them into `os.environ` before Polars is imported, which the extension behaviour
+needs because Polars reads it only at import; applied after, it goes through
+`pl.Config.load`, which reloads the spilling settings only. `haute.cli` imports
+`cli/_polars_startup.py` first, which applies them for the working directory's project and
+reaps that spill root, so the editor server, every command and every worker they spawn run
+under them, and `haute serve` logs them. The scoring container's Dockerfile sets the same
+variables for `/app`. A process Haute does not own keeps its own settings.
+
 **Streaming chunk size (`_polars_utils.py`).** `current_streaming_chunk_size()` reads
-Polars' process value (`POLARS_STREAMING_CHUNK_SIZE`), falling back to
+Polars' process value from the variable `pl.Config.set_streaming_chunk_size` writes,
+`POLARS_IDEAL_MORSEL_SIZE` on Polars 2 (named once, as `STREAMING_CHUNK_SIZE_ENV`, and
+pinned by a test that sets it through Polars' own setter), falling back to
 `DEFAULT_STREAMING_CHUNK_SIZE` (500,000). The server process sets that value from the
-pipeline settings' `chunk_rows` (see Pipeline settings below); a `POLARS_STREAMING_CHUNK_SIZE`
-already in the environment is not a setting and is replaced. `set_streaming_chunk_size(n)` validates `n`
+pipeline settings' `chunk_rows` (see Pipeline settings below); a value already in the
+environment is not a setting and is replaced. `set_streaming_chunk_size(n)` validates `n`
 (an integer from 1 to 10,000,000; a bool is refused) and sets it with
 `pl.Config.set_streaming_chunk_size`, which writes the environment variable a spawned
 child inherits. `streaming_chunk_size_cap(rows)` lowers the value Polars sees while its
@@ -1008,7 +1043,7 @@ low-level spec); the configuration is process-wide, so a query another thread st
 meanwhile runs with the smaller chunk, which changes its memory and speed, never its
 result. `start_process_with_environment` holds the chunk-size lock while a child spawns
 (`streaming_chunk_size_for_spawn`), so no cap starts or ends mid-spawn, and never touches
-this process's `POLARS_STREAMING_CHUNK_SIZE`, so a sink already running under a cap keeps
+this process's `POLARS_IDEAL_MORSEL_SIZE`, so a sink already running under a cap keeps
 it. Under an active cap the child inherits the capped variable but is also handed the
 setting as `HAUTE_SPAWN_STREAMING_CHUNK_SIZE`, which the isolated-worker and worker-protocol
 entry points apply first (`apply_spawned_streaming_chunk_size`); warm interactive and
@@ -1586,7 +1621,8 @@ present a structural or schema result as execution evidence.
   code consumes — a `filter` predicate column, for example, even under a rows-only demand.
   The source builder supplies the opened scan's schema to that rule, and a scan under
   projection-opaque code is narrowed only with it: the known schema lets lineage add a row
-  carrier when the code drops every demanded column (so the frame keeps its height), and lets
+  carrier when the code's select, aggregation or unpivot would be left with no column (a
+  `drop` of every demanded column keeps the frame's height and needs none), and lets
   the rule prove the full pre-shaping output. When the configured selection and renames would
   collide on that output, the scan stays full width, so the rename error is raised in bounded
   profiles exactly as in preview, with or without code. Planning and runtime join refinement
@@ -1864,7 +1900,10 @@ present a structural or schema result as execution evidence.
   process-global string cache, so first-appearance order differs across chunk
   boundaries); `fill_null`/`is_in` are admitted only in their literal-value /
   literal-collection forms (strategy fills and column-haystack membership read across
-  rows or the full column, which a chunk boundary changes).
+  rows or the full column, which a chunk boundary changes). A literal collection is a
+  list, tuple or set of literal scalars, or the typed list the step renderer builds from
+  one: `pl.Series([<literals>])` parsed with `.str.to_date()` or
+  `.str.to_decimal(scale=<int>)` and passed with `.implode()`, which holds no column.
 - **The operation registry is the single operation vocabulary.**
   `haute._polars_operations.POLARS_OPERATIONS` is a frozen mapping keyed by
   `(receiver, namespace, name)` where the receiver is `frame`, `expr`, `namespace`,
@@ -1885,9 +1924,10 @@ present a structural or schema result as execution evidence.
   cardinality analyser's unbounded-expansion expression set is the registry's
   `unbounded` expressions; the planner's materialisation-boundary operators are
   `materialising_frame_methods()` — every frame method with the
-  `materialisation_boundary` policy (`group_by`/`groupby`, `sort`, `unique`,
+  `materialisation_boundary` policy (`group_by`, `sort`, `unique`,
   `join`, `join_asof`, `top_k`, `bottom_k`, `reverse`, `shift`, `explode`) — plus
-  `materialising_expression_methods()` (`over`, `shift`, `diff`, `pct_change`),
+  `materialising_expression_methods()` (`over`, `shift`, `diff`, `pct_change`,
+  `bin_quantiles`, `bin_ranks`, `approx_quantile`),
   matched receiver-aware in evaluation order. Every entry also carries
   `costly_to_recompute: bool` and `slice_transparent: bool`. Class defaults are that
   `row_local` and `row_expanding` default cheap, while `order_dependent`, `fan_in_stateful`,
@@ -1900,15 +1940,23 @@ present a structural or schema result as execution evidence.
   `rolling_mean`, `rolling_min`, `rolling_std`, `rolling_sum`, `interpolate`, `implode`,
   `first`, `last`, `head`, `tail`; frame `gather`, `head`, `limit`, `slice`, `tail`, `sample`,
   `reverse`, `shift`, `with_row_index`; and function `arg_where`. Fan-in entries declared costly
-  are expression `over`, `median`, `mode`, `quantile`; and frame `agg`, `group_by`, `groupby`,
-  `group_by_dynamic`, `join`, `join_asof`, `join_where`, `merge_sorted`, `pivot`, `rolling`,
-  `upsample`. Fan-in entries declared cheap are expression `sum`, `mean`, `min`, `max`, `count`,
-  `len`, `std`, `var`, `arg_max`, `arg_min`; frame `interpolate`; namespace `str.concat`,
-  `str.join`; and function `len`. Opaque entries declared costly are expression `map_elements`,
-  `map_batches`, `pipe`, `register_plugin`, `rolling_map`, and frame `collect`,
-  `collect_batches`, `fetch`, `iter_rows`, `lazy`, `map_batches`, `partition_by`, `pipe`,
-  `rows`, `sink_csv`, `sink_parquet`, `to_numpy`, `to_pandas`, `with_context`, while opaque
-  entries declared cheap are function `all`, `exclude`, `first`, `last`, `nth`, `selectors`.
+  are expression `over`, `median`, `mode`, `quantile`, `bin_quantiles`, `bin_ranks`; and frame
+  `agg`, `group_by`, `group_by_dynamic`, `join`, `join_asof`, `join_where`, `merge_sorted`,
+  `pivot`, `rolling`, `upsample`. Fan-in entries declared cheap are expression `sum`, `mean`,
+  `min`, `max`, `count`, `len`, `std`, `var`, `arg_max`, `arg_min`, `approx_quantile`; frame
+  `interpolate`; namespace `str.join`; and function `len`. Opaque entries declared costly are
+  expression `map_elements`, `map_batches`, `pipe`, `pipe_with_dtype`, `rolling_map`; frame
+  `collect`, `collect_batches`, `iter_rows`, `lazy`, `map_batches`, `partition_by`, `pipe`,
+  `rows`, `sink_csv`, `sink_parquet`, `to_numpy`, `to_pandas`; and function `pipe_with_dtype`,
+  `fold`, `reduce`, `cum_fold`, `cum_reduce`, whose callbacks receive whole Series and may
+  change the row count, while opaque entries declared cheap are function `all`, `exclude`,
+  `first`, `last`, `nth`, `selectors`. The registry describes the installed Polars 2: the
+  `map` and `ext` expression namespaces are namespaces (their methods unproven row-local
+  entries), an expression method the registry does not name is read as row-bounded, so
+  every one that can grow the frame (`reshape`, which flattens an array column, and
+  `pipe_with_dtype` among them) is registered as expanding, and an operation Polars 2
+  removed (`melt`, `fetch`, `with_context`, `flatten`, `from_json`, `register_plugin`,
+  `str.concat`, the legacy `groupby`) is not registered.
   Slice transparency is true for every `row_local` entry of every receiver except frame
   `filter` and `drop_nulls`, and false for every other class; selector functions are decided by
   call form, where `pl.all()`, `pl.first()`, and `pl.last()` with no argument, `pl.nth(...)`,
@@ -1970,8 +2018,9 @@ present a structural or schema result as execution evidence.
   see (a `utility` module import) are not boundaries; the process RSS watchdog
   remains the defence for those. A same-named method on a `pl` expression never
   creates a
-  boundary. Expression-level boundary methods -- `over`, `shift`, `diff`, and
-  `pct_change` -- follow the expression rule above: they are written on a `pl`
+  boundary. Expression-level boundary methods -- `over`, `shift`, `diff`,
+  `pct_change`, `bin_quantiles`, `bin_ranks` and `approx_quantile` -- follow the
+  expression rule above: they are written on a `pl`
   chain, so a call (or a method taken as a value) admits a boundary on any
   receiver that is not a proven frame, and the containing node records the
   method as its operator. `shift` is also a frame method, so it admits a boundary
@@ -1986,14 +2035,22 @@ present a structural or schema result as execution evidence.
   `memory_evidence` is what makes the lane self-checking: `measured_operation_names(receiver)`
   returns every entry claiming evidence, and the certification test requires each
   of them to have a probe plan, so a policy can never rest on a measurement that
-  was never taken. Each boundary entry's `materialisation_factor_basis_points` is
+  was never taken. `MEMORY_EVIDENCE_POLARS` names the Polars release (major.minor) the
+  measured entries were certified on, Polars 2.0 on the Linux reference runner on
+  18 October 2026, and `tests/test_polars_operations.py` holds it to the installed
+  Polars, so an upgrade fails until the lane has measured them again. Each boundary entry's `materialisation_factor_basis_points` is
   derived from that evidence — measured peak divided by the estimator's
   rows × width × 3.0 figure for the same frame, with margin, rounded up to a whole
-  multiple: `sort` 300, `unique` 350, `join` 200, `join_asof` 250, `over` 250,
+  multiple: `sort` 450 (its ratio reached 4.33 on Polars 2.0), `unique` 350, `join` 200,
+  `join_asof` 250, `over` 250,
   `reverse` 250, `top_k`/`bottom_k` 100, `group_by` 100, `shift` 100 on both
-  receivers, `diff` 100, `pct_change` 150. The neighbouring-row boundaries (frame
-  and expression `shift`, `diff`, `pct_change`) carry no does-not-stream ratio
-  witness: their growth is buffering whose size depends on scheduling (frame
+  receivers, `diff` 100, `pct_change` 150, `bin_quantiles`, `bin_ranks` and
+  `approx_quantile` 150 (the first two reached 0.98 and 0.99 of the 100-point estimate
+  on the Linux reference runner). The neighbouring-row boundaries (frame and expression
+  `shift`, `diff`, `pct_change`) and the whole-column binning boundaries
+  (`bin_quantiles`, `bin_ranks`, `approx_quantile`, each a column of `v1` beside the
+  full-width fact, which holds the frame until the column is read) carry no
+  does-not-stream ratio witness: their growth is buffering whose size depends on scheduling (frame
   `shift` reaches 1.46x the scan control on the Linux reference runner but stays
   near 1.15x on Windows), so a fixed floor ratio would certify the platform rather
   than the operator. Each must instead show that it does not stream in either of two
@@ -2005,7 +2062,8 @@ present a structural or schema result as execution evidence.
   lag column or difference is only one or two streaming chunk-buffer steps on the
   four-thread reference runner (1.44x to 2.46x across three CI runs), while the
   ratio sits below the ceiling on hosts with a larger passthrough floor (frame
-  `shift` near 1.15x on Windows, where its growth is 3x or more).
+  `shift` near 1.15x on Windows, where its growth is 3x or more; the binning probes
+  near 1.05x on Windows at the lane's rows, where their growth is 13x to 23x).
   `join_asof` holds its right (lookup) port while streaming its left, so its
   evidence is the big-right variant: a wide left against a small right sits near
   the streaming floor and proves nothing, while swapping the ports puts the large
@@ -2478,26 +2536,28 @@ present a structural or schema result as execution evidence.
   rather than looking like a deceptively narrow complete total. They never include cache paths,
   source identities, column names, graph ids, or exception messages.
 
-- **The projected root frame is never empty where the full frame is not.** The input whose
-  rows form the output must carry at least one column at every step: a zero-column frame is
-  an empty frame, so a demand that names only generated columns (`select(pl.len())`, a
-  `with_row_index` column, a literal projection) or only columns the program later drops
-  (`drop_nulls(['a']).drop('a')...with_row_index()`) would otherwise lose every row in
-  silence. `analyze_polars_lineage` re-evaluates the program over the projected root schema
-  (`_ensure_root_carrier`) and, at the first step where the full frame still has columns but
-  the projected frame has none, adds the first root column present in the full frame at that
-  step, in sorted order, repeating until no step is empty; a projected program that cannot be
-  evaluated at all is reported unsupported (`carrier_unresolvable`). Demanding an extra
-  column never changes a result, so the rule only widens. Without the root input's schema no
-  carrier can be chosen, so the analyser evaluates the program over the demanded root columns
-  alone and reports `row_carrier_schema_unknown` when a step would leave that frame with no
-  columns while the full frame is not provably empty — a `drop` of every demanded column,
-  typically. An empty demand is carried by the one column the edge or scan keeps for it, but
-  that column's name is unknown, so it counts only until the first `drop` (strict or not,
-  even of a column the code overwrote) or the first `select`, aggregate, or `unpivot`. A Polars node whose parent schema is unknown,
+- **The projected root frame never loses rows the full frame keeps.** Polars 2 keeps a
+  frame's height when `drop` removes its last column, but a `select`, an aggregation or an
+  `unpivot` left with no output column has no rows, and so does the projection itself, which
+  is a `select`. A demand that names only generated columns (`select(pl.len())`, a
+  `with_row_index` column, a literal projection) therefore needs a carrier column at the
+  root, and so does a projected program whose `select`, aggregate or `unpivot` would be left
+  with no column where the full one has some; a program that only drops the demanded columns
+  (`drop_nulls(['a']).drop('a')...with_row_index()`) keeps its rows without one.
+  `analyze_polars_lineage` re-evaluates the program over the projected root schema
+  (`_ensure_root_carrier`) and, at the first such row-emptying step where the full frame still
+  has columns but the projected frame has none, adds the first root column present in the
+  full frame at that step, in sorted order, repeating until no row-emptying step is empty; a
+  projected program that cannot be evaluated at all is reported unsupported
+  (`carrier_unresolvable`). Demanding an extra column never changes a result, so the rule
+  only widens. Without the root input's schema no carrier can be chosen, and none is needed:
+  an empty demand is carried into the program by the one column the edge or scan keeps for
+  it, a `drop` of every column, whichever it names, keeps the frame's height, and a
+  row-emptying step names the same outputs narrowed or not, since a selector over an unknown
+  schema has already failed the analysis. A Polars node whose parent schema is unknown,
   builder post-code (always analysed without a schema), External File code, and Data Input
-  post-load code (planned without its scan's schema) therefore keep a full-width boundary for
-  such code rather than losing rows in bounded profiles. Other inputs keep an exact empty
+  post-load code (planned without its scan's schema) are therefore narrowed like any other
+  code. Other inputs keep an exact empty
   demand: an unused port has no rows to carry, and the runtime join path (`_execute_lazy.py`)
   keeps its own carrier for an empty-demand edge. Pinned by `tests/test_column_lineage.py`
   (including the drop-everything program the property test falsified) and the
@@ -2655,6 +2715,11 @@ present a structural or schema result as execution evidence.
 
 ## Testing
 
+- **`tests/test_row_order_parity.py`** — a pipeline with an ordered Edge Join, a Join step
+  and a Sort rows with ties over Parquet scans gives the same rows in the same order from a
+  preview, `Pipeline.run`, `Pipeline.score`, a Data Output write and the deploy scorer on
+  each of 20 runs, equal to the stable order computed in Python (the same graph with an
+  unordered Edge Join fails it); an unpivot gives the same rows as a set on every run.
 - **`tests/test_preview_snapshot_seeding.py`** — the eager engine under a preview plan: a
   seeded node builds nothing at or above it; a capture under a row limit holds the full
   output and the limited rows are read from it; the limit-boundary filter and sum over a
@@ -2732,7 +2797,8 @@ present a structural or schema result as execution evidence.
 - `tests/test_polars_steps.py::test_data_input_steps_execute_and_round_trip` and `test_data_input_incomplete_steps_fail_on_every_path` — a stepped Data Input applies its frame-mode steps to the opened snapshot through `execute_graph`, and an unrenderable or input-referencing list raises the `INCOMPLETE_STEPS_MESSAGE` error with the step number from `_builders._build_data_input` and from the deploy scorer's `_reject_incomplete_stepped_nodes` guard alike (`_builders.stepped_code_problem`, shared by both).
 - `tests/test_polars_steps.py::test_external_file_steps_reach_the_other_inputs_and_obj`, `test_rating_step_steps_execute_and_round_trip`, `test_scenario_expander_steps_execute_and_round_trip`, `test_model_score_steps_round_trip_and_fail_before_any_model_loads` and `test_recovery_and_save_report_incomplete_steps_on_every_surface` — the External File, Rating Step, Scenario Expander and Model Score builders apply the same guard (an External File's steps may join its other inputs and its free code reaches `obj`; a Model Score's column contract treats a nonempty step list as opaque so an incomplete list is refused by the builder rather than by a model lookup; an empty list retains ordinary model feature demand), the deploy scorer rejects an incomplete stepped node in `_reject_incomplete_stepped_nodes` before `_attach_bundled_model_contract_inputs` loads any model, and the recovery validator and the save warning name the failing step on every surface.
 - `tests/performance/test_polars_scale_scenario.py` — bounded Polars join/training projection scale generation, modelling-menu demand propagation, and CI-small execution-profile smoke contracts.
-- `tests/performance/test_execution_engine_certification.py` — isolated projected-versus-full wide-Parquet RSS comparison, published API Input table projection and direct-JSONL checkpoint evidence, a fresh-interpreter restart certificate that reads a published table after its source is removed, telemetry privacy, and `test_global_operation_memory_policies_match_the_registry`, which measures every global operation's incremental peak RSS in a fresh process through `tests/performance/_operation_memory_probe.py` and `bounded_sink` and certifies it against the policy read from `haute._polars_operations::operation` at runtime. Its 1.5M-row fact fixture and 375k-row dimension table are written with 25,000-row row groups — 60 row groups, more than any host's thread count — so parallel Parquet decoding cannot hold the whole file resident and the control measures streaming rather than the reader. Four controls are measured in the same run: `scan` (full-width passthrough sink), `scan_head` (a 1000-row sink), `scan_narrow` (a dense two-column sink) and `scan_gaps` (the same two columns where one is nullable and carries the gap runs). A control matches the operation's input columns *and* their nullability: a dense two-column scan under-represents the validity-bitmap and gap-handling cost of the same read, so measuring a nullable-column operator against it charges the operator for a read cost the control never paid. That is a correctness requirement for the comparison, not an allowance -- `interpolate` reads the nullable gap column and is therefore floored by `scan_gaps`, while a dense narrow plan keeps `scan_narrow`. Every `streaming` or `row_local` policy is bound by its matched passthrough control -- incremental peak <= 1.3x -- because a streaming pipeline can never need more than the passthrough pipeline over the same input (decode buffers plus output buffers, and a reducing operator's output buffers are smaller); a wide plan is bound by `scan` however few rows it emits, since its output size does not change what it must read. This is the safety-critical direction, since an operator wrongly recorded as streaming is one the planner never admits. `scan_head` is used only as the matched floor for a reducing boundary operator's witness. A `materialisation_boundary` policy is certified against the planner instead of a ratio: the same fixture is planned as a `dataInput` -> `polars` graph through `plan_execution_strategy` under an ample admission, and the admission estimate must bound the observed peak. The join graph declares `validate='m:1'` because that is the practice the product asks of an analyst and because it keeps the bound this join propagates downstream realistic; the join's own estimate is sized from its input ports and does not depend on the declaration. The join probe executes that same `validate='m:1'` code, so the measurement and the estimate describe one plan rather than two. Because a *declared* join estimate is sized from its largest operand, the lane also measures `join_fanout` -- `fact.join(multi, on='key', how='inner')` against an `operation-multi.parquet` fixture holding three rows per dimension key, so the output is three times the fact rows -- as a variant of `join` against the `scan` control. That measurement is what falsified input sizing for undeclared joins (about 1.57x the input-sized figure), so `join_fanout` is certified through the planner's policy rather than against a number: planned under `native_memory_backend_scope("rlimit")` it must be `warned`/`full-width-conservative` with `proof_gap=op:join_cardinality_many_to_many`, and planned without a cap it must raise `materialisation_estimate_unavailable` naming that detail. Only the rows check and those two policy checks are asserted; the evidence payload still records its `rows_out` against the expected 3x, the incremental peak, and `exceeds_declared_join_estimate` -- whether the observed fan-out peak is above the declared `join` case's estimate. Being a variant rather than a registry name, it carries no does-not-stream witness. A fan-in Polars node also carries the declared per-parent contract production requires. `explode` is certified as the typed unavailable-estimate rejection instead, its expansion being unbounded. `sort`, `unique`, `join`, and `explode` additionally carry a does-not-stream witness at 1.25x their matched floor. Two boundaries cannot be witnessed by their own wide-frame measurement and each names the variant that does show its state: `over` is dominated by the passthrough's own buffers on a 12-column frame, so the `over_narrow` probe must reach 1.5x `scan_narrow`, where its partition state dominates; and `join_asof` buffers its right (lookup) port and streams its left, so the wide-left case sits near the floor and the `join_asof_big_right` probe (`dim.join_asof(fact, ...)`, the large frame in the buffered position) must reach 1.25x `scan_head` — the wide case still certifies the estimate and the operator factor. `group_by`, `top_k`, `bottom_k`, and `reverse` are boundaries by construction or conservatism and carry no witness. The lane is registry-complete rather than a hand-kept list: for each receiver it asserts that every name `measured_operation_names` returns has a plan in the probe (modulo the registered spelling aliases `groupby` and `melt`), so a new measured entry without a measurement fails here. Probe names are receiver-qualified where a name exists on both receivers: `shift` is the frame probe (`fact.shift(1)`), while `shift_expr`, `diff_expr`, and `pct_change_expr` add a lag, difference, or percentage-change column of `v1` to the full-width fact (`with_columns(...alias(...))`) and certify the expression entries, so a frame measurement can never stand in for an expression one. `test_neighbouring_row_boundaries_grow_with_their_input` witnesses those boundaries and frame `shift` by growth: it writes the fact fixture at the lane's 1.5M rows and at four times that, measures each probe against `scan` at both sizes as paired means, requires the planner's estimate to bound the observed peak at both sizes, so the whole-frame estimate is shown to scale with the input as the operators do, and requires every probe to show it does not stream: either its paired-mean ratio at the lane's rows exceeds the 1.3x streaming ceiling (the CI runner measured 1.39x to 1.53x for the shift and difference probes and about 2.0x for `pct_change`) or its extra memory over the control at the larger size is at least 1.5x the extra at the smaller (a constant buffer stays near 1.0). The evidence payload records the ratio, the growth, and which of the two held. `interpolate`'s probe reads a dedicated `v1_gaps` column — a straight line with 50-row null runs punched across the row-group boundaries — so the measurement cannot be of a passthrough over a column with nothing to fill, and the test verifies that the sunk output has no interior nulls left and that the filled values equal the linear interpolation of their neighbours. That verification runs in the *parent*, lazily over the retained sink after `run_smoke` has returned, precisely so it cannot contaminate the measurement: every child does nothing but build its plan, sink it, and exit, because anything else a child does lands in the lifetime peak the parent attributes to the operator. The `join_asof` fixtures are written pre-sorted for the same reason: a leading `sort` would make the chained boundary take sort's larger factor and certify the wrong operator. The cross join is certified through the planner alone — the graph plans `how='cross'` and must report the unavailable estimate — since there is no measurement to compare it against. Every ratio in the lane is a paired mean rather than a single reading: each operation is run alternately with its control, three of each -- five for `interpolate`, whose narrow-frame ratio sits at about 1.24 against the 1.30 ceiling, close enough that three pairs let batch drift decide the result -- and the ratio is the mean operation peak over the mean control peak. The per-operation sample count is recorded in the evidence payload. A control is re-run inside the pairs that use it and never sampled once and shared, because a single fresh-process sample drifted by about 20% between batches on the development host -- enough for a single-sample ratio to straddle a threshold and for a quoted figure to be noise rather than measurement. Pairing cancels that drift. The mean rather than the median is deliberate: peak RSS is bimodal, with samples clustering around two values about 35 MiB apart -- the granularity of a streaming chunk buffer, not continuous noise -- so a median of three snaps to whichever mode won two of the three samples and jumps between modes instead of settling, while the mean is the stable estimator of average cost over a discrete allocation pattern. Medians are still recorded for information. No threshold is widened to absorb the variance and no max-of-controls bias is applied. The residual is stated rather than hidden: a run can still fail when all three operation samples land in the high mode while all three control samples land in the low one, roughly a 1-in-64 event per operation, which is the accepted noise floor of an opt-in perf lane. The lane must be run through pytest, one fresh process per run: repeating the test inside a single interpreter reuses a warm page cache for the fixture and flatters every ratio, so an in-process repeat is not a valid measurement of this lane. This roughly triples the lane's runtime, to about 70 seconds, which is affordable for an opt-in perf marker. Polars version, thread count, row-group size, fixture rows, and every operation's rows out, all six paired samples, both means, both medians, the control it was paired against, the ratio, the estimate, and each check's outcome are recorded in the test's evidence payload, so the registry cannot claim a policy the measurements contradict.
+- `tests/performance/test_spilling_memory.py` and `tests/performance/test_malloc_trim_memory.py` — measurements that decide a memory policy and assert none of their figures, marked `perf_evidence` as well as `perf`, so the Performance workflow runs them and the pull-request perf job leaves them out. The spilling test measures `sort`, `unique`, `group_by`, `join` and `over` through the certification lane's probe, three fresh processes each with spilling off as every Haute process runs and three at each of two budgets set from that mean incremental peak (a half and a quarter, at least 32 MB; the probe's `--spill-budget-mb` reloads Polars' settings through `pl.Config.load` and samples its own spill folder), and records each mean peak, its ratio to spilling off, the time ratio, the most it held on disk and, per budget, whether no peak rose more than 5% and whether one fell at least 20%. The trim test builds, frees and collects three kinds of allocation in fresh processes (`tests/performance/_malloc_trim_probe.py`: a Polars frame, 64 KiB NumPy arrays below glibc's mmap threshold, Python objects; about 256 MiB each) and records the resident set after the release and after `_malloc_trim`.
+- `tests/performance/test_execution_engine_certification.py` — isolated projected-versus-full wide-Parquet RSS comparison, published API Input table projection and direct-JSONL checkpoint evidence, a fresh-interpreter restart certificate that reads a published table after its source is removed, telemetry privacy, and `test_global_operation_memory_policies_match_the_registry`, which measures every global operation's incremental peak RSS in a fresh process through `tests/performance/_operation_memory_probe.py` and `bounded_sink` and certifies it against the policy read from `haute._polars_operations::operation` at runtime. Its 1.5M-row fact fixture and 375k-row dimension table are written with 25,000-row row groups — 60 row groups, more than any host's thread count — so parallel Parquet decoding cannot hold the whole file resident and the control measures streaming rather than the reader. Four controls are measured in the same run: `scan` (full-width passthrough sink), `scan_head` (a 1000-row sink), `scan_narrow` (a dense two-column sink) and `scan_gaps` (the same two columns where one is nullable and carries the gap runs). A control matches the operation's input columns *and* their nullability: a dense two-column scan under-represents the validity-bitmap and gap-handling cost of the same read, so measuring a nullable-column operator against it charges the operator for a read cost the control never paid. That is a correctness requirement for the comparison, not an allowance -- `interpolate` reads the nullable gap column and is therefore floored by `scan_gaps`, while a dense narrow plan keeps `scan_narrow`. Every `streaming` or `row_local` policy is bound by its matched passthrough control -- incremental peak <= 1.3x -- because a streaming pipeline can never need more than the passthrough pipeline over the same input (decode buffers plus output buffers, and a reducing operator's output buffers are smaller); a wide plan is bound by `scan` however few rows it emits, since its output size does not change what it must read. This is the safety-critical direction, since an operator wrongly recorded as streaming is one the planner never admits. `scan_head` is used only as the matched floor for a reducing boundary operator's witness. A `materialisation_boundary` policy is certified against the planner instead of a ratio: the same fixture is planned as a `dataInput` -> `polars` graph through `plan_execution_strategy` under an ample admission, and the admission estimate must bound the observed peak. The join graph declares `validate='m:1'` because that is the practice the product asks of an analyst and because it keeps the bound this join propagates downstream realistic; the join's own estimate is sized from its input ports and does not depend on the declaration. The join probe executes that same `validate='m:1'` code, so the measurement and the estimate describe one plan rather than two. Because a *declared* join estimate is sized from its largest operand, the lane also measures `join_fanout` -- `fact.join(multi, on='key', how='inner')` against an `operation-multi.parquet` fixture holding three rows per dimension key, so the output is three times the fact rows -- as a variant of `join` against the `scan` control. That measurement is what falsified input sizing for undeclared joins (about 1.57x the input-sized figure), so `join_fanout` is certified through the planner's policy rather than against a number: planned under `native_memory_backend_scope("rlimit")` it must be `warned`/`full-width-conservative` with `proof_gap=op:join_cardinality_many_to_many`, and planned without a cap it must raise `materialisation_estimate_unavailable` naming that detail. Only the rows check and those two policy checks are asserted; the evidence payload still records its `rows_out` against the expected 3x, the incremental peak, and `exceeds_declared_join_estimate` -- whether the observed fan-out peak is above the declared `join` case's estimate. Being a variant rather than a registry name, it carries no does-not-stream witness. A fan-in Polars node also carries the declared per-parent contract production requires. `explode` is certified as the typed unavailable-estimate rejection instead, its expansion being unbounded. `sort`, `unique`, `join`, and `explode` additionally carry a does-not-stream witness at 1.25x their matched floor. Two boundaries cannot be witnessed by their own wide-frame measurement and each names the variant that does show its state: `over` is dominated by the passthrough's own buffers on a 12-column frame, so the `over_narrow` probe must exceed the 1.3x streaming ceiling against `scan_narrow`, where its partition state dominates (Polars 2.0 measures about 1.44x); and `join_asof` buffers its right (lookup) port and streams its left, so the wide-left case sits near the floor and the `join_asof_big_right` probe (`dim.join_asof(fact, ...)`, the large frame in the buffered position) must reach 1.25x `scan_head` — the wide case still certifies the estimate and the operator factor. `group_by`, `top_k`, `bottom_k`, and `reverse` are boundaries by construction or conservatism and carry no witness. The lane is registry-complete rather than a hand-kept list: for each receiver it asserts that every name `measured_operation_names` returns has a plan in the probe, so a new measured entry without a measurement fails here. Probe names are receiver-qualified where a name exists on both receivers: `shift` is the frame probe (`fact.shift(1)`), while `shift_expr`, `diff_expr`, and `pct_change_expr` add a lag, difference, or percentage-change column of `v1` to the full-width fact (`with_columns(...alias(...))`) and certify the expression entries, so a frame measurement can never stand in for an expression one; `bin_quantiles_expr`, `bin_ranks_expr` and `approx_quantile_expr` add a decile, a rank band or the approximate median of `v1` the same way. `test_whole_column_boundaries_grow_with_their_input` witnesses those boundaries and frame `shift` by growth: it writes the fact fixture at the lane's 1.5M rows and at four times that, measures each probe against `scan` at both sizes as paired means, requires the planner's estimate to bound the observed peak at both sizes, so the whole-frame estimate is shown to scale with the input as the operators do, and requires every probe to show it does not stream: either its paired-mean ratio at the lane's rows exceeds the 1.3x streaming ceiling (the CI runner measured 1.39x to 1.53x for the shift and difference probes and about 2.0x for `pct_change`) or its extra memory over the control at the larger size is at least 1.5x the extra at the smaller (a constant buffer stays near 1.0). The evidence payload records the ratio, the growth, and which of the two held. `interpolate`'s probe reads a dedicated `v1_gaps` column — a straight line with 50-row null runs punched across the row-group boundaries — so the measurement cannot be of a passthrough over a column with nothing to fill, and the test verifies that the sunk output has no interior nulls left and that the filled values equal the linear interpolation of their neighbours. That verification runs in the *parent*, lazily over the retained sink after `run_smoke` has returned, precisely so it cannot contaminate the measurement: every child does nothing but build its plan, sink it, and exit, because anything else a child does lands in the lifetime peak the parent attributes to the operator. The `join_asof` fixtures are written pre-sorted for the same reason: a leading `sort` would make the chained boundary take sort's larger factor and certify the wrong operator. The cross join is certified through the planner alone — the graph plans `how='cross'` and must report the unavailable estimate — since there is no measurement to compare it against. Every ratio in the lane is a paired mean rather than a single reading: each operation is run alternately with its control, three of each -- five for `interpolate`, whose narrow-frame ratio sits at about 1.24 against the 1.30 ceiling, close enough that three pairs let batch drift decide the result, and two for the binning probes, whose growth is an order of magnitude past their witness, which keeps the pull-request perf job inside its time budget -- and the ratio is the mean operation peak over the mean control peak. The per-operation sample count is recorded in the evidence payload. A control is re-run inside the pairs that use it and never sampled once and shared, because a single fresh-process sample drifted by about 20% between batches on the development host -- enough for a single-sample ratio to straddle a threshold and for a quoted figure to be noise rather than measurement. Pairing cancels that drift. The mean rather than the median is deliberate: peak RSS is bimodal, with samples clustering around two values about 35 MiB apart -- the granularity of a streaming chunk buffer, not continuous noise -- so a median of three snaps to whichever mode won two of the three samples and jumps between modes instead of settling, while the mean is the stable estimator of average cost over a discrete allocation pattern. Medians are still recorded for information. No threshold is widened to absorb the variance and no max-of-controls bias is applied. The residual is stated rather than hidden: a run can still fail when all three operation samples land in the high mode while all three control samples land in the low one, roughly a 1-in-64 event per operation, which is the accepted noise floor of an opt-in perf lane. The lane must be run through pytest, one fresh process per run: repeating the test inside a single interpreter reuses a warm page cache for the fixture and flatters every ratio, so an in-process repeat is not a valid measurement of this lane. This roughly triples the lane's runtime, to about 70 seconds, which is affordable for an opt-in perf marker. Polars version, thread count, row-group size, fixture rows, and every operation's rows out, all six paired samples, both means, both medians, the control it was paired against, the ratio, the estimate, and each check's outcome are recorded in the test's evidence payload, so the registry cannot claim a policy the measurements contradict.
 - `tests/performance/test_write_strategy_memory.py` with
   `_write_strategy_memory_probe.py` — fresh-process evidence for the shipped budgeted sliced
   and input-sliced (`filter_with_recipe`) writer paths. Each runs the 40-column, 25,000-row-group
@@ -2777,17 +2843,22 @@ present a structural or schema result as execution evidence.
   carried-column proof's selector rules and its refusal of every program shape it
   cannot name, and cardinality without selector names. `tests/test_polars_selectors.py` pins selector recognition, purity,
   preamble aliases, roots, and expansion parity with Polars.
+- `tests/test_polars_environment.py` — under Polars' defaults a sort told the host is small
+  spills; a fresh process that imports `haute.cli` and a worker it spawns run the same sort
+  without spilling, under the reported settings; a spill forced in a worker lands in the spill
+  root and its folder is gone once the worker ends; reaping removes only ended processes'
+  folders; and a `Pipeline.run` in a user's own process leaves its Polars settings unchanged.
 - `tests/test_polars_utils.py` — `TestRowLocalPythonScan` pins the Python-scan
   contract: limit before predicate, limited transform rows, projection elision and its
-  refusal, input-predicate permission, generated-column predicates, typed exceptions
-  through every collect seam, context variables on engine threads, construction-time
-  declaration checks, and sort-limits matching native Polars. It also pins the limited
-  and key-prefix scans applying a pushed limit, predicate, and projection, and the
-  parked-failure registry evicting its oldest failure.
+  refusal, input-predicate permission, generated-column predicates, typed exceptions with
+  their attributes through every collect seam and a direct `.collect()` on both engines,
+  context variables on engine threads, construction-time declaration checks, and
+  sort-limits matching native Polars. It also pins the limited and key-prefix scans
+  applying a pushed limit, predicate, and projection.
 - `tests/test_cardinality.py` — overflow-safe join-cardinality formulas, uniqueness
   contracts, evidence payloads, invalid bounds, and row-cardinality lineage analysis.
 - `tests/test_column_lineage_properties.py` — Hypothesis differential properties for the closed Polars column-lineage model, including projected-versus-full execution equivalence and row-count bounds that hold over empty, null-heavy, and NaN-heavy frames.
-- `tests/test_polars_operations.py` — the operation registry's invariants (frozen, unique receiver-aware keys, import-time validation of class/policy/expansion, a boundary without a memory factor, and a streaming policy carrying one), the consistency of every analyser's derived vocabulary with the registry, the derived boundary sets (`materialising_frame_methods`, `materialising_expression_methods`), and representative snippets per class proving the chunk classifier and the lineage/cardinality analyser agree with the registered class.
+- `tests/test_polars_operations.py` — the operation registry against the installed Polars: every registered operation exists on it (a `then`, `otherwise` or `agg` on the chain object Polars returns), an entry naming a removed operation is reported, every public expression method, frame method, `pl` function and namespace method is registered or recorded in the reviewed `tests/polars_unregistered_operations.json`, so an upgrade that adds or removes one fails until it is reviewed, and Polars' own `Expr.meta.is_row_separable()` agrees with every row-local entry and with no fan-in or order-dependent one, each built from its admitted shape (`tests/_polars_operation_samples.py`; five entries Polars builds from the column's dtype are recorded as unjudged); and the operation registry's invariants (frozen, unique receiver-aware keys, import-time validation of class/policy/expansion, a boundary without a memory factor, and a streaming policy carrying one), the consistency of every analyser's derived vocabulary with the registry, the derived boundary sets (`materialising_frame_methods`, `materialising_expression_methods`), and representative snippets per class proving the chunk classifier and the lineage/cardinality analyser agree with the registered class.
 - `tests/test_polars_compatibility_corpus.py` — the version-pinned compatibility corpus: `tests/polars_compatibility_corpus.json` records, for representative shapes across every maintained namespace, the classification they receive today (lineage support, cardinality availability, chunk eligibility, and the planner strategy under an admitted context) together with the pinned Polars version; the test fails on any difference, so a Polars upgrade or analyser change cannot silently turn a working shape into a rejection, and every change to the corpus is a reviewed edit of that file. A registry policy change regenerates the corpus, and only the operators whose evidence changed may move.
 - `tests/test_interactive_route_isolation.py` — preview and trace routes execute serialisable production targets through the spawn-worker boundary.
 - `tests/test_interactive_worker_pool.py` — warm interactive-worker pool readiness, protocol, timeout, cancellation, RSS-limit, replacement, and execution-mode contracts.
@@ -2971,7 +3042,7 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   node, so the test pins "the same file execution opens" rather than a
   hard-coded preference.
 - **`test_boundary_operator_equivalence.py`** — full-versus-planned equivalence for every
-  admitted boundary operator (sort, reverse, shift, `shift`/`diff`/`pct_change` columns, top_k, bottom_k, unique, join inner/left with
+  admitted boundary operator (sort, reverse, shift, `shift`/`diff`/`pct_change` columns, `bin_quantiles`/`bin_ranks`/`approx_quantile` columns, top_k, bottom_k, unique, join inner/left with
   duplicate keys and `validate='m:1'`, join_asof, over, explode under a native cap): each graph
   materialises the boundary mid-graph through the real lazy executor under admission and a
   seed plan, asserts the boundary was planned (`materialisation_boundaries` and
@@ -3086,7 +3157,8 @@ conservative estimate fits that working allowance. Initially admit only joins
 whose output cardinality is bounded by the native validation contract (`1:1`,
 `m:1`, `1:m`) or semi/anti semantics. Bound left/right/full unmatched rows too;
 unknown many-to-many multiplicity continues through the current chunked path.
-Keep custom finish recipes on that path until their expansion is established.
+Keep custom finish recipes on that path until their expansion is established. A
+join's stated order does not keep it off this path: Polars 2's sink keeps it.
 Estimate three times the sum of decoded inputs and maximum decoded output, with a
 64 MiB allowance for native reader/hash/allocator setup; this deliberately
 exceeds the observed fixed-width test peaks. No context/budget means no such

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from os.path import normcase
 from pathlib import Path
 
 
@@ -54,6 +55,15 @@ def resolve_submodel_reference(
             f"Submodel path {rel_path!r} escapes project directory"
         )
     return submodel_path, active_dir
+
+
+def submodel_source_key(path: Path) -> str:
+    """The file a resolved registration names: registrations with one key share a definition.
+
+    Equivalent spellings (dot segments, and casing where the filesystem folds it)
+    give one key.
+    """
+    return normcase(str(path.resolve()))
 
 
 def definition_pipeline_dir(rel_path: str) -> str:

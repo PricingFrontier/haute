@@ -29,6 +29,7 @@ from haute._execution_context import (
 )
 from haute._execution_schemas import ExecutionMetricsPayload
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
+from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
 from haute._sandbox import set_project_root
 from haute._source_cache import SourceCacheIdentity
 from haute._types import PipelineGraph
@@ -246,7 +247,7 @@ def _train(
     if streaming_chunk_size is not None:
         from haute._polars_utils import set_streaming_chunk_size
 
-        monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+        monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
         set_streaming_chunk_size(streaming_chunk_size)
     body_payload: dict[str, Any] = {"graph": graph, "node_id": "train", "source": source}
     body = TrainRequest.model_validate(body_payload)

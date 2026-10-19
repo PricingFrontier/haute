@@ -61,7 +61,7 @@ def _unsupported(message: str) -> PipelineRepairError:
 
 def _replace_spans(
     source: bytes,
-    changes: Sequence[tuple[ast.expr | ast.FunctionDef, str]],
+    changes: Sequence[tuple[ast.expr | ast.FunctionDef | ast.AsyncFunctionDef, str]],
 ) -> bytes:
     """Convert AST byte coordinates to the shared formatting-preserving CST boundary."""
     prefix, text, body = _decode_utf8_artifact(source, artifact="Repair source")
@@ -76,7 +76,7 @@ def _replace_spans(
                 end_line=node.end_lineno,
                 end_column=len(lines[node.end_lineno - 1][: node.end_col_offset].decode("utf-8")),
                 source=replacement,
-                is_function=isinstance(node, ast.FunctionDef),
+                is_function=isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)),
             )
         )
     return prefix + replace_source_nodes(text, replacements).encode("utf-8")
@@ -145,6 +145,22 @@ def _target_graph(
     return graph
 
 
+def _definition_port_inputs(
+    document: PipelineEditorDocument, target: RecoveryPipelineNode
+) -> list[tuple[str, str | None]]:
+    """The public input ports of *target*'s submodel that feed it: (port name, handle)."""
+    for definition in (document.submodels or {}).values():
+        if not any(node is target for node in definition.graph.nodes):
+            continue
+        return [
+            (str(port["name"]), entry.get("handleId"))
+            for port in definition.input_ports
+            for entry in port.get("targets", [])
+            if entry.get("nodeId") == target.authored_id
+        ]
+    return []
+
+
 def _reset_node(
     root: Path,
     root_path: Path,
@@ -169,10 +185,12 @@ def _reset_node(
         raise _unsupported("This node type is not installed and cannot be reset.") from exc
     before = path.read_bytes()
     tree = _parse(before)
+    # An async node function is refused by the parser; the regenerated node is a plain def.
     functions = [
         statement
         for statement in tree.body
-        if isinstance(statement, ast.FunctionDef) and statement.name == target.authored_id
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and statement.name == target.authored_id
     ]
     if len(functions) != 1:
         raise _unsupported("Reset requires exactly one ordinary node function.")
@@ -202,15 +220,18 @@ def _reset_node(
         )
     nodes = {node.recovery_id: node for node in graph.nodes}
     incoming = [edge for edge in graph.edges if edge.target_recovery_id == target.recovery_id]
+    # A node inside a submodel is also fed by the definition's public input
+    # ports, which bind it by the port's name; they are not edges of its graph.
+    port_inputs = _definition_port_inputs(document, target)
     if node_type == NodeType.EDGE_JOIN:
-        if {edge.target_handle for edge in incoming} != {"base", "join"} or len(incoming) != 2:
+        handles = [edge.target_handle for edge in incoming] + [h for _n, h in port_inputs]
+        if set(handles) != {"base", "join"} or len(handles) != 2:
             raise _unsupported("An Edge Join reset requires its base and join connections.")
-        incoming.sort(key=lambda edge: edge.target_handle != "base")
-    source_names: list[str] = []
+    named_inputs: list[tuple[str | None, str]] = []
     for edge in incoming:
         source = nodes[edge.source_recovery_id]
         if edge.input_name is not None:
-            source_names.append(edge.input_name)
+            named_inputs.append((edge.target_handle, edge.input_name))
             continue
         # A blocked or unavailable upstream still has authored identity: a damaged
         # chain resets, recovers and saves in any order, never upstream first.
@@ -219,21 +240,35 @@ def _reset_node(
             or source.default_input_name
         )
         if fallback:
-            source_names.append(fallback)
+            named_inputs.append((edge.target_handle, fallback))
             continue
         if source.node_type is None:
             raise _unsupported(
                 "The upstream node's identity is unknown; repair it before changing this node."
             )
-        source_names.append(
-            executable_input_name(
-                node_type=source.node_type,
-                label=source.label,
-                source_handle=edge.source_handle,
+        named_inputs.append(
+            (
+                edge.target_handle,
+                executable_input_name(
+                    node_type=source.node_type,
+                    label=source.label,
+                    source_handle=edge.source_handle,
+                ),
             )
         )
+    named_inputs.extend((handle, name) for name, handle in port_inputs)
+    if node_type == NodeType.EDGE_JOIN:
+        named_inputs.sort(key=lambda item: item[0] != "base")
+    source_names = [name for _handle, name in named_inputs]
     if len(set(source_names)) != len(source_names):
         raise _unsupported("Incoming node names are ambiguous.")
+    if replacement_config is None and node_type is NodeType.EDGE_JOIN:
+        # A new join has no keys until they are chosen, and a join without keys
+        # cannot be written; Recover settings keeps the join's own.
+        raise _unsupported(
+            "An Edge Join cannot be reset: a new join has no keys to write. Recover its "
+            "settings, which keeps its keys, or remove it."
+        )
     config: dict[str, Any] = (
         palette_default_config(node_type) if replacement_config is None else replacement_config
     )
@@ -246,15 +281,10 @@ def _reset_node(
         ),
     )
     try:
-        # A node rebuilt from given settings (recovered, or a scoped save) has
-        # its annotation regenerated from them as the reload's parse check
-        # derives it; carrying the old one forward keeps a stale annotation
-        # that check rejects.
-        generated = _node_to_code(
-            node,
-            source_names=source_names,
-            contract_source="builder" if replacement_config is None else "offline",
-        )
+        # The annotation is regenerated from the settings as the reload's parse
+        # check derives it, never loading a model: a reset Model Score has no
+        # model yet, and an old annotation carried forward goes stale.
+        generated = _node_to_code(node, source_names=source_names, contract_source="offline")
     except (HauteError, ValueError) as exc:
         raise _unsupported(
             f"This node cannot be generated from these settings and connections: {exc}"
@@ -411,14 +441,26 @@ def _recover_completeness(
     issues: Sequence[RecoveryIssue],
 ) -> list[PipelineNodeCompleteness]:
     """What the recover could not fix: provider gaps plus unresolved engine errors."""
-    from haute._polars_io_registry import data_input_completeness, data_output_completeness
+    from haute._polars_io_registry import (
+        PolarsIoConfigError,
+        data_input_completeness,
+        data_output_completeness,
+    )
 
-    if node_type is NodeType.DATA_INPUT:
-        gaps = [(gap.path, gap.code, gap.message) for gap in data_input_completeness(config)]
-    elif node_type is NodeType.DATA_OUTPUT:
-        gaps = [(gap.path, gap.code, gap.message) for gap in data_output_completeness(config)]
-    else:
-        gaps = []
+    try:
+        if node_type is NodeType.DATA_INPUT:
+            gaps = [(gap.path, gap.code, gap.message) for gap in data_input_completeness(config)]
+        elif node_type is NodeType.DATA_OUTPUT:
+            gaps = [(gap.path, gap.code, gap.message) for gap in data_output_completeness(config)]
+        else:
+            gaps = []
+    except PolarsIoConfigError as exc:
+        # No provider survived (a missing config file, an unknown inputType):
+        # nothing is left for Recover to keep, and Reset starts the node afresh.
+        raise _unsupported(
+            f"Recover settings cannot rebuild these settings ({exc}). "
+            "Reset node replaces them with a new node's."
+        ) from exc
     # An error the engine could not resolve must never read as fixed: the
     # recover applies and the node shows it as unfinished.
     for issue in issues:

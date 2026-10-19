@@ -314,7 +314,9 @@ Given `lf: pl.LazyFrame` and `schema: pl.Schema`:
      `is_nan().sum().alias(f"nan::{name}")` — `is_nan()` yields null (not true) for null rows, so
      `.sum()` counts only genuine NaN values, distinct from the null count.
    - `elif _has_categorical_value_counts(dtype)`: `_categorical_value_counts_expr(name, dtype)`
-     — `value_counts(sort=True).struct.rename_fields(...).head(50).implode()` — aliased
+     — `value_counts().struct.rename_fields(...).implode()` with the list sorted by count
+     descending, then value with null last, and cut to its first 50 (`list.eval` over one
+     struct sort key: a sort by several keys fails on an empty list) — aliased
      `categorical_values::{name}`, plus `n_unique()` over the same display-label expression,
      aliased `categorical_label_groups::{name}`.
    - text-like dtypes additionally aggregate min/mean/max display-label character length;
