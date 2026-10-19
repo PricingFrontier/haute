@@ -101,9 +101,10 @@ def test_openai_floor_constructs_a_client_with_current_httpx() -> None:
 def test_price_contour_guard_specifier_is_the_declared_dependency() -> None:
     """The runtime guard enforces exactly the range the package metadata declares.
 
-    The floor is 0.6.0: haute cancels a frontier point's apply or evaluation
-    through the CancelToken that release introduced (OPT-PC02), on top of the
-    0.5.0 per-point factor tables and canonical ratebook evaluation.
+    The floor is 0.7.0: the first release that declares and tests Polars 2 and
+    moves frames through pyo3-polars 0.28, on top of 0.6.0's
+    CancelToken (OPT-PC02) and 0.5.0's per-point factor tables and canonical
+    ratebook evaluation.
     """
     from haute._price_contour import REQUIRED_SPECIFIER
 
@@ -112,8 +113,8 @@ def test_price_contour_guard_specifier_is_the_declared_dependency() -> None:
     declared = next(dep for dep in dependencies if Requirement(dep).name == "price-contour")
 
     assert declared == f"price-contour{REQUIRED_SPECIFIER}"
-    assert SpecifierSet(REQUIRED_SPECIFIER).contains("0.6.0")
-    assert not SpecifierSet(REQUIRED_SPECIFIER).contains("0.5.9")
+    assert SpecifierSet(REQUIRED_SPECIFIER).contains("0.7.0")
+    assert not SpecifierSet(REQUIRED_SPECIFIER).contains("0.6.9")
 
 
 def _setup_uv_pins(workflow_text: str) -> list[str | None]:

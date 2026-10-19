@@ -52,7 +52,6 @@ Polars 2's idioms.
 | PL2-15 | Planned | P2 | The test suite asserts behaviour rather than Polars 1 accidents. |
 | PL2-17 | Reverify | P2 | Every operator memory policy and RAM estimate rests on Polars 2 evidence. |
 | PL2-18 | Reverify | P3 | Worker caps start from a Polars 2 baseline. |
-| PL2-20 | Planned | P3 | Haute runs a price-contour release that declares and tests Polars 2, behind the guard. |
 | PL2-21 | Deferred | P3 | Structured inputs and Data Inputs can carry a JSON object as a `Map` column. |
 | PL2-22 | Deferred | P3 | Banding and the step editor offer quantile and rank binning. |
 
@@ -218,42 +217,6 @@ on every CI platform.
 
 **Evidence:** `src/haute/_native_memory_limit.py::_start_polars_thread_pools`;
 `tests/test_native_memory_limit.py`; `tests/test_worker_isolation.py`.
-
-### PL2-20 — Haute runs a price-contour release that declares and tests Polars 2
-**Status:** since 17 October 2026 the guard passes a one-row frame through the native
-module when it first verifies the install, and a Polars without
-`Series._import_arrow_from_c` fails it by name. No Rust Polars or pyo3-polars release
-matches Python Polars 2.0.0 yet, so price-contour cannot be rebuilt on Polars 2's Rust
-code. What remains is price-contour 0.7.0, specified in
-[price-contour on Polars 2](price-contour-polars-2.md), and Haute's move to it.
-**Why:** price-contour 0.6.0's native module embeds pyo3-polars 0.25 with the
-Polars 0.52 Rust crates. It moves frames through Polars' private Python methods
-(`Series._import_arrow_from_c`, `_newest_compat_level`) and
-`to_arrow(compat_level=...)`, rechunking every incoming column on the way. On
-Polars 2.0 all 139 tests that drive the real library pass, so nothing breaks
-today. But price-contour declares `polars>=0.20`, its own CI has only run Polars
-1.38, and the row order of its results rests on four joins Polars 2 does not
-promise to keep in order.
-
-**Plan:**
-- Once price-contour 0.7.0 is on PyPI, move `pyproject.toml`'s `price-contour`
-  specifier and `REQUIRED_SPECIFIER` to `>=0.7.0,<0.8`, and relock with uv 0.8.22.
-- If 0.7.0 moves to pyo3-polars 0.28, make the guard's private-method test delete
-  `pl.Series._import`, the method that line returns frames through. Update the
-  guard's docstring and the optimiser low-level specification to match.
-- Run every test module that drives the library.
-
-**Acceptance:**
-- Haute pins price-contour 0.7.0.
-- A test that removes the private method the installed build returns frames
-  through fails the guard with its message, not a solve.
-- Every module that drives the real library passes.
-
-**Dependencies:** None in Haute. The move waits for price-contour 0.7.0 on PyPI.
-
-**Evidence:** `src/haute/_price_contour.py::price_contour`;
-`tests/test_price_contour_guard.py`;
-`tests/test_optimiser_routes_real_library.py`.
 
 ### PL2-21 — Structured inputs and Data Inputs can carry a JSON object as a Map column
 **Why:** Polars 2.0 adds a `Map` dtype and reads Arrow, Parquet and Iceberg

@@ -337,8 +337,8 @@ def test_limited_online_trace_linearises_ratio_pct_against_the_whole_portfolio(t
     }
     artifact_path = _write_json(tmp_path / "ratio_pct.json", artifact)
     # q1's own baseline loss ratio (0.60) differs from the portfolio's (0.48).
-    # A ratio apply keeps input quote order, so q1 is the second output row and
-    # its scenario rows lie outside the preview's two head rows.
+    # The apply frame follows the grid's quote order, so q1 is the first output
+    # row, while its scenario rows lie outside the preview's two head rows.
     scored = pl.DataFrame(
         {
             "quote_id": ["q2", "q2", "q2", "q1", "q1", "q1"],
@@ -363,7 +363,7 @@ def test_limited_online_trace_linearises_ratio_pct_against_the_whole_portfolio(t
 
     result = execute_trace(
         graph,
-        row_index=1,
+        row_index=0,
         target_node_id="apply",
         column="optimal_scenario_value",
         row_limit=2,
