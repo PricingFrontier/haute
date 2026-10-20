@@ -19,16 +19,16 @@ that fill the sheets from databases and APIs.
 sign-in, which waits on the Azure work. It names the review's findings it closes
 (`FB-n`), and the review holds their evidence.
 
-`WB-27` to `WB-31` take Show when past whole sheets, sections and components: a field, a
-column and a cell row by row with conditions of their own, and conditions on rows passing
-several tests, on other fields, on text within text, on dates apart and on the price. They
-keep the rule that decides what shows now: everything starts shown and rounds only hide,
-so a condition fails once what it tests hides, and there is no "none of", "at most",
-"exactly" or "not" over a group, any of which could come to hold as hiding went on.
-Decision taken 2026-10-20: the rounds stay. Reading a hidden value as empty and deciding in
-dependency order, loops refused, would let a condition on a list read exactly what the
-quote holds (WB-28's one edge) and allow those four; it is not planned. Rules named once
-and used by many sheets, offered the same day, were not taken either.
+`WB-27` to `WB-29` give a sheet's and a section's Show when more to test: rows passing
+several tests, other fields, text within text, dates apart and the price. Only sheets and
+sections need it: a field that applies only while a box is ticked goes in a section of its
+own, which closes up when it hides. The packages keep the rule that decides what shows now:
+everything starts shown and rounds only hide, so a condition fails once what it tests
+hides, and there is no "none of", "at most", "exactly" or "not" over a group, any of which
+could come to hold as hiding went on. Decisions taken 2026-10-20: the rounds stay, reading
+a hidden value as empty in dependency order, which would allow those four, not planned;
+and fields, columns and cells with conditions of their own, and rules named once and used
+by many sheets, were offered and not taken.
 
 ## Priorities
 
@@ -42,11 +42,9 @@ and used by many sheets, offered the same day, were not taken either.
 | WB-12 | Planned | P3 | A test quote whose response runs past what Preview shows is saved, run and compared in full, as every other test quote is. |
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, sees which quotes are about to lapse, records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
-| WB-27 | Planned | P2 | A Collection's field or a Table's column shows by conditions of its own, the Collection closing up around it and the quote leaving it out while it hides. |
-| WB-28 | Planned | P2 | A Table's cell shows row by row by its own row's values, blank and passed over while it hides, its value kept and left out of the quote. |
-| WB-29 | Planned | P2 | A condition on a many-row table tests the rows that pass several tests in the same row: any of them, every one, how many, or a total of a column over them. |
-| WB-30 | Planned | P3 | A condition tests a field against another field, text within text, and a date against another date give or take a number of days. |
-| WB-31 | Planned | P3 | What takes nothing typed shows by conditions on the price, applied after it so the price never decides what is priced. |
+| WB-27 | Planned | P2 | A sheet's or a section's condition on a many-row table tests the rows that pass several tests in the same row: any of them, every one, how many, or a total of a column over them. |
+| WB-28 | Planned | P3 | A sheet's or a section's condition tests a field against another field, text within text, and a date against another date give or take a number of days. |
+| WB-29 | Planned | P3 | A section or a sheet holding only what takes nothing typed shows by conditions on the price, applied after it so the price never decides what is priced. |
 
 ## Planned improvements
 
@@ -407,81 +405,7 @@ misconfiguration either way.
 headers when the release names its host); `frontend/src/app/useOpenQuoteStore.ts::openNew`
 (`asRenewal`, the browser's tick).
 
-### WB-27 — A field or a column with its own Show when
-**Why:** Only sheets, sections and components hide ([workbench](../workbench/high-level.md)),
-and a hidden component leaves its space in its section empty, since components are placed
-freely. A field that applies only while another is ticked needs a Collection of its own,
-placed by hand. In the commercial-pricing project's `br_rating`, `eq_included` governs four
-`eq_` fields, `flood_included` two, `dic_included` four, `rental_reimbursement_included` one
-and `permission_to_occupy` the `occupancy_permitted_date`, and `cat_limit_combined` decides
-between `combined_cat_limit` and `br_cat_limit` with `dic_cat_limit`: a dozen Collections
-for one table, each leaving a gap when it hides.
-
-**Plan:** Each field of a Collection and each column of a Table (a row of a transposed
-Table) gets a Show when of its own, kept per field beside its look (`column_looks`), with
-the conditions, groups and matches a component's takes; a field without one always shows.
-A Collection closes up around a field that hides, its other fields flowing on through its
-columns, and a Table drops the column. While building, a hidden field is faded with its eye
-struck through, as a hidden component is, and can still be edited; in Preview and the app
-it is not drawn. The rounds hide fields as they hide components, so hiding still only hides
-more. A column is then left out of the quote only when no component that shows shows it
-with its field shown, and a condition holds only while its column is so shown: `visibility`
-and `sheetVisibility` take a field's conditions into `hidden` and into what a condition
-reads. The rule `neverShown` keeps against a sheet's or a section's own components moves
-to fields: a field's conditions may test other fields of its own component, which is the
-point of the package, but never the field itself or one that waits on it. A field's Show
-when is edited in its own group in the component's panel, where its look is set, and the
-field carries an eye on the sheet.
-
-**Acceptance:** In a Collection holding `eq_included` and the four `eq_` fields, each `eq_`
-field shown while `eq_included` is ticked, the four show and hide with the box and the
-Collection closes up, in the sheets, Preview and the app; their values are left out of the
-quote while they hide; a Table's column hides whole, and a transposed Table's row; a field
-waiting on itself is named as a problem; the server and the view are held to new cases in
-the shared visibility fixture.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_workbench_visibility.py::_entered` (every field of a Table or a
-Collection counts as shown with its component); `frontend/src/utils/sheetVisibility.ts::neverShown`
-(a holder's own components, not its fields); `src/haute/_workbench_form.py::ColumnLook` (a
-field's look, and no Show when); `frontend/src/workbench/sheet/FieldBoxes.tsx::FieldBoxes`
-(a Collection draws every field it holds).
-
-### WB-28 — Cells that show row by row
-**Why:** In the commercial-pricing project's `perils`, each row's `deductible_type` decides
-whether its `deductible_pc_tiv` or its `deductible_amount` applies, and a peril whose
-`include_coverage` is not ticked needs neither a limit nor a deductible. A column's
-conditions cannot follow a row's own values, so every row shows every box.
-
-**Plan:** A Table column's Show when (WB-27) may test "this row's" columns of its own
-table. While it holds such a test it decides cell by cell, else for the whole column. A
-hidden cell is drawn blank, cannot be edited and is passed over by Tab and by paste; its
-value stays in the sample, so the cell shows it again when its row's values change back,
-and is left out of the quote: `hidden` holds cells as well as columns, and `sample_quote`
-(`_record`) and `quotedSchema` leave a row's hidden cells out. A test of this row fails on
-a cell hidden in the row, as a condition fails on a column that hides, so the rounds still
-only hide more. One edge comes from keeping the rounds (Scope): a condition on a list (any
-row, every row, a count) reads a row's values as typed whatever the sheets hide, so a cell
-hidden in its row still counts there while the quote leaves it out. The column select of a
-Table column's Show when lists this row's columns first; elsewhere none is offered, and one
-written there by hand is named as a problem.
-
-**Acceptance:** In the perils Table, with `deductible_amount` shown in rows whose
-`deductible_type` is an amount and `deductible_pc_tiv` in rows whose type is a percentage,
-each row shows the one box its type asks for, in the sheets, Preview and the app; a hidden
-cell's value is kept, left out of its row in the quote and shown again when the type changes
-back; Tab and paste pass hidden cells over; the server and the view are held to new cases in
-the shared visibility fixture, and a quote's rows to the typed-quote fixture.
-
-**Dependencies:** WB-27.
-
-**Evidence:** `src/haute/_workbench_tables.py::sample_quote` (columns left out whole, for
-every row); `src/haute/_workbench_tables.py::_record` (a row's values by column, none left out
-alone); `frontend/src/utils/sheetVisibility.ts::quotedSchema` (the quote's columns, the same
-in every row).
-
-### WB-29 — Rows that pass several tests
+### WB-27 — Rows that pass several tests
 **Why:** A condition on a many-row table tests one column in any row or in every row, or
 counts the table's typed rows. The commercial-pricing project's `perils` holds a row per
 peril, preset from `perils.csv`, each with `include_coverage`. "The EQ peril is included"
@@ -520,7 +444,7 @@ and a count of typed rows with no tests); `src/haute/_workbench_tables.py::prese
 (each preset row holding its value, so typed); `src/haute/_workbench_form.py::RowsCondition`
 and `RowCount`.
 
-### WB-30 — Other values to test against
+### WB-28 — Other values to test against
 **Why:** A condition tests a column against values typed into the condition. It cannot
 test one field against another (in the commercial-pricing project, `policy_limit` above
 `mga_limit`), text within text (an insured whose name contains "Holdings"), or one date
@@ -528,50 +452,50 @@ against another (a project completing more than 365 days after it starts,
 `project_completion_date` against `project_start_date`).
 
 **Plan:** A condition's value may be another field of the same type instead of values
-typed: a one-row table's column, or, in a test of a list's rows or of this row (WB-28,
-WB-29), a column of the same row. A date compared with another date may add or take away a
-whole number of days. Text gains contains, does not contain, starts with and ends with,
-compared as equals compares text. A test against another field holds only while both
-fields are on components that show, so hiding still only hides more, and reads the other
-field's value as it reads its own. A date against today is left out: a saved quote would
-then show other sheets, and so be priced otherwise, on another day; a date field on the
-form stands in for it.
+typed: a one-row table's column, or, in a test of a list's rows (WB-27), a column of the
+same row. A date compared with another date may add or take away a whole number of days.
+Text gains contains, does not contain, starts with and ends with, compared as equals
+compares text. A test against another field holds only while both fields are on
+components that show, so hiding still only hides more, and reads the other field's value as
+it reads its own. A date against today is left out: a saved quote would then show other
+sheets, and so be priced otherwise, on another day; a date field on the form stands in for
+it.
 
 **Acceptance:** A section shown while `policy_limit` is above `mga_limit`, one while the
 insured contains "Holdings", and one while the completion date is more than 365 days after
 the start date, each failing while either field hides; the server and the view are held to
 new cases in the shared visibility fixture.
 
-**Dependencies:** WB-29 for another field in a list's tests, WB-28 for one in this row's;
-none for the rest.
+**Dependencies:** WB-27 for another field in a list's tests; none for the rest.
 
 **Evidence:** `src/haute/_workbench_visibility.py::_passes` (each test against the
 condition's own values); `src/haute/_workbench_form.py::Condition` (`values`, typed text
 alone).
 
-### WB-31 — Conditions on the price
+### WB-29 — Conditions on the price
 **Why:** Conditions test input tables alone; one naming an output column is a problem
 ("which is in an output table"). In the commercial-pricing project the referral reasons
 (`product_premium.referral_reasons`) matter only while `premium.referral_count` is above 0,
 and a warning on rate adequacy only while `rate_adequacy` is below 1.
 
-**Plan:** A condition may test an output column, but only in the Show when of what takes
-nothing typed: a Heading, a Chart, a Collection or a Table of output columns alone, a field
-of an output column (WB-27), or a section or a sheet holding only those. Hiding any of them
-never changes the quote, so the price never decides what is priced: the rounds decide what
-shows from the inputs, these conditions holding, and these conditions are then applied to
-the price the sheets show, the last one while a new one is on its way, and before the first
-every output read as empty. The server's `visibility` leaves them out, as they never change
-`hidden`. An input component placed later in a section with such a condition, or such a
-condition on what takes values, is named as a problem, not refused. An output table with
-many rows is tested as a list is (WB-29).
+**Plan:** A condition may test an output column, but only in the Show when of a section, or
+a sheet, holding only what takes nothing typed: Headings, Charts, and Collections and
+Tables of output columns alone. Hiding it never changes the quote, so the price never
+decides what is priced: the rounds decide what shows from the inputs, these conditions
+holding, and these conditions are then applied to the price the sheets show, the last one
+while a new one is on its way, and before the first every output read as empty. The
+server's `visibility` leaves them out, as they never change `hidden`. An input component
+placed later in a section with such a condition, or such a condition on a section or sheet
+that takes values, is named as a problem, not refused. An output table with many rows is
+tested as a list is (WB-27).
 
-**Acceptance:** A Table of referral reasons shown while `referral_count` is above 0,
-hidden before the first price and after a price with none, in the sheets, Preview and the
-app; an output condition on a section holding an input Collection named as a problem; the
-quote the same whatever the output conditions say, held by cases on both sides.
+**Acceptance:** A section holding a Table of referral reasons shown while `referral_count`
+is above 0, hidden before the first price and after a price with none, in the sheets,
+Preview and the app; an output condition on a section holding an input Collection named as
+a problem; the quote the same whatever the output conditions say, held by cases on both
+sides.
 
-**Dependencies:** WB-27 for fields of output columns, WB-29 for output tables with many rows.
+**Dependencies:** WB-27 for output tables with many rows.
 
 **Evidence:** `frontend/src/utils/sheetVisibility.ts::conditionFault` (a column of an output
 table named as a fault); `src/haute/_workbench_visibility.py::_tested_column` (input tables
