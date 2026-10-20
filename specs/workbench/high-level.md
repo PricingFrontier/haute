@@ -1187,7 +1187,8 @@ Out of scope:
     a sheet's, a section's or a component's conditions doing what they say: a condition
     that cannot hold as written, saying why; a value that is not one of its column's
     allowed values; and a sheet, section or component that nothing could show again once
-    hidden, since each column its conditions need is on no Table or Collection, or only on
+    hidden, since each column its conditions need (for a count, each of its table's columns
+    but the index) is on no Table or Collection, or only on
     itself, on its own components or on components that cannot show without it, as a tick
     box in the very section it shows is. None is refused: the form is saved as it is.
 - **Saved.** A successful save of the form adopts the file's new revision; the project
