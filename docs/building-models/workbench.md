@@ -337,7 +337,7 @@ A sheet, a section or a component can show only when the quote calls for it: a b
 interruption sheet only while its cover is ticked, a flood section only while flood is
 ticked, a referral note only while the sum insured is above a limit. Set it under **Show
 when**, in a component's properties or in a sheet's or a section's own panel. **Add
-condition** tests a column of a one-row input table:
+condition** tests a column of an input table:
 
 - a tick box **is ticked** or **is not ticked**;
 - any other column **is filled** or **is empty**, and **equals** or **does not equal** a
@@ -348,8 +348,24 @@ condition** tests a column of a one-row input table:
   value, and a date **is after**, **is on or after**, **is before** or **is on or before**
   one.
 
-With two or more conditions, choose whether **all** or **any** of them must hold. A
-section on a hidden sheet is hidden too, as is a component in a hidden section, and a sheet
+With two or more conditions, choose whether **all** or **any** of them must hold.
+
+A column of a many-row table, such as the drivers on a motor quote, is tested in **Any
+row** or **Every row**, chosen beside the column: a young drivers section can show while
+any driver is under 25. Only rows with something typed in them count, and **Every row**
+needs at least one, so a list nobody has filled in shows nothing waiting on every row of
+it. **Number of rows in** a table, first among a many-row table's columns, tests how
+many rows it has instead, such as a second vehicle section shown while the vehicles table
+has at least 2.
+
+**Add group** adds a group of conditions that counts as one, with its own **Add
+condition** and its own **all** or **any**. Use it to mix the two: a section shown while
+the cover is Comprehensive and either a driver is under 25 or the claims count is at least
+2 needs **all** of the cover's condition and a group needing **any** of the other two. A
+new group starts needing the opposite of the Show when around it, since one needing the
+same would change nothing. Removing a group's last condition removes the group.
+
+A section on a hidden sheet is hidden too, as is a component in a hidden section, and a sheet
 or a section waiting on a box that sits somewhere hidden is hidden with it, so a cover and
 its extensions hide and show in a chain.
 

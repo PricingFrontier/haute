@@ -2530,14 +2530,14 @@ export interface Section {
 }
 /**
  * When a sheet, a section or a widget shows: always, without conditions; else while all
- * of them hold, or any, as ``match`` says.
+ * of them hold, or any, as ``match`` says, each a condition or a group of them.
  */
 export interface ShowWhen {
-  conditions: Condition[];
+  conditions: (Condition | RowsCondition | RowCount | ConditionGroup)[];
   match: 'all' | 'any';
 }
 /**
- * A test of a schema column's value, the column by table and column id.
+ * A test of the value in a one-row table's column, the column by table and column id.
  *
  * The shape is all the file holds a condition to. Whether its column, test and values
  * fit one another is ``haute._workbench_visibility.condition_fits``'s question, asked
@@ -2560,6 +2560,48 @@ export interface Condition {
     | 'at_most';
   table: string;
   values: string[];
+}
+/**
+ * A test of the values in a many-row table's column, passing in any of its rows or in
+ * every one, as ``rows`` says; it fits as a ``Condition`` does.
+ */
+export interface RowsCondition {
+  column: string;
+  op:
+    | 'ticked'
+    | 'not_ticked'
+    | 'filled'
+    | 'empty'
+    | 'equals'
+    | 'not_equals'
+    | 'one_of'
+    | 'not_one_of'
+    | 'above'
+    | 'at_least'
+    | 'below'
+    | 'at_most';
+  rows: 'any' | 'every';
+  table: string;
+  values: string[];
+}
+/**
+ * A test of how many rows a many-row table, by id, holds.
+ */
+export interface RowCount {
+  count: number;
+  op: 'equals' | 'not_equals' | 'above' | 'at_least' | 'below' | 'at_most';
+  table: string;
+}
+/**
+ * Conditions that count as one: holding while all of them hold, or any, as ``match``
+ * says. A group holds no group.
+ */
+export interface ConditionGroup {
+  /**
+   * @minItems 1
+   */
+  conditions: (Condition | RowsCondition | RowCount)[];
+  match: 'all' | 'any';
 }
 /**
  * A Table: a grid showing columns of many-row schema tables, each of its columns given

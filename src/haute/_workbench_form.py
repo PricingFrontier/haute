@@ -29,7 +29,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, Strict, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    Field,
+    Strict,
+    Tag,
+    ValidationError,
+    model_validator,
+)
 
 from haute._explore_pivots import PIVOT_DECIMAL_PLACES_MAX
 from haute._file_ops import atomic_write_bytes
@@ -164,7 +173,7 @@ class FieldRef(_Strict):
 
 
 class Condition(_Strict):
-    """A test of a schema column's value, the column by table and column id.
+    """A test of the value in a one-row table's column, the column by table and column id.
 
     The shape is all the file holds a condition to. Whether its column, test and values
     fit one another is ``haute._workbench_visibility.condition_fits``'s question, asked
@@ -179,12 +188,70 @@ class Condition(_Strict):
     values: list[Annotated[str, Strict()]] = Field(default_factory=list)
 
 
+class RowsCondition(_Strict):
+    """A test of the values in a many-row table's column, passing in any of its rows or in
+    every one, as ``rows`` says; it fits as a ``Condition`` does."""
+
+    table: str
+    column: str
+    rows: Literal["any", "every"]
+    op: ConditionTest
+    values: list[Annotated[str, Strict()]] = Field(default_factory=list)
+
+
+#: What a count tests a many-row table's number of rows for.
+CountTest = Literal["equals", "not_equals", "above", "at_least", "below", "at_most"]
+
+
+class RowCount(_Strict):
+    """A test of how many rows a many-row table, by id, holds."""
+
+    table: str
+    op: CountTest
+    count: Annotated[int, Strict(), Field(ge=0)]
+
+
+def _condition_kind(value: Any) -> str:
+    """Which entry of a ``show_when`` *value* is, by its fields: a group holds
+    ``conditions``, a count ``count``, a many-row table's condition ``rows``."""
+    fields = value if isinstance(value, dict) else type(value).model_fields
+    if "conditions" in fields:
+        return "group"
+    if "count" in fields:
+        return "count"
+    return "rows" if "rows" in fields else "one"
+
+
+_ONE_CONDITION = (
+    Annotated[Condition, Tag("one")]
+    | Annotated[RowsCondition, Tag("rows")]
+    | Annotated[RowCount, Tag("count")]
+)
+
+#: One condition: of a one-row table's column, of a many-row table's, or a count of rows.
+SingleCondition = Annotated[_ONE_CONDITION, Discriminator(_condition_kind)]
+
+
+class ConditionGroup(_Strict):
+    """Conditions that count as one: holding while all of them hold, or any, as ``match``
+    says. A group holds no group."""
+
+    match: Literal["all", "any"]
+    conditions: list[SingleCondition] = Field(min_length=1)
+
+
+#: An entry of a ``show_when``: one condition or a group of them.
+ShowWhenEntry = Annotated[
+    _ONE_CONDITION | Annotated[ConditionGroup, Tag("group")], Discriminator(_condition_kind)
+]
+
+
 class ShowWhen(_Strict):
     """When a sheet, a section or a widget shows: always, without conditions; else while all
-    of them hold, or any, as ``match`` says."""
+    of them hold, or any, as ``match`` says, each a condition or a group of them."""
 
     match: Literal["all", "any"] = "all"
-    conditions: list[Condition] = Field(default_factory=list)
+    conditions: list[ShowWhenEntry] = Field(default_factory=list)
 
 
 class ColumnLook(_Strict):

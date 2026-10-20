@@ -2,16 +2,18 @@
 which input columns a quote leaves out (specs/workbench).
 
 A sheet, a section or a component with conditions shows only while they hold on the values
-typed into the sheets; a section on a sheet that does not show does not show either, nor
-does a component in a section that does not show. A
+typed into the sheets, a group of them holding as one; a section on a sheet that does not
+show does not show either, nor does a component in a section that does not show. A
 condition holds while it fits (``condition_fits``), its column is on a Table or a
 Collection that shows (a Chart takes nothing typed, so its columns never count, and a
-Heading has none), and the value typed into the column's first row passes its test, read
-as the sample's values are typed. Everything starts shown and anything whose conditions
-fail is hidden, round after round, until a round hides nothing: hiding never shows
-anything, so the answer does not depend on the order of the sheets, sections, components
-or conditions. A condition that does not fit never holds; it is a problem the view reports,
-never an error here.
+Heading has none), and the value typed into the column passes its test, read as the
+sample's values are typed: a one-row table's one value, or a many-row table's in any of
+its typed rows or in every one, there being one; a count holds while one of its table's
+columns is on a Table that shows and its number of typed rows passes. Everything starts
+shown and anything whose conditions fail is hidden, round after round, until a round hides
+nothing: hiding never shows anything, so the answer does not depend on the order of the
+sheets, sections, components or conditions. A condition that does not fit never holds; it
+is a problem the view reports, never an error here.
 
 The view applies the same rules in ``frontend/src/utils/sheetVisibility.ts``; both are
 held to the cases in ``frontend/src/utils/__tests__/fixtures/sheetVisibility.json``.
@@ -30,15 +32,21 @@ from haute._workbench_form import (
     CollectionWidget,
     ColumnType,
     Condition,
+    ConditionGroup,
     ConditionTest,
+    CountTest,
     FieldRef,
     FormSpec,
+    RowCount,
+    RowsCondition,
     SchemaColumn,
+    SchemaTable,
     ShowWhen,
+    SingleCondition,
     TableInputWidget,
     Widget,
 )
-from haute._workbench_tables import _filled, _typed
+from haute._workbench_tables import _filled, _typed, preset_rows
 
 #: The values typed into the sheets: rows by table id, each a cell (text, or a tick) by
 #: column id, as the sample holds them.
@@ -55,6 +63,16 @@ _COMPARISONS: dict[ConditionTest, Callable[[Any, Any], bool]] = {
     "at_most": operator.le,
 }
 _ORDERS = frozenset(_COMPARISONS)
+
+#: How a count compares a table's number of rows with its own.
+_COUNTS: dict[CountTest, Callable[[int, int], bool]] = {
+    "equals": operator.eq,
+    "not_equals": operator.ne,
+    "above": operator.gt,
+    "at_least": operator.ge,
+    "below": operator.lt,
+    "at_most": operator.le,
+}
 
 #: The tests each column type takes.
 _TESTS: dict[ColumnType, frozenset[ConditionTest]] = {
@@ -151,10 +169,13 @@ def _entered(widget: Widget) -> list[FieldRef]:
     return widget.fields if isinstance(widget, TableInputWidget | CollectionWidget) else []
 
 
-def condition_fits(spec: FormSpec, condition: Condition) -> bool:
-    """Whether *condition* can hold as written: its column in a one-row input table, a test
-    the column's type takes, as many values as the test takes, and each value one the
-    column could hold."""
+def condition_fits(spec: FormSpec, condition: SingleCondition) -> bool:
+    """Whether *condition* can hold as written: a count's table a many-row input table; else
+    its column in an input table with the rows it tests, one or many, a test the column's
+    type takes, as many values as the test takes, and each value one the column could
+    hold."""
+    if isinstance(condition, RowCount):
+        return _counted_table(spec, condition) is not None
     column = _tested_column(spec, condition)
     return column is not None and _fits(column.type, condition)
 
@@ -162,28 +183,72 @@ def condition_fits(spec: FormSpec, condition: Condition) -> bool:
 def _shows(spec: FormSpec, show_when: ShowWhen, rows: Rows, shown: set[tuple[str, str]]) -> bool:
     if not show_when.conditions:
         return True
-    holding = (_holds(spec, condition, rows, shown) for condition in show_when.conditions)
+    holding = (
+        _group_holds(spec, entry, rows, shown)
+        if isinstance(entry, ConditionGroup)
+        else _holds(spec, entry, rows, shown)
+        for entry in show_when.conditions
+    )
     return all(holding) if show_when.match == "all" else any(holding)
 
 
-def _holds(spec: FormSpec, condition: Condition, rows: Rows, shown: set[tuple[str, str]]) -> bool:
+def _group_holds(
+    spec: FormSpec, group: ConditionGroup, rows: Rows, shown: set[tuple[str, str]]
+) -> bool:
+    holding = (_holds(spec, condition, rows, shown) for condition in group.conditions)
+    return all(holding) if group.match == "all" else any(holding)
+
+
+def _holds(
+    spec: FormSpec, condition: SingleCondition, rows: Rows, shown: set[tuple[str, str]]
+) -> bool:
+    if isinstance(condition, RowCount):
+        counted = _counted_table(spec, condition)
+        if counted is None or not any(
+            (counted.id, column.id) in shown for column in counted.columns if not column.index
+        ):
+            return False
+        typed = _typed_rows(counted, rows.get(counted.id, ()))
+        return _COUNTS[condition.op](len(typed), condition.count)
     column = _tested_column(spec, condition)
     if column is None or not _fits(column.type, condition):
         return False
     if (condition.table, condition.column) not in shown:
         return False
-    first = next(iter(rows.get(condition.table, ())), None)
-    cell = None if first is None else first.get(condition.column)
-    return _passes(column.type, condition, cell)
+    if isinstance(condition, Condition):
+        first = next(iter(rows.get(condition.table, ())), None)
+        cell = None if first is None else first.get(condition.column)
+        return _passes(column.type, condition, cell)
+    # A column that fits is in a many-row input table.
+    table = next(table for table in spec.data_schema.tables if table.id == condition.table)
+    cells = [row.get(column.id) for row in _typed_rows(table, rows.get(table.id, ()))]
+    if condition.rows == "any":
+        return any(_passes(column.type, condition, cell) for cell in cells)
+    return bool(cells) and all(_passes(column.type, condition, cell) for cell in cells)
 
 
-def _tested_column(spec: FormSpec, condition: Condition) -> SchemaColumn | None:
-    """The condition's column, while it is in a one-row input table."""
+def _typed_rows(
+    table: SchemaTable, rows: Sequence[Mapping[str, str | bool]]
+) -> list[Mapping[str, str | bool]]:
+    """A many-row table's rows as a grid holds them (``preset_rows``), each with anything
+    but the index typed in it, whatever the sheets hide: counting only what shows would let
+    hiding a column drop a row and show something again (``typedRows`` in the view)."""
+    return [
+        row
+        for row in preset_rows(table, rows)
+        if any(_filled(row.get(column.id)) for column in table.columns if not column.index)
+    ]
+
+
+def _tested_column(spec: FormSpec, condition: Condition | RowsCondition) -> SchemaColumn | None:
+    """The condition's column, while it is in an input table with the rows it tests: one for
+    a ``Condition``, many for a ``RowsCondition``."""
+    rows = "one" if isinstance(condition, Condition) else "many"
     return next(
         (
             column
             for table in spec.data_schema.tables
-            if table.id == condition.table and table.role == "input" and table.rows == "one"
+            if table.id == condition.table and table.role == "input" and table.rows == rows
             for column in table.columns
             if column.id == condition.column
         ),
@@ -191,7 +256,19 @@ def _tested_column(spec: FormSpec, condition: Condition) -> SchemaColumn | None:
     )
 
 
-def _fits(column_type: ColumnType, condition: Condition) -> bool:
+def _counted_table(spec: FormSpec, count: RowCount) -> SchemaTable | None:
+    """The count's table, while it is a many-row input table."""
+    return next(
+        (
+            table
+            for table in spec.data_schema.tables
+            if table.id == count.table and table.role == "input" and table.rows == "many"
+        ),
+        None,
+    )
+
+
+def _fits(column_type: ColumnType, condition: Condition | RowsCondition) -> bool:
     if condition.op not in _TESTS[column_type]:
         return False
     count = len(condition.values)
@@ -227,7 +304,9 @@ def _is_day(text: str) -> bool:
     return True
 
 
-def _passes(column_type: ColumnType, condition: Condition, cell: str | bool | None) -> bool:
+def _passes(
+    column_type: ColumnType, condition: Condition | RowsCondition, cell: str | bool | None
+) -> bool:
     op = condition.op
     if op == "ticked":
         return cell is True

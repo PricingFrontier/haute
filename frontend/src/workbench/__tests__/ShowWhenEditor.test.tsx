@@ -2,7 +2,9 @@
  * A sheet's, a section's or a component's Show when (specs/workbench): "Always" without
  * conditions; a condition added on the first one-row input column; its column, test and
  * value chosen, the value the control its column's cell is; conditions removed; all or any
- * of two or more; a condition whose column is gone; each change one undo step.
+ * of two or more; groups of conditions; a many-row table's column in any or every row, and
+ * its number of rows; a condition whose column is gone or whose table switched between one
+ * row and many; each change one undo step.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
@@ -28,6 +30,8 @@ function Editor() {
 const showWhen = () => widgetsOf(currentForm())[0].show_when
 const undoSteps = () => useWorkbenchFormStore.getState().undoStack.length
 const condition = (n: number) => screen.getByRole("group", { name: `Condition ${n}` })
+const group = (n: number) => screen.getByRole("group", { name: `Group ${n}` })
+const options = (select: HTMLElement) => within(select).getAllByRole("option").map((option) => option.textContent)
 
 describe("ShowWhenEditor", () => {
   beforeEach(() => {
@@ -61,7 +65,7 @@ describe("ShowWhenEditor", () => {
     expect(undoSteps()).toBe(steps)
     fireEvent.blur(day)
 
-    expect(showWhen().conditions[0].values).toEqual(["2026-01-01"])
+    expect(showWhen().conditions[0]).toMatchObject({ values: ["2026-01-01"] })
     expect(undoSteps()).toBe(steps + 1)
   })
 
@@ -76,9 +80,9 @@ describe("ShowWhenEditor", () => {
     fireEvent.change(screen.getByRole("combobox", { name: "Condition 1 test" }), { target: { value: "one_of" } })
     expect(showWhen().conditions[0]).toMatchObject({ op: "one_of", values: ["NY"] })
     fireEvent.click(screen.getByRole("checkbox", { name: "CA" }))
-    expect(showWhen().conditions[0].values).toEqual(["CA", "NY"])
+    expect(showWhen().conditions[0]).toMatchObject({ values: ["CA", "NY"] })
     fireEvent.click(screen.getByRole("checkbox", { name: "NY" }))
-    expect(showWhen().conditions[0].values).toEqual(["CA"])
+    expect(showWhen().conditions[0]).toMatchObject({ values: ["CA"] })
     expect(undoSteps()).toBe(5)
   })
 
@@ -138,6 +142,102 @@ describe("ShowWhenEditor", () => {
     expect(showWhen()).toMatchObject({ match: "any", conditions: [{ column: "policy.state" }] })
   })
 
+  it("adds a group needing what the Show when does not, with its own conditions, match and removal, each one undo step", () => {
+    render(<Editor />)
+    const fresh = { table: "policy", column: "policy.state", op: "equals", values: [] }
+    fireEvent.click(screen.getByRole("button", { name: "Add group" }))
+    expect(showWhen()).toEqual({ match: "all", conditions: [{ match: "any", conditions: [fresh] }] })
+    expect(undoSteps()).toBe(1)
+    expect(screen.queryByRole("combobox", { name: "Which conditions of group 1 must hold" })).not.toBeInTheDocument()
+
+    fireEvent.click(within(group(1)).getByRole("button", { name: "Add condition to group 1" }))
+    expect(within(group(1)).getByText("of these are true")).toBeInTheDocument()
+    fireEvent.change(screen.getByRole("combobox", { name: "Which conditions of group 1 must hold" }), { target: { value: "all" } })
+    fireEvent.change(screen.getByRole("combobox", { name: "Group 1 condition 2 column" }), { target: { value: "policy:policy.year" } })
+    expect(showWhen()).toEqual({ match: "all", conditions: [{ match: "all", conditions: [fresh, { table: "policy", column: "policy.year", op: "equals", values: [] }] }] })
+    expect(undoSteps()).toBe(4)
+
+    // Under a Show when needing any, a new group needs all.
+    fireEvent.click(screen.getByRole("button", { name: "Add condition" }))
+    fireEvent.change(screen.getByRole("combobox", { name: "Which conditions must hold" }), { target: { value: "any" } })
+    fireEvent.click(screen.getByRole("button", { name: "Add group" }))
+    expect(showWhen().conditions[2]).toEqual({ match: "all", conditions: [fresh] })
+
+    // Its last condition removed, a group goes with it; its cross removes it whole.
+    fireEvent.click(within(group(3)).getByRole("button", { name: "Remove group 3 condition 1" }))
+    expect(showWhen().conditions).toHaveLength(2)
+    fireEvent.click(screen.getByRole("button", { name: "Remove group 1" }))
+    expect(showWhen()).toEqual({ match: "any", conditions: [fresh] })
+  })
+
+  it("tests a many-row table's column in any row or every row, and counts its rows in a whole number", () => {
+    render(<Editor />)
+    fireEvent.click(screen.getByRole("button", { name: "Add condition" }))
+    const column = screen.getByRole("combobox", { name: "Condition 1 column" })
+    expect(screen.queryByRole("combobox", { name: "Condition 1 rows" })).not.toBeInTheDocument()
+
+    fireEvent.change(column, { target: { value: "equipment:equipment.value" } })
+    expect(showWhen().conditions[0]).toEqual({ table: "equipment", column: "equipment.value", rows: "any", op: "equals", values: [] })
+    const rows = screen.getByRole("combobox", { name: "Condition 1 rows" })
+    expect(options(rows)).toEqual(["Any row", "Every row"])
+    fireEvent.change(rows, { target: { value: "every" } })
+    expect(showWhen().conditions[0]).toMatchObject({ rows: "every" })
+
+    fireEvent.change(column, { target: { value: "equipment#rows" } })
+    expect(showWhen().conditions[0]).toEqual({ table: "equipment", op: "at_least", count: 1 })
+    expect(column).toHaveDisplayValue("Number of rows in equipment")
+    expect(screen.queryByRole("combobox", { name: "Condition 1 rows" })).not.toBeInTheDocument()
+    expect(options(screen.getByRole("combobox", { name: "Condition 1 test" }))).toEqual([
+      "equals",
+      "does not equal",
+      "is greater than",
+      "is at least",
+      "is less than",
+      "is at most",
+    ])
+    const count = screen.getByRole("textbox", { name: "Condition 1 value" })
+    const steps = undoSteps()
+    fireEvent.change(count, { target: { value: "2.5" } })
+    fireEvent.blur(count)
+    expect(screen.getByText("Enter a whole number of rows, 0 or more.")).toBeInTheDocument()
+    expect(undoSteps()).toBe(steps)
+    fireEvent.change(count, { target: { value: "3" } })
+    fireEvent.blur(count)
+    expect(showWhen().conditions[0]).toEqual({ table: "equipment", op: "at_least", count: 3 })
+    expect(undoSteps()).toBe(steps + 1)
+
+    // Moved to a column, it keeps its test while the column's type takes it, with no value.
+    fireEvent.change(column, { target: { value: "policy:policy.year" } })
+    expect(showWhen().conditions[0]).toEqual({ table: "policy", column: "policy.year", op: "at_least", values: [] })
+  })
+
+  it("fixes a condition whose table switched between one row and many from its rows select", () => {
+    const form = currentForm()
+    widgetsOf(form)[0].show_when = {
+      match: "all",
+      conditions: [
+        { table: "equipment", column: "equipment.value", op: "filled", values: [] },
+        { table: "policy", column: "policy.year", rows: "every", op: "filled", values: [] },
+      ],
+    }
+    loadForm(form)
+    render(<Editor />)
+
+    expect(within(condition(1)).getByText("Tests value, which is in a table with many rows")).toBeInTheDocument()
+    const first = screen.getByRole("combobox", { name: "Condition 1 rows" })
+    expect(first).toHaveDisplayValue("Choose…")
+    fireEvent.change(first, { target: { value: "any" } })
+    expect(showWhen().conditions[0]).toEqual({ table: "equipment", column: "equipment.value", rows: "any", op: "filled", values: [] })
+    expect(within(condition(1)).queryByText(/Tests value/)).not.toBeInTheDocument()
+
+    expect(within(condition(2)).getByText("Tests year in every row, which is in a table with one row")).toBeInTheDocument()
+    const second = screen.getByRole("combobox", { name: "Condition 2 rows" })
+    expect(options(second)).toEqual(["The row", "Any row", "Every row"])
+    fireEvent.change(second, { target: { value: "one" } })
+    expect(showWhen().conditions[1]).toEqual({ table: "policy", column: "policy.year", op: "filled", values: [] })
+    expect(screen.queryByRole("combobox", { name: "Condition 2 rows" })).not.toBeInTheDocument()
+  })
+
   it("keeps a condition whose column is gone, saying so", () => {
     const form = currentForm()
     widgetsOf(form)[0].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.gone", op: "filled", values: [] }] }
@@ -148,13 +248,14 @@ describe("ShowWhenEditor", () => {
     expect(within(condition(1)).getByText("Tests a column that is no longer in the schema")).toBeInTheDocument()
   })
 
-  it("adds nothing while no one-row input table has a column, saying why", () => {
+  it("adds nothing while no input table has a column to test, saying why", () => {
     const form = currentForm()
-    form.schema.tables = [table("equipment", "equipment", { rows: "many", columns: [column("equipment.item", "item", { key: true })] })]
+    form.schema.tables = [table("equipment", "equipment", { rows: "many", columns: [column("equipment.row", "row", { type: "int", index: true })] })]
     loadForm(form)
     render(<Editor />)
 
     expect(screen.getByRole("button", { name: "Add condition" })).toBeDisabled()
-    expect(screen.getByText("Conditions test one-row input tables; the schema has none with a column.")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Add group" })).toBeDisabled()
+    expect(screen.getByText("Conditions test input tables; the schema has none with a column to test.")).toBeInTheDocument()
   })
 })

@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest"
 import fixture from "./fixtures/sheetVisibility.json"
 import typedQuotes from "./fixtures/typedQuotes.json"
-import type { Condition, FormSpec, Page, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
+import type { Condition, FormSpec, Page, RowCount, RowsCondition, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
 import type { RowsByTable } from "../sheetValues"
 import { BLANK_THEME, COLLECTION_OPTIONS } from "../workbenchForm"
 import {
@@ -16,6 +16,7 @@ import {
   conditionFault,
   neverShown,
   newCondition,
+  newRowCount,
   quoteEligible,
   quotedSchema,
   sheetVisibility,
@@ -23,6 +24,7 @@ import {
   testsFor,
   valueFits,
   withConditionColumn,
+  withConditionRows,
   withConditionTest,
 } from "../sheetVisibility"
 
@@ -96,7 +98,7 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
 
 const ALWAYS: ShowWhen = { match: "all", conditions: [] }
 const ticked = (table: string, columnId: string): Condition => ({ table, column: columnId, op: "ticked", values: [] })
-const when = (...conditions: Condition[]): ShowWhen => ({ match: "all", conditions })
+const when = (...conditions: ShowWhen["conditions"]): ShowWhen => ({ match: "all", conditions })
 
 const policy: SchemaTable = {
   id: "t_policy",
@@ -294,6 +296,23 @@ describe("conditionFault", () => {
     expect(fault({ column: "c_si", values: ["lots"] })).toBe('tests sum_insured against "lots", which isn\'t a number')
     expect(fault({ column: "c_start", op: "below", values: ["01/05/2026"] })).toBe('tests start against "01/05/2026", which isn\'t a day written YYYY-MM-DD')
   })
+
+  it("faults a condition in any or every row by its table's rows as it faults one on a one-row table's column", () => {
+    const every: RowsCondition = { table: "t_items", column: "c_item", rows: "every", op: "filled", values: [] }
+    expect(conditionFault(form, every)).toBeNull()
+    expect(conditionFault(form, { ...every, table: "t_policy", column: "c_class" })).toBe("tests class in every row, which is in a table with one row")
+    expect(conditionFault(form, { ...every, rows: "any", table: "t_out", column: "c_premium" })).toBe("tests premium, which is in an output table")
+    expect(conditionFault(form, { ...every, op: "ticked" })).toBe('tests item with "is ticked", which a Text column cannot take')
+    expect(conditionFault(form, { ...every, op: "equals" })).toBe("needs a value for its test of item")
+  })
+
+  it("faults a count by its table alone: gone, an output table or one with one row", () => {
+    const count: RowCount = { table: "t_items", op: "at_least", count: 2 }
+    expect(conditionFault(form, count)).toBeNull()
+    expect(conditionFault(form, { ...count, table: "t_policy" })).toBe("counts the rows of policy, which has one row")
+    expect(conditionFault(form, { ...count, table: "t_out" })).toBe("counts the rows of premium, which is an output table")
+    expect(conditionFault(form, { ...count, table: "t_gone" })).toBe("counts the rows of a table that is no longer in the schema")
+  })
 })
 
 describe("neverShown", () => {
@@ -365,6 +384,24 @@ describe("neverShown", () => {
     expect([...neverShown(onSheet)]).toEqual([["p_never", ticked("t_policy", "c_motor")]])
   })
 
+  it("reports a sheet waiting on a group's condition, with that condition", () => {
+    const waits = ticked("t_policy", "c_bi")
+    const form = formOf([page("p_main", [motorBox]), page("p_bi", [collection("w_bi", [["t_policy", "c_bi"]])], { match: "all", conditions: [{ match: "any", conditions: [waits] }] })])
+    expect([...neverShown(form)]).toEqual([["p_bi", waits]])
+
+    const reachable = { match: "all" as const, conditions: [{ match: "any" as const, conditions: [waits, ticked("t_policy", "c_motor")] }] }
+    expect(neverShown(formOf([page("p_main", [motorBox]), page("p_bi", [collection("w_bi", [["t_policy", "c_bi"]])], reachable)])).size).toBe(0)
+  })
+
+  it("reaches a count through any of its table's columns on a component outside it, and reports one only on itself", () => {
+    const count: RowCount = { table: "t_items", op: "at_least", count: 1 }
+    const own = formOf([page("p_main", [motorBox]), page("p_items", [collection("w_items", [["t_items", "c_item"]])], when(count))])
+    expect([...neverShown(own)]).toEqual([["p_items", count]])
+
+    const elsewhere = formOf([page("p_main", [collection("w_items", [["t_items", "c_item"]])]), page("p_more", [motorBox], when(count))])
+    expect(neverShown(elsewhere).size).toBe(0)
+  })
+
   it("leaves out a sheet whose condition does not fit, as that is reported already", () => {
     const form = formOf([page("p_main", [motorBox]), page("p_bad", [], when({ table: "t_policy", column: "c_gone", op: "ticked", values: [] }))])
     expect(neverShown(form).size).toBe(0)
@@ -374,9 +411,18 @@ describe("neverShown", () => {
 describe("the editor's steps", () => {
   const form = formOf([page("p", [])])
 
-  it("starts a condition on the first one-row input table's first column, or none without one", () => {
+  it("starts a condition on the first one-row input table's first column, else in any row of a many-row one's, or none without one", () => {
     expect(newCondition(form)).toEqual({ table: "t_policy", column: "c_bi", op: "ticked", values: [] })
-    expect(newCondition(formOf([page("p", [])], [items, premium, { ...policy, columns: [] }]))).toBeNull()
+    expect(newCondition(formOf([page("p", [])], [items, premium, { ...policy, columns: [] }]))).toEqual({
+      table: "t_items",
+      column: "c_item",
+      rows: "any",
+      op: "equals",
+      values: [],
+    })
+    // A many-row table's index takes no typing, so it is never tested.
+    const numbered = { ...items, columns: [column("c_row", "row", { type: "int", index: true })] }
+    expect(newCondition(formOf([page("p", [])], [numbered, premium, { ...policy, columns: [] }]))).toBeNull()
   })
 
   it("moves a condition to another column, its test and values kept while they fit", () => {
@@ -389,6 +435,27 @@ describe("the editor's steps", () => {
     expect(withConditionColumn(form, fraction, "t_policy", "c_years")).toEqual({ table: "t_policy", column: "c_years", op: "equals", values: [] })
     expect(() => withConditionColumn(form, years, "t_policy", "c_gone")).toThrow(/c_gone/)
     expect(years).toEqual({ table: "t_policy", column: "c_years", op: "above", values: ["3"] })
+  })
+
+  it("moves a condition to a many-row table's column in any row, its rows kept, and back to a one-row table's", () => {
+    const years: Condition = { table: "t_policy", column: "c_years", op: "equals", values: ["3"] }
+    expect(withConditionColumn(form, years, "t_items", "c_item")).toEqual({ table: "t_items", column: "c_item", rows: "any", op: "equals", values: ["3"] })
+    const every: RowsCondition = { table: "t_items", column: "c_item", rows: "every", op: "filled", values: [] }
+    expect(withConditionColumn(form, every, "t_items", "c_item")).toEqual(every)
+    expect(withConditionColumn(form, every, "t_policy", "c_class")).toEqual({ table: "t_policy", column: "c_class", op: "filled", values: [] })
+  })
+
+  it("counts a table's rows at least 1, and moves a count to a column keeping its test while the column's type takes it, with no value", () => {
+    const count = newRowCount("t_items")
+    expect(count).toEqual({ table: "t_items", op: "at_least", count: 1 })
+    expect(withConditionColumn(form, count, "t_policy", "c_years")).toEqual({ table: "t_policy", column: "c_years", op: "at_least", values: [] })
+    expect(withConditionColumn(form, count, "t_policy", "c_class")).toEqual({ table: "t_policy", column: "c_class", op: "equals", values: [] })
+  })
+
+  it("gives a condition its rows: any or every row a many-row table's condition, the one row a one-row table's", () => {
+    const one: Condition = { table: "t_items", column: "c_item", op: "equals", values: ["Pump"] }
+    expect(withConditionRows(one, "every")).toEqual({ table: "t_items", column: "c_item", rows: "every", op: "equals", values: ["Pump"] })
+    expect(withConditionRows(withConditionRows(one, "any"), "one")).toEqual(one)
   })
 
   it("gives a condition another test, its values kept while their number and the column take them", () => {

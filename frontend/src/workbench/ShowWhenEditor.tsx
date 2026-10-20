@@ -1,23 +1,35 @@
 /**
  * When a sheet, a section or a component shows (specs/workbench): the conditions in its
  * panel, and the eye it carries on the sheet while building. Conditions test the values typed into
- * one-row input tables, each a row of its column, its test and its value, the control the
- * column's cell is; with two or more, all of them must hold or any. Every change is handed
+ * input tables, each a row of its column, for a many-row table's column which rows, its test and
+ * its value, the control the column's cell is, or count a many-row table's rows; a group holds
+ * conditions of its own; with two or more, all of them must hold or any. Every change is handed
  * up whole, so the panel commits it as one undo step.
  */
 import { Eye, EyeOff, X } from "lucide-react"
 import type { CSSProperties } from "react"
-import type { Condition, FormSpec, SchemaColumn, SchemaTable, ShowWhen } from "../api/types"
-import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, QuietAction } from "../components/form"
+import type { ConditionGroup, FormSpec, RowCount, RowsCondition, SchemaColumn, SchemaTable, ShowWhen } from "../api/types"
+import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, QuietAction, ValidatedTextField, wholeNumber } from "../components/form"
 import {
   CONDITION_TESTS,
+  COUNT_TESTS,
   conditionFault,
+  isGroup,
+  isRowCount,
+  isRowsCondition,
   newCondition,
+  newRowCount,
+  testableColumns,
   testLabel,
   testsFor,
   withConditionColumn,
+  withConditionRows,
   withConditionTest,
+  type ColumnCondition,
   type ConditionTest,
+  type CountTest,
+  type ShowWhenEntry,
+  type SingleCondition,
 } from "../utils/sheetVisibility"
 import { fieldColumn, readableName } from "../utils/workbenchForm"
 import { COLUMN_TYPES } from "./columnTypes"
@@ -27,12 +39,52 @@ const MATCHES: ReadonlyArray<{ value: ShowWhen["match"]; label: string }> = [
   { value: "any", label: "any" },
 ]
 
-const columnKey = (tableId: string, columnId: string) => `${tableId}:${columnId}`
-const label = (column: SchemaColumn) => column.label || readableName(column.name)
+const ROWS: ReadonlyArray<{ value: RowsCondition["rows"]; label: string }> = [
+  { value: "any", label: "Any row" },
+  { value: "every", label: "Every row" },
+]
 
-/** The columns a condition can test: those of the one-row input tables, by table. */
-const testable = (form: FormSpec): SchemaTable[] =>
-  form.schema.tables.filter((table) => table.role === "input" && table.rows === "one" && table.columns.length > 0)
+const columnKey = (tableId: string, columnId: string) => `${tableId}:${columnId}`
+/** Number of rows' place in the column select, never a column's key, whose `:` between its ids no id holds. */
+const countKey = (tableId: string) => `${tableId}#rows`
+const label = (column: SchemaColumn) => column.label || readableName(column.name)
+const countValid = wholeNumber({ min: 0, unit: "rows" })
+
+/** The tables a condition can test: the input tables with a column to test. */
+const testable = (form: FormSpec): SchemaTable[] => form.schema.tables.filter((table) => testableColumns(table).length > 0)
+
+/** "[all|any] of these are true", the match a select in the sentence. */
+function MatchSentence({
+  match,
+  lead,
+  name,
+  onChange,
+}: {
+  match: ShowWhen["match"]
+  lead: string | null
+  name: string
+  onChange: (match: ShowWhen["match"]) => void
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5" style={{ color: "var(--text-secondary)" }}>
+      {lead !== null && <span>{lead}</span>}
+      <select
+        aria-label={name}
+        value={match}
+        onChange={(event) => onChange(event.target.value as ShowWhen["match"])}
+        className={`${FIELD_CLASS} w-16`}
+        style={INPUT_STYLE}
+      >
+        {MATCHES.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <span>of these are true</span>
+    </div>
+  )
+}
 
 export function ShowWhenEditor({
   form,
@@ -43,61 +95,130 @@ export function ShowWhenEditor({
   showWhen: ShowWhen
   onChange: (next: ShowWhen) => void
 }) {
-  const { conditions, match } = showWhen
+  const { conditions: entries, match } = showWhen
   const fresh = newCondition(form)
-  const setConditions = (next: Condition[]) => onChange({ match, conditions: next })
-  const replace = (index: number, condition: Condition) =>
-    setConditions(conditions.map((current, at) => (at === index ? condition : current)))
+  const setEntries = (next: ShowWhenEntry[]) => onChange({ match, conditions: next })
+  const replace = (index: number, entry: ShowWhenEntry) => setEntries(entries.map((current, at) => (at === index ? entry : current)))
+  const remove = (index: number) => setEntries(entries.filter((_, at) => at !== index))
 
   return (
     <div className="flex flex-col gap-1.5">
-      {conditions.length === 0 && <span style={{ color: "var(--text-muted)" }}>Always</span>}
-      {conditions.length > 1 && (
-        <div className="flex flex-wrap items-center gap-1.5" style={{ color: "var(--text-secondary)" }}>
-          <span>Show when</span>
-          <select
-            aria-label="Which conditions must hold"
-            value={match}
-            onChange={(event) => onChange({ match: event.target.value as ShowWhen["match"], conditions })}
-            className={`${FIELD_CLASS} w-16`}
-            style={INPUT_STYLE}
-          >
-            {MATCHES.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-          <span>of these are true</span>
-        </div>
+      {entries.length === 0 && <span style={{ color: "var(--text-muted)" }}>Always</span>}
+      {entries.length > 1 && (
+        <MatchSentence match={match} lead="Show when" name="Which conditions must hold" onChange={(next) => onChange({ match: next, conditions: entries })} />
       )}
-      {conditions.map((condition, index) => (
-        <ConditionRow
-          // A condition has no id of its own; its place in the list is what the panel edits.
-          key={index}
-          form={form}
-          condition={condition}
-          name={`Condition ${index + 1}`}
-          onChange={(next) => replace(index, next)}
-          onRemove={() => setConditions(conditions.filter((_, at) => at !== index))}
-        />
-      ))}
-      <div className="flex items-center gap-2">
+      {entries.map((entry, index) =>
+        // An entry has no id of its own; its place in the list is what the panel edits.
+        isGroup(entry) ? (
+          <GroupFrame
+            key={index}
+            form={form}
+            group={entry}
+            name={`Group ${index + 1}`}
+            onChange={(next) => replace(index, next)}
+            onRemove={() => remove(index)}
+          />
+        ) : (
+          <ConditionRow
+            key={index}
+            form={form}
+            condition={entry}
+            name={`Condition ${index + 1}`}
+            onChange={(next) => replace(index, next)}
+            onRemove={() => remove(index)}
+          />
+        ),
+      )}
+      <div className="flex flex-wrap items-center gap-2">
         <QuietAction
           disabled={fresh === null}
           onClick={() => {
-            if (fresh !== null) setConditions([...conditions, fresh])
+            if (fresh !== null) setEntries([...entries, fresh])
           }}
           className="self-start"
         >
           Add condition
         </QuietAction>
+        <QuietAction
+          disabled={fresh === null}
+          onClick={() => {
+            // A group needing what the Show when needs would add nothing: it needs the other.
+            if (fresh !== null) setEntries([...entries, { match: match === "all" ? "any" : "all", conditions: [fresh] }])
+          }}
+          className="self-start"
+        >
+          Add group
+        </QuietAction>
         {fresh === null && (
           <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-            Conditions test one-row input tables; the schema has none with a column.
+            Conditions test input tables; the schema has none with a column to test.
           </span>
         )}
       </div>
+    </div>
+  )
+}
+
+/** A group's conditions in a frame of their own, with its match, its own Add condition and a cross; removing its last condition removes it. */
+function GroupFrame({
+  form,
+  group,
+  name,
+  onChange,
+  onRemove,
+}: {
+  form: FormSpec
+  group: ConditionGroup
+  name: string
+  onChange: (next: ConditionGroup) => void
+  onRemove: () => void
+}) {
+  const fresh = newCondition(form)
+  const setConditions = (next: SingleCondition[]) => (next.length === 0 ? onRemove() : onChange({ match: group.match, conditions: next }))
+  const lower = name.toLowerCase()
+
+  return (
+    <div
+      role="group"
+      aria-label={name}
+      className="flex flex-col gap-1.5 rounded-md px-2 py-1.5"
+      style={{ border: "1px dashed var(--border)" }}
+    >
+      <div className="flex items-start gap-1.5">
+        <div className="min-w-0 flex-1">
+          {group.conditions.length > 1 && (
+            <MatchSentence
+              match={group.match}
+              lead={null}
+              name={`Which conditions of ${lower} must hold`}
+              onChange={(next) => onChange({ match: next, conditions: group.conditions })}
+            />
+          )}
+        </div>
+        <button type="button" onClick={onRemove} aria-label={`Remove ${lower}`} title="Remove this group" className="icon-danger-btn focus-ring shrink-0 rounded p-0.5">
+          <X size={12} aria-hidden="true" />
+        </button>
+      </div>
+      {group.conditions.map((condition, index) => (
+        <ConditionRow
+          key={index}
+          form={form}
+          condition={condition}
+          name={`${name} condition ${index + 1}`}
+          onChange={(next) => setConditions(group.conditions.map((current, at) => (at === index ? next : current)))}
+          onRemove={() => setConditions(group.conditions.filter((_, at) => at !== index))}
+        />
+      ))}
+      <QuietAction
+        aria-label={`Add condition to ${lower}`}
+        disabled={fresh === null}
+        onClick={() => {
+          if (fresh !== null) setConditions([...group.conditions, fresh])
+        }}
+        className="self-start"
+      >
+        Add condition
+      </QuietAction>
     </div>
   )
 }
@@ -110,18 +231,29 @@ function ConditionRow({
   onRemove,
 }: {
   form: FormSpec
-  condition: Condition
+  condition: SingleCondition
   name: string
-  onChange: (next: Condition) => void
+  onChange: (next: SingleCondition) => void
   onRemove: () => void
 }) {
-  const found = fieldColumn(form, condition)
   const tables = testable(form)
-  const offered = tables.some((table) => table.id === condition.table && table.columns.some((column) => column.id === condition.column))
-  const type = found?.column.type ?? "str"
-  const tests = found === null ? [condition.op] : testsFor(type)
+  const counting = isRowCount(condition)
+  const found = counting ? null : fieldColumn(form, condition)
+  const table = form.schema.tables.find((candidate) => candidate.id === condition.table)
+  const key = counting ? countKey(condition.table) : columnKey(condition.table, condition.column)
+  // What each place in the column select makes of the condition.
+  const choices = new Map<string, () => SingleCondition>()
+  for (const candidate of tables) {
+    if (candidate.rows === "many") choices.set(countKey(candidate.id), () => (counting && condition.table === candidate.id ? condition : newRowCount(candidate.id)))
+    for (const column of testableColumns(candidate)) {
+      choices.set(columnKey(candidate.id, column.id), () => withConditionColumn(form, condition, candidate.id, column.id))
+    }
+  }
+  const offered = choices.has(key)
+  const type = counting ? "int" : (found?.column.type ?? "str")
   const fault = conditionFault(form, condition)
-  const marker = found === null ? null : COLUMN_TYPES[found.column.type]
+  const marker = counting ? COLUMN_TYPES.int : found === null ? null : COLUMN_TYPES[found.column.type]
+  const missing = counting ? (table === undefined ? "Missing table" : `Number of rows in ${table.name}`) : found === null ? "Missing column" : label(found.column)
 
   return (
     <div
@@ -136,49 +268,53 @@ function ConditionRow({
         </span>
         <select
           aria-label={`${name} column`}
-          value={columnKey(condition.table, condition.column)}
+          value={key}
           onChange={(event) => {
-            const [tableId, columnId] = event.target.value.split(":")
-            onChange(withConditionColumn(form, condition, tableId, columnId))
+            const choose = choices.get(event.target.value)
+            if (choose === undefined) throw new Error(`"${event.target.value}" is not a column a condition can test`)
+            onChange(choose())
           }}
           className={`${FIELD_CLASS} flex-1`}
           style={INPUT_STYLE}
         >
           {!offered && (
-            <option value={columnKey(condition.table, condition.column)} disabled>
-              {found === null ? "Missing column" : label(found.column)}
+            <option value={key} disabled>
+              {missing}
             </option>
           )}
-          {tables.map((table) => (
-            <optgroup key={table.id} label={table.name}>
-              {table.columns.map((column) => (
-                <option key={column.id} value={columnKey(table.id, column.id)}>
+          {tables.map((candidate) => (
+            <optgroup key={candidate.id} label={candidate.name}>
+              {candidate.rows === "many" && <option value={countKey(candidate.id)}>Number of rows in {candidate.name}</option>}
+              {testableColumns(candidate).map((column) => (
+                <option key={column.id} value={columnKey(candidate.id, column.id)}>
                   {label(column)}
                 </option>
               ))}
             </optgroup>
           ))}
         </select>
+        {!counting && table !== undefined && (table.rows === "many" || isRowsCondition(condition)) && (
+          <RowsSelect condition={condition} oneRow={table.rows === "one"} name={name} onChange={onChange} />
+        )}
         <button type="button" onClick={onRemove} aria-label={`Remove ${name.toLowerCase()}`} title="Remove this condition" className="icon-danger-btn focus-ring shrink-0 rounded p-0.5">
           <X size={12} aria-hidden="true" />
         </button>
       </div>
       <div className="flex items-start gap-1.5">
         <span className="size-4 shrink-0" aria-hidden="true" />
-        <select
-          aria-label={`${name} test`}
-          value={condition.op}
-          onChange={(event) => onChange(withConditionTest(form, condition, event.target.value as ConditionTest))}
-          className={`${FIELD_CLASS} w-32 shrink-0`}
-          style={INPUT_STYLE}
-        >
-          {(tests.includes(condition.op) ? tests : [condition.op, ...tests]).map((test) => (
-            <option key={test} value={test}>
-              {testLabel(test, type)}
-            </option>
-          ))}
-        </select>
-        <ConditionValue condition={condition} column={found?.column ?? null} name={name} onChange={(values) => onChange({ ...condition, values })} />
+        {counting ? (
+          <CountFields condition={condition} name={name} onChange={onChange} />
+        ) : (
+          <ColumnFields
+            form={form}
+            condition={condition}
+            column={found?.column ?? null}
+            tests={found === null ? [condition.op] : testsFor(type)}
+            type={type}
+            name={name}
+            onChange={onChange}
+          />
+        )}
       </div>
       {fault !== null && (
         <span className="text-[11px]" style={{ color: "var(--warning)" }}>
@@ -189,6 +325,117 @@ function ConditionRow({
   )
 }
 
+/**
+ * Which rows a column's condition tests: Any row or Every row for a many-row table's
+ * column; while its table has switched kinds since, "Choose…" for a one-row condition on
+ * a many-row table, and The row too for one in any or every row on a one-row table.
+ */
+function RowsSelect({
+  condition,
+  oneRow,
+  name,
+  onChange,
+}: {
+  condition: ColumnCondition
+  oneRow: boolean
+  name: string
+  onChange: (next: ColumnCondition) => void
+}) {
+  return (
+    <select
+      aria-label={`${name} rows`}
+      value={isRowsCondition(condition) ? condition.rows : "one"}
+      onChange={(event) => onChange(withConditionRows(condition, event.target.value as RowsCondition["rows"] | "one"))}
+      className={`${FIELD_CLASS} w-24 shrink-0`}
+      style={INPUT_STYLE}
+    >
+      {oneRow ? (
+        <option value="one">The row</option>
+      ) : (
+        !isRowsCondition(condition) && (
+          <option value="one" disabled>
+            Choose…
+          </option>
+        )
+      )}
+      {ROWS.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+/** A column's condition's test and its value. */
+function ColumnFields({
+  form,
+  condition,
+  column,
+  tests,
+  type,
+  name,
+  onChange,
+}: {
+  form: FormSpec
+  condition: ColumnCondition
+  column: SchemaColumn | null
+  tests: readonly ConditionTest[]
+  type: SchemaColumn["type"]
+  name: string
+  onChange: (next: ColumnCondition) => void
+}) {
+  return (
+    <>
+      <select
+        aria-label={`${name} test`}
+        value={condition.op}
+        onChange={(event) => onChange(withConditionTest(form, condition, event.target.value as ConditionTest))}
+        className={`${FIELD_CLASS} w-32 shrink-0`}
+        style={INPUT_STYLE}
+      >
+        {(tests.includes(condition.op) ? tests : [condition.op, ...tests]).map((test) => (
+          <option key={test} value={test}>
+            {testLabel(test, type)}
+          </option>
+        ))}
+      </select>
+      <ConditionValue condition={condition} column={column} name={name} onChange={(values) => onChange({ ...condition, values })} />
+    </>
+  )
+}
+
+/** A count's test, a number's, and its whole number of rows, anything else refused at the field. */
+function CountFields({ condition, name, onChange }: { condition: RowCount; name: string; onChange: (next: RowCount) => void }) {
+  return (
+    <>
+      <select
+        aria-label={`${name} test`}
+        value={condition.op}
+        onChange={(event) => onChange({ ...condition, op: event.target.value as CountTest })}
+        className={`${FIELD_CLASS} w-32 shrink-0`}
+        style={INPUT_STYLE}
+      >
+        {COUNT_TESTS.map((test) => (
+          <option key={test} value={test}>
+            {testLabel(test, "int")}
+          </option>
+        ))}
+      </select>
+      <ValidatedTextField
+        dataTestId={`${name}-count`}
+        ariaLabel={`${name} value`}
+        value={String(condition.count)}
+        validate={countValid}
+        onCommit={(text) => onChange({ ...condition, count: Number(text) })}
+        containerClassName="min-w-0 flex-1"
+        className={`${FIELD_CLASS} w-full tabular-nums`}
+        style={INPUT_STYLE}
+      />
+    </>
+  )
+}
+
 /** A condition's value, the control its column's cell is; a box per allowed value for one of many. */
 function ConditionValue({
   condition,
@@ -196,7 +443,7 @@ function ConditionValue({
   name,
   onChange,
 }: {
-  condition: Condition
+  condition: ColumnCondition
   column: SchemaColumn | null
   name: string
   onChange: (values: string[]) => void

@@ -4,7 +4,7 @@
  * and what would stop the schema being the pipeline's tables.
  */
 import { describe, expect, it } from "vitest"
-import type { ChartWidget, CollectionWidget, Condition, FieldRef, FormSchema, FormSpec, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
+import type { ChartWidget, CollectionWidget, Condition, FieldRef, FormSchema, FormSpec, RowCount, RowsCondition, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
 import {
   addPage,
   addSchemaColumn,
@@ -952,6 +952,24 @@ describe("what the sheets show", () => {
     expect(findWidget(pastedGrid.spec, pastedGrid.id)?.widget).toMatchObject({ column_looks: [{ table: "equipment", column: "equipment.item", bold: true }] })
   })
 
+  it("leaves out of a copy pasted a group's conditions on a column lost since, a group left with none, and a count of a table lost since", () => {
+    const onState: Condition = { table: "policy", column: "policy.state", op: "equals", values: ["NY"] }
+    const onValue: RowsCondition = { table: "equipment", column: "equipment.value", rows: "every", op: "above", values: ["50"] }
+    const count: RowCount = { table: "equipment", op: "at_least", count: 1 }
+    const spec = updateWidget(sheet(), "w_boxes", {
+      show_when: { match: "any", conditions: [{ match: "all", conditions: [onState, onValue] }, { match: "all", conditions: [count] }] },
+    })
+    const copied = findWidget(spec, "w_boxes")!.widget
+
+    const lostValue = pasteWidget(removeSchemaColumn(spec, "equipment", "equipment.value"), copied, "s")
+    expect(findWidget(lostValue.spec, lostValue.id)?.widget.show_when).toEqual({
+      match: "any",
+      conditions: [{ match: "all", conditions: [onState] }, { match: "all", conditions: [count] }],
+    })
+    const lostTable = pasteWidget(removeSchemaTable(spec, "equipment"), copied, "s")
+    expect(findWidget(lostTable.spec, lostTable.id)?.widget.show_when).toEqual({ match: "any", conditions: [{ match: "all", conditions: [onState] }] })
+  })
+
   it("sets one of the sheets' colours, leaving the others the editor's own, and the editor's own again", () => {
     expect(BLANK_THEME).toEqual({ sheet_color: null, background_color: null, border_color: null, font_color: null, input_cell_color: null, output_cell_color: null })
     const spec = sheet()
@@ -1750,6 +1768,76 @@ describe("when sheets and components show", () => {
     expect(showWhenText(spec, { match: "any", conditions: [ticked, onClass] })).toBe(
       "Shows when any of these are true: BI cover is ticked; Class is one of Motor, Fleet",
     )
+  })
+
+  /** `covered`, with a many-row table of drivers, its ages on a Table in `sectionId`. */
+  const listed = (sectionId = "s_main"): FormSpec => {
+    const spec = covered()
+    spec.schema.tables.push(table("drivers", "drivers", { rows: "many", columns: [column("drivers.age", "age", { type: "int", label: "Age" })] }))
+    return addWidget(spec, sectionId, {
+      id: "w_drivers",
+      type: "tableInput",
+      x: 0,
+      y: 0,
+      w: 720,
+      h: 120,
+      title: "Drivers",
+      rows: 3,
+      ...TABLE_OPTIONS,
+      fields: [{ table: "drivers", column: "drivers.age" }],
+      show_when: always(),
+    })
+  }
+  const young: RowsCondition = { table: "drivers", column: "drivers.age", rows: "any", op: "below", values: ["25"] }
+  const twoDrivers: RowCount = { table: "drivers", op: "at_least", count: 2 }
+
+  it("takes a group's condition out with its column, a group left with none with it, and a count out with its table alone", () => {
+    const onClass: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"] }
+    const spec = setSectionShowWhen(listed(), "s_bi", {
+      match: "all",
+      conditions: [onClass, { match: "any", conditions: [young, twoDrivers] }, { match: "any", conditions: [ticked] }],
+    })
+    expect(conditionUses(spec, "drivers", "drivers.age").map((holder) => holder.id)).toEqual(["s_bi"])
+    expect(conditionUses(spec, "drivers").map((holder) => holder.id)).toEqual(["s_bi"])
+    expect(conditionUses(spec, "policy", "policy.bi").map((holder) => holder.id)).toEqual(["p_bi", "s_bi"])
+    const shown = (next: FormSpec) => findSection(next, "s_bi")?.section.show_when
+
+    expect(shown(removeSchemaColumn(spec, "drivers", "drivers.age"))).toEqual({
+      match: "all",
+      conditions: [onClass, { match: "any", conditions: [twoDrivers] }, { match: "any", conditions: [ticked] }],
+    })
+    expect(shown(removeSchemaColumn(spec, "policy", "policy.bi"))).toEqual({ match: "all", conditions: [onClass, { match: "any", conditions: [young, twoDrivers] }] })
+    expect(shown(removeSchemaTable(spec, "drivers"))).toEqual({ match: "all", conditions: [onClass, { match: "any", conditions: [ticked] }] })
+  })
+
+  it("says what stops a group's conditions and a count doing what they say", () => {
+    const spec = listed("s_bi")
+    expect([...pageProblems(spec), ...sectionProblems(spec), ...widgetProblems(spec)]).toEqual([])
+    const showing = (next: FormSpec, showWhen: ShowWhen) => pageProblems(setPageShowWhen(next, "p_bi", showWhen)).map((p) => p.message)
+
+    // A condition in a group that cannot hold is named as any other.
+    const classTicked: Condition = { table: "policy", column: "policy.class", op: "ticked", values: [] }
+    expect(showing(spec, { match: "all", conditions: [{ match: "any", conditions: [ticked, classTicked] }] })).toEqual([
+      'Sheet "BI" tests class with "is ticked", which a Text column cannot take',
+    ])
+    // Rows typed only on the sheet the count shows, or on no Table: nothing could show it again.
+    expect(showing(spec, { match: "all", conditions: [twoDrivers] })).toEqual([
+      'Sheet "BI" waits on the rows of drivers, which are only on components that hide with it, so it could not show again once hidden',
+    ])
+    expect(showing(removeWidget(spec, "w_drivers"), { match: "all", conditions: [twoDrivers] })).toEqual(['Sheet "BI" waits on the rows of drivers, which are on no Table'])
+  })
+
+  it("reads a condition in any or every row, a count and a group as sentences", () => {
+    const spec = listed()
+    expect(conditionText(spec, young)).toBe("Age is less than 25 in any row of drivers")
+    expect(conditionText(spec, { ...young, rows: "every", op: "filled", values: [] })).toBe("Age is filled in every row of drivers")
+    expect(conditionText(spec, twoDrivers)).toBe("Number of rows in drivers is at least 2")
+    expect(conditionText(spec, { table: "gone", op: "equals", count: 0 })).toBe("Number of rows in a missing table equals 0")
+
+    expect(showWhenText(spec, { match: "all", conditions: [ticked, { match: "any", conditions: [young, twoDrivers] }] })).toBe(
+      "Shows when all of these are true: BI cover is ticked; any of (Age is less than 25 in any row of drivers, Number of rows in drivers is at least 2)",
+    )
+    expect(showWhenText(spec, { match: "all", conditions: [{ match: "any", conditions: [ticked] }] })).toBe("Shows when BI cover is ticked")
   })
 
   it("prices what the sheets show: a condition that hides or shows a column changes the basis, a move does not", () => {

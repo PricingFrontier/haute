@@ -182,12 +182,18 @@ Out of scope:
   `show_when` of its own, and each but a
   Heading with a `title` and showing its `fields`, schema columns named by table id and
   column id so a rename keeps them. A `show_when` holds `conditions` and whether `all`
-  of them must hold or `any` (`match`); with none, the sheet, section or component always shows. A
-  condition names a column by table id and column id, a test (`op`) and the test's `values`,
+  of them must hold or `any` (`match`); with none, the sheet, section or component always shows.
+  Each is a condition or a group, which holds `conditions` of its own, at least one and no
+  group among them, and whether all of those must hold or any (`match`). A
+  condition names a column of a one-row table by table id and column id, a test (`op`) and the test's `values`,
   as text: `ticked` or `not_ticked`, with no value, for a True/false column; `filled` or
   `empty`, with no value, and `equals` or `not_equals`, with one, for any other; `one_of` or
   `not_one_of`, with one or more, for a Text or number column; and `above`, `at_least`,
-  `below` or `at_most`, with one, for a number or a Date column. The sample holds, by table
+  `below` or `at_most`, with one, for a number or a Date column. A condition on a column of
+  a many-row table holds the same and whether its test must pass in `any` row or in `every`
+  one (`rows`); and a condition can count a many-row table's rows instead, naming the table
+  by id, a test (`op`, `equals`, `not_equals`, `above`, `at_least`, `below` or `at_most`)
+  and a whole number of rows, 0 or more (`count`). The sample holds, by table
   id, rows keyed by column id, each value as typed: text or a tick. Haute reads the file whole whenever it needs it and never keeps it in memory, so an
   edit made outside the view reaches the next request. A file that does not exist is the
   blank form, never saved: one sheet 1280 wide holding one section 560 tall, no tables, no
@@ -344,7 +350,8 @@ Out of scope:
   and drops its index, with what shows it, and switching it to many rows clears its
   columns' defaults. Removing a column or a table a sheet shows, or a
   sheet's, a section's or a component's condition tests, asks first, and takes it off the
-  sheet, out of those conditions and out of the sample. The editor says what would stop
+  sheet, out of those conditions (a group left with none going with them) and out of the
+  sample, a table taking the conditions counting its rows too. The editor says what would stop
   the schema being the pipeline's tables: a table's name is held to the port rules the
   Quote Input's labels are held to (an identifier, none of the document's reserved labels,
   unique whatever its case), a column's name is an identifier that is not a Python keyword,
@@ -604,9 +611,15 @@ Out of scope:
   under it, selected, and Delete section, asking first when components are in it, disabled
   while it is the sheet's only section. Pressing the empty sheet, Escape, the panel's close,
   or selecting a component or another section closes either. Show when reads "Always" while there are no
-  conditions, and Add condition adds one on the first column of a one-row input table,
-  with the first test its type takes and no value yet; each condition is a row of its
-  column (a select of the one-row input tables' columns, by table, each by its label), its
+  conditions, and Add condition adds one on the first column of a one-row input table, else
+  of a many-row one, in any row,
+  with the first test its type takes and no value yet; Add group adds a group holding such
+  a condition, its conditions all needed while the Show when needs any and any while it needs
+  all, in a frame of its own with its own Add condition and a cross that removes it, as
+  removing its last condition does. Each condition is a row of its
+  column (a select of the input tables' columns, by table, each by its label, a many-row
+  table's other than its index, after Number of rows in the table), beside a many-row table's column which rows,
+  Any row or Every row, its
   test (for True/false "is ticked" and "is not ticked"; for Text "equals", "does not
   equal", "is one of", "is not one of", "is filled" and "is empty"; for a number those and
   "is greater than", "is at least", "is less than" and "is at most"; for a Date "is on",
@@ -614,10 +627,19 @@ Out of scope:
   and "is empty"), its value, the control the column's cell is (a dropdown of the allowed
   values, a date picker, else a text field, committing on blur or Enter), or for "is one
   of" and "is not one of" a tick box per allowed value, or the values typed comma-separated
-  when the column allows any, and a cross that removes it. Choosing another column keeps
-  the test while the column's type takes it, else the type's first, and the values while
-  they fit the test; with two or more conditions the section reads "Show when [all|any] of
-  these are true". Each change is one undo step.
+  when the column allows any, and a cross that removes it; Number of rows takes the tests of
+  a number ("equals" to "is at most") and a whole number, 0 or more, typed into a field that
+  refuses anything else.
+  Choosing another column keeps
+  the test while the column's type takes it, else the type's first, the values while
+  they fit the test, and which rows while it is a many-row table's, else Any row; choosing
+  Number of rows starts it at "is at least" 1, and choosing a column for it keeps its test
+  while the column's type takes it, with no value. While a
+  condition's table has switched between one row and many since, which rows shows for it
+  too: "Choose…" for a one-row table's condition, and The row beside Any row and Every row
+  for one whose table now has one row, choosing it making it the one-row table's condition.
+  With two or more conditions the section reads "Show when [all|any] of
+  these are true", and a group with two or more "[all|any] of these are true". Each change is one undo step.
 - **The sheet's keyboard.** While the sheets show and a component is selected: Escape
   deselects it, Delete or Backspace removes it, Ctrl/Cmd+D duplicates it (16px below and
   to the right, selected), Ctrl/Cmd+C copies it, a note saying so, and the arrow keys nudge it by a grid step, or a pixel with
@@ -1102,11 +1124,25 @@ Out of scope:
     value passes `empty`, `not_equals` and `not_one_of` alone, and a value not of its
     column's type (text in a number column, or a tick left in a column since retyped)
     `filled`, `not_equals` and `not_one_of` alone. A condition that cannot hold as written
-    never holds: one naming a column that is not in a one-row input table (gone, an output
-    table's, a many-row table's), a test its column's type does not take, a number of
+    never holds: one naming a column that is not in an input table with the rows it tests
+    (gone, an output table's, a many-row table's for a condition on one row, a one-row
+    table's for a condition in any or every row), a count naming a table that is not a
+    many-row input table, a test its column's type does not take, a number of
     values its test does not take (none for the ticks, `filled` and `empty`, at least one
     for `one_of` and `not_one_of`, else one), or a value its column could not hold (blank,
     not a number, a fraction for an Integer, not a `YYYY-MM-DD` day).
+  - **On a list.** A condition on a many-row input table's column holds while its column
+    is on a Table that shows and its test passes in any of the table's rows, or in every
+    one of them and there is at least one, each row's value read as a one-row table's is. A
+    count holds while one of its table's columns other than the index is on a Table that
+    shows and the number of the table's rows passes its test, compared as whole numbers. A
+    table's rows are those a grid showing it holds (a column giving it a row for each
+    value gives every one of those) with anything but the index typed in them, whatever
+    the sheets hide: a row with nothing typed in it is no row, as the quote leaves it out.
+  - **Groups.** A group holds while all of its conditions hold, or any, as its `match`
+    says, and counts as one of its `show_when`'s conditions: a section that shows while
+    the cover is Comprehensive and either a driver is under 25 or the claims count is at
+    least 2 needs all of the cover's condition and a group needing any of the other two.
   - **Decided at once.** What shows is decided for the whole form together: everything
     starts shown and anything whose conditions fail is hidden, which may hide a column another
     condition tests, until nothing more hides. So a sheet that shows when a box on a
@@ -1554,6 +1590,20 @@ Out of scope:
   whatever the order of the sheets and components, a chain of conditions (a sheet shown by
   a box on a sheet shown by another box) is followed without being written twice, and no
   value the underwriter cannot see decides what they see.
+- **One level of groups, all or any.** A group in the Show when says each mix of all and
+  any a sheet asks for, a cover and either of two extras or either of two covers each
+  with its own, since a test's opposite stands in for a "not"; a deeper tree would say
+  nothing more and be harder to read and to lay out in the panel. Neither takes "none of
+  these": a condition fails once its column hides, so "none" could come to hold as hiding
+  went on and show something again, and hiding has to only ever hide more.
+- **A list's rows are its typed rows.** A condition on a many-row table counts each row
+  with anything typed in it, whatever the sheets hide, because counting only what shows
+  would let hiding a column drop a row, so that every row left passes or the count falls
+  under a limit, and show something again. Only a row typed into a Table that hides, while
+  its table is on another that shows, counts without showing, which a table's rows,
+  inserted and deleted in every table a grid shows at once, rarely come to. Every row
+  needs at least one row, as nothing typed decides nothing: a list nobody has filled
+  shows no section waiting on all of it.
 - **A Chart takes nothing.** A quote holds what can be typed into the sheets that show, so
   a column counts for Shown when only on the components it is typed into. Were a Chart's
   columns to count, a Chart that plots a section's values would keep them in the quote
@@ -1625,7 +1675,8 @@ Out of scope:
   showing a table of the other kind is, and never holds until it is fixed, rather than
   refusing the form or quietly dropping the condition and showing what it hid. Removing a
   column is the one change that takes its conditions with it, as it takes its fields,
-  after the schema editor has asked.
+  after the schema editor has asked, and a group it empties, which would hold nothing to
+  test, goes too.
 - **The view's state is the view's.** Which sheet shows and which of the view's own
   sections (the sheets, the schema or Preview), the selection (a component, a sheet's
   section or the sheet's own panel), the zoom and the panel's width are neither saved with
@@ -1850,7 +1901,9 @@ Out of scope:
   serves its tables with it, the condition never holds, so what it is on stays hidden and
   the values only hidden components show are left out of the quote, and the view names
   the problem on the sheet or component while building. A `show_when`, a condition or a
-  test the form's shape does not have (an unknown `op`, a `values` entry that is not text)
+  test the form's shape does not have (an unknown `op`, a `values` entry that is not text,
+  a group with no conditions or with a group among them, a count that is not a whole number
+  of 0 or more)
   is a form that does not fit, refused as any other.
 - `GET /api/workbench/tables` answers 404 while the workbench is not enabled; the editor
   never asks then. Tables or response tables the pipeline cannot take, such as a table named
