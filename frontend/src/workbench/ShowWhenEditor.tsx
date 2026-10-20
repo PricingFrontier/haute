@@ -3,8 +3,8 @@
  * panel, and the eye it carries on the sheet while building. Conditions test the values typed into
  * input tables, each a row of its column, for a many-row table's column which rows, its test and
  * its value, the control the column's cell is, or count a many-row table's rows; a group holds
- * conditions of its own; with two or more, all of them must hold or any. Every change is handed
- * up whole, so the panel commits it as one undo step.
+ * conditions of its own; with two or more, all of them must hold, any, or at least a number.
+ * Every change is handed up whole, so the panel commits it as one undo step.
  */
 import { Eye, EyeOff, X } from "lucide-react"
 import type { CSSProperties } from "react"
@@ -34,10 +34,15 @@ import {
 import { fieldColumn, readableName } from "../utils/workbenchForm"
 import { COLUMN_TYPES } from "./columnTypes"
 
-const MATCHES: ReadonlyArray<{ value: ShowWhen["match"]; label: string }> = [
+type Match = ShowWhen["match"]
+
+const MATCHES: ReadonlyArray<{ value: "all" | "any" | "at_least"; label: string }> = [
   { value: "all", label: "all" },
   { value: "any", label: "any" },
+  { value: "at_least", label: "at least" },
 ]
+/** The number "at least" starts at. */
+const AT_LEAST = 2
 
 const ROWS: ReadonlyArray<{ value: RowsCondition["rows"]; label: string }> = [
   { value: "any", label: "Any row" },
@@ -53,26 +58,39 @@ const countValid = wholeNumber({ min: 0, unit: "rows" })
 /** The tables a condition can test: the input tables with a column to test. */
 const testable = (form: FormSpec): SchemaTable[] => form.schema.tables.filter((table) => testableColumns(table).length > 0)
 
-/** "[all|any] of these are true", the match a select in the sentence. */
+/** Whether a Show when's or a group's match sentence shows: with two or more conditions, or one while its match is a number. */
+const sentenceShown = (match: Match, count: number) => count > 1 || (count === 1 && typeof match === "number")
+
+/**
+ * "[all|any|at least] of these are true", the match a select in the sentence, and at least's
+ * number a select of 1 to as many conditions as there are, or to the number while it asks for more.
+ */
 function MatchSentence({
   match,
+  count,
   lead,
-  name,
+  of,
   onChange,
 }: {
-  match: ShowWhen["match"]
+  match: Match
+  count: number
   lead: string | null
-  name: string
-  onChange: (match: ShowWhen["match"]) => void
+  /** Whose conditions, after "conditions" in the selects' names: "" or " of group 2". */
+  of: string
+  onChange: (match: Match) => void
 }) {
+  const numbers = Array.from({ length: Math.max(count, typeof match === "number" ? match : 0) }, (_, at) => at + 1)
   return (
     <div className="flex flex-wrap items-center gap-1.5" style={{ color: "var(--text-secondary)" }}>
       {lead !== null && <span>{lead}</span>}
       <select
-        aria-label={name}
-        value={match}
-        onChange={(event) => onChange(event.target.value as ShowWhen["match"])}
-        className={`${FIELD_CLASS} w-16`}
+        aria-label={`Which conditions${of} must hold`}
+        value={typeof match === "number" ? "at_least" : match}
+        onChange={(event) => {
+          const next = event.target.value
+          onChange(next === "at_least" ? AT_LEAST : (next as "all" | "any"))
+        }}
+        className={`${FIELD_CLASS} w-20`}
         style={INPUT_STYLE}
       >
         {MATCHES.map((option) => (
@@ -81,6 +99,21 @@ function MatchSentence({
           </option>
         ))}
       </select>
+      {typeof match === "number" && (
+        <select
+          aria-label={`How many conditions${of} must hold`}
+          value={match}
+          onChange={(event) => onChange(Number(event.target.value))}
+          className={`${FIELD_CLASS} w-14 tabular-nums`}
+          style={INPUT_STYLE}
+        >
+          {numbers.map((number) => (
+            <option key={number} value={number}>
+              {number}
+            </option>
+          ))}
+        </select>
+      )}
       <span>of these are true</span>
     </div>
   )
@@ -104,8 +137,8 @@ export function ShowWhenEditor({
   return (
     <div className="flex flex-col gap-1.5">
       {entries.length === 0 && <span style={{ color: "var(--text-muted)" }}>Always</span>}
-      {entries.length > 1 && (
-        <MatchSentence match={match} lead="Show when" name="Which conditions must hold" onChange={(next) => onChange({ match: next, conditions: entries })} />
+      {sentenceShown(match, entries.length) && (
+        <MatchSentence match={match} count={entries.length} lead="Show when" of="" onChange={(next) => onChange({ match: next, conditions: entries })} />
       )}
       {entries.map((entry, index) =>
         // An entry has no id of its own; its place in the list is what the panel edits.
@@ -142,7 +175,7 @@ export function ShowWhenEditor({
         <QuietAction
           disabled={fresh === null}
           onClick={() => {
-            // A group needing what the Show when needs would add nothing: it needs the other.
+            // A group needing what the Show when needs would add nothing: it needs the other, all under at least.
             if (fresh !== null) setEntries([...entries, { match: match === "all" ? "any" : "all", conditions: [fresh] }])
           }}
           className="self-start"
@@ -186,11 +219,12 @@ function GroupFrame({
     >
       <div className="flex items-start gap-1.5">
         <div className="min-w-0 flex-1">
-          {group.conditions.length > 1 && (
+          {sentenceShown(group.match, group.conditions.length) && (
             <MatchSentence
               match={group.match}
+              count={group.conditions.length}
               lead={null}
-              name={`Which conditions of ${lower} must hold`}
+              of={` of ${lower}`}
               onChange={(next) => onChange({ match: next, conditions: group.conditions })}
             />
           )}

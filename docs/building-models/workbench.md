@@ -348,7 +348,11 @@ condition** tests a column of an input table:
   value, and a date **is after**, **is on or after**, **is before** or **is on or before**
   one.
 
-With two or more conditions, choose whether **all** or **any** of them must hold.
+With two or more conditions, choose whether **all** or **any** of them must hold, or **at
+least** a number of them: a section shown while two or three of three cover boxes are
+ticked needs at least 2 of the three boxes' **is ticked** conditions. There is no "at most"
+or "exactly": hiding a box makes its condition fail, so those would show a section again
+as more of the form hid.
 
 A column of a many-row table, such as the drivers on a motor quote, is tested in **Any
 row** or **Every row**, chosen beside the column: a young drivers section can show while
@@ -359,7 +363,7 @@ many rows it has instead, such as a second vehicle section shown while the vehic
 has at least 2.
 
 **Add group** adds a group of conditions that counts as one, with its own **Add
-condition** and its own **all** or **any**. Use it to mix the two: a section shown while
+condition** and its own **all**, **any** or **at least**. Use it to mix them: a section shown while
 the cover is Comprehensive and either a driver is under 25 or the claims count is at least
 2 needs **all** of the cover's condition and a group needing **any** of the other two. A
 new group starts needing the opposite of the Show when around it, since one needing the

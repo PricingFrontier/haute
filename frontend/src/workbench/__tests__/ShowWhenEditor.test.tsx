@@ -1,8 +1,8 @@
 /**
  * A sheet's, a section's or a component's Show when (specs/workbench): "Always" without
  * conditions; a condition added on the first one-row input column; its column, test and
- * value chosen, the value the control its column's cell is; conditions removed; all or any
- * of two or more; groups of conditions; a many-row table's column in any or every row, and
+ * value chosen, the value the control its column's cell is; conditions removed; all, any or
+ * at least a number of two or more; groups of conditions; a many-row table's column in any or every row, and
  * its number of rows; a condition whose column is gone or whose table switched between one
  * row and many; each change one undo step.
  */
@@ -140,6 +140,38 @@ describe("ShowWhenEditor", () => {
 
     fireEvent.click(within(condition(2)).getByRole("button", { name: "Remove condition 2" }))
     expect(showWhen()).toMatchObject({ match: "any", conditions: [{ column: "policy.state" }] })
+  })
+
+  it("asks for at least a number of conditions, from 1 to as many as there are, saying so while one is left", () => {
+    render(<Editor />)
+    for (let n = 0; n < 3; n++) fireEvent.click(screen.getByRole("button", { name: "Add condition" }))
+    expect(screen.queryByRole("combobox", { name: "How many conditions must hold" })).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Which conditions must hold" }), { target: { value: "at_least" } })
+    expect(showWhen().match).toBe(2)
+    const howMany = screen.getByRole("combobox", { name: "How many conditions must hold" })
+    expect(options(howMany)).toEqual(["1", "2", "3"])
+    fireEvent.change(howMany, { target: { value: "3" } })
+    expect(showWhen().match).toBe(3)
+    expect(undoSteps()).toBe(5)
+
+    // Under at least, a new group needs all, and a group asks for at least a number as the Show when does.
+    fireEvent.click(screen.getByRole("button", { name: "Add group" }))
+    expect(showWhen().conditions[3]).toEqual({ match: "all", conditions: [showWhen().conditions[0]] })
+    fireEvent.click(within(group(4)).getByRole("button", { name: "Add condition to group 4" }))
+    fireEvent.change(screen.getByRole("combobox", { name: "Which conditions of group 4 must hold" }), { target: { value: "at_least" } })
+    expect(showWhen().conditions[3]).toMatchObject({ match: 2 })
+    expect(options(screen.getByRole("combobox", { name: "How many conditions of group 4 must hold" }))).toEqual(["1", "2"])
+    fireEvent.click(screen.getByRole("button", { name: "Remove group 4" }))
+
+    // Fewer conditions than it asks for: the number stays, to be put right, and reads so with one left.
+    fireEvent.click(within(condition(3)).getByRole("button", { name: "Remove condition 3" }))
+    fireEvent.click(within(condition(2)).getByRole("button", { name: "Remove condition 2" }))
+    expect(showWhen().match).toBe(3)
+    expect(options(screen.getByRole("combobox", { name: "How many conditions must hold" }))).toEqual(["1", "2", "3"])
+    fireEvent.change(screen.getByRole("combobox", { name: "Which conditions must hold" }), { target: { value: "all" } })
+    expect(showWhen().match).toBe("all")
+    expect(screen.queryByRole("combobox", { name: "Which conditions must hold" })).not.toBeInTheDocument()
   })
 
   it("adds a group needing what the Show when does not, with its own conditions, match and removal, each one undo step", () => {

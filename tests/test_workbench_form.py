@@ -804,6 +804,11 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         (lambda f: f["pages"][0]["sections"][1]["show_when"].update(match="most"), "match"),
         (lambda f: widgets(f)[0].update(type="slider"), "type"),
         (lambda f: f["pages"][0]["show_when"].update(match="none"), "match"),
+        # At least a number of conditions is a whole number from 1, not a tick or text.
+        (lambda f: f["pages"][0]["show_when"].update(match=0), "match"),
+        (lambda f: f["pages"][0]["show_when"].update(match=True), "match"),
+        (lambda f: f["pages"][0]["show_when"].update(match="2"), "match"),
+        (lambda f: f["pages"][0]["show_when"].update(match=1.5), "match"),
         (
             lambda f: widgets(f)[1]["show_when"]["conditions"][0].update(op="has"),
             "op",

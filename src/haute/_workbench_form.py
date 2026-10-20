@@ -232,11 +232,16 @@ _ONE_CONDITION = (
 SingleCondition = Annotated[_ONE_CONDITION, Discriminator(_condition_kind)]
 
 
-class ConditionGroup(_Strict):
-    """Conditions that count as one: holding while all of them hold, or any, as ``match``
-    says. A group holds no group."""
+#: How many of a ``show_when``'s or a group's conditions must hold: all, any, or at least a
+#: number of them.
+Match = Literal["all", "any"] | Annotated[int, Strict(), Field(ge=1)]
 
-    match: Literal["all", "any"]
+
+class ConditionGroup(_Strict):
+    """Conditions that count as one: holding while all of them hold, any, or at least a
+    number of them, as ``match`` says. A group holds no group."""
+
+    match: Match
     conditions: list[SingleCondition] = Field(min_length=1)
 
 
@@ -248,9 +253,10 @@ ShowWhenEntry = Annotated[
 
 class ShowWhen(_Strict):
     """When a sheet, a section or a widget shows: always, without conditions; else while all
-    of them hold, or any, as ``match`` says, each a condition or a group of them."""
+    of them hold, any, or at least a number of them, as ``match`` says, each a condition or a
+    group of them."""
 
-    match: Literal["all", "any"] = "all"
+    match: Match = "all"
     conditions: list[ShowWhenEntry] = Field(default_factory=list)
 
 

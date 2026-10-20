@@ -1840,6 +1840,32 @@ describe("when sheets and components show", () => {
     expect(showWhenText(spec, { match: "all", conditions: [{ match: "any", conditions: [ticked] }] })).toBe("Shows when BI cover is ticked")
   })
 
+  it("says when at least a number asks for more conditions than its Show when or a group holds", () => {
+    const spec = listed()
+    const showing = (showWhen: ShowWhen) => pageProblems(setPageShowWhen(spec, "p_bi", showWhen)).map((p) => p.message)
+    const motor: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Motor"] }
+
+    expect(showing({ match: 2, conditions: [ticked, motor] })).toEqual([])
+    expect(showing({ match: 3, conditions: [ticked, motor] })).toEqual(['Sheet "BI" needs at least 3 conditions to hold but has only 2, so it never shows'])
+    // With none it always shows, whatever the number.
+    expect(showing({ match: 3, conditions: [] })).toEqual([])
+    expect(showing({ match: "any", conditions: [ticked, { match: 2, conditions: [motor] }] })).toEqual([
+      'Sheet "BI" has a group that needs at least 2 conditions to hold but holds only 1',
+    ])
+  })
+
+  it("reads at least a number as a sentence, however many conditions it holds", () => {
+    const spec = listed()
+    expect(showWhenText(spec, { match: 2, conditions: [ticked, young, twoDrivers] })).toBe(
+      "Shows when at least 2 of these are true: BI cover is ticked; Age is less than 25 in any row of drivers; Number of rows in drivers is at least 2",
+    )
+    expect(showWhenText(spec, { match: 2, conditions: [ticked] })).toBe("Shows when at least 2 of these are true: BI cover is ticked")
+    expect(showWhenText(spec, { match: "all", conditions: [ticked, { match: 2, conditions: [young, twoDrivers] }] })).toBe(
+      "Shows when all of these are true: BI cover is ticked; at least 2 of (Age is less than 25 in any row of drivers, Number of rows in drivers is at least 2)",
+    )
+    expect(showWhenText(spec, { match: "all", conditions: [{ match: 1, conditions: [ticked] }] })).toBe("Shows when at least 1 of (BI cover is ticked)")
+  })
+
   it("prices what the sheets show: a condition that hides or shows a column changes the basis, a move does not", () => {
     const spec = covered()
     expect(pricingBasis(setPageShowWhen(spec, "p_bi", always()))).not.toBe(pricingBasis(spec))

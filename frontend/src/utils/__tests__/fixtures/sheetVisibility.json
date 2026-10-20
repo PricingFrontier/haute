@@ -4267,6 +4267,210 @@
       "hidden_sections": ["s_extra", "s_target"],
       "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
       "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "at least 2 of three holds while two of them hold",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": 2,
+          "conditions": [
+            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": []},
+            {"table": "t_in", "column": "c_text", "op": "equals", "values": ["a"]},
+            {"table": "t_in", "column": "c_int", "op": "above", "values": ["5"]}
+          ]
+        }
+      },
+      "values": {"t_in": [{"c_tick": true, "c_text": "a", "c_int": "1"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "at least 2 of three holds while all three hold",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": 2,
+          "conditions": [
+            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": []},
+            {"table": "t_in", "column": "c_text", "op": "equals", "values": ["a"]},
+            {"table": "t_in", "column": "c_int", "op": "above", "values": ["5"]}
+          ]
+        }
+      },
+      "values": {"t_in": [{"c_tick": true, "c_text": "a", "c_int": "9"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "at least 2 of three fails while one of them holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": 2,
+          "conditions": [
+            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": []},
+            {"table": "t_in", "column": "c_text", "op": "equals", "values": ["a"]},
+            {"table": "t_in", "column": "c_int", "op": "above", "values": ["5"]}
+          ]
+        }
+      },
+      "values": {"t_in": [{"c_tick": true, "c_text": "b", "c_int": "1"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "at least 1 holds as any does",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": 1,
+          "conditions": [
+            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": []},
+            {"table": "t_in", "column": "c_text", "op": "equals", "values": ["a"]},
+            {"table": "t_in", "column": "c_int", "op": "above", "values": ["5"]}
+          ]
+        }
+      },
+      "values": {"t_in": [{"c_tick": false, "c_text": "b", "c_int": "9"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "at least asking for more conditions than it holds never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": 3,
+          "conditions": [
+            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": []},
+            {"table": "t_in", "column": "c_text", "op": "equals", "values": ["a"]}
+          ]
+        }
+      },
+      "values": {"t_in": [{"c_tick": true, "c_text": "a"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "at least with no conditions always shows",
+      "form": "tests",
+      "show_when": {"p_target": {"match": 2, "conditions": []}},
+      "values": {"t_in": [{}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "at least counts a condition on a column that hides as failing",
+      "form": "sections",
+      "show_when": {
+        "p_other": {
+          "match": 2,
+          "conditions": [
+            {"table": "t_policy", "column": "c_cover", "op": "ticked", "values": []},
+            {"table": "t_policy", "column": "c_flood", "op": "ticked", "values": []},
+            {"table": "t_flood", "column": "c_barrier", "op": "ticked", "values": []}
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_cover": true}], "t_flood": [{"c_barrier": true}]},
+      "hidden_pages": ["p_other"],
+      "hidden_sections": ["s_barrier", "s_flood", "s_note", "s_other"],
+      "hidden_widgets": ["w_barrier", "w_flood", "w_flood_extra", "w_flood_heading", "w_note", "w_other"],
+      "hidden_columns": [
+        ["t_flood", "c_barrier"],
+        ["t_flood", "c_depth"],
+        ["t_policy", "c_area"],
+        ["t_policy", "c_note"],
+        ["t_policy", "c_rate"]
+      ]
+    },
+    {
+      "name": "at least counts a condition on a column that shows",
+      "form": "sections",
+      "show_when": {
+        "p_other": {
+          "match": 2,
+          "conditions": [
+            {"table": "t_policy", "column": "c_cover", "op": "ticked", "values": []},
+            {"table": "t_policy", "column": "c_flood", "op": "ticked", "values": []},
+            {"table": "t_flood", "column": "c_barrier", "op": "ticked", "values": []}
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_flood": true}], "t_flood": [{"c_barrier": true}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_note"],
+      "hidden_widgets": ["w_flood_extra", "w_note"],
+      "hidden_columns": [["t_policy", "c_note"], ["t_policy", "c_rate"]]
+    },
+    {
+      "name": "a group asking for at least 2 holds while two of its own hold",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Comprehensive"]},
+            {
+              "match": 2,
+              "conditions": [
+                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"]},
+                {"table": "t_drivers", "column": "c_age", "rows": "any", "op": "below", "values": ["25"]},
+                {"table": "t_policy", "column": "c_extras", "op": "ticked", "values": []}
+              ]
+            }
+          ]
+        }
+      },
+      "values": {
+        "t_policy": [{"c_cover": "Comprehensive", "c_claims": "0", "c_extras": true}],
+        "t_drivers": [{"c_name": "Ann", "c_age": "22"}]
+      },
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a group asking for at least 2 fails while one of its own holds",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Comprehensive"]},
+            {
+              "match": 2,
+              "conditions": [
+                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"]},
+                {"table": "t_drivers", "column": "c_age", "rows": "any", "op": "below", "values": ["25"]},
+                {"table": "t_policy", "column": "c_extras", "op": "ticked", "values": []}
+              ]
+            }
+          ]
+        }
+      },
+      "values": {
+        "t_policy": [{"c_cover": "Comprehensive", "c_claims": "0"}],
+        "t_drivers": [{"c_name": "Ann", "c_age": "22"}]
+      },
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
     }
   ]
 }

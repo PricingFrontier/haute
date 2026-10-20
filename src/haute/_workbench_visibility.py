@@ -2,8 +2,9 @@
 which input columns a quote leaves out (specs/workbench).
 
 A sheet, a section or a component with conditions shows only while they hold on the values
-typed into the sheets, a group of them holding as one; a section on a sheet that does not
-show does not show either, nor does a component in a section that does not show. A
+typed into the sheets, all of them, any or at least a number, a group of them holding as
+one; a section on a sheet that does not show does not show either, nor does a component in
+a section that does not show. A
 condition holds while it fits (``condition_fits``), its column is on a Table or a
 Collection that shows (a Chart takes nothing typed, so its columns never count, and a
 Heading has none), and the value typed into the column passes its test, read as the
@@ -23,7 +24,7 @@ from __future__ import annotations
 
 import operator
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -37,6 +38,7 @@ from haute._workbench_form import (
     CountTest,
     FieldRef,
     FormSpec,
+    Match,
     RowCount,
     RowsCondition,
     SchemaColumn,
@@ -189,14 +191,24 @@ def _shows(spec: FormSpec, show_when: ShowWhen, rows: Rows, shown: set[tuple[str
         else _holds(spec, entry, rows, shown)
         for entry in show_when.conditions
     )
-    return all(holding) if show_when.match == "all" else any(holding)
+    return _matches(show_when.match, holding)
 
 
 def _group_holds(
     spec: FormSpec, group: ConditionGroup, rows: Rows, shown: set[tuple[str, str]]
 ) -> bool:
-    holding = (_holds(spec, condition, rows, shown) for condition in group.conditions)
-    return all(holding) if group.match == "all" else any(holding)
+    return _matches(
+        group.match, (_holds(spec, condition, rows, shown) for condition in group.conditions)
+    )
+
+
+def _matches(match: Match, holding: Iterable[bool]) -> bool:
+    """Whether all of *holding* hold, any, or at least *match* of them."""
+    if match == "all":
+        return all(holding)
+    if match == "any":
+        return any(holding)
+    return sum(holding) >= match
 
 
 def _holds(

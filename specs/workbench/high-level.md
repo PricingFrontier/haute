@@ -182,9 +182,11 @@ Out of scope:
   `show_when` of its own, and each but a
   Heading with a `title` and showing its `fields`, schema columns named by table id and
   column id so a rename keeps them. A `show_when` holds `conditions` and whether `all`
-  of them must hold or `any` (`match`); with none, the sheet, section or component always shows.
+  of them must hold, `any`, or at least a whole number of them, 1 or more (`match`); with
+  none, the sheet, section or component always shows.
   Each is a condition or a group, which holds `conditions` of its own, at least one and no
-  group among them, and whether all of those must hold or any (`match`). A
+  group among them, and whether all of those must hold, any, or at least a number of them
+  (`match`). A
   condition names a column of a one-row table by table id and column id, a test (`op`) and the test's `values`,
   as text: `ticked` or `not_ticked`, with no value, for a True/false column; `filled` or
   `empty`, with no value, and `equals` or `not_equals`, with one, for any other; `one_of` or
@@ -638,8 +640,12 @@ Out of scope:
   condition's table has switched between one row and many since, which rows shows for it
   too: "Choose…" for a one-row table's condition, and The row beside Any row and Every row
   for one whose table now has one row, choosing it making it the one-row table's condition.
-  With two or more conditions the section reads "Show when [all|any] of
-  these are true", and a group with two or more "[all|any] of these are true". Each change is one undo step.
+  With two or more conditions the section reads "Show when [all|any|at least] of
+  these are true", and a group with two or more "[all|any|at least] of these are true", at
+  least with a select of its number beside it, 1 to as many conditions as there are (or to
+  the number, while it asks for more), choosing it starting at 2; one condition reads so
+  too while the match is a number, as fewer conditions than it asks for is a problem to put
+  right. Each change is one undo step.
 - **The sheet's keyboard.** While the sheets show and a component is selected: Escape
   deselects it, Delete or Backspace removes it, Ctrl/Cmd+D duplicates it (16px below and
   to the right, selected), Ctrl/Cmd+C copies it, a note saying so, and the arrow keys nudge it by a grid step, or a pixel with
@@ -1139,10 +1145,15 @@ Out of scope:
     table's rows are those a grid showing it holds (a column giving it a row for each
     value gives every one of those) with anything but the index typed in them, whatever
     the sheets hide: a row with nothing typed in it is no row, as the quote leaves it out.
-  - **Groups.** A group holds while all of its conditions hold, or any, as its `match`
-    says, and counts as one of its `show_when`'s conditions: a section that shows while
-    the cover is Comprehensive and either a driver is under 25 or the claims count is at
-    least 2 needs all of the cover's condition and a group needing any of the other two.
+  - **At least some.** A `show_when` or a group whose `match` is a number holds while at
+    least that many of its conditions hold, a group counting as one: a section that shows
+    while two or three of three cover boxes are ticked needs at least 2 of the three
+    boxes' conditions. Asking for more than it holds, it never holds.
+  - **Groups.** A group holds while all of its conditions hold, any, or at least a number
+    of them, as its `match` says, and counts as one of its `show_when`'s conditions: a
+    section that shows while the cover is Comprehensive and either a driver is under 25 or
+    the claims count is at least 2 needs all of the cover's condition and a group needing
+    any of the other two.
   - **Decided at once.** What shows is decided for the whole form together: everything
     starts shown and anything whose conditions fail is hidden, which may hide a column another
     condition tests, until nothing more hides. So a sheet that shows when a box on a
@@ -1186,7 +1197,8 @@ Out of scope:
     and in the warning colour on a sheet's tab, on hover and to a screen reader, what stops
     a sheet's, a section's or a component's conditions doing what they say: a condition
     that cannot hold as written, saying why; a value that is not one of its column's
-    allowed values; and a sheet, section or component that nothing could show again once
+    allowed values; a `show_when` or a group asking for at least more conditions than it
+    holds; and a sheet, section or component that nothing could show again once
     hidden, since each column its conditions need (for a count, each of its table's columns
     but the index) is on no Table or Collection, or only on
     itself, on its own components or on components that cannot show without it, as a tick
@@ -1597,6 +1609,10 @@ Out of scope:
   nothing more and be harder to read and to lay out in the panel. Neither takes "none of
   these": a condition fails once its column hides, so "none" could come to hold as hiding
   went on and show something again, and hiding has to only ever hide more.
+- **At least, never at most.** "At least 2 of these" says two or three of three boxes
+  without writing out every pair as a group of its own. Neither takes "at most" or
+  "exactly", for the reason neither takes "none": hiding a column makes fewer conditions
+  hold, so "at most 1" could come to hold as hiding went on.
 - **A list's rows are its typed rows.** A condition on a many-row table counts each row
   with anything typed in it, whatever the sheets hide, because counting only what shows
   would let hiding a column drop a row, so that every row left passes or the count falls

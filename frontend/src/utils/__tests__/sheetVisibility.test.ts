@@ -393,6 +393,14 @@ describe("neverShown", () => {
     expect(neverShown(formOf([page("p_main", [motorBox]), page("p_bi", [collection("w_bi", [["t_policy", "c_bi"]])], reachable)])).size).toBe(0)
   })
 
+  it("reports a sheet needing at least more conditions than it can reach, with the one it waits on", () => {
+    const own = ticked("t_policy", "c_bi")
+    const atLeast = (match: number) =>
+      formOf([page("p_main", [motorBox]), page("p_bi", [collection("w_bi", [["t_policy", "c_bi"]])], { match, conditions: [ticked("t_policy", "c_motor"), own] })])
+    expect([...neverShown(atLeast(2))]).toEqual([["p_bi", own]])
+    expect(neverShown(atLeast(1)).size).toBe(0)
+  })
+
   it("reaches a count through any of its table's columns on a component outside it, and reports one only on itself", () => {
     const count: RowCount = { table: "t_items", op: "at_least", count: 1 }
     const own = formOf([page("p_main", [motorBox]), page("p_items", [collection("w_items", [["t_items", "c_item"]])], when(count))])

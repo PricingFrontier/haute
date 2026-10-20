@@ -1464,11 +1464,22 @@ function allowed(column: SchemaColumn, value: string): boolean {
 /**
  * What stops a sheet's, a section's or a component's conditions doing what they say: a
  * condition that cannot hold as written (`conditionFault`); a value tested for equality that
- * is not one of its column's allowed values, which no value chosen from them can match; and,
+ * is not one of its column's allowed values, which no value chosen from them can match; a
+ * number `match` asking for more conditions than its `show_when` or group holds; and,
  * while neither, nothing able to show it again once hidden (`neverShown`).
  */
 function conditionProblems(spec: FormSpec, holder: Page | Section | Widget, never: ReadonlyMap<string, SingleCondition>): string[] {
   const problems: string[] = []
+  const { match, conditions } = holder.show_when
+  // With no conditions it always shows, whatever the match asks for.
+  if (typeof match === "number" && conditions.length > 0 && match > conditions.length) {
+    problems.push(`needs at least ${match} conditions to hold but has only ${conditions.length}, so it never shows`)
+  }
+  for (const entry of conditions) {
+    if (isGroup(entry) && typeof entry.match === "number" && entry.match > entry.conditions.length) {
+      problems.push(`has a group that needs at least ${entry.match} conditions to hold but holds only ${entry.conditions.length}`)
+    }
+  }
   for (const condition of leafConditions(holder.show_when)) {
     const fault = conditionFault(spec, condition)
     if (fault !== null) {
@@ -1524,16 +1535,22 @@ export function conditionText(spec: FormSpec, condition: SingleCondition): strin
   return isRowsCondition(condition) ? `${text} in ${condition.rows} row of ${found?.table.name ?? "a missing table"}` : text
 }
 
-/** When a sheet, a section or a component shows, as its eye's title says it: a group of two or more as `any of (…, …)`. */
+/** A match as the sentences say it: `all`, `any` or `at least 2`. */
+const matchText = (match: ShowWhen["match"]): string => (typeof match === "number" ? `at least ${match}` : match)
+
+/**
+ * When a sheet, a section or a component shows, as its eye's title says it: a group of two or
+ * more as `any of (…, …)`, and one asking for at least a number however many it holds.
+ */
 export function showWhenText(spec: FormSpec, showWhen: ShowWhen): string {
   const parts = showWhen.conditions.map((entry) => {
     if (!isGroup(entry)) return conditionText(spec, entry)
     const texts = entry.conditions.map((condition) => conditionText(spec, condition))
-    return texts.length === 1 ? texts[0] : `${entry.match} of (${texts.join(", ")})`
+    return texts.length === 1 && typeof entry.match !== "number" ? texts[0] : `${matchText(entry.match)} of (${texts.join(", ")})`
   })
   if (parts.length === 0) return "Always shows"
-  if (parts.length === 1) return `Shows when ${parts[0]}`
-  return `Shows when ${showWhen.match} of these are true: ${parts.join("; ")}`
+  if (parts.length === 1 && typeof showWhen.match !== "number") return `Shows when ${parts[0]}`
+  return `Shows when ${matchText(showWhen.match)} of these are true: ${parts.join("; ")}`
 }
 
 // ─── Problems ────────────────────────────────────────────────────────────

@@ -2530,11 +2530,12 @@ export interface Section {
 }
 /**
  * When a sheet, a section or a widget shows: always, without conditions; else while all
- * of them hold, or any, as ``match`` says, each a condition or a group of them.
+ * of them hold, any, or at least a number of them, as ``match`` says, each a condition or a
+ * group of them.
  */
 export interface ShowWhen {
   conditions: (Condition | RowsCondition | RowCount | ConditionGroup)[];
-  match: 'all' | 'any';
+  match: ('all' | 'any') | number;
 }
 /**
  * A test of the value in a one-row table's column, the column by table and column id.
@@ -2593,15 +2594,15 @@ export interface RowCount {
   table: string;
 }
 /**
- * Conditions that count as one: holding while all of them hold, or any, as ``match``
- * says. A group holds no group.
+ * Conditions that count as one: holding while all of them hold, any, or at least a
+ * number of them, as ``match`` says. A group holds no group.
  */
 export interface ConditionGroup {
   /**
    * @minItems 1
    */
   conditions: (Condition | RowsCondition | RowCount)[];
-  match: 'all' | 'any';
+  match: ('all' | 'any') | number;
 }
 /**
  * A Table: a grid showing columns of many-row schema tables, each of its columns given

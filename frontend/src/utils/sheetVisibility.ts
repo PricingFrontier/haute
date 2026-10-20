@@ -269,8 +269,12 @@ export interface SheetVisibility {
 export const fieldKeys = (widget: Widget): string[] =>
   widget.type === "tableInput" || widget.type === "collection" ? widget.fields.map((field) => columnKey(field.table, field.column)) : []
 
-const matches = <T,>(match: ShowWhen["match"], entries: readonly T[], holds: (entry: T) => boolean): boolean =>
-  match === "all" ? entries.every(holds) : entries.some(holds)
+/** Whether all of `entries` hold, any, or at least `match` of them (`_matches` on the server). */
+const matches = <T,>(match: ShowWhen["match"], entries: readonly T[], holds: (entry: T) => boolean): boolean => {
+  if (match === "all") return entries.every(holds)
+  if (match === "any") return entries.some(holds)
+  return entries.filter(holds).length >= match
+}
 
 /** Whether a `show_when` passes: with no conditions, always; else as its `match` says, a group as its own does. */
 const showWhenPasses = (showWhen: ShowWhen, holds: (condition: SingleCondition) => boolean): boolean =>
