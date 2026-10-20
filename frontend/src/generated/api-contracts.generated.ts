@@ -2534,7 +2534,7 @@ export interface Section {
  * group of them.
  */
 export interface ShowWhen {
-  conditions: (Condition | RowsCondition | RowCount | ConditionGroup)[];
+  conditions: (Condition | RowsCondition | RowCount | RowTotal | ConditionGroup)[];
   match: ('all' | 'any') | number;
 }
 /**
@@ -2563,10 +2563,22 @@ export interface Condition {
   values: string[];
 }
 /**
- * A test of the values in a many-row table's column, passing in any of its rows or in
- * every one, as ``rows`` says; it fits as a ``Condition`` does.
+ * A many-row table's rows, by table id, passing all of its tests in the same row: any
+ * of them, or every one, as ``rows`` says.
  */
 export interface RowsCondition {
+  rows: 'any' | 'every';
+  table: string;
+  /**
+   * @minItems 1
+   */
+  where: RowTest[];
+}
+/**
+ * A test a row of a many-row table must pass: a ``Condition``'s column, test and values,
+ * its table the condition's that holds it.
+ */
+export interface RowTest {
   column: string;
   op:
     | 'ticked'
@@ -2581,17 +2593,30 @@ export interface RowsCondition {
     | 'at_least'
     | 'below'
     | 'at_most';
-  rows: 'any' | 'every';
-  table: string;
   values: string[];
 }
 /**
- * A test of how many rows a many-row table, by id, holds.
+ * How many of a many-row table's rows, by table id, pass all of its tests in the same
+ * row: every row while it has none.
  */
 export interface RowCount {
   count: number;
   op: 'equals' | 'not_equals' | 'above' | 'at_least' | 'below' | 'at_most';
   table: string;
+  where: RowTest[];
+}
+/**
+ * A total of a number column's values in the rows of a many-row table, by table id,
+ * passing all of its tests in the same row, every row while it has none, tested against
+ * a number typed as text.
+ */
+export interface RowTotal {
+  column: string;
+  op: 'equals' | 'not_equals' | 'above' | 'at_least' | 'below' | 'at_most';
+  table: string;
+  total: 'sum' | 'min' | 'max' | 'average';
+  value: string;
+  where: RowTest[];
 }
 /**
  * Conditions that count as one: holding while all of them hold, any, or at least a
@@ -2601,7 +2626,7 @@ export interface ConditionGroup {
   /**
    * @minItems 1
    */
-  conditions: (Condition | RowsCondition | RowCount)[];
+  conditions: (Condition | RowsCondition | RowCount | RowTotal)[];
   match: ('all' | 'any') | number;
 }
 /**

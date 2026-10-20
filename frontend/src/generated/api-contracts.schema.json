@@ -1247,6 +1247,9 @@
               },
               {
                 "$ref": "#/$defs/RowCount"
+              },
+              {
+                "$ref": "#/$defs/RowTotal"
               }
             ]
           },
@@ -12748,7 +12751,7 @@
     },
     "RowCount": {
       "additionalProperties": false,
-      "description": "A test of how many rows a many-row table, by id, holds.",
+      "description": "How many of a many-row table's rows, by table id, pass all of its tests in the same\nrow: every row while it has none.",
       "properties": {
         "count": {
           "minimum": 0,
@@ -12770,19 +12773,27 @@
         "table": {
           "title": "Table",
           "type": "string"
+        },
+        "where": {
+          "items": {
+            "$ref": "#/$defs/RowTest"
+          },
+          "title": "Where",
+          "type": "array"
         }
       },
       "required": [
         "table",
+        "where",
         "op",
         "count"
       ],
       "title": "RowCount",
       "type": "object"
     },
-    "RowsCondition": {
+    "RowTest": {
       "additionalProperties": false,
-      "description": "A test of the values in a many-row table's column, passing in any of its rows or in\nevery one, as ``rows`` says; it fits as a ``Condition`` does.",
+      "description": "A test a row of a many-row table must pass: a ``Condition``'s column, test and values,\nits table the condition's that holds it.",
       "properties": {
         "column": {
           "title": "Column",
@@ -12806,6 +12817,83 @@
           "title": "Op",
           "type": "string"
         },
+        "values": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Values",
+          "type": "array"
+        }
+      },
+      "required": [
+        "column",
+        "op",
+        "values"
+      ],
+      "title": "RowTest",
+      "type": "object"
+    },
+    "RowTotal": {
+      "additionalProperties": false,
+      "description": "A total of a number column's values in the rows of a many-row table, by table id,\npassing all of its tests in the same row, every row while it has none, tested against\na number typed as text.",
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "op": {
+          "enum": [
+            "equals",
+            "not_equals",
+            "above",
+            "at_least",
+            "below",
+            "at_most"
+          ],
+          "title": "Op",
+          "type": "string"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        },
+        "total": {
+          "enum": [
+            "sum",
+            "min",
+            "max",
+            "average"
+          ],
+          "title": "Total",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        },
+        "where": {
+          "items": {
+            "$ref": "#/$defs/RowTest"
+          },
+          "title": "Where",
+          "type": "array"
+        }
+      },
+      "required": [
+        "table",
+        "total",
+        "column",
+        "where",
+        "op",
+        "value"
+      ],
+      "title": "RowTotal",
+      "type": "object"
+    },
+    "RowsCondition": {
+      "additionalProperties": false,
+      "description": "A many-row table's rows, by table id, passing all of its tests in the same row: any\nof them, or every one, as ``rows`` says.",
+      "properties": {
         "rows": {
           "enum": [
             "any",
@@ -12818,20 +12906,19 @@
           "title": "Table",
           "type": "string"
         },
-        "values": {
+        "where": {
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/RowTest"
           },
-          "title": "Values",
+          "minItems": 1,
+          "title": "Where",
           "type": "array"
         }
       },
       "required": [
         "table",
-        "column",
         "rows",
-        "op",
-        "values"
+        "where"
       ],
       "title": "RowsCondition",
       "type": "object"
@@ -13473,6 +13560,9 @@
               },
               {
                 "$ref": "#/$defs/RowCount"
+              },
+              {
+                "$ref": "#/$defs/RowTotal"
               },
               {
                 "$ref": "#/$defs/ConditionGroup"

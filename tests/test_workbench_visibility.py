@@ -97,15 +97,39 @@ def test_a_condition_fits_while_its_values_are_ones_its_column_could_hold(
     assert condition_fits(every_type_form(), condition) is fits
 
 
+FILLED_V = {"column": "c_v", "op": "filled"}
+
+
+def total(**changed: Any) -> dict[str, Any]:
+    """A sum of t_many's numbers above 1,000, *changed* as given."""
+    condition = {"table": "t_many", "total": "sum", "column": "c_v", "where": []}
+    return {**condition, "op": "above", "value": "£1,000", **changed}
+
+
 @pytest.mark.parametrize(
     ("condition", "fits"),
     [
-        ({"table": "t_many", "column": "c_v", "rows": "every", "op": "filled"}, True),
-        ({"table": "t_in", "column": "c_num", "rows": "any", "op": "filled"}, False),
+        ({"table": "t_many", "rows": "every", "where": [FILLED_V]}, True),
+        ({"table": "t_in", "rows": "any", "where": [{"column": "c_num", "op": "filled"}]}, False),
         ({"table": "t_many", "column": "c_v", "op": "filled"}, False),
-        ({"table": "t_many", "op": "at_least", "count": 2}, True),
-        ({"table": "t_in", "op": "at_least", "count": 2}, False),
-        ({"table": "t_out", "op": "at_least", "count": 2}, False),
+        ({"table": "t_many", "where": [], "op": "at_least", "count": 2}, True),
+        (
+            {
+                "table": "t_many",
+                "where": [{"column": "c_gone", "op": "filled"}],
+                "op": "at_least",
+                "count": 2,
+            },
+            False,
+        ),
+        ({"table": "t_in", "where": [], "op": "at_least", "count": 2}, False),
+        ({"table": "t_out", "where": [], "op": "at_least", "count": 2}, False),
+        (total(), True),
+        (total(where=[FILLED_V, {"column": "c_key", "op": "equals", "values": ["A"]}]), True),
+        (total(column="c_key"), False),
+        (total(column="c_gone"), False),
+        (total(value="lots"), False),
+        (total(where=[{"column": "c_key", "op": "ticked"}]), False),
     ],
 )
 def test_a_condition_fits_while_its_table_has_the_rows_it_tests(

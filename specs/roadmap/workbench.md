@@ -19,8 +19,8 @@ that fill the sheets from databases and APIs.
 sign-in, which waits on the Azure work. It names the review's findings it closes
 (`FB-n`), and the review holds their evidence.
 
-`WB-27` to `WB-29` give the Show when of a sheet, a section and a component more to test:
-rows passing several tests, other fields, text within text, dates apart and the price.
+`WB-28` and `WB-29` give the Show when of a sheet, a section and a component more to test:
+other fields, text within text, dates apart and the price.
 Nothing finer than a component hides: a field that applies only while a box is ticked goes
 in a section of its own, which closes up when it hides. The packages keep the rule that
 decides what shows now:
@@ -43,7 +43,6 @@ by many sheets, were offered and not taken.
 | WB-12 | Planned | P3 | A test quote whose response runs past what Preview shows is saved, run and compared in full, as every other test quote is. |
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, sees which quotes are about to lapse, records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
-| WB-27 | Planned | P2 | A condition on a many-row table tests the rows that pass several tests in the same row: any of them, every one, how many, or a total of a column over them. |
 | WB-28 | Planned | P3 | A condition tests a field against another field, text within text, and a date against another date give or take a number of days. |
 | WB-29 | Planned | P3 | A component that takes nothing typed, or a section or a sheet holding only such components, shows by conditions on the price, applied after it so the price never decides what is priced. |
 
@@ -406,45 +405,6 @@ misconfiguration either way.
 headers when the release names its host); `frontend/src/app/useOpenQuoteStore.ts::openNew`
 (`asRenewal`, the browser's tick).
 
-### WB-27 — Rows that pass several tests
-**Why:** A condition on a many-row table tests one column in any row or in every row, or
-counts the table's typed rows. The commercial-pricing project's `perils` holds a row per
-peril, preset from `perils.csv`, each with `include_coverage`. "The EQ peril is included"
-needs `peril` to equal EQ and `include_coverage` to be ticked in the same row, which two
-conditions in any row cannot say, as two different rows can meet them; and "two or more
-perils are included" cannot be said at all, since Number of rows in perils is always six,
-each preset row holding its peril. A total cannot be tested either: a section for large
-schedules shown while the jobsites' `hard_costs_limit` adds up past a figure.
-
-**Plan:** A condition on a many-row table names its table, the tests a row must pass, all of
-them in the same row, and which rows: any of them, every one (there being at least one), or
-how many, by a count test and a whole number, counting every typed row while it has no
-tests. A total takes a number column over the rows that pass, its sum, least, greatest or
-average, and tests it as a number column's value is tested; the sum of no rows is 0, and
-the others of no rows are empty, failing every comparison. Conditions on lists keep today's
-rule (Scope): a row's values are read as typed, whatever the sheets hide, and the condition
-holds only while each column it tests (for a count without tests, one of its table's
-columns other than the index) is on a Table that shows, so hiding still only hides more.
-`RowsCondition` and `RowCount` give way to this one shape; no form outside this branch
-holds them yet. In the panel a list condition is a block: "[Any row | Every row | Number
-of rows | Total of a column] of perils where", a test per line with its own add, then a
-count's test and number or a total's column, kind, test and value. The eye reads it as
-"Any row of perils where peril equals EQ and include coverage is ticked" and "Number of rows
-of perils where include coverage is ticked is at least 2".
-
-**Acceptance:** In the commercial-pricing form, a section shown while the EQ peril's row
-has `include_coverage` ticked, one shown while at least two perils are included, and one
-shown while the jobsites' hard costs total above a figure, each in the sheets, Preview and
-the app; each fails once a column it tests hides; the server and the view are held to new
-cases in the shared visibility fixture, the fixture's list cases written in the new shape.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_workbench_visibility.py::_holds` (one column in any or every row,
-and a count of typed rows with no tests); `src/haute/_workbench_tables.py::preset_rows`
-(each preset row holding its value, so typed); `src/haute/_workbench_form.py::RowsCondition`
-and `RowCount`.
-
 ### WB-28 — Other values to test against
 **Why:** A condition tests a column against values typed into the condition. It cannot
 test one field against another (in the commercial-pricing project, `policy_limit` above
@@ -453,8 +413,8 @@ against another (a project completing more than 365 days after it starts,
 `project_completion_date` against `project_start_date`).
 
 **Plan:** A condition's value may be another field of the same type instead of values
-typed: a one-row table's column, or, in a test of a list's rows (WB-27), a column of the
-same row. A date compared with another date may add or take away a whole number of days.
+typed: a one-row table's column, or, in a test of a list's rows, a column of the same
+row. A date compared with another date may add or take away a whole number of days.
 Text gains contains, does not contain, starts with and ends with, compared as equals
 compares text. A test against another field holds only while both fields are on
 components that show, so hiding still only hides more, and reads the other field's value as
@@ -467,7 +427,7 @@ insured contains "Holdings", and one while the completion date is more than 365 
 the start date, each failing while either field hides; the server and the view are held to
 new cases in the shared visibility fixture.
 
-**Dependencies:** WB-27 for another field in a list's tests; none for the rest.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_workbench_visibility.py::_passes` (each test against the
 condition's own values); `src/haute/_workbench_form.py::Condition` (`values`, typed text
@@ -488,7 +448,7 @@ while a new one is on its way, and before the first every output read as empty. 
 server's `visibility` leaves them out, as they never change `hidden`. An input component
 placed later in a section with such a condition, or such a condition on what takes
 values, is named as a problem, not refused. An output table with many rows is
-tested as a list is (WB-27).
+tested as a list is.
 
 **Acceptance:** A Table of referral reasons, and a section holding it, each shown while
 `referral_count` is above 0, hidden before the first price and after a price with none, in
@@ -496,7 +456,7 @@ the sheets, Preview and the app; an output condition on a section holding an inp
 Collection, or on an input Collection, named as a problem; the quote the same whatever the output conditions say, held by cases on both
 sides.
 
-**Dependencies:** WB-27 for output tables with many rows.
+**Dependencies:** None.
 
 **Evidence:** `frontend/src/utils/sheetVisibility.ts::conditionFault` (a column of an output
 table named as a fault); `src/haute/_workbench_visibility.py::_tested_column` (input tables

@@ -4,7 +4,7 @@
  * and what would stop the schema being the pipeline's tables.
  */
 import { describe, expect, it } from "vitest"
-import type { ChartWidget, CollectionWidget, Condition, FieldRef, FormSchema, FormSpec, RowCount, RowsCondition, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
+import type { ChartWidget, CollectionWidget, Condition, FieldRef, FormSchema, FormSpec, RowCount, RowsCondition, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
 import {
   addPage,
   addSchemaColumn,
@@ -952,19 +952,20 @@ describe("what the sheets show", () => {
     expect(findWidget(pastedGrid.spec, pastedGrid.id)?.widget).toMatchObject({ column_looks: [{ table: "equipment", column: "equipment.item", bold: true }] })
   })
 
-  it("leaves out of a copy pasted a group's conditions on a column lost since, a group left with none, and a count of a table lost since", () => {
+  it("leaves out of a copy pasted what its conditions test of a column lost since, a group left with none, and a count of a table lost since", () => {
     const onState: Condition = { table: "policy", column: "policy.state", op: "equals", values: ["NY"] }
-    const onValue: RowsCondition = { table: "equipment", column: "equipment.value", rows: "every", op: "above", values: ["50"] }
-    const count: RowCount = { table: "equipment", op: "at_least", count: 1 }
+    const onValue: RowsCondition = { table: "equipment", rows: "every", where: [{ column: "equipment.value", op: "above", values: ["50"] }] }
+    const count: RowCount = { table: "equipment", where: [{ column: "equipment.value", op: "filled", values: [] }], op: "at_least", count: 1 }
     const spec = updateWidget(sheet(), "w_boxes", {
       show_when: { match: "any", conditions: [{ match: "all", conditions: [onState, onValue] }, { match: "all", conditions: [count] }] },
     })
     const copied = findWidget(spec, "w_boxes")!.widget
 
+    // In every row with no test left goes; a count keeps counting, its test on the column gone.
     const lostValue = pasteWidget(removeSchemaColumn(spec, "equipment", "equipment.value"), copied, "s")
     expect(findWidget(lostValue.spec, lostValue.id)?.widget.show_when).toEqual({
       match: "any",
-      conditions: [{ match: "all", conditions: [onState] }, { match: "all", conditions: [count] }],
+      conditions: [{ match: "all", conditions: [onState] }, { match: "all", conditions: [{ ...count, where: [] }] }],
     })
     const lostTable = pasteWidget(removeSchemaTable(spec, "equipment"), copied, "s")
     expect(findWidget(lostTable.spec, lostTable.id)?.widget.show_when).toEqual({ match: "any", conditions: [{ match: "all", conditions: [onState] }] })
@@ -1770,10 +1771,11 @@ describe("when sheets and components show", () => {
     )
   })
 
-  /** `covered`, with a many-row table of drivers, its ages on a Table in `sectionId`. */
+  /** `covered`, with a many-row table of drivers, its ages on a Table in `sectionId` and its covers on none. */
   const listed = (sectionId = "s_main"): FormSpec => {
     const spec = covered()
-    spec.schema.tables.push(table("drivers", "drivers", { rows: "many", columns: [column("drivers.age", "age", { type: "int", label: "Age" })] }))
+    const columns = [column("drivers.age", "age", { type: "int", label: "Age" }), column("drivers.cover", "cover", { options: ["Full", "Partial"] })]
+    spec.schema.tables.push(table("drivers", "drivers", { rows: "many", columns }))
     return addWidget(spec, sectionId, {
       id: "w_drivers",
       type: "tableInput",
@@ -1788,25 +1790,32 @@ describe("when sheets and components show", () => {
       show_when: always(),
     })
   }
-  const young: RowsCondition = { table: "drivers", column: "drivers.age", rows: "any", op: "below", values: ["25"] }
-  const twoDrivers: RowCount = { table: "drivers", op: "at_least", count: 2 }
+  const young: RowsCondition = { table: "drivers", rows: "any", where: [{ column: "drivers.age", op: "below", values: ["25"] }] }
+  const twoDrivers: RowCount = { table: "drivers", where: [], op: "at_least", count: 2 }
+  const aged: RowCount = { table: "drivers", where: [{ column: "drivers.age", op: "filled", values: [] }], op: "at_least", count: 1 }
+  const ageSum: RowTotal = { table: "drivers", total: "sum", column: "drivers.age", where: [], op: "above", value: "50" }
 
-  it("takes a group's condition out with its column, a group left with none with it, and a count out with its table alone", () => {
+  it("takes what a group's conditions test of a column out with it, a group left with none with it, and a count out with its table alone", () => {
     const onClass: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"] }
     const spec = setSectionShowWhen(listed(), "s_bi", {
       match: "all",
-      conditions: [onClass, { match: "any", conditions: [young, twoDrivers] }, { match: "any", conditions: [ticked] }],
+      conditions: [onClass, { match: "any", conditions: [young, twoDrivers, aged, ageSum] }, { match: "any", conditions: [ticked] }],
     })
     expect(conditionUses(spec, "drivers", "drivers.age").map((holder) => holder.id)).toEqual(["s_bi"])
     expect(conditionUses(spec, "drivers").map((holder) => holder.id)).toEqual(["s_bi"])
     expect(conditionUses(spec, "policy", "policy.bi").map((holder) => holder.id)).toEqual(["p_bi", "s_bi"])
     const shown = (next: FormSpec) => findSection(next, "s_bi")?.section.show_when
 
+    // In any row with no test left goes, as does a total of the column; a count keeps counting.
     expect(shown(removeSchemaColumn(spec, "drivers", "drivers.age"))).toEqual({
       match: "all",
-      conditions: [onClass, { match: "any", conditions: [twoDrivers] }, { match: "any", conditions: [ticked] }],
+      conditions: [onClass, { match: "any", conditions: [twoDrivers, { ...aged, where: [] }] }, { match: "any", conditions: [ticked] }],
     })
-    expect(shown(removeSchemaColumn(spec, "policy", "policy.bi"))).toEqual({ match: "all", conditions: [onClass, { match: "any", conditions: [young, twoDrivers] }] })
+    expect(shown(removeSchemaColumn(spec, "policy", "policy.bi"))).toEqual({
+      match: "all",
+      conditions: [onClass, { match: "any", conditions: [young, twoDrivers, aged, ageSum] }],
+    })
+    expect(conditionUses(spec, "drivers", "drivers.cover")).toEqual([])
     expect(shown(removeSchemaTable(spec, "drivers"))).toEqual({ match: "all", conditions: [onClass, { match: "any", conditions: [ticked] }] })
   })
 
@@ -1825,14 +1834,31 @@ describe("when sheets and components show", () => {
       'Sheet "BI" waits on the rows of drivers, which are only on components that hide with it, so it could not show again once hidden',
     ])
     expect(showing(removeWidget(spec, "w_drivers"), { match: "all", conditions: [twoDrivers] })).toEqual(['Sheet "BI" waits on the rows of drivers, which are on no Table'])
+    // A condition on rows with tests waits on each column it tests, named while it is on no Table.
+    expect(showing(spec, { match: "all", conditions: [young] })).toEqual([
+      'Sheet "BI" waits on the rows of drivers, which are only on components that hide with it, so it could not show again once hidden',
+    ])
+    expect(showing(removeWidget(spec, "w_drivers"), { match: "all", conditions: [young] })).toEqual(['Sheet "BI" waits on age, which is on no Table'])
+    // A test of a row against a value no allowed value can match.
+    const uncovered: RowsCondition = { table: "drivers", rows: "any", where: [{ column: "drivers.cover", op: "equals", values: ["None"] }] }
+    expect(showing(spec, { match: "all", conditions: [uncovered] })).toEqual([
+      'Sheet "BI" tests cover against "None", which isn\'t one of its allowed values',
+      'Sheet "BI" waits on cover, which is on no Table',
+    ])
   })
 
   it("reads a condition in any or every row, a count and a group as sentences", () => {
     const spec = listed()
     expect(conditionText(spec, young)).toBe("Age is less than 25 in any row of drivers")
-    expect(conditionText(spec, { ...young, rows: "every", op: "filled", values: [] })).toBe("Age is filled in every row of drivers")
+    expect(conditionText(spec, { ...young, rows: "every", where: [{ column: "drivers.age", op: "filled", values: [] }] })).toBe("Age is filled in every row of drivers")
+    const full = { column: "drivers.cover", op: "equals" as const, values: ["Full"] }
+    expect(conditionText(spec, { ...young, where: [...young.where, full] })).toBe("Age is less than 25 and Cover equals Full in any row of drivers")
     expect(conditionText(spec, twoDrivers)).toBe("Number of rows in drivers is at least 2")
-    expect(conditionText(spec, { table: "gone", op: "equals", count: 0 })).toBe("Number of rows in a missing table equals 0")
+    expect(conditionText(spec, { ...twoDrivers, where: young.where })).toBe("Number of rows in drivers where Age is less than 25 is at least 2")
+    expect(conditionText(spec, { table: "gone", where: [], op: "equals", count: 0 })).toBe("Number of rows in a missing table equals 0")
+    expect(conditionText(spec, ageSum)).toBe("Sum of Age in drivers is greater than 50")
+    expect(conditionText(spec, { ...ageSum, total: "average", where: [full] })).toBe("Average of Age in drivers where Cover equals Full is greater than 50")
+    expect(conditionText(spec, { ...ageSum, total: "min", column: "drivers.gone" })).toBe("Smallest of A missing column in drivers is greater than 50")
 
     expect(showWhenText(spec, { match: "all", conditions: [ticked, { match: "any", conditions: [young, twoDrivers] }] })).toBe(
       "Shows when all of these are true: BI cover is ticked; any of (Age is less than 25 in any row of drivers, Number of rows in drivers is at least 2)",

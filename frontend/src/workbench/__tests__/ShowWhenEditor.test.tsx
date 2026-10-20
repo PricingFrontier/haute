@@ -2,9 +2,10 @@
  * A sheet's, a section's or a component's Show when (specs/workbench): "Always" without
  * conditions; a condition added on the first one-row input column; its column, test and
  * value chosen, the value the control its column's cell is; conditions removed; all, any or
- * at least a number of two or more; groups of conditions; a many-row table's column in any or every row, and
- * its number of rows; a condition whose column is gone or whose table switched between one
- * row and many; each change one undo step.
+ * at least a number of two or more; groups of conditions; a many-row table's rows in any
+ * or every row passing tests of a row, how many and a total over them; a condition whose
+ * column is gone or whose table switched between one row and many; each change one undo
+ * step.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
@@ -202,23 +203,38 @@ describe("ShowWhenEditor", () => {
     expect(showWhen()).toEqual({ match: "any", conditions: [fresh] })
   })
 
-  it("tests a many-row table's column in any row or every row, and counts its rows in a whole number", () => {
+  it("tests a table's rows in any or every row passing tests of a row, counts them and totals a column over them", () => {
     render(<Editor />)
     fireEvent.click(screen.getByRole("button", { name: "Add condition" }))
     const column = screen.getByRole("combobox", { name: "Condition 1 column" })
     expect(screen.queryByRole("combobox", { name: "Condition 1 rows" })).not.toBeInTheDocument()
 
-    fireEvent.change(column, { target: { value: "equipment:equipment.value" } })
-    expect(showWhen().conditions[0]).toEqual({ table: "equipment", column: "equipment.value", rows: "any", op: "equals", values: [] })
-    const rows = screen.getByRole("combobox", { name: "Condition 1 rows" })
-    expect(options(rows)).toEqual(["Any row", "Every row"])
-    fireEvent.change(rows, { target: { value: "every" } })
-    expect(showWhen().conditions[0]).toMatchObject({ rows: "every" })
-
     fireEvent.change(column, { target: { value: "equipment#rows" } })
-    expect(showWhen().conditions[0]).toEqual({ table: "equipment", op: "at_least", count: 1 })
-    expect(column).toHaveDisplayValue("Number of rows in equipment")
-    expect(screen.queryByRole("combobox", { name: "Condition 1 rows" })).not.toBeInTheDocument()
+    const item = { column: "equipment.item", op: "equals", values: [] }
+    expect(showWhen().conditions[0]).toEqual({ table: "equipment", rows: "any", where: [item] })
+    expect(column).toHaveDisplayValue("Rows of equipment")
+    const rows = screen.getByRole("combobox", { name: "Condition 1 rows" })
+    expect(options(rows)).toEqual(["Any row", "Every row", "Number of rows", "Sum", "Smallest", "Largest", "Average"])
+    // Any row needs a test, so its only one has no cross.
+    expect(screen.queryByRole("button", { name: "Remove condition 1 where 1" })).not.toBeInTheDocument()
+
+    // A second test of the same row, then every row, each one undo step.
+    fireEvent.click(screen.getByRole("button", { name: "Add test to condition 1" }))
+    fireEvent.change(screen.getByRole("combobox", { name: "Condition 1 where 2 column" }), { target: { value: "equipment.value" } })
+    fireEvent.change(screen.getByRole("combobox", { name: "Condition 1 where 2 test" }), { target: { value: "above" } })
+    const value = screen.getByRole("textbox", { name: "Condition 1 where 2 value" })
+    fireEvent.change(value, { target: { value: "1000" } })
+    fireEvent.blur(value)
+    fireEvent.change(rows, { target: { value: "every" } })
+    const above = { column: "equipment.value", op: "above", values: ["1000"] }
+    expect(showWhen().conditions[0]).toEqual({ table: "equipment", rows: "every", where: [item, above] })
+    expect(undoSteps()).toBe(7)
+    fireEvent.click(screen.getByRole("button", { name: "Remove condition 1 where 1" }))
+    expect(showWhen().conditions[0]).toEqual({ table: "equipment", rows: "every", where: [above] })
+
+    // How many rows pass: a whole number committed, anything else refused.
+    fireEvent.change(rows, { target: { value: "count" } })
+    expect(showWhen().conditions[0]).toEqual({ table: "equipment", where: [above], op: "at_least", count: 1 })
     expect(options(screen.getByRole("combobox", { name: "Condition 1 test" }))).toEqual([
       "equals",
       "does not equal",
@@ -235,39 +251,56 @@ describe("ShowWhenEditor", () => {
     expect(undoSteps()).toBe(steps)
     fireEvent.change(count, { target: { value: "3" } })
     fireEvent.blur(count)
-    expect(showWhen().conditions[0]).toEqual({ table: "equipment", op: "at_least", count: 3 })
+    expect(showWhen().conditions[0]).toEqual({ table: "equipment", where: [above], op: "at_least", count: 3 })
     expect(undoSteps()).toBe(steps + 1)
+    // A count's only test can go: without tests it counts every row.
+    fireEvent.click(screen.getByRole("button", { name: "Remove condition 1 where 1" }))
+    expect(showWhen().conditions[0]).toEqual({ table: "equipment", where: [], op: "at_least", count: 3 })
 
-    // Moved to a column, it keeps its test while the column's type takes it, with no value.
+    // A total of a number column: a number committed, anything else refused.
+    fireEvent.change(rows, { target: { value: "sum" } })
+    expect(showWhen().conditions[0]).toEqual({ table: "equipment", total: "sum", column: "equipment.value", where: [], op: "above", value: "" })
+    expect(options(screen.getByRole("combobox", { name: "Condition 1 total of" }))).toEqual(["Value"])
+    expect(within(condition(1)).getByText("Needs a number to compare its total of value with")).toBeInTheDocument()
+    const total = screen.getByRole("textbox", { name: "Condition 1 value" })
+    fireEvent.change(total, { target: { value: "lots" } })
+    fireEvent.blur(total)
+    expect(screen.getByText("Enter a number.")).toBeInTheDocument()
+    fireEvent.change(total, { target: { value: "£5,000" } })
+    fireEvent.blur(total)
+    fireEvent.change(rows, { target: { value: "average" } })
+    expect(showWhen().conditions[0]).toEqual({ table: "equipment", total: "average", column: "equipment.value", where: [], op: "above", value: "£5,000" })
+
+    // Moved to a one-row table's column, with no test of it, it starts on that column's first test.
     fireEvent.change(column, { target: { value: "policy:policy.year" } })
-    expect(showWhen().conditions[0]).toEqual({ table: "policy", column: "policy.year", op: "at_least", values: [] })
+    expect(showWhen().conditions[0]).toEqual({ table: "policy", column: "policy.year", op: "equals", values: [] })
   })
 
-  it("fixes a condition whose table switched between one row and many from its rows select", () => {
+  it("puts right a condition whose table switched between one row and many from its column select", () => {
     const form = currentForm()
     widgetsOf(form)[0].show_when = {
       match: "all",
       conditions: [
         { table: "equipment", column: "equipment.value", op: "filled", values: [] },
-        { table: "policy", column: "policy.year", rows: "every", op: "filled", values: [] },
+        { table: "policy", rows: "every", where: [{ column: "policy.year", op: "filled", values: [] }] },
       ],
     }
     loadForm(form)
     render(<Editor />)
 
     expect(within(condition(1)).getByText("Tests value, which is in a table with many rows")).toBeInTheDocument()
-    const first = screen.getByRole("combobox", { name: "Condition 1 rows" })
-    expect(first).toHaveDisplayValue("Choose…")
-    fireEvent.change(first, { target: { value: "any" } })
-    expect(showWhen().conditions[0]).toEqual({ table: "equipment", column: "equipment.value", rows: "any", op: "filled", values: [] })
+    const first = screen.getByRole("combobox", { name: "Condition 1 column" })
+    expect(first).toHaveDisplayValue("Value")
+    fireEvent.change(first, { target: { value: "equipment#rows" } })
+    expect(showWhen().conditions[0]).toEqual({ table: "equipment", rows: "any", where: [{ column: "equipment.value", op: "filled", values: [] }] })
     expect(within(condition(1)).queryByText(/Tests value/)).not.toBeInTheDocument()
 
-    expect(within(condition(2)).getByText("Tests year in every row, which is in a table with one row")).toBeInTheDocument()
-    const second = screen.getByRole("combobox", { name: "Condition 2 rows" })
-    expect(options(second)).toEqual(["The row", "Any row", "Every row"])
-    fireEvent.change(second, { target: { value: "one" } })
+    expect(within(condition(2)).getByText("Tests the rows of policy, which has one row")).toBeInTheDocument()
+    const second = screen.getByRole("combobox", { name: "Condition 2 column" })
+    expect(second).toHaveDisplayValue("Rows of policy")
+    fireEvent.change(second, { target: { value: "policy:policy.year" } })
     expect(showWhen().conditions[1]).toEqual({ table: "policy", column: "policy.year", op: "filled", values: [] })
-    expect(screen.queryByRole("combobox", { name: "Condition 2 rows" })).not.toBeInTheDocument()
+    expect(within(condition(2)).queryByText(/Tests the rows/)).not.toBeInTheDocument()
   })
 
   it("keeps a condition whose column is gone, saying so", () => {

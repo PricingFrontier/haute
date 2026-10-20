@@ -547,6 +547,8 @@ export type {
   Page,
   RowCount,
   RowsCondition,
+  RowTest,
+  RowTotal,
   SchemaColumn,
   SchemaTable,
   Section,

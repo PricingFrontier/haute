@@ -26,12 +26,19 @@ import {
   conditionFault,
   fieldKeys,
   isGroup,
+  isListCondition,
   isRowCount,
   isRowsCondition,
+  isRowTotal,
   leafConditions,
+  listColumns,
   neverShown,
   sheetVisibility,
   testLabel,
+  TOTALS,
+  type ColumnTest,
+  type ConditionTest,
+  type ListCondition,
   type ShowWhenEntry,
   type SingleCondition,
 } from "./sheetVisibility"
@@ -283,32 +290,59 @@ const dropFields = (draft: FormSpec, drop: (field: FieldRef) => boolean): void =
   for (const widget of allWidgets(draft)) dropShown(widget, drop)
 }
 
-/** A `show_when` without the conditions `drop` matches, a group left with none going too, as it would hold nothing to test. */
-const withoutConditions = (showWhen: ShowWhen, drop: (condition: SingleCondition) => boolean): ShowWhen => ({
-  match: showWhen.match,
-  conditions: showWhen.conditions.flatMap((entry): ShowWhenEntry[] => {
-    if (!isGroup(entry)) return drop(entry) ? [] : [entry]
-    const kept = entry.conditions.filter((condition) => !drop(condition))
-    return kept.length === 0 ? [] : [{ ...entry, conditions: kept }]
-  }),
-})
-
-/** Take the conditions `drop` matches out of every sheet, section and widget that tests them (`withoutConditions`). */
-const dropConditions = (draft: FormSpec, drop: (condition: SingleCondition) => boolean): void => {
-  for (const holder of [...draft.pages, ...allSections(draft), ...allWidgets(draft)]) {
-    holder.show_when = withoutConditions(holder.show_when, drop)
+/**
+ * A `show_when` with each condition as `keep` leaves it, those it gives null taken out, a
+ * group left with none going too, as it would hold nothing to test.
+ */
+const withoutConditions = (showWhen: ShowWhen, keep: (condition: SingleCondition) => SingleCondition | null): ShowWhen => {
+  const kept = (conditions: readonly SingleCondition[]): SingleCondition[] =>
+    conditions.flatMap((condition) => {
+      const left = keep(condition)
+      return left === null ? [] : [left]
+    })
+  return {
+    match: showWhen.match,
+    conditions: showWhen.conditions.flatMap((entry): ShowWhenEntry[] => {
+      if (!isGroup(entry)) return kept([entry])
+      const left = kept(entry.conditions)
+      return left.length === 0 ? [] : [{ ...entry, conditions: left }]
+    }),
   }
+}
+
+/** Leave every sheet's, section's and widget's conditions as `keep` leaves them (`withoutConditions`). */
+const dropConditions = (draft: FormSpec, keep: (condition: SingleCondition) => SingleCondition | null): void => {
+  for (const holder of [...draft.pages, ...allSections(draft), ...allWidgets(draft)]) {
+    holder.show_when = withoutConditions(holder.show_when, keep)
+  }
+}
+
+/** The ids of the columns of its table a condition tests: a one-row table's condition's own, or those a list's tests of a row and its total test. */
+const conditionColumns = (condition: SingleCondition): string[] => (isListCondition(condition) ? listColumns(condition) : [condition.column])
+
+/**
+ * A condition without what it tests of a column: none for a one-row table's condition on
+ * it or a total of it; a list's tests of a row on it taken out, a condition in any or
+ * every row left with none going too, as it needs one.
+ */
+function withoutColumn(condition: SingleCondition, tableId: string, columnId: string): SingleCondition | null {
+  if (condition.table !== tableId) return condition
+  if (!isListCondition(condition)) return condition.column === columnId ? null : condition
+  if (isRowTotal(condition) && condition.column === columnId) return null
+  const where = condition.where.filter((test) => test.column !== columnId)
+  if (where.length === condition.where.length) return condition
+  return isRowsCondition(condition) && where.length === 0 ? null : { ...condition, where }
 }
 
 /**
  * Removing a table removes its columns from the widgets that show them, or label a Chart's
- * rows, and the conditions that test them or count its rows, and its sample rows.
+ * rows, and the conditions on it, and its sample rows.
  */
 export const removeSchemaTable = (spec: FormSpec, id: string): FormSpec =>
   edit(spec, (draft) => {
     draft.schema.tables = draft.schema.tables.filter((table) => table.id !== id)
     dropFields(draft, (field) => field.table === id)
-    dropConditions(draft, (condition) => condition.table === id)
+    dropConditions(draft, (condition) => (condition.table === id ? null : condition))
     delete draft.sample[id]
   })
 
@@ -413,14 +447,14 @@ export const changeSchemaColumnType = (
 
 /**
  * Removing a column removes it from the widgets that show it, or label a Chart's rows,
- * and the conditions that test it, and its sample values.
+ * and what the conditions test of it (`withoutColumn`), and its sample values.
  */
 export const removeSchemaColumn = (spec: FormSpec, tableId: string, columnId: string): FormSpec =>
   edit(spec, (draft) => {
     const table = schemaTableOf(draft, tableId)
     table.columns = table.columns.filter((column) => column.id !== columnId)
     dropFields(draft, (field) => field.table === tableId && field.column === columnId)
-    dropConditions(draft, (condition) => !isRowCount(condition) && condition.table === tableId && condition.column === columnId)
+    dropConditions(draft, (condition) => withoutColumn(condition, tableId, columnId))
     for (const row of draft.sample[tableId] ?? []) delete row[columnId]
   })
 
@@ -432,11 +466,11 @@ export const fieldUses = (spec: FormSpec, tableId: string, columnId?: string): W
     ),
   )
 
-/** The sheets, sections and widgets whose conditions test a schema table's columns or count its rows, or test just one of its columns. */
+/** The sheets, sections and widgets whose conditions are on a schema table, or test just one of its columns. */
 export const conditionUses = (spec: FormSpec, tableId: string, columnId?: string): (Page | Section | Widget)[] =>
   [...spec.pages, ...allSections(spec), ...allWidgets(spec)].filter((holder) =>
     leafConditions(holder.show_when).some(
-      (condition) => condition.table === tableId && (columnId === undefined || (!isRowCount(condition) && condition.column === columnId)),
+      (condition) => condition.table === tableId && (columnId === undefined || conditionColumns(condition).includes(columnId)),
     ),
   )
 
@@ -1051,9 +1085,14 @@ export function pasteWidget(spec: FormSpec, widget: Widget, sectionId: string): 
   const copy: Widget = { ...structuredClone(widget), id, ...at }
   const gone = (field: FieldRef) => fieldColumn(spec, field) === null
   dropShown(copy, gone)
-  copy.show_when = withoutConditions(copy.show_when, (condition) =>
-    isRowCount(condition) ? !spec.schema.tables.some((table) => table.id === condition.table) : gone(condition),
-  )
+  copy.show_when = withoutConditions(copy.show_when, (condition) => {
+    if (!spec.schema.tables.some((table) => table.id === condition.table)) return null
+    let kept: SingleCondition | null = condition
+    for (const column of conditionColumns(condition)) {
+      if (kept !== null && gone({ table: condition.table, column })) kept = withoutColumn(kept, condition.table, column)
+    }
+    return kept
+  })
   return { spec: addWidget(spec, sectionId, copy), id }
 }
 
@@ -1450,7 +1489,7 @@ export function sectionProblems(spec: FormSpec): SectionProblem[] {
 }
 
 /** The tests that compare a value with the condition's own, which allowed values should be. */
-const EQUALITY_TESTS: ReadonlySet<SingleCondition["op"]> = new Set(["equals", "not_equals", "one_of", "not_one_of"])
+const EQUALITY_TESTS: ReadonlySet<ConditionTest> = new Set(["equals", "not_equals", "one_of", "not_one_of"])
 
 /** Whether `value` is one of `column`'s allowed values, a number's read as numbers. */
 function allowed(column: SchemaColumn, value: string): boolean {
@@ -1486,27 +1525,36 @@ function conditionProblems(spec: FormSpec, holder: Page | Section | Widget, neve
       problems.push(fault)
       continue
     }
-    if (isRowCount(condition)) continue
-    // A condition that fits names a column the schema has.
-    const column = fieldColumn(spec, condition)?.column
-    if (!column?.options.length || !EQUALITY_TESTS.has(condition.op)) continue
-    for (const value of condition.values) {
-      if (!allowed(column, value)) problems.push(`tests ${column.name} against "${value}", which isn't one of its allowed values`)
+    // A condition that fits names a table, and the columns of it it tests, the schema has.
+    const table = schemaTableOf(spec, condition.table)
+    const tests: ColumnTest[] = isListCondition(condition) ? condition.where : [condition]
+    for (const test of tests) {
+      const column = table.columns.find((candidate) => candidate.id === test.column) as SchemaColumn
+      if (!column.options.length || !EQUALITY_TESTS.has(test.op)) continue
+      for (const value of test.values) {
+        if (!allowed(column, value)) problems.push(`tests ${column.name} against "${value}", which isn't one of its allowed values`)
+      }
     }
   }
   const waiting = never.get(holder.id)
   if (waiting !== undefined) {
     // Typed into a Table or a Collection: a Chart only plots and a Heading shows none, so neither counts.
     const entered = (keys: string[]) => allWidgets(spec).some((widget) => fieldKeys(widget).some((key) => keys.includes(key)))
-    if (isRowCount(waiting)) {
-      // A count that never shows again fits, so its table is in the schema.
+    if (isListCondition(waiting)) {
+      // A condition on rows that never shows again fits, so its table and the columns it tests are in the schema.
       const table = schemaTableOf(spec, waiting.table)
+      const tested = listColumns(waiting)
+      const missing = tested.find((id) => !entered([columnKey(table.id, id)]))
       const keys = table.columns.filter((column) => !column.index).map((column) => columnKey(table.id, column.id))
-      problems.push(
-        entered(keys)
-          ? `waits on the rows of ${table.name}, which are only on components that hide with it, so it could not show again once hidden`
-          : `waits on the rows of ${table.name}, which are on no Table`,
-      )
+      if (missing !== undefined) {
+        problems.push(`waits on ${(table.columns.find((column) => column.id === missing) as SchemaColumn).name}, which is on no Table`)
+      } else {
+        problems.push(
+          tested.length > 0 || entered(keys)
+            ? `waits on the rows of ${table.name}, which are only on components that hide with it, so it could not show again once hidden`
+            : `waits on the rows of ${table.name}, which are on no Table`,
+        )
+      }
     } else {
       const name = fieldColumn(spec, waiting)?.column.name ?? waiting.column
       problems.push(
@@ -1520,19 +1568,38 @@ function conditionProblems(spec: FormSpec, holder: Page | Section | Widget, neve
 }
 
 /**
- * A condition read by its column's label: `Cover BI is ticked`, `Class of business is one of Motor, Fleet`,
- * `Age is less than 25 in any row of drivers`; a count by its table's name: `Number of rows in drivers is at least 2`.
+ * A condition read by its columns' labels and its table's name: `Cover BI is ticked`,
+ * `Class of business is one of Motor, Fleet`, `Age is less than 25 in any row of drivers`,
+ * `Number of rows in perils where Include coverage is ticked is at least 2`, `Sum of Limit in
+ * perils is greater than 1000000`.
  */
 export function conditionText(spec: FormSpec, condition: SingleCondition): string {
-  if (isRowCount(condition)) {
-    const table = spec.schema.tables.find((candidate) => candidate.id === condition.table)
-    return `Number of rows in ${table?.name ?? "a missing table"} ${testLabel(condition.op, "int")} ${condition.count}`
-  }
-  const found = fieldColumn(spec, condition)
-  const label = found === null ? "A missing column" : found.column.label || readableName(found.column.name)
-  const test = testLabel(condition.op, found?.column.type ?? "str")
-  const text = condition.values.length === 0 ? `${label} ${test}` : `${label} ${test} ${condition.values.join(", ")}`
-  return isRowsCondition(condition) ? `${text} in ${condition.rows} row of ${found?.table.name ?? "a missing table"}` : text
+  if (isListCondition(condition)) return listText(spec, condition)
+  return testText(fieldColumn(spec, condition)?.column ?? null, condition)
+}
+
+/** A column's label, or what stands for one gone. */
+const columnLabel = (column: SchemaColumn | null | undefined): string =>
+  column === null || column === undefined ? "A missing column" : column.label || readableName(column.name)
+
+/** A test of a column read by its label: `Age is less than 25`. */
+function testText(column: SchemaColumn | null | undefined, test: ColumnTest): string {
+  const words = testLabel(test.op, column?.type ?? "str")
+  const text = `${columnLabel(column)} ${words}`
+  return test.values.length === 0 ? text : `${text} ${test.values.join(", ")}`
+}
+
+/** A condition on a list's rows read as `conditionText` says. */
+function listText(spec: FormSpec, condition: ListCondition): string {
+  const table = spec.schema.tables.find((candidate) => candidate.id === condition.table)
+  const name = table?.name ?? "a missing table"
+  const columnOf = (id: string) => table?.columns.find((column) => column.id === id)
+  const tests = condition.where.map((test) => testText(columnOf(test.column), test)).join(" and ")
+  if (isRowsCondition(condition)) return `${tests} in ${condition.rows} row of ${name}`
+  const where = condition.where.length === 0 ? "" : ` where ${tests}`
+  if (isRowCount(condition)) return `Number of rows in ${name}${where} ${testLabel(condition.op, "int")} ${condition.count}`
+  const kind = TOTALS.find((total) => total.value === condition.total)?.label ?? condition.total
+  return `${kind} of ${columnLabel(columnOf(condition.column))} in ${name}${where} ${testLabel(condition.op, "float")} ${condition.value}`
 }
 
 /** A match as the sentences say it: `all`, `any` or `at least 2`. */

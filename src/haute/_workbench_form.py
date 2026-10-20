@@ -188,35 +188,64 @@ class Condition(_Strict):
     values: list[Annotated[str, Strict()]] = Field(default_factory=list)
 
 
-class RowsCondition(_Strict):
-    """A test of the values in a many-row table's column, passing in any of its rows or in
-    every one, as ``rows`` says; it fits as a ``Condition`` does."""
+class RowTest(_Strict):
+    """A test a row of a many-row table must pass: a ``Condition``'s column, test and values,
+    its table the condition's that holds it."""
 
-    table: str
     column: str
-    rows: Literal["any", "every"]
     op: ConditionTest
     values: list[Annotated[str, Strict()]] = Field(default_factory=list)
 
 
-#: What a count tests a many-row table's number of rows for.
+class RowsCondition(_Strict):
+    """A many-row table's rows, by table id, passing all of its tests in the same row: any
+    of them, or every one, as ``rows`` says."""
+
+    table: str
+    rows: Literal["any", "every"]
+    where: list[RowTest] = Field(min_length=1)
+
+
+#: What a count or a total tests its number for.
 CountTest = Literal["equals", "not_equals", "above", "at_least", "below", "at_most"]
 
 
 class RowCount(_Strict):
-    """A test of how many rows a many-row table, by id, holds."""
+    """How many of a many-row table's rows, by table id, pass all of its tests in the same
+    row: every row while it has none."""
 
     table: str
+    where: list[RowTest]
     op: CountTest
     count: Annotated[int, Strict(), Field(ge=0)]
 
 
+#: Which total of a number column's values a total takes.
+TotalKind = Literal["sum", "min", "max", "average"]
+
+
+class RowTotal(_Strict):
+    """A total of a number column's values in the rows of a many-row table, by table id,
+    passing all of its tests in the same row, every row while it has none, tested against
+    a number typed as text."""
+
+    table: str
+    total: TotalKind
+    column: str
+    where: list[RowTest]
+    op: CountTest
+    value: Annotated[str, Strict()]
+
+
 def _condition_kind(value: Any) -> str:
     """Which entry of a ``show_when`` *value* is, by its fields: a group holds
-    ``conditions``, a count ``count``, a many-row table's condition ``rows``."""
+    ``conditions``, a total ``total``, a count ``count``, a condition in any or every row
+    ``rows``."""
     fields = value if isinstance(value, dict) else type(value).model_fields
     if "conditions" in fields:
         return "group"
+    if "total" in fields:
+        return "total"
     if "count" in fields:
         return "count"
     return "rows" if "rows" in fields else "one"
@@ -226,10 +255,14 @@ _ONE_CONDITION = (
     Annotated[Condition, Tag("one")]
     | Annotated[RowsCondition, Tag("rows")]
     | Annotated[RowCount, Tag("count")]
+    | Annotated[RowTotal, Tag("total")]
 )
 
-#: One condition: of a one-row table's column, of a many-row table's, or a count of rows.
+#: One condition: of a one-row table's column, or of a many-row table's rows.
 SingleCondition = Annotated[_ONE_CONDITION, Discriminator(_condition_kind)]
+
+#: A condition on a many-row table's rows.
+ListCondition = RowsCondition | RowCount | RowTotal
 
 
 #: How many of a ``show_when``'s or a group's conditions must hold: all, any, or at least a

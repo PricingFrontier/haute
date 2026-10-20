@@ -8,9 +8,10 @@ a section that does not show. A
 condition holds while it fits (``condition_fits``), its column is on a Table or a
 Collection that shows (a Chart takes nothing typed, so its columns never count, and a
 Heading has none), and the value typed into the column passes its test, read as the
-sample's values are typed: a one-row table's one value, or a many-row table's in any of
-its typed rows or in every one, there being one; a count holds while one of its table's
-columns is on a Table that shows and its number of typed rows passes. Everything starts
+sample's values are typed. A condition on a list's rows holds while each column it tests
+is on a Table that shows (for a count without tests, one of its table's columns) and the
+table's typed rows passing all of its tests in the same row do: any of them, every one
+(there being one), how many, or a total of a number column over them. Everything starts
 shown and anything whose conditions fail is hidden, round after round, until a round hides
 nothing: hiding never shows anything, so the answer does not depend on the order of the
 sheets, sections, components or conditions. A condition that does not fit never holds; it
@@ -38,9 +39,12 @@ from haute._workbench_form import (
     CountTest,
     FieldRef,
     FormSpec,
+    ListCondition,
     Match,
     RowCount,
     RowsCondition,
+    RowTest,
+    RowTotal,
     SchemaColumn,
     SchemaTable,
     ShowWhen,
@@ -66,8 +70,8 @@ _COMPARISONS: dict[ConditionTest, Callable[[Any, Any], bool]] = {
 }
 _ORDERS = frozenset(_COMPARISONS)
 
-#: How a count compares a table's number of rows with its own.
-_COUNTS: dict[CountTest, Callable[[int, int], bool]] = {
+#: How a count or a total compares its number with the condition's.
+_COUNTS: dict[CountTest, Callable[[float, float], bool]] = {
     "equals": operator.eq,
     "not_equals": operator.ne,
     "above": operator.gt,
@@ -172,14 +176,17 @@ def _entered(widget: Widget) -> list[FieldRef]:
 
 
 def condition_fits(spec: FormSpec, condition: SingleCondition) -> bool:
-    """Whether *condition* can hold as written: a count's table a many-row input table; else
-    its column in an input table with the rows it tests, one or many, a test the column's
-    type takes, as many values as the test takes, and each value one the column could
-    hold."""
-    if isinstance(condition, RowCount):
-        return _counted_table(spec, condition) is not None
-    column = _tested_column(spec, condition)
-    return column is not None and _fits(column.type, condition)
+    """Whether *condition* can hold as written: a one-row table's condition's column in a
+    one-row input table, a test the column's type takes, as many values as the test takes,
+    and each value one the column could hold; a condition on a list's rows on a many-row
+    input table, each of its tests of a row on a column of the table other than its index
+    and fitting so, and a total's column a number column of the table other than its index,
+    its value a number."""
+    if isinstance(condition, Condition):
+        column = _tested_column(spec, condition)
+        return column is not None and _fits(column.type, condition)
+    table = _list_table(spec, condition)
+    return table is not None and _list_fits(table, condition)
 
 
 def _shows(spec: FormSpec, show_when: ShowWhen, rows: Rows, shown: set[tuple[str, str]]) -> bool:
@@ -214,29 +221,92 @@ def _matches(match: Match, holding: Iterable[bool]) -> bool:
 def _holds(
     spec: FormSpec, condition: SingleCondition, rows: Rows, shown: set[tuple[str, str]]
 ) -> bool:
-    if isinstance(condition, RowCount):
-        counted = _counted_table(spec, condition)
-        if counted is None or not any(
-            (counted.id, column.id) in shown for column in counted.columns if not column.index
-        ):
-            return False
-        typed = _typed_rows(counted, rows.get(counted.id, ()))
-        return _COUNTS[condition.op](len(typed), condition.count)
+    if not isinstance(condition, Condition):
+        return _list_holds(spec, condition, rows, shown)
     column = _tested_column(spec, condition)
     if column is None or not _fits(column.type, condition):
         return False
     if (condition.table, condition.column) not in shown:
         return False
-    if isinstance(condition, Condition):
-        first = next(iter(rows.get(condition.table, ())), None)
-        cell = None if first is None else first.get(condition.column)
-        return _passes(column.type, condition, cell)
-    # A column that fits is in a many-row input table.
-    table = next(table for table in spec.data_schema.tables if table.id == condition.table)
-    cells = [row.get(column.id) for row in _typed_rows(table, rows.get(table.id, ()))]
-    if condition.rows == "any":
-        return any(_passes(column.type, condition, cell) for cell in cells)
-    return bool(cells) and all(_passes(column.type, condition, cell) for cell in cells)
+    first = next(iter(rows.get(condition.table, ())), None)
+    cell = None if first is None else first.get(condition.column)
+    return _passes(column.type, condition, cell)
+
+
+def _list_holds(
+    spec: FormSpec, condition: ListCondition, rows: Rows, shown: set[tuple[str, str]]
+) -> bool:
+    table = _list_table(spec, condition)
+    if table is None or not _list_fits(table, condition):
+        return False
+    tested = _list_columns(condition)
+    if tested:
+        if not all((table.id, column_id) in shown for column_id in tested):
+            return False
+    elif not any((table.id, column.id) in shown for column in table.columns if not column.index):
+        return False
+    typed = _typed_rows(table, rows.get(table.id, ()))
+    passing = _passing_rows(table, condition.where, typed)
+    if isinstance(condition, RowsCondition):
+        if condition.rows == "any":
+            return bool(passing)
+        return bool(typed) and len(passing) == len(typed)
+    if isinstance(condition, RowCount):
+        return _COUNTS[condition.op](len(passing), condition.count)
+    total = _total(table, condition, passing)
+    return total is not None and _COUNTS[condition.op](
+        total, _typed("float", condition.value.strip())
+    )
+
+
+def _list_columns(condition: ListCondition) -> list[str]:
+    """The ids of the columns a condition on a list's rows tests: its tests of a row's, and a
+    total's."""
+    tested = [test.column for test in condition.where]
+    return [*tested, condition.column] if isinstance(condition, RowTotal) else tested
+
+
+def _passing_rows(
+    table: SchemaTable, where: Sequence[RowTest], rows: Sequence[Mapping[str, str | bool]]
+) -> list[Mapping[str, str | bool]]:
+    """The *rows* passing every test of *where* in the same row, whose columns fit."""
+    types = {column.id: column.type for column in table.columns}
+    return [
+        row
+        for row in rows
+        if all(_passes(types[test.column], test, row.get(test.column)) for test in where)
+    ]
+
+
+def _total(
+    table: SchemaTable, total: RowTotal, rows: Sequence[Mapping[str, str | bool]]
+) -> float | None:
+    """The sum, least, greatest or average of the numbers *total*'s column holds in *rows*,
+    a cell blank or not a number of the column's type left out, to 15 significant digits so
+    that 0.1, 0.2 and 0.3 sum to 0.6: the sum of none is 0, and the others of none are None,
+    which no test passes."""
+    column_type = next(column.type for column in table.columns if column.id == total.column)
+    numbers: list[float] = [
+        _typed(column_type, cell.strip())
+        for row in rows
+        if isinstance(cell := row.get(total.column), str) and _of_type(column_type, cell)
+    ]
+    if not numbers and total.total != "sum":
+        return None
+    # Added in order, as the view adds them: ``sum`` compensates floats' errors from Python
+    # 3.12, which the view's addition does not.
+    added = 0.0
+    for number in numbers:
+        added += number
+    if total.total == "sum":
+        found = added
+    elif total.total == "min":
+        found = min(numbers)
+    elif total.total == "max":
+        found = max(numbers)
+    else:
+        found = added / len(numbers)
+    return float(f"{found:.15g}")
 
 
 def _typed_rows(
@@ -252,15 +322,13 @@ def _typed_rows(
     ]
 
 
-def _tested_column(spec: FormSpec, condition: Condition | RowsCondition) -> SchemaColumn | None:
-    """The condition's column, while it is in an input table with the rows it tests: one for
-    a ``Condition``, many for a ``RowsCondition``."""
-    rows = "one" if isinstance(condition, Condition) else "many"
+def _tested_column(spec: FormSpec, condition: Condition) -> SchemaColumn | None:
+    """A one-row table's condition's column, while it is in a one-row input table."""
     return next(
         (
             column
             for table in spec.data_schema.tables
-            if table.id == condition.table and table.role == "input" and table.rows == rows
+            if table.id == condition.table and table.role == "input" and table.rows == "one"
             for column in table.columns
             if column.id == condition.column
         ),
@@ -268,19 +336,46 @@ def _tested_column(spec: FormSpec, condition: Condition | RowsCondition) -> Sche
     )
 
 
-def _counted_table(spec: FormSpec, count: RowCount) -> SchemaTable | None:
-    """The count's table, while it is a many-row input table."""
+def _list_table(spec: FormSpec, condition: ListCondition) -> SchemaTable | None:
+    """A condition on a list's rows' table, while it is a many-row input table."""
     return next(
         (
             table
             for table in spec.data_schema.tables
-            if table.id == count.table and table.role == "input" and table.rows == "many"
+            if table.id == condition.table and table.role == "input" and table.rows == "many"
         ),
         None,
     )
 
 
-def _fits(column_type: ColumnType, condition: Condition | RowsCondition) -> bool:
+def _list_fits(table: SchemaTable, condition: ListCondition) -> bool:
+    """Whether a condition on *table*'s rows can hold as written: each test of a row on a
+    column of the table other than its index, fitting as a one-row table's condition fits,
+    and a total's column a number column of the table other than its index, its value a
+    number."""
+    for test in condition.where:
+        column = _row_column(table, test.column)
+        if column is None or not _fits(column.type, test):
+            return False
+    if not isinstance(condition, RowTotal):
+        return True
+    column = _row_column(table, condition.column)
+    return (
+        column is not None
+        and column.type in ("int", "float")
+        and _of_type("float", condition.value)
+    )
+
+
+def _row_column(table: SchemaTable, column_id: str) -> SchemaColumn | None:
+    """*table*'s column by id, other than its index, which nothing is typed into."""
+    return next(
+        (column for column in table.columns if column.id == column_id and not column.index),
+        None,
+    )
+
+
+def _fits(column_type: ColumnType, condition: Condition | RowTest) -> bool:
     if condition.op not in _TESTS[column_type]:
         return False
     count = len(condition.values)
@@ -317,7 +412,7 @@ def _is_day(text: str) -> bool:
 
 
 def _passes(
-    column_type: ColumnType, condition: Condition | RowsCondition, cell: str | bool | None
+    column_type: ColumnType, condition: Condition | RowTest, cell: str | bool | None
 ) -> bool:
     op = condition.op
     if op == "ticked":

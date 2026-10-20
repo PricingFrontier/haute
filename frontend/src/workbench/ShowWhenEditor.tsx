@@ -1,35 +1,45 @@
 /**
  * When a sheet, a section or a component shows (specs/workbench): the conditions in its
  * panel, and the eye it carries on the sheet while building. Conditions test the values typed into
- * input tables, each a row of its column, for a many-row table's column which rows, its test and
- * its value, the control the column's cell is, or count a many-row table's rows; a group holds
- * conditions of its own; with two or more, all of them must hold, any, or at least a number.
- * Every change is handed up whole, so the panel commits it as one undo step.
+ * one-row input tables, each a row of its column, its test and its value, the control the
+ * column's cell is, or a many-row table's rows: which rows, any, every, how many or a total
+ * of a column over them, and the tests a row must pass; a group holds conditions of its
+ * own; with two or more, all of them must hold, any, or at least a number. Every change is
+ * handed up whole, so the panel commits it as one undo step.
  */
-import { Eye, EyeOff, X } from "lucide-react"
+import { Eye, EyeOff, List, X } from "lucide-react"
 import type { CSSProperties } from "react"
-import type { ConditionGroup, FormSpec, RowCount, RowsCondition, SchemaColumn, SchemaTable, ShowWhen } from "../api/types"
+import type { Condition, ConditionGroup, FormSpec, RowsCondition, RowTest, SchemaColumn, SchemaTable, ShowWhen } from "../api/types"
 import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, QuietAction, ValidatedTextField, wholeNumber } from "../components/form"
+import { parseTypedNumber } from "../utils/sheetValues"
 import {
   CONDITION_TESTS,
   COUNT_TESTS,
   conditionFault,
   isGroup,
+  isListCondition,
   isRowCount,
   isRowsCondition,
+  isRowTotal,
   newCondition,
-  newRowCount,
+  newRowTest,
   testableColumns,
   testLabel,
   testsFor,
+  TOTALS,
+  totalColumns,
   withConditionColumn,
-  withConditionRows,
+  withConditionRowsOf,
   withConditionTest,
-  type ColumnCondition,
+  withListKind,
+  withTestColumn,
+  type ColumnTest,
   type ConditionTest,
   type CountTest,
+  type ListCondition,
   type ShowWhenEntry,
   type SingleCondition,
+  type TotalKind,
 } from "../utils/sheetVisibility"
 import { fieldColumn, readableName } from "../utils/workbenchForm"
 import { COLUMN_TYPES } from "./columnTypes"
@@ -44,16 +54,23 @@ const MATCHES: ReadonlyArray<{ value: "all" | "any" | "at_least"; label: string 
 /** The number "at least" starts at. */
 const AT_LEAST = 2
 
-const ROWS: ReadonlyArray<{ value: RowsCondition["rows"]; label: string }> = [
+type ListKind = RowsCondition["rows"] | "count" | TotalKind
+
+/** Which rows a condition on a table's rows takes, in the order its select offers them. */
+const KINDS: ReadonlyArray<{ value: ListKind; label: string }> = [
   { value: "any", label: "Any row" },
   { value: "every", label: "Every row" },
+  { value: "count", label: "Number of rows" },
+  ...TOTALS,
 ]
 
 const columnKey = (tableId: string, columnId: string) => `${tableId}:${columnId}`
-/** Number of rows' place in the column select, never a column's key, whose `:` between its ids no id holds. */
-const countKey = (tableId: string) => `${tableId}#rows`
+/** A table's rows' place in the column select, never a column's key, whose `:` between its ids no id holds. */
+const rowsKey = (tableId: string) => `${tableId}#rows`
 const label = (column: SchemaColumn) => column.label || readableName(column.name)
 const countValid = wholeNumber({ min: 0, unit: "rows" })
+/** A total's number: blank, which its fault names, or a number as the sample's are typed. */
+const numberValid = (text: string): string | null => (text.trim() === "" || parseTypedNumber(text.trim()) !== null ? null : "Enter a number.")
 
 /** The tables a condition can test: the input tables with a column to test. */
 const testable = (form: FormSpec): SchemaTable[] => form.schema.tables.filter((table) => testableColumns(table).length > 0)
@@ -271,23 +288,25 @@ function ConditionRow({
   onRemove: () => void
 }) {
   const tables = testable(form)
-  const counting = isRowCount(condition)
-  const found = counting ? null : fieldColumn(form, condition)
+  const list = isListCondition(condition)
   const table = form.schema.tables.find((candidate) => candidate.id === condition.table)
-  const key = counting ? countKey(condition.table) : columnKey(condition.table, condition.column)
-  // What each place in the column select makes of the condition.
+  const found = list ? null : fieldColumn(form, condition)
+  const key = list ? rowsKey(condition.table) : columnKey(condition.table, condition.column)
+  // What each place in the column select makes of the condition: a one-row table's column, or a many-row table's rows.
   const choices = new Map<string, () => SingleCondition>()
   for (const candidate of tables) {
-    if (candidate.rows === "many") choices.set(countKey(candidate.id), () => (counting && condition.table === candidate.id ? condition : newRowCount(candidate.id)))
+    if (candidate.rows === "many") {
+      choices.set(rowsKey(candidate.id), () => withConditionRowsOf(form, condition, candidate.id))
+      continue
+    }
     for (const column of testableColumns(candidate)) {
       choices.set(columnKey(candidate.id, column.id), () => withConditionColumn(form, condition, candidate.id, column.id))
     }
   }
   const offered = choices.has(key)
-  const type = counting ? "int" : (found?.column.type ?? "str")
   const fault = conditionFault(form, condition)
-  const marker = counting ? COLUMN_TYPES.int : found === null ? null : COLUMN_TYPES[found.column.type]
-  const missing = counting ? (table === undefined ? "Missing table" : `Number of rows in ${table.name}`) : found === null ? "Missing column" : label(found.column)
+  const marker = list ? ROWS_MARKER : found === null ? null : COLUMN_TYPES[found.column.type]
+  const missing = list ? (table === undefined ? "Missing table" : `Rows of ${table.name}`) : found === null ? "Missing column" : label(found.column)
 
   return (
     <div
@@ -308,7 +327,7 @@ function ConditionRow({
             if (choose === undefined) throw new Error(`"${event.target.value}" is not a column a condition can test`)
             onChange(choose())
           }}
-          className={`${FIELD_CLASS} flex-1`}
+          className={`${FIELD_CLASS} min-w-0 flex-1`}
           style={INPUT_STYLE}
         >
           {!offered && (
@@ -318,36 +337,28 @@ function ConditionRow({
           )}
           {tables.map((candidate) => (
             <optgroup key={candidate.id} label={candidate.name}>
-              {candidate.rows === "many" && <option value={countKey(candidate.id)}>Number of rows in {candidate.name}</option>}
-              {testableColumns(candidate).map((column) => (
-                <option key={column.id} value={columnKey(candidate.id, column.id)}>
-                  {label(column)}
-                </option>
-              ))}
+              {candidate.rows === "many" ? (
+                <option value={rowsKey(candidate.id)}>Rows of {candidate.name}</option>
+              ) : (
+                testableColumns(candidate).map((column) => (
+                  <option key={column.id} value={columnKey(candidate.id, column.id)}>
+                    {label(column)}
+                  </option>
+                ))
+              )}
             </optgroup>
           ))}
         </select>
-        {!counting && table !== undefined && (table.rows === "many" || isRowsCondition(condition)) && (
-          <RowsSelect condition={condition} oneRow={table.rows === "one"} name={name} onChange={onChange} />
-        )}
         <button type="button" onClick={onRemove} aria-label={`Remove ${name.toLowerCase()}`} title="Remove this condition" className="icon-danger-btn focus-ring shrink-0 rounded p-0.5">
           <X size={12} aria-hidden="true" />
         </button>
       </div>
       <div className="flex items-start gap-1.5">
         <span className="size-4 shrink-0" aria-hidden="true" />
-        {counting ? (
-          <CountFields condition={condition} name={name} onChange={onChange} />
+        {list ? (
+          <ListFields form={form} table={table} condition={condition} name={name} onChange={onChange} />
         ) : (
-          <ColumnFields
-            form={form}
-            condition={condition}
-            column={found?.column ?? null}
-            tests={found === null ? [condition.op] : testsFor(type)}
-            type={type}
-            name={name}
-            onChange={onChange}
-          />
+          <ColumnFields column={found?.column ?? null} test={condition} name={name} onChange={(next: Condition) => onChange(next)} />
         )}
       </div>
       {fault !== null && (
@@ -359,113 +370,231 @@ function ConditionRow({
   )
 }
 
-/**
- * Which rows a column's condition tests: Any row or Every row for a many-row table's
- * column; while its table has switched kinds since, "Choose…" for a one-row condition on
- * a many-row table, and The row too for one in any or every row on a one-row table.
- */
-function RowsSelect({
-  condition,
-  oneRow,
-  name,
-  onChange,
-}: {
-  condition: ColumnCondition
-  oneRow: boolean
-  name: string
-  onChange: (next: ColumnCondition) => void
-}) {
-  return (
-    <select
-      aria-label={`${name} rows`}
-      value={isRowsCondition(condition) ? condition.rows : "one"}
-      onChange={(event) => onChange(withConditionRows(condition, event.target.value as RowsCondition["rows"] | "one"))}
-      className={`${FIELD_CLASS} w-24 shrink-0`}
-      style={INPUT_STYLE}
-    >
-      {oneRow ? (
-        <option value="one">The row</option>
-      ) : (
-        !isRowsCondition(condition) && (
-          <option value="one" disabled>
-            Choose…
-          </option>
-        )
-      )}
-      {ROWS.map((option) => (
-        <option key={option.value} value={option.value}>
-          {option.label}
-        </option>
-      ))}
-    </select>
-  )
-}
+/** The mark a condition on a table's rows carries where a column's condition carries its type. */
+const ROWS_MARKER = { label: "Rows", icon: List, color: "" }
 
-/** A column's condition's test and its value. */
-function ColumnFields({
+/**
+ * A condition on a table's rows: which rows, a total's number column beside them, the
+ * tests a row must pass, each with its column, test, value and cross (none on the only one
+ * any or every row needs), Add test, and a count's or a total's test and number.
+ */
+function ListFields({
   form,
+  table,
   condition,
-  column,
-  tests,
-  type,
   name,
   onChange,
 }: {
   form: FormSpec
-  condition: ColumnCondition
-  column: SchemaColumn | null
-  tests: readonly ConditionTest[]
-  type: SchemaColumn["type"]
+  table: SchemaTable | undefined
+  condition: ListCondition
   name: string
-  onChange: (next: ColumnCondition) => void
+  onChange: (next: ListCondition) => void
 }) {
+  const columns = table === undefined ? [] : testableColumns(table)
+  const numbers = table === undefined ? [] : totalColumns(table)
+  const kind: ListKind = isRowsCondition(condition) ? condition.rows : isRowCount(condition) ? "count" : condition.total
+  const setWhere = (where: RowTest[]) => onChange({ ...condition, where })
+  // Any row and Every row need a test, a total a number column.
+  const unavailable = (option: ListKind) =>
+    option === "any" || option === "every" ? condition.where.length === 0 && columns.length === 0 : option !== "count" && !isRowTotal(condition) && numbers.length === 0
+  const fresh = table === undefined ? null : newRowTest(table)
+
   return (
-    <>
-      <select
-        aria-label={`${name} test`}
-        value={condition.op}
-        onChange={(event) => onChange(withConditionTest(form, condition, event.target.value as ConditionTest))}
-        className={`${FIELD_CLASS} w-32 shrink-0`}
-        style={INPUT_STYLE}
+    <div className="flex min-w-0 flex-1 flex-col gap-1">
+      <div className="flex flex-wrap items-center gap-1.5" style={{ color: "var(--text-secondary)" }}>
+        <select
+          aria-label={`${name} rows`}
+          value={kind}
+          onChange={(event) => onChange(withListKind(form, condition, event.target.value as ListKind))}
+          className={`${FIELD_CLASS} w-32 shrink-0`}
+          style={INPUT_STYLE}
+        >
+          {KINDS.map((option) => (
+            <option key={option.value} value={option.value} disabled={unavailable(option.value)}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        {isRowTotal(condition) && (
+          <>
+            <span>of</span>
+            <select
+              aria-label={`${name} total of`}
+              value={condition.column}
+              onChange={(event) => onChange({ ...condition, column: event.target.value })}
+              className={`${FIELD_CLASS} min-w-0 flex-1`}
+              style={INPUT_STYLE}
+            >
+              {!numbers.some((column) => column.id === condition.column) && (
+                <option value={condition.column} disabled>
+                  {table?.columns.find((column) => column.id === condition.column)?.name ?? "Missing column"}
+                </option>
+              )}
+              {numbers.map((column) => (
+                <option key={column.id} value={column.id}>
+                  {label(column)}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
+        {condition.where.length > 0 && <span>where</span>}
+      </div>
+      {condition.where.map((test, index) => (
+        <RowTestFields
+          // A test has no id of its own; its place in the list is what the panel edits.
+          key={index}
+          form={form}
+          table={table}
+          test={test}
+          name={`${name} where ${index + 1}`}
+          removable={!isRowsCondition(condition) || condition.where.length > 1}
+          onChange={(next) => setWhere(condition.where.map((current, at) => (at === index ? next : current)))}
+          onRemove={() => setWhere(condition.where.filter((_, at) => at !== index))}
+        />
+      ))}
+      <QuietAction
+        aria-label={`Add test to ${name.toLowerCase()}`}
+        disabled={fresh === null}
+        onClick={() => {
+          if (fresh !== null) setWhere([...condition.where, fresh])
+        }}
+        className="self-start"
       >
-        {(tests.includes(condition.op) ? tests : [condition.op, ...tests]).map((test) => (
-          <option key={test} value={test}>
-            {testLabel(test, type)}
-          </option>
-        ))}
-      </select>
-      <ConditionValue condition={condition} column={column} name={name} onChange={(values) => onChange({ ...condition, values })} />
-    </>
+        Add test
+      </QuietAction>
+      {!isRowsCondition(condition) && (
+        <div className="flex items-start gap-1.5">
+          <select
+            aria-label={`${name} test`}
+            value={condition.op}
+            onChange={(event) => onChange({ ...condition, op: event.target.value as CountTest })}
+            className={`${FIELD_CLASS} w-32 shrink-0`}
+            style={INPUT_STYLE}
+          >
+            {COUNT_TESTS.map((test) => (
+              <option key={test} value={test}>
+                {testLabel(test, isRowCount(condition) ? "int" : "float")}
+              </option>
+            ))}
+          </select>
+          {isRowCount(condition) ? (
+            <ValidatedTextField
+              dataTestId={`${name}-count`}
+              ariaLabel={`${name} value`}
+              value={String(condition.count)}
+              validate={countValid}
+              onCommit={(text) => onChange({ ...condition, count: Number(text) })}
+              containerClassName="min-w-0 flex-1"
+              className={`${FIELD_CLASS} w-full tabular-nums`}
+              style={INPUT_STYLE}
+            />
+          ) : (
+            <ValidatedTextField
+              dataTestId={`${name}-total`}
+              ariaLabel={`${name} value`}
+              value={condition.value}
+              validate={numberValid}
+              onCommit={(text) => onChange({ ...condition, value: text.trim() })}
+              containerClassName="min-w-0 flex-1"
+              className={`${FIELD_CLASS} w-full tabular-nums`}
+              style={INPUT_STYLE}
+            />
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
-/** A count's test, a number's, and its whole number of rows, anything else refused at the field. */
-function CountFields({ condition, name, onChange }: { condition: RowCount; name: string; onChange: (next: RowCount) => void }) {
+/** A test a row must pass: its column, one of its table's but the index, its test and value, and a cross. */
+function RowTestFields({
+  form,
+  table,
+  test,
+  name,
+  removable,
+  onChange,
+  onRemove,
+}: {
+  form: FormSpec
+  table: SchemaTable | undefined
+  test: RowTest
+  name: string
+  removable: boolean
+  onChange: (next: RowTest) => void
+  onRemove: () => void
+}) {
+  const columns = table === undefined ? [] : testableColumns(table)
+  const column = table?.columns.find((candidate) => candidate.id === test.column) ?? null
+  return (
+    <div role="group" aria-label={name} className="flex flex-col gap-1 pl-2" style={{ borderLeft: "2px solid var(--border)" }}>
+      <div className="flex items-center gap-1.5">
+        <select
+          aria-label={`${name} column`}
+          value={test.column}
+          onChange={(event) => {
+            // A test is only offered the columns of a table the schema has.
+            if (table !== undefined) onChange(withTestColumn(form, table.id, test, event.target.value))
+          }}
+          className={`${FIELD_CLASS} min-w-0 flex-1`}
+          style={INPUT_STYLE}
+        >
+          {!columns.some((candidate) => candidate.id === test.column) && (
+            <option value={test.column} disabled>
+              {column === null ? "Missing column" : label(column)}
+            </option>
+          )}
+          {columns.map((candidate) => (
+            <option key={candidate.id} value={candidate.id}>
+              {label(candidate)}
+            </option>
+          ))}
+        </select>
+        {removable && (
+          <button type="button" onClick={onRemove} aria-label={`Remove ${name.toLowerCase()}`} title="Remove this test" className="icon-danger-btn focus-ring shrink-0 rounded p-0.5">
+            <X size={12} aria-hidden="true" />
+          </button>
+        )}
+      </div>
+      <div className="flex items-start gap-1.5">
+        <ColumnFields column={column} test={test} name={name} onChange={onChange} />
+      </div>
+    </div>
+  )
+}
+
+/** A test of a column's value: its test and its value. */
+function ColumnFields<T extends ColumnTest>({
+  column,
+  test,
+  name,
+  onChange,
+}: {
+  column: SchemaColumn | null
+  test: T
+  name: string
+  onChange: (next: T) => void
+}) {
+  const type = column?.type ?? "str"
+  const tests = column === null ? [test.op] : testsFor(type)
   return (
     <>
       <select
         aria-label={`${name} test`}
-        value={condition.op}
-        onChange={(event) => onChange({ ...condition, op: event.target.value as CountTest })}
+        value={test.op}
+        onChange={(event) => onChange(withConditionTest(column ?? undefined, test, event.target.value as ConditionTest))}
         className={`${FIELD_CLASS} w-32 shrink-0`}
         style={INPUT_STYLE}
       >
-        {COUNT_TESTS.map((test) => (
-          <option key={test} value={test}>
-            {testLabel(test, "int")}
+        {(tests.includes(test.op) ? tests : [test.op, ...tests]).map((option) => (
+          <option key={option} value={option}>
+            {testLabel(option, type)}
           </option>
         ))}
       </select>
-      <ValidatedTextField
-        dataTestId={`${name}-count`}
-        ariaLabel={`${name} value`}
-        value={String(condition.count)}
-        validate={countValid}
-        onCommit={(text) => onChange({ ...condition, count: Number(text) })}
-        containerClassName="min-w-0 flex-1"
-        className={`${FIELD_CLASS} w-full tabular-nums`}
-        style={INPUT_STYLE}
-      />
+      <ConditionValue condition={test} column={column} name={name} onChange={(values) => onChange({ ...test, values })} />
     </>
   )
 }
@@ -477,7 +606,7 @@ function ConditionValue({
   name,
   onChange,
 }: {
-  condition: ColumnCondition
+  condition: ColumnTest
   column: SchemaColumn | null
   name: string
   onChange: (values: string[]) => void

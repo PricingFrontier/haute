@@ -354,13 +354,25 @@ ticked needs at least 2 of the three boxes' **is ticked** conditions. There is n
 or "exactly": hiding a box makes its condition fail, so those would show a section again
 as more of the form hid.
 
-A column of a many-row table, such as the drivers on a motor quote, is tested in **Any
-row** or **Every row**, chosen beside the column: a young drivers section can show while
-any driver is under 25. Only rows with something typed in them count, and **Every row**
-needs at least one, so a list nobody has filled in shows nothing waiting on every row of
-it. **Number of rows in** a table, first among a many-row table's columns, tests how
-many rows it has instead, such as a second vehicle section shown while the vehicles table
-has at least 2.
+A many-row table, such as the drivers on a motor quote, is tested by its rows: choose
+**Rows of** the table, then which rows, and the tests a row must pass, each with its own
+column, test and value. **Add test** adds another, and a row must pass all of them at
+once, so a section for a covered earthquake can show while the perils table has a row
+whose peril is EQ and whose cover is ticked; two separate conditions could be met by two
+different rows. Which rows can be:
+
+- **Any row** or **Every row** passing the tests: a young drivers section can show while
+  any driver is under 25. **Every row** needs at least one row, so a list nobody has
+  filled in shows nothing waiting on every row of it.
+- **Number of rows** passing the tests, every row while there are none: a section shown
+  while at least 2 perils have their cover ticked, or a second vehicle section while the
+  vehicles table has at least 2 rows.
+- **Sum**, **Smallest**, **Largest** or **Average** of a number column over the rows
+  passing the tests: a large schedules section shown while the jobsites' hard costs add up
+  past a figure. A blank cell, or one that isn't a number, adds nothing; the sum of no rows
+  is 0, and the others of no rows fail every test.
+
+Only rows with something typed in them count.
 
 **Add group** adds a group of conditions that counts as one, with its own **Add
 condition** and its own **all**, **any** or **at least**. Use it to mix them: a section shown while

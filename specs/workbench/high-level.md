@@ -191,11 +191,15 @@ Out of scope:
   as text: `ticked` or `not_ticked`, with no value, for a True/false column; `filled` or
   `empty`, with no value, and `equals` or `not_equals`, with one, for any other; `one_of` or
   `not_one_of`, with one or more, for a Text or number column; and `above`, `at_least`,
-  `below` or `at_most`, with one, for a number or a Date column. A condition on a column of
-  a many-row table holds the same and whether its test must pass in `any` row or in `every`
-  one (`rows`); and a condition can count a many-row table's rows instead, naming the table
-  by id, a test (`op`, `equals`, `not_equals`, `above`, `at_least`, `below` or `at_most`)
-  and a whole number of rows, 0 or more (`count`). The sample holds, by table
+  `below` or `at_most`, with one, for a number or a Date column. A condition on a many-row
+  table's rows names the table by id and the tests a row must pass, all in the same row
+  (`where`), each a column of the table other than its index by id, a test and its values,
+  as a one-row table's condition has them; and which rows: `any` of them or `every` one
+  (`rows`), with one test or more; how many, by a test (`op`, `equals`, `not_equals`,
+  `above`, `at_least`, `below` or `at_most`) and a whole number of rows, 0 or more
+  (`count`); or the `sum`, `min`, `max` or `average` (`total`) of a number column's values
+  in them (`column`, not the index), by such a test and a number typed as text (`value`).
+  The sample holds, by table
   id, rows keyed by column id, each value as typed: text or a tick. Haute reads the file whole whenever it needs it and never keeps it in memory, so an
   edit made outside the view reaches the next request. A file that does not exist is the
   blank form, never saved: one sheet 1280 wide holding one section 560 tall, no tables, no
@@ -352,8 +356,10 @@ Out of scope:
   and drops its index, with what shows it, and switching it to many rows clears its
   columns' defaults. Removing a column or a table a sheet shows, or a
   sheet's, a section's or a component's condition tests, asks first, and takes it off the
-  sheet, out of those conditions (a group left with none going with them) and out of the
-  sample, a table taking the conditions counting its rows too. The editor says what would stop
+  sheet, out of those conditions and out of the sample: a column takes a test of a list's
+  rows on it alone, the list's condition going with it once it has no test while it needs
+  one (in any or every row) or when it totals the column; a group left with none goes with
+  them; and a table takes every condition on its rows. The editor says what would stop
   the schema being the pipeline's tables: a table's name is held to the port rules the
   Quote Input's labels are held to (an identifier, none of the document's reserved labels,
   unique whatever its case), a column's name is an identifier that is not a Python keyword,
@@ -614,14 +620,13 @@ Out of scope:
   while it is the sheet's only section. Pressing the empty sheet, Escape, the panel's close,
   or selecting a component or another section closes either. Show when reads "Always" while there are no
   conditions, and Add condition adds one on the first column of a one-row input table, else
-  of a many-row one, in any row,
+  on any row of a many-row one with a test of its first column but the index,
   with the first test its type takes and no value yet; Add group adds a group holding such
   a condition, its conditions all needed while the Show when needs any and any while it needs
   all, in a frame of its own with its own Add condition and a cross that removes it, as
   removing its last condition does. Each condition is a row of its
-  column (a select of the input tables' columns, by table, each by its label, a many-row
-  table's other than its index, after Number of rows in the table), beside a many-row table's column which rows,
-  Any row or Every row, its
+  column (a select of the one-row input tables' columns, by table, each by its label, and of
+  each many-row input table's rows, "Rows of" the table), its
   test (for True/false "is ticked" and "is not ticked"; for Text "equals", "does not
   equal", "is one of", "is not one of", "is filled" and "is empty"; for a number those and
   "is greater than", "is at least", "is less than" and "is at most"; for a Date "is on",
@@ -629,17 +634,24 @@ Out of scope:
   and "is empty"), its value, the control the column's cell is (a dropdown of the allowed
   values, a date picker, else a text field, committing on blur or Enter), or for "is one
   of" and "is not one of" a tick box per allowed value, or the values typed comma-separated
-  when the column allows any, and a cross that removes it; Number of rows takes the tests of
-  a number ("equals" to "is at most") and a whole number, 0 or more, typed into a field that
-  refuses anything else.
-  Choosing another column keeps
-  the test while the column's type takes it, else the type's first, the values while
-  they fit the test, and which rows while it is a many-row table's, else Any row; choosing
-  Number of rows starts it at "is at least" 1, and choosing a column for it keeps its test
-  while the column's type takes it, with no value. While a
-  condition's table has switched between one row and many since, which rows shows for it
-  too: "Choose…" for a one-row table's condition, and The row beside Any row and Every row
-  for one whose table now has one row, choosing it making it the one-row table's condition.
+  when the column allows any, and a cross that removes it. A condition on a table's rows
+  says which rows, Any row, Every row, Number of rows, or the Sum, Smallest, Largest or
+  Average of a number column of the table other than its index, chosen beside it, then its
+  tests of a row, all passing in the same row, each a column of the table other than its
+  index with its test and value as above and a cross, and Add test; Any row and Every row
+  need a test, so their only one has no cross; Number of rows and a total end with their
+  test, a number's ("equals" to "is at most"), and a whole number of rows, 0 or more, or a
+  number, typed into a field that refuses anything else.
+  Choosing another column, for a condition or a test of a row, keeps
+  the test while the column's type takes it, else the type's first, and the values while
+  they fit the test. Choosing a table's rows starts Any row with a test of its first column
+  but the index, or, for a condition on a column of the table, a test of that column as
+  the condition has it; choosing a one-row table's column for a condition on rows keeps its
+  test of that column, if it has one. Choosing Number of rows starts it at "is at least"
+  1, a total at "is greater than" with no value, and Any row or Every row adds a test of the
+  first column while there is none, each keeping the tests there are. While a condition's
+  table has switched between one row and many since, its column select holds it, not
+  offered, and its fault says so: choosing the table's rows, or a column, puts it right.
   With two or more conditions the section reads "Show when [all|any|at least] of
   these are true", and a group with two or more "[all|any|at least] of these are true", at
   least with a select of its number beside it, 1 to as many conditions as there are (or to
@@ -1130,18 +1142,24 @@ Out of scope:
     value passes `empty`, `not_equals` and `not_one_of` alone, and a value not of its
     column's type (text in a number column, or a tick left in a column since retyped)
     `filled`, `not_equals` and `not_one_of` alone. A condition that cannot hold as written
-    never holds: one naming a column that is not in an input table with the rows it tests
-    (gone, an output table's, a many-row table's for a condition on one row, a one-row
-    table's for a condition in any or every row), a count naming a table that is not a
-    many-row input table, a test its column's type does not take, a number of
+    never holds: one naming a column that is not in a one-row input table (gone, an output
+    table's or a many-row table's), a condition on rows naming a table that is not a
+    many-row input table, a test of a row naming a column that is not its table's or is its
+    index, a total of a column that is not a number column of its table other than its
+    index or against a value that is not a number, a test its column's type does not take, a number of
     values its test does not take (none for the ticks, `filled` and `empty`, at least one
     for `one_of` and `not_one_of`, else one), or a value its column could not hold (blank,
     not a number, a fraction for an Integer, not a `YYYY-MM-DD` day).
-  - **On a list.** A condition on a many-row input table's column holds while its column
-    is on a Table that shows and its test passes in any of the table's rows, or in every
-    one of them and there is at least one, each row's value read as a one-row table's is. A
-    count holds while one of its table's columns other than the index is on a Table that
-    shows and the number of the table's rows passes its test, compared as whole numbers. A
+  - **On a list.** A condition on a many-row input table's rows holds while each column it
+    tests, and a total's column, is on a Table that shows (for a count without tests, one
+    of its table's columns other than the index), and its rows pass: any of the table's rows
+    passing all of its tests, every one of them passing them all and there being at least
+    one, the number of rows passing them all by its test, compared as whole numbers, or the
+    total of its column's numbers in those rows by its test, compared as numbers to 15
+    significant digits (so 0.1, 0.2 and 0.3 sum to 0.6), each row's value read as a one-row
+    table's is. A sum of no numbers is 0; a least, greatest or
+    average of none is empty and fails every test; a cell that is blank or not a number adds
+    nothing to a total. A
     table's rows are those a grid showing it holds (a column giving it a row for each
     value gives every one of those) with anything but the index typed in them, whatever
     the sheets hide: a row with nothing typed in it is no row, as the quote leaves it out.
@@ -1199,8 +1217,8 @@ Out of scope:
     that cannot hold as written, saying why; a value that is not one of its column's
     allowed values; a `show_when` or a group asking for at least more conditions than it
     holds; and a sheet, section or component that nothing could show again once
-    hidden, since each column its conditions need (for a count, each of its table's columns
-    but the index) is on no Table or Collection, or only on
+    hidden, since each column its conditions need (for a count without tests, each of its
+    table's columns but the index) is on no Table or Collection, or only on
     itself, on its own components or on components that cannot show without it, as a tick
     box in the very section it shows is. None is refused: the form is saved as it is.
 - **Saved.** A successful save of the form adopts the file's new revision; the project
@@ -1621,6 +1639,12 @@ Out of scope:
   inserted and deleted in every table a grid shows at once, rarely come to. Every row
   needs at least one row, as nothing typed decides nothing: a list nobody has filled
   shows no section waiting on all of it.
+- **A row's tests together.** A condition on a list's rows takes every test a row must pass
+  at once, since two conditions in any row can be met by two different rows: the EQ peril
+  is included only when one row holds both the peril and its cover ticked. Counting and
+  totalling the rows that pass says the rest, at least two perils included or the
+  jobsites' costs above a figure, where the number of a table's rows alone says nothing of
+  a table that gives a row for each value, as every one of those is typed.
 - **A Chart takes nothing.** A quote holds what can be typed into the sheets that show, so
   a column counts for Shown when only on the components it is typed into. Were a Chart's
   columns to count, a Chart that plots a section's values would keep them in the quote
@@ -1919,8 +1943,9 @@ Out of scope:
   the values only hidden components show are left out of the quote, and the view names
   the problem on the sheet or component while building. A `show_when`, a condition or a
   test the form's shape does not have (an unknown `op`, a `values` entry that is not text,
-  a group with no conditions or with a group among them, a count that is not a whole number
-  of 0 or more)
+  a group with no conditions or with a group among them, a condition in any or every row
+  with no test, a total that is not a sum, least, greatest or average, a count that is not a
+  whole number of 0 or more)
   is a form that does not fit, refused as any other.
 - `GET /api/workbench/tables` answers 404 while the workbench is not enabled; the editor
   never asks then. Tables or response tables the pipeline cannot take, such as a table named
