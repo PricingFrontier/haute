@@ -9,8 +9,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import TypeAdapter
 
-from haute._workbench_form import Condition, FormSpec
+from haute._workbench_form import Condition, FormSpec, SingleCondition
 from haute._workbench_visibility import condition_fits, visibility
 
 FIXTURE = (
@@ -94,3 +95,22 @@ def test_a_condition_fits_while_its_values_are_ones_its_column_could_hold(
     )
 
     assert condition_fits(every_type_form(), condition) is fits
+
+
+@pytest.mark.parametrize(
+    ("condition", "fits"),
+    [
+        ({"table": "t_many", "column": "c_v", "rows": "every", "op": "filled"}, True),
+        ({"table": "t_in", "column": "c_num", "rows": "any", "op": "filled"}, False),
+        ({"table": "t_many", "column": "c_v", "op": "filled"}, False),
+        ({"table": "t_many", "op": "at_least", "count": 2}, True),
+        ({"table": "t_in", "op": "at_least", "count": 2}, False),
+        ({"table": "t_out", "op": "at_least", "count": 2}, False),
+    ],
+)
+def test_a_condition_fits_while_its_table_has_the_rows_it_tests(
+    condition: dict[str, Any], fits: bool
+) -> None:
+    single = TypeAdapter(SingleCondition).validate_python(condition)
+
+    assert condition_fits(every_type_form(), single) is fits
