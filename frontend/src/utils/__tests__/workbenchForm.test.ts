@@ -186,6 +186,20 @@ describe("names", () => {
     ])
     expect(messages(spec)).toEqual([])
   })
+
+  it("gives a new column the type of the column above it, Text first in its table or under its index", () => {
+    let spec = addSchemaTable(blank(), { ...createSchemaTable(blank()), id: "t", rows: "many" })
+    expect(createSchemaColumn(spec, "t").type).toBe("str")
+    spec = addSchemaColumn(spec, "t", createIndexColumn(spec, "t"), 0)
+    expect(createSchemaColumn(spec, "t").type).toBe("str")
+
+    spec = addSchemaColumn(spec, "t", { ...createSchemaColumn(spec, "t"), id: "a", type: "float", min: 0, number_format: "percent" })
+    spec = addSchemaColumn(spec, "t", { ...createSchemaColumn(spec, "t"), id: "b", type: "date" })
+    // At the end by default, or under the column at the place before the one given; the type alone, none of its rules or format.
+    expect(createSchemaColumn(spec, "t")).toMatchObject({ type: "date" })
+    expect(createSchemaColumn(spec, "t", 2)).toMatchObject({ type: "float", min: null, number_format: "general" })
+    expect(createSchemaColumn(spec, "t", 1).type).toBe("str")
+  })
 })
 
 describe("problems", () => {

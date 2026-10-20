@@ -103,7 +103,8 @@ quote holding nothing but its defaults is not priced, marked or saved until some
 typed, and a value typed equal to its default counts as the default.
 
 - Enter in the last column's name adds the next column; in any other column's name it just
-  keeps what you typed.
+  keeps what you typed. A column added, by Enter or **Add column**, takes the type of the
+  column above it: Text when it is the table's first or comes under the index.
 - Drag a column by the grip at its left, or press Alt+Up and Alt+Down in its name, to move
   it within its table. Drag a table by the grip beside its name, or press Alt+Up and
   Alt+Down in its name, to move the table. A grip shows while the pointer is over its row.

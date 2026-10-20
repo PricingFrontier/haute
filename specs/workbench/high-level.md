@@ -334,7 +334,9 @@ Out of scope:
   when it becomes or stops being True/false, or becomes a Date while it is not a day.
   Every text field
   commits on blur or Enter, so an edit is one undo step; Enter in the last column's name
-  adds the next column, and in any other only commits it, a column is dragged by its grip within its table, or moved by Alt+Up and
+  adds the next column, and in any other only commits it, a new column, by Enter or Add
+  column, taking the type of the column above it, Text first in its table or under its
+  index, a column is dragged by its grip within its table, or moved by Alt+Up and
   Alt+Down in its name, a table likewise by the grip beside its name or Alt+Up and
   Alt+Down in it, and a new table's or column's name takes the focus. A many-row table can have an index: a column first in the table, `row_number`
   until renamed, an Integer whose type cannot change, numbering the rows from 1, which

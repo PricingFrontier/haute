@@ -66,7 +66,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, ad
   const locked = isQuoteDetails(table)
 
   const insertAt = (at: number) => {
-    const column = createSchemaColumn(currentForm(), table.id)
+    const column = createSchemaColumn(currentForm(), table.id, at)
     change((f) => addSchemaColumn(f, table.id, column, at))
     setAdded(column.id)
   }

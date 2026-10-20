@@ -190,27 +190,35 @@ export const createSchemaTable = (spec: FormSpec): SchemaTable => ({
   columns: [],
 })
 
-export const createSchemaColumn = (spec: FormSpec, tableId: string): SchemaColumn => ({
-  id: newId("c"),
-  name: uniqueName("column", schemaTableOf(spec, tableId).columns.map((column) => column.name)),
-  type: "str",
-  label: "",
-  group: "",
-  key: false,
-  required: false,
-  min: null,
-  max: null,
-  options: [],
-  options_source: null,
-  row_per_value: false,
-  index: false,
-  help: "",
-  placeholder: "",
-  default_value: "",
-  number_format: "general",
-  decimal_places: null,
-  use_grouping: true,
-})
+/**
+ * A new column for a table, to go at `at` among its columns (the end by default): of the
+ * type of the column above it, or Text first in the table or under its index.
+ */
+export const createSchemaColumn = (spec: FormSpec, tableId: string, at?: number): SchemaColumn => {
+  const { columns } = schemaTableOf(spec, tableId)
+  const above = columns[(at ?? columns.length) - 1]
+  return {
+    id: newId("c"),
+    name: uniqueName("column", columns.map((column) => column.name)),
+    type: above === undefined || above.index ? "str" : above.type,
+    label: "",
+    group: "",
+    key: false,
+    required: false,
+    min: null,
+    max: null,
+    options: [],
+    options_source: null,
+    row_per_value: false,
+    index: false,
+    help: "",
+    placeholder: "",
+    default_value: "",
+    number_format: "general",
+    decimal_places: null,
+    use_grouping: true,
+  }
+}
 
 /** A table's index: a column holding each row's number, from 1, as the rows stand. */
 export const createIndexColumn = (spec: FormSpec, tableId: string): SchemaColumn => ({
