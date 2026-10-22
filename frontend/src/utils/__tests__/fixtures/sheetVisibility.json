@@ -5316,6 +5316,26 @@
       "hidden_columns": []
     },
     {
+      "name": "a total halfway between two 15-digit numbers takes the one away from zero",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_claims", "total": "sum", "column": "c_amount", "where": [], "op": "equals", "value": "1.00003051757813"}
+          ]
+        }
+      },
+      "values": {
+        "t_policy": [{"c_extras": true}],
+        "t_claims": [{"c_amount": "1.000030517578125"}]
+      },
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
       "name": "a field shows while a condition on another field of its Collection holds",
       "form": "fields",
       "field_show_when": [

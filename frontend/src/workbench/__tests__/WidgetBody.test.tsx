@@ -1158,6 +1158,41 @@ describe("WidgetBody", () => {
     expect(screen.queryByRole("textbox")).toBeNull()
   })
 
+  it("keeps a Table of output columns alone on its first field's rows in Preview while that field hides", () => {
+    const premium = { table: "premiums", column: "premiums.premium" }
+    const covered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [] }] }
+    const form = coverForm()
+    form.schema.tables.push(
+      table("fees", "fees", { role: "output", rows: "many", columns: [column("fees.item", "item", { key: true }), column("fees.fee", "fee", { type: "float" })] }),
+    )
+    addTo(form, {
+      ...createWidget("tableInput", { x: 16, y: 380, w: 480, h: 160 }),
+      id: "w_results",
+      title: "Premiums",
+      fields: [premium, { table: "fees", column: "fees.item" }, { table: "fees", column: "fees.fee" }],
+    })
+    loadForm(setColumnLook(form, "w_results", premium, { show_when: covered }))
+    useWorkbenchViewStore.setState({ section: "preview" })
+    render(<SheetCanvas />)
+    act(() =>
+      useWorkbenchPricingStore.setState({
+        price: {
+          basis: previewBasis(currentForm()),
+          sample: {},
+          tables: {
+            premiums: [{ item: "Crane", premium: 10 }, { item: "Lift", premium: 20 }],
+            fees: [{ item: "Lift", fee: 200 }, { item: "Crane", fee: 100 }, { item: "Dozer", fee: 300 }],
+          },
+        },
+      }),
+    )
+    const grid = within(screen.getByTestId("sheet-widget-w_results"))
+
+    // The premium's column goes, but the fees stay lined up with the premiums' rows.
+    expect(grid.getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["#", "Item", "Fee"])
+    expect([1, 2, 3].map((row) => screen.queryByTestId(`priced-fees:fees.fee-${row}`)?.textContent)).toEqual(["100", "200", undefined])
+  })
+
   it("takes a date once it is committed, one edit, not as each digit of its year is typed", () => {
     const form = toggleField(sheetForm(), "w_boxes", { table: "policy", column: "policy.year" })
     loadForm(updateSchemaColumn(form, "policy", "policy.year", { type: "date" }))

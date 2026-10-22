@@ -240,8 +240,8 @@ class RowTotal(_Strict):
 def _condition_kind(value: Any) -> str:
     """Which entry of a ``show_when`` *value* is, by its fields: a group holds
     ``conditions``, a total ``total``, a count ``count``, a condition in any or every row
-    ``rows``."""
-    fields = value if isinstance(value, dict) else type(value).model_fields
+    ``rows``; anything else is read as one, which then refuses it."""
+    fields = value if isinstance(value, dict) else getattr(type(value), "model_fields", {})
     if "conditions" in fields:
         return "group"
     if "total" in fields:

@@ -29,6 +29,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
+from decimal import ROUND_HALF_UP, Decimal, localcontext
 from typing import Any
 
 from haute._workbench_form import (
@@ -344,7 +345,10 @@ def _total(
         found = max(numbers)
     else:
         found = added / len(numbers)
-    return float(f"{found:.15g}")
+    # Rounded as the view's ``toPrecision`` rounds the exact value, a tie away from zero,
+    # where formatting it would take a tie to the even digit.
+    with localcontext(prec=15, rounding=ROUND_HALF_UP):
+        return float(+Decimal(found))
 
 
 def _typed_rows(

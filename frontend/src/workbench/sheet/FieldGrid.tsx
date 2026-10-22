@@ -134,8 +134,8 @@ export function FieldGrid({
   )
   const given = givenRows.size > 0
   const holding = Math.max(0, ...inputTables.map((id) => held[id]?.length ?? 0))
-  // Each many-row output table it shows; showing no input table, their answer gives its rows once priced.
-  const outputs = fields.flatMap(({ found }) => (found !== null && found.table.role === "output" && found.table.rows === "many" ? [found.table] : []))
+  // Each many-row output table of every field, whatever hides; showing no input table, their answer gives its rows once priced.
+  const outputs = rowFields.flatMap(({ found }) => (found !== null && found.table.role === "output" && found.table.rows === "many" ? [found.table] : []))
   const answered = inputs.length === 0 ? answeredOutputs(outputs, price) : null
   const answer = outputs.length === 0 ? undefined : answered?.get(outputs[0].id)
   const count =

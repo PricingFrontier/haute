@@ -1532,8 +1532,8 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   have, a Table's option on a Chart and a Chart's on a Table, a Table's text size, header
   size, direction, line or frame weight or line style it does not have, a lower-case
   colour, its lines' colour or its header's direction on a Collection, a box style or
-  weight a Collection does not have, a label or box width outside 24 to 1000, a Collection
-  read with its look and its column looks, a column look with only a Show when kept, a
+  weight a Collection does not have, a label width outside 1 to 99 percent or a box width
+  outside 24 to 1000, a Collection read with its look and its column looks, a column look with only a Show when kept, a
   column look, a Table's or a Collection's, for a
   column it does not show, a second for one column, one that changes nothing, a width
   outside 24 to 1000, an alignment it does not have or an unknown key in one, a frame on a Chart or a

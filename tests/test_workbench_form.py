@@ -839,6 +839,9 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         (lambda f: f["pages"][0]["show_when"].update(match=True), "match"),
         (lambda f: f["pages"][0]["show_when"].update(match="2"), "match"),
         (lambda f: f["pages"][0]["show_when"].update(match=1.5), "match"),
+        # A condition or a group is an object: anything else is refused as the shape is.
+        (lambda f: f["pages"][0]["show_when"]["conditions"].append(None), "conditions"),
+        (lambda f: f["pages"][0]["show_when"]["conditions"].append("x"), "conditions"),
         (
             lambda f: widgets(f)[1]["show_when"]["conditions"][0].update(op="has"),
             "op",
