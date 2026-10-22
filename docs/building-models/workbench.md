@@ -158,7 +158,7 @@ smaller from that corner; wider than the window, it scrolls across.
 It is a stack of **sections**: strips across its whole width, one under the next, each
 holding the components placed in it. A new sheet is one section; hide a section and, in
 Preview, the sections under it move up to close the gap (see
-[Showing sheets, sections and components conditionally](#showing-sheets-sections-and-components-conditionally)).
+[Showing sheets, sections, components and fields conditionally](#showing-sheets-sections-components-and-fields-conditionally)).
 The palette on the left offers four components and a section; drag a component onto the
 sheet (a ghost shows where it lands) and it goes into the section under the top of the
 ghost. From the keyboard, Tab to an item and press Enter: a component goes into the
@@ -188,7 +188,7 @@ square, and the sheet shows a colour as you pick it. They apply wherever the
 sheets show, Preview and the underwriter app included.
 
 Select a component to open its properties on the right: its title, when it shows (see
-[Showing sheets, sections and components conditionally](#showing-sheets-sections-and-components-conditionally)), its layout (the rows a
+[Showing sheets, sections, components and fields conditionally](#showing-sheets-sections-components-and-fields-conditionally)), its layout (the rows a
 Table starts with, whether they are **fixed**, with no rows inserted or deleted, and whether it is
 **transposed**, or a Collection's columns across), a Table's **look** (see
 [A Table's look](#a-tables-look)), a Collection's **look** (see
@@ -292,7 +292,10 @@ toolbar; a colour you set on a Table, or on one of its columns, is drawn over th
   to 1000) and **Bold**. **Clear** takes the column's look
   away; a dot marks a column that has one. A column's fill covers the stripes and the
   output shade in its cells. Once every column has a width, the grid is as wide as its
-  columns rather than its frame. When you stop showing a column, its look goes with it.
+  columns rather than its frame. Under its look, the column's own **Show when** (see
+  [Showing sheets, sections, components and fields conditionally](#showing-sheets-sections-components-and-fields-conditionally));
+  an eye marks a column that has conditions, and **Clear** leaves them. When you stop
+  showing a column, its look and its Show when go with it.
 
 On a transposed Table, a column's look applies along its field's line: its header colours
 on the line's label and its cell colours across the line. Widths don't apply to a
@@ -322,7 +325,9 @@ set on a Collection, or on one of its fields, is drawn over them.
   **Align**, its box's **Fill**, **Font** and **Align** (each Align on Auto follows the
   Collection's), its box's **Width** in pixels (blank for the Collection's) and **Bold**. **Clear** takes the
   field's look away; a dot marks a field that has one. A field's fill covers the output
-  shade in its box. When you stop showing a field, its look goes with it.
+  shade in its box. Under its look, the field's own **Show when**, as a Table's columns
+  have; an eye marks a field that has conditions. When you stop showing a field, its look
+  and its Show when go with it.
 
 With labels beside the boxes and both widths on Auto, each label takes two fifths of its
 field and its box the rest. Give the labels a width, say 80%, and the boxes take the
@@ -331,13 +336,15 @@ tick boxes in one column, set the boxes' **Width** to about 40 for wide labels a
 boxes. A box never grows wider than its field. With labels above, a box narrower than its
 field sits at the field's left, or where the boxes' **Align** puts it.
 
-## Showing sheets, sections and components conditionally
+## Showing sheets, sections, components and fields conditionally
 
-A sheet, a section or a component can show only when the quote calls for it: a business
-interruption sheet only while its cover is ticked, a flood section only while flood is
-ticked, a referral note only while the sum insured is above a limit. Set it under **Show
-when**, in a component's properties or in a sheet's or a section's own panel. **Add
-condition** tests a column of an input table:
+A sheet, a section, a component, or one of a Table's columns or a Collection's fields, can
+show only when the quote calls for it: a business interruption sheet only while its cover
+is ticked, a flood section only while flood is ticked, a referral note only while the sum
+insured is above a limit, the earthquake limit and deductible only while the earthquake box
+beside them is ticked. Set it under **Show when**, in a component's properties, in a
+sheet's or a section's own panel, or in a column's or a field's own look in its
+component's **Display** pane. **Add condition** tests a column of an input table:
 
 - a tick box **is ticked** or **is not ticked**;
 - any other column **is filled** or **is empty**, and **equals** or **does not equal** a
@@ -381,19 +388,29 @@ the cover is Comprehensive and either a driver is under 25 or the claims count i
 new group starts needing the opposite of the Show when around it, since one needing the
 same would change nothing. Removing a group's last condition removes the group.
 
-A section on a hidden sheet is hidden too, as is a component in a hidden section, and a sheet
-or a section waiting on a box that sits somewhere hidden is hidden with it, so a cover and
-its extensions hide and show in a chain.
+A section on a hidden sheet is hidden too, as is a component in a hidden section and a field
+of a hidden component, and a sheet, a section or a field waiting on a box that sits
+somewhere hidden is hidden with it, so a cover and its extensions hide and show in a chain.
 
-While building, a new quote decides, holding its defaults alone: a hidden sheet's tab, a hidden
-section and a hidden component are faded, their eye struck through (hover it to read the
-conditions), and you can still select and edit them; every section keeps its place. In
+A field's conditions can test the other fields of its own component: put the earthquake
+box and its limit and deductible in one Collection, and give the limit and the deductible
+a Show when of **EQ included is ticked**. A field shown only by its own value could never
+show again once hidden, so the view names it as a problem.
+
+While building, a new quote decides, holding its defaults alone: a hidden sheet's tab, a
+hidden section, a hidden component and a hidden field are faded, their eye struck through
+(hover it to read the conditions), and you can still select and edit them; every section
+keeps its place, and every field its place in its component. In
 Preview the sample decides as you type it, and in the underwriter app the quote: a hidden
 sheet has no tab; a hidden section is not drawn and the
-sections under it move up to close the gap; and a hidden component is not drawn, its space
-in its section left empty, since components are placed freely. So give what should close
-up a section of its own, with its Heading in it, and put the tick box that controls it
-just above it, where the underwriter is working. While the underwriter holds a mouse
+sections under it move up to close the gap; a hidden component is not drawn, its space
+in its section left empty, since components are placed freely; and a hidden field is not
+drawn, its component closing up around it: a Collection's other fields move up through its
+columns, a spacer going with the fields after it when all of them hide, and a Table leaves
+out the column (or, transposed, the field's line). A whole column hides; its cells don't
+hide row by row. So give a set of components that should close up a section of its own, with its
+Heading in it, and put the tick box that controls it just above it, where the underwriter
+is working; fields that hide together with their box can stay in one Collection. While the underwriter holds a mouse
 button down on the sheet nothing moves, so a click is never pulled from under them, and
 when a section above them opens or closes the sheet scrolls to keep their place.
 
@@ -402,11 +419,12 @@ priced, as if they had never been typed, for the sample priced in Preview (and t
 Workbench Input's copy of it) and for a quote in the underwriter app, and a hidden required
 cell is never marked. The values are kept, so ticking the cover again brings them back. A Chart takes
 nothing typed, so a column only a Chart plots never hides and a condition on it never
-holds, and a value only a hidden component takes is left out even when a Chart that shows
-plots it. A Heading takes nothing either; it just hides and shows. A condition
-that cannot work (its column gone or retyped, a missing value) and a sheet or a section
-nothing could show again once hidden (its tick box only inside it) are named on the
-sheet's tab, the section's header or the component's dashed frame.
+holds, and a value only a hidden component or a hidden field takes is left out even when a
+Chart that shows plots it. A Heading takes nothing either; it just hides and shows. A
+condition that cannot work (its column gone or retyped, a missing value) and a sheet, a
+section or a field nothing could show again once hidden (its tick box only inside it) are
+named on the sheet's tab, the section's header or the component's dashed frame, a field's
+by its label.
 
 ## Building: a new quote
 

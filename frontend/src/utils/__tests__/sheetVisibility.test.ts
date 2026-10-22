@@ -9,11 +9,12 @@ import fixture from "./fixtures/sheetVisibility.json"
 import typedQuotes from "./fixtures/typedQuotes.json"
 import type { Condition, FormSpec, Page, RowCount, RowsCondition, RowTest, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
 import type { RowsByTable } from "../sheetValues"
-import { BLANK_THEME, COLLECTION_OPTIONS } from "../workbenchForm"
+import { BLANK_THEME, COLLECTION_OPTIONS, PLAIN_COLUMN_LOOK } from "../workbenchForm"
 import {
   CONDITION_TESTS,
   columnKey,
   conditionFault,
+  fieldKey,
   neverShown,
   newCondition,
   newRowTest,
@@ -37,10 +38,12 @@ interface VisibilityCase {
   name: string
   form: string
   show_when?: Record<string, ShowWhen>
+  field_show_when?: { widget: string; table: string; column: string; show_when: ShowWhen }[]
   values: RowsByTable
   hidden_pages: string[]
   hidden_sections: string[]
   hidden_widgets: string[]
+  hidden_fields?: [string, string, string][]
   hidden_columns: [string, string][]
 }
 
@@ -62,12 +65,26 @@ describe("sheetVisibility, held to the shared cases", () => {
       if (holder === undefined) throw new Error(`Case "${testCase.name}" names "${id}", which is no sheet, section or component of the form`)
       holder.show_when = showWhen
     }
+    for (const field of testCase.field_show_when ?? []) {
+      const widget = widgets.find((candidate) => candidate.id === field.widget)
+      if (widget?.type !== "tableInput" && widget?.type !== "collection") throw new Error(`Case "${testCase.name}" gives a field of "${field.widget}", which is no Table or Collection of the form`)
+      widget.column_looks.push({ table: field.table, column: field.column, ...PLAIN_COLUMN_LOOK, show_when: field.show_when })
+    }
 
     const visibility = sheetVisibility(form, testCase.values)
 
     expect(form.pages.map((page) => page.id).filter((id) => !visibility.pages.has(id)).sort(byText)).toEqual(testCase.hidden_pages)
     expect(sections.map((section) => section.id).filter((id) => !visibility.sections.has(id)).sort(byText)).toEqual(testCase.hidden_sections)
     expect(widgets.map((widget) => widget.id).filter((id) => !visibility.widgets.has(id)).sort(byText)).toEqual(testCase.hidden_widgets)
+    // The fields of the components that show, but those the case says hide.
+    const hiding = new Set((testCase.hidden_fields ?? []).map(([widget, table, columnId]) => fieldKey(widget, table, columnId)))
+    const fields = widgets.flatMap((widget) =>
+      visibility.widgets.has(widget.id) && (widget.type === "tableInput" || widget.type === "collection")
+        ? widget.fields.map((field) => fieldKey(widget.id, field.table, field.column))
+        : [],
+    )
+    expect(fields.filter((key) => hiding.has(key)).length, "the case hides a field no component that shows has").toBe(hiding.size)
+    expect([...visibility.fields].sort(byText)).toEqual(fields.filter((key) => !hiding.has(key)).sort(byText))
     const hidden = [...visibility.hidden].map((key): [string, string] => {
       const [table, column] = key.split(":")
       return [table, column]
@@ -172,7 +189,7 @@ describe("quoteEligible", () => {
     pages: typedQuotes.form.pages.map((sheet) =>
       sectioned(
         sheet.id,
-        sheet.sections.map((each) => section(each.id, each.widgets.map((widget) => ({ title: "", show_when: ALWAYS, ...widget }) as Widget))),
+        sheet.sections.map((each) => section(each.id, each.widgets.map((widget) => ({ title: "", show_when: ALWAYS, column_looks: [], ...widget }) as unknown as Widget))),
       ),
     ),
   }
@@ -343,6 +360,52 @@ describe("conditionFault", () => {
 
 describe("neverShown", () => {
   const motorBox = collection("w_motor", [["t_policy", "c_motor"]])
+  /** A Table or a Collection with each of `shown` a field shown as its `show_when` says. */
+  const withFields = (widget: Widget, shown: [string, string, ShowWhen][]): Widget =>
+    widget.type === "collection" || widget.type === "tableInput"
+      ? { ...widget, column_looks: shown.map(([table, columnId, showWhen]) => ({ table, column: columnId, ...PLAIN_COLUMN_LOOK, show_when: showWhen })) }
+      : widget
+
+  it("reports a field shown by its own value, but not one shown by another field of its component", () => {
+    const own = ticked("t_policy", "c_bi")
+    const cover = collection("w_cover", [
+      ["t_policy", "c_bi"],
+      ["t_policy", "c_motor"],
+      ["t_policy", "c_class"],
+    ])
+    const form = formOf([page("p_main", [withFields(cover, [["t_policy", "c_bi", when(own)], ["t_policy", "c_class", when(ticked("t_policy", "c_motor"))]])])])
+    expect([...neverShown(form)]).toEqual([[fieldKey("w_cover", "t_policy", "c_bi"), own]])
+  })
+
+  it("reports two fields each waiting on the other, and not a field waiting on one that shows with it elsewhere", () => {
+    const cover = collection("w_cover", [
+      ["t_policy", "c_bi"],
+      ["t_policy", "c_motor"],
+    ])
+    const waiting = withFields(cover, [
+      ["t_policy", "c_bi", when(ticked("t_policy", "c_motor"))],
+      ["t_policy", "c_motor", when(ticked("t_policy", "c_bi"))],
+    ])
+    expect([...neverShown(formOf([page("p_main", [waiting])]))]).toEqual([
+      [fieldKey("w_cover", "t_policy", "c_bi"), ticked("t_policy", "c_motor")],
+      [fieldKey("w_cover", "t_policy", "c_motor"), ticked("t_policy", "c_bi")],
+    ])
+    // The motor box shown on another component as well, the bi field can show again, and so the motor field.
+    expect(neverShown(formOf([page("p_main", [waiting, motorBox])])).size).toBe(0)
+  })
+
+  it("leaves a field of a component that can never show to its component, and counts no field that cannot show again", () => {
+    const own = ticked("t_policy", "c_bi")
+    const never = withFields(collection("w_never", [["t_policy", "c_class"]], when(ticked("t_policy", "c_motor"))), [["t_policy", "c_class", when(own)]])
+    // The motor box hidden by its own value: a section waiting on it waits on a field that cannot show again.
+    const motorField = withFields(motorBox, [["t_policy", "c_motor", when(ticked("t_policy", "c_motor"))]])
+    const form = formOf([sectioned("p_main", [section("s_main", [never, motorField, collection("w_bi", [["t_policy", "c_bi"]])]), section("s_motor", [], when(ticked("t_policy", "c_motor")))])])
+    expect([...neverShown(form)]).toEqual([
+      ["w_never", ticked("t_policy", "c_motor")],
+      [fieldKey("w_motor", "t_policy", "c_motor"), ticked("t_policy", "c_motor")],
+      ["s_motor", ticked("t_policy", "c_motor")],
+    ])
+  })
 
   it("reports a sheet shown by a box on the very sheet, in any of its sections, with the condition it waits on", () => {
     const waits = ticked("t_policy", "c_bi")

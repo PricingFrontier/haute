@@ -1,5 +1,5 @@
 {
-  "description": "The cases the workbench's visibility rules are held to, on the server (src/haute/_workbench_visibility.py, tests/test_workbench_visibility.py) and in the view (frontend/src/utils/sheetVisibility.ts, sheetVisibility.test.ts) alike (specs/workbench). Each case names a form, replaces the show_when of the sheets, sections and components it lists, and says, for the values typed (rows by table id, cells by column id), which sheets, sections, components and input columns are hidden; a section on a hidden sheet is hidden too, as is a component in a hidden section.",
+  "description": "The cases the workbench's visibility rules are held to, on the server (src/haute/_workbench_visibility.py, tests/test_workbench_visibility.py) and in the view (frontend/src/utils/sheetVisibility.ts, sheetVisibility.test.ts) alike (specs/workbench). Each case names a form, replaces the show_when of the sheets, sections and components it lists, and of the fields field_show_when lists (each a component, a table and a column, its look given that show_when), and says, for the values typed (rows by table id, cells by column id), which sheets, sections, components and input columns are hidden, and which fields hide in components that show (none where hidden_fields is left out); a section on a hidden sheet is hidden too, as is a component in a hidden section and a field of a hidden component.",
   "forms": {
     "quote": {
       "version": 1,
@@ -2194,6 +2194,419 @@
                   "type": "collection",
                   "title": "",
                   "fields": [{"table": "t_target", "column": "c_x"}],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
+                  "spacers": []
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "sample": {}
+    },
+    "fields": {
+      "version": 1,
+      "name": "fields",
+      "theme": {
+        "sheet_color": null,
+        "background_color": null,
+        "border_color": null,
+        "font_color": null,
+        "input_cell_color": null,
+        "output_cell_color": null
+      },
+      "schema": {
+        "tables": [
+          {
+            "id": "t_rating",
+            "name": "rating",
+            "role": "input",
+            "rows": "one",
+            "columns": [
+              {
+                "id": "c_eq",
+                "name": "eq_included",
+                "type": "bool",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_eq_limit",
+                "name": "eq_limit",
+                "type": "float",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_eq_ded",
+                "name": "eq_deductible",
+                "type": "float",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_flood",
+                "name": "flood_included",
+                "type": "bool",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_flood_limit",
+                "name": "flood_limit",
+                "type": "float",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_combined",
+                "name": "cat_limit_combined",
+                "type": "bool",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_note",
+                "name": "note",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          },
+          {
+            "id": "t_perils",
+            "name": "perils",
+            "role": "input",
+            "rows": "many",
+            "columns": [
+              {
+                "id": "c_peril",
+                "name": "peril",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_limit",
+                "name": "limit",
+                "type": "float",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_ded",
+                "name": "deductible",
+                "type": "float",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          }
+        ]
+      },
+      "pages": [
+        {
+          "id": "p_main",
+          "title": "Main",
+          "width": 1280,
+          "show_when": {"match": "all", "conditions": []},
+          "sections": [
+            {
+              "id": "s_main",
+              "title": "Section 1",
+              "height": 400,
+              "show_when": {"match": "all", "conditions": []},
+              "widgets": [
+                {
+                  "id": "w_rating",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 120,
+                  "type": "collection",
+                  "title": "",
+                  "fields": [
+                    {"table": "t_rating", "column": "c_eq"},
+                    {"table": "t_rating", "column": "c_eq_limit"},
+                    {"table": "t_rating", "column": "c_eq_ded"},
+                    {"table": "t_rating", "column": "c_flood"},
+                    {"table": "t_rating", "column": "c_flood_limit"},
+                    {"table": "t_rating", "column": "c_combined"}
+                  ],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
+                  "spacers": []
+                },
+                {
+                  "id": "w_perils",
+                  "x": 0,
+                  "y": 140,
+                  "w": 720,
+                  "h": 200,
+                  "type": "tableInput",
+                  "title": "",
+                  "fields": [
+                    {"table": "t_perils", "column": "c_peril"},
+                    {"table": "t_perils", "column": "c_limit"},
+                    {"table": "t_perils", "column": "c_ded"}
+                  ],
+                  "show_when": {"match": "all", "conditions": []},
+                  "rows": 3,
+                  "row_numbers": true,
+                  "density": "compact",
+                  "gridlines": "rows",
+                  "striped": true,
+                  "fixed_rows": false,
+                  "header": "plain",
+                  "frame": true,
+                  "transposed": false,
+                  "groups": false,
+                  "font_size": 12,
+                  "header_font_size": null,
+                  "header_bold": true,
+                  "header_wrap": false,
+                  "header_orientation": "horizontal",
+                  "header_color": null,
+                  "header_font_color": null,
+                  "grid_color": null,
+                  "grid_weight": "thin",
+                  "grid_style": "solid",
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": []
+                },
+                {
+                  "id": "w_summary",
+                  "x": 740,
+                  "y": 0,
+                  "w": 520,
+                  "h": 120,
+                  "type": "collection",
+                  "title": "",
+                  "fields": [{"table": "t_rating", "column": "c_flood_limit"}],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
+                  "spacers": []
+                }
+              ]
+            },
+            {
+              "id": "s_eq",
+              "title": "Section 2",
+              "height": 160,
+              "show_when": {"match": "all", "conditions": []},
+              "widgets": [
+                {
+                  "id": "w_note",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 120,
+                  "type": "collection",
+                  "title": "",
+                  "fields": [{"table": "t_rating", "column": "c_note"}],
                   "show_when": {"match": "all", "conditions": []},
                   "columns": 3,
                   "labels": "above",
@@ -4900,6 +5313,452 @@
       "hidden_pages": [],
       "hidden_sections": [],
       "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a field shows while a condition on another field of its Collection holds",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+          }
+        },
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_ded",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+          }
+        }
+      ],
+      "values": {"t_rating": [{"c_eq": true}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a field hides while its condition fails, its value left out of the quote",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+          }
+        },
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_ded",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+          }
+        }
+      ],
+      "values": {"t_rating": [{"c_eq_limit": "1000000"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [["w_rating", "t_rating", "c_eq_ded"], ["w_rating", "t_rating", "c_eq_limit"]],
+      "hidden_columns": [["t_rating", "c_eq_ded"], ["t_rating", "c_eq_limit"]]
+    },
+    {
+      "name": "a column on a field that hides stays in the quote while another component shows it as a field that shows",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_flood_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_flood", "op": "ticked", "values": []}]
+          }
+        }
+      ],
+      "values": {},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [["w_rating", "t_rating", "c_flood_limit"]],
+      "hidden_columns": []
+    },
+    {
+      "name": "a column hidden on every field that shows it is left out",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_flood_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_flood", "op": "ticked", "values": []}]
+          }
+        },
+        {
+          "widget": "w_summary",
+          "table": "t_rating",
+          "column": "c_flood_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_combined", "op": "ticked", "values": []}]
+          }
+        }
+      ],
+      "values": {},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [["w_rating", "t_rating", "c_flood_limit"], ["w_summary", "t_rating", "c_flood_limit"]],
+      "hidden_columns": [["t_rating", "c_flood_limit"]]
+    },
+    {
+      "name": "a condition on a field that hides fails",
+      "form": "fields",
+      "show_when": {
+        "s_eq": {
+          "match": "all",
+          "conditions": [{"table": "t_rating", "column": "c_eq_limit", "op": "filled", "values": []}]
+        }
+      },
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+          }
+        }
+      ],
+      "values": {"t_rating": [{"c_eq_limit": "5"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_eq"],
+      "hidden_widgets": ["w_note"],
+      "hidden_fields": [["w_rating", "t_rating", "c_eq_limit"]],
+      "hidden_columns": [["t_rating", "c_eq_limit"], ["t_rating", "c_note"]]
+    },
+    {
+      "name": "fields waiting on each other in a chain hide together",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+          }
+        },
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_ded",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq_limit", "op": "filled", "values": []}]
+          }
+        }
+      ],
+      "values": {"t_rating": [{"c_eq_limit": "5", "c_eq_ded": "1"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [["w_rating", "t_rating", "c_eq_ded"], ["w_rating", "t_rating", "c_eq_limit"]],
+      "hidden_columns": [["t_rating", "c_eq_ded"], ["t_rating", "c_eq_limit"]]
+    },
+    {
+      "name": "fields waiting on each other in a chain show while its first condition holds",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+          }
+        },
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_ded",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq_limit", "op": "filled", "values": []}]
+          }
+        }
+      ],
+      "values": {"t_rating": [{"c_eq": true, "c_eq_limit": "5", "c_eq_ded": "1"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a field waiting on a column in a hidden section hides",
+      "form": "fields",
+      "show_when": {
+        "s_eq": {
+          "match": "all",
+          "conditions": [{"table": "t_rating", "column": "c_combined", "op": "ticked", "values": []}]
+        }
+      },
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_note", "op": "filled", "values": []}]
+          }
+        }
+      ],
+      "values": {"t_rating": [{"c_note": "Refer"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_eq"],
+      "hidden_widgets": ["w_note"],
+      "hidden_fields": [["w_rating", "t_rating", "c_eq_limit"]],
+      "hidden_columns": [["t_rating", "c_eq_limit"], ["t_rating", "c_note"]]
+    },
+    {
+      "name": "a Table's column hides whole, in every row",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_perils",
+          "table": "t_perils",
+          "column": "c_ded",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_combined", "op": "not_ticked", "values": []}]
+          }
+        }
+      ],
+      "values": {
+        "t_rating": [{"c_combined": true}],
+        "t_perils": [{"c_peril": "EQ", "c_ded": "500"}, {"c_peril": "Flood", "c_ded": "250"}]
+      },
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [["w_perils", "t_perils", "c_ded"]],
+      "hidden_columns": [["t_perils", "c_ded"]]
+    },
+    {
+      "name": "a Table's column shows while its condition holds",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_perils",
+          "table": "t_perils",
+          "column": "c_ded",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_combined", "op": "not_ticked", "values": []}]
+          }
+        }
+      ],
+      "values": {"t_perils": [{"c_peril": "EQ", "c_ded": "500"}, {"c_peril": "Flood", "c_ded": "250"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a condition on a list's rows fails once a column it tests hides as a field",
+      "form": "fields",
+      "show_when": {
+        "s_eq": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_perils", "rows": "any", "where": [{"column": "c_ded", "op": "filled", "values": []}]}
+          ]
+        }
+      },
+      "field_show_when": [
+        {
+          "widget": "w_perils",
+          "table": "t_perils",
+          "column": "c_ded",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_combined", "op": "not_ticked", "values": []}]
+          }
+        }
+      ],
+      "values": {
+        "t_rating": [{"c_combined": true}],
+        "t_perils": [{"c_peril": "EQ", "c_ded": "500"}, {"c_peril": "Flood", "c_ded": "250"}]
+      },
+      "hidden_pages": [],
+      "hidden_sections": ["s_eq"],
+      "hidden_widgets": ["w_note"],
+      "hidden_fields": [["w_perils", "t_perils", "c_ded"]],
+      "hidden_columns": [["t_perils", "c_ded"], ["t_rating", "c_note"]]
+    },
+    {
+      "name": "a field is hidden with its component, whatever its own conditions say",
+      "form": "fields",
+      "show_when": {
+        "w_rating": {
+          "match": "all",
+          "conditions": [{"table": "t_rating", "column": "c_note", "op": "filled", "values": []}]
+        }
+      },
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+          }
+        },
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_ded",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+          }
+        }
+      ],
+      "values": {"t_rating": [{"c_eq": true}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": ["w_rating"],
+      "hidden_fields": [],
+      "hidden_columns": [
+        ["t_rating", "c_combined"],
+        ["t_rating", "c_eq"],
+        ["t_rating", "c_eq_ded"],
+        ["t_rating", "c_eq_limit"],
+        ["t_rating", "c_flood"]
+      ]
+    },
+    {
+      "name": "a field testing its own column shows while its value passes",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq_limit", "op": "filled", "values": []}]
+          }
+        }
+      ],
+      "values": {"t_rating": [{"c_eq_limit": "5"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a field testing its own column hides once its value does not pass, and stays hidden",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq_limit", "op": "filled", "values": []}]
+          }
+        }
+      ],
+      "values": {},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [["w_rating", "t_rating", "c_eq_limit"]],
+      "hidden_columns": [["t_rating", "c_eq_limit"]]
+    },
+    {
+      "name": "a field's conditions take groups and at least a number of them",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_flood_limit",
+          "show_when": {
+            "match": 1,
+            "conditions": [
+              {"table": "t_rating", "column": "c_flood", "op": "ticked", "values": []},
+              {
+                "match": "all",
+                "conditions": [
+                  {"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []},
+                  {"table": "t_rating", "column": "c_combined", "op": "ticked", "values": []}
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "values": {"t_rating": [{"c_eq": true, "c_combined": true}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a field's group failing hides it",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_flood_limit",
+          "show_when": {
+            "match": 1,
+            "conditions": [
+              {"table": "t_rating", "column": "c_flood", "op": "ticked", "values": []},
+              {
+                "match": "all",
+                "conditions": [
+                  {"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []},
+                  {"table": "t_rating", "column": "c_combined", "op": "ticked", "values": []}
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "values": {"t_rating": [{"c_eq": true}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [["w_rating", "t_rating", "c_flood_limit"]],
       "hidden_columns": []
     }
   ]

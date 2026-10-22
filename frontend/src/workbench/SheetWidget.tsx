@@ -2,7 +2,8 @@ import { memo, useMemo } from "react"
 import type { FormSchema } from "../api/types"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { HANDLES, type Handle } from "../utils/sheetGeometry"
-import { shownFields, widgetName, type Widget } from "../utils/workbenchForm"
+import { widgetName, type Widget } from "../utils/workbenchForm"
+import { drawnFields, HIDDEN_OPACITY } from "./sheet/fieldCells"
 import { startTransform } from "./sheetInteractions"
 import { ShowWhenMark } from "./ShowWhenEditor"
 import WidgetBody from "./WidgetBody"
@@ -27,8 +28,10 @@ const HANDLE_CLASS: Record<Handle, string> = {
  * in the warning colour, naming the problem on hover and to a screen reader. While
  * building, a component with conditions carries an eye naming them, top right, or top left
  * on a right-aligned Heading so it never covers the end of the text, and one a new quote
- * hides is drawn faded and its eye struck through. It is drawn again only when what it is
- * given changes: the fields it shows are its own and `schema`'s.
+ * hides is drawn faded and its eye struck through, as are its fields with conditions,
+ * marked so; in Preview it draws only its fields that show. It is drawn again only when
+ * what it is given changes: the fields it shows are its own and `schema`'s, and those that
+ * show `fieldsShowing`'s.
  */
 export default memo(function SheetWidget({
   widget,
@@ -38,6 +41,7 @@ export default memo(function SheetWidget({
   editable,
   hidden,
   conditions,
+  fieldsShowing,
   layer,
 }: {
   widget: Widget
@@ -51,6 +55,8 @@ export default memo(function SheetWidget({
   hidden: boolean
   /** Its conditions as a sentence, for its eye while building; null for none, or in Preview. */
   conditions: string | null
+  /** The fields that show for the sheet's values, by `fieldKey`, the form's whole. */
+  fieldsShowing: ReadonlySet<string>
   /**
    * Its place in the stack: what it covers where it overlaps another, the form's order of
    * the components and the selected one above them, apart from the order they are read in.
@@ -65,7 +71,7 @@ export default memo(function SheetWidget({
         ? "border-transparent group-hover:border-[var(--border-bright)]"
         : "border-transparent"
   const select = useWorkbenchViewStore((s) => s.select)
-  const fields = useMemo(() => shownFields(schema, widget), [schema, widget])
+  const drawn = useMemo(() => drawnFields(schema, widget, fieldsShowing, editable, hidden), [schema, widget, fieldsShowing, editable, hidden])
   const problemId = `${widget.id}-problem`
   return (
     <div
@@ -94,9 +100,9 @@ export default memo(function SheetWidget({
         className={`h-full ${editable ? "pointer-events-none" : ""}`}
         inert={editable}
         data-hidden={hidden ? "true" : undefined}
-        style={hidden ? { opacity: 0.45 } : undefined}
+        style={hidden ? { opacity: HIDDEN_OPACITY } : undefined}
       >
-        <WidgetBody widget={widget} fields={fields} />
+        <WidgetBody widget={widget} drawn={drawn} />
       </div>
       <div className={`pointer-events-none absolute -inset-1 rounded-md border ${frame}`} />
       {conditions !== null && (

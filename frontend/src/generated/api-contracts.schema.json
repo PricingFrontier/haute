@@ -1066,7 +1066,7 @@
     },
     "ColumnLook": {
       "additionalProperties": false,
-      "description": "How one of a Table's columns, or one of a Collection's fields, looks, its field by table\nand column id: each colour the component's own while None, its values placed as its type\nputs them, or as the Collection places its boxes', while ``align`` is ``auto``, its label\nover a Table's column as its values sit, or as the Collection places its labels, while\n``header_align`` is, and, while ``width`` is None, a Table's column as wide as the grid\nmakes it and a Collection's box as wide as the Collection makes it.",
+      "description": "How one of a Table's columns, or one of a Collection's fields, looks and when it shows,\nits field by table and column id: each colour the component's own while None, its values\nplaced as its type puts them, or as the Collection places its boxes', while ``align`` is\n``auto``, its label over a Table's column as its values sit, or as the Collection places\nits labels, while ``header_align`` is, while ``width`` is None, a Table's column as wide as\nthe grid makes it and a Collection's box as wide as the Collection makes it, and shown\nwith its component while ``show_when`` has no conditions.",
       "properties": {
         "align": {
           "default": "auto",
@@ -1151,6 +1151,9 @@
           "default": null,
           "title": "Header Font Color"
         },
+        "show_when": {
+          "$ref": "#/$defs/ShowWhen"
+        },
         "table": {
           "title": "Table",
           "type": "string"
@@ -1180,7 +1183,8 @@
         "font_color",
         "bold",
         "align",
-        "width"
+        "width",
+        "show_when"
       ],
       "title": "ColumnLook",
       "type": "object"
@@ -13547,7 +13551,7 @@
     },
     "ShowWhen": {
       "additionalProperties": false,
-      "description": "When a sheet, a section or a widget shows: always, without conditions; else while all\nof them hold, any, or at least a number of them, as ``match`` says, each a condition or a\ngroup of them.",
+      "description": "When a sheet, a section, a widget or a widget's field shows: always, without\nconditions; else while all of them hold, any, or at least a number of them, as ``match``\nsays, each a condition or a group of them.",
       "properties": {
         "conditions": {
           "items": {

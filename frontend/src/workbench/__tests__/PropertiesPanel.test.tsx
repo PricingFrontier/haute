@@ -308,6 +308,7 @@ describe("PropertiesPanel", () => {
         bold: true,
         align: "right",
         width: 64,
+        show_when: { match: "all", conditions: [] },
       },
     ])
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(25)
@@ -476,6 +477,7 @@ describe("PropertiesPanel", () => {
         bold: true,
         align: "center",
         width: 120,
+        show_when: { match: "all", conditions: [] },
       },
     ])
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(8)
@@ -496,6 +498,41 @@ describe("PropertiesPanel", () => {
     expect(looks()).toEqual([])
     expect(columnButton("Item")).toBeInTheDocument()
     expect(within(item).queryByRole("button", { name: "Clear" })).not.toBeInTheDocument()
+  })
+
+  it("gives a Table's column a Show when of its own in its look, which Clear keeps, each one undo step", () => {
+    select("w_grid")
+    render(<PropertiesPanel />)
+    showPane("Display")
+    const columns = screen.getByRole("region", { name: "Columns" })
+    const looks = () => (grid() as Extract<ReturnType<typeof grid>, { type: "tableInput" }>).column_looks
+    fireEvent.click(within(columns).getByRole("button", { name: "Item" }))
+    const item = within(columns).getByRole("group", { name: "Item's look" })
+    expect(within(item).getByText("Always")).toBeInTheDocument()
+    const undone = useWorkbenchFormStore.getState().undoStack.length
+
+    fireEvent.click(within(item).getByRole("button", { name: "Add condition" }))
+    expect(looks()).toHaveLength(1)
+    expect(looks()[0]).toMatchObject({ column: "equipment.item", bold: false, show_when: { match: "all" } })
+    expect(looks()[0].show_when.conditions).toHaveLength(1)
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(undone + 1)
+    // Marked in the list with an eye naming its conditions, and with no dot: its look is the Table's.
+    expect(within(columns).getByRole("img", { name: /^Shows when / })).toBeInTheDocument()
+    expect(within(columns).queryByText(", has a look of its own")).not.toBeInTheDocument()
+    expect(within(item).queryByRole("button", { name: "Clear" })).not.toBeInTheDocument()
+
+    // Clear takes its look away and keeps its Show when.
+    fireEvent.click(within(item).getByRole("checkbox", { name: "Bold" }))
+    fireEvent.click(within(item).getByRole("button", { name: "Clear" }))
+    expect(looks()).toHaveLength(1)
+    expect(looks()[0]).toMatchObject({ bold: false })
+    expect(looks()[0].show_when.conditions).toHaveLength(1)
+
+    // Its last condition removed, it always shows, so it has no look left.
+    fireEvent.click(within(item).getByRole("button", { name: "Remove condition 1" }))
+    expect(looks()).toEqual([])
+    expect(within(item).getByText("Always")).toBeInTheDocument()
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(undone + 4)
   })
 
   it("sets a Chart's type, what labels its rows, its legend, stacked, horizontal and data labels, each one undo step", () => {

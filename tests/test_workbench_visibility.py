@@ -41,18 +41,33 @@ def test_what_shows_is_what_the_shared_cases_say(case: dict[str, Any]) -> None:
     )
     for item_id, show_when in replaced.items():
         shown_by[item_id]["show_when"] = show_when
+    for field in case.get("field_show_when", []):
+        looks = shown_by[field["widget"]]["column_looks"]
+        looks.append({"table": field["table"], "column": field["column"]})
+        looks[-1]["show_when"] = field["show_when"]
     spec = FormSpec.model_validate(form)
 
     result = visibility(spec, case["values"])
 
+    placed = [
+        widget for page in spec.pages for section in page.sections for widget in section.widgets
+    ]
     pages = {page.id for page in spec.pages}
     sections = {section.id for page in spec.pages for section in page.sections}
-    widgets = {
-        widget.id for page in spec.pages for section in page.sections for widget in section.widgets
-    }
+    widgets = {widget.id for widget in placed}
     assert sorted(pages - result.pages) == case["hidden_pages"]
     assert sorted(sections - result.sections) == case["hidden_sections"]
     assert sorted(widgets - result.widgets) == case["hidden_widgets"]
+    # The fields of the components that show, but those the case says hide.
+    fields = {
+        (widget.id, field.table, field.column)
+        for widget in placed
+        if widget.id in result.widgets and widget.type in ("tableInput", "collection")
+        for field in widget.fields
+    }
+    hiding = {tuple(field) for field in case.get("hidden_fields", [])}
+    assert hiding <= fields, "the case hides a field no component that shows has"
+    assert result.fields == fields - hiding
     assert sorted([list(pair) for pair in result.hidden]) == case["hidden_columns"]
 
 

@@ -16,6 +16,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import type { FormSpec } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
@@ -25,6 +26,7 @@ import {
   findSection,
   findWidget,
   HEADING_OPTIONS,
+  setColumnLook,
   setPageWidth,
   setSectionShowWhen,
   TABLE_OPTIONS,
@@ -1408,6 +1410,31 @@ describe("SheetCanvas", () => {
     turn()
     expect(screen.queryByTestId("sheet-section-s_flood")).not.toBeInTheDocument()
     expect(band("s_notes")).toHaveStyle({ top: "152px" })
+  })
+
+  it("in Preview holds a component's fields drawn while a pointer is pressed on the sheet, though a value the press commits shows one, until a turn after the release", () => {
+    vi.useFakeTimers()
+    const year = { table: "policy", column: "policy.year" }
+    // Through JSON, so no two components share a list of looks.
+    const form: FormSpec = JSON.parse(JSON.stringify(coverForm()))
+    const fields = [{ table: "policy", column: "policy.state" }, { table: "policy", column: "policy.cover" }, year]
+    loadForm(
+      setColumnLook(updateWidget(form, "w_boxes", { fields }), "w_boxes", year, {
+        show_when: { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [] }] },
+      }),
+    )
+    useWorkbenchViewStore.setState({ section: "preview" })
+    render(<SheetCanvas />)
+    const cover = () => within(frame("w_boxes")).getByRole("checkbox", { name: "Cover" })
+    const yearBox = () => within(frame("w_boxes")).queryByRole("textbox", { name: "Year" })
+
+    fireEvent.pointerDown(cover(), { button: 0 })
+    sampleCover(true)
+    expect(yearBox()).not.toBeInTheDocument()
+    fireEvent.pointerUp(cover())
+    expect(yearBox()).not.toBeInTheDocument()
+    turn()
+    expect(yearBox()).toBeInTheDocument()
   })
 
   it("in Preview keeps the section holding the focus in place on the screen as a section opens above it", () => {

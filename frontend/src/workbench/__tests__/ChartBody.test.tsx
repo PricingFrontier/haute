@@ -13,7 +13,8 @@ import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { previewBasis } from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { shownFields, updateSchemaColumn, withSampleCell, type ChartOptions } from "../../utils/workbenchForm"
+import { updateSchemaColumn, withSampleCell, type ChartOptions } from "../../utils/workbenchForm"
+import { everyField } from "../sheet/fieldCells"
 import { SheetValuesContext, useNewQuoteValues, useQuoteValues, useSampleValues } from "../useSheetValues"
 import WidgetBody from "../WidgetBody"
 import { addTo, chartWidget, currentForm, loadForm, sheetForm, widgetsOf } from "./fixtures"
@@ -77,7 +78,7 @@ function OnSheet({ values, children }: { values: Values; children: ReactNode }) 
 function renderChart(values: Values = "sample") {
   return render(
     <OnSheet values={values}>
-      <WidgetBody widget={chart()} fields={shownFields(currentForm().schema, chart())} />
+      <WidgetBody widget={chart()} drawn={everyField(currentForm().schema, chart())} />
     </OnSheet>,
   )
 }

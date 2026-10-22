@@ -1,4 +1,4 @@
-/** What a Table's and a Collection's looks share in the Display pane: their labels' rows, their frame, a width and each column's own look (specs/workbench). */
+/** What a Table's and a Collection's looks share in the Display pane: their labels' rows, their frame, a width and each column's own look and Show when (specs/workbench). */
 import { ChevronDown, ChevronRight, X } from "lucide-react"
 import { type ReactNode, useState } from "react"
 import type { CollectionWidget, FieldRef, FormSpec, TableInputWidget } from "../../api/types"
@@ -9,15 +9,17 @@ import {
   COLUMN_WIDTH_MIN,
   LABEL_WIDTH_MAX,
   LABEL_WIDTH_MIN,
-  PLAIN_COLUMN_LOOK,
   columnLook,
   fieldColumn,
+  hasOwnLook,
   setColumnLook,
+  showWhenText,
   updateWidget,
   type ColumnLookOptions,
   type SharedLook,
 } from "../../utils/workbenchForm"
 import { fieldLabel } from "../sheet/fieldCells"
+import { ShowWhenEditor, ShowWhenMark } from "../ShowWhenEditor"
 import { ColourRow } from "./ColourRow"
 import { ALIGNS, CASES, HEADER_SIZES, WEIGHTS } from "./lookChoices"
 
@@ -130,7 +132,8 @@ export interface LookHeadings {
 
 /**
  * Its fields in its order, each opened to its own look, its label's and its values' as
- * `headings` names them, with a width while `sized`; one that has a look is marked.
+ * `headings` names them, with a width while `sized`, and its Show when; one that has a look
+ * is marked with a dot, and one with conditions with an eye.
  */
 export function ColumnLooks({ form, widget, headings, sized }: { form: FormSpec; widget: LookWidget; headings: LookHeadings; sized: boolean }) {
   const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set())
@@ -159,13 +162,14 @@ export function ColumnLooks({ form, widget, headings, sized }: { form: FormSpec;
               <span className="min-w-0 flex-1 truncate" style={{ color: "var(--text-primary)" }}>
                 {label}
               </span>
-              {look !== PLAIN_COLUMN_LOOK && (
+              {look.show_when.conditions.length > 0 && <ShowWhenMark hidden={false} title={showWhenText(form, look.show_when)} />}
+              {hasOwnLook(look) && (
                 <span className="size-1.5 shrink-0 rounded-full" style={{ background: "var(--accent)" }}>
                   <span className="sr-only">, has a look of its own</span>
                 </span>
               )}
             </button>
-            {opened && <ColumnLookFields widget={widget} field={field} label={label} look={look} headings={headings} sized={sized} />}
+            {opened && <ColumnLookFields form={form} widget={widget} field={field} label={label} look={look} headings={headings} sized={sized} />}
           </div>
         )
       })}
@@ -173,8 +177,13 @@ export function ColumnLooks({ form, widget, headings, sized }: { form: FormSpec;
   )
 }
 
-/** One column's look: its label's fill, font and place, its values' fill, font and place, its width while `sized`, and bold; Clear while it has one. */
+/**
+ * One column's look: its label's fill, font and place, its values' fill, font and place,
+ * its width while `sized`, and bold; Clear while it has one, which keeps its Show when; and
+ * its Show when.
+ */
 function ColumnLookFields({
+  form,
   widget,
   field,
   label,
@@ -182,6 +191,7 @@ function ColumnLookFields({
   headings,
   sized,
 }: {
+  form: FormSpec
   widget: LookWidget
   field: FieldRef
   label: string
@@ -208,11 +218,13 @@ function ColumnLookFields({
       <LabelledRow>
         <ConfigCheckbox label="Bold" checked={look.bold} onChange={(bold) => set({ bold })} />
       </LabelledRow>
-      {look !== PLAIN_COLUMN_LOOK && (
+      {hasOwnLook(look) && (
         <QuietAction icon={X} onClick={() => set("clear")} className="self-start">
           Clear
         </QuietAction>
       )}
+      <EditorLabel as="div">Show when</EditorLabel>
+      <ShowWhenEditor form={form} showWhen={look.show_when} onChange={(show_when) => set({ show_when })} />
     </div>
   )
 }

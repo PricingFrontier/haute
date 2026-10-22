@@ -154,7 +154,8 @@ Out of scope:
   theme's, and `column_looks`, the looks of the columns given one of their own, each the
   column it shows by `table` and `column`, its label's `header_color`,
   `header_font_color` and `header_align`, its cells' `cell_color` and `font_color`, `bold`,
-  `align` (each align `auto`, `left`, `center` or `right`) and `width` (24 to 1000 pixels, or null), one for each
+  `align` (each align `auto`, `left`, `center` or `right`), `width` (24 to 1000 pixels, or null)
+  and `show_when`, when the column shows in the Table, as a component's (below), one for each
   column at most, none for a column it does not show and none that changes nothing), a
   Collection (`collection`, boxes
   showing columns of one-row tables, `columns` across, its `spacers`, the gaps among
@@ -168,8 +169,8 @@ Out of scope:
   `box_width`; its frame's `frame_color`
   and `frame_weight`; and `column_looks`, its fields' own looks, as a Table's columns'
   are, a field's label's `header_color`, `header_font_color` and `header_align`, its box's
-  `cell_color` and `font_color`, `bold`, `align` and its box's `width`, each width 24 to 1000 pixels
-  or null), a Chart (`chart`, plotting number
+  `cell_color` and `font_color`, `bold`, `align`, its box's `width`, each width 24 to 1000 pixels
+  or null, and its `show_when`), a Chart (`chart`, plotting number
   columns, with what labels the rows of its many-row tables, `category`, a schema column
   named as a field is or null to number them, and how it draws: `chart_type` (`column`,
   `line`, `area` or `pie`), `orientation` (`vertical` or `horizontal`), `stacked`, `legend`
@@ -183,7 +184,7 @@ Out of scope:
   Heading with a `title` and showing its `fields`, schema columns named by table id and
   column id so a rename keeps them. A `show_when` holds `conditions` and whether `all`
   of them must hold, `any`, or at least a whole number of them, 1 or more (`match`); with
-  none, the sheet, section or component always shows.
+  none, the sheet, section, component or field always shows.
   Each is a condition or a group, which holds `conditions` of its own, at least one and no
   group among them, and whether all of those must hold, any, or at least a number of them
   (`match`). A
@@ -552,10 +553,13 @@ Out of scope:
   order opened in turn to its own look, its header's Fill, Font and Align, its cells' Fill
   and Font and Align, each Align Auto, Left, Centre or Right, its Width, blank for Auto, a whole number of
   pixels from 24 to 1000 otherwise refused at the field, not while transposed, and Bold,
-  with Clear while it has a look, a column with one marked in the list; a colour picked
+  with Clear while it has a look, which leaves its Show when, and then its Show when, edited
+  as a component's is, a column with a look marked in the list and one with conditions
+  carrying an eye there; a colour picked
   as the sheets' colours are, shown as it is picked and one undo step, a pick that an undo
   or a redo made while its picker has the focus finishes first committing nothing more as
-  the picker is left, and a column that stops being shown losing its look), a
+  the picker is left, and a column that stops being shown losing its look and its Show
+  when), a
   Collection's look, set as a Table's is (its density and its text size; its Labels,
   their Position, Above or Beside, while beside their Width, blank for Auto, a whole
   percentage of the field from 1 to 99 otherwise refused at the field, their Case, Size,
@@ -564,8 +568,9 @@ Out of scope:
   of pixels from 24 to 1000 otherwise refused at the field; its Frame and, while framed, the frame's
   Weight and Colour; and its Fields, each in its order opened in turn to its own look, its
   label's Fill, Font and Align, its box's Fill, Font and Align, Width and Bold, with Clear while
-  it has a look, a field with one marked in the list; its colours picked as a Table's are,
-  and a field that stops being shown losing its look), a
+  it has a look, and its Show when, as a Table's columns have them, marked in the list as
+  theirs are; its colours picked as a Table's are, and a field that stops being shown losing
+  its look and its Show when), a
   Chart's chart (its type, Column, Line,
   Area or Pie; while it plots many-row tables, what labels its rows, "Row number" or a
   column of a table whose rows line up with its fields, other than an index, by table and
@@ -1128,13 +1133,15 @@ Out of scope:
   keeps no quotes. One who may only read quotes is offered nothing that changes them: no
   New quote, Duplicate, Archive or Restore on the Quotes page, and every quote read only,
   saying that changing it needs the app's edit role.
-- **Shown when.** A sheet, a section or a component with conditions shows only while they
+- **Shown when.** A sheet, a section, a component, or a Table's column or a Collection's
+  field, with conditions shows only while they
   hold on the values typed into the sheets: a new quote's defaults alone while building, and in
   Preview the sample or the underwriter app's quote; a section on a sheet that does not
   show does not show either, nor does a
-  component in a section that does not show.
+  component in a section that does not show, nor a field of a component that does not show.
   - **A condition holds** while its column is in a one-row input table and on a Table or a
-    Collection that shows, and the value typed into it passes the test, read as the server types it:
+    Collection that shows it, the component showing and so does its field, and the value
+    typed into it passes the test, read as the server types it:
     text without the spaces around it, compared exactly; a tick box ticked or not, one
     never touched unticked; a number read as the sample's numbers are (a currency sign,
     separators and spaces allowed) and compared as a number; a date as the day it names;
@@ -1151,8 +1158,8 @@ Out of scope:
     for `one_of` and `not_one_of`, else one), or a value its column could not hold (blank,
     not a number, a fraction for an Integer, not a `YYYY-MM-DD` day).
   - **On a list.** A condition on a many-row input table's rows holds while each column it
-    tests, and a total's column, is on a Table that shows (for a count without tests, one
-    of its table's columns other than the index), and its rows pass: any of the table's rows
+    tests, and a total's column, is on a Table that shows it (for a count without tests,
+    one of its table's columns other than the index), and its rows pass: any of the table's rows
     passing all of its tests, every one of them passing them all and there being at least
     one, the number of rows passing them all by its test, compared as whole numbers, or the
     total of its column's numbers in those rows by its test, compared as numbers to 15
@@ -1172,14 +1179,23 @@ Out of scope:
     section that shows while the cover is Comprehensive and either a driver is under 25 or
     the claims count is at least 2 needs all of the cover's condition and a group needing
     any of the other two.
+  - **Fields.** A Table's column or a Collection's field with a Show when of its own hides
+    by it as a component does, within its component: a Collection's fields after it close
+    up, flowing on through its columns, a spacer going with the fields after it, up to the
+    next spacer, while it has some and all of them hide; a Table leaves the column out of
+    its grid, and a transposed Table the field's line. Its conditions may test its
+    component's other fields, which is what they are for: the earthquake fields of a
+    Collection shown while its earthquake box is ticked. A field that its own value alone
+    shows could never show again once hidden, as a section's own tick box inside it could
+    not.
   - **Decided at once.** What shows is decided for the whole form together: everything
     starts shown and anything whose conditions fail is hidden, which may hide a column another
     condition tests, until nothing more hides. So a sheet that shows when a box on a
     hidden sheet is ticked is hidden too, whatever the box holds, as is a section that
-    shows when a box in a hidden section is ticked, and the order of the sheets, sections
-    and components decides nothing.
+    shows when a box in a hidden section is ticked, and the order of the sheets, sections,
+    components and fields decides nothing.
   - **A quote is what the sheets show.** A value typed into an input column that is on
-    Tables or Collections, none of which shows, is left out of the quote, as if it had never
+    Tables or Collections, none of which shows it, is left out of the quote, as if it had never
     been typed: a row with nothing typed in it but such values is left out as an empty row
     is; the index, which nothing is typed into, is never left out; and a column on no Table
     or Collection is not left out. A Chart takes nothing typed, so the columns it plots
@@ -1192,15 +1208,17 @@ Out of scope:
     column shows. The server leaves them out where it makes a quote of the form's values,
     so the sample priced in Preview, the sample the Workbench Input's copy holds and the
     app's quote leave out the same values.
-  - **While building** a new quote decides, its defaults alone typed: a hidden sheet's tab, a hidden section and a
-    hidden component are drawn faded, still shown, selected and edited like any other, the
-    sheet's sections keeping their places, and a sheet, a section or a component with
-    conditions carries an eye (a section's in its bar), struck through while it is
-    hidden, that names its conditions on hover.
+  - **While building** a new quote decides, its defaults alone typed: a hidden sheet's tab, a hidden section, a
+    hidden component and a hidden field are drawn faded, still shown, selected and edited
+    like any other, the sheet's sections and a component's fields keeping their places, and
+    a sheet, a section, a component or a field with conditions carries an eye (a section's
+    in its bar, a field's after its label, or a column's in its header), struck through
+    while it is hidden, that names its conditions on hover.
   - **In Preview** the values decide as they are typed, the sample or the app's quote: a hidden sheet has no tab; a hidden
-    section is not drawn and the sections under it move up to close the space it took; and
+    section is not drawn and the sections under it move up to close the space it took;
     a hidden component is not drawn, its place in its section left empty, since the
-    components are placed freely in it. While the sheet chosen is hidden, the first sheet
+    components are placed freely in it; and a hidden field is not drawn, its component
+    closing up around it (Fields, above). While the sheet chosen is hidden, the first sheet
     that shows is shown in its place, and while none shows the view says "No sheet shows
     for this quote." Fitting takes the components that show. While a pointer's primary
     button is pressed on the sheet, what shows and where, the sheet showing included, stays
@@ -1213,14 +1231,15 @@ Out of scope:
     place stays where it was; nothing scrolls when that section itself closes.
   - **Problems.** The view names, on the dashed frame of a component, on a section's bar
     and in the warning colour on a sheet's tab, on hover and to a screen reader, what stops
-    a sheet's, a section's or a component's conditions doing what they say: a condition
+    a sheet's, a section's, a component's or a field's conditions doing what they say, a
+    field's on its component's frame naming the field: a condition
     that cannot hold as written, saying why; a value that is not one of its column's
     allowed values; a `show_when` or a group asking for at least more conditions than it
-    holds; and a sheet, section or component that nothing could show again once
+    holds; and a sheet, section, component or field that nothing could show again once
     hidden, since each column its conditions need (for a count without tests, each of its
     table's columns but the index) is on no Table or Collection, or only on
-    itself, on its own components or on components that cannot show without it, as a tick
-    box in the very section it shows is. None is refused: the form is saved as it is.
+    itself, on its own components or on components or fields that cannot show without it,
+    as a tick box in the very section it shows is. None is refused: the form is saved as it is.
 - **Saved.** A successful save of the form adopts the file's new revision; the project
   save then fetches the tables afresh, so the Workbench Input's and Workbench Output's
   copies follow the schema, as after any fetch, and saves the pipeline with them. A save refused
@@ -1690,6 +1709,18 @@ Out of scope:
   never shrinks of its own accord. While building, every section keeps its place under its
   bar, faded while hidden, so it can be edited; Preview stacks those that show, with no
   bars.
+- **Fields close up within their component.** A field that applies only while a box is
+  ticked, such as the four earthquake fields of a building's rating under its earthquake
+  box, would otherwise need a section of its own for each such box, a dozen for one table.
+  A Collection already flows its fields through its columns and a Table lays its columns
+  side by side, so a field that hides is one fewer in that flow, and closing it up moves
+  only the fields after it within the same component, in their order: nothing outside the
+  component moves, and nothing overlaps. The component keeps its size, so a section's
+  layout stays as the builder made it. A field's conditions are written as a component's
+  are and decided in the same rounds, so a field hiding only ever hides more, and a value
+  only hidden fields take is left out of the quote as one only hidden components take is.
+  The conditions that apply are a whole column's: a Table's cell does not hide row by row
+  by its own row's values.
 - **Nothing moves under the underwriter.** A section that opens or closes moves what is
   under it while the underwriter works. A text cell commits as it is left, and pressing a
   tick box or a button leaves it, so the commit could move the press's target between
@@ -1940,8 +1971,8 @@ Out of scope:
   visible in both views until it is fixed.
 - A condition that cannot hold as written is refused nowhere: the form reads, saves and
   serves its tables with it, the condition never holds, so what it is on stays hidden and
-  the values only hidden components show are left out of the quote, and the view names
-  the problem on the sheet or component while building. A `show_when`, a condition or a
+  the values only hidden components or fields show are left out of the quote, and the view
+  names the problem on the sheet or component while building. A `show_when`, a condition or a
   test the form's shape does not have (an unknown `op`, a `values` entry that is not text,
   a group with no conditions or with a group among them, a condition in any or every row
   with no test, a total that is not a sum, least, greatest or average, a count that is not a

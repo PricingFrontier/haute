@@ -195,6 +195,17 @@ FORM: dict[str, Any] = {
                                     "bold": True,
                                     "align": "right",
                                     "width": 64,
+                                    "show_when": {
+                                        "match": "all",
+                                        "conditions": [
+                                            {
+                                                "table": "t_policy",
+                                                "column": "c_exposure",
+                                                "op": "filled",
+                                                "values": [],
+                                            }
+                                        ],
+                                    },
                                 }
                             ],
                             "spacers": [1],
@@ -261,6 +272,7 @@ FORM: dict[str, Any] = {
                                     "bold": True,
                                     "align": "center",
                                     "width": 120,
+                                    "show_when": {"match": "all", "conditions": []},
                                 }
                             ],
                         },
@@ -725,6 +737,24 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
             ),
             "look for t_layers.c_limit changes nothing",
         ),
+        # A column always shown with its Table changes nothing either, whatever its match;
+        # its Show when is a component's.
+        (
+            lambda f: widgets(f)[1].update(
+                column_looks=[
+                    {
+                        "table": "t_layers",
+                        "column": "c_limit",
+                        "show_when": {"match": "any", "conditions": []},
+                    }
+                ]
+            ),
+            "look for t_layers.c_limit changes nothing",
+        ),
+        (
+            lambda f: widgets(f)[1]["column_looks"][0].update(show_when={"match": "none"}),
+            "show_when.match",
+        ),
         (lambda f: widgets(f)[1]["column_looks"][0].update(width=23), "width"),
         (lambda f: widgets(f)[1]["column_looks"][0].update(width=1001), "width"),
         (lambda f: widgets(f)[1]["column_looks"][0].update(align="justify"), "align"),
@@ -860,6 +890,25 @@ def test_an_unknown_field_or_a_value_outside_the_shape_is_refused(
     ) as caught:
         read_form_document(config(tmp_path))
     assert where in str(caught.value)
+
+
+def test_a_column_look_holding_only_a_show_when_is_kept() -> None:
+    form = json.loads(json.dumps(FORM))
+    show_when = {
+        "match": "any",
+        "conditions": [
+            {"table": "t_policy", "column": "c_state", "op": "equals", "values": ["NY"]}
+        ],
+    }
+    widgets(form)[1]["column_looks"] = [
+        {"table": "t_layers", "column": "c_limit", "show_when": show_when}
+    ]
+
+    look = widgets(FormSpec.model_validate(form).model_dump(mode="json"))[1]["column_looks"]
+
+    assert [(entry["column"], entry["show_when"], entry["bold"]) for entry in look] == [
+        ("c_limit", show_when, False)
+    ]
 
 
 def test_a_section_or_sheet_too_small_for_a_component_is_grown_as_it_is_read_and_said(

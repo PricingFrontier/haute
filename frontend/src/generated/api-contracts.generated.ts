@@ -2529,9 +2529,9 @@ export interface Section {
   widgets: (TableInputWidget | CollectionWidget | ChartWidget | HeadingWidget)[];
 }
 /**
- * When a sheet, a section or a widget shows: always, without conditions; else while all
- * of them hold, any, or at least a number of them, as ``match`` says, each a condition or a
- * group of them.
+ * When a sheet, a section, a widget or a widget's field shows: always, without
+ * conditions; else while all of them hold, any, or at least a number of them, as ``match``
+ * says, each a condition or a group of them.
  */
 export interface ShowWhen {
   conditions: (Condition | RowsCondition | RowCount | RowTotal | ConditionGroup)[];
@@ -2668,12 +2668,13 @@ export interface TableInputWidget {
   y: number;
 }
 /**
- * How one of a Table's columns, or one of a Collection's fields, looks, its field by table
- * and column id: each colour the component's own while None, its values placed as its type
- * puts them, or as the Collection places its boxes', while ``align`` is ``auto``, its label
- * over a Table's column as its values sit, or as the Collection places its labels, while
- * ``header_align`` is, and, while ``width`` is None, a Table's column as wide as the grid
- * makes it and a Collection's box as wide as the Collection makes it.
+ * How one of a Table's columns, or one of a Collection's fields, looks and when it shows,
+ * its field by table and column id: each colour the component's own while None, its values
+ * placed as its type puts them, or as the Collection places its boxes', while ``align`` is
+ * ``auto``, its label over a Table's column as its values sit, or as the Collection places
+ * its labels, while ``header_align`` is, while ``width`` is None, a Table's column as wide as
+ * the grid makes it and a Collection's box as wide as the Collection makes it, and shown
+ * with its component while ``show_when`` has no conditions.
  */
 export interface ColumnLook {
   align: 'auto' | 'left' | 'center' | 'right';
@@ -2684,6 +2685,7 @@ export interface ColumnLook {
   header_align: 'auto' | 'left' | 'center' | 'right';
   header_color: string | null;
   header_font_color: string | null;
+  show_when: ShowWhen;
   table: string;
   width: number | null;
 }

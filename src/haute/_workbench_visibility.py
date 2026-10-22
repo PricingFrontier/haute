@@ -1,21 +1,22 @@
-"""Which sheets, sections and components show for values typed into the sheets, and so
-which input columns a quote leaves out (specs/workbench).
+"""Which sheets, sections, components and fields show for values typed into the sheets, and
+so which input columns a quote leaves out (specs/workbench).
 
-A sheet, a section or a component with conditions shows only while they hold on the values
-typed into the sheets, all of them, any or at least a number, a group of them holding as
-one; a section on a sheet that does not show does not show either, nor does a component in
-a section that does not show. A
-condition holds while it fits (``condition_fits``), its column is on a Table or a
-Collection that shows (a Chart takes nothing typed, so its columns never count, and a
+A sheet, a section, a component or a field of a Table or a Collection with conditions shows
+only while they hold on the values typed into the sheets, all of them, any or at least a
+number, a group of them holding as one; a section on a sheet that does not show does not
+show either, nor does a component in a section that does not show, nor a field of a
+component that does not show. A
+condition holds while it fits (``condition_fits``), its column is a field that shows of a
+Table or a Collection (a Chart takes nothing typed, so its columns never count, and a
 Heading has none), and the value typed into the column passes its test, read as the
 sample's values are typed. A condition on a list's rows holds while each column it tests
-is on a Table that shows (for a count without tests, one of its table's columns) and the
-table's typed rows passing all of its tests in the same row do: any of them, every one
-(there being one), how many, or a total of a number column over them. Everything starts
+is a field that shows of a Table (for a count without tests, one of its table's columns)
+and the table's typed rows passing all of its tests in the same row do: any of them, every
+one (there being one), how many, or a total of a number column over them. Everything starts
 shown and anything whose conditions fail is hidden, round after round, until a round hides
 nothing: hiding never shows anything, so the answer does not depend on the order of the
-sheets, sections, components or conditions. A condition that does not fit never holds; it
-is a problem the view reports, never an error here.
+sheets, sections, components, fields or conditions. A condition that does not fit never
+holds; it is a problem the view reports, never an error here.
 
 The view applies the same rules in ``frontend/src/utils/sheetVisibility.ts``; both are
 held to the cases in ``frontend/src/utils/__tests__/fixtures/sheetVisibility.json``.
@@ -106,32 +107,38 @@ class Visibility:
     sections: frozenset[str]
     #: The ids of the components that show, each in a section that shows.
     widgets: frozenset[str]
+    #: The fields that show of the Tables and Collections that show, each a component id, a
+    #: table id and a column id.
+    fields: frozenset[tuple[str, str, str]]
     #: The input columns left out of the quote, each a table id and a column id: columns
-    #: other than the index on at least one Table or Collection, none of which shows.
+    #: other than the index on at least one Table or Collection, none of which shows them
+    #: as a field that shows.
     hidden: frozenset[tuple[str, str]]
 
 
 def visibility(spec: FormSpec, rows: Rows) -> Visibility:
-    """Which of *spec*'s sheets, sections and components show for *rows*, and which columns
-    hide."""
+    """Which of *spec*'s sheets, sections, components and fields show for *rows*, and which
+    columns hide."""
     placed = [
         (page, section, widget)
         for page in spec.pages
         for section in page.sections
         for widget in section.widgets
     ]
+    entered = [
+        (widget.id, field, _field_show_when(widget, field))
+        for _, _, widget in placed
+        for field in _entered(widget)
+    ]
     pages = {page.id for page in spec.pages}
     sections = {section.id for page in spec.pages for section in page.sections}
     widgets = {widget.id for _, _, widget in placed}
+    fields = {(widget_id, field.table, field.column) for widget_id, field, _ in entered}
     while True:
-        # A component still shown is in a section and on a sheet still shown: each round
-        # hides a sheet's sections and a section's components with it.
-        shown = {
-            (field.table, field.column)
-            for _, _, widget in placed
-            if widget.id in widgets
-            for field in _entered(widget)
-        }
+        # A field still shown is of a component, in a section and on a sheet, still shown:
+        # each round hides a sheet's sections, a section's components and a component's
+        # fields with it.
+        shown = {(table, column) for _, table, column in fields}
         hiding_pages = {
             page.id
             for page in spec.pages
@@ -150,11 +157,18 @@ def visibility(spec: FormSpec, rows: Rows) -> Visibility:
             if widget.id in widgets
             and (section.id in hiding_sections or not _shows(spec, widget.show_when, rows, shown))
         }
-        if not hiding_pages and not hiding_sections and not hiding_widgets:
+        hiding_fields = {
+            key
+            for widget_id, field, show_when in entered
+            if (key := (widget_id, field.table, field.column)) in fields
+            and (widget_id in hiding_widgets or not _shows(spec, show_when, rows, shown))
+        }
+        if not hiding_pages and not hiding_sections and not hiding_widgets and not hiding_fields:
             break
         pages -= hiding_pages
         sections -= hiding_sections
         widgets -= hiding_widgets
+        fields -= hiding_fields
     on_widgets = {
         (field.table, field.column) for _, _, widget in placed for field in _entered(widget)
     }
@@ -166,13 +180,37 @@ def visibility(spec: FormSpec, rows: Rows) -> Visibility:
         if not column.index
     }
     hidden = (on_widgets - shown) & inputs
-    return Visibility(frozenset(pages), frozenset(sections), frozenset(widgets), frozenset(hidden))
+    return Visibility(
+        frozenset(pages),
+        frozenset(sections),
+        frozenset(widgets),
+        frozenset(fields),
+        frozenset(hidden),
+    )
 
 
 def _entered(widget: Widget) -> list[FieldRef]:
     """The columns a component has values typed into: a Table's and a Collection's fields,
     none of a Chart's, which it only plots, and none of a Heading, which has no fields."""
     return widget.fields if isinstance(widget, TableInputWidget | CollectionWidget) else []
+
+
+_ALWAYS = ShowWhen()
+
+
+def _field_show_when(widget: Widget, field: FieldRef) -> ShowWhen:
+    """When a Table's or a Collection's field shows with its component: as its look's
+    ``show_when`` says, always without a look."""
+    if not isinstance(widget, TableInputWidget | CollectionWidget):
+        return _ALWAYS
+    return next(
+        (
+            look.show_when
+            for look in widget.column_looks
+            if (look.table, look.column) == (field.table, field.column)
+        ),
+        _ALWAYS,
+    )
 
 
 def condition_fits(spec: FormSpec, condition: SingleCondition) -> bool:

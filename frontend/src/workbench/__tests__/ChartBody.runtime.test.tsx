@@ -9,7 +9,8 @@ import type { ReactNode } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPricingStore from "../../stores/useWorkbenchPricingStore"
-import { shownFields, withSampleCell } from "../../utils/workbenchForm"
+import { withSampleCell } from "../../utils/workbenchForm"
+import { everyField } from "../sheet/fieldCells"
 import { SheetValuesContext, useSampleValues } from "../useSheetValues"
 import WidgetBody from "../WidgetBody"
 import { addTo, chartWidget, currentForm, loadForm, sheetForm, widgetsOf } from "./fixtures"
@@ -57,7 +58,7 @@ describe("ChartBody's runtime", () => {
     const chart = widgetsOf(currentForm())[2]
     render(
       <OnSheet>
-        <WidgetBody widget={chart} fields={shownFields(currentForm().schema, chart)} />
+        <WidgetBody widget={chart} drawn={everyField(currentForm().schema, chart)} />
       </OnSheet>,
     )
 

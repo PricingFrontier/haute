@@ -32,6 +32,7 @@ import {
   findSection,
   findWidget,
   fitSection,
+  hasOwnLook,
   HEADING_OPTIONS,
   keptInside,
   labelColumns,
@@ -1612,7 +1613,7 @@ describe("when sheets and components show", () => {
     title,
     fields: columns.map(([tableId, columnId]) => ({ table: tableId, column: columnId })),
     show_when: showWhen,
-    columns: 3, ...COLLECTION_OPTIONS,
+    columns: 3, ...COLLECTION_OPTIONS, column_looks: [], spacers: [],
   })
   /**
    * A tick box and a class on the main sheet, in its section "Policy", and a sheet of
@@ -1683,6 +1684,45 @@ describe("when sheets and components show", () => {
     expect(withoutPolicy.pages[1].show_when.conditions).toEqual([])
     expect(findSection(withoutPolicy, "s_bi")?.section.show_when.conditions).toEqual([])
     expect(findWidget(withoutPolicy, "w_bi")?.widget.show_when.conditions).toEqual([])
+  })
+
+  it("gives a field a Show when of its own in its look, which its uses count and its column takes out with it", () => {
+    const bi = { table: "policy", column: "policy.bi" }
+    const klass = { table: "policy", column: "policy.class" }
+    const onClass: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"] }
+    const policy = (form: FormSpec) => findWidget(form, "w_policy")?.widget as Extract<Widget, { type: "collection" }>
+    const spec = setColumnLook(covered(), "w_policy", bi, { show_when: { match: "any", conditions: [onClass] } })
+    expect(policy(spec).column_looks).toEqual([{ ...bi, ...PLAIN_COLUMN_LOOK, show_when: { match: "any", conditions: [onClass] } }])
+    expect(hasOwnLook(columnLook(policy(spec), bi))).toBe(false)
+    expect(conditionUses(spec, "policy", "policy.class").map((holder) => holder.id)).toEqual(["w_policy"])
+
+    // Clear puts back its look and keeps its Show when; emptied of conditions, it always
+    // shows, so a look that sets nothing else goes.
+    const bold = setColumnLook(spec, "w_policy", bi, { bold: true })
+    expect(hasOwnLook(columnLook(policy(bold), bi))).toBe(true)
+    expect(policy(setColumnLook(bold, "w_policy", bi, "clear")).column_looks).toEqual(policy(spec).column_looks)
+    expect(policy(setColumnLook(spec, "w_policy", bi, { show_when: { match: 2, conditions: [] } })).column_looks).toEqual([])
+    expect(policy(setColumnLook(bold, "w_policy", bi, { show_when: { match: 2, conditions: [] } })).column_looks).toEqual([
+      { ...bi, ...PLAIN_COLUMN_LOOK, bold: true, show_when: { match: "all", conditions: [] } },
+    ])
+
+    // Its conditions go with the column they test, and its look with them while it sets nothing else.
+    expect(policy(removeSchemaColumn(spec, "policy", "policy.class")).column_looks).toEqual([])
+    expect(policy(removeSchemaColumn(setColumnLook(spec, "w_policy", bi, { bold: true }), "policy", "policy.class")).column_looks).toEqual([
+      { ...bi, ...PLAIN_COLUMN_LOOK, bold: true, show_when: { match: "all", conditions: [] } },
+    ])
+    expect(policy(removeSchemaColumn(spec, "policy", "policy.start")).column_looks).toEqual(policy(spec).column_looks)
+
+    // Pasted after the column it tests is gone, the copy holds no condition on it.
+    const copied = policy(spec)
+    const pasted = pasteWidget(removeSchemaColumn(spec, "policy", "policy.class"), copied, "s_main")
+    expect((findWidget(pasted.spec, pasted.id)?.widget as Extract<Widget, { type: "collection" }>).column_looks).toEqual([])
+
+    // A field waiting on itself is named on its component, by its label.
+    const own = setColumnLook(covered(), "w_policy", klass, { show_when: { match: "all", conditions: [onClass] } })
+    expect(widgetProblems(own).map((p) => p.message)).toEqual([
+      'Collection "Policy"\'s field "Class" waits on class, which is only on fields that hide with it, so it could not show again once hidden',
+    ])
   })
 
   it("counts a Heading's conditions as any component's, and takes them out with their column or table", () => {

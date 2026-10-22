@@ -3,10 +3,12 @@ import { type CSSProperties, Fragment } from "react"
 import { cellKey } from "../../utils/sheetValues"
 import { columnKey } from "../../utils/sheetVisibility"
 import { type CollectionOptions, type ColumnLookOptions, type ShownField } from "../../utils/workbenchForm"
+import { ShowWhenMark } from "../ShowWhenEditor"
 import { useSheetValues } from "../useSheetValues"
 import { Cell, FieldLabel } from "./Cell"
 import {
   BOX_GAPS,
+  HIDDEN_OPACITY,
   LINE_WIDTH,
   ROW_HEIGHT,
   SPACER_HEIGHT,
@@ -18,6 +20,7 @@ import {
   looksByKey,
   shown,
   typeHere,
+  type FieldMark,
 } from "./fieldCells"
 import { type SheetColours } from "./sheetColours"
 
@@ -49,6 +52,9 @@ const VALUE_PLACE: Record<ColumnLookOptions["align"], CSSProperties["justifyCont
  * gap across its whole width where each of its spacers sits, the fields after it starting a
  * new row. An output column shows what pricing gave its table's one row, dimmed while the
  * price is for other values, and a dash before the first answer or after pricing fails.
+ * It draws the fields it is given, in Preview those that show, with `spacers` placed among
+ * them; while building, a field with conditions carries an eye after its label, and one a
+ * new quote hides is faded (`marks`).
  *
  * Its look, as a Table's is set: its values' size; its labels' size, case, weight, wrapping,
  * place, fill and colour, a filled label padded as a cell and, beside its box, as tall as
@@ -61,11 +67,16 @@ const VALUE_PLACE: Record<ColumnLookOptions["align"], CSSProperties["justifyCont
  */
 export function FieldBoxes({
   fields,
+  spacers,
+  marks,
   columns,
   options,
   colours,
 }: {
   fields: ShownField[]
+  /** Each the number of `fields` before it, in order. */
+  spacers: readonly number[]
+  marks: ReadonlyMap<string, FieldMark>
   columns: number
   options: CollectionOptions
   colours: SheetColours
@@ -81,7 +92,7 @@ export function FieldBoxes({
   const boxStyle = (fill: string | null): CSSProperties => ({ border, ...(fill === null ? {} : { background: fill }) })
   // The spacers before the field at `at`, or after the last field for the end.
   const spacersAt = (at: number) =>
-    options.spacers.flatMap((place, n) =>
+    spacers.flatMap((place, n) =>
       place === at || (at === fields.length && place > at)
         ? [<div key={`spacer-${n}`} aria-hidden="true" data-testid="collection-spacer" className={SPACER_HEIGHT[options.density]} style={{ gridColumn: "1 / -1" }} />]
         : [],
@@ -115,10 +126,16 @@ export function FieldBoxes({
         const boxPlace: CSSProperties =
           width === null ? (beside ? TAKES_THE_REST : {}) : { width, minWidth: 0, maxWidth: "100%", ...(beside ? {} : BOX_PLACE[boxAlign]) }
         const valueText: CSSProperties = { fontSize: options.font_size, ...(look.bold ? { fontWeight: 600 } : {}), ...valueAcross }
+        const mark = marks.get(key)
         return (
           <Fragment key={key}>
             {spacersAt(index)}
-            <div className={`flex min-w-0 ${beside ? "items-center gap-2" : "flex-col gap-1"}`} title={fieldTitle(found)}>
+            <div
+              className={`flex min-w-0 ${beside ? "items-center gap-2" : "flex-col gap-1"}`}
+              title={fieldTitle(found)}
+              data-hidden={mark?.faded ? "true" : undefined}
+              style={mark?.faded ? { opacity: HIDDEN_OPACITY } : undefined}
+            >
               <span
                 data-testid={`label-${key}`}
                 className={`flex min-w-0 items-center ${fill === null ? "" : `rounded-md px-2.5 ${beside ? "self-stretch" : "py-1"}`}`}
@@ -127,6 +144,7 @@ export function FieldBoxes({
                 <span className={`min-w-0 flex-1 ${label.className} ${options.header_wrap ? "break-words" : "truncate"}`} style={{ ...label.style, ...labelAcross }}>
                   <FieldLabel found={found} />
                 </span>
+                {mark !== undefined && <ShowWhenMark hidden={mark.hidden} title={mark.conditions} className="ml-1" />}
               </span>
               {fillable(found) ? (
                 <div className="pointer-events-auto" style={boxPlace} onPointerDown={typeHere}>

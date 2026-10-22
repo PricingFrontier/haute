@@ -10,14 +10,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import type { ReactNode } from "react"
+import type { FormSpec, ShowWhen } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { previewBasis } from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { valuesBasis } from "../../utils/sheetValues"
-import { addSchemaColumn, addSchemaTable, BLANK_THEME, createWidget, setColumnLook, shownFields, toggleField, updateSchemaColumn, updateWidget, type WidgetPatch } from "../../utils/workbenchForm"
+import { addSchemaColumn, addSchemaTable, BLANK_THEME, createWidget, setColumnLook, toggleField, updateSchemaColumn, updateWidget, type WidgetPatch } from "../../utils/workbenchForm"
 import SheetCanvas from "../SheetCanvas"
 import { SheetValuesContext, useNewQuoteValues, useQuoteValues, useSampleValues } from "../useSheetValues"
+import { everyField } from "../sheet/fieldCells"
 import WidgetBody from "../WidgetBody"
 import { addTo, column, coverForm, currentForm, headingWidget, hiddenPerilsForm, loadForm, releasePointer, sheetForm, stubLayout, table, widgetsOf } from "./fixtures"
 
@@ -40,7 +42,7 @@ function OnSheet({ values, children }: { values: Values; children: ReactNode }) 
 
 const body = (id: string, values: Values = "sample") => (
   <OnSheet values={values}>
-    <WidgetBody widget={widget(id)} fields={shownFields(currentForm().schema, widget(id))} />
+    <WidgetBody widget={widget(id)} drawn={everyField(currentForm().schema, widget(id))} />
   </OnSheet>
 )
 
@@ -698,6 +700,59 @@ describe("WidgetBody", () => {
     loadForm(updateWidget(currentForm(), "w_boxes", { density: "compact" }))
     renderBody("w_boxes")
     expect(screen.getAllByTestId("collection-spacer")[0]).toHaveClass("h-2")
+  })
+
+  it("closes a Collection up in Preview around a field that hides, a spacer going with the fields after it, and fades the field while building, its eye naming its conditions", () => {
+    const year = { table: "policy", column: "policy.year" }
+    const covered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [] }] }
+    // Through JSON, so no two components share a list of looks.
+    const base: FormSpec = JSON.parse(JSON.stringify(coverForm()))
+    const fields = [{ table: "policy", column: "policy.state" }, { table: "policy", column: "policy.cover" }, year]
+    loadForm(setColumnLook(updateWidget(base, "w_boxes", { fields, spacers: [2] }), "w_boxes", year, { show_when: covered }))
+    render(<SheetCanvas />)
+    const boxes = () => screen.getByTestId("sheet-widget-w_boxes")
+
+    // While building a new quote hides it: faded, its eye struck through, its spacer kept.
+    const eye = within(boxes()).getByRole("img", { name: "Hidden for a new quote. Shows when Cover is ticked" })
+    expect(eye.closest("[data-hidden]")).toBe(within(boxes()).getByRole("textbox", { name: "Year" }).closest("[data-hidden]"))
+    expect(within(boxes()).getAllByTestId("collection-spacer")).toHaveLength(1)
+
+    // In Preview the sample decides: neither the year nor its spacer is drawn until cover is ticked.
+    act(() => useWorkbenchViewStore.setState({ section: "preview" }))
+    expect(within(boxes()).queryByRole("textbox", { name: "Year" })).not.toBeInTheDocument()
+    expect(within(boxes()).queryAllByTestId("collection-spacer")).toHaveLength(0)
+    expect(within(boxes()).queryByRole("img", { name: /Shows when/ })).not.toBeInTheDocument()
+    fireEvent.click(within(boxes()).getByRole("checkbox", { name: "Cover" }))
+    expect(within(boxes()).getByRole("textbox", { name: "Year" })).toBeInTheDocument()
+    expect(within(boxes()).getAllByTestId("collection-spacer")).toHaveLength(1)
+  })
+
+  it("leaves a Table's column that hides out of its grid in Preview, transposed its line, its rows still moving with every table it shows", () => {
+    const value = { table: "equipment", column: "equipment.value" }
+    const note = { table: "extras", column: "extras.note" }
+    const covered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [] }] }
+    const base: FormSpec = JSON.parse(JSON.stringify(coverForm()))
+    base.schema.tables.push(table("extras", "extras", { rows: "many", columns: [column("extras.item", "item", { key: true }), column("extras.note", "note")] }))
+    let form = updateWidget(base, "w_grid", { fields: [{ table: "equipment", column: "equipment.item" }, value, note] })
+    form = setColumnLook(setColumnLook(form, "w_grid", value, { show_when: covered }), "w_grid", note, { show_when: covered })
+    loadForm({ ...form, sample: { equipment: [{ "equipment.item": "Crane" }, { "equipment.item": "Lift" }], extras: [{ "extras.note": "first" }, { "extras.note": "second" }] } })
+    render(<SheetCanvas />)
+    const grid = () => screen.getByTestId("sheet-widget-w_grid")
+
+    // While building, faded, its eye in its header.
+    expect(within(grid()).getByRole("columnheader", { name: /^Value/ })).toHaveAttribute("data-hidden", "true")
+    expect(within(grid()).getAllByRole("img", { name: "Hidden for a new quote. Shows when Cover is ticked" })).toHaveLength(2)
+
+    act(() => useWorkbenchViewStore.setState({ section: "preview" }))
+    expect(within(grid()).getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["#", "Item", ""])
+    // A row deleted goes from every table the grid shows, the one whose columns all hide too.
+    fireEvent.click(within(grid()).getByRole("button", { name: "Delete row 1" }))
+    expect(currentForm().sample.equipment).toEqual([{ "equipment.item": "Lift" }])
+    expect(currentForm().sample.extras).toEqual([{ "extras.note": "second" }])
+
+    // Transposed, the field's line goes.
+    act(() => useWorkbenchFormStore.getState().change((spec) => updateWidget(spec, "w_grid", { transposed: true })))
+    expect(within(grid()).getAllByRole("rowheader").map((header) => header.textContent)).toEqual(["Item"])
   })
 
   it("draws the components in the sheets' colours: the font, the borders, the backgrounds and the input and output cells' fills", () => {

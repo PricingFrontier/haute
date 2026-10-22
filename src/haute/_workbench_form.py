@@ -285,21 +285,22 @@ ShowWhenEntry = Annotated[
 
 
 class ShowWhen(_Strict):
-    """When a sheet, a section or a widget shows: always, without conditions; else while all
-    of them hold, any, or at least a number of them, as ``match`` says, each a condition or a
-    group of them."""
+    """When a sheet, a section, a widget or a widget's field shows: always, without
+    conditions; else while all of them hold, any, or at least a number of them, as ``match``
+    says, each a condition or a group of them."""
 
     match: Match = "all"
     conditions: list[ShowWhenEntry] = Field(default_factory=list)
 
 
 class ColumnLook(_Strict):
-    """How one of a Table's columns, or one of a Collection's fields, looks, its field by table
-    and column id: each colour the component's own while None, its values placed as its type
-    puts them, or as the Collection places its boxes', while ``align`` is ``auto``, its label
-    over a Table's column as its values sit, or as the Collection places its labels, while
-    ``header_align`` is, and, while ``width`` is None, a Table's column as wide as the grid
-    makes it and a Collection's box as wide as the Collection makes it."""
+    """How one of a Table's columns, or one of a Collection's fields, looks and when it shows,
+    its field by table and column id: each colour the component's own while None, its values
+    placed as its type puts them, or as the Collection places its boxes', while ``align`` is
+    ``auto``, its label over a Table's column as its values sit, or as the Collection places
+    its labels, while ``header_align`` is, while ``width`` is None, a Table's column as wide as
+    the grid makes it and a Collection's box as wide as the Collection makes it, and shown
+    with its component while ``show_when`` has no conditions."""
 
     table: str
     column: str
@@ -312,11 +313,16 @@ class ColumnLook(_Strict):
     bold: bool = False
     align: ColumnAlign = "auto"
     width: int | None = Field(default=None, ge=COLUMN_WIDTH_MIN, le=COLUMN_WIDTH_MAX)
+    show_when: ShowWhen = Field(default_factory=ShowWhen)
 
 
-#: A column look that changes nothing, which no Table or Collection holds: a column without a
-#: look of its own has none.
-_PLAIN_LOOK = ColumnLook(table="", column="").model_dump(exclude={"table", "column"})
+#: A column look's fields that are not how it looks: its field and when it shows.
+_NOT_ITS_LOOK = {"table", "column", "show_when"}
+
+#: A column look's look that changes nothing: with a ``show_when`` without conditions, which
+#: always shows whatever its ``match``, a look no Table or Collection holds, as a column
+#: without a look of its own has none.
+_PLAIN_LOOK = ColumnLook(table="", column="").model_dump(exclude=_NOT_ITS_LOOK)
 
 
 def _check_column_looks(widget_id: str, fields: list[FieldRef], looks: list[ColumnLook]) -> None:
@@ -332,7 +338,7 @@ def _check_column_looks(widget_id: str, fields: list[FieldRef], looks: list[Colu
         if at in seen:
             raise ValueError(f"widget {widget_id} has two looks for {name}")
         seen.add(at)
-        if look.model_dump(exclude={"table", "column"}) == _PLAIN_LOOK:
+        if look.model_dump(exclude=_NOT_ITS_LOOK) == _PLAIN_LOOK and not look.show_when.conditions:
             raise ValueError(
                 f"widget {widget_id}'s look for {name} changes nothing: a column without a "
                 "look of its own has none"

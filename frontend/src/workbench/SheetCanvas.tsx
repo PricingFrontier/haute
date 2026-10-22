@@ -87,12 +87,16 @@ export default function SheetCanvas() {
   let showing: Page | null = null
   if (form !== null) showing = previewing ? shownPage(form, pageId, visibility.pages) : activePage(form, pageId)
   const live = useMemo(
-    () => ({ page: showing, sections: showing === null ? NO_SECTIONS : previewing ? previewSections(showing, visibility) : showing.sections }),
+    () => ({
+      page: showing,
+      sections: showing === null ? NO_SECTIONS : previewing ? previewSections(showing, visibility) : showing.sections,
+      fields: visibility.fields,
+    }),
     [showing, previewing, visibility],
   )
-  // In Preview nothing moves under a pressed pointer, the sheet showing included, and the
-  // underwriter's place is kept.
-  const { page, sections } = useHeldWhilePressed(live, previewing, viewport)
+  // In Preview nothing moves under a pressed pointer, the sheet showing and the fields that
+  // show included, and the underwriter's place is kept.
+  const { page, sections, fields } = useHeldWhilePressed(live, previewing, viewport)
   // While building each section sits under the bar that names it; Preview has none.
   const stack = useMemo(() => stackSections(sections, previewing ? 0 : SECTION_HEADER), [sections, previewing])
   useKeptPlace(viewport, stack, zoom, previewing && page !== null ? page.id : null)
@@ -174,6 +178,7 @@ export default function SheetCanvas() {
                         // Preview draws only what shows, but for what a press holds, never faded.
                         hidden={!previewing && !visibility.widgets.has(widget.id)}
                         conditions={previewing || widget.show_when.conditions.length === 0 ? null : showWhenText(form, widget.show_when)}
+                        fieldsShowing={fields}
                         layer={selected ? top : (layers.get(widget.id) ?? top)}
                       />
                     )

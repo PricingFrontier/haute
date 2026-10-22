@@ -19,17 +19,18 @@ that fill the sheets from databases and APIs.
 sign-in, which waits on the Azure work. It names the review's findings it closes
 (`FB-n`), and the review holds their evidence.
 
-`WB-28` and `WB-29` give the Show when of a sheet, a section and a component more to test:
-other fields, text within text, dates apart and the price.
-Nothing finer than a component hides: a field that applies only while a box is ticked goes
-in a section of its own, which closes up when it hides. The packages keep the rule that
-decides what shows now:
+`WB-28` and `WB-29` give the Show when of a sheet, a section, a component and a field
+more to test: other fields, text within text, dates apart and the price. A Table's column
+and a Collection's field have a Show when of their own ([workbench](../workbench/high-level.md)),
+the whole column hiding; a Table's cell does not hide row by row. The packages keep the
+rule that decides what shows now:
 everything starts shown and rounds only hide, so a condition fails once what it tests
 hides, and there is no "none of", "at most", "exactly" or "not" over a group, any of which
 could come to hold as hiding went on. Decisions taken 2026-10-20: the rounds stay, reading
 a hidden value as empty in dependency order, which would allow those four, not planned;
-and fields, columns and cells with conditions of their own, and rules named once and used
-by many sheets, were offered and not taken.
+and rules named once and used by many sheets were offered and not taken. Fields and
+columns with conditions of their own, not taken that day, were asked for on 2026-10-22;
+cells shown row by row through "this row" tests were offered again and not taken.
 
 ## Priorities
 

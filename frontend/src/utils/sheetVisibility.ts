@@ -1,12 +1,12 @@
 /**
- * The conditions on the sheets, sections and components (specs/workbench): the tests each
- * column's type takes and their words, what stops a condition holding as written, and which
- * sheets, sections and components show for values typed into the sheets, none while
- * building, the sample or the underwriter app's quote in Preview, and so which input
+ * The conditions on the sheets, sections, components and fields (specs/workbench): the tests
+ * each column's type takes and their words, what stops a condition holding as written, and
+ * which sheets, sections, components and fields show for values typed into the sheets, none
+ * while building, the sample or the underwriter app's quote in Preview, and so which input
  * columns a quote leaves out. The server applies the same rules in src/haute/_workbench_visibility.py, and both
  * are held to the cases in __tests__/fixtures/sheetVisibility.json.
  */
-import type { Condition, ConditionGroup, FormSchema, FormSpec, RowCount, RowsCondition, RowTest, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen } from "../api/types"
+import type { Condition, ConditionGroup, FieldRef, FormSchema, FormSpec, RowCount, RowsCondition, RowTest, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen } from "../api/types"
 import { filled, isDay, parseTypedNumber, presetRows, quoteTyped, rowFilled, withPresetRows, type RowsByTable } from "./sheetValues"
 
 export type ConditionTest = Condition["op"]
@@ -27,6 +27,12 @@ type Cell = Row[string]
 
 /** A column's key in a set of columns: its table id and column id. */
 export const columnKey = (tableId: string, columnId: string): string => `${tableId}:${columnId}`
+
+/** A field's key in a set of fields: its component's id and its column's `columnKey`, the `:` between them in no id. */
+export const fieldKey = (widgetId: string, tableId: string, columnId: string): string => `${widgetId}:${columnKey(tableId, columnId)}`
+
+/** When a new sheet, section, component or field shows: always. */
+export const ALWAYS: Readonly<ShowWhen> = { match: "all", conditions: [] }
 
 /** Whether an entry of a `show_when` is a group, told by its fields as the server tells it. */
 export const isGroup = (entry: ShowWhenEntry): entry is ConditionGroup => "conditions" in entry
@@ -296,7 +302,7 @@ function passes(type: ColumnType, condition: ColumnTest, cell: Cell | undefined)
   }
 }
 
-/** Which sheets, sections and components show for the values, and the input columns a quote leaves out. */
+/** Which sheets, sections, components and fields show for the values, and the input columns a quote leaves out. */
 export interface SheetVisibility {
   /** The ids of the sheets that show. */
   pages: ReadonlySet<string>
@@ -304,6 +310,8 @@ export interface SheetVisibility {
   sections: ReadonlySet<string>
   /** The ids of the components that show, each in a section that shows. */
   widgets: ReadonlySet<string>
+  /** The fields that show, by `fieldKey`, each of a Table or a Collection that shows. */
+  fields: ReadonlySet<string>
   /** The input columns left out of the quote, by `columnKey`. */
   hidden: ReadonlySet<string>
 }
@@ -314,6 +322,18 @@ export interface SheetVisibility {
  */
 export const fieldKeys = (widget: Widget): string[] =>
   widget.type === "tableInput" || widget.type === "collection" ? widget.fields.map((field) => columnKey(field.table, field.column)) : []
+
+/** When a Table's or a Collection's field shows with its component: as its look's `show_when` says, always without one (`_field_show_when` on the server). */
+export const fieldShowWhen = (widget: Widget, field: FieldRef): ShowWhen =>
+  widget.type === "tableInput" || widget.type === "collection"
+    ? (widget.column_looks.find((look) => look.table === field.table && look.column === field.column)?.show_when ?? ALWAYS)
+    : ALWAYS
+
+/** A component's fields that take values typed, each by its `fieldKey` and its column's `columnKey`, with when it shows. */
+const enteredFields = (widget: Widget): { key: string; column: string; showWhen: ShowWhen }[] =>
+  widget.type === "tableInput" || widget.type === "collection"
+    ? widget.fields.map((field) => ({ key: fieldKey(widget.id, field.table, field.column), column: columnKey(field.table, field.column), showWhen: fieldShowWhen(widget, field) }))
+    : []
 
 /** Whether all of `entries` hold, any, or at least `match` of them (`_matches` on the server). */
 const matches = <T,>(match: ShowWhen["match"], entries: readonly T[], holds: (entry: T) => boolean): boolean => {
@@ -413,12 +433,14 @@ function decide(spec: FormSpec, rows: RowsByTable): SheetVisibility {
   }
 
   const placed = spec.pages.flatMap((page) => page.sections.flatMap((section) => section.widgets.map((widget) => ({ section, widget }))))
+  const entered = placed.flatMap(({ widget }) => enteredFields(widget).map((field) => ({ widgetId: widget.id, ...field })))
   let pages = new Set(spec.pages.map((page) => page.id))
   let sections = new Set(spec.pages.flatMap((page) => page.sections.map((section) => section.id)))
   let widgets = new Set(placed.map(({ widget }) => widget.id))
-  // A component still shown is in a section and on a sheet still shown: each round hides a
-  // sheet's sections and a section's components with it.
-  const shownColumns = (): Set<string> => new Set(placed.filter(({ widget }) => widgets.has(widget.id)).flatMap(({ widget }) => fieldKeys(widget)))
+  let fields = new Set(entered.map(({ key }) => key))
+  // A field still shown is of a component, in a section and on a sheet, still shown: each
+  // round hides a sheet's sections, a section's components and a component's fields with it.
+  const shownColumns = (): Set<string> => new Set(entered.filter(({ key }) => fields.has(key)).map(({ column }) => column))
 
   // Hiding only ever hides more, so a condition that fails stays failed and the rounds end.
   let hiding = true
@@ -446,14 +468,18 @@ function decide(spec: FormSpec, rows: RowsByTable): SheetVisibility {
         .filter(({ section, widget }) => nextSections.has(section.id) && widgets.has(widget.id) && showWhenPasses(widget.show_when, holds))
         .map(({ widget }) => widget.id),
     )
-    hiding = nextPages.size < pages.size || nextSections.size < sections.size || nextWidgets.size < widgets.size
+    const nextFields = new Set(
+      entered.filter(({ widgetId, key, showWhen }) => nextWidgets.has(widgetId) && fields.has(key) && showWhenPasses(showWhen, holds)).map(({ key }) => key),
+    )
+    hiding = nextPages.size < pages.size || nextSections.size < sections.size || nextWidgets.size < widgets.size || nextFields.size < fields.size
     pages = nextPages
     sections = nextSections
     widgets = nextWidgets
+    fields = nextFields
   }
 
   const shown = shownColumns()
-  const onWidgets = new Set(placed.flatMap(({ widget }) => fieldKeys(widget)))
+  const onWidgets = new Set(entered.map(({ column }) => column))
   const hidden = new Set<string>()
   for (const table of spec.schema.tables) {
     if (table.role !== "input") continue
@@ -462,17 +488,18 @@ function decide(spec: FormSpec, rows: RowsByTable): SheetVisibility {
       if (!column.index && onWidgets.has(key) && !shown.has(key)) hidden.add(key)
     }
   }
-  return { pages, sections, widgets, hidden }
+  return { pages, sections, widgets, fields, hidden }
 }
 
 const decided = new WeakMap<FormSpec, WeakMap<RowsByTable, SheetVisibility>>()
 
 /**
- * Which sheets and components show for the values typed into the sheets, and so which
- * input columns a quote leaves out: everything starts shown, then each round hides a
- * sheet whose conditions fail and a component whose sheet is hidden or whose conditions
- * fail, a condition holding only while its column is on a component still shown, until a
- * round hides nothing. Memoised per form and values, so the same pair gives the same answer.
+ * Which sheets, components and fields show for the values typed into the sheets, and so
+ * which input columns a quote leaves out: everything starts shown, then each round hides a
+ * sheet whose conditions fail, a component whose sheet is hidden or whose conditions fail
+ * and a field whose component is hidden or whose conditions fail, a condition holding only
+ * while its column is a field still shown, until a round hides nothing. Memoised per form
+ * and values, so the same pair gives the same answer.
  */
 export function sheetVisibility(spec: FormSpec, rows: RowsByTable): SheetVisibility {
   let byRows = decided.get(spec)
@@ -515,24 +542,26 @@ export function quoteEligible(form: FormSpec, values: RowsByTable, locked: Reado
 }
 
 /**
- * The sheets, sections and components that nothing could show again once hidden, each
- * with the first condition it waits on that nothing could make hold. Which could show
- * again is a least fixed point: a sheet, section or component can when its conditions pass
- * counting only those that fit and whose column is on a component that can show again
- * other than itself (and, for a sheet or a section, not one of its own components); a
- * section needs its sheet too, and a component its section. One in a sheet or section that
- * can never show is left to it, and one with a condition that does not fit is left out, as
- * that fault is reported already.
+ * The sheets, sections, components and fields (by `fieldKey`) that nothing could show again
+ * once hidden, each with the first condition it waits on that nothing could make hold.
+ * Which could show again is a least fixed point: a sheet, section, component or field can
+ * when its conditions pass counting only those that fit and whose column is a field that can
+ * show again other than itself, of a component other than itself (and, for a sheet or a
+ * section, not one of its own components); a section needs its sheet too, a component its
+ * section and a field its component. One in a sheet, section or component that can never
+ * show is left to it, and one with a condition that does not fit is left out, as that fault
+ * is reported already.
  */
 export function neverShown(spec: FormSpec): ReadonlyMap<string, SingleCondition> {
   const canShow = new Set<string>()
   const fits = (condition: SingleCondition): boolean => conditionFault(spec, condition) === null
   const widgets = spec.pages.flatMap((page) => page.sections.flatMap((section) => section.widgets))
-  // A condition needs on a component that can show again each column it tests, or for a count without tests any of its table's but the index.
+  // A condition needs as a field that can show again each column it tests, or for a count without tests any of its table's but the index.
   const reachable = (condition: SingleCondition, holder: string, own: ReadonlySet<string>): boolean => {
     if (!fits(condition)) return false
+    // A field can show again only while its component can, so it stands for both.
     const onShown = (key: string): boolean =>
-      widgets.some((widget) => canShow.has(widget.id) && widget.id !== holder && !own.has(widget.id) && fieldKeys(widget).includes(key))
+      widgets.some((widget) => widget.id !== holder && !own.has(widget.id) && fieldKeys(widget).includes(key) && canShow.has(`${widget.id}:${key}`))
     if (!isListCondition(condition)) return onShown(columnKey(condition.table, condition.column))
     const tested = listColumns(condition)
     if (tested.length > 0) return tested.every((id) => onShown(columnKey(condition.table, id)))
@@ -563,7 +592,11 @@ export function neverShown(spec: FormSpec): ReadonlyMap<string, SingleCondition>
       for (const section of page.sections) {
         shownAgain(section.id, section.show_when, own(section.id))
         if (!canShow.has(section.id)) continue
-        for (const widget of section.widgets) shownAgain(widget.id, widget.show_when, none)
+        for (const widget of section.widgets) {
+          shownAgain(widget.id, widget.show_when, none)
+          if (!canShow.has(widget.id)) continue
+          for (const field of enteredFields(widget)) shownAgain(field.key, field.showWhen, none)
+        }
       }
     }
   }
@@ -586,7 +619,13 @@ export function neverShown(spec: FormSpec): ReadonlyMap<string, SingleCondition>
         continue
       }
       for (const widget of section.widgets) {
-        if (!canShow.has(widget.id)) report(widget.id, widget.show_when, none)
+        if (!canShow.has(widget.id)) {
+          report(widget.id, widget.show_when, none)
+          continue
+        }
+        for (const field of enteredFields(widget)) {
+          if (!canShow.has(field.key)) report(field.key, field.showWhen, none)
+        }
       }
     }
   }
