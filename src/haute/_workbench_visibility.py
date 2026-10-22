@@ -127,9 +127,9 @@ def visibility(spec: FormSpec, rows: Rows) -> Visibility:
         for widget in section.widgets
     ]
     entered = [
-        (widget.id, field, _field_show_when(widget, field))
+        (widget.id, field, show_when)
         for _, _, widget in placed
-        for field in _entered(widget)
+        for field, show_when in _entered(widget)
     ]
     pages = {page.id for page in spec.pages}
     sections = {section.id for page in spec.pages for section in page.sections}
@@ -171,7 +171,7 @@ def visibility(spec: FormSpec, rows: Rows) -> Visibility:
         widgets -= hiding_widgets
         fields -= hiding_fields
     on_widgets = {
-        (field.table, field.column) for _, _, widget in placed for field in _entered(widget)
+        (field.table, field.column) for _, _, widget in placed for field, _ in _entered(widget)
     }
     inputs = {
         (table.id, column.id)
@@ -190,28 +190,18 @@ def visibility(spec: FormSpec, rows: Rows) -> Visibility:
     )
 
 
-def _entered(widget: Widget) -> list[FieldRef]:
-    """The columns a component has values typed into: a Table's and a Collection's fields,
-    none of a Chart's, which it only plots, and none of a Heading, which has no fields."""
-    return widget.fields if isinstance(widget, TableInputWidget | CollectionWidget) else []
-
-
 _ALWAYS = ShowWhen()
 
 
-def _field_show_when(widget: Widget, field: FieldRef) -> ShowWhen:
-    """When a Table's or a Collection's field shows with its component: as its look's
-    ``show_when`` says, always without a look."""
+def _entered(widget: Widget) -> list[tuple[FieldRef, ShowWhen]]:
+    """The columns a component has values typed into, each with when it shows with its
+    component: a Table's and a Collection's fields, as their looks' ``show_when`` says,
+    always without a look; none of a Chart's, which it only plots, and none of a Heading,
+    which has no fields."""
     if not isinstance(widget, TableInputWidget | CollectionWidget):
-        return _ALWAYS
-    return next(
-        (
-            look.show_when
-            for look in widget.column_looks
-            if (look.table, look.column) == (field.table, field.column)
-        ),
-        _ALWAYS,
-    )
+        return []
+    shows = {(look.table, look.column): look.show_when for look in widget.column_looks}
+    return [(field, shows.get((field.table, field.column), _ALWAYS)) for field in widget.fields]
 
 
 def condition_fits(spec: FormSpec, condition: SingleCondition) -> bool:
