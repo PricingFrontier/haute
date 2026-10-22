@@ -10,7 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import type { ReactNode } from "react"
-import type { FormSpec, ShowWhen } from "../../api/types"
+import type { ShowWhen } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { previewBasis } from "../../stores/useWorkbenchPricingStore"
@@ -19,7 +19,7 @@ import { valuesBasis } from "../../utils/sheetValues"
 import { addSchemaColumn, addSchemaTable, BLANK_THEME, createWidget, setColumnLook, toggleField, updateSchemaColumn, updateWidget, type WidgetPatch } from "../../utils/workbenchForm"
 import SheetCanvas from "../SheetCanvas"
 import { SheetValuesContext, useNewQuoteValues, useQuoteValues, useSampleValues } from "../useSheetValues"
-import { everyField } from "../sheet/fieldCells"
+import { everyField, spacersShown } from "../sheet/fieldCells"
 import WidgetBody from "../WidgetBody"
 import { addTo, column, coverForm, currentForm, headingWidget, hiddenPerilsForm, loadForm, releasePointer, sheetForm, stubLayout, table, widgetsOf } from "./fixtures"
 
@@ -705,8 +705,7 @@ describe("WidgetBody", () => {
   it("closes a Collection up in Preview around a field that hides, a spacer going with the fields after it, and fades the field while building, its eye naming its conditions", () => {
     const year = { table: "policy", column: "policy.year" }
     const covered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [] }] }
-    // Through JSON, so no two components share a list of looks.
-    const base: FormSpec = JSON.parse(JSON.stringify(coverForm()))
+    const base = coverForm()
     const fields = [{ table: "policy", column: "policy.state" }, { table: "policy", column: "policy.cover" }, year]
     loadForm(setColumnLook(updateWidget(base, "w_boxes", { fields, spacers: [2] }), "w_boxes", year, { show_when: covered }))
     render(<SheetCanvas />)
@@ -731,7 +730,7 @@ describe("WidgetBody", () => {
     const value = { table: "equipment", column: "equipment.value" }
     const note = { table: "extras", column: "extras.note" }
     const covered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [] }] }
-    const base: FormSpec = JSON.parse(JSON.stringify(coverForm()))
+    const base = coverForm()
     base.schema.tables.push(table("extras", "extras", { rows: "many", columns: [column("extras.item", "item", { key: true }), column("extras.note", "note")] }))
     let form = updateWidget(base, "w_grid", { fields: [{ table: "equipment", column: "equipment.item" }, value, note] })
     form = setColumnLook(setColumnLook(form, "w_grid", value, { show_when: covered }), "w_grid", note, { show_when: covered })
@@ -1383,5 +1382,22 @@ describe("WidgetBody", () => {
     expect(screen.queryByRole("button", { name: "Delete row 1" })).not.toBeInTheDocument()
     act(() => useWorkbenchPreviewStore.getState().setCell("policy", 0, "policy.state", "CA"))
     expect(useWorkbenchPreviewStore.getState().quote.policy[0]["policy.state"]).toBe("NY")
+  })
+})
+
+describe("spacersShown", () => {
+  it.each([
+    // Five fields, a spacer after the third: the fields after it hide, so it goes with them.
+    { spacers: [3], shows: [true, true, true, false, false], placed: [] },
+    // The fields before it hide: it stays, among the fields that show.
+    { spacers: [3], shows: [true, false, false, true, true], placed: [1] },
+    // Two at one place: the first's run is empty and stays; the second goes with its fields.
+    { spacers: [2, 2], shows: [true, true, false, false], placed: [2] },
+    // After the last field it has no fields of its own, and stays at the end.
+    { spacers: [2], shows: [false, true], placed: [1] },
+    // Nothing hides: every spacer where it sits.
+    { spacers: [0, 1, 3], shows: [true, true, true], placed: [0, 1, 3] },
+  ])("places $spacers among $shows at $placed", ({ spacers, shows, placed }) => {
+    expect(spacersShown(spacers, shows)).toEqual(placed)
   })
 })

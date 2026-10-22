@@ -28,8 +28,11 @@ type Cell = Row[string]
 /** A column's key in a set of columns: its table id and column id. */
 export const columnKey = (tableId: string, columnId: string): string => `${tableId}:${columnId}`
 
-/** A field's key in a set of fields: its component's id and its column's `columnKey`, the `:` between them in no id. */
-export const fieldKey = (widgetId: string, tableId: string, columnId: string): string => `${widgetId}:${columnKey(tableId, columnId)}`
+/** A field's key from its component's id and its column's `columnKey`, the `:` between them in no id. */
+const keyOfField = (widgetId: string, column: string): string => `${widgetId}:${column}`
+
+/** A field's key in a set of fields: its component's id and its column's `columnKey`. */
+export const fieldKey = (widgetId: string, tableId: string, columnId: string): string => keyOfField(widgetId, columnKey(tableId, columnId))
 
 /** When a new sheet, section, component or field shows: always. */
 export const ALWAYS: Readonly<ShowWhen> = { match: "all", conditions: [] }
@@ -561,7 +564,7 @@ export function neverShown(spec: FormSpec): ReadonlyMap<string, SingleCondition>
     if (!fits(condition)) return false
     // A field can show again only while its component can, so it stands for both.
     const onShown = (key: string): boolean =>
-      widgets.some((widget) => widget.id !== holder && !own.has(widget.id) && fieldKeys(widget).includes(key) && canShow.has(`${widget.id}:${key}`))
+      widgets.some((widget) => widget.id !== holder && !own.has(widget.id) && fieldKeys(widget).includes(key) && canShow.has(keyOfField(widget.id, key)))
     if (!isListCondition(condition)) return onShown(columnKey(condition.table, condition.column))
     const tested = listColumns(condition)
     if (tested.length > 0) return tested.every((id) => onShown(columnKey(condition.table, id)))

@@ -16,7 +16,6 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
-import type { FormSpec } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
@@ -1415,8 +1414,7 @@ describe("SheetCanvas", () => {
   it("in Preview holds a component's fields drawn while a pointer is pressed on the sheet, though a value the press commits shows one, until a turn after the release", () => {
     vi.useFakeTimers()
     const year = { table: "policy", column: "policy.year" }
-    // Through JSON, so no two components share a list of looks.
-    const form: FormSpec = JSON.parse(JSON.stringify(coverForm()))
+    const form = coverForm()
     const fields = [{ table: "policy", column: "policy.state" }, { table: "policy", column: "policy.cover" }, year]
     loadForm(
       setColumnLook(updateWidget(form, "w_boxes", { fields }), "w_boxes", year, {

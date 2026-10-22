@@ -417,8 +417,8 @@ against another (a project completing more than 365 days after it starts,
 typed: a one-row table's column, or, in a test of a list's rows, a column of the same
 row. A date compared with another date may add or take away a whole number of days.
 Text gains contains, does not contain, starts with and ends with, compared as equals
-compares text. A test against another field holds only while both fields are on
-components that show, so hiding still only hides more, and reads the other field's value as
+compares text. A test against another field holds only while both are fields that show,
+so hiding still only hides more, and reads the other field's value as
 it reads its own. A date against today is left out: a saved quote would then show other
 sheets, and so be priced otherwise, on another day; a date field on the form stands in for
 it.
@@ -441,8 +441,8 @@ alone).
 and a warning on rate adequacy only while `rate_adequacy` is below 1.
 
 **Plan:** A condition may test an output column, but only in the Show when of what takes
-nothing typed: a Heading, a Chart, a Collection or a Table of output columns alone, or a
-section or a sheet holding only those. Hiding it never changes the quote, so the price never
+nothing typed: a Heading, a Chart, a Collection or a Table of output columns alone, a
+field of an output column, or a section or a sheet holding only those. Hiding it never changes the quote, so the price never
 decides what is priced: the rounds decide what shows from the inputs, these conditions
 holding, and these conditions are then applied to the price the sheets show, the last one
 while a new one is on its way, and before the first every output read as empty. The
