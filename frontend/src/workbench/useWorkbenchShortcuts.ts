@@ -53,7 +53,7 @@ export default function useWorkbenchShortcuts(onSave: () => void): void {
       }
       if (isTypingTarget(e.target)) return
       const view = useWorkbenchViewStore.getState()
-      const previewing = view.section === "preview"
+      const previewing = view.mode === "preview"
       if (mod && key === "z" && !e.shiftKey) {
         e.preventDefault()
         forms.undo()
@@ -64,7 +64,7 @@ export default function useWorkbenchShortcuts(onSave: () => void): void {
         forms.redo()
         return
       }
-      if ((view.section !== "sheets" && !previewing) || forms.form === null || isFormControl(e.target)) return
+      if (view.section !== "sheets" || forms.form === null || isFormControl(e.target)) return
       if (mod && key === "1") {
         e.preventDefault()
         view.fitZoom()

@@ -20,7 +20,7 @@ const HEADING_ALIGN: Record<HeadingWidget["align"], string> = { left: "text-left
  * in Preview.
  */
 export function HeadingBody({ widget, colours }: { widget: HeadingWidget; colours: SheetColours }) {
-  const previewing = useWorkbenchViewStore((s) => s.section === "preview")
+  const previewing = useWorkbenchViewStore((s) => s.mode === "preview")
   if (widget.text.trim() === "") {
     if (previewing) return null
     // One line, cut short in a small Heading rather than running out over what is below it.

@@ -113,7 +113,7 @@ function OneQuote() {
           This app keeps no quotes: it was started without a quote store. A quote priced here is not saved.
         </Notice>
         <div className="px-4 pt-2">
-          <PageTabs readOnly />
+          <PageTabs />
         </div>
         <SheetCanvas />
       </main>

@@ -12,6 +12,7 @@ import useUIStore from "../../stores/useUIStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import useWorkbenchPricingStore, { PRICING_DELAY_MS } from "../../stores/useWorkbenchPricingStore"
+import useWorkbenchTestQuotesStore from "../../stores/useWorkbenchTestQuotesStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { BLANK_THEME } from "../../utils/workbenchForm"
 import WorkbenchView from "../WorkbenchView"
@@ -25,10 +26,9 @@ vi.mock("../SchemaEditor", () => ({
   ),
 }))
 vi.mock("../SheetCanvas", () => ({ default: () => <div data-testid="sheet-canvas" /> }))
-vi.mock("../PageTabs", () => ({
-  default: ({ readOnly }: { readOnly?: boolean }) => <div data-testid="page-tabs" data-readonly={readOnly ? "true" : undefined} />,
-}))
+vi.mock("../PageTabs", () => ({ default: () => <div data-testid="page-tabs" /> }))
 vi.mock("../PropertiesPanel", () => ({ default: () => <div data-testid="properties-panel" /> }))
+vi.mock("../TestQuotesPanel", () => ({ default: () => <div data-testid="test-quotes-panel" /> }))
 vi.mock("../../panels/GitPanel", () => ({ default: () => <div data-testid="git-panel" /> }))
 vi.mock("../../panels/assistant/AssistantPanel", () => ({ default: () => <div data-testid="assistant-panel" /> }))
 vi.mock("../../api/workbench", async (importOriginal) => ({
@@ -60,7 +60,8 @@ describe("WorkbenchView", () => {
   beforeEach(() => {
     useWorkbenchFormStore.setState({ status: "ready", loadError: null, stale: false, form: null, ...actions })
     useWorkbenchPricingStore.setState({ ...pricing, error: null, price: null })
-    useWorkbenchViewStore.setState({ section: "sheets", selectedId: null })
+    useWorkbenchViewStore.setState({ mode: "build", section: "sheets", selectedId: null })
+    useWorkbenchTestQuotesStore.setState({ open: false })
     useWorkbenchStore.setState({ enabled: true, activeView: "workbench", formPath: "forms/form.json" })
     useUIStore.setState({ gitOpen: false, assistantOpen: false, paletteOpen: true })
   })
@@ -98,17 +99,29 @@ describe("WorkbenchView", () => {
     expect(screen.getByTestId("properties-panel")).toBeInTheDocument()
   })
 
-  it("shows the sheets read only in Preview, with no properties panel", () => {
+  it("lays Preview out as building, on the sheets from the schema too, the palette's components disabled and the test quotes in the properties panel's place", () => {
+    useWorkbenchTestQuotesStore.setState({ open: true })
     renderView()
-    expect(screen.getByTestId("page-tabs")).not.toHaveAttribute("data-readonly")
+    expect(screen.getByTestId("properties-panel")).toBeInTheDocument()
+    expect(screen.queryByTestId("test-quotes-panel")).not.toBeInTheDocument()
 
     act(() => {
-      useWorkbenchViewStore.getState().showSection("preview")
+      useWorkbenchViewStore.getState().showSection("schema")
+      useWorkbenchViewStore.getState().showMode("preview")
     })
-    expect(screen.getByTestId("page-tabs")).toHaveAttribute("data-readonly", "true")
+    expect(screen.getByTestId("page-tabs")).toBeInTheDocument()
     expect(screen.getByTestId("sheet-canvas")).toBeInTheDocument()
-    expect(screen.queryByTestId("properties-panel")).not.toBeInTheDocument()
     expect(screen.queryByTestId("schema-editor")).not.toBeInTheDocument()
+    expect(screen.getByTestId("palette-item-tableInput")).toHaveAttribute("aria-disabled", "true")
+    expect(screen.queryByTestId("properties-panel")).not.toBeInTheDocument()
+    expect(screen.getByTestId("test-quotes-panel")).toBeInTheDocument()
+
+    act(() => {
+      useWorkbenchViewStore.getState().showMode("build")
+    })
+    expect(screen.getByTestId("palette-item-tableInput")).not.toHaveAttribute("aria-disabled")
+    expect(screen.getByTestId("properties-panel")).toBeInTheDocument()
+    expect(screen.queryByTestId("test-quotes-panel")).not.toBeInTheDocument()
   })
 
   it("says the workbench is loading, or why it could not be read with a way to try again", () => {
@@ -211,7 +224,7 @@ describe("WorkbenchView", () => {
     expect(pricing.schedule).not.toHaveBeenCalled()
 
     // Preview prices the sample as it shows, as the pipeline may have changed meanwhile.
-    act(() => useWorkbenchViewStore.getState().showSection("preview"))
+    act(() => useWorkbenchViewStore.getState().showMode("preview"))
     expect(pricing.schedule).toHaveBeenCalledTimes(1)
     // The same basis prices nothing again; a typed sample does.
     act(() => {
@@ -240,14 +253,14 @@ describe("WorkbenchView", () => {
     useWorkbenchFormStore.setState({ form: { ...sheetForm(), sample: { policy: [{ "policy.state": "CA" }] } } })
     renderView()
 
-    act(() => useWorkbenchViewStore.getState().showSection("preview"))
+    act(() => useWorkbenchViewStore.getState().showMode("preview"))
     await act(() => vi.advanceTimersByTimeAsync(PRICING_DELAY_MS - 100))
-    act(() => useWorkbenchViewStore.getState().showSection("sheets"))
+    act(() => useWorkbenchViewStore.getState().showMode("build"))
     await act(() => vi.advanceTimersByTimeAsync(PRICING_DELAY_MS))
     expect(fetchWorkbenchFormTables).not.toHaveBeenCalled()
 
     // Left in Preview, the sample is priced once the pause has passed.
-    act(() => useWorkbenchViewStore.getState().showSection("preview"))
+    act(() => useWorkbenchViewStore.getState().showMode("preview"))
     await act(() => vi.advanceTimersByTimeAsync(PRICING_DELAY_MS))
     expect(fetchWorkbenchFormTables).toHaveBeenCalledTimes(1)
   })

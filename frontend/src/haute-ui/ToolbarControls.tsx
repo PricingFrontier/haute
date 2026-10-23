@@ -61,14 +61,14 @@ export function UndoRedo({ canUndo, canRedo, onUndo, onRedo }: UndoRedoProps) {
   )
 }
 
-/** Zoom In over Zoom Out. */
-export function ZoomInOut({ onZoomIn, onZoomOut }: { onZoomIn: () => void; onZoomOut: () => void }) {
+/** Zoom In over Zoom Out, both disabled while `disabled`. */
+export function ZoomInOut({ onZoomIn, onZoomOut, disabled = false }: { onZoomIn: () => void; onZoomOut: () => void; disabled?: boolean }) {
   return (
     <ToolbarColumn>
-      <ToolbarButton compact data-testid="toolbar-zoom-in" icon={ZoomIn} onClick={onZoomIn} aria-label="Zoom in" title="Zoom in">
+      <ToolbarButton compact data-testid="toolbar-zoom-in" icon={ZoomIn} onClick={onZoomIn} disabled={disabled} aria-label="Zoom in" title="Zoom in">
         Zoom In
       </ToolbarButton>
-      <ToolbarButton compact data-testid="toolbar-zoom-out" icon={ZoomOut} onClick={onZoomOut} aria-label="Zoom out" title="Zoom out">
+      <ToolbarButton compact data-testid="toolbar-zoom-out" icon={ZoomOut} onClick={onZoomOut} disabled={disabled} aria-label="Zoom out" title="Zoom out">
         Zoom Out
       </ToolbarButton>
     </ToolbarColumn>

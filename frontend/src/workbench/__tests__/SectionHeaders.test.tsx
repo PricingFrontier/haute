@@ -79,7 +79,7 @@ describe("SectionHeaders", () => {
     expect(bar("s_flood")).toHaveTextContent("Flood")
     expect(bar("s_flood")).not.toHaveAttribute("data-selected")
 
-    act(() => useWorkbenchViewStore.setState({ section: "preview" }))
+    act(() => useWorkbenchViewStore.setState({ mode: "preview" }))
     expect(screen.queryAllByTestId(/^section-header-/)).toHaveLength(0)
   })
 

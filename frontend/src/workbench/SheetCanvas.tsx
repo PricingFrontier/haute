@@ -46,7 +46,7 @@ const NO_SECTIONS: readonly Section[] = []
 export default function SheetCanvas() {
   const form = useWorkbenchFormStore((s) => s.form)
   const pageId = useWorkbenchViewStore((s) => s.pageId)
-  const previewing = useWorkbenchViewStore((s) => s.section === "preview")
+  const previewing = useWorkbenchViewStore((s) => s.mode === "preview")
   const underwriterApp = useWorkbenchViewStore((s) => s.underwriterApp)
   const zoom = useWorkbenchViewStore((s) => s.zoom)
   const selectedId = useWorkbenchViewStore((s) => s.selectedId)

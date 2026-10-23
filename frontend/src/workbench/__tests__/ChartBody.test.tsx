@@ -108,7 +108,7 @@ describe("ChartBody", () => {
     loadForm()
     useWorkbenchPricingStore.setState({ price: null, error: null })
     useWorkbenchPreviewStore.setState({ quote: {}, price: null, error: null, pricing: false })
-    useWorkbenchViewStore.setState({ section: "sheets" })
+    useWorkbenchViewStore.setState({ mode: "build", section: "sheets" })
   })
 
   afterEach(() => {
@@ -158,7 +158,7 @@ describe("ChartBody", () => {
     expect(createComboChart).not.toHaveBeenCalled()
 
     cleanup()
-    useWorkbenchViewStore.setState({ section: "preview" })
+    useWorkbenchViewStore.setState({ mode: "preview" })
     renderChart()
     expect(screen.queryByText(/panel on the right/)).not.toBeInTheDocument()
     expect(screen.queryByRole("figure")).not.toBeInTheDocument()
@@ -222,7 +222,7 @@ describe("ChartBody", () => {
     expect(createComboChart).not.toHaveBeenCalled()
     cleanup()
 
-    useWorkbenchViewStore.setState({ section: "preview" })
+    useWorkbenchViewStore.setState({ mode: "preview" })
     renderChart("sample")
     await waitFor(() => expect(plotted()).toEqual([[100]]))
     expect(readOut("Chart values")).toEqual([

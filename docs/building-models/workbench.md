@@ -28,9 +28,11 @@ editor; **Pricing** brings the pipeline back. The pipeline editor keeps everythi
 (its document, its undo history, live sync) while the workbench shows; its keyboard
 shortcuts are off meanwhile, so nothing you press in the workbench edits the pipeline. The
 toolbar keeps Haute's project controls (**Pipeline files** and **Local files**, Assistant,
-Help, the branch, **Save** and **Commit**) and shows the workbench's own: **Build** over **Preview**, then, while building,
-**Sheets** over **Schema** and **Display**, in Preview **Test quotes**, then **Undo** over
-**Redo**, and **Zoom In** over **Zoom Out** on the sheets.
+Help, the branch, **Save** and **Commit**) and shows the workbench's own: **Build** over
+**Preview**, **Sheets** over **Schema**, **Display**, **Test quotes**, **Undo** over
+**Redo**, and **Zoom In** over **Zoom Out**. They stay in place in both modes: Sheets,
+Schema and Display are greyed out in Preview, Test quotes while building, and the zoom
+while the schema shows.
 
 **Save** and Ctrl+S save the project, the same from either view: `forms/form.json` first
 when the workbench has unsaved edits, then the pipeline, with the Workbench Input's and
@@ -441,7 +443,9 @@ Nothing is priced while building.
 
 **Preview** shows the sheets as an underwriter uses them, drawn as the underwriter app
 draws them: the sections that show stacked one under the next and each component where it
-sits in its section, with no section bars and nothing to move or lay out. It is where you
+sits in its section, with no section bars and nothing to move or lay out. The layout around
+the sheets stays as it was while building, with the palette's components and the toolbar's
+building controls greyed out. It is where you
 type the **sample**, a quote you key in as an underwriter would: it is saved with the
 sheets, and it is what the [Workbench Input](nodes/workbench-input.md)'s previews run on
 once saved.

@@ -272,6 +272,7 @@ export function loadForm(form: FormSpec = sheetForm()): void {
     saving: false,
   })
   useWorkbenchViewStore.setState({
+    mode: "build",
     section: "sheets",
     underwriterApp: false,
     pageId: null,

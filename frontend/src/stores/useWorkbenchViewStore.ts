@@ -1,7 +1,7 @@
 /**
  * Zustand store for the workbench view's own state while it shows (specs/workbench):
- * which of the view's sections shows (the sheets or the schema while building, or
- * Preview), whose values Preview shows (the form's sample, or the underwriter app's
+ * the mode (building or Preview), which of the view's sections shows (the sheets or the
+ * schema; Preview shows the sheets), whose values Preview shows (the form's sample, or the underwriter app's
  * quote), which sheet, the selected component, the selected section or the sheet's own
  * panel, the sheet's zoom, a component being dragged out of the palette, a section being
  * moved by its header, the sheet's size as pressed while an edge is dragged, the properties
@@ -16,8 +16,11 @@ import { findWidget, type PaletteType, type Widget } from "../utils/workbenchFor
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "./useWorkbenchPreviewStore"
 
-/** The sheets and the schema are Build's; Preview shows the sheets as an underwriter sees them. */
-export type WorkbenchSection = "sheets" | "schema" | "preview"
+/** Building lays out the sheets and the schema; Preview uses the sheets as an underwriter would. */
+export type WorkbenchMode = "build" | "preview"
+
+/** What the view shows: the sheets, in either mode, or the schema while building. */
+export type WorkbenchSection = "sheets" | "schema"
 
 /** A component or a section being dragged out of the palette, and where the pointer is. */
 export interface Creating {
@@ -68,6 +71,7 @@ export const previewSections = (page: Page, visibility: SheetVisibility): Sectio
     .map((section) => ({ ...section, widgets: section.widgets.filter((widget) => visibility.widgets.has(widget.id)) }))
 
 interface WorkbenchViewState {
+  mode: WorkbenchMode
   section: WorkbenchSection
   /**
    * The sheets are the underwriter app's: Preview shows its quote, the Preview store's,
@@ -102,8 +106,10 @@ interface WorkbenchViewState {
   /** The sheet element and its scrolling viewport, while the sheets section shows. */
   sheet: HTMLElement | null
   viewport: HTMLElement | null
+  /** Switch to a mode, on the sheets, with nothing selected. */
+  showMode: (mode: WorkbenchMode) => void
   showSection: (section: WorkbenchSection) => void
-  /** Show a sheet, with nothing selected: in Preview as before, else on the sheets section. */
+  /** Show a sheet on the sheets section, in either mode, with nothing selected. */
   showPage: (pageId: string) => void
   /** Select a component, or nothing; either closes the sheet's panel and the section's. */
   select: (id: string | null) => void
@@ -129,6 +135,7 @@ interface WorkbenchViewState {
 }
 
 const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
+  mode: "build",
   section: "sheets",
   underwriterApp: false,
   pageId: null,
@@ -145,9 +152,9 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   copied: null,
   sheet: null,
   viewport: null,
+  showMode: (mode) => set({ mode, section: "sheets", selectedId: null, sheetSelected: false, sectionId: null }),
   showSection: (section) => set({ section, selectedId: null, sheetSelected: false, sectionId: null }),
-  showPage: (pageId) =>
-    set((s) => ({ section: s.section === "preview" ? "preview" : "sheets", pageId, selectedId: null, sheetSelected: false, sectionId: null })),
+  showPage: (pageId) => set({ section: "sheets", pageId, selectedId: null, sheetSelected: false, sectionId: null }),
   select: (selectedId) => set({ selectedId, sheetSelected: false, sectionId: null }),
   selectSheet: () => set({ selectedId: null, sheetSelected: true, sectionId: null }),
   selectSection: (sectionId) => set({ selectedId: null, sheetSelected: false, sectionId }),
@@ -155,11 +162,11 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   setZoom: (zoom) => set({ zoom: Math.round(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom)) * 100) / 100 }),
   zoomBy: (step) => get().setZoom(get().zoom + step),
   fitZoom: () => {
-    const { viewport, pageId, section, underwriterApp } = get()
+    const { viewport, pageId, mode, underwriterApp } = get()
     const { form } = useWorkbenchFormStore.getState()
     if (viewport === null || form === null) return
     let page: Page | null = activePage(form, pageId)
-    if (section === "preview") {
+    if (mode === "preview") {
       const visibility = sheetVisibility(form, underwriterApp ? useWorkbenchPreviewStore.getState().quote : form.sample)
       page = shownPage(form, pageId, visibility.pages)
     }

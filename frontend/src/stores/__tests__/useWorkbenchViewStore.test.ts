@@ -1,6 +1,6 @@
 /**
- * The workbench view's own state (specs/workbench): which of the view's sections and which
- * sheet show, a component, a section or the sheet's own panel selected, a section moved by
+ * The workbench view's own state (specs/workbench): the mode, which of the view's sections
+ * and which sheet show, a component, a section or the sheet's own panel selected, a section moved by
  * its header, the sections and components Preview draws, the zoom within its bounds and
  * fitted to the viewport, and the properties panel's width.
  */
@@ -23,17 +23,17 @@ function viewport(width: number): HTMLElement {
 describe("useWorkbenchViewStore", () => {
   beforeEach(() => loadForm())
 
-  it("shows a sheet with nothing selected: on the sheets section while building, in Preview as before", () => {
+  it("shows a sheet on the sheets section with nothing selected, in either mode", () => {
     const store = useWorkbenchViewStore.getState
     store().showSection("schema")
     store().select("w_boxes")
 
     store().showPage("p2")
-    expect(store()).toMatchObject({ section: "sheets", pageId: "p2", selectedId: null })
+    expect(store()).toMatchObject({ mode: "build", section: "sheets", pageId: "p2", selectedId: null })
 
-    store().showSection("preview")
+    store().showMode("preview")
     store().showPage("p1")
-    expect(store()).toMatchObject({ section: "preview", pageId: "p1" })
+    expect(store()).toMatchObject({ mode: "preview", section: "sheets", pageId: "p1" })
 
     // The sheet named, or the first when none is or it was removed.
     expect(activePage(sheetForm(), "p2").id).toBe("p2")
@@ -93,7 +93,7 @@ describe("useWorkbenchViewStore", () => {
     store().showPage("p2")
     expect(store().sheetSelected).toBe(false)
     store().selectSheet()
-    store().showSection("preview")
+    store().showMode("preview")
     expect(store().sheetSelected).toBe(false)
   })
 
@@ -128,8 +128,25 @@ describe("useWorkbenchViewStore", () => {
     expect(store()).toMatchObject({ section: "schema", sectionId: null })
     store().showSection("sheets")
     store().selectSection("s_p2")
-    store().showSection("preview")
-    expect(store()).toMatchObject({ section: "preview", sectionId: null })
+    store().showMode("preview")
+    expect(store()).toMatchObject({ mode: "preview", section: "sheets", sectionId: null })
+  })
+
+  it("shows either mode on the sheets with nothing selected, from the schema too", () => {
+    const store = useWorkbenchViewStore.getState
+    store().showSection("schema")
+    store().showMode("preview")
+    expect(store()).toMatchObject({ mode: "preview", section: "sheets" })
+
+    store().showMode("build")
+    store().showSection("schema")
+    store().showMode("build")
+    expect(store()).toMatchObject({ mode: "build", section: "sheets" })
+
+    store().select("w_grid")
+    store().showMode("preview")
+    store().showMode("build")
+    expect(store()).toMatchObject({ mode: "build", section: "sheets", selectedId: null })
   })
 
   it("follows a section dragged by its header, with the place it would move to, until it is let go", () => {
@@ -185,7 +202,7 @@ describe("useWorkbenchViewStore", () => {
     store().fitZoom()
     expect(store().zoom).toBe(1)
     // In Preview, with cover unticked, the first sheet shows in its place.
-    store().showSection("preview")
+    store().showMode("preview")
     store().fitZoom()
     expect(store().zoom).toBe(0.5)
     useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy", 0, "policy.cover", true))
@@ -195,7 +212,7 @@ describe("useWorkbenchViewStore", () => {
     // The app's quote, not the sample, decides there.
     loadForm(form)
     useWorkbenchViewStore.setState({ underwriterApp: true, viewport: viewport(1000 + SHEET_PADDING * 2), pageId: "p2" })
-    store().showSection("preview")
+    store().showMode("preview")
     useWorkbenchPreviewStore.setState({ quote: {} })
     store().fitZoom()
     expect(store().zoom).toBe(0.5)

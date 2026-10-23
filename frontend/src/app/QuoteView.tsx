@@ -211,7 +211,7 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
             <QuoteLine />
             <QuoteNotices unkept={unkept} />
             <div className="px-4 pt-2">
-              <PageTabs readOnly />
+              <PageTabs />
             </div>
             <SheetCanvas />
           </main>

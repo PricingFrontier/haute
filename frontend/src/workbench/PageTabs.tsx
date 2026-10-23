@@ -31,16 +31,17 @@ function moveSheet(from: number, to: number): void {
  * settings mark opens its own panel, which deletes it, a tab having no delete of its own.
  * A sheet with conditions carries an
  * eye, struck through and its tab faded while a new quote hides it, and a sheet whose
- * conditions have a problem a warning mark naming it. Read only, in Preview, the tabs only
- * switch sheets, and only between the sheets the values show.
+ * conditions have a problem a warning mark naming it. In Preview, the underwriter app's
+ * too, the tabs only switch sheets, and only between the sheets the values show.
  */
-export default function PageTabs({ readOnly = false }: { readOnly?: boolean }) {
+export default function PageTabs() {
   const form = useWorkbenchFormStore((s) => s.form)
   const change = useWorkbenchFormStore((s) => s.change)
+  const previewing = useWorkbenchViewStore((s) => s.mode === "preview")
   const pageId = useWorkbenchViewStore((s) => s.pageId)
   const showPage = useWorkbenchViewStore((s) => s.showPage)
   const selectSheet = useWorkbenchViewStore((s) => s.selectSheet)
-  const visibility = useSheetVisibility(readOnly)
+  const visibility = useSheetVisibility()
   const [renaming, setRenaming] = useState<string | null>(null)
   const dragFor = useListReorder(moveSheet)
   // A tab moved by the keyboard is put back in the focus, as its button may be moved in
@@ -53,8 +54,8 @@ export default function PageTabs({ readOnly = false }: { readOnly?: boolean }) {
   }, [form])
   if (form === null) throw new Error("The sheet tabs need the form loaded")
   const page = activePage(form, pageId)
-  const showing = readOnly ? shownPage(form, pageId, visibility.pages) : page
-  const sheets = readOnly ? form.pages.filter((sheet) => visibility.pages.has(sheet.id)) : form.pages
+  const showing = previewing ? shownPage(form, pageId, visibility.pages) : page
+  const sheets = previewing ? form.pages.filter((sheet) => visibility.pages.has(sheet.id)) : form.pages
 
   const addSheet = () => {
     const sheet = createPage(form)
@@ -66,13 +67,13 @@ export default function PageTabs({ readOnly = false }: { readOnly?: boolean }) {
   // Alt+Left and Alt+Right move it a place, never past an end.
   const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, sheetId: string, index: number) => {
     if (event.altKey) {
-      const to = readOnly ? null : altArrowMove(event, "horizontal", index, form.pages.length)
+      const to = previewing ? null : altArrowMove(event, "horizontal", index, form.pages.length)
       if (to === null) return
       tabs.moved(sheetId)
       moveSheet(index, to)
       return
     }
-    if (event.key === "F2" && !readOnly) {
+    if (event.key === "F2" && !previewing) {
       setRenaming(sheetId)
       return
     }
@@ -113,9 +114,9 @@ export default function PageTabs({ readOnly = false }: { readOnly?: boolean }) {
           )
         }
         const hidden = !visibility.pages.has(sheet.id)
-        const problem = readOnly ? undefined : problems.get(sheet.id)
+        const problem = previewing ? undefined : problems.get(sheet.id)
         // In the form's order while building, so a tab's place is its sheet's.
-        const drag = readOnly ? null : dragFor(index)
+        const drag = previewing ? null : dragFor(index)
         return (
           <div
             key={sheet.id}
@@ -135,9 +136,9 @@ export default function PageTabs({ readOnly = false }: { readOnly?: boolean }) {
               role="tab"
               aria-selected={active}
               tabIndex={active ? 0 : -1}
-              aria-keyshortcuts={readOnly ? undefined : "F2 Alt+ArrowLeft Alt+ArrowRight"}
+              aria-keyshortcuts={previewing ? undefined : "F2 Alt+ArrowLeft Alt+ArrowRight"}
               onClick={() => showPage(sheet.id)}
-              onDoubleClick={readOnly ? undefined : () => setRenaming(sheet.id)}
+              onDoubleClick={previewing ? undefined : () => setRenaming(sheet.id)}
               onKeyDown={(event) => onTabKeyDown(event, sheet.id, index)}
               data-hidden={hidden ? "true" : undefined}
               className="-mb-px flex items-center gap-1 border-b-2 px-3 py-2 text-xs"
@@ -147,7 +148,7 @@ export default function PageTabs({ readOnly = false }: { readOnly?: boolean }) {
                 opacity: hidden ? 0.5 : undefined,
               }}
             >
-              {!readOnly && sheet.show_when.conditions.length > 0 && (
+              {!previewing && sheet.show_when.conditions.length > 0 && (
                 <ShowWhenMark hidden={hidden} title={showWhenText(form, sheet.show_when)} />
               )}
               {sheet.title}
@@ -157,7 +158,7 @@ export default function PageTabs({ readOnly = false }: { readOnly?: boolean }) {
                 <AlertTriangle size={11} aria-hidden="true" />
               </span>
             )}
-            {!readOnly && active && (
+            {!previewing && active && (
               <button
                 type="button"
                 onClick={selectSheet}
@@ -172,7 +173,7 @@ export default function PageTabs({ readOnly = false }: { readOnly?: boolean }) {
           </div>
         )
       })}
-      {!readOnly && (
+      {!previewing && (
         <button
           type="button"
           onClick={addSheet}

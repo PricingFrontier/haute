@@ -63,7 +63,7 @@ describe("QuoteView", () => {
     useAppStore.setState({ release, form, revision: "rev-9", people: [], releaseChanged: false })
     useQuestionStore.setState({ question: null })
     useWorkbenchFormStore.setState({ form, status: "ready" })
-    useWorkbenchViewStore.setState({ section: "preview", underwriterApp: true, pageId: null, zoom: 1, fitted: false, viewport: null, sheet: null })
+    useWorkbenchViewStore.setState({ mode: "preview", underwriterApp: true, pageId: null, zoom: 1, fitted: false, viewport: null, sheet: null })
     useWorkbenchPreviewStore.setState({ quote: {}, price: null, error: null, pricing: false, readOnly: false, locked: APP_SET_COLUMNS })
     useOpenQuoteStore.setState({ status: "idle", quote: null, revision: null, past: false, olderSheets: null, source: null, pending: null, conflict: null, error: null, historyOpen: false, history: null })
     useToastStore.setState({ toasts: [] })

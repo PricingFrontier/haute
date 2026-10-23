@@ -141,7 +141,7 @@ describe("SheetCanvas", () => {
     expect(topOnSheet(screen.getByTestId("section-edge-s_flood"))).toBe(428)
     expect(screen.getByTestId("section-edge-s_flood")).toHaveStyle({ height: "8px" })
 
-    act(() => useWorkbenchViewStore.getState().showSection("preview"))
+    act(() => useWorkbenchViewStore.getState().showMode("preview"))
     expect(screen.queryAllByTestId(/^section-(header|edge)-/)).toHaveLength(0)
     expect(band("s_policy")).toHaveStyle({ top: "0px" })
     expect(band("s_flood")).toHaveStyle({ top: "152px" })
@@ -183,7 +183,7 @@ describe("SheetCanvas", () => {
     expect(heights()).toEqual([152, 232, 56])
     expect(undoSteps()).toBe(4)
 
-    act(() => useWorkbenchViewStore.getState().showSection("preview"))
+    act(() => useWorkbenchViewStore.getState().showMode("preview"))
     expect(screen.queryAllByTestId(/^sheet-edge-/)).toHaveLength(0)
     for (let step = 0; step < 4; step += 1) act(() => useWorkbenchFormStore.getState().undo())
     expect(currentForm().pages[0].width).toBe(936)
@@ -958,7 +958,7 @@ describe("SheetCanvas", () => {
     expect(screen.getByRole("button", { name: "Section 2, Section 2" })).toHaveAttribute("data-selected", "true")
     expect(screen.getByTestId(`section-edge-${added.id}`)).toBeInTheDocument()
     // In Preview, with no bars, the Table is where it was on the sheet: 144 and 16 down, 160.
-    act(() => useWorkbenchViewStore.getState().showSection("preview"))
+    act(() => useWorkbenchViewStore.getState().showMode("preview"))
     expect(band(added.id)).toHaveStyle({ top: "144px" })
 
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
@@ -1127,7 +1127,7 @@ describe("SheetCanvas", () => {
 
   it("in Preview draws a Heading's text for the underwriter, and one with no text only as the frame its problem draws", () => {
     loadForm(headed({ id: "w_title", text: "Equipment schedule", size: "large", y: 384 }, { id: "w_blank", text: "  ", size: "medium", y: 440 }))
-    useWorkbenchViewStore.setState({ section: "preview" })
+    useWorkbenchViewStore.setState({ mode: "preview" })
     render(<SheetCanvas />)
 
     expect(within(frame("w_title")).getByRole("heading", { level: 2, name: "Equipment schedule" })).toBeInTheDocument()
@@ -1169,7 +1169,7 @@ describe("SheetCanvas", () => {
     addTo(form, headingWidget("w_note", "Over the grid", { y: 160 }))
     addTo(form, headingWidget("w_ca", "California", { y: 136, show_when: californian }))
     loadForm(form)
-    useWorkbenchViewStore.setState({ section: "preview" })
+    useWorkbenchViewStore.setState({ mode: "preview" })
     render(<SheetCanvas />)
 
     expect(order()).toEqual(["w_title", "w_boxes", "w_grid", "w_note"])
@@ -1253,7 +1253,7 @@ describe("SheetCanvas", () => {
   })
 
   it("in Preview, neither selects nor moves a component, offers no drop, draws no section bars, and types into the sample", () => {
-    useWorkbenchViewStore.setState({ section: "preview" })
+    useWorkbenchViewStore.setState({ mode: "preview" })
     render(
       <>
         <WorkbenchPalette />
@@ -1345,7 +1345,7 @@ describe("SheetCanvas", () => {
     const form = coverForm()
     widgetsOf(form)[1].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"] }] }
     loadForm(form)
-    useWorkbenchViewStore.setState({ section: "preview", pageId: "p2" })
+    useWorkbenchViewStore.setState({ mode: "preview", pageId: "p2" })
     render(<SheetCanvas />)
 
     // The sample leaves Cover unticked: Sheet 1 shows in its place, without the hidden Table.
@@ -1362,7 +1362,7 @@ describe("SheetCanvas", () => {
 
   it("in Preview draws no section the sample hides, the sections under it moved up into its place, and down again once it shows", () => {
     loadForm(sectionedForm())
-    useWorkbenchViewStore.setState({ section: "preview" })
+    useWorkbenchViewStore.setState({ mode: "preview" })
     render(<SheetCanvas />)
     const cover = () => within(frame("w_boxes")).getByRole("checkbox", { name: "Cover" })
 
@@ -1384,7 +1384,7 @@ describe("SheetCanvas", () => {
   it("in Preview holds the sections drawn, and their places, while a pointer is pressed on the sheet, never faded, until a turn after the release", () => {
     vi.useFakeTimers()
     loadForm(sectionedForm())
-    useWorkbenchViewStore.setState({ section: "preview" })
+    useWorkbenchViewStore.setState({ mode: "preview" })
     render(<SheetCanvas />)
     const cover = () => within(frame("w_boxes")).getByRole("checkbox", { name: "Cover" })
 
@@ -1421,7 +1421,7 @@ describe("SheetCanvas", () => {
         show_when: { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [] }] },
       }),
     )
-    useWorkbenchViewStore.setState({ section: "preview" })
+    useWorkbenchViewStore.setState({ mode: "preview" })
     render(<SheetCanvas />)
     const cover = () => within(frame("w_boxes")).getByRole("checkbox", { name: "Cover" })
     const yearBox = () => within(frame("w_boxes")).queryByRole("textbox", { name: "Year" })
@@ -1440,7 +1440,7 @@ describe("SheetCanvas", () => {
     // The policy's year in Notes, under its Heading.
     addTo(form, { id: "w_year", type: "collection", x: 16, y: 72, w: 400, h: 120, title: "Year", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "policy", column: "policy.year" }], show_when: { match: "all", conditions: [] } }, 0, 2)
     loadForm(form)
-    useWorkbenchViewStore.setState({ section: "preview" })
+    useWorkbenchViewStore.setState({ mode: "preview" })
     render(<SheetCanvas />)
     // jsdom has no scrollTo: one moving the viewport's scroll position, as a browser's does.
     const viewport = screen.getByTestId("sheet-viewport")
@@ -1462,7 +1462,7 @@ describe("SheetCanvas", () => {
     widgetsOf(form)[1].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"] }] }
     addTo(form, headingWidget("w_after", "Under the equipment", { y: 384 }))
     loadForm(form)
-    useWorkbenchViewStore.setState({ section: "preview" })
+    useWorkbenchViewStore.setState({ mode: "preview" })
     render(<SheetCanvas />)
 
     expect(screen.queryByTestId("sheet-widget-w_grid")).not.toBeInTheDocument()
@@ -1478,7 +1478,7 @@ describe("SheetCanvas", () => {
     const form = coverForm()
     form.pages[0].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.year", op: "filled", values: [] }] }
     loadForm(form)
-    useWorkbenchViewStore.setState({ section: "preview" })
+    useWorkbenchViewStore.setState({ mode: "preview" })
     render(<SheetCanvas />)
 
     expect(screen.getByText("No sheet shows for this quote.")).toBeInTheDocument()
@@ -1491,7 +1491,7 @@ describe("SheetCanvas", () => {
     // Each sheet shows only while cover is ticked, its tick box on the first.
     form.pages[0].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [] }] }
     loadForm(withSampleCell(form, "policy", 0, "policy.cover", true))
-    useWorkbenchViewStore.setState({ section: "preview" })
+    useWorkbenchViewStore.setState({ mode: "preview" })
     render(<SheetCanvas />)
     const cover = () => within(frame("w_boxes")).getByRole("checkbox", { name: "Cover" })
 

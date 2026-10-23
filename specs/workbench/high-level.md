@@ -264,14 +264,18 @@ Out of scope:
     beside the view, in the properties panel's place. The Workbench Input's and Workbench
     Output's panels offer "Edit in Workbench", which shows the view.
   - **The toolbar** keeps the brand and the project's controls (Pipeline files and Local
-    files, Assistant, Help, the branch, Save and Commit) and shows the view's own, by mode:
+    files, Assistant, Help, the branch, Save and Commit) and shows the view's own, the same
+    in both modes, so the toolbar keeps its layout as the mode changes: Build over Preview,
+    Sheets over Schema, Display, Test quotes, the form's Undo and Redo, and Zoom In over
+    Zoom Out, then, in Preview, why pricing the sample last failed; there is no Price and no
+    Clear. A control the mode or the section showing has no use for stays in its place,
+    disabled, as the palette's components are in Preview:
 
-    | Mode | The view's controls |
+    | Control | Disabled |
     |---|---|
-    | Building or Preview | Build over Preview |
-    | Building, the sheets showing | Sheets over Schema, Display, the form's Undo and Redo, and Zoom In over Zoom Out |
-    | Building, the schema showing | Sheets over Schema, Display, and Undo and Redo |
-    | Preview | Test quotes, the form's Undo and Redo, Zoom In over Zoom Out, and why pricing the sample last failed; no Price and no Clear |
+    | Sheets over Schema, Display | In Preview, which shows the sheets |
+    | Test quotes | While building |
+    | Zoom In over Zoom Out | While the schema shows |
 
   - **Save.** Save and Ctrl/Cmd+S save the project, the same from either toolbar, with a
     focused field's edit included: the form is saved first when it holds unsaved edits or
@@ -862,7 +866,9 @@ Out of scope:
   one under the next and each component where it sits in its section, read and
   tabbed through in the order they sit, no section bars, their
   tabs only switching sheets, the components neither selected nor moved, the palette's
-  components disabled, no properties panel, and the zoom. The sheets are drawn as the
+  components and the toolbar's Sheets over Schema and Display disabled (the toolbar,
+  above), no properties panel, and the zoom. Either button shows the sheets, from the
+  schema too, with nothing selected. The sheets are drawn as the
   underwriter app draws them, through the same components. The analyst keys the sample in
   as an underwriter keys a quote, through the same controls, and it is priced live
   (above), read as a request is, so it prices as it would deployed: every output column

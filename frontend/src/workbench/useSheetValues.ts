@@ -186,8 +186,9 @@ export function useQuoteValues(active = true): SheetValues {
  * Which sheets and components show, for what draws outside the sheet (the tabs): a new
  * quote's while building; in Preview, the sample's, or the quote's in the underwriter app.
  */
-export function useSheetVisibility(previewing: boolean): SheetVisibility {
+export function useSheetVisibility(): SheetVisibility {
   const form = useWorkbenchFormStore((s) => s.form)
+  const previewing = useWorkbenchViewStore((s) => s.mode === "preview")
   const quote = useWorkbenchPreviewStore((s) => s.quote)
   const underwriterApp = useWorkbenchViewStore((s) => s.underwriterApp)
   if (form === null) return NO_VISIBILITY

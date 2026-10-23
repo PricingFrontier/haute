@@ -53,7 +53,7 @@ describe("UnderwriterApp", () => {
     vi.mocked(fetchAppRelease).mockResolvedValue(release)
     vi.mocked(fetchAppForm).mockResolvedValue({ form: sheetForm(), revision: "rev-9" })
     useWorkbenchFormStore.setState({ form: null, status: "idle" })
-    useWorkbenchViewStore.setState({ section: "sheets", underwriterApp: false, pageId: null, zoom: 1, fitted: false, viewport: null, sheet: null })
+    useWorkbenchViewStore.setState({ mode: "build", section: "sheets", underwriterApp: false, pageId: null, zoom: 1, fitted: false, viewport: null, sheet: null })
     useWorkbenchPreviewStore.setState({ quote: {}, price: null, error: null, pricing: false })
     useWorkbenchPricingStore.setState({ pricer: null, quotePricer: null })
   })
@@ -73,7 +73,7 @@ describe("UnderwriterApp", () => {
     expect(screen.getByTestId("app-principal")).toHaveTextContent("Signed in as uw@example.com")
     expect(screen.getByRole("tab", { name: "Sheet 1" })).toBeInTheDocument()
     expect(screen.getByText("Equipment")).toBeInTheDocument()
-    expect(useWorkbenchViewStore.getState()).toMatchObject({ section: "preview", underwriterApp: true })
+    expect(useWorkbenchViewStore.getState()).toMatchObject({ mode: "preview", section: "sheets", underwriterApp: true })
     for (const builder of ["Build", "Preview", "Sheets", "Schema", "Save", "Test quotes"]) {
       expect(screen.queryByRole("button", { name: builder })).toBeNull()
     }

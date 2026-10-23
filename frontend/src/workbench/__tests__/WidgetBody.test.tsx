@@ -718,7 +718,7 @@ describe("WidgetBody", () => {
     expect(within(boxes()).getAllByTestId("collection-spacer")).toHaveLength(1)
 
     // In Preview the sample decides: neither the year nor its spacer is drawn until cover is ticked.
-    act(() => useWorkbenchViewStore.setState({ section: "preview" }))
+    act(() => useWorkbenchViewStore.setState({ mode: "preview" }))
     expect(within(boxes()).queryByRole("textbox", { name: "Year" })).not.toBeInTheDocument()
     expect(within(boxes()).queryAllByTestId("collection-spacer")).toHaveLength(0)
     expect(within(boxes()).queryByRole("img", { name: /Shows when/ })).not.toBeInTheDocument()
@@ -743,7 +743,7 @@ describe("WidgetBody", () => {
     expect(within(grid()).getByRole("columnheader", { name: /^Value/ })).toHaveAttribute("data-hidden", "true")
     expect(within(grid()).getAllByRole("img", { name: "Hidden for a new quote. Shows when Cover is ticked" })).toHaveLength(2)
 
-    act(() => useWorkbenchViewStore.setState({ section: "preview" }))
+    act(() => useWorkbenchViewStore.setState({ mode: "preview" }))
     expect(within(grid()).getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["#", "Item", ""])
     // A row deleted goes from every table the grid shows, the one whose columns all hide too.
     fireEvent.click(within(grid()).getByRole("button", { name: "Delete row 1" }))
@@ -1173,7 +1173,7 @@ describe("WidgetBody", () => {
       fields: [premium, { table: "fees", column: "fees.item" }, { table: "fees", column: "fees.fee" }],
     })
     loadForm(setColumnLook(form, "w_results", premium, { show_when: covered }))
-    useWorkbenchViewStore.setState({ section: "preview" })
+    useWorkbenchViewStore.setState({ mode: "preview" })
     render(<SheetCanvas />)
     act(() =>
       useWorkbenchPricingStore.setState({
@@ -1197,7 +1197,7 @@ describe("WidgetBody", () => {
   it("takes a date once it is committed, one edit, not as each digit of its year is typed", () => {
     const form = toggleField(sheetForm(), "w_boxes", { table: "policy", column: "policy.year" })
     loadForm(updateSchemaColumn(form, "policy", "policy.year", { type: "date" }))
-    useWorkbenchViewStore.setState({ section: "preview" })
+    useWorkbenchViewStore.setState({ mode: "preview" })
     renderBody("w_boxes")
     const year = screen.getByLabelText("Year")
 
@@ -1211,7 +1211,7 @@ describe("WidgetBody", () => {
 
   it("shows a held value its select no longer allows, and a tick in a column since retyped, each marked", () => {
     loadForm(toggleField({ ...sheetForm(), sample: { policy: [{ "policy.state": "TX", "policy.year": true }] } }, "w_boxes", { table: "policy", column: "policy.year" }))
-    useWorkbenchViewStore.setState({ section: "preview" })
+    useWorkbenchViewStore.setState({ mode: "preview" })
     renderBody("w_boxes")
 
     // Priced as held, so shown as held, not as a blank select.
@@ -1224,7 +1224,7 @@ describe("WidgetBody", () => {
 
   it("marks the cells that break their column's rules once anything is typed, as the sample is typed in Preview", () => {
     loadForm(toggleField(sheetForm(), "w_boxes", { table: "policy", column: "policy.year" }))
-    useWorkbenchViewStore.setState({ section: "preview" })
+    useWorkbenchViewStore.setState({ mode: "preview" })
     const { rerender } = renderBody("w_boxes")
 
     // Nothing typed: nothing is marked, though the state is required.
@@ -1280,7 +1280,7 @@ describe("WidgetBody", () => {
   })
 
   it("keeps the rows the underwriter app's quote's grid starts with as the first value is typed into it, and inserts and deletes its rows", () => {
-    useWorkbenchViewStore.setState({ section: "preview" })
+    useWorkbenchViewStore.setState({ mode: "preview" })
     renderBody("w_grid", "quote")
 
     const item = screen.getByRole("textbox", { name: "Item row 1" })
@@ -1312,7 +1312,7 @@ describe("WidgetBody", () => {
     expect(useWorkbenchFormStore.getState().undoStack).toEqual([])
 
     // In Preview the cells take typing: the sample's.
-    act(() => useWorkbenchViewStore.setState({ section: "preview" }))
+    act(() => useWorkbenchViewStore.setState({ mode: "preview" }))
     expect(within(screen.getByTestId("sheet-widget-w_boxes")).getByRole("combobox", { name: "State" })).toHaveValue("NY")
     expect(screen.getByTestId("sheet-widget-w_boxes").querySelector("[inert]")).toBeNull()
   })
@@ -1324,7 +1324,7 @@ describe("WidgetBody", () => {
     render(<SheetCanvas />)
 
     expect(within(screen.getByTestId("sheet-widget-w_boxes")).getByRole("combobox", { name: "State" })).toHaveValue("CA")
-    act(() => useWorkbenchViewStore.setState({ section: "preview" }))
+    act(() => useWorkbenchViewStore.setState({ mode: "preview" }))
     expect(within(screen.getByTestId("sheet-widget-w_boxes")).getByRole("combobox", { name: "State" })).toHaveValue("NY")
   })
 
@@ -1333,7 +1333,7 @@ describe("WidgetBody", () => {
     addTo(form, headingWidget("w_head", "Equipment schedule"))
     loadForm(form)
     const resize = (size: "large" | "small") => act(() => useWorkbenchFormStore.getState().change((spec) => updateWidget(spec, "w_head", { size })))
-    const preview = (on: boolean) => act(() => useWorkbenchViewStore.setState({ section: on ? "preview" : "sheets" }))
+    const preview = (on: boolean) => act(() => useWorkbenchViewStore.setState({ mode: on ? "preview" : "build" }))
     const heading = (level: number) => screen.getByRole("heading", { level, name: "Equipment schedule" })
     const { container, rerender } = renderBody("w_head")
 
@@ -1390,10 +1390,10 @@ describe("WidgetBody", () => {
       expect(screen.getByRole("heading", { name: "Equipment schedule" }).parentElement).toHaveClass(className)
     }
     // The same for the underwriter in Preview.
-    act(() => useWorkbenchViewStore.setState({ section: "preview" }))
+    act(() => useWorkbenchViewStore.setState({ mode: "preview" }))
     rerender(body("w_head"))
     expect(screen.getByText("Each item insured, with its value").parentElement).toHaveClass("text-right")
-    act(() => useWorkbenchViewStore.setState({ section: "sheets" }))
+    act(() => useWorkbenchViewStore.setState({ mode: "build", section: "sheets" }))
     rerender(body("w_head"))
 
     // Only spaces are no description; and a Heading with no text shows its hint alone.

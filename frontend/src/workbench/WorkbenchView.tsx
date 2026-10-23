@@ -44,11 +44,12 @@ const BANNER_STYLE = {
 
 /**
  * The workbench's view, over the area below the toolbar while it is the active view
- * (specs/workbench): the component palette with the switcher back to the pipeline, then
- * the section the toolbar chose, the sheets (their tabs over the sheet showing, with the
- * selected component's properties panel on the right), the schema editor, or Preview,
- * the sheets as an underwriter sees them with the sample keyed into them, on the form the
- * store reads when the view first shows. A save refused because the file changed on disk
+ * (specs/workbench), laid out alike in both modes: the component palette with the switcher
+ * back to the pipeline, then the section the toolbar chose, the sheets (their tabs over the
+ * sheet showing) or, while building, the schema editor, on the form the store reads when
+ * the view first shows. While building the selected component's properties panel opens on
+ * the right; in Preview the sheets are as an underwriter sees them, with the sample keyed
+ * into them, and the test quotes open there. A save refused because the file changed on disk
  * is reported in a banner with the way out, a reload. The toolbar's Git, Assistant and
  * Files panels open beside the view, in the properties panel's place. While Preview shows, the
  * sample is priced on the pipeline whenever the schema or the sample changes once typing
@@ -62,6 +63,7 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
   const basis = useWorkbenchFormStore((s) => (s.form === null ? null : pricingBasis(s.form)))
   // The pipeline, its data, its source or the document moved: Preview prices again.
   const context = usePricingContext()
+  const previewing = useWorkbenchViewStore((s) => s.mode === "preview")
   const section = useWorkbenchViewStore((s) => s.section)
   const setPricer = useWorkbenchPricingStore((s) => s.setPricer)
   const setSnapshot = useWorkbenchPricingStore((s) => s.setSnapshot)
@@ -97,10 +99,10 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
   // Preview prices the sample; leaving it drops what waits to be priced, so nothing is
   // priced while building.
   useEffect(() => {
-    if (section !== "preview" || basis === null) return
+    if (!previewing || basis === null) return
     schedule()
     return cancel
-  }, [basis, context, section, schedule, cancel])
+  }, [basis, context, previewing, schedule, cancel])
 
   return (
     <div className="absolute inset-0 flex" data-testid="workbench-view" style={{ background: "var(--bg-base)" }}>
@@ -126,7 +128,7 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
           ) : (
             <>
               <div className="px-4 pt-2">
-                <PageTabs readOnly={section === "preview"} />
+                <PageTabs />
               </div>
               <SheetCanvas />
             </>
@@ -172,11 +174,11 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
             <FilesPanel key={filesPlace} place={filesPlace} onClose={() => setFilesPlace(null)} />
           </Suspense>
         </aside>
-      ) : status === "ready" && section === "preview" && testQuotesOpen ? (
+      ) : status === "ready" && previewing && testQuotesOpen ? (
         <aside aria-label="Test quotes">
           <TestQuotesPanel />
         </aside>
-      ) : status === "ready" && section === "sheets" ? (
+      ) : status === "ready" && !previewing && section === "sheets" ? (
         <PropertiesPanel />
       ) : null}
       <DragChip />

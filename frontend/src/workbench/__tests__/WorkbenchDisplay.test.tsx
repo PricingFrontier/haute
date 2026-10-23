@@ -20,7 +20,7 @@ describe("WorkbenchDisplay", () => {
   afterEach(cleanup)
 
   it("opens a box of the sheets' colours under Display, each Automatic to start, and Display closes it", () => {
-    render(<WorkbenchDisplay />)
+    render(<WorkbenchDisplay disabled={false} />)
     expect(display()).toHaveAttribute("aria-haspopup", "dialog")
     expect(display()).toHaveAttribute("aria-expanded", "false")
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
@@ -35,7 +35,7 @@ describe("WorkbenchDisplay", () => {
   })
 
   it("offers white, light grey, dark grey and black before Haute's hues for each colour", () => {
-    render(<WorkbenchDisplay />)
+    render(<WorkbenchDisplay disabled={false} />)
     fireEvent.click(display())
     const font = within(box())
       .getAllByRole("button", { name: /^Colour #[0-9A-F]{6} for Font$/ })
@@ -48,7 +48,7 @@ describe("WorkbenchDisplay", () => {
   })
 
   it("sets a colour from a swatch, and the editor's own again with Automatic, each one undo step", () => {
-    render(<WorkbenchDisplay />)
+    render(<WorkbenchDisplay disabled={false} />)
     fireEvent.click(display())
 
     fireEvent.click(within(box()).getByRole("button", { name: "Colour #2563EB for Sheet background" }))
@@ -61,7 +61,7 @@ describe("WorkbenchDisplay", () => {
   })
 
   it("shows a colour of its own on the sheet at each step of its pick, the picker the same element throughout, and records the pick as one undo step", () => {
-    render(<WorkbenchDisplay />)
+    render(<WorkbenchDisplay disabled={false} />)
     fireEvent.click(display())
     const custom = within(box()).getByLabelText("Custom colour for Font")
 
@@ -82,7 +82,7 @@ describe("WorkbenchDisplay", () => {
   it("closes on Escape, keeping the key from the sheet, and on a press outside it, a component's too, a colour being picked recorded first", () => {
     render(
       <>
-        <WorkbenchDisplay />
+        <WorkbenchDisplay disabled={false} />
         <div data-testid="outside" />
         {/* A component on the sheet: its press stops there, cancelling the mouse events after it. */}
         <div

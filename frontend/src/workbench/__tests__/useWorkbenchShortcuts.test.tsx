@@ -187,7 +187,7 @@ describe("useWorkbenchShortcuts on the sheets", () => {
 
     useWorkbenchViewStore.setState({ section: "schema" })
     key({ key: "v", ctrlKey: true })
-    useWorkbenchViewStore.setState({ section: "preview" })
+    useWorkbenchViewStore.setState({ mode: "preview", section: "sheets" })
     key({ key: "v", ctrlKey: true })
     expect(widgets()).toHaveLength(2)
   })
@@ -386,7 +386,7 @@ describe("useWorkbenchShortcuts on the sheets", () => {
     const fitZoom = vi.fn()
     const undo = vi.fn()
     const redo = vi.fn()
-    useWorkbenchViewStore.setState({ section: "preview", fitZoom })
+    useWorkbenchViewStore.setState({ mode: "preview", fitZoom })
     useWorkbenchFormStore.setState({ undo, redo })
 
     key({ key: "1", ctrlKey: true })

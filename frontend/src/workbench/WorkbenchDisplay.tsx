@@ -1,7 +1,7 @@
 /**
- * Display in the workbench's toolbar while building (specs/workbench), and the box it opens
- * under it, as the pipeline toolbar's Source dropdown opens one, rather than a dialog over
- * the sheet: the sheets' colours, the form's `theme`, each Automatic (the editor's own), one
+ * Display in the workbench's toolbar (specs/workbench), `disabled` in Preview and until the
+ * form is read, and the box it opens under it, as the pipeline toolbar's Source dropdown
+ * opens one, rather than a dialog over the sheet: the sheets' colours, the form's `theme`, each Automatic (the editor's own), one
  * of the swatches, the neutrals then Haute's hues, or a colour of its own from the rainbow
  * square. A colour of its own shows on the sheet at each
  * step of its pick, and the whole pick is one undo step. Pressing outside the box, or
@@ -27,10 +27,12 @@ const THEME_COLOURS: ReadonlyArray<{ key: ThemeColour; label: string }> = [
   { key: "output_cell_color", label: "Output cells" },
 ]
 
-export default function WorkbenchDisplay() {
-  const ready = useWorkbenchFormStore((s) => s.status === "ready")
+export default function WorkbenchDisplay({ disabled }: { disabled: boolean }) {
   const theme = useWorkbenchFormStore((s) => s.form?.theme ?? BLANK_THEME)
   const [open, setOpen] = useState(false)
+  // Disabled while open, as Preview shows from the keyboard: the box goes with it, its
+  // picker already left for the toolbar.
+  if (disabled && open) setOpen(false)
   const box = useRef<HTMLDivElement>(null)
   const dialog = useRef<HTMLDivElement>(null)
   // The box takes the focus as it opens.
@@ -70,7 +72,7 @@ export default function WorkbenchDisplay() {
         aria-expanded={open}
         aria-pressed={open}
         onClick={() => (open ? close() : setOpen(true))}
-        disabled={!ready}
+        disabled={disabled}
         title="The sheets' colours"
       >
         Display
