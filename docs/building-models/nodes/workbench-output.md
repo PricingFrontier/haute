@@ -13,6 +13,8 @@ Each table is filled from the frame connected to it. Each of the table's columns
 
 A column the frame doesn't have, or has with a type that doesn't fit (a Text column for a Decimal one, say), is left empty: its values are null, and the panel flags it (see below). A table nothing is connected to is left empty too: a table with one row per quote gets one row of nulls, and a table with many rows gets none. None of these stops the run, so the pipeline previews and prices while you are still building it. To fill a column, give the frame a column of its name and type before the Workbench Output, for example in a [Transform](transform.md) node.
 
+A table's **reference** and **option** are left empty in the node's own tables, whatever its frame holds: the response gives every row the quote's (see below), so a pipeline need not carry them through.
+
 A table with one row per quote takes exactly one row from its frame; a table with many rows per quote takes all of its frame's rows, in the order the frame delivers them. A step before it that leaves row order to Polars, such as an [Edge Join](edge-join.md) with **Order** set to **None**, can list them in a different order from one run to the next.
 
 Click the node to preview its tables, filled for the workbench's sample quote: each table is a dataframe, with the table picker at the top of the preview choosing which one shows when there are several. The preview keeps the table you picked when you refresh it, when the pipeline recalculates and when you come back to the node. Click a value to trace it back through the pipeline: it is traced from the node connected to its table, through the frame's column of the same name. A null the Workbench Output filled in, for a column the frame doesn't fill or a table nothing is connected to, has nothing to trace.
@@ -21,19 +23,21 @@ In Preview, the workbench prices the sample live and shows the answer in its out
 
 ## The response
 
-When the pipeline answers a request, through a deployment's `/quote` or `pipeline.run()` and `pipeline.score()` in code, the tables become the response for one quote: each one-row table is an object under its name and each many-row table a list of objects under its name, for example:
+When the pipeline answers a request, through a deployment's `/quote` or `pipeline.run()` and `pipeline.score()` in code, the tables become the response for one quote: each one-row table is an object under its name and each many-row table a list of objects under its name, every row holding the quote's **reference** and **option**, for example:
 
 ```json
 [
   {
-    "pricing_output": { "model_premium": 1250.0, "charged_premium": 1300.0 },
+    "pricing_output": { "reference": "Q-000123", "option": 2, "model_premium": 1250.0, "charged_premium": 1300.0 },
     "layers": [
-      { "layer": 1, "premium": 800.0 },
-      { "layer": 2, "premium": 500.0 }
+      { "reference": "Q-000123", "option": 2, "layer": 1, "premium": 800.0 },
+      { "reference": "Q-000123", "option": 2, "layer": 2, "premium": 500.0 }
     ]
   }
 ]
 ```
+
+The reference and option are the request's, read from its `quote_details`; in code, `run()` answers as quote `PREVIEW`, option 1, and `score()` with the `quote_details` frame it is given, leaving them out without one.
 
 Values that are null, and tables with no rows, are left out of the response, as in a Quote Response's.
 
@@ -48,7 +52,7 @@ The panel lists the workbench's output tables and shows how the frames connected
 | The table's name | The input's name. |
 | **one per quote** or **many per quote** | Whether a quote has one row of the table or a list of them. |
 | **From** ... or **Not connected** | The node whose frame fills the table, or that nothing does yet. |
-| Each column's name and type, in a box | The box's border is **red** when the column is missing: the connected frame has no column of exactly that name, or nothing is connected to the table. It is **orange** when the frame has the column but of a type that doesn't fit; hold the pointer over the box to see the frame's type. Either way the column is left empty when the pipeline runs. The borders follow the frame as the node it comes from was last previewed, so preview that node to bring them up to date. |
+| Each column's name and type, in a box | The box's border is **red** when the column is missing: the connected frame has no column of exactly that name, or nothing is connected to the table. It is **orange** when the frame has the column but of a type that doesn't fit; hold the pointer over the box to see the frame's type. Either way the column is left empty when the pipeline runs. The borders follow the frame as the node it comes from was last previewed, so preview that node to bring them up to date. A table's **reference** and **option**, which the response fills, are never red or orange. |
 | A warning under the name | The name can't be an input: it isn't an identifier, or another table has it. Rename the table in the workbench. |
 | **No columns yet, so no port.** | The table has no columns, so there is nothing to fill. Add its columns in the workbench. |
 

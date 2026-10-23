@@ -79,6 +79,15 @@ typed, and what is typed is what is saved and priced. Under each column's name, 
 sums up what is set: required, its range and default, shown in its format, its allowed
 values, and a number's format and decimal places.
 
+Every table but `quote_details` starts with two columns Haute keeps for the quote,
+**reference** and **option**, which say which quote a row belongs to once rows of many
+quotes are put together, in the app's saved quotes, in exports and in joins. They come
+first and are locked: they cannot be renamed, retyped, moved or removed, take no label,
+group, help, rules, default or format, and are not offered to the sheets, where
+`quote_details`' own stand for them. They are not a key: rows still line up by the table's
+own key. A table you add has them at once, and a project saved before them takes them on
+when it is opened.
+
 A column's **allowed values** come from a CSV in the pipeline's params folder
 (`rating/files/params/`, **params** in the Pipeline files panel); they are never typed in.
 Choose the file beside **Allowed**, then its column: the column's distinct values become
@@ -120,8 +129,8 @@ typed, and a value typed equal to its default counts as the default.
 - Drag a column by the grip at its left, or press Alt+Up and Alt+Down in its name, to move
   it within its table. Drag a table by the grip beside its name, or press Alt+Up and
   Alt+Down in its name, to move the table. A grip shows while the pointer is over its row.
-- **Add index** on a many-row table adds a column first in the table, `row_number` until
-  renamed, that numbers the rows from 1. It is an Integer and can be the table's key.
+- **Add index** on a many-row table adds a column first in the table after **reference**
+  and **option**, `row_number` until renamed, that numbers the rows from 1. It is an Integer and can be the table's key.
 - The editor says what would stop the schema being the pipeline's tables: a table's name is
   held to the rules a Quote Input's labels follow (an identifier, no reserved name, unique
   whatever its case), a column's name is an identifier that is not a Python keyword, unique
@@ -135,6 +144,11 @@ typed, and a value typed equal to its default counts as the default.
   True/false, or becomes a Date while it is not a date; switching a table to many rows
   clears its defaults, and to one row its keys and its row for each value.
 - Removing a column or a table a sheet shows asks first, and takes it off the sheet.
+- A column of a table's own named **reference** or **option**, as a project saved before
+  Haute kept those names may hold, keeps its place and its values, and the table goes
+  without the quote's reference and option; the editor names it among the schema's
+  problems, and `haute app build` and deploying refuse while it stands. Rename it, and the
+  table takes them at the next save.
 
 ### Quote details
 
@@ -142,24 +156,42 @@ Every workbench has Haute's own table, `quote_details`, first in the schema, whe
 it stays: one row of a quote's details, which the underwriter app keeps with each saved quote and lists
 on its Quotes page. Its columns are fixed: **reference**, **quote_name**, **insured**,
 **broker**, **inception_date**, **expiry_date**, **valid_until**, **currency**, **stage**,
-**assignee**, **archived** and **is_renewal**. Put them on the sheets as any other columns, and give them
+**assignee**, **archived**, **is_renewal** and **option**. Put them on the sheets as any other columns, and give them
 labels, groups, help, placeholders, defaults and rules; the pipeline receives the table as
 it receives any other input, so a rule can read a quote's inception date or its stage.
 **is_renewal** is a tick box: a quote made with the app's **Renew** opens with it ticked,
 and an underwriter ticks it for a renewal started any other way. A project saved before
-**is_renewal** existed takes it on when it is opened; save once so the Workbench Input
-copies it.
+**is_renewal** or **option** existed takes them on when it is opened; save once so the
+Workbench Input copies them.
 
-The app sets **reference**, **stage**, **assignee** and **archived** itself: their cells take
-no typing in the app and take no rules and no default. Assigning, archiving, restoring, marking final and
-reopening a quote each save a new revision with those details changed and its values and
-price kept, so the history shows when a quote moved; the pipeline sees the new details the
-next time the quote is priced. A new quote is priced before it takes its reference, so its
-first price is made without one.
+The app sets **reference**, **option**, **stage**, **assignee** and **archived** itself:
+their cells take no typing in the app and take no rules and no default. Assigning,
+archiving, restoring, marking final and reopening a quote each save a new revision with
+those details changed and its values and price kept, so the history shows when a quote
+moved; the pipeline sees the new details the next time the quote is priced. A quote takes
+its reference and option when it is made (see [The Quotes page](#the-quotes-page)), so its
+every price has them. Preview prices the sample as `PREVIEW`, option 1, as the app prices
+the one quote it holds without a quote store: a quote's reference and option are never
+blank.
 
 A table or a column you add reaches the pipeline when you save: the editor fetches the
 tables again, the Workbench Input's and Workbench Output's tables follow the schema, and
 the pipeline is saved with them in the same save. Until then it is on the sheets alone.
+
+### Joining the schema's tables
+
+Every table but `quote_details` holds the quote's reference and option on every row. Join
+two of them on **reference**, **option** and their own key, and each stays once: a Left,
+Inner or Right join keeps one **reference** and one **option**, and a Semi or Anti join the
+first table's alone. A Full join keeps both tables' keys, the second's as `reference_right`
+and `option_right`: in an [Edge Join](nodes/edge-join.md), set **COALESCE** to **True** to
+keep one of each; after a Transform's **Join another input**, fill **reference**,
+**option** and your own key from their `_right` copies where a row came from the second
+table alone, then remove the copies. A cross join takes no keys: remove the second table's
+**reference** and **option** after it. Joined on their own key alone, the second table's
+are kept as `reference_right` and `option_right`, and joining a third table after that is
+refused, as `reference_right` is there already. **option** is an Integer, so a step that
+takes every Integer column takes it too.
 
 ## Sheets
 
@@ -482,8 +514,8 @@ while building.
 The sample is **priced live**: 300ms after the schema or the sample changes, a value
 counting once it is entered (press Enter or Tab, or leave a text or number cell; a tick,
 a choice or a date counts as you make it), and each time you open Preview, Haute prices it on the pipeline open in the
-editor, as it stands, saved or not, exactly as a deployed pipeline would price it. Every
-output column shows its value, a Collection's its table's one row and a Table's the row in
+editor, as it stands, saved or not, exactly as a deployed pipeline would price it, as
+quote `PREVIEW`, option 1. Every output column shows its value, a Collection's its table's one row and a Table's the row in
 the answer keyed like each grid row, dimmed while a newer answer is on its way, and every
 Chart plots the sample with what pricing it gave. A Table of output columns alone, such as
 a premium by peril, shows a row for each row of the answer, as a Chart of them does; until
@@ -536,12 +568,12 @@ builder on screen. With a quote store it is where they manage their quotes too.
   ```
 
 - The hosted app keeps quotes in the SQL database your IT team provides. The host gives the
-  app its SQLAlchemy URL in `HAUTE_QUOTE_STORE_URL`; without it the app prices and keeps
-  nothing, and says so. The app does not start on a database it has not been migrated to:
+  app its SQLAlchemy URL in `HAUTE_QUOTE_STORE_URL`; without it the app keeps nothing, says
+  so, and prices its one quote as `PREVIEW`, option 1. The app does not start on a database it has not been migrated to:
   run `haute app migrate` (with `HAUTE_QUOTE_STORE_URL` set, or `--url`) before a release
-  that needs it starts. Back the database up first: after some migrations, such as the one
-  that adds **is_renewal**, an earlier release no longer starts on the database, so rolling
-  back means restoring that backup.
+  that needs it starts. Back the database up first: after some migrations, such as those
+  that add **is_renewal** and **option**, an earlier release no longer starts on the
+  database, so rolling back means restoring that backup.
 
 A page opened before a new release is refused when it prices or saves, and reloading it
 picks up the release; its unsaved values stay in the browser.
@@ -549,33 +581,37 @@ picks up the release; its unsaved values stay in the browser.
 ### The Quotes page
 The app opens on the Quotes page. On the left are **My work** (the quotes with you),
 **Team** and **Archived**, and the stages of the list showing, **Draft** (saved without a
-price), **Priced** and **Final**, each with its count. Each quote shows its reference, its
-quote name (or its insured, or its reference), and its insured, broker and inception date
-under the labels the sheets give them, read from its quote details. Search matches every
-word you type against the reference, quote name, insured and broker; in Team you can
-narrow the list to who a quote is with, and order it by when it was saved, its reference
-or its insured. The list, the search and the order are in the page's address, so a link or Back
+price), **Priced** and **Final**, each with its count. Each quote shows its reference and
+option (`Q-000123/2`), its quote name (or its insured, or its reference and option), and
+its insured, broker and inception date under the labels the sheets give them, read from its
+quote details. Search matches every word you type against the reference, quote name,
+insured and broker, and `Q-000123/2` finds that option alone; in Team you can narrow the
+list to who a quote is with, and order it by when it was saved, its reference (the newest
+first, its options in order) or its insured. The list, the search and the order are in the page's address, so a link or Back
 returns to the same list. A row opens its quote; Duplicate and Archive appear as you hover
-over it, and Archive can be undone from the message it shows. **New quote** (or `N`) starts
-a new one, holding the columns' defaults; `/` jumps to the search.
+over it, and Archive can be undone from the message it shows. **New quote** (or `N`) makes
+a new quote there and then, holding the columns' defaults, with the next reference and
+option 1, and opens it; one left with nothing typed stays a **Draft** until archived. `/`
+jumps to the search.
 
 ### A quote
-A quote opens at its own address, under a bar holding its reference (`Q-000123`), its
-name (its `quote_name`, saved with the next **Save**), its stage, and:
+A quote opens at its own address, under a bar holding its reference and option
+(`Q-000123/2`), its name (its `quote_name`, saved with the next **Save**), its stage, and:
 
 - **Save**. The quote is priced as you enter it, as Preview prices the sample, with no
   **Price** to press and no **Clear**, and a quote opened that can change is priced again
   when it was saved unpriced or priced on an earlier release. **Save** waits for that
   pricing and keeps the quote with its price, or unpriced when it could not be priced (the
   button says **Save unpriced** then, and the bar says why); the app prices it again as it
-  saves, and says so if the price it keeps moved. Each save is a new revision, and the
-  quote's first save gives it its reference.
+  saves, and says so if the price it keeps moved. Each save is a new revision.
 - **Mark final** pins the newest revision as the final quotation, once it is priced on the
   running release; a final quote cannot be saved over until someone **reopens** it, giving a
   reason. The final stays in its history.
-- **More**: **Duplicate**, **Renew** and **Create alternative** each start a new quote from
-  the revision showing, linked to it, a renewal with **is_renewal** ticked; **Archive** takes it out of the lists (it opens read
-  only until restored); **Copy link**.
+- **More**: **Duplicate**, **Renew** and **Create alternative** each make a new quote there
+  and then from the revision showing, linked to it, and open it: **Create alternative** under
+  the same reference as its next option (`Q-000123/2` from `Q-000123/1`), **Duplicate** and
+  **Renew** under a new reference as option 1, a renewal with **is_renewal** ticked;
+  **Archive** takes it out of the lists (it opens read only until restored); **Copy link**.
 - **History**: the handover note, every revision (each opens as it was saved), what was done
   to the quote, by whom and when, and the quotes it came from or that were made from it.
 

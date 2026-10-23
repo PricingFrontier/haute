@@ -125,16 +125,25 @@ Out of scope:
   automatic) and `use_grouping`. Every schema holds Haute's own table of a quote's
   details, `quote_details`, first: one row, an input, its columns `reference`,
   `quote_name`, `insured`, `broker`, `inception_date`, `expiry_date`, `valid_until`,
-  `currency`, `stage`, `assignee`, `archived` and `is_renewal`, in that order, the three
-  dates Dates, `archived` and `is_renewal` True/false and the rest Text, each with the id
-  `qd_` and its name. A form read or saved without it takes it on, and one holding its
-  columns as an earlier Haute made them (the first eleven, before `is_renewal`, or more of
-  them in order) takes the newer ones on after them; one whose `quote_details` is not Haute's (the
-  name on another table, or its role, rows, columns, keys or index changed) is refused,
-  as is a rule or a default on `reference`, `stage`, `assignee` or `archived`, which the
-  underwriter app sets. Its labels, groups, help and placeholders are the project's, as are
-  the rules and defaults of the columns the underwriter types; the sheets show its columns, and the pipeline receives
-  it, as any other input table's. A sheet has an id, a title, its `width` in pixels, when it
+  `currency`, `stage`, `assignee`, `archived`, `is_renewal` and `option`, in that order,
+  the three dates Dates, `archived` and `is_renewal` True/false, `option` an Integer and
+  the rest Text, each with the id `qd_` and its name. A form read or saved without it takes
+  it on, and one holding its columns as an earlier Haute made them (the first eleven, before
+  `is_renewal`, or more of them in order) takes the newer ones on after them; one whose
+  `quote_details` is not Haute's (the name on another table, or its role, rows, columns,
+  keys or index changed) is refused, as is a rule or a default on `reference`, `option`,
+  `stage`, `assignee` or `archived`, which the underwriter app sets. Its labels, groups,
+  help and placeholders are the project's, as are the rules and defaults of the columns the
+  underwriter types; the sheets show its columns, and the pipeline receives it, as any other
+  input table's. Every other table leads with the quote's identity: `reference` (Text, id
+  `quote_reference`) and `option` (Integer, id `quote_option`), the same ids in every
+  table, with nothing else of theirs set. A form read or saved without them gives them to
+  each table at its head, unless the table holds a column of its own under either name,
+  which keeps its place and values, the table going without them: that clash is named
+  among the schema's problems and refused by building the app and by deploying
+  (`identity_clashes`), and renaming the column gives the table the identity at the next
+  read or save. A form whose identity columns are not its tables' first two, as Haute
+  makes them, is refused. A sheet has an id, a title, its `width` in pixels, when it
   shows (`show_when`) and its sections (`sections`, at least one): strips across the sheet's
   whole width, stacked in
   their order, each with an id, a `title`, its `height` in pixels, when it shows
@@ -401,8 +410,12 @@ Out of scope:
   its structure and its place: its name, role and rows and its columns' names, types and
   order are fixed, it is neither deleted nor given a column, and no table moves above it; its columns take labels, groups and help, and
   those the underwriter types their defaults, placeholders and rules, while `reference`,
-  `stage`, `assignee` and `archived`, which the app sets, take a label, a group and help
-  alone.
+  `option`, `stage`, `assignee` and `archived`, which the app sets, take a label, a group
+  and help alone. Every other table's `reference` and `option` lead it, locked: not
+  renamed, retyped, moved or removed, and taking no label, group, help, rule, default or
+  format; a table added has them at once, and an index goes after them. They are not keys,
+  and the sheets are never offered them: a component's fields, a Show when's columns and a
+  Chart's rows leave them out.
 - **The sheets.** A sheet is a canvas on an 8px snap grid as wide as its width and as
   long as its sections, drawn at the zoom from its viewport's top-left corner, so it
   stays beside the palette and under the tabs: zooming out draws it smaller, the canvas
@@ -991,9 +1004,10 @@ Out of scope:
   history (`GET
   /api/app/quotes/{id}/history`) and the people quotes are with (`GET /api/app/people`).
   A save names the sheets' revision and the release it was drawn for, refused (409) for
-  another, and an operation key; the details the app sets, `reference`, `stage`,
-  `assignee` and `archived`, are set over whatever the page sent, and with nothing else
-  typed there is nothing to save (422). It saves the quote unpriced, or, given the prices
+  another, and an operation key; the details the app sets, `reference`, `option`,
+  `stage`, `assignee` and `archived`, are set over whatever the page sent, and with
+  nothing else typed there is nothing to save (422), save a creation, which makes the quote
+  holding what it starts with. It saves the quote unpriced, or, given the prices
   the page showed, prices it again on the server and keeps that pricing, saying whether
   it moved from what the page showed, so a price kept is always the release's own. Each
   change but a note names the quote's version and is refused (409) with the quote as it is now when
@@ -1008,11 +1022,12 @@ Out of scope:
   (everyone's) and Archived, and the stages of the list showing, Draft, Priced and Final,
   each with its count; a stage picked narrows the list and picked again widens it. Above
   the list are its name, a search box (`/` focuses it) matching every word typed in the
-  reference, quote name, insured or broker, in Team an assignee to narrow it to, the
-  order (newest saved, newest reference, or insured) and New quote (`N`). The list is a
-  table at Haute's density, 50 quotes at a time with Load more, read from the quotes'
-  `quote_details`: each quote's reference, its title (its quote name, else its insured,
-  else its reference), its insured, broker and inception date under their columns'
+  reference, quote name, insured or broker (`Q-000123/2` matching that option alone), in
+  Team an assignee to narrow it to, the order (newest saved, newest reference with its
+  options in order, or insured) and New quote (`N`). The list is a table at Haute's
+  density, 50 quotes at a time with Load more, read from the quotes' `quote_details`: each
+  quote's reference and option, `Q-000123/2`, its title (its quote name, else its insured,
+  else its reference and option), its insured, broker and inception date under their columns'
   labels on the sheets, the date as a day, its stage, who it is with and when it was saved,
   relative, with the time on hover. A row opens its quote, its reference a link of its
   own; on hover or focus it offers Open, Duplicate, and Archive or Restore. The list,
@@ -1021,7 +1036,7 @@ Out of scope:
   empty list says why: no quotes yet, with New quote; none matching, with Clear search;
   none archived.
 - **A quote in the app.** A quote opens at `/quotes/{id}` on the sheets, under its bar:
-  back to Quotes, its reference, its name (its `quote_details.quote_name`, typed in the
+  back to Quotes, its reference and option, its name (its `quote_details.quote_name`, typed in the
   bar as on the sheets and saved with the next Save), its stage and, when archived,
   Archived, who it is with (reassigned from the people quotes are with, or a name typed),
   Save, Mark final or, for a final quote, Reopen, which asks why, a menu of Duplicate,
@@ -1048,19 +1063,24 @@ Out of scope:
   as it was sent, in this browser's draft too, so the next Save repeats it exactly before
   saving anything typed since as the quote's next revision; only a refusal (a status
   below 500) lets it go. While a save or a change is being made, Save and every control
-  that changes the quote are off. The cells of `reference`,
+  that changes the quote are off. The cells of `reference`, `option`,
   `stage`, `assignee` and `archived` take no typing; assigning,
   archiving, restoring, marking final and reopening each write a revision of the newest
   with those details changed, its values and prices kept, which the sheets take on, what
-  was typed kept. A new quote, at `/quotes/new`, opens holding its columns' defaults and
-  is saved by its first Save,
-  which gives it its reference and its own address; one made from another quote's
-  revision (Duplicate, Renew, Create alternative) opens with that revision's values
-  carried onto the current sheets and priced afresh, without the reference, stage,
-  assignee and archived flag the app set for the source, naming what it was made from
-  and any value that no longer fits, and clean: left as it opened it keeps no draft and
-  asks nothing on leaving; a renewal opens with `is_renewal` ticked, which the
-  underwriter can untick, as one not made by Renew can be ticked by hand. The sheets take no typing and are not priced, and Save is
+  was typed kept. A new quote is made as the underwriter asks for it: `/quotes/new` makes
+  it at once, a draft holding its columns' defaults under the next reference and option 1,
+  and moves to its own address; one made from another quote's revision (Duplicate, Renew,
+  Create alternative) is made from that revision's values carried onto the current sheets,
+  without the reference, option, stage, assignee and archived flag the app set for the
+  source, naming what it was made from and any value that no longer fits: Create
+  alternative under the source's reference as its next option, Duplicate and Renew under
+  a new reference as option 1, a renewal with `is_renewal` ticked, which the underwriter
+  can untick, as one not made by Renew can be ticked by hand. Made, it is clean: left as it
+  opened it keeps no draft and asks nothing on leaving, and one left with nothing typed
+  stays a draft. The page holds the creation's operation key in the tab until the answer
+  comes, so a reload before then asks with it again and the quote is made once, a refusal
+  letting it go; an answer arriving once the page moved on does not move it, and one who
+  may only read quotes makes none. The sheets take no typing and are not priced, and Save is
   off, while the quote is final, archived, shown at an earlier revision (at
   `/quotes/{id}/revisions/{n}`, with Open the newest) or saved on earlier sheets (opened
   on those sheets, with Move to current sheets, which carries its values onto the
@@ -1235,6 +1255,16 @@ Out of scope:
     once, from one set holding both types; tests fail when a check in the code names the Quote
     Input alone where it means a request input. The pipeline never needs the workbench: the
     copies are an ordinary `tables` list and `sample` object.
+  - **The quote's identity.** A request and a frame differ in shape. A request's tables
+    hold their own columns, and the quote's reference and option are named in its
+    `quote_details` alone: a request without them, with an option below 1, or giving either
+    in another table, is refused naming the spot. Reading it puts them on every row of every
+    table leading with them. Every quote has them: the sample, read in editor runs, previews
+    and `run()`, the null quote, which an empty sample and deploy's dry run read, and the one
+    quote of an underwriter app without a quote store are priced under the stand-in,
+    `PREVIEW` and option 1, which the form never keeps; deploy's request schema holds them
+    in `quote_details` alone. The app's own requests hold the quote's, whatever its sheets
+    hide.
   - **No file; the sample.** A Workbench Input reads no file. Without a request, in editor
     runs and previews and in generated code's `run()`, it reads its sample as it reads a
     request, so the sample prices as the quote it stands for would when deployed: each port
@@ -1254,8 +1284,9 @@ Out of scope:
     request's schema and to dry-run the pipeline on one row, it derives both from a Workbench
     Input's tables, never its sample: the schema holds each table under its name, an object of
     its columns for a one-row table and a list of them for a many-row one, with their declared
-    types, and the dry run reads one quote with nothing filled in, one row of nulls per table,
-    the rows a preview runs on before the workbench supplies values. A node that cannot take a
+    types, and the dry run reads one quote with nothing filled in, one row of nulls per table
+    under the stand-in identity, the rows a preview runs on before the workbench supplies
+    values. A node that cannot take a
     null fails that dry run with its own error. Nothing deployed reads the sample, so the
     bundle leaves it out and carries the tables alone: the quote an analyst typed while
     building stays in the project. Deploy's test quotes are not held to the
@@ -1334,7 +1365,9 @@ Out of scope:
     whose type does not fit its declared type (below) and every column of a table nothing is
     connected to are filled with nulls, and the panel flags each, so the pipeline runs while
     it is being built: a one-row table nothing is connected to holds one row of nulls and a
-    many-row one no rows. None of them stops a run.
+    many-row one no rows. None of them stops a run. A table leading with the quote's
+    reference and option holds them null in the node's tables whatever its frame holds, and
+    the panel never flags them; the response fills them.
   - **Its tables are its result.** When the node runs, its result is its tables, one frame per
     table with a column, under the table's name, each holding the table's columns in the tables' order with
     their declared types, and nothing else of the frames it was given. A column fits its
@@ -1353,8 +1386,12 @@ Out of scope:
     the pipeline answers a request, its tables become the response for one quote: a list of one
     object holding each one-row table as an object under its name and each many-row table as a
     list of objects under its name, each column under its name, as a quote holds its tables.
-    The response is the tables as they are, every row and every column, and where it is
-    rendered as JSON a null value or an empty list is left out, as a Quote Response's are.
+    The response is the tables as they are, every row and every column, save that every row
+    of a table leading with the quote's reference and option takes the quote's, read from
+    the run's `quote_details` frame where the response is built (the request's in deployed
+    scoring, the source's in `Pipeline.run`, the frame given to `Pipeline.score`, null
+    without one), so a pipeline need not carry them through; where it is rendered as JSON a
+    null value or an empty list is left out, as a Quote Response's are.
   - **A response node.** A Workbench Output is the pipeline's response as a Quote Response is:
     `Pipeline.run` and `Pipeline.score` return its response, deploy prunes the pipeline to it
     and takes the response's schema from it, and a deployed pipeline answers `/quote` with its
@@ -1415,15 +1452,20 @@ Out of scope:
   details are kept once. The row holds the details the underwriter typed and those the
   app sets: a reference, `Q-` and six digits, taken from a counter in the transaction
   that creates the quote, so two quotes made at once take two and one whose creation
-  fails keeps none; its stage, `draft` or `priced` as the revision was saved, or
-  `final`; who it is assigned to, at first who made it; and whether it is archived.
-  `is_renewal`, added after the others by the store's third migration, is null in the
-  rows written before it, which reads as unticked. The
-  newest revision's row is the quote as the app lists, searches and orders it.
+  fails keeps none, and an option, 1 for a new quote, a duplicate and a renewal, and for
+  an alternative the next under its source's reference, taken from a counter per
+  reference in the same transaction, so two alternatives made at once take two; its
+  stage, `draft` or `priced` as the revision was saved, or `final`; who it is assigned
+  to, at first who made it; and whether it is archived. The reference and option are held
+  on the quote too, unique together among the app's quotes; a quote the store saves
+  alone holds neither. `is_renewal`, added after the others by the store's third
+  migration, is null in the rows written before it, which reads as unticked; the fourth
+  gave every app quote option 1. The newest revision's row is the quote as the app lists,
+  searches and orders it.
   Assigning, archiving, restoring, marking final and reopening each write a revision of
   the newest, its values, request, prices and release kept and its details changed: the
   pipeline sees the new details, as any other input, the next time the quote is priced.
-  A new quote is priced before it takes its reference, so its first pricing sees none. A
+  A quote is made with its reference and option, so its every pricing sees them. A
   handover note is an event alone, written with the quote's row held as a revision holds
   it, so a note never lands on a quote archived before it. A quote's name
   (`quote_name`) is at most 200 characters, a longer one refused naming the limit at
@@ -1445,8 +1487,10 @@ Out of scope:
   restored, each a revision of its own that keeps the pinned final. The app's lists
   are read a page at a time: the quotes assigned to the signed-in underwriter, the
   team's, or the archive, of one stage when asked, matching every word searched for in
-  the reference, quote name, insured or broker, newest saved first, newest reference
-  first or by insured, with each list's count and each stage's. A
+  the reference, quote name, insured or broker (`Q-000123/2` matching that option alone),
+  newest saved first, newest reference first with its options in order, or by insured,
+  with each list's count and each stage's. A difference in the quote's reference and
+  option alone is no price that moved. A
   saved quote opens on its own form, and its values are carried onto the current form
   through the stable ids: a renamed table or column keeps its values, each filled
   value whose table or column the current form no longer has is named as
@@ -1776,10 +1820,11 @@ Out of scope:
   names, as a quote holds its tables, built where the pipeline answers a request and rendered
   as a Quote Response's is; nothing is placed at a path, so the response has exactly the
   tables' shape and deploy serves it unchanged.
-- **One quote per request.** A request's quotes carry no identity into their tables' rows, so
-  the rows of several quotes cannot be told apart once they are tables. A workbench prices
-  one quote at a time, so a Workbench Output answers one, and a one-row table with other than
-  one row fails rather than joining rows by position.
+- **One quote per request.** A workbench prices one quote at a time, so a Workbench Output
+  answers one, and a one-row table with other than one row fails rather than joining rows
+  by position. Its tables' rows carry the quote's reference and option, which say whose
+  they are once rows of many quotes are put together: the app's kept quotes, exports and
+  any pricing of a book of quotes again.
 - **Ports are the tables, inputs are the nodes.** Every node receives a frame under its
   source's name, and codegen, parsing, projection and tracing rely on it, so the table a frame
   fills is the connection's target port, as an Edge Join's role is, rather than its input
