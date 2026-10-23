@@ -156,6 +156,21 @@ export function parseTypedNumber(text: string): number | null {
   return Number.isFinite(number) ? number : null
 }
 
+/** Digits alone with a sign, which the server reads as a whole number exactly. */
+const WHOLE = /^[+-]?\d+$/
+
+/**
+ * A typed whole number as the server types one for an Integer column: digits alone read
+ * exactly however large, not through a Number; any other number that is whole as the
+ * Number it reads as; or null for text that is not a whole number.
+ */
+export function parseTypedWhole(text: string): bigint | null {
+  const cleaned = text.replace(/[$£€,\s]/g, "")
+  if (WHOLE.test(cleaned)) return BigInt(cleaned)
+  const number = parseTypedNumber(cleaned)
+  return number !== null && Number.isInteger(number) ? BigInt(number) : null
+}
+
 /**
  * A value as its number column's format shows it, as an Explore pivot shows a value (a
  * percent the value times 100), typed text read as the server reads it; or null when the

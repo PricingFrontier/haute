@@ -403,7 +403,8 @@ def _typed(column_type: str, text: str) -> Any:
     if _NUMBER.fullmatch(cleaned) is None:
         return text
     if column_type == "int" and _WHOLE.fullmatch(cleaned):
-        # Digits alone are a whole number, read exactly however large: not through a float.
+        # Digits alone are a whole number, read exactly however large: not through a float
+        # (``parseTypedWhole`` in the view, for a Show when's tests).
         return int(cleaned)
     number = float(cleaned)
     if not math.isfinite(number):

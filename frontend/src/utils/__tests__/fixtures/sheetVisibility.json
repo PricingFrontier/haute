@@ -3422,6 +3422,42 @@
       "hidden_columns": []
     },
     {
+      "name": "a whole number past 2^53 is told from the one before it",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_int", "op": "not_equals", "values": ["9007199254740992"]}]}
+      },
+      "values": {"t_in": [{"c_int": "9007199254740993"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a whole number past 2^53 compares exactly",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_int", "op": "above", "values": ["9007199254740992"]}]}
+      },
+      "values": {"t_in": [{"c_int": "9007199254740993"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a whole number too large for a float still compares",
+      "form": "tests",
+      "show_when": {
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_int", "op": "above", "values": ["1"]}]}
+      },
+      "values": {"t_in": [{"c_int": "1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
       "name": "one_of reads a whole number typed with a point",
       "form": "tests",
       "show_when": {
@@ -5334,6 +5370,57 @@
       "hidden_sections": [],
       "hidden_widgets": [],
       "hidden_columns": []
+    },
+    {
+      "name": "a row test tells a whole number past 2^53 from the one before it",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "not_equals", "values": ["9007199254740993"]}]}
+          ]
+        }
+      },
+      "values": {"t_drivers": [{"c_age": "9007199254740992"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "a least total reads a whole number past 2^53 as a float, as the view does",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_drivers", "total": "min", "column": "c_age", "where": [], "op": "equals", "value": "20000000000000000"}
+          ]
+        }
+      },
+      "values": {"t_drivers": [{"c_age": "20000000000000050"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "a total leaves out a whole number too large for a float",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_drivers", "total": "sum", "column": "c_age", "where": [], "op": "equals", "value": "22"}
+          ]
+        }
+      },
+      "values": {"t_drivers": [{"c_age": "22"}, {"c_age": "1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
     },
     {
       "name": "a field shows while a condition on another field of its Collection holds",

@@ -7,7 +7,7 @@
  * are held to the cases in __tests__/fixtures/sheetVisibility.json.
  */
 import type { Condition, ConditionGroup, FieldRef, FormSchema, FormSpec, RowCount, RowsCondition, RowTest, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen } from "../api/types"
-import { filled, isDay, parseTypedNumber, presetRows, quoteTyped, rowFilled, withPresetRows, type RowsByTable } from "./sheetValues"
+import { filled, isDay, parseTypedNumber, parseTypedWhole, presetRows, quoteTyped, rowFilled, withPresetRows, type RowsByTable } from "./sheetValues"
 
 export type ConditionTest = Condition["op"]
 export type CountTest = RowCount["op"]
@@ -153,12 +153,10 @@ const NOT_A_VALUE: Readonly<Record<ColumnType, string>> = {
   date: "a day written YYYY-MM-DD",
 }
 
-/** Whether stripped text is of a column's type: a number, whole for an Integer; a day; any text. */
+/** Whether stripped text is of a column's type: a whole number for an Integer; a number; a day; any text. */
 function ofType(type: ColumnType, text: string): boolean {
-  if (type === "int" || type === "float") {
-    const number = parseTypedNumber(text)
-    return number !== null && (type === "float" || Number.isInteger(number))
-  }
+  if (type === "int") return parseTypedWhole(text) !== null
+  if (type === "float") return parseTypedNumber(text) !== null
   if (type === "date") return isDay(text)
   return true
 }
@@ -245,11 +243,12 @@ function listFault(table: SchemaTable | undefined, condition: ListCondition): st
   return null
 }
 
-/** Stripped text as the server types it for a column: a number column's numbers as numbers. */
-function typed(type: ColumnType, text: string): number | string {
+/** Stripped text as the server types it for a column: an Integer's whole numbers exactly, a number column's other numbers as numbers. */
+function typed(type: ColumnType, text: string): bigint | number | string {
   const stripped = text.trim()
-  if (type !== "int" && type !== "float") return stripped
-  return parseTypedNumber(stripped) ?? stripped
+  if (type === "int") return parseTypedWhole(stripped) ?? parseTypedNumber(stripped) ?? stripped
+  if (type === "float") return parseTypedNumber(stripped) ?? stripped
+  return stripped
 }
 
 /** Whether a cell is filled and equal to the value, typed alike: a tick never equals a value. */
@@ -271,6 +270,10 @@ function order(type: ColumnType, cell: Cell | undefined, value: string): number 
     return text < day ? -1 : text > day ? 1 : 0
   }
   // Neither is null: the cell is a number by ofType, and a fitting condition's value by valueFits.
+  if (type === "int") {
+    const [cellWhole, valueWhole] = [parseTypedWhole(text) as bigint, parseTypedWhole(value) as bigint]
+    return cellWhole < valueWhole ? -1 : cellWhole > valueWhole ? 1 : 0
+  }
   return Math.sign((parseTypedNumber(text) ?? NaN) - (parseTypedNumber(value) ?? NaN))
 }
 
@@ -326,7 +329,7 @@ export interface SheetVisibility {
 export const fieldKeys = (widget: Widget): string[] =>
   widget.type === "tableInput" || widget.type === "collection" ? widget.fields.map((field) => columnKey(field.table, field.column)) : []
 
-/** When a Table's or a Collection's field shows with its component: as its look's `show_when` says, always without one (`_field_show_when` on the server). */
+/** When a Table's or a Collection's field shows with its component: as its look's `show_when` says, always without one (`_entered` on the server). */
 export const fieldShowWhen = (widget: Widget, field: FieldRef): ShowWhen =>
   widget.type === "tableInput" || widget.type === "collection"
     ? (widget.column_looks.find((look) => look.table === field.table && look.column === field.column)?.show_when ?? ALWAYS)
@@ -366,9 +369,10 @@ function passingRows(table: SchemaTable, where: readonly RowTest[], rows: readon
 
 /**
  * The sum, least, greatest or average of the numbers a total's column holds in the rows, a
- * cell blank or not a number of the column's type left out, added in order and taken to
- * 15 significant digits so that 0.1, 0.2 and 0.3 sum to 0.6: the sum of none is 0, and the
- * others of none are null, which no test passes (`_total` on the server).
+ * cell blank, not a number of the column's type or too large for a Number left out, each
+ * read as a Number, added in order and taken to 15 significant digits so that 0.1, 0.2 and
+ * 0.3 sum to 0.6: the sum of none is 0, and the others of none are null, which no test
+ * passes (`_total` on the server).
  */
 function totalOf(table: SchemaTable, condition: RowTotal, rows: readonly Row[]): number | null {
   // A total that fits takes a number column its table has.
@@ -376,7 +380,8 @@ function totalOf(table: SchemaTable, condition: RowTotal, rows: readonly Row[]):
   const numbers = rows.flatMap((row) => {
     const cell = row[condition.column]
     const text = typeof cell === "string" ? cell.trim() : ""
-    return typeof cell === "string" && ofType(type, text) ? [parseTypedNumber(text) as number] : []
+    const number = typeof cell === "string" && ofType(type, text) ? parseTypedNumber(text) : null
+    return number === null ? [] : [number]
   })
   if (numbers.length === 0 && condition.total !== "sum") return null
   let added = 0

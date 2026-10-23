@@ -407,7 +407,7 @@ def test_typed_text_is_read_by_the_rule_the_view_applies(case: dict[str, Any]) -
         return
     assert _typed("float", text) == number
     whole = _typed("int", text)
-    assert whole == number
+    assert whole == (int(case["integer"]) if "integer" in case else number)
     assert isinstance(whole, int) is case["whole"]
 
 

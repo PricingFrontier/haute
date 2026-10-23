@@ -1,7 +1,8 @@
 {
-  "about": "How typed text is read: each number case's text and the number a number column reads it as (null when it is not one, and the text is kept as typed), and whether that number is whole, which an int column keeps as an integer; each filled case's value and whether it counts as typed. frontend/src/utils/__tests__/sheetValues.test.ts holds parseTypedNumber and filled to every case and tests/test_workbench_tables.py holds _typed and _filled to them: one rule in two languages.",
+  "about": "How typed text is read: each number case's text and the number a number column reads it as (null when it is not one, and the text is kept as typed), and whether that number is whole, which an int column keeps as an integer (the one `integer` names, as digits, where the number cannot hold it exactly); each filled case's value and whether it counts as typed. frontend/src/utils/__tests__/sheetValues.test.ts holds parseTypedNumber, parseTypedWhole and filled to every case and tests/test_workbench_tables.py holds _typed and _filled to them: one rule in two languages.",
   "numbers": [
     { "name": "digits", "text": "1000", "number": 1000, "whole": true },
+    { "name": "digits past 2^53", "text": "9007199254740993", "number": 9007199254740992, "whole": true, "integer": "9007199254740993" },
     { "name": "a currency sign and separators", "text": "$1,250,000.50", "number": 1250000.5, "whole": false },
     { "name": "pounds with spaces", "text": "£ 1 000", "number": 1000, "whole": true },
     { "name": "euros", "text": "€5", "number": 5, "whole": true },
