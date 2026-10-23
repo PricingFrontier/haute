@@ -500,8 +500,13 @@ archived. New quote, a Duplicate and a Renew take the next reference and option 
 alternative, from any option of a reference, takes that reference and its next option,
 from a counter row for the reference updated as `_next_reference` updates the quotes'
 counter, in the transaction that writes the quote: two alternatives made at once take two
-options, and a creation repeated with its operation key answers with the quote it made. A
-save keeps the pair. The quote's bar, the Quotes page,
+options, and a creation repeated with its operation key answers with the quote it made.
+The browser takes that key when the underwriter asks for the quote, not when a page opens,
+and keeps it with what was asked until the answer comes: a reload before then asks again
+with the same key, so one draft is made; the answer opens the quote at its own address, so
+a reload after it opens that quote; and a New quote asked for again takes a new key. A
+save keeps the pair. An app without a quote store, which prices one quote kept nowhere,
+has no quote to make, so it prices under the stand-in below, as Preview does. The quote's bar, the Quotes page,
 its history, its related quotes and the messages naming it show `Q-000123/2`, option 1 as
 `/1`; ordering by reference orders by reference, then option as a number, then id, and the
 page cursor carries all three; a search for `Q-000123` finds every option of it, and one
@@ -554,10 +559,14 @@ an export keys a revision's rows by reference, option and revision (WB-11).
 
 Edge Join and the step editor's join are not changed for this. The identity is never blank
 and is the same on every row of a quote, so two schema tables joined on `reference`,
-`option` and their own key keep one of each and match as they would on their own key
-alone. Joined on their own key alone, the right side's identity stays as `reference_right`
-and `option_right`, and joining a third schema table on after that is refused by Polars,
-`reference_right` being there already. The docs show schema tables joined on `reference`,
+`option` and their own key match as they would on their own key alone, and a Left, Inner
+or Right join keeps one of each, a Semi or Anti join the left side's alone. A Full join
+keeps both sides' keys, the joining side's as `reference_right` and `option_right`, unless
+Edge Join's **Coalesce** is True; the step editor's join has no such setting, and a Cross
+join takes no keys, so there the docs show the right side's two dropped. Joined on their
+own key alone, the right side's identity stays as `reference_right` and `option_right`,
+and joining a third schema table on after that is refused by Polars, `reference_right`
+being there already. The docs show schema tables joined on `reference`,
 `option` and their own key, and that a selection by type takes `option` with the other
 Integers. A project's pipeline meets the columns at its next save, and its previews show
 any step they stop.
@@ -566,7 +575,10 @@ any step they stop.
 anything is typed, and its first price's frames hold `Q-000124` and 1. Create alternative
 on `Q-000123/1` makes `Q-000123/2`, and on `/2` makes `/3`; a Duplicate and a Renew make
 new references at `/1`; two alternatives made at once take two options, a creation
-repeated with its operation key answers the quote it made, and later saves keep the pair. Ordered by reference, `/2` comes before `/10` across pages, and a
+repeated with its operation key answers the quote it made, and later saves keep the pair;
+a New quote whose answer is lost, its page reloaded untouched, leaves exactly one draft,
+reference and option, and New quote asked for again makes another. An app started without
+a quote store prices its one quote with `PREVIEW` and 1. Ordered by reference, `/2` comes before `/10` across pages, and a
 search for `Q-000123/2` finds that option alone. A database at the previous schema holding
 app quotes of several revisions and a quote the store saved alone migrates with every app
 quote at option 1 and its reference unchanged, the other holding neither, and a Haute at
@@ -584,10 +596,11 @@ two blank though the pipeline's frame holds values in them, and output rows stil
 with the grid's rows by the table's own key. A request without `option` in
 `quote_details`, with `reference` in `coverage`, or with an option of 0 is refused naming
 the spot, while Preview with no sample and the deploy's dry run hold the stand-in in
-`quote_details` alone. `coverage`, `vehicles` and `drivers` joined on `reference`,
+`quote_details` alone. `coverage`, `vehicles` and `drivers` joined Left on `reference`,
 `option` and `peril`, by Edge Join and by the step editor's join, give one `reference` and
-one `option` and the same rows and price in Preview as in the app; joined on `peril`
-alone, joining `drivers` after `vehicles` is refused naming `reference_right`.
+one `option` and the same rows and price in Preview as in the app; a Full Edge Join on them
+gives one of each with **Coalesce** True and `reference_right` without it; joined on
+`peril` alone, joining `drivers` after `vehicles` is refused naming `reference_right`.
 
 **Dependencies:** None. WB-11's exports key their rows by what this carries; WB-10's
 migrations keep the previous release working save for those, like this one, that name
@@ -603,7 +616,8 @@ themselves the oldest schema, after which WB-08 rolls back by a restore.
 `::FormSpec._brings_quote_details_up_to_date` (newer columns appended);
 `src/haute/_workbench_app_quotes.py::quote_router` (`create_quote` prices before
 `book.create` takes the reference); `frontend/src/app/useOpenQuoteStore.ts::openNew` (a
-new or derived quote held in the browser until its first save); `src/haute/_workbench_tables.py::quote_request` (the
+new or derived quote held in the browser until its first save, opened by the route);
+`frontend/src/app/UnderwriterApp.tsx::OneQuote` (the app without a quote store); `src/haute/_workbench_tables.py::quote_request` (the
 cells the sheets hide left out); `src/haute/_workbench_input.py::read_quote` (each table's
 frame holds its own columns alone), `::workbench_request_frames` (one quote per request)
 and `::null_quote` (every declared column of every table);
