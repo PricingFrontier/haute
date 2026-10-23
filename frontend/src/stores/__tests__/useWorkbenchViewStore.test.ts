@@ -144,11 +144,16 @@ describe("useWorkbenchViewStore", () => {
     store().showMode("build")
     expect(store()).toMatchObject({ mode: "build", schemaOpen: true })
 
-    // Its width is kept between openings.
+    // Its width, and how it was left, are kept between openings.
     store().setSchemaWidth(560)
+    store().toggleSchemaCollapsed("t_policy")
+    store().toggleSchemaCollapsed("t_items")
+    store().toggleSchemaCollapsed("t_policy")
+    store().setSchemaDetails("c_limit")
+    store().setSchemaScroll(120)
     store().setSchemaOpen(false)
     store().setSchemaOpen(true)
-    expect(store().schemaWidth).toBe(560)
+    expect(store()).toMatchObject({ schemaWidth: 560, schemaCollapsed: new Set(["t_items"]), schemaDetails: "c_limit", schemaScroll: 120 })
   })
 
   it("follows a section dragged by its header, with the place it would move to, until it is let go", () => {

@@ -280,8 +280,9 @@ Out of scope:
     moving it; the part it covers takes no presses and no drops while it is open. Its
     right edge is dragged to resize it, from 320px to half the window, or to the width its
     fields take at full stretch where that is wider; it opens at that width, kept while the
-    editor is open, and its Close, or Schema again, closes it. It stays open as the mode
-    changes and as another sheet shows, and opening it keeps the selection and the
+    editor is open, and its Close, or Schema again, closes it. Opened again, it is as it
+    was closed: scrolled where it was, the same tables collapsed and the same column's
+    label and rules open. It stays open as the mode changes and as another sheet shows, and opening it keeps the selection and the
     properties panel. While building it edits the schema; in Preview it shows the schema
     read only: a table still collapses and expands and a column's label and rules still
     open, but no field takes typing, no select takes a choice, and no table or column is

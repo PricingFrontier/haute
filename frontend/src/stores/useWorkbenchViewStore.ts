@@ -5,7 +5,8 @@
  * quote), which sheet, the selected component, the selected section or the sheet's own
  * panel, the sheet's zoom, a component being dragged out of the palette, a section being
  * moved by its header, the sheet's size as pressed while an edge is dragged, the properties
- * panel's width and the pane it last showed for each component, the schema's pane's width,
+ * panel's width and the pane it last showed for each component, the schema's pane's width
+ * and how it was left (its tables collapsed, the column whose details are open, its scroll),
  * the component copied, and the sheet and viewport elements that drops are placed on and
  * the zoom fits to, and the schema's pane, where nothing drops. None of it is part of the form, so none is saved or undone.
  */
@@ -105,6 +106,13 @@ interface WorkbenchViewState {
   panelWidth: number
   /** The schema's pane's width, kept between openings. */
   schemaWidth: number
+  /**
+   * The schema's pane as it was left, so it opens again as it was closed: the tables shown
+   * collapsed, by id, the column whose label and rules are open, and how far it is scrolled.
+   */
+  schemaCollapsed: ReadonlySet<string>
+  schemaDetails: string | null
+  schemaScroll: number
   /** The pane each component's properties panel last showed, by component id; Config until another is chosen. */
   widgetPanes: Record<string, WidgetPane>
   /** The component Ctrl/Cmd+C copied, which Ctrl/Cmd+V pastes, or null. */
@@ -138,6 +146,9 @@ interface WorkbenchViewState {
   setHeldSize: (size: Size | null) => void
   setPanelWidth: (width: number) => void
   setSchemaWidth: (width: number) => void
+  toggleSchemaCollapsed: (tableId: string) => void
+  setSchemaDetails: (columnId: string | null) => void
+  setSchemaScroll: (top: number) => void
   setWidgetPane: (id: string, pane: WidgetPane) => void
   setCopied: (copied: Copied | null) => void
   setSheet: (element: HTMLElement | null) => void
@@ -160,6 +171,9 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   heldSize: null,
   panelWidth: DEFAULT_PANEL_WIDTH,
   schemaWidth: SCHEMA_FULL_WIDTH,
+  schemaCollapsed: new Set(),
+  schemaDetails: null,
+  schemaScroll: 0,
   widgetPanes: {},
   copied: null,
   sheet: null,
@@ -193,6 +207,15 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   setHeldSize: (heldSize) => set({ heldSize }),
   setPanelWidth: (panelWidth) => set({ panelWidth }),
   setSchemaWidth: (schemaWidth) => set({ schemaWidth }),
+  toggleSchemaCollapsed: (tableId) =>
+    set((s) => {
+      const schemaCollapsed = new Set(s.schemaCollapsed)
+      if (schemaCollapsed.has(tableId)) schemaCollapsed.delete(tableId)
+      else schemaCollapsed.add(tableId)
+      return { schemaCollapsed }
+    }),
+  setSchemaDetails: (schemaDetails) => set({ schemaDetails }),
+  setSchemaScroll: (schemaScroll) => set({ schemaScroll }),
   setWidgetPane: (id, pane) => set((s) => ({ widgetPanes: { ...s.widgetPanes, [id]: pane } })),
   setCopied: (copied) => set({ copied }),
   setSheet: (sheet) => set({ sheet }),

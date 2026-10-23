@@ -52,7 +52,8 @@ Both workbench nodes' panels have **Edit in Workbench**, which opens the view.
 ## Schema
 
 **Schema** in the toolbar opens the schema in a pane over the left of the sheet; **Schema**
-again, or the pane's close button, closes it, and dragging its right edge widens it. The
+again, or the pane's close button, closes it, and it opens again as you left it; dragging
+its right edge widens it. The
 sheet stays where it is under the pane, and the pane stays open as you switch sheets or go
 to Preview, where it shows the schema without letting you change it.
 

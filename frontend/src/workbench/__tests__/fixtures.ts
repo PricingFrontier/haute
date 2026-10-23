@@ -288,6 +288,9 @@ export function loadForm(form: FormSpec = sheetForm()): void {
     sheet: null,
     viewport: null,
     schemaPane: null,
+    schemaCollapsed: new Set(),
+    schemaDetails: null,
+    schemaScroll: 0,
   })
 }
 

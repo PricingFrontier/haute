@@ -11,6 +11,7 @@ import type { FormSpec, ProjectFolderResponse, SchemaColumn, SchemaTable } from 
 import { fetchParamFile } from "../../api/workbench"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { answerQuestion, asked } from "../../test-utils/question"
 import { BLANK_THEME, COLLECTION_OPTIONS, TABLE_OPTIONS, updateSchemaColumn } from "../../utils/workbenchForm"
 import SchemaEditor from "../SchemaEditor"
@@ -149,6 +150,7 @@ describe("SchemaEditor", () => {
   afterEach(() => {
     cleanup()
     useWorkbenchFormStore.setState({ form: null, status: "idle", undoStack: [], redoStack: [] })
+    useWorkbenchViewStore.setState({ schemaCollapsed: new Set(), schemaDetails: null, schemaScroll: 0 })
     useDocumentStatusStore.setState({ capabilities: null })
     vi.mocked(fetchParamFile).mockReset()
   })
@@ -813,6 +815,21 @@ describe("SchemaEditor", () => {
     const row = screen.getByTestId("schema-column-c_sum")
     expect(within(summary("c_sum")!).queryByRole("textbox")).toBeNull()
     expect(summary("c_sum")!.previousElementSibling).toContainElement(within(row).getByRole("textbox", { name: "Column name" }))
+  })
+
+  it("opens again as it was left: its tables collapsed, a column's label and rules open, and scrolled where it was", () => {
+    const { unmount } = render(<SchemaEditor />)
+    fireEvent.click(screen.getByRole("button", { name: "Collapse policy_details" }))
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of limit" }))
+    const editor = screen.getByTestId("schema-editor")
+    editor.scrollTop = 120
+    fireEvent.scroll(editor)
+    unmount()
+
+    render(<SchemaEditor />)
+    expect(within(tableNamed("policy_details")).queryAllByRole("textbox", { name: "Column name" })).toEqual([])
+    expect(screen.getByRole("textbox", { name: "Label of limit" })).toBeInTheDocument()
+    expect(screen.getByTestId("schema-editor").scrollTop).toBe(120)
   })
 
   it("shows the schema read only, as Preview does: a table collapses and a column's details open, but nothing in it changes", () => {
