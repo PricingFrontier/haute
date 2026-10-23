@@ -323,7 +323,8 @@ to the pricing shows on the quotes they know. A first version was taken out on 2
 bulk, accepted and deleted from a panel there, and kept in a SQLite file committed with the
 project, which git diffed as text and merged quote by quote. Deploy's check and the smoke
 test priced them again, and a pull request's changes to them were reported on it. Its
-commits are `352823c4d`, `d4249d583`, `448aee189`, `42a7309b3` and `5ccc51fff`. Its
+commits are `352823c4d`, `d4249d583`, `448aee189`, `42a7309b3` and `5ccc51fff`, and
+`c44884922` took it out. Its
 pricing went through the preview route, which answers at most 10,000 rows of a table, so a
 quote whose many-row table ran past that could not be kept.
 
