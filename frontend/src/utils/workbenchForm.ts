@@ -79,6 +79,7 @@ export type TableOptions = Pick<
   | "header_orientation"
   | "header_color"
   | "header_font_color"
+  | "header_align"
   | "grid_color"
   | "grid_weight"
   | "grid_style"
@@ -730,8 +731,9 @@ function fieldsWidgetOf(spec: FormSpec, id: string): FieldsWidget {
 /**
  * A new Table's options: numbered, compact, lined between rows, striped, not fixed, its
  * header as written, framed, not transposed and without groups; 12px text, its header's
- * the same size, bold, level, unwrapped and in the theme's colours, thin solid gridlines and
- * a thin frame in the theme's colours, and no column with a look of its own.
+ * the same size, bold, level, unwrapped, placed as each column's look says and in the
+ * theme's colours, thin solid gridlines and a thin frame in the theme's colours, and no
+ * column with a look of its own.
  */
 export const TABLE_OPTIONS: Readonly<TableOptions> = {
   row_numbers: true,
@@ -750,6 +752,7 @@ export const TABLE_OPTIONS: Readonly<TableOptions> = {
   header_orientation: "horizontal",
   header_color: null,
   header_font_color: null,
+  header_align: "auto",
   grid_color: null,
   grid_weight: "thin",
   grid_style: "solid",

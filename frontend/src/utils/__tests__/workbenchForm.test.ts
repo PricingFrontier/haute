@@ -644,6 +644,7 @@ describe("what the sheets show", () => {
       "header_orientation",
       "header_color",
       "header_font_color",
+      "header_align",
       "grid_color",
       "grid_weight",
       "grid_style",
@@ -728,7 +729,6 @@ describe("what the sheets show", () => {
     expect(() => updateWidget(spec, grid.id, { labels: "beside" })).toThrow("Only a Collection has labels")
     expect(() => updateWidget(spec, grid.id, { label_width: 60 })).toThrow("Only a Collection has label_width")
     expect(() => updateWidget(spec, grid.id, { box_style: "dashed" })).toThrow("Only a Collection has box_style")
-    expect(() => updateWidget(spec, grid.id, { header_align: "left" })).toThrow("Only a Collection has header_align")
     expect(() => updateWidget(spec, grid.id, { box_align: "center" })).toThrow("Only a Collection has box_align")
     expect(() => updateWidget(spec, "missing", { title: "x" })).toThrow("No sheet has a component missing")
 

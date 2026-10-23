@@ -244,8 +244,8 @@ FORM: dict[str, Any] = {
                             "transposed": True,
                             "groups": True,
                             # Its text and its header's larger, its labels plain, wrapped,
-                            # turned upwards and coloured; its lines red, heavy and dashed;
-                            # its frame black and heavier still; and its limit's column
+                            # turned upwards, centred and coloured; its lines red, heavy and
+                            # dashed; its frame black and heavier still; and its limit's column
                             # filled, bold, its label on the right over its values centred,
                             # and a set width.
                             "font_size": 14,
@@ -255,6 +255,7 @@ FORM: dict[str, Any] = {
                             "header_orientation": "up",
                             "header_color": "#1E293B",
                             "header_font_color": "#FFFFFF",
+                            "header_align": "center",
                             "grid_color": "#DC2626",
                             "grid_weight": "medium",
                             "grid_style": "dashed",
@@ -506,6 +507,7 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         "header_orientation",
         "header_color",
         "header_font_color",
+        "header_align",
         "grid_color",
         "grid_weight",
         "grid_style",
@@ -580,8 +582,9 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         "frame": True,
         "transposed": False,
         "groups": False,
-        # 12px text, its header the same size, bold, level and unwrapped, in the theme's
-        # colours, as its lines and its frame are, thin and solid, and no column with a look.
+        # 12px text, its header the same size, bold, level, unwrapped and placed as each
+        # column's look says, in the theme's colours, as its lines and its frame are, thin and
+        # solid, and no column with a look.
         "font_size": 12,
         "header_font_size": None,
         "header_bold": True,
@@ -589,6 +592,7 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         "header_orientation": "horizontal",
         "header_color": None,
         "header_font_color": None,
+        "header_align": "auto",
         "grid_color": None,
         "grid_weight": "thin",
         "grid_style": "solid",
@@ -679,15 +683,15 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         (lambda f: widgets(f)[1].update(box_style="solid"), "box_style"),
         (lambda f: widgets(f)[1].update(box_width=96), "box_width"),
         (lambda f: widgets(f)[1].update(box_align="left"), "box_align"),
-        (lambda f: widgets(f)[1].update(header_align="left"), "header_align"),
         (lambda f: widgets(f)[0].update(labels="under"), "labels"),
         (lambda f: widgets(f)[0].update(density="roomy"), "density"),
         (lambda f: widgets(f)[1].update(header="bold"), "header"),
-        # A Table's text comes in set sizes, its labels turn three ways, and its lines and
-        # frame come in three weights and its gridlines in three styles.
+        # A Table's text comes in set sizes, its labels turn three ways and sit four, and its
+        # lines and frame come in three weights and its gridlines in three styles.
         (lambda f: widgets(f)[1].update(font_size=15), "font_size"),
         (lambda f: widgets(f)[1].update(header_font_size=9), "header_font_size"),
         (lambda f: widgets(f)[1].update(header_orientation="angled"), "header_orientation"),
+        (lambda f: widgets(f)[1].update(header_align="justify"), "header_align"),
         (lambda f: widgets(f)[1].update(grid_weight="hairline"), "grid_weight"),
         (lambda f: widgets(f)[1].update(grid_style="double"), "grid_style"),
         (lambda f: widgets(f)[1].update(frame_weight=2), "frame_weight"),

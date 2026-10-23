@@ -977,6 +977,18 @@ describe("WidgetBody", () => {
     loadForm(updateWidget(form, "w_grid", { transposed: true }))
     renderBody("w_grid")
     expect(screen.getAllByRole("rowheader")[1]).toHaveStyle({ textAlign: "left" })
+    cleanup()
+
+    // The Table's place for its labels over each column's values, a column's own over the Table's.
+    form = updateWidget(setColumnLook(sheetForm(), "w_grid", value, { align: "right" }), "w_grid", { header_align: "center" })
+    loadForm(form)
+    renderBody("w_grid")
+    expect(screen.getAllByRole("columnheader").slice(1).map((header) => header.style.textAlign)).toEqual(["center", "center"])
+    expect(screen.getByRole("textbox", { name: "Value row 1" }).closest("td")).toHaveStyle({ textAlign: "right" })
+    cleanup()
+    loadForm(updateWidget(setColumnLook(form, "w_grid", value, { header_align: "left" }), "w_grid", { transposed: true }))
+    renderBody("w_grid")
+    expect(screen.getAllByRole("rowheader").map((header) => header.style.textAlign)).toEqual(["center", "left"])
   })
 
   it("gives a checkbox's cell in a grid its row's height at either density", () => {

@@ -1066,7 +1066,7 @@
     },
     "ColumnLook": {
       "additionalProperties": false,
-      "description": "How one of a Table's columns, or one of a Collection's fields, looks and when it shows,\nits field by table and column id: each colour the component's own while None, its values\nplaced as its type puts them, or as the Collection places its boxes', while ``align`` is\n``auto``, its label over a Table's column as its values sit, or as the Collection places\nits labels, while ``header_align`` is, while ``width`` is None, a Table's column as wide as\nthe grid makes it and a Collection's box as wide as the Collection makes it, and shown\nwith its component while ``show_when`` has no conditions.",
+      "description": "How one of a Table's columns, or one of a Collection's fields, looks and when it shows,\nits field by table and column id: each colour the component's own while None, its values\nplaced as its type puts them, or as the Collection places its boxes', while ``align`` is\n``auto``, its label as its component places its labels while ``header_align`` is, and\nover a Table's column as its values sit while the Table's is too, while ``width`` is\nNone, a Table's column as wide as the grid makes it and a Collection's box as wide as the\nCollection makes it, and shown with its component while ``show_when`` has no\nconditions.",
       "properties": {
         "align": {
           "default": "auto",
@@ -13737,6 +13737,17 @@
           "title": "Header",
           "type": "string"
         },
+        "header_align": {
+          "default": "auto",
+          "enum": [
+            "auto",
+            "left",
+            "center",
+            "right"
+          ],
+          "title": "Header Align",
+          "type": "string"
+        },
         "header_bold": {
           "default": true,
           "title": "Header Bold",
@@ -13887,6 +13898,7 @@
         "header_orientation",
         "header_color",
         "header_font_color",
+        "header_align",
         "grid_color",
         "grid_weight",
         "grid_style",

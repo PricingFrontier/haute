@@ -334,7 +334,7 @@ describe("PropertiesPanel", () => {
     expect(size).toHaveValue("12")
     fireEvent.change(size, { target: { value: "14" } })
 
-    // The header's size is its text's until one is chosen; its labels turn three ways.
+    // The header's size is its text's until one is chosen; its labels turn three ways and sit where chosen.
     const header = region("Header")
     const headerSize = within(header).getByRole("combobox", { name: "Size" })
     expect(headerSize).toHaveValue("auto")
@@ -347,6 +347,7 @@ describe("PropertiesPanel", () => {
       ["stacked", "Stacked"],
     ])
     fireEvent.change(direction, { target: { value: "up" } })
+    fireEvent.change(within(header).getByRole("combobox", { name: "Align" }), { target: { value: "center" } })
     fireEvent.click(within(header).getByRole("button", { name: "Colour #4B5563 for the header's fill" }))
     fireEvent.click(within(header).getByRole("button", { name: "Colour #FFFFFF for the header's font" }))
     fireEvent.click(within(header).getByRole("checkbox", { name: "Bold" }))
@@ -370,6 +371,7 @@ describe("PropertiesPanel", () => {
       font_size: 14,
       header_font_size: 16,
       header_orientation: "up",
+      header_align: "center",
       header_color: "#4B5563",
       header_font_color: "#FFFFFF",
       header_bold: false,
@@ -380,7 +382,7 @@ describe("PropertiesPanel", () => {
       frame_weight: "thick",
       frame_color: "#000000",
     })
-    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(12)
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(13)
 
     fireEvent.change(headerSize, { target: { value: "auto" } })
     expect(grid()).toMatchObject({ header_font_size: null })

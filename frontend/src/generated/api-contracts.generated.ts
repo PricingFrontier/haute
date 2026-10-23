@@ -2649,6 +2649,7 @@ export interface TableInputWidget {
   groups: boolean;
   h: number;
   header: 'caps' | 'plain';
+  header_align: 'auto' | 'left' | 'center' | 'right';
   header_bold: boolean;
   header_color: string | null;
   header_font_color: string | null;
@@ -2671,10 +2672,11 @@ export interface TableInputWidget {
  * How one of a Table's columns, or one of a Collection's fields, looks and when it shows,
  * its field by table and column id: each colour the component's own while None, its values
  * placed as its type puts them, or as the Collection places its boxes', while ``align`` is
- * ``auto``, its label over a Table's column as its values sit, or as the Collection places
- * its labels, while ``header_align`` is, while ``width`` is None, a Table's column as wide as
- * the grid makes it and a Collection's box as wide as the Collection makes it, and shown
- * with its component while ``show_when`` has no conditions.
+ * ``auto``, its label as its component places its labels while ``header_align`` is, and
+ * over a Table's column as its values sit while the Table's is too, while ``width`` is
+ * None, a Table's column as wide as the grid makes it and a Collection's box as wide as the
+ * Collection makes it, and shown with its component while ``show_when`` has no
+ * conditions.
  */
 export interface ColumnLook {
   align: 'auto' | 'left' | 'center' | 'right';

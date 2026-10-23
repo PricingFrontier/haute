@@ -145,8 +145,8 @@ Out of scope:
   `transposed` and `groups`, and its look set as a spreadsheet's is: `font_size` (10, 11,
   12, 13, 14, 16 or 18), its header's `header_font_size` (one of those, or null for its
   text's size, a pixel smaller in capitals), `header_bold`, `header_wrap`,
-  `header_orientation` (`horizontal`, `up`, `down` or `stacked`), `header_color` and
-  `header_font_color`, its lines' `grid_color`, `grid_weight` (`thin`, `medium` or
+  `header_orientation` (`horizontal`, `up`, `down` or `stacked`), `header_color`,
+  `header_font_color` and `header_align`, where its labels sit, its lines' `grid_color`, `grid_weight` (`thin`, `medium` or
   `thick`, 1, 2 or 3px) and `grid_style` (`solid`, `dashed` or `dotted`), its frame's
   `frame_color` and `frame_weight`, each colour `#RRGGBB` in capitals or null for the
   theme's, and `column_looks`, the looks of the columns given one of their own, each the
@@ -473,11 +473,13 @@ Out of scope:
   before an output and a group's rule, in its `grid_color` and `grid_weight`, the
   gridlines in its `grid_style`, the rules solid; its frame in its `frame_color` and
   `frame_weight`, the rule under its title in that colour; its header strip in its
-  `header_color`, its labels and group names in its `header_font_color`; and each column's
+  `header_color`, its labels and group names in its `header_font_color`, its labels across
+  their column as its `header_align` says; and each column's
   own look over the Table's: its label's fill and font, its cells' fill, drawn over the
   stripes and the output shade, their font, on an index's numbers and a dash too, and
   weight, where its values sit across it, as its type puts them while `auto`, and where its
-  label does, as its values do while its `header_align` is `auto`, and its width, exactly that wide, the
+  label does, as the Table's `header_align` says while its own is `auto`, and as its values
+  do while both are, and its width, exactly that wide, the
   grid as wide as its columns rather than its frame once every column has one;
   transposed, a column's look is its field's line, its label the line's label, and it
   has no width; a Collection as boxes, its columns across, their labels above

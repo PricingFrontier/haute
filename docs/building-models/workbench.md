@@ -284,8 +284,9 @@ toolbar; a colour you set on a Table, or on one of its columns, is drawn over th
 - **Look**: compact or comfortable rows, the **Text size** of its values, and row
   numbers, **groups** and striped rows.
 - **Header**: labels **As written** or in **Capitals**, their **Size** (**Auto** is the
-  values' size, a pixel smaller in capitals), their **Direction**, a **Fill** and **Font**
-  colour for the whole header, **Bold**, and **Wrap**. **Rotated up** and **Rotated down**
+  values' size, a pixel smaller in capitals), their **Direction**, their **Align** (Auto
+  leaves each label as its column's look places it), a **Fill** and **Font** colour for the
+  whole header, **Bold**, and **Wrap**. **Rotated up** and **Rotated down**
   turn the labels to run up or down their column, and **Stacked** puts their letters one
   under another; turned labels sit at the foot of the header, so set narrow column widths
   to fit more columns across. Wrapped labels break between words onto more lines rather
@@ -298,8 +299,8 @@ toolbar; a colour you set on a Table, or on one of its columns, is drawn over th
 - **Frame**: whether it is framed and, if so, the frame's **Weight** and **Colour** (the
   rule under its title takes the colour too).
 - **Columns**: click a column to open its own look: its header's **Fill**, **Font** and
-  **Align** (Auto sits the header as its cells sit, though a transposed Table's label sits
-  at its start while its cells' Align is Auto too), its cells' **Fill**, **Font** and
+  **Align** (Auto follows the header's Align, else sits the header as its cells sit, though
+  a transposed Table's label sits at its start while its cells' Align is Auto too), its cells' **Fill**, **Font** and
   **Align** (Auto puts numbers on the right), **Width** in pixels (blank for Auto, from 24
   to 1000) and **Bold**. **Clear** takes the column's look
   away; a dot marks a column that has one. A column's fill covers the stripes and the

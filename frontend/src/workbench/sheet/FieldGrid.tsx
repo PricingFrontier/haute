@@ -89,13 +89,14 @@ function groupRuns(fields: ShownField[]): { group: string; start: number; size: 
  * transposed (`groupRuns`).
  *
  * Its look, as a spreadsheet's is set: its text's size; its labels' size, weight, fill,
- * colour, wrapping and turn, the turned ones read upwards, downwards or stacked and sitting
- * at the foot of the header; its lines' colour and weight, which its gridlines, the rule
- * under its header, the line before an output and a group's rule all take, and its
- * gridlines' style, the rules staying solid; and each column's own look, its label's fill
- * and colour, its cells' fill, colour and weight, where its values sit across it and its
- * label, as its values do until it is given a place of its own, and, unless transposed,
- * its width. A colour it sets is drawn over the theme's, and a
+ * colour, place, wrapping and turn, the turned ones read upwards, downwards or stacked
+ * and sitting at the foot of the header; its lines' colour and weight, which its
+ * gridlines, the rule under its header, the line before an output and a group's rule all
+ * take, and its gridlines' style, the rules staying solid; and each column's own look, its
+ * label's fill and colour, its cells' fill, colour and weight, where its values sit across
+ * it and its label, as the Table's labels do until it is given a place of its own and as
+ * its values do while the Table gives none, and, unless transposed, its width. A colour it
+ * sets is drawn over the theme's, and a
  * column's over the Table's; a column's fill hides the stripes and the output shade in its
  * cells. Transposed, a column's look is its field's line, its label the line's label.
  *
@@ -212,6 +213,10 @@ export function FieldGrid({
   const widthOf = (look: ColumnLookOptions): CSSProperties =>
     transposed || look.width === null ? {} : { width: look.width, minWidth: look.width, maxWidth: look.width }
   const labelColour = (found: Found, look: ColumnLookOptions): string => labelFont(found, look, options, colours.font)
+  // Where a column's label sits across it, while anything sets it: its own place, else the
+  // Table's, else its values'.
+  const labelAcross = (look: ColumnLookOptions): CSSProperties["textAlign"] | null =>
+    look.header_align !== "auto" ? look.header_align : options.header_align !== "auto" ? options.header_align : look.align !== "auto" ? look.align : null
   // A field's label, turned as the header says: a turned label wraps only past a set length.
   const labelText = (found: Found) =>
     turn === null ? (
@@ -404,7 +409,7 @@ export function FieldGrid({
                       style={{
                         ...headStyle,
                         left: runs === null ? 0 : GROUP_COLUMN_WIDTH - 1,
-                        textAlign: look.header_align !== "auto" ? look.header_align : look.align === "auto" ? (turn === null ? "left" : "center") : look.align,
+                        textAlign: labelAcross(look) ?? (turn === null ? "left" : "center"),
                         background: look.header_color ?? headFill,
                         boxShadow: grouped ? `${ruleLeft}, ${ruleRight}` : ruleRight,
                         borderTop: above,
@@ -472,17 +477,8 @@ export function FieldGrid({
                 const look = lookOf(key)
                 // Level, it cuts off or wraps across its column; turned, it sits at the header's foot.
                 const shape = turn !== null ? "px-1.5 py-1.5 align-bottom" : wrap ? "px-2.5 py-1 break-words" : "truncate px-2.5"
-                // Its own place, else its values': as set, centred turned, a number's on the right.
-                const across =
-                  look.header_align !== "auto"
-                    ? look.header_align
-                    : look.align !== "auto"
-                      ? look.align
-                      : turn !== null
-                        ? "center"
-                        : found !== null && isNumeric(found.column.type)
-                          ? "right"
-                          : undefined
+                // As set, else centred turned, a number's on the right.
+                const across = labelAcross(look) ?? (turn !== null ? "center" : found !== null && isNumeric(found.column.type) ? "right" : undefined)
                 return (
                   <th
                     key={key}

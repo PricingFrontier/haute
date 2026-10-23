@@ -297,10 +297,11 @@ class ColumnLook(_Strict):
     """How one of a Table's columns, or one of a Collection's fields, looks and when it shows,
     its field by table and column id: each colour the component's own while None, its values
     placed as its type puts them, or as the Collection places its boxes', while ``align`` is
-    ``auto``, its label over a Table's column as its values sit, or as the Collection places
-    its labels, while ``header_align`` is, while ``width`` is None, a Table's column as wide as
-    the grid makes it and a Collection's box as wide as the Collection makes it, and shown
-    with its component while ``show_when`` has no conditions."""
+    ``auto``, its label as its component places its labels while ``header_align`` is, and
+    over a Table's column as its values sit while the Table's is too, while ``width`` is
+    None, a Table's column as wide as the grid makes it and a Collection's box as wide as the
+    Collection makes it, and shown with its component while ``show_when`` has no
+    conditions."""
 
     table: str
     column: str
@@ -370,8 +371,8 @@ class TableInputWidget(_Placed):
     groups: bool = False
     # Its text, its header, its lines and its frame, as a spreadsheet's are set: by default
     # 12px text, its header's the same size, or a pixel smaller in capitals, bold, level and
-    # unwrapped, filled and coloured as the sheets' theme says, thin solid gridlines and a
-    # thin frame, coloured as the theme says.
+    # unwrapped, filled and coloured as the sheets' theme says, each label placed as its
+    # column's look says, thin solid gridlines and a thin frame, coloured as the theme says.
     font_size: FontSize = 12
     header_font_size: FontSize | None = None
     header_bold: bool = True
@@ -379,6 +380,7 @@ class TableInputWidget(_Placed):
     header_orientation: HeaderOrientation = "horizontal"
     header_color: Colour | None = None
     header_font_color: Colour | None = None
+    header_align: ColumnAlign = "auto"
     grid_color: Colour | None = None
     grid_weight: LineWeight = "thin"
     grid_style: LineStyle = "solid"
