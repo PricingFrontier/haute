@@ -617,6 +617,26 @@ def test_deploy_answers_with_a_workbench_output(project: Path) -> None:
     assert render_output_document(picked) == [{"pricing": {"premium": 50.0, "state": "TX"}}]
 
 
+def test_deploy_answers_with_nulls_for_what_the_pipeline_does_not_fill(project: Path) -> None:
+    # `state` is a String upstream declared an Integer, `discount` no frame column, and
+    # `layers` a table nothing is connected to: each null, left out of the answer.
+    graph = _one_table_quote()
+    graph.node_map["response"].data.config["tables"] = [
+        _table("pricing", ("premium", "float"), ("state", "int"), ("discount", "float")),
+        _table("layers", ("layer", "int"), many=True),
+    ]
+    request = pl.DataFrame([{"quote": {"state": "TX", "limit": 500}}])
+
+    scored = score_graph(
+        graph=graph,
+        input_df=request,
+        input_node_ids=find_deploy_input_nodes(graph),
+        output_node_id="response",
+    )
+
+    assert render_output_document(scored) == [{"pricing": {"premium": 50.0}}]
+
+
 def _no_tables(graph: PipelineGraph) -> None:
     graph.node_map["response"].data.config["tables"] = []
     graph.edges = [edge for edge in graph.edges if edge.target != "response"]

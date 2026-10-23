@@ -479,8 +479,9 @@ sample is priced whatever its cells hold. Once anything is typed, a cell that br
 column's rules (a required cell left empty, a number that is not one, a whole number that
 is not whole, a date that is not one, a number outside its range, a value that is not one of the allowed ones) is
 outlined, naming the problem when you hover, and priced all the same. When pricing fails —
-no Workbench Output on the pipeline, a table with nothing connected, a value that does not
-fit its column — the toolbar says why. Ctrl+S still saves the project in Preview.
+no Workbench Output on the pipeline, a value that does not fit its column — the toolbar
+says why. An output table with nothing connected, or an output column the pipeline doesn't
+fill, prices all the same and shows dashes (see [Workbench Output](nodes/workbench-output.md#filling-the-tables)). Ctrl+S still saves the project in Preview.
 
 ## Test quotes
 

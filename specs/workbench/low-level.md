@@ -2234,8 +2234,8 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   (no tables refused, tables without columns refused, a `mapping` key refused), filling (by
   name, case included, a typed null for a column the frame lacks and for one whose dtype does
   not fit, a table nothing is connected to, one-row and many-row, a node with nothing
-  connected run to its response, a one-row table with other than one row, the columns cut to
-  the table's in order), the response document and `as_response` for either response node, a pipeline running
+  connected run to its response, deploy answering without them, a one-row table with other
+  than one row, the columns cut to the table's in order), the response document and `as_response` for either response node, a pipeline running
   and scoring to it, codegen and parsing of `target_port`, the second response node refused in
   save and deploy, deploy pruning to it and serving its response, the preview's table
   picker, and three tables previewed from one run (`port_labels`), each as its preview
