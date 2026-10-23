@@ -132,7 +132,7 @@ export default function Toolbar({
   )
 
   // The brand column is as wide as the node palette, less the bar's padding, so the
-  // Source label starts over the palette's edge (haute-ui/toolbar.css).
+  // Source selector starts over the palette's edge (haute-ui/toolbar.css).
   const brand = <ToolbarBrand name="haute" version={__APP_VERSION__} />
 
   return (
@@ -140,11 +140,10 @@ export default function Toolbar({
       {brand}
       {/* Source and Pipeline column — the Source selector sits on the top row, in
           line with Timing and Undo, and the Pipeline control underneath it.
-          The two rows are one grid so the control column takes the width of the
-          wider control and both buttons come out identical, whatever the active
+          The two rows are one grid column, which takes the width of the wider
+          control, so both buttons come out identical whatever the active
           source is named. */}
-      <div className="grid grid-cols-[auto_auto] items-center gap-x-1 gap-y-1 w-fit" data-testid="toolbar-source-pipeline">
-        <label className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>Source:</label>
+      <div className="grid grid-cols-[auto] items-center gap-y-1 w-fit" data-testid="toolbar-source-pipeline">
         <div ref={sourceRef} className="relative w-full">
           {addingSource ? (
             <form
@@ -261,10 +260,9 @@ export default function Toolbar({
             </div>
           )}
         </div>
-        <label className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>Pipeline:</label>
         {/* The button names the pipeline's live state, so the server going
             away is reported here: nothing calculates while it is offline.
-            "Offline" is no wider than "Calculating", so going offline never
+            "Offline" is no wider than "Pipeline", so going offline never
             widens the column; like "Manual", it can narrow it. */}
         {/* Spelled as the Source selector over it is, whose chevron the kit's
             centred action would not take, so the two texts line up. */}
@@ -277,7 +275,7 @@ export default function Toolbar({
           style={offlineTitle ? { color: 'var(--danger)' } : undefined}
           title={offlineTitle ?? PIPELINE_SETTINGS_TITLE}
         >
-          {offlineTitle ? "Offline" : calculationMode === "manual" ? "Manual" : "Calculating"}
+          {offlineTitle ? "Offline" : calculationMode === "manual" ? "Manual" : "Pipeline"}
         </button>
       </div>
       {/* Canvas actions (Undo/Redo through Utility/Constants) sit on the left,

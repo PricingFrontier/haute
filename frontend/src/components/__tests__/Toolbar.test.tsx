@@ -641,7 +641,7 @@ describe("Toolbar", () => {
       // down, so a page load never flashes "Offline".
       render(<Toolbar {...makeProps({ wsStatus })} />)
       const button = screen.getByTestId("toolbar-pipeline-settings")
-      expect(button).toHaveTextContent(/^Calculating$/)
+      expect(button).toHaveTextContent(/^Pipeline$/)
       expect(button).toHaveAttribute(
         "title",
         "Pipeline settings - preview rows, chunk rows and cached data",
@@ -666,14 +666,13 @@ describe("Toolbar", () => {
     expect(trigger.textContent).toContain("live")
   })
 
-  it("positions Source text directly after brand width aligned to node toolbar width (x + 1)", () => {
+  it("positions the Source selector directly after brand width aligned to node toolbar width (x + 1)", () => {
     render(<Toolbar {...makeProps()} />)
     const brand = screen.getByTestId("toolbar-brand")
     // 165px wide (haute-ui/toolbar.css, pinned by haute-ui's tokens.test.ts)
     expect(brand).toHaveClass("toolbar-brand")
 
-    const sourceLabel = screen.getByText("Source:")
-    const sourceContainer = sourceLabel.parentElement
+    const sourceContainer = screen.getByTestId("toolbar-source-pipeline")
     expect(sourceContainer).not.toHaveClass("ml-12")
     // Brand container immediately precedes sourceContainer in document order
     expect(brand.nextElementSibling).toBe(sourceContainer)
@@ -687,8 +686,9 @@ describe("Toolbar", () => {
 
     expect(column).toContainElement(source)
     expect(column).toContainElement(cache)
-    expect(screen.getByText("Pipeline:")).toBeInTheDocument()
-    expect(cache).toHaveTextContent("Calculating")
+    // The two buttons stand without "Source:" and "Pipeline:" labels.
+    expect(column.querySelector("label")).toBeNull()
+    expect(cache).toHaveTextContent(/^Pipeline$/)
     // The Source selector shares the toolbar button surface and type.
     expect(source).toHaveClass("toolbar-btn", "text-[12px]", "font-medium")
     expect(source).not.toHaveClass("font-mono")
@@ -703,7 +703,7 @@ describe("Toolbar", () => {
 
     // Both controls stretch to fill the same grid column, which is what makes
     // the Pipeline button exactly as wide as the Source selector above it.
-    expect(column.className).toContain("grid-cols-[auto_auto]")
+    expect(column.className).toContain("grid-cols-[auto]")
     expect(source).toHaveClass("w-full")
     expect(cache).toHaveClass("w-full")
 
@@ -798,7 +798,7 @@ describe("Toolbar", () => {
     useUIStore.setState({ calculationMode: "automatic" })
     render(<Toolbar {...makeProps()} />)
     const button = screen.getByTestId("toolbar-pipeline-settings")
-    expect(button).toHaveTextContent("Calculating")
+    expect(button).toHaveTextContent("Pipeline")
 
     act(() => useUIStore.setState({ calculationMode: "manual" }))
     expect(button).toHaveTextContent("Manual")

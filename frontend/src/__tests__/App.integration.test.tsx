@@ -1558,10 +1558,10 @@ describe("App integration - server status", () => {
     const latestSocket = () => MockWebSocket.instances[MockWebSocket.instances.length - 1]
     const pipeline = screen.getByTestId("toolbar-pipeline-settings")
     // Still connecting: not evidence of anything, so no "Offline" flash.
-    expect(pipeline).toHaveTextContent(/^Calculating$/)
+    expect(pipeline).toHaveTextContent(/^Pipeline$/)
 
     act(() => latestSocket().onopen?.())
-    expect(pipeline).toHaveTextContent(/^Calculating$/)
+    expect(pipeline).toHaveTextContent(/^Pipeline$/)
 
     act(() => (latestSocket().onclose as unknown as (event: CloseEvent) => void)({ code: 1006 } as CloseEvent))
     expect(pipeline).toHaveTextContent(/^Offline$/)
