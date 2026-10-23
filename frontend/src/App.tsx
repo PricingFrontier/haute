@@ -1904,7 +1904,13 @@ function FlowEditor() {
       ) : (
         <ErrorBoundary name="WorkbenchToolbar">
           <Suspense fallback={<header role="toolbar" aria-label="Workbench toolbar" className="toolbar" />}>
-            <WorkbenchToolbar onSave={requestSave} onCommit={requestCommit} editingDisabled={editingReadOnly} />
+            <WorkbenchToolbar
+              onSave={requestSave}
+              onCommit={requestCommit}
+              wsStatus={wsStatus}
+              editingDisabled={editingReadOnly}
+              sourceSelectionTrusted={documentSourceSelectionTrusted}
+            />
           </Suspense>
         </ErrorBoundary>
       )}

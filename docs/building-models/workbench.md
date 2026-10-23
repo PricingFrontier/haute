@@ -28,10 +28,12 @@ editor; **Pricing** brings the pipeline back. The pipeline editor keeps everythi
 (its document, its undo history, live sync) while the workbench shows; its keyboard
 shortcuts are off meanwhile, so nothing you press in the workbench edits the pipeline. The
 toolbar keeps Haute's project controls (**Pipeline files** and **Local files**, Assistant,
-Help, the branch, **Save** and **Commit**) and shows the workbench's own: **Build** over
-**Preview**, **Sheets** over **Schema**, **Display**, **Undo** over **Redo**, and **Zoom
-In** over **Zoom Out**. They stay in place in both modes: Sheets, Schema and Display are
-greyed out in Preview, and the zoom while the schema shows.
+Help, the branch, **Save** and **Commit**) and the source dropdown over the **Pipeline**
+button, and shows the workbench's own: **Undo** over **Redo** and **Zoom In** over **Zoom
+Out**, in the same places as the pipeline editor's, then **Build** over **Preview**,
+**Sheets** over **Schema** and **Display**. They stay in place in both modes: Sheets,
+Schema and Display are greyed out in Preview, and the zoom while the schema shows. Preview
+prices the sample on the source the dropdown shows.
 
 **Save** and Ctrl+S save the project, the same from either view: `forms/form.json` first
 when the workbench has unsaved edits, then the pipeline, with the Workbench Input's and
