@@ -67,7 +67,8 @@ In scope:
   `ModalShell`, `Tooltip`, `ContextMenu`, `KeyboardShortcuts`, `Toolbar`,
   `GlobalConstantsPanel`, `BackgroundJobPolling`, `NodeSearch`, `BreadcrumbBar`.
   `GlobalConstantsPanel` is the sole global-constants editor.
-- Small generic hooks with no domain knowledge: `useClickOutside`,
+- Small generic hooks with no domain knowledge: `useClickOutside` (a menu or box
+  closes on any press outside it, a workbench sheet component's included),
   `useDragResize`, `useJobPolling` (+ its orchestrator
   `useBackgroundJobs`), `useMlflowBrowser`, `useSchemaFetch`,
   `useStaleConfigEstimate`.

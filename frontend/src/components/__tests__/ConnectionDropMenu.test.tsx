@@ -70,14 +70,14 @@ describe("ConnectionDropMenu", () => {
     vi.restoreAllMocks()
   })
 
-  it("closes on Escape and on a mousedown outside the menu, but not inside it", () => {
+  it("closes on Escape and on a press outside the menu, but not inside it", () => {
     const { onClose } = renderMenu()
 
-    fireEvent.mouseDown(screen.getByRole("menuitem", { name: "Transform" }))
+    fireEvent.pointerDown(screen.getByRole("menuitem", { name: "Transform" }))
     expect(onClose).not.toHaveBeenCalled()
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" })
     expect(onClose).toHaveBeenCalledTimes(1)
-    fireEvent.mouseDown(document.body)
+    fireEvent.pointerDown(document.body)
     expect(onClose).toHaveBeenCalledTimes(2)
   })
 

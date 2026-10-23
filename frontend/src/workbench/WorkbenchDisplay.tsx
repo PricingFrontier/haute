@@ -13,6 +13,7 @@ import { SlidersHorizontal } from "lucide-react"
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react"
 import { EditorLabel } from "../components/form"
 import { ToolbarButton } from "../haute-ui"
+import useClickOutside from "../hooks/useClickOutside"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import { BLANK_THEME, setThemeColour, type ThemeColour } from "../utils/workbenchForm"
 import { ColourRow } from "./panel/ColourRow"
@@ -46,15 +47,8 @@ export default function WorkbenchDisplay({ disabled }: { disabled: boolean }) {
     setOpen(false)
   }, [])
   // A press outside the box closes it, a component's too, whose press cancels the mouse
-  // events after it: the press is heard as it begins, before anything on the sheet stops it.
-  useEffect(() => {
-    if (!open) return
-    const onPress = (event: PointerEvent) => {
-      if (box.current !== null && event.target instanceof Node && !box.current.contains(event.target)) close()
-    }
-    document.addEventListener("pointerdown", onPress, true)
-    return () => document.removeEventListener("pointerdown", onPress, true)
-  }, [open, close])
+  // events after it.
+  useClickOutside(box, close, open)
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.key !== "Escape" || !open) return
     // Not the sheet's own Escape, which would deselect.

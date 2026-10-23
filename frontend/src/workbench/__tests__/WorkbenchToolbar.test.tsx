@@ -185,6 +185,29 @@ describe("WorkbenchToolbar", () => {
     expect(leadingControls()).toEqual(pipeline)
   })
 
+  it("closes the Source dropdown and the Help menu on a sheet component's press, which cancels the mouse events after it", () => {
+    renderToolbar()
+    // A component on the sheet: its press is all there is, stopped where it lands.
+    const component = document.body.appendChild(document.createElement("div"))
+    component.addEventListener("pointerdown", (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+    })
+    try {
+      fireEvent.click(screen.getByTestId("source-selector"))
+      expect(screen.getByRole("button", { name: "Add source" })).toBeInTheDocument()
+      fireEvent.pointerDown(component)
+      expect(screen.queryByRole("button", { name: "Add source" })).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByTestId("toolbar-help"))
+      expect(screen.getByRole("menu", { name: "Help" })).toBeInTheDocument()
+      fireEvent.pointerDown(component)
+      expect(screen.queryByRole("menu", { name: "Help" })).not.toBeInTheDocument()
+    } finally {
+      component.remove()
+    }
+  })
+
   it("reports the server Offline on its Pipeline button, as the pipeline toolbar does", () => {
     render(<WorkbenchToolbar onSave={onSave} onCommit={onCommit} wsStatus="reconnecting" />)
     expect(screen.getByTestId("toolbar-pipeline-settings")).toHaveTextContent(/^Offline$/)
