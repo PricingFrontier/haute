@@ -636,8 +636,36 @@ def _validated_data_output(
     result = dict(config)
     gaps: list[IoCompletenessGap] = []
     output_type = result.get("outputType")
-    if not isinstance(output_type, str) or output_type not in {"file", "database", "lakehouse"}:
+    if not isinstance(output_type, str) or output_type not in {
+        "file",
+        "database",
+        "lakehouse",
+        "databricks",
+    }:
         raise PolarsIoConfigError(f"Unknown outputType {output_type!r}.")
+    if output_type == "databricks":
+        from haute._databricks_output import DATABRICKS_WRITE_MODES
+
+        _reject_inactive_fields(
+            result,
+            allowed={"outputType", "http_path", "table", "write_mode", "arguments"}
+            | _IO_UNIVERSAL_KEYS,
+            discriminant="outputType",
+            value=output_type,
+        )
+        for field in ("http_path", "table"):
+            gap = _locator_gap(result, field, subject="Databricks output")
+            if gap is not None:
+                gaps.append(gap)
+        write_mode = result.get("write_mode")
+        if write_mode is not None and write_mode not in DATABRICKS_WRITE_MODES:
+            raise PolarsIoConfigError(
+                f"Databricks output 'write_mode' must be one of {list(DATABRICKS_WRITE_MODES)}."
+            )
+        arguments = result.get("arguments", {})
+        if not isinstance(arguments, Mapping) or arguments:
+            raise PolarsIoConfigError("Databricks output takes no arguments.")
+        return result, gaps
     fmt = format_for_config(result)
     group = format_group(fmt)
     if output_type != group:
@@ -688,6 +716,18 @@ def format_for_config(config: Mapping[str, Any]) -> IoFormat:
             + ", ".join(sorted(FORMATS_BY_NAME))
         )
     return fmt
+
+
+def is_databricks_output(config: Mapping[str, Any]) -> bool:
+    """Whether a Data Output writes a Databricks table (it has no ``format``)."""
+    return config.get("outputType") == "databricks"
+
+
+def data_output_group(config: Mapping[str, Any]) -> str:
+    """The editor group of a Data Output config, Databricks included."""
+    if is_databricks_output(config):
+        return "databricks"
+    return format_group(format_for_config(config))
 
 
 def _callable_owner(fmt_callable: str, *, owner: str) -> tuple[str, str]:
@@ -1404,6 +1444,17 @@ def write_polars_output(
     """
     from haute._polars_utils import streaming_collect
 
+    if is_databricks_output(config):
+        from haute._databricks_output import write_databricks_output
+
+        return write_databricks_output(
+            lf,
+            config,
+            recipe=recipe,
+            execution_context=execution_context,
+            node_id=node_id,
+        )
+
     fmt = format_for_config(config)
     mode = resolve_output_mode(fmt, config)
     owner, callable_name = output_callable_key(fmt, mode)
@@ -1543,7 +1594,7 @@ def registry_capabilities() -> dict[str, Any]:
             "name": "databricks",
             "label": "Databricks",
             "input_available": True,
-            "output_available": False,
+            "output_available": True,
             "cache_modes": ["snapshot"],
             "input_fields": [
                 {
@@ -1555,7 +1606,16 @@ def registry_capabilities() -> dict[str, Any]:
                 {"name": "table", "label": "Table", "kind": "table", "required": True},
                 {"name": "query", "label": "SELECT clause", "kind": "query", "required": False},
             ],
-            "output_fields": [],
+            "output_fields": [
+                {
+                    "name": "http_path",
+                    "label": "SQL warehouse HTTP path",
+                    "kind": "text",
+                    "required": True,
+                },
+                {"name": "table", "label": "Table", "kind": "table", "required": True},
+                {"name": "write_mode", "label": "Write mode", "kind": "text", "required": False},
+            ],
             "formats": [],
         },
         "inline": {

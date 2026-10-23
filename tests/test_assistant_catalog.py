@@ -745,9 +745,10 @@ class TestIoBranches:
             "file",
             "database",
             "lakehouse",
+            "databricks",
         ]
         assert data_input.required_fields == ("inputType",)
-        assert data_output.required_fields == ("format", "outputType")
+        assert data_output.required_fields == ("outputType",)
 
 
 class TestUsageNotes:

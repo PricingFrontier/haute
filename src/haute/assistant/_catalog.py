@@ -95,8 +95,8 @@ _USAGE_NOTES: dict[NodeType, str] = {
         "an explicit provider and format; use a snapshot for remote or eager-only inputs."
     ),
     NodeType.DATA_OUTPUT: (
-        "Write or sink its one input frame to a file, database or lakehouse target "
-        "when the analyst runs the output; it has no output, so it ends its branch "
+        "Write or sink its one input frame to a file, database, lakehouse or Databricks "
+        "table when the analyst runs the output; it has no output, so it ends its branch "
         "and stays out of the scoring path."
     ),
     NodeType.POLARS: (
@@ -222,7 +222,7 @@ _SUMMARIES: dict[NodeType, str] = {
     NodeType.API_INPUT: "The live quote request, one frame per declared request table.",
     NodeType.WORKBENCH_INPUT: "The live quote request, one frame per table the workbench defines.",
     NodeType.DATA_INPUT: "Read a file, database, lakehouse, Databricks table or inline records.",
-    NodeType.DATA_OUTPUT: "Write a frame to a file, database or lakehouse when the output is run.",
+    NodeType.DATA_OUTPUT: "Write a frame to a file, database, lakehouse or Databricks table.",
     NodeType.POLARS: "Transform one or more frames with Polars steps.",
     NodeType.EDGE_JOIN: "Join a base frame with a lookup frame on keys.",
     NodeType.MODEL_SCORE: "Score rows with a saved model.",

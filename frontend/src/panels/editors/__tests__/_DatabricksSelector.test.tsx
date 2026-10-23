@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, act, waitFor, within } from "@testing-library/react"
-import { WarehousePicker, CatalogTablePicker } from "../_DatabricksSelector"
+import { WarehousePicker, CatalogTablePicker, TargetTablePicker } from "../_DatabricksSelector"
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -597,3 +597,91 @@ describe("CatalogTablePicker", () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TargetTablePicker
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("TargetTablePicker", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetCatalogs.mockResolvedValue({ catalogs: [{ name: "workspace", comment: "" }] })
+    mockGetSchemas.mockResolvedValue({ schemas: [{ name: "pricing-dev", comment: "" }, { name: "other", comment: "" }] })
+    mockGetTables.mockResolvedValue({
+      tables: [{ name: "claims", full_name: "workspace.pricing-dev.claims", table_type: "MANAGED", comment: "" }],
+    })
+  })
+  afterEach(cleanup)
+
+  const chooseSchema = async () => {
+    fireEvent.focus(screen.getByLabelText("Catalog"))
+    await screen.findByRole("option", { name: "workspace" })
+    fireEvent.change(screen.getByLabelText("Catalog"), { target: { value: "workspace" } })
+    await screen.findByRole("option", { name: "pricing-dev" })
+    fireEvent.change(screen.getByLabelText("Schema"), { target: { value: "pricing-dev" } })
+  }
+
+  it("names a new table once catalog, schema and name are set", async () => {
+    const onSelect = vi.fn()
+    const { rerender } = render(<TargetTablePicker table="" onSelect={onSelect} />)
+
+    expect(screen.getByLabelText("Table name")).toBeDisabled()
+    await chooseSchema()
+    const name = screen.getByLabelText("Table name")
+    expect(name).toBeEnabled()
+    expect(name).toHaveAttribute("placeholder", "New or existing table name")
+    fireEvent.change(name, { target: { value: "scored" } })
+    fireEvent.blur(name)
+
+    expect(onSelect).toHaveBeenLastCalledWith("workspace.pricing-dev.scored")
+    rerender(<TargetTablePicker table="workspace.pricing-dev.scored" onSelect={onSelect} />)
+    expect(await screen.findByText(/new table, created on first write/)).toBeInTheDocument()
+  })
+
+  it("recognises an existing table and suggests the schema's tables", async () => {
+    const { container } = render(
+      <TargetTablePicker table="workspace.pricing-dev.claims" onSelect={vi.fn()} />,
+    )
+
+    expect(await screen.findByText(/existing table/)).toBeInTheDocument()
+    expect(mockGetTables).toHaveBeenCalledWith("workspace", "pricing-dev")
+    const suggestions = container.querySelectorAll("datalist option")
+    expect(Array.from(suggestions).map((option) => option.getAttribute("value"))).toEqual(["claims"])
+  })
+
+  it("refuses a name Databricks cannot take without quoting", async () => {
+    const onSelect = vi.fn()
+    render(<TargetTablePicker table="" onSelect={onSelect} />)
+    await chooseSchema()
+    onSelect.mockClear()
+
+    const name = screen.getByLabelText("Table name")
+    fireEvent.change(name, { target: { value: "scored policies" } })
+    fireEvent.blur(name)
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Use only letters, digits, underscores and hyphens.",
+    )
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it("keeps the name when the schema changes", async () => {
+    const onSelect = vi.fn()
+    render(<TargetTablePicker table="workspace.pricing-dev.scored" onSelect={onSelect} />)
+
+    fireEvent.focus(screen.getByLabelText("Schema"))
+    await screen.findByRole("option", { name: "other" })
+    fireEvent.change(screen.getByLabelText("Schema"), { target: { value: "other" } })
+
+    expect(onSelect).toHaveBeenLastCalledWith("workspace.other.scored")
+  })
+
+  it("clears the table when the catalog changes", async () => {
+    const onSelect = vi.fn()
+    render(<TargetTablePicker table="workspace.pricing-dev.scored" onSelect={onSelect} />)
+
+    fireEvent.change(screen.getByLabelText("Catalog"), { target: { value: "" } })
+
+    expect(onSelect).toHaveBeenLastCalledWith("")
+  })
+})

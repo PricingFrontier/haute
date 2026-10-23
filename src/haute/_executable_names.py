@@ -307,7 +307,9 @@ def data_output_destination(
     ``outputs/``, the format's default extension added, relative paths
     anchored as the writer anchors them), compared ignoring case on Windows
     and macOS, whose file systems do. A database target is its connection (or
-    URI) and its table. A destination missing a required part has none: it is
+    URI) and its table. A Databricks target is its table, spelled canonically,
+    since every warehouse in the workspace writes the same one. A destination
+    missing a required part has none: it is
     a draft, saved and compared with nothing, and its completeness is required
     only when it runs. A destination the writer refuses (outside the project)
     has none either; the writer's own refusal reports it.
@@ -318,12 +320,18 @@ def data_output_destination(
         data_output_completeness,
         format_for_config,
         format_group,
+        is_databricks_output,
     )
     from haute.executor import resolve_data_output_path
 
     try:
         if data_output_completeness(config):
             return None
+        if is_databricks_output(config):
+            from haute._databricks_io import _canonical_table
+
+            table = str(config.get("table"))
+            return f"Databricks table {_canonical_table(table)}", f"Databricks table {table}"
         fmt = format_for_config(config)
         if format_group(fmt) == "database":
             locator = config.get("connection") or config.get("uri")
