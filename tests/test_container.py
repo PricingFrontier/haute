@@ -284,7 +284,7 @@ class TestGenerateAppSource:
         for name in (
             "QuoteRequest",
             "admit_deploy_execution",
-            "reads_one_quote_per_request",
+            "reads_request_records",
             "score_graph",
             "score_graph_lazy",
         ):

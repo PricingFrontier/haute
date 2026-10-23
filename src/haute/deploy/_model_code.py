@@ -35,16 +35,17 @@ def _request(
 ) -> DeployInput:
     """The request as the pipeline's request input takes it.
 
-    A Workbench Input reads its quotes as their records, each value as it was sent: a
-    frame inferred from the request would type a column the tables do not name, and fail
-    on one of mixed types, before the reader could leave it unread, where the signature
-    lets any value through (specs/workbench). Any other request input takes the frame.
+    A Workbench Input, or a Quote Input with tables, reads its quotes as their records,
+    each value as it was sent: a frame inferred from the request would type a column the
+    tables do not name, and fail on one of mixed types, before the reader could leave it
+    unread, where the signature lets any value through (specs/workbench). Any other
+    request input takes the frame.
     """
     import polars as pl
 
-    from haute.deploy._scorer import QuoteRequest, reads_one_quote_per_request
+    from haute.deploy._scorer import QuoteRequest, reads_request_records
 
-    if reads_one_quote_per_request(graph, input_node_ids):
+    if reads_request_records(graph, input_node_ids):
         return QuoteRequest(
             tuple(_plain(record) for record in model_input.to_dict(orient="records"))
         )

@@ -100,12 +100,13 @@ def _clear_deploy_artifact_caches() -> None:
 
 @dataclass(frozen=True, slots=True)
 class QuoteRequest:
-    """A Workbench Input's request as it was sent: its quotes, one record each, untyped.
+    """A request as it was sent: its quotes, one record each, untyped.
 
-    A deployed Workbench Input reads its request itself, each value as its column's type
-    holds it, and refuses a misfit naming the spot (specs/workbench). A frame built from the
-    records by inference would type them first, and refuse a misfit as Polars does, so a
-    request bound for a Workbench Input is handed over as its records.
+    A deployed Workbench Input, or a Quote Input with tables, reads its request itself,
+    walking each record into its tables and typing each value as its column holds it
+    (specs/workbench). A frame built from the records by inference would flatten nothing
+    and type them first, refusing a misfit as Polars does, so a request bound for either
+    is handed over as its records.
     """
 
     records: tuple[Mapping[str, Any], ...]
@@ -116,9 +117,35 @@ class QuoteRequest:
         return len(self.records)
 
 
-#: A deployed request: the rows of a Quote Input's or a Data Input's request as a frame,
-#: or a Workbench Input's quotes as their records.
+#: A deployed request: the rows of a flat Quote Input's or a Data Input's request as a
+#: frame, or the quotes of a Workbench Input or a Quote Input with tables as their records.
 DeployInput = pl.DataFrame | QuoteRequest
+
+
+def reads_tables_from_request(node: GraphNode) -> bool:
+    """Whether a Quote Input walks its request into tables, as its JSON source's are read."""
+    from haute._api_input_schema import is_json_api_input_path
+
+    config = node.data.config
+    return (
+        node.data.nodeType is NodeType.API_INPUT  # the Quote Input alone
+        and isinstance(config.get("tables"), list)
+        and is_json_api_input_path(str(config.get("path") or ""))
+    )
+
+
+def reads_request_records(graph: PipelineGraph, input_node_ids: Sequence[str]) -> bool:
+    """Whether the request input takes its request as records (:class:`QuoteRequest`).
+
+    A Workbench Input does, and so does a Quote Input with tables: each walks the
+    records into its tables itself. Any other request input takes a frame.
+    """
+    inputs = set(input_node_ids)
+    return any(
+        node.data.nodeType is NodeType.WORKBENCH_INPUT or reads_tables_from_request(node)
+        for node in graph.nodes
+        if node.id in inputs
+    )
 
 
 def reads_one_quote_per_request(graph: PipelineGraph, input_node_ids: Sequence[str]) -> bool:
@@ -127,6 +154,17 @@ def reads_one_quote_per_request(graph: PipelineGraph, input_node_ids: Sequence[s
     return any(
         node.data.nodeType is NodeType.WORKBENCH_INPUT for node in graph.nodes if node.id in inputs
     )
+
+
+def request_input_tables(
+    node: GraphNode, records: Sequence[Mapping[str, Any]]
+) -> dict[str, pl.DataFrame]:
+    """The frames a records-reading request input gives: one per table, keyed by port."""
+    if node.data.nodeType is NodeType.WORKBENCH_INPUT:
+        return workbench_request_frames(node.data.config, records)
+    from haute._json_shred._shred import shred_records_to_frames
+
+    return shred_records_to_frames(records, dict(node.data.config))
 
 
 @dataclass(slots=True)
@@ -721,30 +759,32 @@ def _score_graph_lazy(
             # dynamic model contract can fail with a lower-level config error.
             _validate_deploy_model_score_source(node, remap)
     input_set = set(input_node_ids)
-    # A Workbench Input's quote is read once, here, into a frame per port: the walk hands
-    # each edge its table, and the memory estimate sizes each consumer from the table
-    # that feeds it rather than from the one-row request that holds them all.
+    # A Workbench Input's quote, or a Quote Input with tables' quotes, is read once, here,
+    # into a frame per port: the walk hands each edge its table, and the memory estimate
+    # sizes each consumer from the table that feeds it rather than from the request that
+    # holds them all.
     quote_tables: dict[str, dict[str, pl.DataFrame]] = {}
     runtime_source_frames_by_node: dict[str, pl.DataFrame | Mapping[str, pl.DataFrame]] = {}
     # The input nodes are the request input or the promoted Data Input, nothing else.
     for node in graph.nodes:
         if node.id not in input_set:
             continue
-        if node.data.nodeType is NodeType.WORKBENCH_INPUT:
+        if node.data.nodeType is NodeType.WORKBENCH_INPUT or reads_tables_from_request(node):
             records = (
                 input_df.records if isinstance(input_df, QuoteRequest) else input_df.to_dicts()
             )
-            quote_tables[node.id] = workbench_request_frames(node.data.config, records)
+            quote_tables[node.id] = request_input_tables(node, records)
             runtime_source_frames_by_node[node.id] = quote_tables[node.id]
             continue
         if isinstance(input_df, QuoteRequest):
             raise ValueError(
-                f"A QuoteRequest is read by a Workbench Input alone; {node.id!r} is a "
-                f"{node.data.nodeType.value} and takes a frame."
+                "A QuoteRequest is read by a Workbench Input or a Quote Input with tables "
+                f"alone; {node.id!r} is a {node.data.nodeType.value} and takes a frame."
             )
         runtime_source_frames_by_node[node.id] = input_df
-    # A Workbench Input's quote was read above; any other input takes the frame. With a
-    # QuoteRequest there is no other input (the loop refused one), so this is never read.
+    # A records-reading input's quotes were read above; any other input takes the frame.
+    # With a QuoteRequest there is no other input (the loop refused one), so this is never
+    # read.
     input_lf = pl.LazyFrame() if isinstance(input_df, QuoteRequest) else input_df.lazy()
     model_score_temp_paths: list[str] = []
     retained_lazy_frames: list[pl.LazyFrame] = []
@@ -764,17 +804,17 @@ def _score_graph_lazy(
         _preamble_names: dict[str, Any] = dict(build_kwargs.get("preamble_ns") or {})
 
         # Intercept: the request input → inject the live DataFrame directly; a
-        # Workbench Input's request was read into its tables above.
+        # records-reading input's request was read into its tables above.
         if node_type in REQUEST_INPUT_NODE_TYPES and nid in input_set:
-            if node_type is NodeType.WORKBENCH_INPUT:
+            if nid in quote_tables:
                 # A frame per port, as a multi-frame source gives, which the walk
                 # hands each edge by its handle.
-                def inject_workbench_request(
+                def inject_request_tables(
                     _tables: dict[str, pl.DataFrame] = quote_tables[nid],
                 ) -> Any:
                     return {port: table.lazy() for port, table in _tables.items()}
 
-                return func_name, inject_workbench_request, True
+                return func_name, inject_request_tables, True
 
             def inject_input() -> _Frame:
                 return input_lf

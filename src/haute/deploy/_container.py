@@ -406,7 +406,7 @@ from haute.deploy._batch_scoring import (
 from haute.deploy._scorer import (
     QuoteRequest,
     admit_deploy_execution,
-    reads_one_quote_per_request,
+    reads_request_records,
     score_graph,
     score_graph_lazy,
 )
@@ -419,9 +419,9 @@ _manifest = json.loads(_MANIFEST_PATH.read_text())
 
 _pruned_graph = PipelineGraph.model_validate(_manifest["pruned_graph"])
 _input_node_ids = _manifest["input_node_ids"]
-# A Workbench Input reads its quote from the records as sent, typing each value itself;
-# any other request input takes the rows as a frame.
-_reads_quotes = reads_one_quote_per_request(_pruned_graph, _input_node_ids)
+# A Workbench Input, or a Quote Input with tables, walks the records as sent into its
+# tables, typing each value itself; any other request input takes the rows as a frame.
+_reads_quotes = reads_request_records(_pruned_graph, _input_node_ids)
 _output_node_id = _manifest["output_node_id"]
 
 

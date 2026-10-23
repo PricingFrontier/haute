@@ -208,12 +208,24 @@ def infer_deploy_execution_policy(
         _attach_bundled_optimiser_artifacts,
         _resolve_runtime_graph_paths,
         admit_deploy_execution,
+        reads_tables_from_request,
+        request_input_tables,
     )
     from haute.errors import DeployError, GroupByExecutionUnsupportedError
     from haute.execution import plan_execution_strategy
     from haute.projection import ExecutionStrategy, ProjectionRequest
 
     sample = _read_sample_row(graph, input_node_ids)
+    # A Quote Input with tables is planned from the tables its sample quote walks into,
+    # as it is scored, not from the request that holds them.
+    source_frames: dict[str, pl.DataFrame | dict[str, pl.DataFrame]] = {}
+    for input_node_id in input_node_ids:
+        input_node = _find_node(graph, input_node_id)
+        source_frames[input_node_id] = (
+            request_input_tables(input_node, sample.to_dicts())
+            if reads_tables_from_request(input_node)
+            else sample
+        )
     remap = artifact_paths or {}
     planned = _attach_bundled_feature_contracts(_resolve_runtime_graph_paths(graph), remap)
     planned = _attach_bundled_optimiser_artifacts(planned, remap)
@@ -232,7 +244,7 @@ def infer_deploy_execution_policy(
                 source="live",
             ),
             execution_context=context,
-            runtime_source_frames_by_node=dict.fromkeys(input_node_ids, sample),
+            runtime_source_frames_by_node=source_frames,
         )
     except GroupByExecutionUnsupportedError as exc:
         if exc.reason_code != "materialisation_estimate_unavailable":

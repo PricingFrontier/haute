@@ -29,7 +29,12 @@ from haute._workbench_tables import (
     table_disagreements,
 )
 from haute.deploy._config import ResolvedDeploy
-from haute.deploy._scorer import QuoteRequest, reads_one_quote_per_request, score_graph
+from haute.deploy._scorer import (
+    QuoteRequest,
+    reads_one_quote_per_request,
+    reads_request_records,
+    score_graph,
+)
 
 logger = get_logger(component="deploy.validators")
 
@@ -722,9 +727,11 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
         # Input's quote need not hold every table (a many-row table it leaves
         # out has no rows, a one-row one its row of nulls), and its reader
         # refuses a quote that does not fit, naming the spot, when it is
-        # scored below, so its cases are not held to the columns here.
+        # scored below, so its cases are not held to the columns here. A Quote
+        # Input with tables reads nested paths a missing key leaves null, so
+        # neither are its.
         required_cols = set(resolved.input_schema or {})
-        reads_quotes = _reads_one_quote_per_request(resolved)
+        reads_quotes = reads_request_records(resolved.pruned_graph, resolved.input_node_ids)
         for jf in test_quote_files(tq_dir):
             try:
                 cleaned = load_test_quote_file(jf)
@@ -781,7 +788,8 @@ def score_test_quotes(
     """Score every JSON file in the test_quotes directory.
 
     Each JSON file should contain a list of dicts (quote objects). A Quote Input's cases
-    are scored as one request; a Workbench Input reads one quote per request, so its
+    are scored as one request (its records, when it reads tables from them, else their
+    frame); a Workbench Input reads one quote per request, so its
     cases are scored one request each, each case's expected output compared with its own
     request's one row.
 
@@ -806,6 +814,7 @@ def score_test_quotes(
 
     results: list[TestQuoteResult] = []
     one_quote_per_request = _reads_one_quote_per_request(resolved)
+    reads_records = reads_request_records(resolved.pruned_graph, resolved.input_node_ids)
 
     def score(input_df: pl.DataFrame | QuoteRequest) -> pl.DataFrame:
         return score_graph(
@@ -829,7 +838,13 @@ def score_test_quotes(
                 _validate_expected_outputs_per_case(cases=cases, outputs=outputs)
                 rows = sum(output.height for output in outputs)
             else:
-                output = score(pl.DataFrame([case.input for case in cases]))
+                # The cases as one request: as sent when the input walks them into tables.
+                request = (
+                    QuoteRequest(tuple(case.input for case in cases))
+                    if reads_records
+                    else pl.DataFrame([case.input for case in cases])
+                )
+                output = score(request)
                 _validate_expected_outputs(cases=cases, output=output)
                 rows = output.height
 

@@ -94,7 +94,11 @@ were sent, one quote per request, each consumer sized by the memory estimate fro
 that feeds it; its test quotes are not pre-checked for columns, and their expected outputs
 are compared into the response's tables; a Databricks deployment's signature holds each
 table as a map of any values or an array of them, the reader holding the request to the
-tables' columns ([workbench](../workbench/high-level.md)). For a graph with no request input,
+tables' columns ([workbench](../workbench/high-level.md)). A Quote Input with tables reads a
+served request the same way, from the records as they were sent, through the shared JSON
+shredder ([json-shredding](../json-shredding/high-level.md)), so each port receives its own
+table as the editor gives it; unlike a Workbench Input it takes several quotes to a request,
+and its test quotes are not pre-checked for flat columns. For a graph with no request input,
 exactly one source may be promoted only when it is a `dataInput`, whose configured data
 provides schema/sample information before live requests replace it. A `constant` or any
 other source type is never promoted accidentally; deployment fails with a correction that

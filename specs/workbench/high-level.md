@@ -1020,9 +1020,8 @@ Out of scope:
     own) and its dry run read the request through the same reader, one quote per request,
     each table under its name, from the records as they were sent (a frame built from them
     by inference would type them first, and refuse a misfit as Polars does rather than as
-    the input does), so a deployed Workbench Input gives each port its table where a
-    deployed Quote Input still hands every port the whole request
-    ([BUG-31](../roadmap/bugs.md#bug-31--a-deployed-quote-input-splits-a-request-into-its-tables)).
+    the input does), so a deployed Workbench Input gives each port its table, as a
+    deployed Quote Input with tables does from its quotes, several to a request.
     The memory estimate of a deployed run sizes each consumer from the table that feeds it,
     not from the one-row request that holds them all. None of them reads the sample. Haute calls the two the request inputs and decides this
     once, from one set holding both types; tests fail when a check in the code names the Quote

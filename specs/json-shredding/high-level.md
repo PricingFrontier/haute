@@ -320,11 +320,10 @@ strict build and raises a specific, column-named error instead.
 - The eager executor and generated code consume the same runtime loader:
   canvas execution reads the published table snapshots, generated standalone code
   shreds in-process — see [execution-engine](../execution-engine/high-level.md)
-  and [codegen](../codegen/high-level.md). Deployed scoring does not: it hands the
-  request to every Quote Input port as one frame ([deploy](../deploy/high-level.md)).
-
-> NOTE: A deployed multi-table Quote Input therefore gives each port the whole request
-> rather than its table ([BUG-31](../roadmap/bugs.md#bug-31--a-deployed-quote-input-splits-a-request-into-its-tables)).
+  and [codegen](../codegen/high-level.md). Deployed scoring shreds the request's
+  records in memory through the same table specs (`shred_records_to_frames`), so each
+  Quote Input port receives its own table, as the editor gives it
+  ([deploy](../deploy/high-level.md)).
 
 - Demand-scoped execution is an optional argument to that shared loader, not a
   second executor-only codec. Generated code that does not pass a demand

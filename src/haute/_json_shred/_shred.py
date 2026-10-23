@@ -673,6 +673,34 @@ def _rows_to_frame(
     return frame
 
 
+def shred_records_to_frames(
+    records: Sequence[Mapping[str, Any]], v2_config: dict[str, Any]
+) -> dict[str, pl.DataFrame]:
+    """Shred in-memory *records* into one typed frame per emitting table, keyed by label.
+
+    A deployed Quote Input reads its request this way: the request body's quotes are
+    walked through the same table specs a file shred uses, so a served request and
+    the canvas's preview of the source file give each port the same columns and types.
+    """
+    table_specs = _emitting_table_specs(v2_config)
+    rows_by_label: dict[str, list[_Row]] = {spec.label: [] for spec in table_specs}
+    emitted_counts: dict[str, int] = dict.fromkeys(rows_by_label, 0)
+    stats = ShredSkipStats()
+    shred_to_buffers(
+        (dict(record) for record in records),
+        v2_config,
+        stats=stats,
+        _table_specs=table_specs,
+        _row_sink=lambda label, row: rows_by_label[label].append(row),
+        _emitted_counts=emitted_counts,
+    )
+    _assert_root_conservation(table_specs, {}, stats, len(records), emitted_counts=emitted_counts)
+    return {
+        spec.label: _rows_to_frame(rows_by_label[spec.label], spec.leaf_specs)
+        for spec in table_specs
+    }
+
+
 def _per_frame_metadata(label: str, col_specs: list[_LeafSpec]) -> dict[bytes, bytes]:
     """Build the parquet-footer key-value metadata describing this frame.
 

@@ -66,7 +66,7 @@ from haute.deploy._config import DeployConfig, resolve_config
 from haute.deploy._container import _generate_app_source
 from haute.deploy._pruner import find_deploy_input_nodes
 from haute.deploy._schema import _read_sample_row, infer_input_schema
-from haute.deploy._scorer import DeployInput, QuoteRequest, score_graph
+from haute.deploy._scorer import DeployInput, QuoteRequest, request_input_tables, score_graph
 from haute.deploy._utils import shipped_graph
 from haute.deploy._validators import score_test_quotes
 from haute.execution import ExecutionProfile, execute_lazy_graph
@@ -1186,13 +1186,22 @@ def test_a_deployed_pipeline_reads_the_request_into_the_tables(project: Path) ->
         WorkbenchInputError, match="reads one quote per request, and this request holds 2"
     ):
         deployed(QuoteRequest((quote, quote)))
-    # The records are a Workbench Input's alone: a Quote Input takes its request as a frame.
-    with pytest.raises(ValueError, match="read by a Workbench Input alone"):
+    # The records are for an input that walks them into tables: a Quote Input reading a
+    # flat file takes its request as a frame.
+    flat = project / "quotes.csv"
+    flat.write_text("state,limit\nNY,1000\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="read by a Workbench Input or a Quote Input with tables"):
         score_graph(
-            graph=_pricing(project, NodeType.API_INPUT),
-            input_df=QuoteRequest((quote,)),
+            graph=PipelineGraph(
+                nodes=[
+                    _node("request", NodeType.API_INPUT, {"path": str(flat)}),
+                    _node("out", NodeType.OUTPUT, make_output_config(["state"], source_port="q")),
+                ],
+                edges=[_edge("request", "out", "q")],
+            ),
+            input_df=QuoteRequest(({"state": "TX", "limit": 5},)),
             input_node_ids=["request"],
-            output_node_id="listed",
+            output_node_id="out",
         )
 
 
@@ -1223,6 +1232,104 @@ def test_a_deployed_request_is_sized_per_table_for_the_memory_estimate(project: 
         "policy": 1,
         "items": 3,
     }
+
+
+def test_a_deployed_quote_input_reads_the_request_into_its_tables(project: Path) -> None:
+    """BUG-31: each port gets its own table from the request, as the editor gives it."""
+    graph = _pricing(project, NodeType.API_INPUT)
+    quote = {"policy": {"state": "TX", "limit": 5}, "items": [{"item_id": "Z", "value": 7.0}]}
+    other = {
+        "policy": {"state": "CA", "limit": 9},
+        "items": [{"item_id": "Y", "value": 1}, {"item_id": "X", "value": 2.0}],
+    }
+    sized: dict[str, Any] = {}
+    real = _scorer.execute_lazy_graph
+
+    def recording(graph_: PipelineGraph, builder: Any, **kwargs: Any) -> Any:
+        sized.update(kwargs["runtime_source_frames_by_node"])
+        return real(graph_, builder, **kwargs)
+
+    def deployed(request: DeployInput) -> list[Any]:
+        scored = score_graph(
+            graph=graph, input_df=request, input_node_ids=["request"], output_node_id="listed"
+        )
+        return scored["name"].to_list()
+
+    # The editor's result for its sample is the deployed result for the same request.
+    assert deployed(QuoteRequest(tuple(_SAMPLE))) == _preview(graph, "listed")["name"].to_list()
+    assert deployed(QuoteRequest((quote,))) == ["TX", "Z", "2.0"]
+    # Several quotes in one request, as records or as the frame a flat caller builds.
+    with patch.object(_scorer, "execute_lazy_graph", recording):
+        assert deployed(QuoteRequest((quote, other))) == ["TX", "CA", "Z", "Y", "X", "2.0"]
+    # A frame is inferred from the records first, so its values must already agree.
+    floats = {**other, "items": [{"item_id": "Y", "value": 1.0}, {"item_id": "X", "value": 2.0}]}
+    assert deployed(_quote(quote, floats)) == ["TX", "CA", "Z", "Y", "X", "2.0"]
+    # Each port its table's rows, typed as the table declares (an int read as a float).
+    tables = sized["request"]
+    assert {port: frame.height for port, frame in tables.items()} == {"policy": 2, "items": 3}
+    assert dict(tables["items"].schema) == {"item_id": pl.String, "value": pl.Float64}
+    assert tables["items"]["value"].to_list() == [7.0, 1.0, 2.0]
+    # A value that is not of its column's type is refused naming the column.
+    with pytest.raises(ApiInputSchemaError, match="column 'value'"):
+        deployed(QuoteRequest(({**quote, "items": [{"item_id": "Z", "value": "x"}]},)))
+
+
+def test_shredding_records_gives_the_tables_a_file_shred_gives(project: Path) -> None:
+    graph = _pricing(project, NodeType.API_INPUT)
+    [request] = [node for node in graph.nodes if node.id == "request"]
+
+    from_records = request_input_tables(request, _SAMPLE)
+
+    assert set(from_records) == {"policy", "items"}
+    for port, frame in from_records.items():
+        assert_frame_equal(frame, _preview(_port_graph(graph, port), "port"))
+
+
+def _port_graph(graph: PipelineGraph, port: str) -> PipelineGraph:
+    """*graph*'s request input with one passthrough reading *port*, previewed as the editor does."""
+    [request] = [node for node in graph.nodes if node.id == "request"]
+    return PipelineGraph(
+        nodes=[request, _node("port", NodeType.POLARS, {"code": f"df = {port}"})],
+        edges=[_edge("request", "port", port)],
+    )
+
+
+def test_the_containers_quote_route_splits_a_quote_inputs_request(project: Path) -> None:
+    """A served request to a Quote Input with tables is read into them, one quote or several."""
+    from fastapi.testclient import TestClient
+
+    graph = _pricing(project, NodeType.API_INPUT)
+    container = project / "container"
+    container.mkdir()
+    manifest = {
+        "pruned_graph": shipped_graph(graph),
+        "input_node_ids": ["request"],
+        "output_node_id": "listed",
+        "artifacts": {},
+        "output_fields": None,
+    }
+    (container / "deploy_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    app_path = container / "app.py"
+    app_path.write_text(_generate_app_source("motor", 8080), encoding="utf-8")
+    module_name = f"_haute_quote_input_app_{uuid.uuid4().hex}"
+    spec = importlib.util.spec_from_file_location(module_name, app_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    quote = {"policy": {"state": "TX", "limit": 5}, "items": [{"item_id": "Z", "value": 7.0}]}
+    other = {"policy": {"state": "CA", "limit": 9}, "items": []}
+    try:
+        spec.loader.exec_module(module)
+        with TestClient(module.app) as client:
+            one = client.post("/quote", json=quote)
+            several = client.post("/quote", json=[quote, other])
+    finally:
+        sys.modules.pop(module_name, None)
+
+    assert one.status_code == 200, one.text
+    assert [row["name"] for row in one.json()["rows"]] == ["TX", "Z", "2.0"]
+    assert several.status_code == 200, several.text
+    assert [row["name"] for row in several.json()["rows"]] == ["TX", "CA", "Z", "2.0"]
 
 
 def test_the_containers_quote_route_reads_the_request_as_sent(project: Path) -> None:
