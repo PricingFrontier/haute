@@ -1,13 +1,16 @@
 import { Database } from "lucide-react"
 import { SidePanel } from "../haute-ui"
-import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
+import useWorkbenchViewStore, { SCHEMA_FULL_WIDTH } from "../stores/useWorkbenchViewStore"
 import SchemaEditor from "./SchemaEditor"
 import { COMPONENT_COLOR } from "./widgetKinds"
 
 const MIN_WIDTH = 320
 
-/** At most half the window, so the sheet stays in view beside it. */
-const maxWidth = () => Math.max(MIN_WIDTH, Math.floor(window.innerWidth / 2))
+/**
+ * At most half the window, so the sheet stays in view beside it, but never short of the
+ * width its fields take at full stretch.
+ */
+const maxWidth = () => Math.max(SCHEMA_FULL_WIDTH, Math.floor(window.innerWidth / 2))
 
 /**
  * The schema's pane (specs/workbench): over the sheet's left part, under the sheet tabs,

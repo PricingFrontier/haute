@@ -12,7 +12,7 @@ import useUIStore from "../../stores/useUIStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import useWorkbenchPricingStore, { PRICING_DELAY_MS } from "../../stores/useWorkbenchPricingStore"
-import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
+import useWorkbenchViewStore, { SCHEMA_FULL_WIDTH } from "../../stores/useWorkbenchViewStore"
 import { BLANK_THEME } from "../../utils/workbenchForm"
 import WorkbenchView from "../WorkbenchView"
 import { sheetForm } from "./fixtures"
@@ -100,6 +100,34 @@ describe("WorkbenchView", () => {
     fireEvent.click(within(pane).getByTitle("Close"))
     expect(screen.queryByTestId("schema-pane")).not.toBeInTheDocument()
     expect(useWorkbenchViewStore.getState()).toMatchObject({ schemaOpen: false, schemaPane: null })
+  })
+
+  it("opens the schema's pane with its fields at full stretch, a width a drag reaches on a narrow window too", () => {
+    const innerWidth = window.innerWidth
+    try {
+      // Half of it is under the full stretch.
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 1000 })
+      renderView()
+      act(() => {
+        useWorkbenchViewStore.getState().setSchemaOpen(true)
+      })
+      const pane = screen.getByTestId("schema-pane")
+      expect(SCHEMA_FULL_WIDTH).toBe(640 + 10 + 4)
+      expect(pane.firstElementChild).toHaveStyle({ width: `${SCHEMA_FULL_WIDTH}px` })
+
+      const handle = within(pane).getByTestId("panel-resize-handle")
+      fireEvent.mouseDown(handle, { clientX: 600 })
+      fireEvent.mouseMove(window, { clientX: 400, buttons: 1 })
+      fireEvent.mouseUp(window)
+      expect(useWorkbenchViewStore.getState().schemaWidth).toBe(SCHEMA_FULL_WIDTH - 200)
+      fireEvent.mouseDown(handle, { clientX: 200 })
+      fireEvent.mouseMove(window, { clientX: 900, buttons: 1 })
+      fireEvent.mouseUp(window)
+      expect(useWorkbenchViewStore.getState().schemaWidth).toBe(SCHEMA_FULL_WIDTH)
+    } finally {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: innerWidth })
+      useWorkbenchViewStore.setState({ schemaWidth: SCHEMA_FULL_WIDTH })
+    }
   })
 
   it("lays Preview out as building, the schema's pane kept open and read only, the palette's components disabled and no properties panel", () => {

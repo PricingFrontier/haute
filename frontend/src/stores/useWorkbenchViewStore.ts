@@ -47,7 +47,11 @@ export const ZOOM_STEP = 0.1
 export const MIN_ZOOM = 0.25
 export const MAX_ZOOM = 2
 const DEFAULT_PANEL_WIDTH = 360
-const DEFAULT_SCHEMA_WIDTH = 480
+/**
+ * The schema's pane with its fields at full stretch: the schema editor's 640px beside a
+ * 10px scrollbar and the pane's 4px drag handle. It opens at this width.
+ */
+export const SCHEMA_FULL_WIDTH = 640 + 10 + 4
 
 /** The sheet `pageId` names, or the first when it names none: none chosen yet, or one removed. */
 export function activePage(form: FormSpec, pageId: string | null): Page {
@@ -155,7 +159,7 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   movingSection: null,
   heldSize: null,
   panelWidth: DEFAULT_PANEL_WIDTH,
-  schemaWidth: DEFAULT_SCHEMA_WIDTH,
+  schemaWidth: SCHEMA_FULL_WIDTH,
   widgetPanes: {},
   copied: null,
   sheet: null,
