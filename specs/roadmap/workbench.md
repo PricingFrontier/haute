@@ -148,10 +148,12 @@ digest, checked the same way, and the release that runs recorded. Rollouts take 
 maintenance window: the old revision stops, the migrations run, the new revision starts, and
 no traffic is split; a new revision that fails to start or fails its check after the
 migrations is replaced by the previous release, started again on the migrated schema, which
-the migrations of WB-10 keep it able to read and write, and the run fails. The host step is
-small, and the project's IT team provides what it deploys onto (the Container App, the
-registry, the identities and the database): it publishes, rolls the environment to the
-release, waits until the release runs and reports it, and creates nothing. Azure Container
+the migrations of WB-10 keep it able to read and write, and the run fails; after a migration
+that names itself the oldest schema the previous release refuses that schema, so the run
+fails with the app stopped, naming the copy of the database WB-10 keeps to restore. The
+host step is small, and the project's IT team provides what it deploys onto (the Container
+App, the registry, the identities and the database): it publishes, rolls the environment to
+the release, waits until the release runs and reports it, and creates nothing. Azure Container
 Apps first; other hosts follow with the same commands.
 
 **Acceptance:** A project initialised by `haute init --workbench` for Azure Container Apps
@@ -164,7 +166,8 @@ nothing; a request to the hosted app without sign-in is refused; impact reports 
 a premium inside a response table; the first release, onto an empty database with no
 production app, reports that there is no baseline and still waits for approval; a candidate
 that fails after the migrations leaves the previous release running on the migrated schema
-and the run failed.
+and the run failed, or, after a migration naming itself the oldest schema, the app stopped,
+the run failed and the copy to restore named.
 
 **Dependencies:** WB-10 (the store and its migrations), WB-11 (the export
 the app's tests make, once its formats are decided) and WB-12 (the test quotes). The Azure
@@ -279,16 +282,21 @@ insert-if-absent. The deploy's migrate step runs `haute app migrate` under an id
 owns the schema, before the release rolls out, while the app's own identity reads and writes
 data only. A release's migrations keep the previous release's reads and writes working (a
 column or table added, nullable or with a default, no constraint the previous release's
-writes would break, nothing dropped), save one that names itself the oldest schema, as the
-third and WB-30's do, which the previous release refuses outright; and each records the
-oldest Haute that can still use the database; that is proved by running the previous release's store tests against the
+writes would break, nothing dropped), and each records the oldest Haute that can still use
+the database; that is proved by running the previous release's store tests against the
 schema the migrations leave, so the previous release can be started again after a failed
-rollout; removing a column is a step of its own after the release that stops using it.
+rollout; removing a column is a step of its own after the release that stops using it. A
+migration after which the previous release cannot read what the next saves, as the third
+and WB-30's, names itself the oldest schema instead, so the previous release refuses the
+database naming the upgrade; the deploy keeps a copy of the database from before such a
+migration, and rolling back past it is restoring that copy.
 
 **Acceptance:** The same store tests pass against SQLite and the server engine; a deploy
 migrates IT's instance under the schema's identity before the release starts, and the app's
 identity cannot change the schema; the previous release's store tests pass against the
-schema a candidate's migrations leave, and the previous release starts on it; no connection
+schema a candidate's migrations leave, and the previous release starts on it, save after a
+migration naming itself the oldest schema, when it refuses the schema naming the upgrade
+and restoring the copy taken before the migration starts it again; no connection
 value appears in the form file, `haute.toml`, an API response or a log.
 
 **Dependencies:** The SQL instance and its identities, provided by the project's IT team,
@@ -478,10 +486,11 @@ groups the options offered on one submission.
 
 **Plan:** `quote_details` gains `option`, an Integer the app sets as it sets `reference`
 (no typing, no rules, no default), added after `is_renewal`, so a form saved before it
-takes it on as `is_renewal` was taken on. A quote's reference and option are held on
-`haute_quotes`, one row a quote, unique together, and each revision's details row keeps
-them as written. A new quote, a Duplicate and a Renew take the next reference and option 1
-at their first save, as now. Create alternative, from any option of a reference, takes
+takes it on as `is_renewal` was taken on. An app quote's reference and option are held on
+`haute_quotes`, unique together where set, and each revision's details row keeps them as
+written; a quote the store saves alone, without details, holds neither. A new quote, a
+Duplicate and a Renew take the next reference and option 1 at their first save, as now.
+Create alternative, from any option of a reference, takes
 that reference and its next option, from a counter row for the reference updated as
 `_next_reference` updates the quotes' counter, in the transaction that writes the quote:
 two alternatives saved at once take two options, and a save repeated with its operation
@@ -491,8 +500,9 @@ its history, its related quotes and the messages naming it show `Q-000123/2`, op
 page cursor carries all three; a search for `Q-000123` finds every option of it, and one
 for `Q-000123/2` that option alone; a quote's address stays its id.
 
-The migration fills `haute_quotes`' reference from each quote's details and its option
-with 1, gives the details rows option 1, and names itself the oldest schema, as the third
+The migration gives each app quote the reference of its newest details row and option 1,
+leaves both empty on a quote without details, gives the details rows option 1, and names
+itself the oldest schema, as the third
 does for `is_renewal`: the forms saved after it hold columns an earlier Haute refuses, so
 that Haute refuses the database rather than the quotes, and rolling back past it means
 restoring the database. Revisions, forms and stored requests and responses stay as
@@ -513,66 +523,85 @@ does not take the identity; the schema names the clash among its problems, `haut
 build` and the deploy refuse while it stands, and renaming the column, whose values are
 kept by its id, clears it at the next save.
 
+A request and a frame differ in shape. A request's tables hold their own columns, the
+identity in `quote_details` alone, and the request the app builds holds it whatever the
+sheets hide; `null_quote`, the sample and the deploy's request schema follow the
+request's shape. A request holding either column in another table is refused naming the
+spot, and an option below 1 is refused as a value that does not fit its column is.
 `read_quote`, which reads the request in deployed scoring and the app's pricing and the
-sample in the editor, Preview and generated code, puts the quote's `quote_details`
+sample in the editor, Preview and generated code, then puts the quote's `quote_details`
 reference and option on every row of every other table's frame: typed nulls when the quote
-holds none, and no rows for a many-row table without any. The request holds them whatever
-the sheets hide, as the app sets them. A request holding either in a table other than
-`quote_details` is refused naming the spot, and an option below 1 is refused as a value
-that does not fit its column is. A pipeline need not carry them through to its outputs:
-where the response is made from the Workbench Output's tables (`as_response`) the request
-is at hand too, in deployed scoring, which the app's pricing uses, and in `Pipeline.run`
-and `score`, and there every output row takes the quote's identity over whatever the
-pipeline's frame held in those columns. In the editor and Preview they are blank, as the
-Output fills a column its frame lacks. The price never depends on them: a difference in
-them alone is not a price that moved, and the docs say a rule never reads them.
+holds none, and no rows for a many-row table without any.
+
+A pipeline need not carry them through to its outputs. The Workbench Output's tables hold
+the two columns as typed nulls whatever the pipeline's frames hold in them, so the editor
+and Preview show them blank; where the response is made from those tables (`as_response`),
+in deployed scoring, which the app's pricing uses, and in `Pipeline.run` and `score`, every
+row takes the identity of the run's `quote_details` frame: the request's in deployed
+scoring, the source's in `run`, the frame given in `score`, and blank when that port is
+unconnected. The price never depends on them: a difference in them alone is not a price
+that moved, and the docs say a rule never reads them.
 
 A new quote is priced before it takes its reference, so its first revision's stored
 response holds blank identity; read out of the store, its rows take their quote's. The
 revision is not carried, as a quote is priced before its next revision exists; an export
 keys a revision's rows by reference, option and revision (WB-11).
 
-Two schema tables joined on their own key would carry the identity twice
-(`reference_right`, `option_right`), and a selection by type takes `option` with the other
-Integers. Edge Join and the step editor's join add the identity columns to the keys given
-whenever both sides hold them, so each appears once and rows of two quotes never meet; the
-docs say so, and that a selection by type takes them. A project's pipeline meets the
-columns at its next save, and its previews show any step they change.
+Joins are unchanged. Two schema tables joined on their own key, by Edge Join or the step
+editor's join, keep the right side's identity as `reference_right` and `option_right`, and
+joining a third schema table on after that is refused by Polars, `reference_right` being
+there already; a selection by type takes `option` with the other Integers. The docs show
+the right side's two columns dropped before a further join, never joined on, as they are
+blank before a quote's first save and a blank key matches nothing. A project's pipeline
+meets the columns at its next save, and its previews show any step they stop.
 
 **Acceptance:** Create alternative on `Q-000123/1` saves `Q-000123/2`, and on `/2` saves
 `/3`; a Duplicate and a Renew save new references at `/1`; two alternatives saved at once
 take two options, a save repeated with its operation key answers the option it took, and a
 later save keeps it. Ordered by reference, `/2` comes before `/10` across pages, and a
 search for `Q-000123/2` finds that option alone. A database at the previous schema holding
-quotes of several revisions migrates with every quote at option 1 and its reference
-unchanged, and a Haute at the previous schema then refuses it naming the upgrade. A form
+app quotes of several revisions and a quote the store saved alone migrates with every app
+quote at option 1 and its reference unchanged, the other holding neither, and a Haute at
+the previous schema then refuses it naming the upgrade; afterwards the store saves a quote
+alone, and the app a new one, as before. A form
 saved before this opens with `option` last in `quote_details` and the identity leading
 every other table, an index after it, its sample and fields unchanged; a table with its
 own `option` column keeps it and its values, the clash is named and `haute app build`
 refuses, and renaming the column clears it with its values kept. An app quote's
 `coverage` frame holds its reference and option on every row, in deployed scoring and in
 `Pipeline.run`; a Workbench Output many-row table's rows hold them in the response though
-the pipeline's frame does not; in Preview both are blank and output rows still line up
-with the grid's rows by the table's own key. A quote's first priced save stores blank
-identity, and that revision reopened and read out gives its rows the quote's. A request
-with `reference` in `coverage`, or an option of 0, is refused naming the spot. An Edge
-Join of `coverage` and `vehicles` on `peril` gives one `reference` and one `option`.
+the pipeline's frame does not, and `score` with `quote_details` unconnected answers them
+blank; in Preview both are blank, though the pipeline's frame holds values in them, and
+output rows still line up with the grid's rows by the table's own key. A quote's first
+priced save stores blank identity, and that revision reopened and read out gives its rows
+the quote's. A request with `reference` in `coverage`, or an option of 0, is refused
+naming the spot, while Preview with no sample and the deploy's request schema and dry run
+hold the identity in `quote_details` alone. An Edge Join and a step editor join of
+`coverage` and `vehicles` on `peril` keep `reference_right` and `option_right`; joining
+`drivers` on after that is refused naming `reference_right`; and the docs' pattern,
+dropping them first, gives the same rows and price before and after the quote's first
+save.
 
 **Dependencies:** None. WB-11's exports key their rows by what this carries; WB-10's
 migrations keep the previous release working save for those, like this one, that name
-themselves the oldest schema.
+themselves the oldest schema, after which WB-08 rolls back by a restore.
 
 **Evidence:** `src/haute/_quote_store/_book.py::QuoteBook._create` (every new quote takes
 `_next_reference`, whatever its source's relation) and `::_sort_key`, `::_search_filter`
 (the reference alone); `src/haute/_quote_store/_tables.py::QUOTES` and `::QUOTE_DETAILS`
 (the reference per revision, none on the quote, nothing unique);
+`tests/test_quote_book.py::test_a_quote_the_store_saved_alone_has_no_details_and_is_not_listed`
+(a quote without details);
 `src/haute/_workbench_form.py::QUOTE_DETAILS_COLUMNS` and
 `::FormSpec._brings_quote_details_up_to_date` (newer columns appended);
 `src/haute/_workbench_app_quotes.py::quote_router` (`create_quote` prices before
 `book.create` takes the reference); `src/haute/_workbench_tables.py::quote_request` (the
 cells the sheets hide left out); `src/haute/_workbench_input.py::read_quote` (each table's
-frame holds its own columns alone) and `::workbench_request_frames` (one quote per
-request); `src/haute/_workbench_output.py::fill_workbench_tables` and `::as_response`;
-`src/haute/_edge_join.py` (overlapping columns kept with a suffix);
+frame holds its own columns alone), `::workbench_request_frames` (one quote per request)
+and `::null_quote` (every declared column of every table);
+`src/haute/_workbench_output.py::fill_workbench_tables` (a typed column the frame holds
+kept) and `::as_response`; `src/haute/pipeline.py::Pipeline.score` (frames seeded on the
+connected ports alone); `src/haute/_edge_join.py` (overlapping columns kept with a suffix;
+Polars 2.0 refuses a second join that would repeat `reference_right`);
 `frontend/src/utils/sheetValues.ts::pricedRows` (output rows lined up by the key columns);
 `frontend/src/utils/workbenchForm.ts::moveSchemaColumn` (the index first in its table).
