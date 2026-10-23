@@ -81,7 +81,7 @@ export default function HistoryPanel() {
       maxWidth={maxWidth}
       testId="quote-history"
       title="History"
-      subtitle={<span className="text-[11px]" style={{ color: "var(--text-muted)" }}>{quote.reference}</span>}
+      subtitle={<span className="text-[11px]" style={{ color: "var(--text-muted)" }}>{quote.label}</span>}
       icon={<History size={14} style={{ color: "var(--accent)" }} />}
       onClose={() => setHistoryOpen(false)}
     >
@@ -102,7 +102,7 @@ export default function HistoryPanel() {
                     <li>
                       Made as {RELATION[history.source.relation]} of{" "}
                       <a href={revisionPath(history.source.id, history.source.revision)} onClick={(event) => followLink(event, revisionPath(history.source?.id ?? "", history.source?.revision ?? 1))} style={linkStyle}>
-                        {history.source.reference}
+                        {history.source.label}
                       </a>{" "}
                       revision {history.source.revision}
                     </li>
@@ -110,7 +110,7 @@ export default function HistoryPanel() {
                   {history.derived.map((made) => (
                     <li key={made.id}>
                       <a href={quotePath(made.id)} onClick={(event) => followLink(event, quotePath(made.id))} style={linkStyle}>
-                        {made.reference}
+                        {made.label}
                       </a>{" "}
                       <span style={{ color: "var(--text-secondary)" }}>
                         {RELATION[made.relation]} from revision {made.revision}

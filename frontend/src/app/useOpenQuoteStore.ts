@@ -1,12 +1,12 @@
 /**
- * The quote open in the underwriter app (specs/workbench): a saved quote at its newest
- * revision or an earlier one, or a new quote not yet saved, perhaps made from another's
- * revision; its values on the sheets through Preview's store, read only while the quote may
- * not change; its saves and changes, each over the version the values were opened or saved
- * at (`base`), a change's details taken onto the sheets, and each answer the open quote's
- * alone, dropped when another was opened meanwhile; the values kept in this browser while
- * they are not saved; and what a save or change that could not be made offers instead. A
- * renewal opens with `is_renewal` ticked.
+ * The quote open in the underwriter app (specs/workbench): a quote at its newest revision or
+ * an earlier one, a new one made, with its reference and option, as the underwriter asks for
+ * it, perhaps from another's revision; its values on the sheets through Preview's store,
+ * read only while the quote may not change; its saves and changes, each over the version the
+ * values were opened or saved at (`base`), a change's details taken onto the sheets, and
+ * each answer the open quote's alone, dropped when another was opened meanwhile; the values
+ * kept in this browser while they are not saved; and what a save or change that could not be
+ * made offers instead. A renewal is made with `is_renewal` ticked.
  */
 import { create } from "zustand"
 import {
@@ -28,15 +28,14 @@ import { newQuoteValues } from "../utils/sheetValues"
 import { quoteEligible } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, type SampleRow } from "../utils/workbenchForm"
 import { latest } from "../utils/latest"
-import { basisOf, cellPlaces, clearDraft, draftKey, lostPlaces, onSheets, operationKey, readDraft, releaseMoved, savedPrice, valuesKey, writeDraft, type Draft, type PendingWrite, type QuoteWrite, type Values } from "./quoteValues"
+import { basisOf, cellPlaces, clearDraft, creationKey, draftKey, heldOperation, lostPlaces, onSheets, operationKey, readDraft, releaseMoved, releaseOperation, savedPrice, valuesKey, writeDraft, type Draft, type PendingWrite, type QuoteWrite, type Values } from "./quoteValues"
 import useAppStore from "./useAppStore"
 
-/** A new quote's origin: the quote and revision it is made from, and how. */
-export interface QuoteSource {
+/** What a new quote is asked to be made from: a quote's revision, and how. */
+export interface QuoteOrigin {
   quoteId: string
   revision: number
   relation: QuoteRelation
-  reference: string
 }
 
 /** A renewal's values: those carried from its source, with `is_renewal` ticked in its details. */
@@ -51,24 +50,22 @@ export type ReadOnlyReason = "final" | "archived" | "past" | "older-sheets" | "r
 interface OpenQuoteState {
   status: "idle" | "loading" | "ready" | "error"
   loadError: string | null
-  /** The saved quote; null for a new one. */
+  /** The quote; null until it is read or made. */
   quote: WorkbenchAppQuote | null
-  /** The revision on the sheets; null for a new quote. */
+  /** The revision on the sheets; null until the quote is read or made. */
   revision: WorkbenchAppQuoteRevision | null
   /**
    * The quote's version the values on the sheets are edited over, which a save and a change
    * name: the newest revision as it was opened, saved or written by a change made here.
    * Anything else that refreshes the quote, a note, leaves it, so a save over a quote moved
-   * on meanwhile is refused rather than written over it. Null for a new quote, or one shown
-   * at an earlier revision.
+   * on meanwhile is refused rather than written over it. Null for a quote shown at an earlier
+   * revision.
    */
   base: number | null
   /** The revision on the sheets is not the newest. */
   past: boolean
   /** The sheets the revision was keyed into, installed in place of the release's. */
   olderSheets: FormSpec | null
-  /** What a new quote is made from. */
-  source: QuoteSource | null
   /** What the values were when they were opened or last saved. */
   baseline: string
   saving: boolean
@@ -91,9 +88,13 @@ interface OpenQuoteState {
   pending: PendingWrite | null
   history: WorkbenchAppQuoteHistoryResponse | null
   historyOpen: boolean
-  openNew: (from: { quoteId: string; revision: number; relation: QuoteRelation } | null) => Promise<void>
+  /**
+   * Make a new quote, as the underwriter asks for it, from `from` or holding its columns'
+   * defaults, and open it: the quote it made, or null when it made none.
+   */
+  openNew: (from: QuoteOrigin | null) => Promise<WorkbenchAppQuote | null>
   openQuote: (id: string, revision: number | null) => Promise<void>
-  /** Save the values on the sheets, once their pricing settles, as the quote's next revision or a new quote. */
+  /** Save the values on the sheets, once their pricing settles, as the quote's next revision. */
   save: () => Promise<WorkbenchAppQuote | null>
   /** Save the values on the sheets as a new quote made from the quote they were opened as. */
   saveAsNew: () => Promise<WorkbenchAppQuote | null>
@@ -127,7 +128,6 @@ const CLOSED: Closed = {
   base: null,
   past: false,
   olderSheets: null,
-  source: null,
   baseline: valuesKey({}),
   saving: false,
   changing: false,
@@ -157,18 +157,16 @@ export const busy = (state: Pick<OpenQuoteState, "saving" | "changing">): boolea
 export const canEdit = (): boolean => useAppStore.getState().release?.can_edit ?? true
 
 /**
- * Which new quote the open one is: a plain one, or one made from a quote's revision as a
- * duplicate, a renewal or an alternative, each a quote of its own, so neither its draft nor
- * a write held after a lost answer is taken for another's.
+ * What a new quote asked for is: a plain one, or one made from a quote's revision as a
+ * duplicate, a renewal or an alternative, so the key held for one is not taken for another's.
  */
-const newQuoteName = (source: QuoteSource | null): string =>
-  source === null ? "new" : `new-from-${source.quoteId}-${source.revision}-${source.relation}`
+const askedFor = (from: QuoteOrigin | null): string => (from === null ? "new" : `new-from-${from.quoteId}-${from.revision}-${from.relation}`)
 
-/** The open quote's draft key in this browser. */
-export function openDraftKey(state: Pick<OpenQuoteState, "quote" | "source">): string | null {
+/** The open quote's draft key in this browser; null with no quote open. */
+export function openDraftKey(state: Pick<OpenQuoteState, "quote">): string | null {
   const { release } = useAppStore.getState()
-  if (release === null) return null
-  return draftKey(release.pipeline_name || "app", release.principal, state.quote?.id ?? newQuoteName(state.source))
+  if (release === null || state.quote === null) return null
+  return draftKey(release.pipeline_name || "app", release.principal, state.quote.id)
 }
 
 /** Put `form` on the sheets, the release's or a quote's older ones. */
@@ -368,7 +366,6 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       base: answer.revision.number,
       past: false,
       olderSheets: null,
-      source: null,
       baseline: valuesKey(answer.revision.values as Values),
       pending: null,
       recovered: recovered === null ? null : { ...recovered, pending: null },
@@ -449,7 +446,6 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       base: answer.revision.number,
       past: false,
       olderSheets: null,
-      source: null,
       baseline: valuesKey(values),
       moved: answer.moved,
       conflict: null,
@@ -485,35 +481,49 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
 
     openNew: async (from) => {
       const attempt = loads.take()
-      const { form } = useAppStore.getState()
-      if (form === null) return
+      const { form, revision, release } = useAppStore.getState()
+      if (form === null || release === null) return null
       installSheets(form)
-      // A new quote starts with its columns' defaults, which are not typing: left as it
-      // opened, it keeps no draft.
-      const values = from === null ? (structuredClone(newQuoteValues(form.schema)) as Values) : {}
-      useWorkbenchPreviewStore.getState().open(values, null, !canEdit())
-      set({ ...CLOSED, status: from === null ? "ready" : "loading", loadError: null, baseline: valuesKey(values) })
-      if (from === null) {
-        offerDraft()
-        return
+      // Until it is made, the sheets hold nothing and take no typing.
+      useWorkbenchPreviewStore.getState().open({}, null, true)
+      if (!canEdit()) {
+        set({ ...CLOSED, status: "error", loadError: "Making a quote needs the app's edit role." })
+        return null
       }
+      set({ ...CLOSED, status: "loading", loadError: null })
+      // Held in this tab until the answer comes, so a reload asks with it again and the
+      // quote is made once.
+      const held = creationKey(release.pipeline_name || "app", release.principal, askedFor(from))
       try {
-        const [origin, carried] = await Promise.all([openAppQuote(from.quoteId, from.revision), carryAppQuote(from.quoteId, from.revision)])
-        if (!loads.is(attempt)) return
-        // The values carried, without the details the app set for the source, are the new
-        // quote as it opens: left as they are, it keeps no draft and asks nothing on leaving.
-        const carriedValues = carried.values as Values
-        const opened = from.relation === "renewal" ? asRenewal(carriedValues) : carriedValues
-        useWorkbenchPreviewStore.getState().open(opened, null, !canEdit())
-        set({
-          status: "ready",
-          source: { ...from, reference: origin.quote.reference },
-          dropped: carried.dropped,
-          baseline: valuesKey(opened),
-        })
-        offerDraft()
+        // A new quote starts with its columns' defaults, one made from another with that
+        // revision's values, without the details the app set for it, a renewal ticked as one.
+        let values = structuredClone(newQuoteValues(form.schema)) as Values
+        let dropped: string[] = []
+        if (from !== null) {
+          const carried = await carryAppQuote(from.quoteId, from.revision)
+          if (!loads.is(attempt)) return null
+          values = from.relation === "renewal" ? asRenewal(carried.values as Values) : (carried.values as Values)
+          dropped = carried.dropped
+        }
+        const body = { operation: heldOperation(held), form_revision: revision, release: release.id, values, shown: null }
+        const source = from === null ? null : { quote_id: from.quoteId, revision: from.revision, relation: from.relation }
+        let answer: WorkbenchAppQuoteResponse
+        try {
+          answer = await createAppQuote(body, source)
+        } catch (error: unknown) {
+          // Refused, it was not made and never will be: the next asks anew. Unanswered, it
+          // may have been: the key stays held.
+          if (refused(error)) releaseOperation(held)
+          throw error
+        }
+        releaseOperation(held)
+        if (!loads.is(attempt)) return answer.quote
+        show(answer, false)
+        set({ status: "ready", dropped })
+        return answer.quote
       } catch (error: unknown) {
         if (loads.is(attempt)) set({ status: "error", loadError: apiErrorMessage(error) })
+        return null
       }
     },
 
@@ -537,12 +547,9 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     save: async () => {
       if (get().status !== "ready" || busy(get()) || readOnlyReason(get()) !== null) return null
       return commit(() => {
-        const { quote, source, base } = get()
         // Read only by now, or shown at an earlier revision: nothing is saved.
-        if (readOnlyReason(get()) !== null || (quote !== null && base === null)) return null
-        if (quote !== null) return nextRevision()
-        const from = source === null ? null : { quote_id: source.quoteId, revision: source.revision, relation: source.relation }
-        return prepare(newQuoteName(source), (body) => ({ kind: "create", body, source: from }))
+        if (readOnlyReason(get()) !== null) return null
+        return nextRevision()
       })
     },
 
@@ -561,7 +568,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       const { quote, base } = get()
       if (quote === null || busy(get()) || !canEdit()) return null
       if (asked !== undefined && asked.id !== quote.id) {
-        set({ error: `${asked.reference} is no longer the quote open, so it was not changed.` })
+        set({ error: `${asked.label} is no longer the quote open, so it was not changed.` })
         return null
       }
       const session = loads.current()

@@ -236,6 +236,48 @@ export function operationKey(): string {
   return `save-${random}`.slice(0, 64)
 }
 
+// ── A quote asked for ────────────────────────────────────────────────────
+
+const CREATING_PREFIX = "haute-app-creating"
+
+/**
+ * Where the operation key of a quote asked for is held in this tab until its answer comes:
+ * one per app, person and what was asked, a new quote or one made from a quote's revision.
+ */
+export const creationKey = (app: string, principal: string, asked: string): string => `${CREATING_PREFIX}:${app}:${principal}:${asked}`
+
+/**
+ * The operation key held under `key`, or a new one held there: a reload before the answer
+ * came asks again with the same key, so the quote is made once. A tab that keeps nothing
+ * asks with a new key each time.
+ */
+export function heldOperation(key: string): string {
+  try {
+    const held = window.sessionStorage.getItem(key)
+    if (held !== null) return held
+    const operation = operationKey()
+    window.sessionStorage.setItem(key, operation)
+    return operation
+  } catch {
+    return operationKey()
+  }
+}
+
+/** Let go of the key held under `key`: its quote was made, or refused, and the next is asked for anew. */
+export function releaseOperation(key: string): void {
+  try {
+    window.sessionStorage.removeItem(key)
+  } catch {
+    // Nothing held, nothing to let go.
+  }
+}
+
+/**
+ * A quote's reference and option as the app shows them, `Q-000123/2`, as an event names
+ * them; an event written before options names none, every quote then being option 1.
+ */
+const labelOf = (reference: string, option: unknown): string => `${reference}/${typeof option === "number" ? option : 1}`
+
 // ── History ──────────────────────────────────────────────────────────────
 
 /** How a quote was made from another, in a sentence. */
@@ -247,9 +289,9 @@ export function eventText(event: WorkbenchAppQuoteEvent): string {
   const text = (key: string) => (typeof detail[key] === "string" ? (detail[key] as string) : "")
   switch (event.kind) {
     case "created": {
-      const source = detail.source as { reference?: string; revision?: number; relation?: keyof typeof RELATION_TEXT } | undefined
+      const source = detail.source as { reference?: string; option?: number; revision?: number; relation?: keyof typeof RELATION_TEXT } | undefined
       return source?.reference
-        ? `made it as ${RELATION_TEXT[source.relation ?? "duplicate"]} of ${source.reference} revision ${source.revision ?? "?"}`
+        ? `made it as ${RELATION_TEXT[source.relation ?? "duplicate"]} of ${labelOf(source.reference, source.option)} revision ${source.revision ?? "?"}`
         : "made it"
     }
     case "saved":
@@ -267,6 +309,6 @@ export function eventText(event: WorkbenchAppQuoteEvent): string {
     case "reopened":
       return `reopened final revision ${typeof detail.final_revision === "number" ? detail.final_revision : "?"}: ${text("reason")}`
     case "derived":
-      return `made ${text("reference")} from revision ${event.revision ?? "?"}, as ${RELATION_TEXT[(detail.relation as keyof typeof RELATION_TEXT) ?? "duplicate"]}`
+      return `made ${labelOf(text("reference"), detail.option)} from revision ${event.revision ?? "?"}, as ${RELATION_TEXT[(detail.relation as keyof typeof RELATION_TEXT) ?? "duplicate"]}`
   }
 }

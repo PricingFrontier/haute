@@ -62,14 +62,14 @@ describe("QuotesPage", () => {
     vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote({ details, stage: "priced" }), appQuote({ id: "q2", reference: "Q-000002", title: "CA", assignee: "jo@example.com", stage: "draft" })]))
     show()
 
-    const row = await screen.findByTestId("quote-row-Q-000001")
+    const row = await screen.findByTestId("quote-row-Q-000001/1")
     expect(within(row).getByText("Fleet")).toBeInTheDocument()
     expect(within(row).getByText("Acme")).toBeInTheDocument()
     expect(within(row).getByText("Marsh")).toBeInTheDocument()
     expect(within(row).getByText(/2026/)).not.toHaveTextContent("2026-11-01")
     expect(within(row).getByText("You")).toBeInTheDocument()
     expect(within(row).getByTestId("stage-priced")).toBeInTheDocument()
-    expect(within(screen.getByTestId("quote-row-Q-000002")).getByText("jo@example.com")).toBeInTheDocument()
+    expect(within(screen.getByTestId("quote-row-Q-000002/1")).getByText("jo@example.com")).toBeInTheDocument()
     for (const header of ["Ref", "Quote", "Insured", "Placing broker", "Inception date", "Stage", "With", "Saved"]) {
       expect(screen.getByRole("columnheader", { name: header })).toBeInTheDocument()
     }
@@ -133,7 +133,7 @@ describe("QuotesPage", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("The quotes could not be read: The store is down")
     fireEvent.click(screen.getByRole("button", { name: "Retry" }))
-    expect(await screen.findByTestId("quote-row-Q-000001")).toBeInTheDocument()
+    expect(await screen.findByTestId("quote-row-Q-000001/1")).toBeInTheDocument()
   })
 
   it("loads the next page on Load more", async () => {
@@ -142,7 +142,7 @@ describe("QuotesPage", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Load more" }))
 
-    expect(await screen.findByTestId("quote-row-Q-000002")).toBeInTheDocument()
+    expect(await screen.findByTestId("quote-row-Q-000002/1")).toBeInTheDocument()
     expect(fetchAppQuotes).toHaveBeenLastCalledWith(MINE, "next-1")
     expect(screen.getByText("2 quotes")).toBeInTheDocument()
   })
@@ -151,10 +151,10 @@ describe("QuotesPage", () => {
     vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote({ latest: 3 })]))
     show()
 
-    fireEvent.click(await screen.findByTestId("quote-row-Q-000001"))
+    fireEvent.click(await screen.findByTestId("quote-row-Q-000001/1"))
     expect(window.location.pathname).toBe("/quotes/q1")
     await navigate("/", { force: true })
-    fireEvent.click(screen.getByRole("button", { name: "Duplicate Q-000001" }))
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate Q-000001/1" }))
     expect(`${window.location.pathname}${window.location.search}`).toBe("/quotes/new?from=q1&revision=3&as=duplicate")
   })
 
@@ -163,7 +163,7 @@ describe("QuotesPage", () => {
     vi.mocked(changeAppQuote).mockResolvedValueOnce({ quote: appQuote({ archived: true, archived_at: "2026-10-12T10:00:00+00:00", latest: 2 }), revision: null }).mockResolvedValueOnce({ quote: appQuote({ latest: 3 }), revision: null })
     show()
 
-    fireEvent.click(await screen.findByRole("button", { name: "Archive Q-000001" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Archive Q-000001/1" }))
     fireEvent.click(await screen.findByRole("button", { name: "Undo" }))
 
     await vi.waitFor(() => expect(changeAppQuote).toHaveBeenCalledTimes(2))
@@ -177,7 +177,7 @@ describe("QuotesPage", () => {
     vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote()]))
     vi.mocked(changeAppQuote).mockResolvedValueOnce({ quote: appQuote({ archived: true, archived_at: "2026-10-12T10:00:00+00:00", latest: 2 }), revision: null }).mockResolvedValueOnce({ quote: appQuote({ latest: 3 }), revision: null })
     const view = show()
-    fireEvent.click(await screen.findByRole("button", { name: "Archive Q-000001" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Archive Q-000001/1" }))
     const undo = await screen.findByRole("button", { name: "Undo" })
 
     const team = quotesQueryOf("?view=team")
@@ -199,9 +199,9 @@ describe("QuotesPage", () => {
     vi.mocked(changeAppQuote).mockRejectedValue(new ApiError("HTTP 409", 409, "moved", {}, { message: "Q-000001 has changed" }))
     show()
 
-    fireEvent.click(await screen.findByRole("button", { name: "Archive Q-000001" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Archive Q-000001/1" }))
 
-    expect(await screen.findByText("Could not archive Q-000001: Q-000001 has changed")).toBeInTheDocument()
+    expect(await screen.findByText("Could not archive Q-000001/1: Q-000001 has changed")).toBeInTheDocument()
   })
 
   it("restores an archived quote from the archive", async () => {
@@ -210,10 +210,10 @@ describe("QuotesPage", () => {
     vi.mocked(changeAppQuote).mockResolvedValue({ quote: appQuote({ latest: 2 }), revision: null })
     show(quotesQueryOf("?view=archived"))
 
-    fireEvent.click(await screen.findByRole("button", { name: "Restore Q-000001" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Restore Q-000001/1" }))
 
     await vi.waitFor(() => expect(changeAppQuote).toHaveBeenCalledWith("q1", "restore", 1, {}))
-    expect(await screen.findByText("Restored Q-000001")).toBeInTheDocument()
+    expect(await screen.findByText("Restored Q-000001/1")).toBeInTheDocument()
   })
 
   it("focuses the search on / and starts a new quote on N, but not while typing", async () => {
@@ -234,11 +234,11 @@ describe("QuotesPage", () => {
     vi.mocked(fetchAppQuotes).mockResolvedValueOnce(page([appQuote()])).mockResolvedValueOnce(page([]))
     const view = show()
 
-    await screen.findByTestId("quote-row-Q-000001")
+    await screen.findByTestId("quote-row-Q-000001/1")
     expect(screen.queryByTestId("new-quote")).toBeNull()
-    expect(screen.queryByRole("button", { name: "Archive Q-000001" })).toBeNull()
-    expect(screen.queryByRole("button", { name: "Duplicate Q-000001" })).toBeNull()
-    expect(screen.getByRole("button", { name: "Open Q-000001" })).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Archive Q-000001/1" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Duplicate Q-000001/1" })).toBeNull()
+    expect(screen.getByRole("button", { name: "Open Q-000001/1" })).toBeInTheDocument()
     fireEvent.keyDown(document.body, { key: "n" })
     expect(window.location.pathname).toBe("/")
 

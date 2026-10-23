@@ -100,7 +100,9 @@ describe("eventText", () => {
 
   it.each([
     [event("created"), "made it"],
-    [event("created", { source: { reference: "Q-000001", revision: 2, relation: "renewal" } }), "made it as a renewal of Q-000001 revision 2"],
+    [event("created", { source: { reference: "Q-000001", option: 1, revision: 2, relation: "renewal" } }), "made it as a renewal of Q-000001/1 revision 2"],
+    // An event written before options names none: every quote was option 1.
+    [event("created", { source: { reference: "Q-000001", revision: 2, relation: "duplicate" } }), "made it as a duplicate of Q-000001/1 revision 2"],
     [event("saved", { priced: true }), "saved revision 2, priced"],
     [event("saved", { priced: false }), "saved revision 2, unpriced"],
     [event("assigned", { to: "jo" }), "assigned it to jo"],
@@ -110,7 +112,7 @@ describe("eventText", () => {
     [event("restored"), "restored it"],
     [event("finalised"), "marked revision 2 final"],
     [event("reopened", { reason: "Broker asked", final_revision: 2 }), "reopened final revision 2: Broker asked"],
-    [event("derived", { reference: "Q-000003", relation: "alternative" }), "made Q-000003 from revision 2, as an alternative"],
+    [event("derived", { reference: "Q-000001", option: 3, relation: "alternative" }), "made Q-000001/3 from revision 2, as an alternative"],
   ])("says what was done", (happened, said) => {
     expect(eventText(happened)).toBe(said)
   })

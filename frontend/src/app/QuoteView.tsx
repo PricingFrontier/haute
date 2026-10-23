@@ -1,6 +1,6 @@
 /**
  * A quote in the underwriter app (specs/workbench): the sheets under the quote's bar (back
- * to Quotes, its reference, name and stage, Save and Mark final or Reopen, a menu of what
+ * to Quotes, its reference and option, name and stage, Save and Mark final or Reopen, a menu of what
  * else it takes, History, the zoom, and why it has no price), a line of its revision, who
  * saved it, the release that priced it, where it came from and who it is with, and the
  * notices of anything that stands in the way. The quote is priced as it is typed. Values
@@ -38,7 +38,7 @@ import SheetCanvas from "../workbench/SheetCanvas"
 import AppHeader from "./AppHeader"
 import HistoryPanel from "./HistoryPanel"
 import { basisOf, fullTime, relativeTime, valuesKey } from "./quoteValues"
-import { followLink, navigate, newQuotePath, quotePath, revisionPath, routeOf, setLeaveGuard, type AppRoute } from "./route"
+import { followLink, navigate, newQuotePath, quotePath, revisionPath, setLeaveGuard, type AppRoute } from "./route"
 import { BUTTON, Menu, Notice, StageChip, type MenuItem } from "./ui"
 import useAppStore from "./useAppStore"
 import useOpenQuoteStore, { busy, canEdit, readOnlyReason } from "./useOpenQuoteStore"
@@ -50,23 +50,25 @@ const RELATION_LABEL = { duplicate: "Duplicate", renewal: "Renewal", alternative
 /** The quote_details column that names a quote, typed in the bar. */
 const NAME_COLUMN = "qd_quote_name"
 
-/** A quote just saved as new, on the sheets already: its address is moved to without opening it again. */
+/** A quote just made, on the sheets already: its address is moved to without opening it again. */
 let adopted: string | null = null
 
-/**
- * Save the open quote, and, for a new one, move to its own address once it has one: a save
- * that first repeats a create whose answer was lost makes the quote though the values typed
- * after may still be unsaved.
- */
+/** Save the open quote. */
 async function saveOpen(): Promise<void> {
-  const before = useOpenQuoteStore.getState().quote
   const saved = await useOpenQuoteStore.getState().save()
-  const made = useOpenQuoteStore.getState().quote
-  if (before === null && made !== null && routeOf(window.location).page === "new") {
-    adopted = made.id
-    await navigate(quotePath(made.id), { replace: true, force: true })
-  }
-  if (saved !== null) useToastStore.getState().addToast("success", `Saved ${saved.reference}, revision ${saved.latest}`)
+  if (saved !== null) useToastStore.getState().addToast("success", `Saved ${saved.label}, revision ${saved.latest}`)
+}
+
+/**
+ * Make the quote the page asks for, as the underwriter asked for it, and move to its own
+ * address once it has one, unless the page has moved on meanwhile.
+ */
+async function makeAsked(from: Extract<AppRoute, { page: "new" }>["from"]): Promise<void> {
+  const asked = window.location.href
+  const made = await useOpenQuoteStore.getState().openNew(from)
+  if (made === null || window.location.href !== asked) return
+  adopted = made.id
+  await navigate(quotePath(made.id), { replace: true, force: true })
 }
 
 /** Restore `archived`, as its archive left it: through the open quote while it is open, else on its own. */
@@ -79,7 +81,7 @@ async function undoArchive(archived: WorkbenchAppQuote): Promise<void> {
   try {
     await changeAppQuote(archived.id, "restore", archived.latest, {})
   } catch (reason: unknown) {
-    useToastStore.getState().addToast("error", `Could not restore ${archived.reference}: ${apiErrorMessage(reason)}`)
+    useToastStore.getState().addToast("error", `Could not restore ${archived.label}: ${apiErrorMessage(reason)}`)
   }
 }
 
@@ -89,7 +91,7 @@ async function saveOpenAsNew(): Promise<void> {
   if (quote === null) return
   adopted = quote.id
   await navigate(quotePath(quote.id), { force: true })
-  useToastStore.getState().addToast("success", `Saved as ${quote.reference}`)
+  useToastStore.getState().addToast("success", `Saved as ${quote.label}`)
 }
 
 export default function QuoteView({ route }: { route: QuoteRoute }) {
@@ -112,10 +114,10 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
     useQuestionStore.getState().answer(null)
     const open = useOpenQuoteStore.getState()
     if (route.page === "new") {
-      void open.openNew(route.from)
+      void makeAsked(route.from)
       return
     }
-    // Just saved as new: it is on the sheets already.
+    // Just made, or saved as new: it is on the sheets already.
     const justSaved = adopted === route.id && route.revision === null && open.quote?.id === route.id
     adopted = null
     if (!justSaved) void open.openQuote(route.id, route.revision)
@@ -231,7 +233,6 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   const revision = useOpenQuoteStore((s) => s.revision)
   const past = useOpenQuoteStore((s) => s.past)
   const olderSheets = useOpenQuoteStore((s) => s.olderSheets)
-  const source = useOpenQuoteStore((s) => s.source)
   const saving = useOpenQuoteStore((s) => s.saving)
   const working = useOpenQuoteStore(busy)
   const historyOpen = useOpenQuoteStore((s) => s.historyOpen)
@@ -274,7 +275,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   const finalBlock = !editor
     ? "Changing quotes needs the app's edit role"
     : quote === null
-      ? "Save the quote first"
+      ? "The quote is not open yet"
       : dirty
         ? "Save your changes first"
         : !quote.release || quote.stage === "draft"
@@ -288,29 +289,29 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   const markFinal = async () => {
     if (quote === null || revision === null) return
     const yes = await confirmed({
-      title: `Mark ${quote.reference} final?`,
+      title: `Mark ${quote.label} final?`,
       text: `The quote as revision ${revision.number} holds it is pinned as the final quotation, saved as revision ${revision.number + 1}. It cannot be saved over until someone reopens it, giving a reason; the final stays in its history.`,
       confirm: "Mark final",
     })
-    if (yes && (await change("final", { revision: revision.number }, quote)) !== null) addToast("success", `${quote.reference} is final`)
+    if (yes && (await change("final", { revision: revision.number }, quote)) !== null) addToast("success", `${quote.label} is final`)
   }
 
   const reopen = async () => {
     if (quote === null) return
     const answer = await useQuestionStore.getState().ask({
-      title: `Reopen ${quote.reference}?`,
+      title: `Reopen ${quote.label}?`,
       text: "Its final stays in its history; the next save is an amendment under the same reference.",
       confirm: "Reopen",
       reason: { label: "Why it is being reopened" },
     })
-    if (answer !== null && (await change("reopen", { reason: answer.reason }, quote)) !== null) addToast("success", `${quote.reference} is reopened`)
+    if (answer !== null && (await change("reopen", { reason: answer.reason }, quote)) !== null) addToast("success", `${quote.label} is reopened`)
   }
 
   const archive = async () => {
     if (quote === null) return
     const archived = await change("archive", {}, quote)
     if (archived === null) return
-    addToast("success", `Archived ${quote.reference}`, { label: "Undo", run: () => void undoArchive(archived) })
+    addToast("success", `Archived ${quote.label}`, { label: "Undo", run: () => void undoArchive(archived) })
   }
 
   const derive = (relation: "duplicate" | "renewal" | "alternative") => {
@@ -322,7 +323,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
     if (quote === null) return
     try {
       await navigator.clipboard.writeText(`${window.location.origin}${quotePath(quote.id)}`)
-      addToast("success", `Link to ${quote.reference} copied`)
+      addToast("success", `Link to ${quote.label} copied`)
     } catch {
       addToast("error", "This browser would not copy the link")
     }
@@ -353,7 +354,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
       <div className="flex min-w-[180px] max-w-[320px] flex-col gap-0.5" data-testid="quote-identity">
         <div className="flex items-center gap-1.5">
           <span className="font-mono text-[12px] font-semibold" style={{ color: "var(--text-accent)" }} data-testid="quote-reference">
-            {quote?.reference ?? "New quote"}
+            {quote?.label ?? "New quote"}
           </span>
           {quote !== null && <StageChip stage={quote.stage} />}
           {quote?.archived && <StageChip stage="archived" />}
@@ -366,7 +367,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
         <CommittedTextField
           aria-label="Quote name"
           value={typeof name === "string" ? name : ""}
-          placeholder={quote === null ? (source === null ? "Name this quote" : `${RELATION_LABEL[source.relation]} of ${source.reference}`) : quote.title}
+          placeholder={quote === null ? "Name this quote" : quote.title}
           disabled={!ready || closed}
           title="The quote's name, saved with it"
           onCommit={(text) => setCell(QUOTE_DETAILS_ID, 0, NAME_COLUMN, text.trim())}
@@ -412,7 +413,6 @@ function QuoteLine() {
   const loadPeople = useAppStore((s) => s.loadPeople)
   const quote = useOpenQuoteStore((s) => s.quote)
   const revision = useOpenQuoteStore((s) => s.revision)
-  const source = useOpenQuoteStore((s) => s.source)
   const working = useOpenQuoteStore(busy)
   const change = useOpenQuoteStore((s) => s.change)
 
@@ -426,7 +426,7 @@ function QuoteLine() {
     let assignee = to
     if (to === "") {
       const answer = await useQuestionStore.getState().ask({
-        title: `Assign ${quote.reference}`,
+        title: `Assign ${quote.label}`,
         text: "Name who the quote is with now, as the app shows who is signed in.",
         confirm: "Assign",
         reason: { label: "Their sign-in name" },
@@ -440,20 +440,7 @@ function QuoteLine() {
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-1.5 text-[11px]" style={{ borderBottom: "1px solid var(--border)" }} data-testid="quote-line">
-      {quote === null || revision === null ? (
-        <span style={muted}>
-          Not saved yet
-          {source !== null && (
-            <>
-              {" · "}
-              {RELATION_LABEL[source.relation]} of{" "}
-              <a href={revisionPath(source.quoteId, source.revision)} onClick={(event) => followLink(event, revisionPath(source.quoteId, source.revision))} style={{ color: "var(--text-accent)" }}>
-                {source.reference} revision {source.revision}
-              </a>
-            </>
-          )}
-        </span>
-      ) : (
+      {quote === null || revision === null ? null : (
         <>
           <span style={muted}>
             Revision {revision.number}
@@ -477,7 +464,7 @@ function QuoteLine() {
                 onClick={(event) => followLink(event, revisionPath(quote.source_quote_id ?? "", quote.source_revision ?? 1))}
                 style={{ color: "var(--text-accent)" }}
               >
-                {quote.source_reference} revision {quote.source_revision}
+                {quote.source_label} revision {quote.source_revision}
               </a>
             </span>
           )}

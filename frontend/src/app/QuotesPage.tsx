@@ -162,17 +162,17 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
     try {
       const { quote: archived } = await changeAppQuote(quote.id, "archive", quote.latest, {})
       void load(query, true)
-      addToast("success", `Archived ${quote.reference}`, {
+      addToast("success", `Archived ${quote.label}`, {
         label: "Undo",
         run: () => {
           // The list shown when Undo is pressed, which may be another than the one archived from.
           void changeAppQuote(archived.id, "restore", archived.latest, {})
             .then(() => useQuoteListStore.getState().reload())
-            .catch((reason: unknown) => addToast("error", `Could not restore ${quote.reference}: ${apiErrorMessage(reason)}`))
+            .catch((reason: unknown) => addToast("error", `Could not restore ${quote.label}: ${apiErrorMessage(reason)}`))
         },
       })
     } catch (reason: unknown) {
-      addToast("error", `Could not archive ${quote.reference}: ${apiErrorMessage(reason)}`)
+      addToast("error", `Could not archive ${quote.label}: ${apiErrorMessage(reason)}`)
     }
   }
 
@@ -180,9 +180,9 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
     try {
       await changeAppQuote(quote.id, "restore", quote.latest, {})
       void load(query, true)
-      addToast("success", `Restored ${quote.reference}`)
+      addToast("success", `Restored ${quote.label}`)
     } catch (reason: unknown) {
-      addToast("error", `Could not restore ${quote.reference}: ${apiErrorMessage(reason)}`)
+      addToast("error", `Could not restore ${quote.label}: ${apiErrorMessage(reason)}`)
     }
   }
 
@@ -343,7 +343,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                   <tr
                     key={quote.id}
                     tabIndex={0}
-                    data-testid={`quote-row-${quote.reference}`}
+                    data-testid={`quote-row-${quote.label}`}
                     onClick={() => void navigate(quotePath(quote.id))}
                     onKeyDown={(event) => onRowKey(event, quote)}
                     className="group/row h-7 cursor-pointer transition-colors outline-none hover:bg-[var(--bg-hover)] focus-visible:bg-[var(--bg-hover)]"
@@ -351,7 +351,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                   >
                     <td className="px-3 font-mono text-[11px]">
                       <a href={quotePath(quote.id)} onClick={(event) => { event.stopPropagation(); followLink(event, quotePath(quote.id)) }} style={{ color: "var(--text-accent)" }}>
-                        {quote.reference}
+                        {quote.label}
                       </a>
                     </td>
                     <td className="max-w-[280px] truncate px-2 font-medium" style={{ color: "var(--text-primary)" }} title={quote.title}>
@@ -376,7 +376,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                     </td>
                     <td className="px-2" onClick={(event) => event.stopPropagation()}>
                       <span className="flex justify-end gap-0.5 opacity-0 group-focus-within/row:opacity-100 group-hover/row:opacity-100">
-                        <button type="button" className={ICON_BUTTON} onClick={() => void navigate(quotePath(quote.id))} title={`Open ${quote.reference}`} aria-label={`Open ${quote.reference}`}>
+                        <button type="button" className={ICON_BUTTON} onClick={() => void navigate(quotePath(quote.id))} title={`Open ${quote.label}`} aria-label={`Open ${quote.label}`}>
                           <FolderOpen size={12} />
                         </button>
                         {editor && (
@@ -384,18 +384,18 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                           type="button"
                           className={ICON_BUTTON}
                           onClick={() => void navigate(newQuotePath({ quoteId: quote.id, revision: quote.latest, relation: "duplicate" }))}
-                          title={`Duplicate ${quote.reference} as a new quote`}
-                          aria-label={`Duplicate ${quote.reference}`}
+                          title={`Duplicate ${quote.label} as a new quote`}
+                          aria-label={`Duplicate ${quote.label}`}
                         >
                           <Copy size={12} />
                         </button>
                         )}
                         {!editor ? null : !quote.archived ? (
-                          <button type="button" className={ICON_BUTTON} onClick={() => void archive(quote)} title={`Archive ${quote.reference}`} aria-label={`Archive ${quote.reference}`}>
+                          <button type="button" className={ICON_BUTTON} onClick={() => void archive(quote)} title={`Archive ${quote.label}`} aria-label={`Archive ${quote.label}`}>
                             <Archive size={12} />
                           </button>
                         ) : (
-                          <button type="button" className={ICON_BUTTON} onClick={() => void restore(quote)} title={`Restore ${quote.reference}`} aria-label={`Restore ${quote.reference}`}>
+                          <button type="button" className={ICON_BUTTON} onClick={() => void restore(quote)} title={`Restore ${quote.label}`} aria-label={`Restore ${quote.label}`}>
                             <ArchiveRestore size={12} />
                           </button>
                         )}
