@@ -2028,7 +2028,9 @@ Out of scope:
 
   A table nothing is connected to, a column its frame lacks and a column whose type does
   not fit fill with nulls and fail nothing. A config key a Workbench Output does not
-  declare, `mapping` among them, is refused as it is for any node type.
+  declare is refused as it is for any node type; `mapping`, which it no longer has, is
+  refused wherever its config is read, the pipeline file running on its own included,
+  saying each column is filled from the frame's column of exactly its name.
 - Two response nodes of either type, at the top level or in a submodel, fail save and deploy
   with "Only one Quote Response or Workbench Output node is allowed per pipeline (found 2).",
   and `Pipeline.run` and `Pipeline.score` refuse the pipeline, naming both.

@@ -256,6 +256,25 @@ def test_a_column_the_frame_does_not_fill_is_nulls(project: Path) -> None:
     assert _response(graph)[0]["pricing"] == {"premium": 100.0, "limit": 1000.0}
 
 
+@pytest.mark.parametrize("rows", [0, 2])
+def test_a_table_its_frame_fills_none_of_keeps_the_frames_rows(project: Path, rows: int) -> None:
+    # Every column of `item_prices` is nulls, `item_id` a String declared an Integer and
+    # `discount` no frame column, yet the table has as many rows as its frame.
+    graph = _priced()
+    graph.node_map["response"].data.config["tables"][1]["columns"] = [
+        _column("item_id", "int"),
+        _column("discount", "float"),
+    ]
+    if rows == 0:
+        graph.node_map["item_premiums"].data.config["code"] = (
+            f"{_ITEM_PREMIUMS}\ndf = df.filter(pl.lit(False))"
+        )
+
+    tables = _tables(graph)
+
+    assert tables["item_prices"].to_dicts() == [{"item_id": None, "discount": None}] * rows
+
+
 def test_a_column_of_nulls_fills_a_column_of_any_type(project: Path) -> None:
     # A frame column that is null throughout has no dtype to disagree with the declared one.
     graph = _priced()
@@ -662,6 +681,19 @@ def _fed(code: str) -> Callable[[PipelineGraph], None]:
     return change
 
 
+def _fills_none_of_pricing(code: str) -> Callable[[PipelineGraph], None]:
+    """`pricing` declaring only columns its frame does not fill, the frame made by *code*."""
+
+    def change(graph: PipelineGraph) -> None:
+        graph.node_map["response"].data.config["tables"][0]["columns"] = [
+            _column("referral", "int"),
+            _column("discount", "float"),
+        ]
+        graph.node_map["priced"].data.config["code"] = code
+
+    return change
+
+
 _FAILURES: dict[str, tuple[Callable[[PipelineGraph], None], str]] = {
     "no_tables": (
         _no_tables,
@@ -681,6 +713,15 @@ _FAILURES: dict[str, tuple[Callable[[PipelineGraph], None], str]] = {
     ),
     "no_rows": (
         _fed(f"{_PRICED}\ndf = df.filter(pl.lit(False))"),
+        "has one row per quote, but the frame connected to it has no rows.",
+    ),
+    # A table of nulls alone still counts its frame's rows.
+    "two_rows_of_nulls": (
+        _fills_none_of_pricing(f"{_PRICED}\ndf = pl.concat([df, df])"),
+        "has one row per quote, but the frame connected to it has 2 rows.",
+    ),
+    "no_rows_of_nulls": (
+        _fills_none_of_pricing(f"{_PRICED}\ndf = df.filter(pl.lit(False))"),
         "has one row per quote, but the frame connected to it has no rows.",
     ),
 }
@@ -727,17 +768,21 @@ def test_which_frame_columns_fill_a_declared_column(
 
 
 def test_a_workbench_output_config_with_a_mapping_is_refused(project: Path) -> None:
-    # Columns are filled by name alone: a mapping left in a sidecar is a key the node type
-    # does not declare.
-    pipeline_file = _write(_priced(), project, "main")
+    # Columns are filled by name alone: a mapping left in a sidecar is refused wherever the
+    # sidecar is read, rather than ignored, which would fill the columns differently.
+    pipeline_file = _write(_priced(), project)
     sidecar = project / "config" / "workbench_output" / "response.json"
     config = json.loads(sidecar.read_text(encoding="utf-8"))
     sidecar.write_text(
         json.dumps({**config, "mapping": {"pricing": {"premium": "limit"}}}), encoding="utf-8"
     )
+    removed = "workbenchOutput config contains the removed mapping field"
 
-    with pytest.raises(ConfigError, match="config keys the node type does not declare: 'mapping'"):
+    with pytest.raises(ConfigError, match=removed):
         parse_pipeline_file(pipeline_file)
+    # As the pipeline file runs on its own, which reads the sidecar as it runs.
+    with pytest.raises(ConfigError, match=removed):
+        _import(pipeline_file).pipeline.run(source="live")
 
 
 def test_a_request_of_several_quotes_fails_a_workbench_output(project: Path) -> None:

@@ -111,6 +111,9 @@ _REMOVED_REGISTRY_KEYS: dict[NodeType, frozenset[str]] = {
 _REMOVED_FEATURE_SELECTION_KEYS: dict[NodeType, frozenset[str]] = {
     NodeType.MODELLING: frozenset({"exclude"}),
 }
+_REMOVED_COLUMN_MAPPING_KEYS: dict[NodeType, frozenset[str]] = {
+    NodeType.WORKBENCH_OUTPUT: frozenset({"mapping"}),
+}
 
 
 def reject_removed_config_keys(
@@ -147,6 +150,14 @@ def reject_removed_config_keys(
             "list the columns to train on in feature_columns (tick them on the Features "
             "pane) and remove exclude.",
             removed_config_keys=removed_selection,
+        )
+    removed_mapping = sorted(_REMOVED_COLUMN_MAPPING_KEYS.get(nt, frozenset()).intersection(config))
+    if removed_mapping:
+        raise ConfigError(
+            f"{nt.value} config contains the removed mapping field. Each table column is "
+            "filled from the connected frame's column of exactly its name: name the frame's "
+            "columns as the workbench does upstream and remove mapping.",
+            removed_config_keys=removed_mapping,
         )
 
 

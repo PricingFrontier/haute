@@ -1336,6 +1336,10 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   columns yet `WorkbenchOutputError`, saying what to add.
 - The assistant's operations raise `OpValidationError` for a Workbench Output they may not
   author, as for a Workbench Input.
+- `reject_removed_config_keys` (`src/haute/_config_validation.py`) raises `ConfigError` for a
+  Workbench Output config holding the removed `mapping` (`_REMOVED_COLUMN_MAPPING_KEYS`,
+  carrying `removed_config_keys`), so `load_node_config` refuses it where the standalone
+  runner reads the sidecar, which checks no undeclared key, as well as in parsing and save.
 - `DeployConfig.from_toml` raises `ValueError` for a key under `[workbench]` outside
   `WORKBENCH_TOML_KEYS`, as for any unknown `haute.toml` key.
 
@@ -2231,9 +2235,11 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   that reads directly clearing nothing.
 - The Workbench Output: `tests/test_workbench_output.py` covers a cell of a table fed
   straight from the Workbench Input traced from that frame, the tables read from a config
-  (no tables refused, tables without columns refused, a `mapping` key refused), filling (by
+  (no tables refused, tables without columns refused, a `mapping` key refused in parsing and
+  in the pipeline file's own run), filling (by
   name, case included, a typed null for a column the frame lacks and for one whose dtype does
-  not fit, a table nothing is connected to, one-row and many-row, a node with nothing
+  not fit, a connected table of nulls alone keeping its frame's rows (none or two, and a
+  one-row one refused for either), a table nothing is connected to, one-row and many-row, a node with nothing
   connected run to its response, deploy answering without them, a one-row table with other
   than one row, the columns cut to the table's in order), the response document and `as_response` for either response node, a pipeline running
   and scoring to it, codegen and parsing of `target_port`, the second response node refused in
