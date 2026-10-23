@@ -282,10 +282,15 @@ def artifact_identity_fingerprint(artifact_paths: Mapping[str, str] | None) -> s
 
 
 def _resolve_runtime_graph_paths(graph: PipelineGraph) -> PipelineGraph:
-    """Resolve path config values against ``graph.source_file`` for deploy scoring."""
+    """Resolve path config values as deploy bundles them, for deploy scoring.
+
+    A relative path is tried against ``graph.source_file``'s directory, then the project
+    root, its backslashes read as separators. A bundle's manifest holds absolute paths.
+    """
+    from haute._path_resolution import _normalise_path_text, resolve_graph_source_path
+
     if not graph.source_file:
         return graph
-    base_dir = Path(graph.source_file).parent
     nodes: list[GraphNode] = []
     changed = False
     for node in graph.nodes:
@@ -295,9 +300,9 @@ def _resolve_runtime_graph_paths(graph: PipelineGraph) -> PipelineGraph:
             node.data.nodeType in _RUNTIME_PATH_NODE_TYPES
             and isinstance(raw_path, str)
             and raw_path
-            and not Path(raw_path).is_absolute()
+            and not Path(_normalise_path_text(raw_path)).is_absolute()
         ):
-            resolved = str((base_dir / raw_path).resolve())
+            resolved = resolve_graph_source_path(raw_path, graph.source_file)
             nodes.append(node.with_config({**config, "path": resolved}))
             changed = True
         else:

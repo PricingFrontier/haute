@@ -1195,18 +1195,33 @@ def write_polars_output(
 def anchor_config_source_path(config: Mapping[str, Any], base_dir: Any = None) -> dict[str, Any]:
     """Return *config* with a relative path-kind source anchored to *base_dir*.
 
-    Mirrors the pipeline-dir anchoring the other source node types apply: a
-    relative ``path`` in a saved config resolves against the pipeline dir,
-    never the process cwd. Non-path source kinds pass through unchanged.
+    A relative ``path`` resolves as deploy bundles it: against the pipeline dir
+    first, then the project root, where the editor's file browser writes paths
+    from, with Windows backslashes read as separators. A path found in neither
+    place keeps the pipeline-dir anchoring. Non-path source kinds pass through
+    unchanged.
     """
     from pathlib import Path
+
+    from haute._path_resolution import (
+        _normalise_path_text,
+        current_runtime_project_root,
+        resolve_runtime_file_path,
+    )
 
     result = dict(config)
     raw = result.get("path")
     if base_dir is not None and isinstance(raw, str) and raw.strip():
-        candidate = Path(raw)
-        if not candidate.is_absolute():
-            result["path"] = str(Path(base_dir) / candidate)
+        if not Path(_normalise_path_text(raw)).is_absolute():
+            result["path"] = str(
+                resolve_runtime_file_path(
+                    raw,
+                    pipeline_dir=base_dir,
+                    project_root=current_runtime_project_root(),
+                    prefer="pipeline",
+                    enforce_project_root=False,
+                )
+            )
     return result
 
 

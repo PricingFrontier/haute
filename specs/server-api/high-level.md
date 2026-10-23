@@ -235,7 +235,9 @@ be applied over a newer document.
 **File browsing and schema inspection.** `GET /api/files` lists a directory for the file
 picker; when its `extensions` query is omitted, the effective readable extensions come from
 the installed I/O registry. Directory items omit file size in the backend model and therefore
-serialize it as `null`; file items carry their byte size. `GET /api/schema` reads a data file's
+serialize it as `null`; file items carry their byte size. Item paths and `dir` are
+project-relative with forward slashes on every OS, since the picker's path is saved into
+node configs that Linux CI and deployed containers read. `GET /api/schema` reads a data file's
 column schema, a 5-row preview, and (for parquet) an exact row count or (for JSONL) an estimated
 one, without loading the whole file. XML is decoded through the API-input structured-record
 normaliser and returns an exact row count; invalid or unsafe XML returns 400. Given a Data

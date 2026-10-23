@@ -97,7 +97,9 @@ def _browse_files_blocking(
         try:
             if entry.name.startswith(".") or entry.is_symlink():
                 continue
-            rel = str(entry.relative_to(base))
+            # Forward slashes on every OS: the path is saved into node configs that
+            # Linux CI and deployed containers read too.
+            rel = entry.relative_to(base).as_posix()
             if entry.is_dir():
                 items.append(FileItem(name=entry.name, path=rel, type="directory"))
             elif entry.is_file() and any(
@@ -121,7 +123,7 @@ def _browse_files_blocking(
             continue
 
     return BrowseFilesResponse(
-        dir=str(target.relative_to(base)),
+        dir=target.relative_to(base).as_posix(),
         items=items,
     )
 

@@ -231,3 +231,22 @@ def resolve_runtime_file_path(
         return deduped[0]
 
     raise RuntimePathOutsideProjectError(f"Path {raw_path!r} resolves outside the project root")
+
+
+def resolve_graph_source_path(raw_path: str, source_file: str | Path) -> str:
+    """A node config's relative *raw_path*, resolved as deploy bundles it, made absolute.
+
+    The pipeline file's directory is tried first, then the project root (where the
+    editor's file browser writes paths from), with Windows backslashes read as
+    separators, so a project saved on Windows scores the same on Linux. A path
+    found in neither place keeps the pipeline-dir anchoring.
+    """
+    return str(
+        resolve_runtime_file_path(
+            raw_path,
+            source_file=source_file,
+            pipeline_dir=Path(source_file).parent,
+            prefer="pipeline",
+            enforce_project_root=False,
+        ).resolve()
+    )
