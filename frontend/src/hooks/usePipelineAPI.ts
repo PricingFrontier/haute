@@ -125,10 +125,14 @@ function nodeLabel(node: Node): string {
   return String(node.data.label || node.id)
 }
 
-function previewPortLabel(node: Node): string | undefined {
+function previewPortLabel(node: Node, chosenFrame?: string): string | undefined {
   const data = nodeData(node)
-  // A Workbench Output's tables are its frames: its preview starts at the first.
-  if (data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT) return workbenchTablePorts(data.config)[0]
+  // A Workbench Output's tables are its frames: its preview is of the table last
+  // chosen in it while that is still one of its tables, else of its first.
+  if (data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT) {
+    const ports = workbenchTablePorts(data.config)
+    return chosenFrame !== undefined && ports.includes(chosenFrame) ? chosenFrame : ports[0]
+  }
   if (!isRequestInputType(data.nodeType)) return undefined
   return authoritativeSourceHandles({
     id: node.id,
@@ -211,12 +215,19 @@ function resultToPreview(
   })
 }
 
-function previewColumnNamesForNode(node: Node, source: string, structuralVersion: number): string[] | undefined {
+function previewColumnNamesForNode(
+  node: Node,
+  source: string,
+  structuralVersion: number,
+  portLabel: string | undefined,
+): string[] | undefined {
   const data = nodeData(node)
   // A remembered preview layout is only a valid projection for the graph that
   // produced it. After an edit, let the server discover the current schema.
   if (data._columnsSource !== source || data._columnsStructuralVersion !== structuralVersion) return undefined
-  const columns = data._columns
+  // A frame of a multi-frame node is projected onto that frame's columns: the
+  // flat ones are of whichever frame was last previewed.
+  const columns = (portLabel === undefined ? undefined : data._frameColumns?.[portLabel]) ?? data._columns
   return columns && columns.length > 0
     ? columns.slice(0, PREVIEW_INITIAL_COLUMN_LIMIT).map((column) => column.name)
     : undefined
@@ -449,9 +460,17 @@ export default function usePipelineAPI({
   const invalidatePreviewRequests = useCallback(() => {
     ++previewRequestSeq.current
   }, [])
-  // A frame preview is never stored, so the node-data epoch it is current at
-  // — and the frame to fetch again — is kept beside the object the panel shows.
+  // A frame preview is stored only when it is of the frame the node previews,
+  // so the node-data epoch it is current at — and the frame to fetch again — is
+  // kept beside the object the panel shows.
   const framePreviewEpochs = useRef(new WeakMap<PreviewData, { epoch: number; portLabel: string }>())
+  // The frame last chosen in each node's preview: a Workbench Output's Refresh,
+  // recalculation and selection preview that table again.
+  const chosenFrames = useRef(new Map<string, string>())
+  const portLabelFor = useCallback(
+    (node: Node) => previewPortLabel(node, chosenFrames.current.get(node.id)),
+    [],
+  )
   const fetchPreviewImmediateRef = useRef<
     ((node: Node, existingRequestId?: number, options?: ImmediatePreviewOptions) => void) | null
   >(null)
@@ -604,17 +623,20 @@ export default function usePipelineAPI({
     }
   }, [adoptPipelineDocument, addToast])
 
-  // After a stop, show the node's last stored result for the current source
-  // and row limit, or nothing (the panel then offers Refresh).
+  // After a stop, show the node's last stored result for the current source,
+  // row limit and frame, or nothing (the panel then offers Refresh).
   const restoreAfterStop = useCallback((node: Node) => {
     const stored = useNodeResultsStore.getState().getPreview(node.id)
     const restored =
-      stored && stored.source === activeSourceRef.current && stored.rowLimit === rowLimitRef.current
+      stored &&
+      stored.source === activeSourceRef.current &&
+      stored.rowLimit === rowLimitRef.current &&
+      stored.data.selected_frame === portLabelFor(node)
         ? stored.data
         : null
     stoppedDisplay.current = restored
     setPreviewData(restored)
-  }, [])
+  }, [portLabelFor])
 
   // Send one preview request with a fresh id and poll that request's own step
   // progress onto the loading panel of *nodeId* while it runs; the response,
@@ -731,9 +753,16 @@ export default function usePipelineAPI({
       useGraphStore.getState().structuralVersion === structuralVersion &&
       documentStillCurrent()
 
+    const portLabel = portLabelFor(node)
     // Cache-first: show cached data immediately if available
     const cached = getPreview(node.id)
-    if (!options?.bypassCache && cached && cached.source === snapshotSource && cached.rowLimit === snapshotRowLimit) {
+    if (
+      !options?.bypassCache &&
+      cached &&
+      cached.source === snapshotSource &&
+      cached.rowLimit === snapshotRowLimit &&
+      cached.data.selected_frame === portLabel
+    ) {
       if (requestStillCurrent()) setPreviewData(cached.data)
       // If cache is fresh for the same execution context, skip the API call.
       if (matchesRequestContext(cached)) {
@@ -767,7 +796,6 @@ export default function usePipelineAPI({
       if (announced) bumpEpoch()
     }
 
-    const portLabel = previewPortLabel(node)
     const withProgress = (send: (requestId: string) => Promise<PreviewNodeResponse>) =>
       sendWithProgress(node.id, controller.signal, requestStillCurrent, send)
     const executePreview = () => {
@@ -800,7 +828,7 @@ export default function usePipelineAPI({
           targetRecoveryId: node.id,
           rowLimit: snapshotRowLimit,
           source: snapshotSource,
-          requestedPreviewColumns: previewColumnNamesForNode(node, snapshotSource, structuralVersion),
+          requestedPreviewColumns: previewColumnNamesForNode(node, snapshotSource, structuralVersion, portLabel),
           portLabel,
           requestId,
           signal: controller.signal,
@@ -815,7 +843,7 @@ export default function usePipelineAPI({
           ),
           rowLimit: snapshotRowLimit,
           source: snapshotSource,
-          requestedPreviewColumns: previewColumnNamesForNode(node, snapshotSource, structuralVersion),
+          requestedPreviewColumns: previewColumnNamesForNode(node, snapshotSource, structuralVersion, portLabel),
           portLabel,
           requestId,
           signal: controller.signal,
@@ -853,7 +881,7 @@ export default function usePipelineAPI({
                     activeSubmodelIdentity,
                   ),
                   source: snapshotSource,
-                  requestedPreviewColumns: previewColumnNamesForNode(node, snapshotSource, structuralVersion),
+                  requestedPreviewColumns: previewColumnNamesForNode(node, snapshotSource, structuralVersion, portLabel),
                   portLabel,
                 },
               ],
@@ -935,7 +963,7 @@ export default function usePipelineAPI({
           previewAbort.current = null
         }
       })
-  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews, rereadInputSnapshot, sendWithProgress, settleStopped])
+  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews, rereadInputSnapshot, sendWithProgress, settleStopped, portLabelFor])
 
   useEffect(() => {
     fetchPreviewImmediateRef.current = fetchPreviewImmediate
@@ -960,12 +988,17 @@ export default function usePipelineAPI({
       setPreviewBusy(false)
       return
     }
+    // A stored preview shows only for the frame the node previews.
+    const portLabel = portLabelFor(node)
     if (useUIStore.getState().calculationMode === "manual") {
       // Manual calculation: show the node's last result for the current
       // source and row limit, and run nothing until Refresh is pressed.
       const stored = useNodeResultsStore.getState().getPreview(node.id)
       setPreviewData(
-        stored && stored.source === activeSourceRef.current && stored.rowLimit === rowLimitRef.current
+        stored &&
+          stored.source === activeSourceRef.current &&
+          stored.rowLimit === rowLimitRef.current &&
+          stored.data.selected_frame === portLabel
           ? stored.data
           : null,
       )
@@ -988,13 +1021,18 @@ export default function usePipelineAPI({
     // Cached data should paint immediately. Deferring it creates a visible
     // "Executing pipeline..." flash when switching away from result panels.
     const cached = useNodeResultsStore.getState().getPreview(node.id)
-    if (cached && cached.source === activeSourceRef.current && cached.rowLimit === rowLimitRef.current) {
+    if (
+      cached &&
+      cached.source === activeSourceRef.current &&
+      cached.rowLimit === rowLimitRef.current &&
+      cached.data.selected_frame === portLabel
+    ) {
       setPreviewData(cached.data)
     } else {
       setPreviewData(makePreviewData(node.id, nodeLabel(node), { status: "loading" }))
     }
     previewDebounce.schedule([node, requestId], options.debounceMs)
-  }, [activeSubmodelIdentity, fetchPreviewImmediate, previewDebounce])
+  }, [activeSubmodelIdentity, fetchPreviewImmediate, previewDebounce, portLabelFor])
 
   const cancelPreview = useCallback(() => {
     ++previewRequestSeq.current
@@ -1151,8 +1189,8 @@ export default function usePipelineAPI({
             ),
             rowLimit: snapshotRowLimit,
             source: snapshotSource,
-            requestedPreviewColumns: previewColumnNamesForNode(upstream, snapshotSource, structuralVersion),
-            portLabel: previewPortLabel(upstream),
+            requestedPreviewColumns: previewColumnNamesForNode(upstream, snapshotSource, structuralVersion, portLabelFor(upstream)),
+            portLabel: portLabelFor(upstream),
             signal: controller.signal,
           })
             .then((result) => {
@@ -1187,8 +1225,8 @@ export default function usePipelineAPI({
           activeSubmodelIdentity,
         ),
         source: snapshotSource,
-        requestedPreviewColumns: previewColumnNamesForNode(previewed, snapshotSource, structuralVersion),
-        portLabel: previewPortLabel(previewed),
+        requestedPreviewColumns: previewColumnNamesForNode(previewed, snapshotSource, structuralVersion, portLabelFor(previewed)),
+        portLabel: portLabelFor(previewed),
       })),
       controller.signal,
     )
@@ -1227,11 +1265,12 @@ export default function usePipelineAPI({
           previewAbort.current = null
         }
       })
-  }, [fetchPreviewImmediate, previewDebounce, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews])
+  }, [fetchPreviewImmediate, previewDebounce, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews, portLabelFor])
 
   const previewNodeFrame = useCallback((nodeId: string, portLabel: string) => {
     const node = graphRef.current.nodes.find((n) => n.id === nodeId)
     if (!node || !canPreviewNode(node)) return
+    chosenFrames.current.set(nodeId, portLabel)
     const requestId = ++previewRequestSeq.current
     previewTarget.current = node
     stopRetry.current = null
@@ -1246,6 +1285,8 @@ export default function usePipelineAPI({
     // Keep the current table on screen (marked busy via setPreviewBusy) while
     // the requested frame loads, so switching frames doesn't flash empty.
     const structuralVersion = useGraphStore.getState().structuralVersion
+    const snapshotRowLimit = rowLimitRef.current
+    const snapshotSource = activeSourceRef.current
     const snapshotDocumentFence = capturePreviewDocumentFence(sourceRevisionRef)
     const snapshotDocumentRevision = snapshotDocumentFence.sourceRevision
     const snapshotDocumentStatus = snapshotDocumentFence.loadStatus
@@ -1274,7 +1315,7 @@ export default function usePipelineAPI({
                 node.id,
                 activeSubmodelIdentity,
               ),
-              source: activeSourceRef.current,
+              source: snapshotSource,
               portLabel,
             },
           ],
@@ -1290,8 +1331,8 @@ export default function usePipelineAPI({
               sourceFile: sourceFileRef.current,
               sourceRevision: snapshotDocumentRevision,
               targetRecoveryId: node.id,
-              rowLimit: rowLimitRef.current,
-              source: activeSourceRef.current,
+              rowLimit: snapshotRowLimit,
+              source: snapshotSource,
               portLabel,
               requestId: previewRequestId,
               signal: controller.signal,
@@ -1306,8 +1347,8 @@ export default function usePipelineAPI({
               node.id,
               activeSubmodelIdentity,
             ),
-            rowLimit: rowLimitRef.current,
-            source: activeSourceRef.current,
+            rowLimit: snapshotRowLimit,
+            source: snapshotSource,
             portLabel,
             requestId: previewRequestId,
             signal: controller.signal,
@@ -1324,11 +1365,18 @@ export default function usePipelineAPI({
         const preview = resultToPreview(node.id, label, result, portLabel)
         // Its own captures leave it current unless something else moved the
         // epoch while it was in flight.
-        framePreviewEpochs.current.set(preview, {
-          epoch: captured && epoch === requestNodeDataEpoch ? epoch + 1 : requestNodeDataEpoch,
-          portLabel,
-        })
-        if (requestStillCurrent()) setPreviewData(preview)
+        const currentAt = captured && epoch === requestNodeDataEpoch ? epoch + 1 : requestNodeDataEpoch
+        framePreviewEpochs.current.set(preview, { epoch: currentAt, portLabel })
+        if (requestStillCurrent()) {
+          setPreviewData(preview)
+          // The frame the node previews is its stored preview, which selecting
+          // the node again shows.
+          if (portLabelFor(node) === portLabel) {
+            useNodeResultsStore
+              .getState()
+              .setPreview(node.id, preview, structuralVersion, snapshotSource, snapshotRowLimit, currentAt)
+          }
+        }
         if (captured) bumpEpoch()
       })
       .catch((err: unknown) => {
@@ -1347,7 +1395,7 @@ export default function usePipelineAPI({
         if (previewRequestSeq.current === requestId && stopRetry.current === null) setPreviewBusy(false)
         if (previewAbort.current === controller) previewAbort.current = null
       })
-  }, [previewDebounce, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, addToast, ensureSnapshotsForPreviews, sendWithProgress, settleStopped])
+  }, [previewDebounce, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, addToast, ensureSnapshotsForPreviews, sendWithProgress, settleStopped, portLabelFor])
 
   // Returns true when the save succeeded, false on failure — callers that
   // chain follow-on work (for example Commit) await this so they only proceed

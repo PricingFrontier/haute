@@ -710,8 +710,9 @@ reconciliation rather than dropping them or committing a second mutation.
     capture never fetches it again; if something else moved the epoch while it
     was in flight, it keeps its request epoch and is fetched again at once. A
     superseded response raises the epoch only then. `refreshPreview`'s upstream
-    previews and `previewNodeFrame` announce their captures too; neither is
-    stored. A frame preview keeps the epoch it is current at — stamped one past
+    previews and `previewNodeFrame` announce their captures too. An upstream
+    preview is not stored, and a frame preview is stored only when its frame is
+    the one the node previews (below). A frame preview keeps the epoch it is current at — stamped one past
     its request epoch only when its announcement raised the epoch and nothing
     else moved the epoch, keeping its request epoch otherwise — and its frame
     beside the object the panel shows. A separate effect fetches the displayed
@@ -723,6 +724,16 @@ reconciliation rather than dropping them or committing a second mutation.
     whose seeds did not change is a backend cache hit, and one that fails
     shows the preview error. Other nodes' stored previews are fetched again
     when next displayed.
+    The frame a node previews (`previewPortLabel`): a Workbench Output's is the
+    table last chosen in its preview's frame select (`previewNodeFrame` records
+    each node's choice for the hook's lifetime) while that table is still one of
+    its ports (`workbenchTablePorts`), else its first; a request input's is its
+    first emitting table. So a Workbench Output's Refresh, an automatic
+    recalculation and selecting the node again keep the table chosen. A stored
+    preview is shown by `fetchPreview`, the cache-first check and a stop's
+    restore only when its `selected_frame` is that frame, and a preview's
+    requested columns are the frame's (`_frameColumns`) where the node has them,
+    else its `_columns`.
     Before any network preview is sent, the request asks the backend which
     inputs the preview reads (`previewInputs`, `POST /api/pipeline/preview/inputs`
     — none above a shared snapshot it seeds from, none outside its lineage) and
@@ -1620,7 +1631,10 @@ again through the editor and save paths.
     request; a preview's own capture raising the epoch without fetching it
     again; an own capture whose epoch moved in flight fetched again; a stored
     preview from an older epoch shown and fetched again, and one from the
-    current epoch answered without a request; a displayed frame preview fetched
+    current epoch answered without a request; a Workbench Output's first table
+    previewed, the table chosen in its preview previewed again on Refresh (with
+    that table's columns requested) and shown again on selecting the node, and
+    its first table once the chosen one is gone; a displayed frame preview fetched
     again for its frame, and not for its own capture; a
     duplicate announcement leaving the epoch untouched while a new generation
     raises it once; a frame preview not being refetched for a duplicate
