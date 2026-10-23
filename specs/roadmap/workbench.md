@@ -565,9 +565,9 @@ and is the same on every row of a quote, so two schema tables joined on `referen
 or Right join keeps one of each, a Semi or Anti join the left side's alone. A Full join
 keeps both sides' keys, the joining side's as `reference_right` and `option_right`, unless
 Edge Join's **Coalesce** is True. The step editor's join has no such setting, so after a
-Full join there the docs show `reference` and `option` filled from `reference_right` and
-`option_right`, where a row came from the joining side alone, before those two are
-dropped; a Cross join takes no keys, and the docs show its right side's two dropped. Joined on their
+Full join there the docs show every key a later join needs, `reference`, `option` and the
+table's own, filled from its `_right` copy where a row came from the joining side alone,
+before those copies are dropped; a Cross join takes no keys, and the docs show its right side's two dropped. Joined on their
 own key alone, the right side's identity stays as `reference_right` and `option_right`,
 and joining a third schema table on after that is refused by Polars, `reference_right`
 being there already. The docs show schema tables joined on `reference`,
@@ -606,8 +606,9 @@ the spot, while Preview with no sample and the deploy's dry run hold the stand-i
 `option` and `peril`, by Edge Join and by the step editor's join, give one `reference` and
 one `option` and the same rows and price in Preview as in the app; a Full Edge Join on them
 gives one of each with **Coalesce** True and `reference_right` without it; a Full step
-editor join with a row from the joining side alone, filled and dropped as the docs show,
-then joined Left to `drivers` on `reference`, `option` and `peril`, matches that row;
+editor join with a row from the joining side alone, its `reference`, `option` and `peril`
+filled from their `_right` copies and those dropped as the docs show, then joined Left to
+`drivers` on `reference`, `option` and `peril`, matches that row;
 joined on `peril` alone, joining `drivers` after `vehicles` is refused naming
 `reference_right`.
 
