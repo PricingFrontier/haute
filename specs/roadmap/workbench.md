@@ -523,10 +523,12 @@ revision take their identity from its quote.
 
 Every other table, input and output, leads with `reference` (Text) and `option`
 (Integer), with the same fixed ids in every table (a column's id is unique within its
-table), added by the form's upgrade as `quote_details`' newer columns are and reaching the
-Workbench Input's and Workbench Output's tables at the next save, as any column added does.
-The schema editor shows them as fixed columns: not renamed, moved, removed or given rules,
-and not offered to the sheets, where `quote_details`' own stand for them. A many-row
+table), added by the form's upgrade as `quote_details`' newer columns are, given to a
+table the moment it is added in the schema editor, and reaching the Workbench Input's and
+Workbench Output's tables at the next save, as any column added does. The schema editor
+shows them locked: not renamed, retyped, moved or removed, taking no label, group, help,
+rules, default or format, and not offered to the sheets, where `quote_details`' own stand
+for them. A many-row
 table's index comes after them. They are not keys: within a quote, rows still line up by
 the table's own key, on the sheets and in comparisons, and the identity joins that key only
 where rows of many quotes are put together. Both names are reserved in every table. A
@@ -562,8 +564,10 @@ and is the same on every row of a quote, so two schema tables joined on `referen
 `option` and their own key match as they would on their own key alone, and a Left, Inner
 or Right join keeps one of each, a Semi or Anti join the left side's alone. A Full join
 keeps both sides' keys, the joining side's as `reference_right` and `option_right`, unless
-Edge Join's **Coalesce** is True; the step editor's join has no such setting, and a Cross
-join takes no keys, so there the docs show the right side's two dropped. Joined on their
+Edge Join's **Coalesce** is True. The step editor's join has no such setting, so after a
+Full join there the docs show `reference` and `option` filled from `reference_right` and
+`option_right`, where a row came from the joining side alone, before those two are
+dropped; a Cross join takes no keys, and the docs show its right side's two dropped. Joined on their
 own key alone, the right side's identity stays as `reference_right` and `option_right`,
 and joining a third schema table on after that is refused by Polars, `reference_right`
 being there already. The docs show schema tables joined on `reference`,
@@ -587,7 +591,9 @@ alone, and the app a new one, as before. A form
 saved before this opens with `option` last in `quote_details` and the identity leading
 every other table, an index after it, its sample and fields unchanged; a table with its
 own `option` column keeps it and its values, the clash is named and `haute app build`
-refuses, and renaming the column clears it with its values kept. An app quote's
+refuses, and renaming the column clears it with its values kept. A table added in the
+schema editor starts with `reference` and `option`, which cannot be renamed, retyped,
+moved, removed or given a label, group, help, rule, default or format. An app quote's
 `coverage` frame holds its reference and option on every row, in deployed scoring and in
 `Pipeline.run`; a Workbench Output many-row table's rows hold them in the response though
 the pipeline's frame does not, and `score` given no `quote_details` frame answers them
@@ -599,8 +605,11 @@ the spot, while Preview with no sample and the deploy's dry run hold the stand-i
 `quote_details` alone. `coverage`, `vehicles` and `drivers` joined Left on `reference`,
 `option` and `peril`, by Edge Join and by the step editor's join, give one `reference` and
 one `option` and the same rows and price in Preview as in the app; a Full Edge Join on them
-gives one of each with **Coalesce** True and `reference_right` without it; joined on
-`peril` alone, joining `drivers` after `vehicles` is refused naming `reference_right`.
+gives one of each with **Coalesce** True and `reference_right` without it; a Full step
+editor join with a row from the joining side alone, filled and dropped as the docs show,
+then joined Left to `drivers` on `reference`, `option` and `peril`, matches that row;
+joined on `peril` alone, joining `drivers` after `vehicles` is refused naming
+`reference_right`.
 
 **Dependencies:** None. WB-11's exports key their rows by what this carries; WB-10's
 migrations keep the previous release working save for those, like this one, that name
