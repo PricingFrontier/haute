@@ -397,9 +397,10 @@ describe("TracePanel", () => {
     expect(screen.getByText("Technical details")).toBeInTheDocument()
   })
 
-  it("close button calls onClose", () => {
+  it("close button, the side panels' shared red Close, calls onClose", () => {
     const onClose = vi.fn()
     render(<TracePanel trace={makeTrace()} onClose={onClose} />)
+    expect(screen.getByLabelText("Close trace")).toHaveClass("side-panel-close")
     fireEvent.click(screen.getByLabelText("Close trace"))
     expect(onClose).toHaveBeenCalledOnce()
   })

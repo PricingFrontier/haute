@@ -67,14 +67,16 @@
   color: var(--text-primary);
 }
 
+/* Close, on every side panel: a white X on solid red, deeper on hover. */
 .side-panel-close {
   flex-shrink: 0;
   padding: 4px;
   border-radius: 4px;
-  color: var(--text-muted);
+  color: var(--text-on-accent);
+  background: var(--danger-solid);
   transition: background 150ms;
 }
 .side-panel-close:hover,
 .side-panel-close:focus-visible {
-  background: var(--bg-hover);
+  background: var(--danger-hover);
 }

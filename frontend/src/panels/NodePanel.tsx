@@ -30,6 +30,7 @@ import { buildNodeDataCacheIdentity } from "./dataPointIdentity"
 import { modellingPanesFor, resolveModellingPane } from "./modelling/modellingPanes"
 import { OPTIMISER_PANES, resolveOptimiserPane } from "./optimiser/optimiserPanes"
 import PanelShell from "./PanelShell"
+import { SidePanelClose } from "../haute-ui"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 import { useGraph } from "./useGraph"
 import { buildGraph } from "../utils/buildGraph"
@@ -909,15 +910,7 @@ function NodePanelHeader({
             <Lock size={11} aria-hidden="true" />Read-only
           </span>
         )}
-        <button
-          data-testid="node-panel-close"
-          onClick={onClose}
-          className="node-close-btn p-1 rounded shrink-0 transition-colors"
-          style={{ color: "var(--text-on-accent)" }}
-          title="Close"
-        >
-          <X size={14} strokeWidth={2.5} />
-        </button>
+        <SidePanelClose data-testid="node-panel-close" onClick={onClose} />
       </div>
       {rename.error && (
         <p
@@ -1117,15 +1110,7 @@ function RecoveryNodePanel({
         >
           <Lock size={11} aria-hidden="true" />Read-only
         </span>
-        <button
-          data-testid="node-panel-close"
-          onClick={onClose}
-          className="node-close-btn shrink-0 rounded p-1 transition-colors"
-          style={{ color: "var(--text-muted)" }}
-          title="Close"
-        >
-          <X size={14} strokeWidth={2.5} />
-        </button>
+        <SidePanelClose data-testid="node-panel-close" onClick={onClose} />
       </div>
       <div className="flex-1 space-y-4 overflow-y-auto p-4" data-testid="node-recovery-diagnostics">
         <p className="text-[12px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>

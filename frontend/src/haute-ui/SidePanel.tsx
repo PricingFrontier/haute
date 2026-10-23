@@ -1,5 +1,5 @@
 import { X } from "lucide-react"
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react"
+import { useEffect, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type CSSProperties, type MouseEvent, type ReactNode } from "react"
 
 export interface SidePanelHeaderProps {
   title: string | ReactNode
@@ -12,6 +12,19 @@ export interface SidePanelHeaderProps {
   actions?: ReactNode
 }
 
+/**
+ * The Close button every side panel closes by, a white X on red: the kit's header's, and
+ * the one a panel drawing its own header ends it with. Other props, such as a test id or
+ * a label, pass through.
+ */
+export function SidePanelClose(props: Omit<ButtonHTMLAttributes<HTMLButtonElement>, "type" | "className" | "children">) {
+  return (
+    <button type="button" title="Close" {...props} className="side-panel-close">
+      <X size={14} strokeWidth={2.5} />
+    </button>
+  )
+}
+
 /** A side panel's header: its icon, title and subtitle, any actions, and Close. */
 export function SidePanelHeader({ title, onClose, icon, subtitle, actions }: SidePanelHeaderProps) {
   return (
@@ -22,9 +35,7 @@ export function SidePanelHeader({ title, onClose, icon, subtitle, actions }: Sid
         {subtitle}
       </div>
       {actions}
-      <button type="button" onClick={onClose} className="side-panel-close" title="Close">
-        <X size={14} />
-      </button>
+      <SidePanelClose onClick={onClose} />
     </div>
   )
 }

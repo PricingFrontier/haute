@@ -8,7 +8,7 @@
  */
 export { PaletteColumn, PaletteHeader, PaletteItem, PaletteItems, PaletteRevealStrip } from "./PaletteShell"
 export type { PaletteItemProps } from "./PaletteShell"
-export { SidePanel, SidePanelHeader } from "./SidePanel"
+export { SidePanel, SidePanelClose, SidePanelHeader } from "./SidePanel"
 export type { SidePanelHeaderProps, SidePanelProps } from "./SidePanel"
 export { SaveCommit, ToolbarBrand, ToolbarButton, ToolbarColumn, UndoRedo, ZoomInOut } from "./ToolbarControls"
 export type { ToolbarButtonProps } from "./ToolbarControls"
