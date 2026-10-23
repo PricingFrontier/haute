@@ -5,8 +5,8 @@
  * transposed, a Collection's columns), its
  * look (a Table's density, gridlines, header, row numbers, groups, stripes and frame, a
  * Collection's density, labels, boxes and frame, and either's text and columns' own looks), a Chart's chart
- * (`ChartSettings`), the order of the fields it shows, and the fields themselves, ticked
- * from the schema tables of its kind: many-row tables for a Table, one-row tables for a
+ * (`ChartSettings`), the order of the fields it shows, and the fields themselves, searched
+ * as the schema is and ticked from the schema tables of its kind: many-row tables for a Table, one-row tables for a
  * Collection, any table for a Chart, which plots number columns alone, with a Collection's
  * spacers among them in its order. A grid holds one
  * kind of row, so once a Table or a Chart shows a field, tables whose rows do not line up

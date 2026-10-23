@@ -616,7 +616,13 @@ Out of scope:
   Chart, each table
   collapsible with its role and how many of its columns show, each column with its type's
   icon, its name and its label, a Chart's columns other than numbers and an index disabled,
-  since a Chart plots numbers. Fields are held by table and column id, in the order
+  since a Chart plots numbers. A search box over the tables filters them as it is typed,
+  as the schema's does: only the columns whose name or label, as the list shows it,
+  holds the text, whatever its case, show, in the tables holding one, each open though
+  it was collapsed and its collapse toggle off; with none, "No fields match". Emptying
+  it, by its clear button or Escape, shows them all again; it is the component's own,
+  kept as its panes change and empty for the next component selected. A ticked column
+  the search hides stays ticked, the component still showing it. Fields are held by table and column id, in the order
   ticked, so a rename keeps them. A Collection's spacers keep their places among its
   fields: a field it stops showing, unticked, crossed out or gone from the schema, takes
   its place in the count with it, a field ticked goes after any spacer at the end, and

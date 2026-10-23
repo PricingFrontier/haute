@@ -205,7 +205,8 @@ Table starts with, whether they are **fixed**, with no rows inserted or deleted,
 **transposed**, or a Collection's columns across), a Table's **look** (see
 [A Table's look](#a-tables-look)), a Collection's **look** (see
 [A Collection's look](#a-collections-look)), the **order** of the fields it shows (drag, or
-Alt+Up and Alt+Down), and its **fields**, ticked from the schema tables of its kind. A
+Alt+Up and Alt+Down), and its **fields**, ticked from the schema tables of its kind;
+**Search fields** over them shows only the columns whose name or label holds what you type. A
 Chart's settings are its **Type** (Column, Line, Area or Pie), **Rows** (what labels the
 rows of many-row tables, or Row number), its **Legend**, and whether it is **Stacked**,
 **Horizontal** and shows **Data labels**; its fields come from any table, number columns

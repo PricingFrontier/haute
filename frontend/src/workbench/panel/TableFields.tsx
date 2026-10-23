@@ -10,6 +10,7 @@ export function TableFields({
   table,
   usable,
   plots,
+  matched,
   collapsed,
   onToggle,
 }: {
@@ -19,6 +20,8 @@ export function TableFields({
   usable: boolean
   /** A Chart's: only the columns it can plot can be ticked. */
   plots: boolean
+  /** While the Fields are searched, the ids of its columns the search matches, the only ones shown; null while they are not. */
+  matched: ReadonlySet<string> | null
   collapsed: boolean
   onToggle: () => void
 }) {
@@ -26,6 +29,7 @@ export function TableFields({
   const isShown = (columnId: string) => widget.fields.some((field) => field.table === table.id && field.column === columnId)
   const shown = table.columns.filter((column) => isShown(column.id)).length
   const Chevron = collapsed ? ChevronRight : ChevronDown
+  const columns = matched === null ? table.columns : table.columns.filter((column) => matched.has(column.id))
 
   return (
     <div
@@ -37,9 +41,10 @@ export function TableFields({
       <button
         type="button"
         onClick={onToggle}
+        disabled={matched !== null}
         aria-expanded={!collapsed}
         aria-label={`${collapsed ? "Expand" : "Collapse"} ${table.name}`}
-        className="focus-ring hover-bg flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left"
+        className={`focus-ring flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left ${matched === null ? "hover-bg" : ""}`}
       >
         <Chevron size={14} className="shrink-0" style={{ color: "var(--text-muted)" }} aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate font-mono font-semibold">{table.name}</span>
@@ -57,7 +62,7 @@ export function TableFields({
               No columns yet
             </p>
           )}
-          {table.columns.map((column) => {
+          {columns.map((column) => {
             const { label, icon: Icon, color } = COLUMN_TYPES[column.type]
             const checked = isShown(column.id)
             const tickable = checked || (usable && (!plots || plottable(column)))

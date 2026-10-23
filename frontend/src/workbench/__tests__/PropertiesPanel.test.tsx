@@ -2,7 +2,7 @@
  * The properties panel (specs/workbench): the selected component's title, Show when and
  * layout, a Table's fixed rows and look, a Collection's look, a Chart's chart, the order of its fields, and the
  * fields ticked from the schema tables of its kind (a Chart's from every table, the columns
- * it cannot plot disabled), with tables whose rows do not line up greyed out; a Heading's
+ * it cannot plot disabled), with tables whose rows do not line up greyed out, and searched; a Heading's
  * text, description, size, alignment and Show when; the showing sheet's own panel, its
  * title, its Show when, its width and its deletion, asked first in the editor's own dialog;
  * and a section's panel, its title, its Show when, its
@@ -646,6 +646,50 @@ describe("PropertiesPanel", () => {
     expect(claims).toHaveAttribute("title", "Its rows don't line up with the fields already chosen")
     expect(within(claims).getByRole("checkbox", { name: "Show claims id" })).toBeDisabled()
     expect(screen.getByTestId("fields-table-premiums")).toHaveStyle({ opacity: "1" })
+  })
+
+  it("searches the fields as the schema is searched: only the columns matching, by name, label or readable name, each table open, kept as the panes change", () => {
+    const form = sheetForm()
+    form.schema.tables[1].columns.push(column("equipment.sum_insured", "sum_insured", { type: "float", label: "" }))
+    form.schema.tables[2].columns[1].label = "Annual cost"
+    loadForm(form)
+    select("w_grid")
+    render(<PropertiesPanel />)
+    const fields = screen.getByRole("region", { name: "Fields" })
+    const search = within(fields).getByRole("textbox", { name: "Search fields" })
+    const checkboxes = () => within(fields).queryAllByRole("checkbox").map((box) => box.getAttribute("aria-label"))
+    fireEvent.click(within(fields).getByRole("button", { name: "Collapse equipment" }))
+    expect(within(fields).queryByRole("checkbox", { name: "Show equipment item" })).not.toBeInTheDocument()
+
+    // A name, whatever its case: both tables hold an item, the collapsed one shown open.
+    fireEvent.change(search, { target: { value: "ITEM" } })
+    expect(checkboxes()).toEqual(["Show equipment item", "Show premiums item"])
+    const toggle = within(screen.getByTestId("fields-table-equipment")).getByRole("button", { name: "Collapse equipment" })
+    expect(toggle).toBeDisabled()
+    expect(toggle).toHaveAttribute("aria-expanded", "true")
+    // A label, and a name made readable as a column with no label is listed.
+    fireEvent.change(search, { target: { value: "annual" } })
+    expect(checkboxes()).toEqual(["Show premiums premium"])
+    expect(within(fields).queryByTestId("fields-table-equipment")).not.toBeInTheDocument()
+    fireEvent.change(search, { target: { value: "sum insured" } })
+    expect(checkboxes()).toEqual(["Show equipment sum_insured"])
+    fireEvent.click(within(fields).getByRole("checkbox", { name: "Show equipment sum_insured" }))
+    expect(grid().fields.map((field) => field.column)).toEqual(["equipment.item", "equipment.value", "equipment.sum_insured"])
+    fireEvent.change(search, { target: { value: "zzz" } })
+    expect(within(fields).getByText("No fields match")).toBeInTheDocument()
+    expect(checkboxes()).toEqual([])
+
+    // The panel's own search outlasts a turn to Display and back; Escape empties it, the table collapsed again.
+    fireEvent.change(search, { target: { value: "value" } })
+    showPane("Display")
+    showPane("Config")
+    const again = within(screen.getByRole("region", { name: "Fields" })).getByRole("textbox", { name: "Search fields" })
+    expect(again).toHaveValue("value")
+    expect(within(screen.getByRole("region", { name: "Fields" })).queryAllByRole("checkbox").map((box) => box.getAttribute("aria-label"))).toEqual(["Show equipment value"])
+    fireEvent.keyDown(again, { key: "Escape" })
+    expect(again).toHaveValue("")
+    expect(within(screen.getByRole("region", { name: "Fields" })).getByRole("button", { name: "Expand equipment" })).toBeEnabled()
+    expect(within(screen.getByRole("region", { name: "Fields" })).queryAllByRole("checkbox").map((box) => box.getAttribute("aria-label"))).toEqual(["Show premiums item", "Show premiums premium"])
   })
 
   it("orders the fields: Alt+Down moves one, and a cross stops showing it", () => {

@@ -1,12 +1,14 @@
 /** A Table's, a Collection's or a Chart's panel, in its panes (specs/workbench). */
-import type { FormSpec } from "../../api/types"
-import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, LabelledRow, ValidatedTextField, wholeNumber } from "../../components/form"
+import { useState } from "react"
+import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
+import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, LabelledRow, SearchField, ValidatedTextField, wholeNumber } from "../../components/form"
 import useCollapsedSet from "../../hooks/useCollapsedSet"
 import PreviewPanelTabs, { type PreviewPanelTab } from "../../panels/PreviewPanelTabs"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { type WidgetPane } from "../../stores/useWorkbenchViewStore"
-import { chartGrain, COLLECTION_COLUMNS_MAX, fieldColumn, rowsShown, setTableRows, TABLE_ROWS_MAX, tableGrain, updateWidget, type FieldsWidget } from "../../utils/workbenchForm"
+import { chartGrain, COLLECTION_COLUMNS_MAX, fieldColumn, readableName, rowsShown, setTableRows, TABLE_ROWS_MAX, tableGrain, updateWidget, type FieldsWidget } from "../../utils/workbenchForm"
 import ChartSettings from "../ChartSettings"
+import { columnMatches } from "../schema/schemaText"
 import { ShowWhenEditor } from "../ShowWhenEditor"
 import { WIDGET_KINDS } from "../widgetKinds"
 import { CollectionLook } from "./CollectionLook"
@@ -32,6 +34,16 @@ export function FieldsSettings({ form, widget }: { form: FormSpec; widget: Field
   // share the grid. A key-less many-row table, for one, lines up with nothing else.
   const first = widget.fields.map((field) => fieldColumn(form, field)).find((shown) => shown?.table.rows === rows)
   const grain = widget.type === "chart" ? chartGrain(form.schema, widget) : first ? tableGrain(first.table) : null
+  // The Fields' search, the panel's own: kept as its panes change, empty for the next component.
+  const [search, setSearch] = useState("")
+  const query = search.trim()
+  const filtering = query !== ""
+  // A column with no label is listed by its name made readable, which the search finds too.
+  const matches = (column: SchemaColumn) => columnMatches(column, query) || readableName(column.name).toLowerCase().includes(query.toLowerCase())
+  // While searched, the columns of a table the search matches, by id; null while it is not.
+  const matched = (table: SchemaTable): ReadonlySet<string> | null =>
+    filtering ? new Set(table.columns.filter(matches).map((column) => column.id)) : null
+  const shownTables = tables.map((table) => ({ table, shown: matched(table) })).filter(({ shown }) => shown === null || shown.size > 0)
 
   const kind = WIDGET_KINDS[widget.type]
   // A Table's and a Collection's settings are in two panes, as Haute's node panel puts an
@@ -146,17 +158,22 @@ export function FieldsSettings({ form, widget }: { form: FormSpec; widget: Field
                 </button>
               </p>
             ) : (
-              tables.map((table) => (
-                <TableFields
-                  key={table.id}
-                  widget={widget}
-                  table={table}
-                  usable={grain === null || tableGrain(table) === grain}
-                  plots={widget.type === "chart"}
-                  collapsed={collapsed.has(table.id)}
-                  onToggle={() => toggleCollapsed(table.id)}
-                />
-              ))
+              <>
+                <SearchField value={search} onChange={setSearch} label="Search fields" />
+                {shownTables.length === 0 && <p style={{ color: "var(--text-muted)" }}>No fields match</p>}
+                {shownTables.map(({ table, shown }) => (
+                  <TableFields
+                    key={table.id}
+                    widget={widget}
+                    table={table}
+                    usable={grain === null || tableGrain(table) === grain}
+                    plots={widget.type === "chart"}
+                    matched={shown}
+                    collapsed={!filtering && collapsed.has(table.id)}
+                    onToggle={() => toggleCollapsed(table.id)}
+                  />
+                ))}
+              </>
             )}
           </Section>
         )}
