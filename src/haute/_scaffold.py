@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import PurePosixPath
 
+from haute._project_python import DEFAULT_PYTHON, container_base_image
 from haute._test_quotes import DEFAULT_TEST_QUOTES_DIR
 from haute._workbench_config import DEFAULT_FORM_PATH
 from haute._workbench_form import blank_form, render_form
@@ -280,6 +281,27 @@ _AZURE_TEST_QUOTES_JOB = """
 """
 
 
+#: The Python a generated CI job runs when the project names none (``haute init`` passes
+#: the project's own, ``haute._project_python``). The templates below are written with
+#: it, and ``_pin_ci_python`` swaps in the project's.
+DEFAULT_CI_PYTHON = DEFAULT_PYTHON
+
+# The base image a container target's template is written with; ``haute_toml`` swaps in
+# one on the project's Python.
+_TEMPLATE_BASE_IMAGE = 'base_image = "python:3.11.9-slim"'
+
+# Every form a template pins the job's Python in: setup-uv, Azure's UsePythonVersion and
+# GitLab's job image.
+_CI_PYTHON_PINS = ('python-version: "{}"', 'versionSpec: "{}"', "image: python:{}\n")
+
+
+def _pin_ci_python(text: str, python_version: str) -> str:
+    """*text* with every job's Python pin moved from the default to *python_version*."""
+    for pin in _CI_PYTHON_PINS:
+        text = text.replace(pin.format(DEFAULT_CI_PYTHON), pin.format(python_version))
+    return text
+
+
 def _github_trigger_paths(workbench: bool) -> str:
     """The deploy workflow's ``on.push.paths`` entries, one per release input."""
     dirs = [f'      - "{name}/**"' for name in _release_input_dirs(workbench)]
@@ -350,8 +372,16 @@ def _build_only_notice(target: str) -> str:
 # ── haute.toml ────────────────────────────────────────────────────────
 
 
-def haute_toml(name: str, target: str, ci: str, workbench: bool = False) -> str:
+def haute_toml(
+    name: str,
+    target: str,
+    ci: str,
+    workbench: bool = False,
+    python_version: str = DEFAULT_PYTHON,
+) -> str:
     """Generate ``haute.toml`` with only the relevant target section.
+
+    A container target's base image runs *python_version*, the project's Python.
 
     With *workbench* the ``[workbench]`` table switches the project's workbench on
     (specs/workbench); without it the project has no workbench.
@@ -369,7 +399,9 @@ target = "{target}"
 model_name = "{name}"
 endpoint_name = "{name}"
 """,
-        _target_section(name, target),
+        _target_section(name, target).replace(
+            _TEMPLATE_BASE_IMAGE, f'base_image = "{container_base_image(python_version)}"'
+        ),
         f"""\
 [test_quotes]
 dir = "tests/quotes"
@@ -481,7 +513,12 @@ def _azure_devops_secrets_env(target: str, indent: str = "              ") -> st
 # ── GitHub Actions: ci.yml ────────────────────────────────────────────
 
 
-def github_ci_yml(*, workbench: bool = False) -> str:
+def github_ci_yml(*, workbench: bool = False, python_version: str = DEFAULT_CI_PYTHON) -> str:
+    """:func:`_github_ci_yml` with every job's Python pinned to *python_version*."""
+    return _pin_ci_python(_github_ci_yml(workbench=workbench), python_version)
+
+
+def _github_ci_yml(*, workbench: bool = False) -> str:
     """PR checks workflow for GitHub Actions; a workbench project's also reports what the
     change does to its test quotes, on the pull request."""
     jobs = """\
@@ -555,7 +592,14 @@ jobs:
     return jobs + (_GITHUB_TEST_QUOTES_JOB if workbench else "")
 
 
-def github_deploy_yml(target: str, *, workbench: bool = False) -> str:
+def github_deploy_yml(
+    target: str, *, workbench: bool = False, python_version: str = DEFAULT_CI_PYTHON
+) -> str:
+    """:func:`_github_deploy_yml` with every job's Python pinned to *python_version*."""
+    return _pin_ci_python(_github_deploy_yml(target, workbench=workbench), python_version)
+
+
+def _github_deploy_yml(target: str, *, workbench: bool = False) -> str:
     """Merge-to-main deploy workflow for GitHub Actions.
 
     Runs automatically: validate → staging → smoke test → impact analysis.
@@ -677,7 +721,12 @@ jobs:
     )
 
 
-def github_deploy_prod_yml(target: str) -> str:
+def github_deploy_prod_yml(target: str, *, python_version: str = DEFAULT_CI_PYTHON) -> str:
+    """:func:`_github_deploy_prod_yml` with every job's Python pinned to *python_version*."""
+    return _pin_ci_python(_github_deploy_prod_yml(target), python_version)
+
+
+def _github_deploy_prod_yml(target: str) -> str:
     """Manual production deploy workflow for GitHub Actions.
 
     Triggered via the GitHub Actions UI (workflow_dispatch) after
@@ -749,7 +798,14 @@ jobs:
 # ── GitLab CI ────────────────────────────────────────────────────────
 
 
-def gitlab_ci_yml(target: str, *, workbench: bool = False) -> str:
+def gitlab_ci_yml(
+    target: str, *, workbench: bool = False, python_version: str = DEFAULT_CI_PYTHON
+) -> str:
+    """:func:`_gitlab_ci_yml` with every job's Python pinned to *python_version*."""
+    return _pin_ci_python(_gitlab_ci_yml(target, workbench=workbench), python_version)
+
+
+def _gitlab_ci_yml(target: str, *, workbench: bool = False) -> str:
     """Combined CI + deploy pipeline for GitLab CI/CD.
 
     Uses GitLab stages to enforce ordering.  The ``deploy-production``
@@ -861,7 +917,14 @@ deploy-production:
 # ── Azure DevOps ─────────────────────────────────────────────────────
 
 
-def azure_devops_yml(target: str, *, workbench: bool = False) -> str:
+def azure_devops_yml(
+    target: str, *, workbench: bool = False, python_version: str = DEFAULT_CI_PYTHON
+) -> str:
+    """:func:`_azure_devops_yml` with every job's Python pinned to *python_version*."""
+    return _pin_ci_python(_azure_devops_yml(target, workbench=workbench), python_version)
+
+
+def _azure_devops_yml(target: str, *, workbench: bool = False) -> str:
     """Combined CI + deploy pipeline for Azure DevOps.
 
     Uses stages to enforce ordering.  The ``DeployProduction`` stage

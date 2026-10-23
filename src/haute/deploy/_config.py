@@ -562,6 +562,40 @@ def _load_env(project_root: Path) -> None:
     load_dotenv(env_path, override=False)
 
 
+def _validate_python_versions(config: DeployConfig, project_root: Path) -> None:
+    """Refuse a deploy whose Python differs from the project's (haute._project_python).
+
+    The deployed model runs ``deployed_python_version``: the project's
+    ``.python-version`` pin, or else the Python this deploy runs on, which CI tested.
+    So the interpreter running the deploy must be the pinned one, and a container's
+    ``python`` base image must run that same version; an image Haute cannot read a
+    version from (a custom image, a digest pin) is the project's to keep in step.
+    """
+    from haute._project_python import (
+        base_image_python_version,
+        deploy_python_mismatch,
+        deployed_python_version,
+        python_version_matches,
+    )
+
+    mismatch = deploy_python_mismatch(project_root)
+    if mismatch is not None:
+        raise DeployError(mismatch, project_root=str(project_root))
+    if config.target not in _CONTAINER_BASED_TARGETS:
+        return
+    image_python = base_image_python_version(config.container.base_image)
+    serving = deployed_python_version(project_root)
+    if image_python is not None and not python_version_matches(serving, image_python):
+        raise DeployError(
+            f"container.base_image {config.container.base_image!r} runs Python "
+            f"{image_python}, but the project runs Python {serving}. Set base_image in "
+            f"haute.toml to a python:{serving}.x image so the container runs the Python "
+            "the pipeline was tested on.",
+            base_image=config.container.base_image,
+            python_version=serving,
+        )
+
+
 def resolve_config(config: DeployConfig) -> ResolvedDeploy:
     """Parse pipeline, prune graph, detect I/O nodes, collect artifacts, infer schemas.
 
@@ -611,6 +645,7 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
         project_root = canonical_pipeline.parent
     config.pipeline_file = canonical_pipeline
     _load_env(project_root)
+    _validate_python_versions(config, project_root)
 
     # Parse the pipeline
     full_graph = parse_pipeline_file(config.pipeline_file)

@@ -88,7 +88,9 @@ a structural TOML edit rather than string templating so existing content survive
 `rating/` package tree (including `rating/utility/__init__.py` and
 `rating/utility/features.py`), an empty `rating/config/`, and the empty `rating/files/data/`, `rating/files/models/` and `rating/files/params/` folders where versioned data, model and parameter files go ([pipeline-config](../pipeline-config/high-level.md)), writes `haute.toml` via `haute._scaffold.haute_toml` (with the `[workbench]` table when
 `--workbench` is given, and then `forms/form.json` via `haute._scaffold.starter_form`),
-writes `.env.example`, writes starter tests, writes CI workflow files for the chosen provider
+writes `.env.example`, writes starter tests, writes `.python-version` with the project's Python when it has none
+(`haute._project_python.project_python_version`), writes CI workflow files for the chosen
+provider on that Python
 (pruning a *different* provider's stale files first on `--force`), installs a pre-commit hook into
 `.githooks/` and — if inside a git repo — `.git/hooks/`, and appends `.gitignore` guard entries via
 `haute._gitignore_guard.ensure_gitignore_guards`. A pre-existing root `main.py` is deleted and

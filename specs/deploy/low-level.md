@@ -135,7 +135,11 @@
 **Resolution (`src/haute/deploy/_config.py::resolve_config`)**
 1. Re-validate base-image pinning (config may have been mutated after `__post_init__` via
    `.override()` or env overrides).
-2. Load `.env` (idempotent).
+2. Load `.env` (idempotent), then `_validate_python_versions`: the interpreter running the
+   deploy must be `.python-version`'s pin (or satisfy `requires-python` when there is no
+   pin), and a container target's official `python:` base image must run the deployed
+   Python (`haute._project_python`), so local, CI and the deployed model run one Python;
+   an image whose tag names no Python version is not checked.
 3. `parse_pipeline_file(config.pipeline_file)` → `full_graph`; error if empty;
    `validate_singleton_groups(flatten_graph(full_graph))` refuses a second request input or
    response node, as save does.
@@ -542,7 +546,8 @@ model-from-code with the manifest + every bundled artefact attached (each staged
 `copy_verified` into a temporary directory removed after logging, so a file changed since
 resolution fails the deploy before MLflow copies it), the bundled `utility` package as its only MLflow
 `code_paths` entry (MLflow copies it under the model's `code/` directory and puts that on
-`sys.path` when the model loads), a `conda_env` with Python 3.11.11 and both Haute and
+`sys.path` when the model loads), a `conda_env` with the project's Python (`_project_python.deployed_python_version`:
+`.python-version`'s pin, else the `major.minor` the deploy runs on, which CI tested) and both Haute and
 Polars pinned to the editor's installed versions (`_pip_requirements`; the pinned Haute
 brings its own model engines, CatBoost among them, and a Polars release can change a
 pipeline's results and memory behaviour, so a major range would let a 2.x release change a
@@ -588,8 +593,10 @@ pair. Deploy never uses the general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair.
    `request_rows=None` (the dry runs, the bundle's schema check and the lookup checks) is
    always one frame and never counted. `score_graph_lazy` takes a quote-by-quote request of
    one quote only; the batch child and `score_graph` route several.
-1. Resolve the graph's relative path configs against `graph.source_file`
-   (`_resolve_runtime_graph_paths`) and attach bundled feature-contract paths to
+1. Resolve the graph's relative path configs as bundling does, the directory of
+   `graph.source_file` first and then the project root, backslashes read as separators
+   (`_resolve_runtime_graph_paths`, through `_path_resolution.resolve_graph_source_path`,
+   which `_schema._resolve_pipeline_path` shares for schema inference and the sample row) and attach bundled feature-contract paths to
    `modelScore` node configs (`_attach_bundled_feature_contracts`). When a remapped
    native model has no bundled feature-contract sidecar, load that local model through
    the shared stat-gated local-model cache (`load_local_model_cached`) and attach its

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import stat
 import sys
 import tomllib
@@ -912,3 +913,56 @@ class TestInitWorkbench:
         with open(tmp_path / "haute.toml", "rb") as fh:
             assert tomllib.load(fh)["workbench"]["enabled"] is True
         assert (tmp_path / "forms" / "form.json").read_text(encoding="utf-8") != "edited"
+
+
+class TestInitCiRunsTheProjectsPython:
+    """The generated CI installs the Python the project runs on, or ``uv sync`` refuses it."""
+
+    @pytest.mark.parametrize(
+        ("files", "expected"),
+        [
+            ({}, "3.11"),
+            ({"pyproject.toml": '[project]\nname = "p"\nrequires-python = ">=3.13"\n'}, "3.13"),
+            ({"pyproject.toml": '[project]\nname = "p"\nrequires-python = "~=3.12.1"\n'}, "3.12"),
+            # Below Haute's own floor, the lowest Python Haute runs on.
+            ({"pyproject.toml": '[project]\nname = "p"\nrequires-python = ">=3.9"\n'}, "3.11"),
+            # .python-version decides first, as it does for uv.
+            (
+                {
+                    "pyproject.toml": '[project]\nname = "p"\nrequires-python = ">=3.11"\n',
+                    ".python-version": "3.13\n",
+                },
+                "3.13",
+            ),
+        ],
+        ids=["no-pyproject", "floor", "compatible", "below-haute", "python-version-file"],
+    )
+    @pytest.mark.parametrize("ci_option", ["github", "gitlab", "azure-devops"])
+    def test_every_job_pins_the_projects_python(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        files: dict[str, str],
+        expected: str,
+        ci_option: str,
+    ):
+        monkeypatch.chdir(tmp_path)
+        for name, content in files.items():
+            (tmp_path / name).write_text(content, encoding="utf-8")
+
+        result = runner.invoke(cli, ["init", "--ci", ci_option], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        generated = {
+            "github": [".github/workflows/ci.yml", ".github/workflows/deploy-staging.yml"],
+            "gitlab": [".gitlab-ci.yml"],
+            "azure-devops": ["azure-pipelines.yml"],
+        }[ci_option]
+        for relative in generated:
+            text = (tmp_path / relative).read_text(encoding="utf-8")
+            pins = re.findall(
+                r'python-version: "([\d.]+)"|versionSpec: "([\d.]+)"|image: python:([\d.]+)\n', text
+            )
+            assert pins, relative
+            assert {next(v for v in pin if v) for pin in pins} == {expected}, relative

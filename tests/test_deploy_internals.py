@@ -5262,20 +5262,19 @@ class TestCondaEnvAndPipRequirements:
     def test_conda_env_structure(self):
         from haute.deploy._mlflow import _conda_env
 
-        env = _conda_env()
+        env = _conda_env("3.13")
 
         assert env["name"] == "mlflow-env"
         assert "conda-forge" in env["channels"]
         assert len(env["dependencies"]) == 3  # python, pip, pip-dict
         assert env["dependencies"][0].startswith("python=")
 
-    def test_conda_env_pins_python_version(self):
-        from haute.deploy._mlflow import _SERVING_PYTHON_VERSION, _conda_env
+    @pytest.mark.parametrize("version", ["3.13", "3.12.8"])
+    def test_conda_env_pins_the_projects_python(self, version: str):
+        """The model serves on the Python the project ran on, at the precision it names."""
+        from haute.deploy._mlflow import _conda_env
 
-        env = _conda_env()
-
-        python_dep = env["dependencies"][0]
-        assert python_dep == f"python={_SERVING_PYTHON_VERSION}"
+        assert _conda_env(version)["dependencies"][0] == f"python={version}"
 
 
 class TestCheckDatabricksConnectivity:
