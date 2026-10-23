@@ -19,6 +19,8 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from haute._cache import GraphFingerprintMemo, canonical_json
+from haute._databricks_credentials import DatabricksConfigError
+from haute._databricks_output import DatabricksWriteError
 from haute._editor_identities import (
     NamedCandidate,
     NamingCandidate,
@@ -85,8 +87,9 @@ from haute._pipeline_settings import (
 )
 from haute._polars_io_registry import (
     PolarsIoConfigError,
+    data_output_group,
     format_for_config,
-    format_group,
+    is_databricks_output,
     validate_data_output_config,
 )
 from haute._polars_steps import (
@@ -2184,6 +2187,10 @@ async def output_destination(body: OutputDestinationRequest) -> OutputDestinatio
         config,
         project_root=project_root,
     )
+    if is_databricks_output(config):
+        return OutputDestinationResponse(
+            path=display_path, format="databricks", suffix_mismatch=False
+        )
     fmt = format_for_config(config)
     raw_path = config.get("path")
     suffix = (
@@ -2252,6 +2259,10 @@ def _prepare_data_output_worker(
         return _OutputWriteWorkerOutcome(failure_kind="bounded", detail=str(exc))
     except DataOutputDestinationExistsError as exc:
         return _OutputWriteWorkerOutcome(failure_kind="destination_exists", detail=str(exc))
+    except DatabricksConfigError as exc:
+        return _OutputWriteWorkerOutcome(failure_kind="databricks_config", detail=str(exc))
+    except DatabricksWriteError as exc:
+        return _OutputWriteWorkerOutcome(failure_kind="databricks_write", detail=str(exc))
     except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
         return _OutputWriteWorkerOutcome(
             failure_kind="memory",
@@ -2423,7 +2434,7 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
         config,
         project_root=project_root,
     )
-    is_file_target = format_group(format_for_config(config)) == "file"
+    is_file_target = data_output_group(config) == "file"
     if (
         is_file_target
         and resolved_output is not None
@@ -2485,6 +2496,10 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
             raise HTTPException(status_code=422, detail=e.detail) from None
         if e.kind == "destination_exists":
             raise HTTPException(status_code=409, detail=e.detail) from None
+        if e.kind == "databricks_config":
+            raise HTTPException(status_code=400, detail=e.detail) from None
+        if e.kind == "databricks_write":
+            raise HTTPException(status_code=502, detail=e.detail) from None
         if e.kind == "memory":
             raise HTTPException(status_code=507, detail=e.payload or e.detail) from None
         raise AssertionError(f"unhandled output worker failure kind: {e.kind}")

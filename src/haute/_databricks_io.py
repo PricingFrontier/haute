@@ -111,7 +111,9 @@ def _service_principal_credentials(
     return provider
 
 
-def _connection_settings(http_path: str | None = None) -> tuple[str, dict[str, Any], str]:
+def _connection_settings(
+    http_path: str | None = None, *, node_label: str = "Data Input"
+) -> tuple[str, dict[str, Any], str]:
     """Resolve Databricks connection settings from the environment.
 
     Auth precedence: an explicit ``DATABRICKS_TOKEN`` (PAT) wins;
@@ -121,6 +123,7 @@ def _connection_settings(http_path: str | None = None) -> tuple[str, dict[str, A
 
     Args:
         http_path: SQL Warehouse HTTP path from the node config.
+        node_label: The node kind named when ``http_path`` is missing.
 
     Returns ``(host, auth_kwargs, http_path)`` where ``auth_kwargs`` are
     passed to ``databricks.sql.connect``. The failure message names every
@@ -128,7 +131,9 @@ def _connection_settings(http_path: str | None = None) -> tuple[str, dict[str, A
     """
     resolved_http_path = (http_path or "").strip()
     credentials = resolve_databricks_credentials(
-        additional_missing=("http_path on the Data Input node",) if not resolved_http_path else ()
+        additional_missing=(f"http_path on the {node_label} node",)
+        if not resolved_http_path
+        else ()
     )
 
     if credentials.auth_mode == "pat":

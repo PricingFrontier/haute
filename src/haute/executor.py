@@ -1995,8 +1995,15 @@ def resolve_data_output_path(
     land under ``outputs/``. File outputs are project-root-relative. The default
     extension comes from the format registry; explicit extensions are preserved.
     """
-    from haute._polars_io_registry import default_output_extension, format_for_config, format_group
+    from haute._polars_io_registry import (
+        default_output_extension,
+        format_for_config,
+        format_group,
+        is_databricks_output,
+    )
 
+    if is_databricks_output(config):
+        return None, str(config.get("table", ""))
     root = _infer_project_root(
         project_root=project_root,
         source_file=graph.source_file,
@@ -2141,14 +2148,14 @@ def prepare_data_output(
             admitted_context.release_admission(preserve_primary_error=True)
 
     config = _data_output_config(graph, output_node_id)
-    from haute._polars_io_registry import format_for_config, format_group
+    from haute._polars_io_registry import data_output_group
 
     root = _infer_project_root(
         project_root=project_root,
         source_file=graph.source_file,
     )
     out, path = resolve_data_output_path(graph, config, project_root=root)
-    is_file_target = format_group(format_for_config(config)) == "file"
+    is_file_target = data_output_group(config) == "file"
     if is_file_target and out is not None and out.exists() and not overwrite:
         raise DataOutputDestinationExistsError(path)
 
@@ -2316,7 +2323,7 @@ def prepare_data_output(
             message=f"Wrote {row_count:,} rows to {path}",
             row_count=row_count,
             path=path,
-            format=str(config["format"]),
+            format=str(config.get("format") or config["outputType"]),
             execution_metrics=(
                 ExecutionMetricsPayload.model_validate(
                     execution_context.metrics_payload(status="completed")

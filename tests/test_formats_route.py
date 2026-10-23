@@ -36,7 +36,12 @@ class TestIoCapabilitiesEndpoint:
         ]
         databricks = payload.groups[3]
         assert databricks.input_available is True
-        assert databricks.output_available is False
+        assert databricks.output_available is True
+        assert [field.name for field in databricks.output_fields] == [
+            "http_path",
+            "table",
+            "write_mode",
+        ]
         assert databricks.formats == []
         assert databricks.cache_modes == ["snapshot"]
         assert payload.groups[0].cache_modes == ["direct", "snapshot"]

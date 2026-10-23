@@ -6,6 +6,7 @@
 |---|---|
 | `src/haute/_databricks_credentials.py` | Single environment-to-credentials boundary: redaction-safe `DatabricksCredentials`, `DatabricksConfigError`, host normalisation, completeness validation, and PAT-over-service-principal precedence. |
 | `src/haute/_databricks_io.py` | SQL-connector adaptation, table/projection validation, canonical table identity, bounded Arrow batch iteration, retries, and integrity checks. It raises `DatabricksConfigError` from `src/haute/_databricks_credentials.py`. |
+| `src/haute/_databricks_output.py` | Data Output writes to a Unity Catalog table: Spark-compatible dtype casts, the staged Parquet upload, the overwrite/append load SQL, staged-file cleanup, and `DatabricksWriteError`. |
 | `src/haute/routes/databricks.py` | `/api/databricks` Unity Catalog browsing endpoints. |
 
 `src/haute/_input_providers.py`, `src/haute/_source_cache.py`, and
@@ -45,6 +46,32 @@
    `cursor.rownumber`.
 8. Arrow tables flow directly into `SourceCacheStore`, which owns Parquet writing and
    atomic publication.
+
+### Table write
+
+A Data Output with `outputType: "databricks"` has no `format`;
+`write_polars_output()` dispatches it to `write_databricks_output()` before any
+format lookup.
+
+1. Registry validation requires `http_path` and `table`, allows an optional
+   `write_mode` of `overwrite` (the default) or `append`, and refuses arguments.
+2. The writer re-checks `_TABLE_NAME_RE`, builds the load SQL, and resolves
+   credentials with `_connection_settings(http_path, node_label="Data Output")`.
+3. `_spark_compatible()` casts `Null` and `Time` columns to strings and
+   nanosecond datetimes to microseconds. The frame then streams through the
+   ordinary Parquet sink into a temporary directory, and the row count comes
+   from that file's metadata.
+4. One connection, with `staging_allowed_local_path` set to the temporary
+   directory, runs `CREATE VOLUME IF NOT EXISTS` for `haute_staging` in the
+   target schema, then `PUT` of the file under a fresh UUID name, then the load:
+   `CREATE OR REPLACE TABLE ... AS SELECT` for overwrite, or `CREATE TABLE IF NOT
+   EXISTS ... LIMIT 0` followed by `INSERT INTO ... BY NAME` for append.
+5. `REMOVE` of the staged file runs in a `finally`. A cleanup failure is logged
+   and never masks the load's own outcome.
+
+The write is transactional: there is no staging path on disk to publish, and
+`resolve_data_output_path()` returns `(None, table)`. Duplicate-destination
+detection compares `_canonical_table()` spellings.
 
 ### Credentials
 
@@ -94,6 +121,10 @@ or publish snapshots.
 `SystemExit`, and programming/type errors are never retried. Other fetch errors are retried
 within the fixed budget and the final provider exception propagates with its message.
 
+A table write wraps any connector failure in `DatabricksWriteError`, whose message
+is the whitespace-collapsed warehouse error (truncated at 600 characters). The
+write-output route maps it to 502 and `DatabricksConfigError` to 400.
+
 The input-cache worker logs `error_type` and a shared credential-scrubbed `error` for
 provider failures; raw error text is not copied to public responses. Browsing endpoints
 preserve deliberate `HTTPException` responses and log unexpected SDK messages before
@@ -107,6 +138,9 @@ returning a generic 500.
 - `tests/test_databricks_io.py` covers SQL credential adaptation, table/projection validation,
   cancellation before execute, batch streaming, retries, empty-schema behaviour, row-loss
   detection, identity-independent batch sizing, and builder-through-store publication.
+- `tests/test_databricks_output.py` covers output config validation, the load SQL,
+  dtype casts, the staged write over a fake connector (including cleanup after a
+  failed load), a pipeline write, destination identity, and worker error kinds.
 - `tests/test_databricks_endpoints.py` covers optional dependency/credential failures,
   SDK mapping, and generic error responses for browsing.
 - `tests/test_databricks_routes_auth.py` proves the browsing adapter consumes

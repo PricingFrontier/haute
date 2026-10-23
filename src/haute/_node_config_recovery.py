@@ -74,7 +74,7 @@ _UNIVERSAL = {
 _STRUCTURAL = {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
 _DISCRIMINANTS = {
     NodeType.DATA_INPUT: ("inputType", {"file", "database", "lakehouse", "databricks", "inline"}),
-    NodeType.DATA_OUTPUT: ("outputType", {"file", "database", "lakehouse"}),
+    NodeType.DATA_OUTPUT: ("outputType", {"file", "database", "lakehouse", "databricks"}),
     NodeType.MODEL_SCORE: ("sourceType", {"run", "registered", "file"}),
     NodeType.MODELLING: ("algorithm", set(DESCRIPTORS)),
     NodeType.OPTIMISER: ("mode", {"online", "ratebook"}),
