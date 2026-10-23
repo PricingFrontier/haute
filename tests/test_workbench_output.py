@@ -674,7 +674,10 @@ def _identified() -> PipelineGraph:
                 "item_premiums",
                 NodeType.POLARS,
                 {
-                    "code": "df = items.with_columns(premium=pl.col('value') * 2, reference=pl.lit('X'))"
+                    "code": (
+                        "df = items.with_columns(premium=pl.col('value') * 2, "
+                        "reference=pl.lit('X'))"
+                    )
                 },
             ),
             _node(
