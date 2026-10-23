@@ -8,16 +8,20 @@
  * rules and defaults of those the underwriter types, are the project's. Read only, in
  * Preview, it shows the schema as it is: a table still collapses and a column's details still
  * open, but nothing in it changes. It opens again as it was left: its tables collapsed, the
- * column whose details are open and its scroll are the view store's.
+ * column whose details are open, its scroll and its search are the view store's. The search
+ * shows only the columns whose name or label holds its text, in the tables holding one, and
+ * while it does nothing is added or moved, so each edit is to a column it shows.
  */
 import { useLayoutEffect, useMemo, useRef, useState } from "react"
-import { QuietAction } from "../components/form"
+import type { SchemaTable } from "../api/types"
+import { QuietAction, SearchField } from "../components/form"
 import useListReorder from "../hooks/useListReorder"
 import useRefocusAfterMove from "../hooks/useRefocusAfterMove"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { addSchemaTable, createSchemaTable, isQuoteDetails, moveSchemaTable, schemaProblems } from "../utils/workbenchForm"
+import { columnMatches } from "./schema/schemaText"
 import { TableBlock } from "./schema/TableBlock"
 
 /** The schema's pane's editor: the form's tables of named, typed columns. */
@@ -34,6 +38,8 @@ export default function SchemaEditor({ readOnly = false }: { readOnly?: boolean 
   const collapsed = useWorkbenchViewStore((s) => s.schemaCollapsed)
   const toggleCollapsed = useWorkbenchViewStore((s) => s.toggleSchemaCollapsed)
   const setScroll = useWorkbenchViewStore((s) => s.setSchemaScroll)
+  const search = useWorkbenchViewStore((s) => s.schemaSearch)
+  const setSearch = useWorkbenchViewStore((s) => s.setSchemaSearch)
   // Scrolled where it was left, once it is drawn.
   const scroller = useRef<HTMLDivElement>(null)
   useLayoutEffect(() => {
@@ -45,6 +51,12 @@ export default function SchemaEditor({ readOnly = false }: { readOnly?: boolean 
   if (form === null) throw new Error("The schema editor needs the form loaded")
   const problems = schemaProblems(form, reserved)
   const { tables } = form.schema
+  const query = search.trim()
+  const filtering = query !== ""
+  // While searched, the columns of a table the search matches, by id; null while it is not.
+  const matched = (table: SchemaTable): ReadonlySet<string> | null =>
+    filtering ? new Set(table.columns.filter((column) => columnMatches(column, query)).map((column) => column.id)) : null
+  const shownTables = tables.map((table, index) => ({ table, index, shown: matched(table) })).filter(({ shown }) => shown === null || shown.size > 0)
 
   const addTable = () => {
     const table = createSchemaTable(form)
@@ -53,37 +65,48 @@ export default function SchemaEditor({ readOnly = false }: { readOnly?: boolean 
   }
 
   return (
-    <div
-      ref={scroller}
-      onScroll={(event) => setScroll(event.currentTarget.scrollTop)}
-      className="min-h-0 flex-1 overflow-auto"
-      data-testid="schema-editor"
-    >
-      <div className="flex max-w-[640px] flex-col gap-1.5 px-4 py-3 text-xs">
-        {tables.length === 0 && (
-          <p className="px-1" style={{ color: "var(--text-muted)" }}>
-            No tables yet. A table holds related columns, such as <code className="font-mono">policy_details</code>.
-          </p>
-        )}
-        {tables.map((table, index) => (
-          <TableBlock
-            key={table.id}
-            form={form}
-            table={table}
-            index={index}
-            refocus={refocus}
-            drag={readOnly || isQuoteDetails(table) ? undefined : dragTable(index)}
-            readOnly={readOnly}
-            added={added}
-            setAdded={setAdded}
-            details={details}
-            setDetails={setDetails}
-            collapsed={collapsed.has(table.id)}
-            onToggleCollapsed={() => toggleCollapsed(table.id)}
-            problems={problems.filter((p) => p.tableId === table.id).map((p) => p.message)}
-          />
-        ))}
-        {!readOnly && <QuietAction onClick={addTable} className="justify-self-start">Add table</QuietAction>}
+    <div className="flex min-h-0 flex-1 flex-col" data-testid="schema-editor">
+      <div className="max-w-[640px] px-4 pt-3 pb-1.5">
+        <SearchField value={search} onChange={setSearch} label="Search fields" />
+      </div>
+      <div
+        ref={scroller}
+        onScroll={(event) => setScroll(event.currentTarget.scrollTop)}
+        className="min-h-0 flex-1 overflow-auto"
+        data-testid="schema-tables"
+      >
+        <div className="flex max-w-[640px] flex-col gap-1.5 px-4 pt-1.5 pb-3 text-xs">
+          {tables.length === 0 && (
+            <p className="px-1" style={{ color: "var(--text-muted)" }}>
+              No tables yet. A table holds related columns, such as <code className="font-mono">policy_details</code>.
+            </p>
+          )}
+          {tables.length > 0 && shownTables.length === 0 && (
+            <p className="px-1" style={{ color: "var(--text-muted)" }}>
+              No fields match
+            </p>
+          )}
+          {shownTables.map(({ table, index, shown }) => (
+            <TableBlock
+              key={table.id}
+              form={form}
+              table={table}
+              index={index}
+              refocus={refocus}
+              drag={readOnly || filtering || isQuoteDetails(table) ? undefined : dragTable(index)}
+              readOnly={readOnly}
+              matched={shown}
+              added={added}
+              setAdded={setAdded}
+              details={details}
+              setDetails={setDetails}
+              collapsed={!filtering && collapsed.has(table.id)}
+              onToggleCollapsed={() => toggleCollapsed(table.id)}
+              problems={problems.filter((p) => p.tableId === table.id).map((p) => p.message)}
+            />
+          ))}
+          {!readOnly && !filtering && <QuietAction onClick={addTable} className="justify-self-start">Add table</QuietAction>}
+        </div>
       </div>
     </div>
   )

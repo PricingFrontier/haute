@@ -6,7 +6,8 @@
  * panel, the sheet's zoom, a component being dragged out of the palette, a section being
  * moved by its header, the sheet's size as pressed while an edge is dragged, the properties
  * panel's width and the pane it last showed for each component, the schema's pane's width
- * and how it was left (its tables collapsed, the column whose details are open, its scroll),
+ * and how it was left (its tables collapsed, the column whose details are open, its scroll
+ * and its search),
  * the component copied, and the sheet and viewport elements that drops are placed on and
  * the zoom fits to, and the schema's pane, where nothing drops. None of it is part of the form, so none is saved or undone.
  */
@@ -108,11 +109,13 @@ interface WorkbenchViewState {
   schemaWidth: number
   /**
    * The schema's pane as it was left, so it opens again as it was closed: the tables shown
-   * collapsed, by id, the column whose label and rules are open, and how far it is scrolled.
+   * collapsed, by id, the column whose label and rules are open, how far it is scrolled and
+   * the text filtering its columns, "" for none.
    */
   schemaCollapsed: ReadonlySet<string>
   schemaDetails: string | null
   schemaScroll: number
+  schemaSearch: string
   /** The pane each component's properties panel last showed, by component id; Config until another is chosen. */
   widgetPanes: Record<string, WidgetPane>
   /** The component Ctrl/Cmd+C copied, which Ctrl/Cmd+V pastes, or null. */
@@ -149,6 +152,7 @@ interface WorkbenchViewState {
   toggleSchemaCollapsed: (tableId: string) => void
   setSchemaDetails: (columnId: string | null) => void
   setSchemaScroll: (top: number) => void
+  setSchemaSearch: (text: string) => void
   setWidgetPane: (id: string, pane: WidgetPane) => void
   setCopied: (copied: Copied | null) => void
   setSheet: (element: HTMLElement | null) => void
@@ -174,6 +178,7 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   schemaCollapsed: new Set(),
   schemaDetails: null,
   schemaScroll: 0,
+  schemaSearch: "",
   widgetPanes: {},
   copied: null,
   sheet: null,
@@ -216,6 +221,7 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
     }),
   setSchemaDetails: (schemaDetails) => set({ schemaDetails }),
   setSchemaScroll: (schemaScroll) => set({ schemaScroll }),
+  setSchemaSearch: (schemaSearch) => set({ schemaSearch }),
   setWidgetPane: (id, pane) => set((s) => ({ widgetPanes: { ...s.widgetPanes, [id]: pane } })),
   setCopied: (copied) => set({ copied }),
   setSheet: (sheet) => set({ sheet }),

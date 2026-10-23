@@ -29,11 +29,13 @@ interface ColumnRowProps {
   locked: boolean
   /** In Preview: the column shows as it is, its details too, nothing in it changed. */
   readOnly: boolean
+  /** While the schema is searched: the column is not moved, nor does Enter add the next. */
+  filtering: boolean
   /** Its part in dragging the table's columns into a new order; none for the index or in quote_details, which stay. */
   drag: RowDrag | undefined
 }
 
-export function ColumnRow({ form, table, column, index, refocus, fresh, open, onToggleDetails, onInsertAfter, locked, readOnly, drag }: ColumnRowProps) {
+export function ColumnRow({ form, table, column, index, refocus, fresh, open, onToggleDetails, onInsertAfter, locked, readOnly, filtering, drag }: ColumnRowProps) {
   const change = useWorkbenchFormStore((s) => s.change)
   const row = useRef<HTMLDivElement>(null)
   const shown = fieldUses(form, table.id, column.id).length
@@ -56,7 +58,7 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
   // Enter in the last column's name adds the next column, and in any other only commits it;
   // Alt+Up and Alt+Down move this one.
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (fixed) return
+    if (fixed || filtering) return
     if (e.key === "Enter") {
       e.preventDefault()
       if (index === table.columns.length - 1) onInsertAfter()
@@ -106,7 +108,7 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
         <CommittedTextField
           ref={refocus.register(column.id)}
           aria-label="Column name"
-          aria-keyshortcuts={fixed ? undefined : "Alt+ArrowUp Alt+ArrowDown"}
+          aria-keyshortcuts={fixed || filtering ? undefined : "Alt+ArrowUp Alt+ArrowDown"}
           value={column.name}
           onCommit={(name) => set({ name })}
           {...fresh}

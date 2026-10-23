@@ -53,7 +53,9 @@ Both workbench nodes' panels have **Edit in Workbench**, which opens the view.
 
 **Schema** in the toolbar opens the schema in a pane over the left of the sheet; **Schema**
 again, or the pane's close button, closes it, and it opens again as you left it; dragging
-its right edge widens it. The
+its right edge widens it. **Search fields** at its top shows only the columns whose name or
+label holds what you type; while it does, columns and tables can be edited or removed but
+not added or moved. Clear it, or press Escape in it, to see the whole schema again. The
 sheet stays where it is under the pane, and the pane stays open as you switch sheets or go
 to Preview, where it shows the schema without letting you change it.
 

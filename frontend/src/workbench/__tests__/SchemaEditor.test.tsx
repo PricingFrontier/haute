@@ -150,7 +150,7 @@ describe("SchemaEditor", () => {
   afterEach(() => {
     cleanup()
     useWorkbenchFormStore.setState({ form: null, status: "idle", undoStack: [], redoStack: [] })
-    useWorkbenchViewStore.setState({ schemaCollapsed: new Set(), schemaDetails: null, schemaScroll: 0 })
+    useWorkbenchViewStore.setState({ schemaCollapsed: new Set(), schemaDetails: null, schemaScroll: 0, schemaSearch: "" })
     useDocumentStatusStore.setState({ capabilities: null })
     vi.mocked(fetchParamFile).mockReset()
   })
@@ -702,7 +702,8 @@ describe("SchemaEditor", () => {
     for (const name of ["exposure", "state", "limit"]) {
       fireEvent.click(screen.getByRole("button", { name: `Label and rules of ${name}` }))
       expect(screen.getByRole("textbox", { name: `Label of ${name}` })).toBeInTheDocument()
-      expect(document.querySelectorAll("[placeholder]")).toHaveLength(0)
+      // The tables' boxes; the search over them is named by its placeholder.
+      expect(screen.getByTestId("schema-tables").querySelectorAll("[placeholder]")).toHaveLength(0)
     }
   })
 
@@ -821,16 +822,76 @@ describe("SchemaEditor", () => {
     const { unmount } = render(<SchemaEditor />)
     fireEvent.click(screen.getByRole("button", { name: "Collapse policy_details" }))
     fireEvent.click(screen.getByRole("button", { name: "Label and rules of limit" }))
-    const editor = screen.getByTestId("schema-editor")
-    editor.scrollTop = 120
-    fireEvent.scroll(editor)
+    const tables = screen.getByTestId("schema-tables")
+    tables.scrollTop = 120
+    fireEvent.scroll(tables)
     unmount()
 
     render(<SchemaEditor />)
     expect(within(tableNamed("policy_details")).queryAllByRole("textbox", { name: "Column name" })).toEqual([])
     expect(screen.getByRole("textbox", { name: "Label of limit" })).toBeInTheDocument()
-    expect(screen.getByTestId("schema-editor").scrollTop).toBe(120)
+    expect(screen.getByTestId("schema-tables").scrollTop).toBe(120)
   })
+
+  it("searches the fields: the columns whose name or label holds the text, whatever its case, in the tables holding one, open", () => {
+    load(form(POLICY, { ...LAYERS, columns: [...LAYERS.columns, column("c_excess", "excess", { label: "Policy Excess" })] }))
+    const { unmount } = render(<SchemaEditor />)
+    fireEvent.click(screen.getByRole("button", { name: "Collapse policy_details" }))
+    const search = screen.getByRole("textbox", { name: "Search fields" })
+
+    fireEvent.change(search, { target: { value: "POLICY" } })
+    // A label matches; a table name alone does not.
+    expect(screen.queryByRole("region", { name: "Table policy_details" })).toBeNull()
+    expect(columnNames("layers")).toEqual(["excess"])
+
+    fireEvent.change(search, { target: { value: "t" } })
+    // Open though collapsed, its toggle off while the search filters.
+    expect(columnNames("policy_details")).toEqual(["state"])
+    expect(screen.getByRole("button", { name: "Collapse policy_details" })).toBeDisabled()
+    expect(columnNames("layers")).toEqual(["limit"])
+
+    fireEvent.change(search, { target: { value: "premium" } })
+    expect(screen.queryAllByRole("region", { name: /^Table / })).toEqual([])
+    expect(screen.getByText("No fields match")).toBeInTheDocument()
+
+    // Kept as the pane closes and opens again, and emptied by Clear.
+    fireEvent.change(search, { target: { value: "lim" } })
+    unmount()
+    render(<SchemaEditor />)
+    expect(screen.getByRole("textbox", { name: "Search fields" })).toHaveValue("lim")
+    expect(columnNames("layers")).toEqual(["limit"])
+    fireEvent.click(screen.getByRole("button", { name: "Clear search fields" }))
+    expect(screen.getByRole("textbox", { name: "Search fields" })).toHaveValue("")
+    fireEvent.change(screen.getByRole("textbox", { name: "Search fields" }), { target: { value: "premium" } })
+    const searchAgain = screen.getByRole("textbox", { name: "Search fields" })
+
+    // Escape empties it, and the whole schema shows as it was.
+    fireEvent.keyDown(searchAgain, { key: "Escape" })
+    expect(searchAgain).toHaveValue("")
+    expect(within(tableNamed("policy_details")).queryAllByRole("textbox", { name: "Column name" })).toEqual([])
+    expect(columnNames("layers")).toEqual(["layer", "limit", "excess"])
+  })
+
+  it("adds and moves nothing while the search filters, but edits and removes the columns it shows", () => {
+    render(<SchemaEditor />)
+    fireEvent.change(screen.getByRole("textbox", { name: "Search fields" }), { target: { value: "l" } })
+    const layers = tableNamed("layers")
+
+    expect(screen.queryByRole("button", { name: "Add table" })).toBeNull()
+    expect(within(layers).queryByRole("button", { name: "Add column" })).toBeNull()
+    expect(within(layers).queryByLabelText("Add index to layers")).toBeNull()
+    expect(tableGrip("layers")).toBeNull()
+    expect(columnGrip("c_limit")).toBeNull()
+    const last = within(layers).getAllByRole("textbox", { name: "Column name" })[1]
+    fireEvent.keyDown(last, { key: "Enter" })
+    fireEvent.keyDown(last, { key: "ArrowUp", altKey: true })
+    fireEvent.keyDown(tableNameField("layers"), { key: "ArrowUp", altKey: true })
+    expect(current().schema.tables.map((table) => table.columns.map((each) => each.name))).toEqual([["state", "exposure"], ["layer", "limit"]])
+
+    commit(last, "limit_gbp")
+    expect(current().schema.tables[1].columns[1].name).toBe("limit_gbp")
+  })
+
 
   it("shows the schema read only, as Preview does: a table collapses and a column's details open, but nothing in it changes", () => {
     render(<SchemaEditor readOnly />)

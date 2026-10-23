@@ -35,6 +35,11 @@ interface TableBlockProps {
   drag: RowDrag | undefined
   /** In Preview: the table shows as it is, nothing in it changed. */
   readOnly: boolean
+  /**
+   * While the schema is searched, its columns the search matches, the only ones shown, the
+   * table open and nothing in it added or moved; null while it is not.
+   */
+  matched: ReadonlySet<string> | null
   added: string | null
   setAdded: (id: string | null) => void
   details: string | null
@@ -44,7 +49,7 @@ interface TableBlockProps {
   problems: string[]
 }
 
-export function TableBlock({ form, table, index, refocus: refocusTable, drag, readOnly, added, setAdded, details, setDetails, collapsed, onToggleCollapsed, problems }: TableBlockProps) {
+export function TableBlock({ form, table, index, refocus: refocusTable, drag, readOnly, matched, added, setAdded, details, setDetails, collapsed, onToggleCollapsed, problems }: TableBlockProps) {
   const change = useWorkbenchFormStore((s) => s.change)
   const block = useRef<HTMLElement>(null)
   const shown = fieldUses(form, table.id).length
@@ -67,6 +72,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
   // Haute's quote_details table keeps its structure, and in Preview every table keeps it.
   const locked = isQuoteDetails(table)
   const fixed = locked || readOnly
+  const filtering = matched !== null
 
   const insertAt = (at: number) => {
     const column = createSchemaColumn(currentForm(), table.id, at)
@@ -76,7 +82,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
 
   // Alt+Up and Alt+Down in its name move the table; its name field takes the focus again in its new place.
   const onNameKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (fixed) return
+    if (fixed || filtering) return
     const to = altArrowMove(e, "vertical", index, form.schema.tables.length)
     if (to === null) return
     refocusTable.moved(table.id)
@@ -105,6 +111,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
           icon={collapsed ? ChevronRight : ChevronDown}
           size={14}
           onClick={onToggleCollapsed}
+          disabled={filtering}
           aria-expanded={!collapsed}
           aria-label={`${collapsed ? "Expand" : "Collapse"} ${table.name}`}
           title={collapsed ? "Show columns" : "Hide columns"}
@@ -113,7 +120,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
         <CommittedTextField
           ref={refocusTable.register(table.id)}
           aria-label="Table name"
-          aria-keyshortcuts={fixed ? undefined : "Alt+ArrowUp Alt+ArrowDown"}
+          aria-keyshortcuts={fixed || filtering ? undefined : "Alt+ArrowUp Alt+ArrowDown"}
           value={table.name}
           onCommit={(name) => change((f) => updateSchemaTable(f, table.id, { name }))}
           {...fresh(table.id)}
@@ -174,7 +181,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
       </div>
       {!collapsed && (
         <div className="flex flex-col gap-1 px-1.5 py-1.5" style={{ borderTop: "1px solid var(--border)" }}>
-          {table.columns.map((column, at) => (
+          {table.columns.map((column, at) => matched !== null && !matched.has(column.id) ? null : (
             <ColumnRow
               key={column.id}
               form={form}
@@ -188,14 +195,15 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
               onInsertAfter={() => insertAt(at + 1)}
               locked={locked}
               readOnly={readOnly}
-              drag={fixed || column.index ? undefined : dragColumn(at)}
+              filtering={filtering}
+              drag={fixed || filtering || column.index ? undefined : dragColumn(at)}
             />
           ))}
           {locked ? (
             <p className="px-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
               Kept with each quote and listed on the Quotes page; the app sets reference, stage, assignee and archived.
             </p>
-          ) : readOnly ? null : (
+          ) : readOnly || filtering ? null : (
             <div className="flex items-center gap-3">
               <QuietAction onClick={() => insertAt(count)} className="justify-self-start">Add column</QuietAction>
               {table.rows === "many" && <IndexControl form={form} table={table} onAdded={setAdded} />}

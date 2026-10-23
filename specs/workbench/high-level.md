@@ -281,8 +281,14 @@ Out of scope:
     right edge is dragged to resize it, from 320px to half the window, or to the width its
     fields take at full stretch where that is wider; it opens at that width, kept while the
     editor is open, and its Close, or Schema again, closes it. Opened again, it is as it
-    was closed: scrolled where it was, the same tables collapsed and the same column's
-    label and rules open. It stays open as the mode changes and as another sheet shows, and opening it keeps the selection and the
+    was closed: scrolled where it was, the same tables collapsed, the same column's label
+    and rules open and the same search. A search box at its top filters the schema as it is
+    typed: only the columns whose name or label holds the text, whatever its case, show, in
+    the tables holding one, each open though it was collapsed; with none, "No fields
+    match". While it filters nothing is added, moved or collapsed (no Add column, Add table
+    or index, no grips, no Alt+Up or Alt+Down, Enter in a name only committing it, the
+    collapse toggles off), so each edit is to a column it shows; emptying it, by its clear
+    button or Escape, shows the whole schema again as it was. It stays open as the mode changes and as another sheet shows, and opening it keeps the selection and the
     properties panel. While building it edits the schema; in Preview it shows the schema
     read only: a table still collapses and expands and a column's label and rules still
     open, but no field takes typing, no select takes a choice, and no table or column is

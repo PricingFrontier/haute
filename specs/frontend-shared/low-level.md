@@ -108,8 +108,9 @@
 | `frontend/src/components/form/ConfigCheckbox.tsx` | Labelled controlled checkbox using a caller id or React `useId`, disabled semantics, and shared accent/text tokens. |
 | `frontend/src/components/form/EditorLabel.tsx` | Consistent micro-label primitive; can be a correctly associated `<label>` or non-form span/div for display-only content. |
 | `frontend/src/components/form/IconSelect.tsx` | A choice shown as an icon: the chosen option's icon over an invisible native select of the options, so a click (or Alt+Down) opens the choice and the select keeps its keyboard and screen-reader behaviour; its size, shape and colours are the caller's. The step editor's kind marker and the workbench's column-type marker are made of it. |
+| `frontend/src/components/form/SearchField.tsx` | `SearchField`, a search box: a magnifier, the text (its `label` as the input's accessible name and placeholder) and, while it holds any, a Clear button; Escape in it empties it too, its default prevented so nothing else hears it. |
 | `frontend/src/components/form/SavedValueOption.tsx` | Keeps a saved config value visible in a `<select>` whose options lack it: before the column list arrives (no options yet) the value shows as itself, and once options are known a value they lack is labelled missing (`missingLabel`, default "(not in input)"). |
-| `frontend/src/components/form/index.ts` | Public barrel for the committed text field/area, checkbox, colour swatches, editor-label, saved-value-option and icon-select primitives, and the side panels' shared controls (`INPUT_STYLE`, `FIELD_CLASS`, `COMPACT_FIELD_CLASS`, `wholeNumber`, `LabelledRow`, `SelectRow`, `QuietAction`); editor callers import the shared contract rather than deep paths. |
+| `frontend/src/components/form/index.ts` | Public barrel for the committed text field/area, checkbox, colour swatches, editor-label, saved-value-option, icon-select and search-field primitives, and the side panels' shared controls (`INPUT_STYLE`, `FIELD_CLASS`, `COMPACT_FIELD_CLASS`, `wholeNumber`, `LabelledRow`, `SelectRow`, `QuietAction`); editor callers import the shared contract rather than deep paths. |
 | `frontend/src/components/form/fieldStyle.ts` | The look the panels' fields share: `INPUT_STYLE` (the input's colours, which `panels/editors/_shared.tsx` re-exports), `FIELD_CLASS` (a small field in a side panel), `COMPACT_FIELD_CLASS` (the same in the schema editor's dense rows), and `wholeNumber({ min, max, unit })`, a `ValidatedTextField` check of a whole number, no fewer than `min` and with `max` no more, its error a range ("Enter a whole number from 1 to 12.") or a least number of `unit` ("Enter a whole number of pixels, 240 or more."), a number past a safe whole one refused. |
 | `frontend/src/components/form/LabelledRow.tsx` | `LabelledRow`, a side panel's row of a label in a fixed column beside its control, so the controls line up, or with no label that column left blank, as for tick boxes under labelled rows; and `SelectRow`, a labelled select of named choices, its label its name unless given a `name` of its own. |
 | `frontend/src/components/form/QuietAction.tsx` | `QuietAction`, the quiet "+ Add" text action under a list (`.quiet-action`: accent text, underlined on hover), a plus before it unless another icon is given, its other props passed to the button. |
@@ -1025,6 +1026,9 @@ neither a click nor the keys select;
 no-op blur, external-value draft reset, `ValidatedTextField`'s refused candidates, owner
 refusals, commit errors and warnings, form-label/control semantics, and the icon select's
 options, title and change.
+`frontend/src/components/form/__tests__/SearchField.test.tsx` covers the search box's name and
+placeholder, Clear only while it holds text, and Escape emptying it, prevented, but left
+alone while it is empty.
 `frontend/src/utils/__tests__/chartHelpers.test.ts` and
 `frontend/src/utils/__tests__/formatTrace.test.ts` respectively pin numeric
 ticks/formatting (including an axis's ticks formatted together: distinct labels

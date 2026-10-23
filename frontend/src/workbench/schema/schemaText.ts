@@ -94,6 +94,12 @@ export function usedBy(shown: number, tested: number): string {
   return parts.join(" and ")
 }
 
+/** The column's name or its label holds the search's text, whatever its case. */
+export function columnMatches(column: SchemaColumn, text: string): boolean {
+  const needle = text.toLowerCase()
+  return column.name.toLowerCase().includes(needle) || column.label.toLowerCase().includes(needle)
+}
+
 /** A new table or column gets a placeholder name; selecting it lets typing replace it. */
 export const selectAll = (e: FocusEvent<HTMLInputElement>) => e.target.select()
 
