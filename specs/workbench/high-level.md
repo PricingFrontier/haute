@@ -359,6 +359,13 @@ Out of scope:
   stops a file or a column giving them shows under them. Changing a
   column's type drops the rules and the format the new type cannot have, and its default
   when it becomes or stops being True/false, or becomes a Date while it is not a day.
+  Under a column's name, a line sums it up whenever there is something to say: in an
+  input table, required, its range in its own format, its default (in its format, or
+  "ticked" for True/false), its allowed values counted with the file they came from and
+  "a row each" for the column giving its table's rows; and, in any table, the format of
+  a number column other than the index unless it shows numbers as typed (General with
+  automatic decimals): the format's name, a currency's as its sign and code, its decimal
+  places when chosen, and "no separators" when they are off.
   Every text field
   commits on blur or Enter, so an edit is one undo step; Enter in the last column's name
   adds the next column, and in any other only commits it, a new column, by Enter or Add

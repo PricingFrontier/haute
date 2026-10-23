@@ -1,4 +1,4 @@
-/** A schema column's row: its type, name and summary, dragged or moved, removed and opened for its details (specs/workbench). */
+/** A schema column's row: its type and name, its summary under them, dragged or moved, removed and opened for its details (specs/workbench). */
 import { KeyRound, SlidersHorizontal, X } from "lucide-react"
 import { useRef, type KeyboardEvent } from "react"
 import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
@@ -12,7 +12,7 @@ import { COLUMN_TYPES, COLUMN_TYPE_OPTIONS } from "../columnTypes"
 import { ColumnDetails } from "./ColumnDetails"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
-import { type Fresh, HOVER_ONLY, rulesSummary, usedBy } from "./schemaText"
+import { columnSummary, type Fresh, HOVER_ONLY, usedBy } from "./schemaText"
 
 interface ColumnRowProps {
   form: FormSpec
@@ -50,7 +50,7 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
   const managed = locked && QUOTE_DETAILS_MANAGED.has(column.id)
   // Its name and type stay, and it stays: in quote_details, and in Preview.
   const fixed = locked || readOnly
-  const summary = table.role === "input" ? rulesSummary(table, column) : ""
+  const summary = columnSummary(table, column)
   const set = (patch: Partial<SchemaColumn>) => change((f) => updateSchemaColumn(f, table.id, column.id, patch))
 
   // Enter in the last column's name adds the next column, and in any other only commits it;
@@ -115,11 +115,6 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
           className={`${COMPACT_FIELD_CLASS} flex-1 font-mono`}
           style={INPUT_STYLE}
         />
-        {summary && (
-          <span className="shrink-0 self-center px-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
-            {summary}
-          </span>
-        )}
         {table.rows === "many" && (
           <IconButton
             icon={KeyRound}
@@ -153,6 +148,12 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
           />
         )}
       </div>
+      {summary && (
+        // Under the name, from its text's left edge: past the grip, the type marker and the field's edge.
+        <p className="ml-11 pl-[7px] text-[11px]" style={{ color: "var(--text-muted)" }} data-testid={`schema-column-${column.id}-summary`}>
+          {summary}
+        </p>
+      )}
       {open && <ColumnDetails table={table} column={column} managed={managed} readOnly={readOnly} set={set} />}
     </div>
   )

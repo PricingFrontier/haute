@@ -2,8 +2,18 @@
 import { type FocusEvent } from "react"
 import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
-import { presetColumn } from "../../utils/sheetValues"
+import { formattedNumber, presetColumn } from "../../utils/sheetValues"
 import { isNumeric } from "../columnTypes"
+
+/** A number format's name in a column's summary: as Format names it, a currency by its sign and code. */
+const FORMAT_NAMES: Readonly<Record<SchemaColumn["number_format"], string>> = {
+  general: "General",
+  number: "Number",
+  percent: "Percentage",
+  currency_gbp: "£ GBP",
+  currency_usd: "US$ USD",
+  currency_eur: "€ EUR",
+}
 
 export const CHIP_CLASS = "focus-ring shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-semibold"
 
@@ -21,18 +31,57 @@ export function currentForm(): FormSpec {
   return form
 }
 
-/** An input column's rules in a few words, shown beside its name, and whether it gives its table's rows. */
-export function rulesSummary(table: SchemaTable, column: SchemaColumn): string {
+/** A number as its column's format shows it, or as it is where the format shows numbers as typed. */
+const shown = (column: SchemaColumn, value: number | string): string => formattedNumber(column, value) ?? String(value)
+
+/**
+ * A number column's format in a few words: its name, its decimal places when chosen and
+ * "no separators" when they are off; nothing for the index, a column of another type, or
+ * General with automatic decimals, which shows numbers as typed.
+ */
+export function formatSummary(column: SchemaColumn): string {
+  if (!isNumeric(column.type) || column.index) return ""
+  const { number_format: format, decimal_places: places } = column
+  if (format === "general" && places === null) return ""
+  const parts = [FORMAT_NAMES[format]]
+  if (places !== null) parts.push(`${places} ${places === 1 ? "decimal" : "decimals"}`)
+  // Past General with automatic decimals, separators apply.
+  if (!column.use_grouping) parts.push("no separators")
+  return parts.join(", ")
+}
+
+/**
+ * An input column's rules in a few words: required, its range and its default in its
+ * format, its allowed values and whether it gives its table's rows.
+ */
+function rulesParts(table: SchemaTable, column: SchemaColumn): string[] {
   const parts: string[] = []
   if (column.required) parts.push("required")
   if (isNumeric(column.type) && (column.min !== null || column.max !== null)) {
-    parts.push(`${column.min ?? "…"} to ${column.max ?? "…"}`)
+    parts.push(`${column.min === null ? "…" : shown(column, column.min)} to ${column.max === null ? "…" : shown(column, column.max)}`)
+  }
+  // A default fills a one-row table's new quote; the index takes none.
+  if (table.rows === "one" && !column.index) {
+    const value = column.default_value
+    if (value === true) parts.push("default ticked")
+    else if (value !== false && value !== "") parts.push(`default ${isNumeric(column.type) ? shown(column, value) : value}`)
   }
   if (column.type !== "bool" && column.type !== "date" && column.options.length > 0) {
     const values = `${column.options.length} ${column.options.length === 1 ? "value" : "values"}`
     parts.push(column.options_source === null ? values : `${values} from ${column.options_source.file}`)
   }
   if (presetColumn(table)?.id === column.id) parts.push("a row each")
+  return parts
+}
+
+/**
+ * A column in a few words, shown under its name, "" when there is nothing to say: an input
+ * column's rules, then, in any table, a number column's format.
+ */
+export function columnSummary(table: SchemaTable, column: SchemaColumn): string {
+  const parts = table.role === "input" ? rulesParts(table, column) : []
+  const format = formatSummary(column)
+  if (format !== "") parts.push(format)
   return parts.join(" · ")
 }
 

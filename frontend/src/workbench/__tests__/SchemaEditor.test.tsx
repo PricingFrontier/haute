@@ -772,6 +772,49 @@ describe("SchemaEditor", () => {
     expect(columnNames("policy_details")).toEqual(["state", "exposure"])
   })
 
+  it("sums a column up under its name: its range and default in its format, and a number's format in any table", () => {
+    load(
+      form(
+        table("t_cover", "cover", {
+          columns: [
+            column("c_sum", "sum_insured", { type: "float", required: true, min: 0, max: 1000000, default_value: "250000", number_format: "currency_gbp", decimal_places: 2 }),
+            column("c_rate", "loss_ratio", { type: "float", min: 0, max: 1, number_format: "percent", decimal_places: 1, use_grouping: false }),
+            column("c_count", "claims", { type: "int", default_value: "3" }),
+            column("c_flood", "flood", { type: "bool", default_value: true }),
+            column("c_region", "region", { default_value: "north" }),
+            column("c_note", "note"),
+          ],
+        }),
+        table("t_pricing", "pricing", { role: "output", columns: [column("c_premium", "premium", { type: "float", number_format: "number", decimal_places: 2 })] }),
+        table("t_items", "items", {
+          rows: "many",
+          columns: [column("c_row", "row_number", { type: "int", index: true, number_format: "number" }), column("c_value", "value", { type: "float", default_value: "5" })],
+        }),
+      ),
+    )
+    render(<SchemaEditor />)
+    const summary = (id: string) => screen.queryByTestId(`schema-column-${id}-summary`)
+
+    expect(summary("c_sum")).toHaveTextContent("required · £0.00 to £1,000,000.00 · default £250,000.00 · £ GBP, 2 decimals")
+    // A percent is the value times 100.
+    expect(summary("c_rate")).toHaveTextContent("0.0% to 100.0% · Percentage, 1 decimal, no separators")
+    // General with automatic decimals shows numbers as typed, and says nothing of its format.
+    expect(summary("c_count")).toHaveTextContent(/^default 3$/)
+    expect(summary("c_flood")).toHaveTextContent(/^default ticked$/)
+    expect(summary("c_region")).toHaveTextContent(/^default north$/)
+    expect(summary("c_note")).toBeNull()
+    // An output column has no rules, but its format.
+    expect(summary("c_premium")).toHaveTextContent(/^Number, 2 decimals$/)
+    // Neither the index's format nor a default in a many-row table, which takes none.
+    expect(summary("c_row")).toBeNull()
+    expect(summary("c_value")).toBeNull()
+
+    // On its own line under the name, not beside it.
+    const row = screen.getByTestId("schema-column-c_sum")
+    expect(within(summary("c_sum")!).queryByRole("textbox")).toBeNull()
+    expect(summary("c_sum")!.previousElementSibling).toContainElement(within(row).getByRole("textbox", { name: "Column name" }))
+  })
+
   it("shows the schema read only, as Preview does: a table collapses and a column's details open, but nothing in it changes", () => {
     render(<SchemaEditor readOnly />)
     const layers = tableNamed("layers")
