@@ -1,68 +1,37 @@
-import type { WorkbenchTable } from "../../api/types"
+import type { WorkbenchColumn, WorkbenchTable } from "../../api/types"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
-import { readWorkbenchTables, type WorkbenchOutputMapping } from "../../utils/workbenchTables"
-import type { InputSource, OnUpdateConfig } from "./_shared"
+import { columnFill, readWorkbenchTables, type ColumnFill } from "../../utils/workbenchTables"
+import type { InputSource } from "./_shared"
 import { NO_COLUMNS_NOTE, WorkbenchTablesHeader, tableLabelIssue } from "./WorkbenchInputEditor"
 
-type Picks = Readonly<Record<string, string | null>>
-
-/** What fills a table column: a frame column or none, and whether by name rather than a pick. */
-export type MappedSource = { source: string | null; byName: boolean }
-
-/**
- * What fills *column*: its pick in *picks*, else the frame's column of the same name. With
- * the frame's columns unknown (it has not been previewed), the same name is assumed.
- */
-// eslint-disable-next-line react-refresh/only-export-components
-export function mappedSource(column: string, picks: Picks, frameColumns: readonly string[] | null): MappedSource {
-  if (Object.hasOwn(picks, column)) return { source: picks[column], byName: false }
-  const byName = frameColumns === null || frameColumns.includes(column)
-  return { source: byName ? column : null, byName }
+/** A column's border: red while it is missing, orange while its frame's column is of another type. */
+const FILL_BORDERS: Readonly<Record<ColumnFill["kind"], string>> = {
+  missing: "var(--danger)",
+  mistyped: "var(--caution)",
+  filled: "var(--border)",
+  unknown: "var(--border)",
 }
 
-/**
- * The mapping with *column* of *table* filled from *source*: picked by name, or no entry
- * when the pick is the column's own name, which is filling by name. None is kept as null:
- * a column whose frame has no same-named column is left empty either way today, but an
- * entry of null stays empty when the frame gains one, where no entry would fill it.
- */
-function picked(
-  mapping: WorkbenchOutputMapping,
-  table: string,
-  column: string,
-  source: string | null,
-): WorkbenchOutputMapping {
-  const entries: Record<string, string | null> = { ...(mapping[table] ?? {}) }
-  if (source === column) delete entries[column]
-  else entries[column] = source
-  const next = { ...mapping }
-  if (Object.keys(entries).length === 0) delete next[table]
-  else next[table] = entries
-  return next
-}
-
-function readMapping(value: unknown): WorkbenchOutputMapping {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as WorkbenchOutputMapping)
-    : {}
+function fillTitle(fill: ColumnFill): string | undefined {
+  if (fill.kind === "missing") return "Missing from the frame"
+  if (fill.kind === "mistyped") return `${fill.dtype} in the frame`
+  return undefined
 }
 
 /**
  * The Workbench Output's panel (specs/workbench): the response's tables the project's
- * workbench supplies, each with the node connected to its port, and for each column the
- * connected frame's column that fills it: the same-named one unless picked otherwise. The
- * tables are read-only (the editor keeps them current, `useWorkbenchTables`); the
- * mapping is the node's own.
+ * workbench supplies, each with the node connected to its port, and each of its columns,
+ * which the connected frame's column of exactly its name fills, bordered red while it is
+ * missing and orange while that column is of a type that does not fit. The tables are
+ * read-only (the editor keeps them current, `useWorkbenchTables`).
  */
 export default function WorkbenchOutputEditor({
   config,
-  onUpdate,
   inputSources,
   reservedFrameLabels,
   insideSubmodel = false,
 }: {
   config: Record<string, unknown>
-  onUpdate: OnUpdateConfig
   /** The node's inputs, each with the table port its edge lands on. */
   inputSources: readonly InputSource[]
   /** The document's reserved labels, which a table's name is held against as the schema editor holds it. */
@@ -73,15 +42,9 @@ export default function WorkbenchOutputEditor({
   const enabled = useWorkbenchStore((state) => state.enabled)
   const tables = readWorkbenchTables(config)
   const names = tables.map((table) => table.name)
-  const mapping = readMapping(config.mapping)
 
   return (
     <div className="px-4 py-3 space-y-3" data-testid="workbench-output-editor">
-      <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-        Connect a frame to each table. Each column is filled from the frame's column of the same name, or the one you
-        pick; a column nothing fills is left empty.
-      </p>
-
       <section data-testid="workbench-output-tables" className="space-y-1.5">
         <WorkbenchTablesHeader
           enabled={enabled}
@@ -94,8 +57,6 @@ export default function WorkbenchOutputEditor({
             table={table}
             issue={tableLabelIssue(names, index, reservedFrameLabels)}
             source={inputSources.find((input) => input.targetHandle === table.name) ?? null}
-            picks={mapping[table.name] ?? {}}
-            onPick={(column, source) => onUpdate("mapping", picked(mapping, table.name, column, source))}
           />
         ))}
       </section>
@@ -107,17 +68,11 @@ function OutputTable({
   table,
   issue,
   source,
-  picks,
-  onPick,
 }: {
   table: WorkbenchTable
   issue: string | null
   source: InputSource | null
-  picks: Picks
-  onPick: (column: string, source: string | null) => void
 }) {
-  // The frame's columns as its last preview recorded them; unknown until it has one.
-  const frameColumns = source?.columns ? source.columns.map((column) => column.name) : null
   return (
     <div
       data-testid={`workbench-table-${table.name}`}
@@ -144,21 +99,17 @@ function OutputTable({
           <p
             data-testid={`workbench-table-connection-${table.name}`}
             className="mt-0.5 text-[11px]"
-            style={{ color: source === null ? "var(--warning)" : "var(--text-muted)" }}
+            style={{ color: source === null ? "var(--danger-text)" : "var(--text-muted)" }}
           >
             {source === null ? "Not connected" : `From ${source.sourceLabel}`}
           </p>
-          <ul className="mt-1 space-y-0.5">
+          <ul className="mt-1 space-y-1">
             {table.columns.map((column) => (
-              <MappedColumn
+              <OutputColumn
                 key={column.name}
                 table={table.name}
-                name={column.name}
-                type={column.type}
-                connected={source !== null}
-                frameColumns={frameColumns}
-                mapped={mappedSource(column.name, picks, frameColumns)}
-                onPick={(value) => onPick(column.name, value)}
+                column={column}
+                fill={columnFill(column, source !== null, source?.columns)}
               />
             ))}
           </ul>
@@ -168,64 +119,18 @@ function OutputTable({
   )
 }
 
-function MappedColumn({
-  table,
-  name,
-  type,
-  connected,
-  frameColumns,
-  mapped,
-  onPick,
-}: {
-  table: string
-  name: string
-  type: string
-  connected: boolean
-  frameColumns: readonly string[] | null
-  mapped: MappedSource
-  onPick: (source: string | null) => void
-}) {
-  const missing = mapped.source !== null && frameColumns !== null && !frameColumns.includes(mapped.source)
-  const unfilled = mapped.source === null
-  const options = [...(frameColumns ?? [])]
-  if (mapped.source !== null && !options.includes(mapped.source)) options.push(mapped.source)
-  const title = unfilled
-    ? "Nothing fills this column: it is left empty"
-    : missing
-      ? `The connected frame has no column called ${mapped.source}`
-      : mapped.byName
-        ? "Filled by name"
-        : undefined
+function OutputColumn({ table, column, fill }: { table: string; column: WorkbenchColumn; fill: ColumnFill }) {
   return (
-    <li className="flex items-center gap-2 min-h-6">
-      <span className="min-w-0 flex-1 font-mono truncate">{name}</span>
+    <li
+      data-testid={`workbench-column-${table}-${column.name}`}
+      title={fillTitle(fill)}
+      className="flex items-center gap-2 min-h-6 rounded border px-1.5"
+      style={{ borderColor: FILL_BORDERS[fill.kind] }}
+    >
+      <span className="min-w-0 flex-1 font-mono truncate">{column.name}</span>
       <span className="shrink-0 font-mono text-[11px]" style={{ color: "var(--text-muted)" }}>
-        {type}
+        {column.type}
       </span>
-      <select
-        data-testid={`workbench-mapping-${table}-${name}`}
-        aria-label={`Fills ${table} ${name}`}
-        value={mapped.source ?? ""}
-        disabled={!connected}
-        title={title}
-        onChange={(event) => onPick(event.target.value === "" ? null : event.target.value)}
-        className="w-[48%] shrink-0 rounded border px-1 py-0.5 font-mono text-[11px]"
-        style={{
-          borderColor: unfilled || missing ? "var(--warning)" : "var(--border)",
-          color: unfilled || missing ? "var(--warning)" : "var(--text-primary)",
-        }}
-      >
-        <option value="">— none —</option>
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {option === mapped.source && missing
-              ? `${option} (missing)`
-              : option === mapped.source && mapped.byName
-                ? `${option} (by name)`
-                : option}
-          </option>
-        ))}
-      </select>
     </li>
   )
 }

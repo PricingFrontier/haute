@@ -143,10 +143,10 @@
 (the only table when it names none), and the port it is connected from, which
 `_execute_trace_core` takes as `target_port` to trace that frame of a node emitting several,
 as [workbench](../workbench/low-level.md) describes:
-the column and `row_values` are renamed to the frame columns that fill them, and the listed
-seeds are cut to the new target's lineage. Everything below runs on that node; step 4 also
-raises the Workbench Output's refusal when that node's frame lacks the column, which then
-fills the table's column with nothing.
+the column and `row_values` keep their names, those of the frame columns that fill them, and
+the listed seeds are cut to the new target's lineage. Everything below runs on that node;
+step 4 also raises the Workbench Output's refusal when that node's frame lacks the column or
+holds it with a dtype that does not fit, either of which fills the table's column with nulls.
 
 **The preview's seed plan.** `execute_trace(..., seed_plan)` takes the `ListedSeed`
 entries of the preview it explains. Empty or `None`, the trace runs exactly as below with

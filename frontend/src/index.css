@@ -122,6 +122,11 @@
   --danger-border: rgba(239,68,68,.20);
   --danger-border-strong: rgba(239,68,68,.30);
 
+  /* Caution: orange, between warning and danger, for a value present but of the
+     wrong kind (a Workbench Output column whose frame column has another type),
+     told apart from danger's missing one. */
+  --caution: #f97316;
+
   /* ── Success role tokens ──────────────────────────────────────────
      Functional layer over the success intensity ladder above.  Call
      sites reference these; the graded ladder steps (--success-soft*,

@@ -165,7 +165,6 @@ export function NodeConfigEditor({
       return (
         <WorkbenchOutputEditor
           config={config}
-          onUpdate={onUpdateConfig}
           inputSources={inputSources}
           reservedFrameLabels={reservedApiInputFrameLabels}
           insideSubmodel={insideSubmodel}

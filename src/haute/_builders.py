@@ -832,8 +832,8 @@ def _build_workbench_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]
         # Its tables, one frame each; nothing is collected while they are built.
         return assemble_workbench_output_from_config(*dfs, config=config, ports=ports)
 
-    # With nothing connected it takes no frames: the walk calls it as a source, and it says
-    # what to connect.
+    # With nothing connected it takes no frames: the walk calls it as a source, and each
+    # table fills as one nothing is connected to.
     return ctx.func_name, workbench_output_fn, not ctx.source_names
 
 

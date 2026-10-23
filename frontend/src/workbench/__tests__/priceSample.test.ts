@@ -40,7 +40,7 @@ function graph(): GraphPayload {
     nodes: [
       node("quote", "workbenchInput", { tables: [policy], sample: { policy_details: { exposure: 1 } } }),
       node("priced", "polars", { code: "df" }),
-      node("response", "workbenchOutput", { tables: [pricing], mapping: { pricing_output: { premium: "loaded" } } }),
+      node("response", "workbenchOutput", { tables: [pricing] }),
     ],
     edges: [],
     submodels: { rating: { graph: { nodes: [node("inner", "workbenchInput", { tables: [], sample: {} })], edges: [] } } },
@@ -78,8 +78,7 @@ describe("priceSample", () => {
     expect(source).toBe("live")
     const config = (id: string) => sent.nodes.find((n) => n.id === id)?.data.config
     expect(config("quote")).toEqual({ tables: [policy], sample: typed })
-    // The new tables, the mapping kept for the table and column they still have.
-    expect(config("response")).toEqual({ tables: [pricing, layers], mapping: { pricing_output: { premium: "loaded" } } })
+    expect(config("response")).toEqual({ tables: [pricing, layers] })
     expect(config("priced")).toEqual({ code: "df" })
     // A Workbench Input inside a submodel keeps its copy.
     expect(sent.submodels).toEqual(before.submodels)

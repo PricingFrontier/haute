@@ -12,6 +12,7 @@ import {
   readWorkbenchTables,
   responseTablesPatch,
   workbenchTablePorts,
+  dtypeFits,
   type WorkbenchTables,
 } from "../workbenchTables"
 
@@ -110,20 +111,26 @@ describe("the response's tables", () => {
     expect(responseTablesPatch({}, fetched)?.tables[0]).not.toBe(responseTable)
   })
 
-  it("drops the mapping's entries for tables and columns the new tables lack", () => {
-    const mapping = { layers: { layer: "number", premium: null }, gone: { x: "y" } }
-    const renamed = { ...responseTable, columns: [{ ...responseTable.columns[0], name: "number" }] }
-
-    expect(responseTablesPatch({ tables: [responseTable], mapping }, fetched)).toEqual({
-      tables: [responseTable],
-      mapping: { layers: { layer: "number" } },
-    })
-    expect(responseTablesPatch({ tables: [], mapping }, { ...fetched, responseTables: [renamed] })).toEqual({
-      tables: [renamed],
-      mapping: {},
-    })
-    expect(responseTablesPatch({ tables: [responseTable], mapping: { layers: { layer: "number" } } }, fetched))
-      .toBeNull()
+  // The backend's `column_fits` cases (tests/test_workbench_output.py), as previews render the dtypes.
+  it.each([
+    ["int", "Int32", true],
+    ["int", "UInt8", true],
+    ["int", "Float64", false],
+    ["float", "Int64", true],
+    ["float", "Decimal(precision=12, scale=2)", true],
+    ["float", "String", false],
+    ["str", "String", true],
+    ["str", "Categorical", true],
+    ["str", "Enum(categories=['a'])", true],
+    ["str", "Int64", false],
+    ["bool", "Boolean", true],
+    ["bool", "Int64", false],
+    ["date", "Date", true],
+    ["date", "Datetime(time_unit='us', time_zone=None)", false],
+    ["date", "String", false],
+    ["int", "Null", true],
+  ] as const)("judges whether a %s column takes a frame's %s column: %s", (declared, dtype, fits) => {
+    expect(dtypeFits(declared, dtype)).toBe(fits)
   })
 
   it("starts a Workbench Output with the newest response tables fetched, or none until they are", () => {

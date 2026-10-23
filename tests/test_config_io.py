@@ -269,7 +269,6 @@ class TestSaveAndLoad:
             "tables": [
                 {"name": "layers", "rows": "many", "columns": [{"name": "layer", "type": "int"}]}
             ],
-            "mapping": {"layers": {"layer": "layer_number"}},
         }
         rel = _write_node_config_sidecar(NodeType.WORKBENCH_OUTPUT, "response", config, tmp_path)
         assert rel.as_posix() == "config/workbench_output/response.json"

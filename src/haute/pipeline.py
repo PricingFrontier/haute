@@ -105,6 +105,12 @@ class Node:
         return bool(self.config.get("api_input"))
 
     @property
+    def runs_unconnected(self) -> bool:
+        """Whether the node runs with nothing connected to it: a Workbench Output, whose
+        tables nothing fills are nulls (specs/workbench)."""
+        return self.node_type is NodeType.WORKBENCH_OUTPUT
+
+    @property
     def is_live_switch(self) -> bool:
         """Whether this node is a live/batch switch."""
         return bool(self.config.get("live_switch"))
@@ -182,6 +188,8 @@ class Node:
             result: pl.DataFrame = fn()
             return result
         arity = self.input_arity
+        if len(dfs) == 0 and self.runs_unconnected:
+            return self._run_configured(fn, (), target_ports)
         if len(dfs) == 0:
             raise ValueError(
                 f"Node '{self.name}' expects {arity.describe()} input(s) but received none"
@@ -834,12 +842,12 @@ class Pipeline(NodeRegistry):
         """Resolve *n*'s wired inputs from *outputs* and store its result.
 
         Shared by :meth:`run` and :meth:`score`.  Fails loud when the node
-        has no inbound edges, when an upstream result is missing, or when the
-        node carries unresolved instance references the standalone executor
-        cannot honour.
+        has no inbound edges and does not run unconnected, when an upstream
+        result is missing, or when the node carries unresolved instance
+        references the standalone executor cannot honour.
         """
         input_edges = self._get_input_edges(n.name)
-        if not input_edges:
+        if not input_edges and not n.runs_unconnected:
             raise ValueError(
                 f"Node '{n.name}' has no inbound edges. Use pipeline.connect() to wire it up."
             )

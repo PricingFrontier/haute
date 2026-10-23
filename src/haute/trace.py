@@ -101,7 +101,7 @@ from haute._trace_enrichment import enrich_steps as _enrich_steps
 from haute._trace_lineage import ColumnRead, JoinInputs, ValueLineage, trace_value_lineage
 from haute._trace_waterfall import build_waterfall_from_steps
 from haute._types import REQUEST_INPUT_NODE_TYPES
-from haute._workbench_output import workbench_output_mapping, workbench_output_tables
+from haute._workbench_output import column_fits, workbench_output_tables
 from haute.errors import BoundedMemoryUnsupportedError, TraceCorrelationUnsupportedError
 from haute.executor import (
     PREVIEW_CACHE_MAX_BYTES,
@@ -460,10 +460,10 @@ def execute_trace(
         finally:
             admitted_context.release_admission(preserve_primary_error=True)
 
-    missing_column_error = None
+    table_fill = None
     target_port = None
     if graph.node_map[target_node_id].data.nodeType == NodeType.WORKBENCH_OUTPUT:
-        (target_node_id, target_port, column, row_values, seed_plan, missing_column_error) = (
+        (target_node_id, target_port, column, row_values, seed_plan, table_fill) = (
             _workbench_output_trace_target(
                 graph,
                 target_node_id,
@@ -488,7 +488,7 @@ def execute_trace(
         fingerprint_memo=fingerprint_memo,
         execution_context=execution_context,
         t_start=t_start,
-        missing_column_error=missing_column_error,
+        table_fill=table_fill,
     )
     if not seed_plan:
         return core(snapshot_plan=None)
@@ -558,16 +558,15 @@ def _workbench_output_trace_target(
     column: str | None,
     row_values: dict[str, Any] | None,
     seed_plan: Sequence[ListedSeed] | None,
-) -> tuple[str, str | None, str | None, dict[str, Any] | None, list[ListedSeed] | None, str | None]:
+) -> tuple[str, str | None, str | None, dict[str, Any] | None, list[ListedSeed] | None, _TableFill]:
     """A Workbench Output's cell, traced from the node connected to its table, and the
     port of that node it is connected from, which names the frame of a node that emits
     several (a Workbench Input, one per table).
 
-    The table holds that node's rows, so the row is the same one; the column and the
-    clicked values are renamed to the frame columns that fill them, the mapping's pick or
-    else the column's own name. The preview listed the seeds of every table, so only
-    those in the node's lineage are kept. The last item is the refusal for a column filled
-    by its own name from a frame without it, which only the traced frame can tell.
+    The table holds that node's rows, so the row is the same one, and its columns are the
+    frame's columns of the same names. The preview listed the seeds of every table, so only
+    those in the node's lineage are kept. The last item tells the columns the frame fills,
+    which only the traced frame can.
     """
     config = graph.node_map[target_node_id].data.config
     tables = workbench_output_tables(config)
@@ -594,34 +593,40 @@ def _workbench_output_trace_target(
             f"Target node {target_node_id!r} is a Workbench Output with nothing connected to "
             f"its {port_label!r} table: connect a frame to it."
         )
-    picks = workbench_output_mapping(config, tables).get(port_label, {})
-
-    def filled_from(name: str) -> str | None:
-        return picks[name] if name in picks else name
-
-    unfilled = None
-    if column is not None:
-        if column not in {c.name for c in table.columns}:
-            raise ValueError(
-                f"Target node {target_node_id!r} is a Workbench Output whose {port_label!r} "
-                f"table has no {column!r} column."
-            )
-        unfilled = (
+    if column is not None and column not in {c.name for c in table.columns}:
+        raise ValueError(
             f"Target node {target_node_id!r} is a Workbench Output whose {port_label!r} "
-            f"table fills {column!r} with nothing, so it has no value to trace."
+            f"table has no {column!r} column."
         )
-        if filled_from(column) is None:
-            raise ValueError(unfilled)
-        column = filled_from(column)
-    if row_values is not None:
-        row_values = {
-            filling: value
-            for name, value in row_values.items()
-            if (filling := filled_from(name)) is not None
-        }
+    fill = _TableFill(
+        declared={c.name: c.type for c in table.columns},
+        refusal=(
+            f"Target node {target_node_id!r} is a Workbench Output whose {port_label!r} "
+            f"table fills {column!r} with nulls, as the frame connected to it lacks the "
+            "column or holds it with a type that does not fit, so it has no value to trace."
+        ),
+    )
     lineage = {edge.source, *upstream_node_ids(edge.source, graph.parents_of)}
     listed = None if seed_plan is None else [s for s in seed_plan if s.node_id in lineage]
-    return edge.source, edge.sourceHandle, column, row_values, listed, unfilled
+    return edge.source, edge.sourceHandle, column, row_values, listed, fill
+
+
+@dataclass(frozen=True)
+class _TableFill:
+    """The columns a Workbench Output's table takes from its frame: each by its name, of a
+    type that fits the one it declares, so a column the frame lacks or holds with a type
+    that does not fit is nulls, told once the frame is built. *refusal* is the traced
+    column's refusal when it is one of those."""
+
+    declared: Mapping[str, str]
+    refusal: str
+
+    def fills(self, frame: pl.DataFrame, name: str) -> bool:
+        return (
+            name in self.declared
+            and name in frame.schema
+            and column_fits(self.declared[name], frame.schema[name])
+        )
 
 
 #: Why the ancestors of a seed are not traced, completing "Not traced above the
@@ -993,12 +998,14 @@ def _execute_trace_core(
     execution_context: ExecutionContext,
     snapshot_plan: SeedPlan | None,
     t_start: float,
-    missing_column_error: str | None = None,
+    table_fill: _TableFill | None = None,
     target_port: str | None = None,
 ) -> TraceResult:
     """One trace, under the plan its preview listed when that plan seeds anything.
 
-    *missing_column_error* is raised when the target's frame lacks the traced column.
+    *table_fill* tells a Workbench Output's columns its traced frame fills: the traced
+    column's refusal is raised when the frame does not fill it, and the clicked values it
+    does not fill, nulls in the table, are not matched against the frame.
     *target_port* names the frame of a target that emits several, the one traced.
     """
     nodes = graph.nodes
@@ -1156,12 +1163,15 @@ def _execute_trace_core(
             f"Target node {target_node_id!r} emits multiple frames; "
             "trace a node downstream of a specific frame instead."
         )
-    if (
-        missing_column_error is not None
-        and isinstance(target_output, pl.DataFrame)
-        and column not in target_output.columns
-    ):
-        raise ValueError(missing_column_error)
+    if table_fill is not None and isinstance(target_output, pl.DataFrame):
+        if column is not None and not table_fill.fills(target_output, column):
+            raise ValueError(table_fill.refusal)
+        if row_values is not None:
+            row_values = {
+                name: value
+                for name, value in row_values.items()
+                if table_fill.fills(target_output, name)
+            }
 
     # Preserve every physical edge.  Edge Join input roles are defined by
     # targetHandle, and a multi-frame source can feed both roles of one join.

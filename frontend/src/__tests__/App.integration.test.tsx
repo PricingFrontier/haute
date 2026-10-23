@@ -3122,7 +3122,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     const input = makeNode("wb_in", "Workbench Input", "workbenchInput")
     input.data.config = { tables: [], sample: {} }
     const output = makeNode("wb_out", "Workbench Output", "workbenchOutput")
-    output.data.config = { tables: [], mapping: {} }
+    output.data.config = { tables: [] }
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({ nodes: [input, output], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))
     render(<App />)
     await waitForAppReady()
@@ -3145,7 +3145,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     // copy as it was before the form changed.
     act(() => {
       useGraphStore.getState().setNodesRaw((nodes) => nodes.map((node) => (
-        node.id === "wb_out" ? { ...node, data: { ...node.data, config: { tables: [], mapping: {} } } } : node
+        node.id === "wb_out" ? { ...node, data: { ...node.data, config: { tables: [] } } } : node
       )))
     })
     expect(outputTables()).toEqual(responseTables)

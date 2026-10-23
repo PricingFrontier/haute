@@ -1370,9 +1370,8 @@ Out of scope:
   `workbenchOutput` in the pipeline document, declared in the pipeline file with
   `@pipeline.workbench_output(config=...)` (a submodel's file uses `@submodel.workbench_output`)
   and configured in `config/workbench_output/<function>.json`, whose `tables` are a copy of
-  the workbench's output tables and whose `mapping` says which frame column fills which table
-  column. In the editor it is "Workbench Output", badged "WORKBENCH OUT", in the exit group
-  with the Quote Response's colour and shape and an icon of its own.
+  the workbench's output tables. In the editor it is "Workbench Output", badged "WORKBENCH
+  OUT", in the exit group with the Quote Response's colour and shape and an icon of its own.
   - **A port per table.** A Workbench Output has one input port per table with a column,
     named by the table, in the tables' order, and nothing downstream. A connection lands on
     one table's port: its `targetHandle` is the table's name, and the pipeline file says
@@ -1380,14 +1379,13 @@ Out of scope:
     one connection, and a node fills one table: its frame reaches the Workbench Output under
     the node's own name, as it reaches any node, so a second connection from the same node is
     refused, saying which table that node already fills.
-  - **The mapping.** Each table column is filled from one column of the frame connected to
-    its table's port: the frame's column of the same name, unless the mapping picks another or
-    none. The mapping is `mapping` in the config, by table name and then column name, each
-    entry a frame column's name or `null` for none; a column without an entry is filled by
-    name. A column with no source, because the mapping says none or the frame has no column of
-    its name, is filled with nulls, and the panel flags it. An entry naming a frame column the
-    frame lacks fails the run, naming both. The fetch that updates the tables drops the entries
-    of tables and columns the new tables no longer have.
+  - **Filled by name.** Each table column is filled from the column of exactly its name, case
+    included, in the frame connected to its table's port; nothing else of the frame is taken
+    and no column is filled from another of a different name. A column the frame lacks, one
+    whose type does not fit its declared type (below) and every column of a table nothing is
+    connected to are filled with nulls, and the panel flags each, so the pipeline runs while
+    it is being built: a one-row table nothing is connected to holds one row of nulls and a
+    many-row one no rows. None of them stops a run.
   - **Its tables are its result.** When the node runs, its result is its tables, one frame per
     table with a column, under the table's name, each holding the table's columns in the tables' order with
     their declared types, and nothing else of the frames it was given. A column fits its
@@ -1398,9 +1396,10 @@ Out of scope:
     them differently from one run to the next. Clicking the node
     previews its tables as dataframes, one at a time, chosen from the preview's table picker
     when there are several, the first table first. Clicking a value in them traces it from
-    the node connected to its table: the same row of that node's frame, and the column that
-    fills the value's column. A column nothing fills has no value to trace, and tracing it
-    says so.
+    the node connected to its table: the same row of that node's frame, and its column of the
+    value's column's name. A value filled with nulls, its column missing from the frame or of
+    a type that does not fit, or its table not connected, has no value to trace, and tracing
+    it says so.
   - **The response.** The tables are what a priced quote's output tables are filled with. Where
     the pipeline answers a request, its tables become the response for one quote: a list of one
     object holding each one-row table as an object under its name and each many-row table as a
@@ -1440,10 +1439,12 @@ Out of scope:
     removed and reported, as for a Workbench Input. A renamed table is a new port.
   - **Its panel** shows each table: its name, whether it has one row per quote or many, the
     node connected to it or "Not connected", and whatever the editor finds wrong with its name
-    as a port; then, for each of its columns, the column's name and type and a choice of the
-    connected frame's columns that fills it (the columns its last preview recorded), showing a
-    same-named column as chosen "by name" and flagging a column nothing fills. Changing a choice
-    is an edit to the pipeline like any other. The tables themselves are read-only: the panel has
+    as a port; then each of its columns, its name and type in a box of its own. The box's
+    border is red while the column is missing (the connected frame has no column of its name,
+    or nothing is connected to the table) and orange while the frame's column is of a type
+    that does not fit, judged by the columns and types the frame's last preview recorded; a
+    connected frame not previewed yet is judged by neither. The panel changes nothing: the
+    tables themselves are read-only, and the panel has
     the Workbench Input panel's title and its notes for when the workbench is not enabled and
     while a submodel is open.
   - **The assistant** reads a Workbench Output and connects nodes to its tables, or removes
@@ -1811,12 +1812,12 @@ Out of scope:
   migrations ship with Haute and a project takes a new one by upgrading Haute. A deploy
   applies them before the new release starts, never the app as it opens, so replicas
   never race to migrate.
-- **The response's tables, filled through a mapping.** The workbench defines what a priced
-  quote fills in as it defines the quote, so the pipeline's part is to connect a frame to each
-  table and say which of its columns fills which. Filling by name until the analyst picks
-  otherwise keeps a pipeline built to the workbench's names free of mapping, and a column
-  nothing fills is visible in the panel and the preview rather than stopping every run while
-  the pipeline is being built.
+- **The response's tables, filled by name.** The workbench defines what a priced quote fills
+  in as it defines the quote, so the pipeline's part is to connect to each table a frame that
+  holds its columns under the schema's names and types. Matching names exactly leaves the
+  schema the one place a column is named. A column missing or of the wrong type, and a table
+  not connected yet, are visible in the panel and as nulls in the preview rather than stopping
+  every run while the pipeline is being built; a report of them is later work.
 - **Tables, not a document.** The workbench's output tables are tables, and a pricing analyst
   checks them as tables, so the node's result is its tables and its preview a dataframe per
   table, as a Workbench Input's is per input table. The response document is how the tables
@@ -1958,7 +1959,7 @@ Out of scope:
 - `POST /api/workbench/tables` answers 404 while the workbench is not enabled, the
   structured 422 for tables the Quote Input's rules refuse and FastAPI's 422 for a body
   that is not a form; it writes nothing. A pricing that fails for any reason, a pipeline
-  without a Workbench Output, a table nothing is connected to, a sample that does not fit
+  without a Workbench Output, a sample that does not fit
   its tables or the preview route's failure, shows as the toolbar's reason and empties the
   output columns, never as a toast; an answer that arrives after the view has left is
   dropped.
@@ -2022,13 +2023,12 @@ Out of scope:
     Workbench Output's tables have no columns yet: add their columns in the workbench's
     schema and save it.";
   - with a copy that is not as the workbench writes it, as a Workbench Input's fails;
-  - for a table nothing is connected to, "Connect a frame to the Workbench Output's
-    '<table>' table.";
   - for a connection to a port that is no table of the node's;
-  - for a mapping entry naming a column its table's frame lacks, naming the frame's columns,
-    and for a column whose type does not fit, naming both types;
-  - for a mapping entry for a table or column the node does not have;
   - for a one-row table whose frame has other than one row, saying how many it has.
+
+  A table nothing is connected to, a column its frame lacks and a column whose type does
+  not fit fill with nulls and fail nothing. A config key a Workbench Output does not
+  declare, `mapping` among them, is refused as it is for any node type.
 - Two response nodes of either type, at the top level or in a submodel, fail save and deploy
   with "Only one Quote Response or Workbench Output node is allowed per pipeline (found 2).",
   and `Pipeline.run` and `Pipeline.score` refuse the pipeline, naming both.

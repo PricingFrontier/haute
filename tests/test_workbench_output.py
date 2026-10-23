@@ -2,15 +2,17 @@
 
 Its tables are a copy of the response's tables the project's workbench supplies
 (specs/workbench). Each is a port: the frame connected to it fills it, each column from
-the frame column its mapping picks or else the same-named one, given its declared type. The
-node's result is its tables; where the pipeline answers a request they become the response
-for one quote, each table under its name.
+the frame's column of exactly its name, given its declared type, or with nulls when the frame
+lacks it, holds it with a type that does not fit or nothing is connected. The node's result
+is its tables; where the pipeline answers a request they become the response for one quote,
+each table under its name.
 """
 
 from __future__ import annotations
 
 import copy
 import importlib.util
+import json
 import re
 import sys
 import uuid
@@ -40,14 +42,14 @@ from haute._types import (
 from haute._workbench_output import (
     WorkbenchOutputError,
     WorkbenchOutputTables,
-    _fits,
     as_response,
+    column_fits,
 )
 from haute.codegen import graph_to_code_multi
 from haute.deploy._config import DeployConfig, resolve_config
 from haute.deploy._pruner import find_deploy_input_nodes, find_output_node
 from haute.deploy._scorer import score_graph
-from haute.errors import ExecutionError
+from haute.errors import ConfigError, ExecutionError
 from haute.execution import ExecutionProfile, execute_lazy_graph
 from haute.executor import execute_graph
 from haute.parser import parse_pipeline_file
@@ -217,27 +219,41 @@ def test_a_workbench_output_fills_its_tables_from_their_frames(project: Path) ->
     assert _response(_priced()) == _RESPONSE
 
 
-def _mapped(mapping: dict[str, Any], *extra: tuple[str, str]) -> PipelineGraph:
-    """The priced graph, its pricing table given *extra* columns and its mapping *mapping*."""
+def _unfilled() -> PipelineGraph:
+    """The priced graph, its pricing table declaring `referral`, a String upstream, an
+    Integer, and two columns no frame column is named exactly: `discount` and `Premium`."""
     graph = _priced()
-    config = graph.node_map["response"].data.config
-    config["tables"][0]["columns"] += [_column(name, kind) for name, kind in extra]
-    config["mapping"] = mapping
+    pricing = graph.node_map["response"].data.config["tables"][0]
+    pricing["columns"] = [
+        _column("premium", "float"),
+        _column("limit", "float"),
+        _column("referral", "int"),
+        _column("discount", "float"),
+        _column("Premium", "float"),
+    ]
     return graph
 
 
-def test_the_mapping_picks_what_fills_each_column(project: Path) -> None:
-    # Two picks swap names, `referral` is filled by nothing, and `discount`, which no column of
-    # the frame is named, is filled by nothing too: each nothing a column of nulls.
-    graph = _mapped(
-        {"pricing": {"premium": "limit", "limit": "premium", "referral": None}},
-        ("discount", "float"),
+def test_a_column_the_frame_does_not_fill_is_nulls(project: Path) -> None:
+    # A column of another type, one the frame lacks and one whose name differs only in case
+    # are each a column of nulls of the declared type, and the run goes on.
+    graph = _unfilled()
+
+    tables = _tables(graph)
+
+    assert tables["pricing"].schema == pl.Schema(
+        {
+            "premium": pl.Float64,
+            "limit": pl.Float64,
+            "referral": pl.Int64,
+            "discount": pl.Float64,
+            "Premium": pl.Float64,
+        }
     )
-
-    (pricing,) = _tables(graph)["pricing"].to_dicts()
-
-    assert pricing == {"premium": 1000.0, "limit": 100.0, "referral": None, "discount": None}
-    assert _response(graph)[0]["pricing"] == {"premium": 1000.0, "limit": 100.0}
+    assert tables["pricing"].to_dicts() == [
+        {"premium": 100.0, "limit": 1000.0, "referral": None, "discount": None, "Premium": None}
+    ]
+    assert _response(graph)[0]["pricing"] == {"premium": 100.0, "limit": 1000.0}
 
 
 def test_a_column_of_nulls_fills_a_column_of_any_type(project: Path) -> None:
@@ -263,21 +279,46 @@ def test_a_workbench_output_previews_before_the_workbench_has_a_sample(project: 
     assert tables["item_prices"].to_dicts() == [{"item_id": None, "premium": None}]
 
 
-def test_a_workbench_output_with_nothing_connected_says_what_to_connect(project: Path) -> None:
+def test_a_table_nothing_is_connected_to_is_nulls(project: Path) -> None:
+    # A one-row table is one row of nulls and a many-row table no rows, beside a table that is
+    # connected.
+    graph = _priced()
+    graph.edges = [edge for edge in graph.edges if edge.targetHandle != "item_prices"]
+
+    tables = _tables(graph)
+
+    assert tables["pricing"].to_dicts() == [_RESPONSE[0]["pricing"]]
+    assert tables["item_prices"].schema == pl.Schema({"item_id": pl.String, "premium": pl.Float64})
+    assert tables["item_prices"].height == 0
+    assert _response(graph) == [{"pricing": _RESPONSE[0]["pricing"]}]
+
+
+def test_a_workbench_output_with_nothing_connected_runs(project: Path) -> None:
     graph = _priced()
     graph.edges = [edge for edge in graph.edges if edge.target != "response"]
-    saved = parse_pipeline_file(_write(graph, project, "main"))
+    pipeline_file = _write(graph, project, "main")
 
-    with pytest.raises(WorkbenchOutputError, match="Connect a frame to the Workbench Output's"):
-        _tables(graph)
-    # As the editor previews it, on a saved pipeline with shared snapshots.
-    results = execute_graph(
-        saved, target_node_id="response", shared_snapshots=True, staging_token=new_staging_token()
-    )
-    assert results["response"].status == "error"
-    assert "Connect a frame to the Workbench Output's 'pricing' table." in str(
-        results["response"].error
-    )
+    tables = _tables(graph)
+
+    assert tables["pricing"].to_dicts() == [{"premium": None, "limit": None, "referral": None}]
+    assert tables["item_prices"].height == 0
+    assert _response(graph) == [{}]
+    # As Preview prices it, every table from one run of a saved pipeline with shared
+    # snapshots, and as the pipeline file runs.
+    previewed = execute_graph(
+        parse_pipeline_file(pipeline_file),
+        target_node_id="response",
+        port_labels=["pricing", "item_prices"],
+        shared_snapshots=True,
+        staging_token=new_staging_token(),
+    )["response"]
+    assert previewed.status == "ok", previewed.error
+    assert {label: each.preview for label, each in previewed.port_previews.items()} == {
+        "pricing": [{"premium": None, "limit": None, "referral": None}],
+        "item_prices": [],
+    }
+    pipeline = _import(pipeline_file).pipeline
+    assert render_output_document(_collected(pipeline.run(source="live"))) == [{}]
 
 
 def test_the_editor_previews_a_table_at_a_time(project: Path) -> None:
@@ -452,21 +493,20 @@ def test_a_workbench_outputs_cell_fed_straight_from_the_input_is_traced_from_its
     assert (traced.target_node_id, traced.column, traced.output_value) == ("request", "value", 30.0)
 
 
-def test_a_workbench_outputs_cell_is_traced_through_the_column_filling_it(project: Path) -> None:
-    graph = _mapped(
-        {"pricing": {"premium": "limit", "limit": "premium", "referral": None}},
-        ("discount", "float"),
-    )
-    row = {"premium": 1000.0, "limit": 100.0, "referral": None, "discount": None}
+def test_a_workbench_outputs_cell_beside_nulls_is_traced_from_its_frame(project: Path) -> None:
+    # The clicked row's nulls are not its frame's values: `referral` holds "none" there, so
+    # the row is matched by the columns the frame fills.
+    graph = _unfilled()
+    row = {"premium": 100.0, "limit": 1000.0, "referral": None, "discount": None, "Premium": None}
 
     traced = execute_trace(
         graph, target_node_id="response", column="premium", row_values=row, port_label="pricing"
     )
 
-    assert (traced.target_node_id, traced.column, traced.output_value) == ("priced", "limit", 1000)
-    # Nothing fills `referral` by pick, nor `discount` by name: neither has a value to trace.
-    for unfilled in ("referral", "discount"):
-        with pytest.raises(ValueError, match=f"fills '{unfilled}' with nothing, so it has no"):
+    assert (traced.target_node_id, traced.column, traced.output_value) == ("priced", "premium", 100)
+    # A column of nulls has no value to trace.
+    for unfilled in ("referral", "discount", "Premium"):
+        with pytest.raises(ValueError, match=f"fills '{unfilled}' with nulls, as the frame"):
             execute_trace(graph, target_node_id="response", column=unfilled, port_label="pricing")
 
 
@@ -588,32 +628,11 @@ def _no_columns(graph: PipelineGraph) -> None:
     graph.edges = [edge for edge in graph.edges if edge.target != "response"]
 
 
-def _unconnected(graph: PipelineGraph) -> None:
-    graph.edges = [edge for edge in graph.edges if edge.targetHandle != "item_prices"]
-
-
 def _on_no_table(graph: PipelineGraph) -> None:
     graph.edges = [
         edge.model_copy(update={"targetHandle": "nope"}) if edge.targetHandle == "pricing" else edge
         for edge in graph.edges
     ]
-
-
-def _declares(column: tuple[str, str]) -> Callable[[PipelineGraph], None]:
-    def change(graph: PipelineGraph) -> None:
-        pricing = graph.node_map["response"].data.config["tables"][0]
-        pricing["columns"] = [
-            entry for entry in pricing["columns"] if entry["name"] != column[0]
-        ] + [_column(*column)]
-
-    return change
-
-
-def _remapped(mapping: dict[str, Any]) -> Callable[[PipelineGraph], None]:
-    def change(graph: PipelineGraph) -> None:
-        graph.node_map["response"].data.config["mapping"] = mapping
-
-    return change
 
 
 def _fed(code: str) -> Callable[[PipelineGraph], None]:
@@ -634,53 +653,7 @@ _FAILURES: dict[str, tuple[Callable[[PipelineGraph], None], str]] = {
         "This Workbench Output's tables have no columns yet: add their columns in the "
         "workbench's schema and save it.",
     ),
-    "unconnected": (_unconnected, "Connect a frame to the Workbench Output's 'item_prices' table."),
     "on_no_table": (_on_no_table, "on 'nope', which is none of its tables"),
-    "mapped_from_a_missing_column": (
-        _remapped({"pricing": {"premium": "nope"}}),
-        "The Workbench Output's 'pricing' table fills 'premium' from 'nope', which the frame "
-        "connected to it doesn't have; it has state, limit, premium, referral.",
-    ),
-    "mapping_a_column_it_lacks": (
-        _remapped({"pricing": {"discount": "premium"}}),
-        "The Workbench Output's mapping has a 'discount' column in its 'pricing' table, which "
-        "has no such column.",
-    ),
-    "mapping_not_an_object": (
-        _remapped("premium"),
-        "The Workbench Output's mapping must be an object of tables, each an object of columns.",
-    ),
-    "mapping_a_list": (
-        _remapped([]),
-        "The Workbench Output's mapping must be an object of tables, each an object of columns.",
-    ),
-    "mapping_a_table_it_lacks": (
-        _remapped({"nope": {"premium": "premium"}}),
-        "The Workbench Output's mapping has a 'nope' table, which is none of its tables "
-        "(pricing, item_prices).",
-    ),
-    "mapping_entries_not_an_object": (
-        _remapped({"pricing": "premium"}),
-        "The Workbench Output's mapping for its 'pricing' table must be an object of columns.",
-    ),
-    "mapping_source_not_a_name": (
-        _remapped({"pricing": {"premium": 5}}),
-        "The Workbench Output's mapping for 'pricing'.'premium' must name a column, or be null "
-        "for none.",
-    ),
-    "mistyped_column": (
-        _declares(("referral", "int")),
-        "The Workbench Output's 'pricing' table declares 'referral' as int, but 'referral', "
-        "which fills it, is String.",
-    ),
-    "mistyped_bool": (
-        _declares(("referral", "bool")),
-        "declares 'referral' as bool, but 'referral', which fills it, is String.",
-    ),
-    "mistyped_date": (
-        _declares(("referral", "date")),
-        "declares 'referral' as date, but 'referral', which fills it, is String.",
-    ),
     "two_rows": (
         _fed(f"{_PRICED}\ndf = pl.concat([df, df])"),
         "The Workbench Output's 'pricing' table has one row per quote, but the frame "
@@ -730,7 +703,21 @@ def test_which_frame_columns_fill_a_declared_column(
     declared: str, dtype: pl.DataType, fits: bool
 ) -> None:
     """Any integer fills an Integer, any number a Decimal, a category Text; a null anything."""
-    assert _fits(declared, dtype) is fits
+    assert column_fits(declared, dtype) is fits
+
+
+def test_a_workbench_output_config_with_a_mapping_is_refused(project: Path) -> None:
+    # Columns are filled by name alone: a mapping left in a sidecar is a key the node type
+    # does not declare.
+    pipeline_file = _write(_priced(), project, "main")
+    sidecar = project / "config" / "workbench_output" / "response.json"
+    config = json.loads(sidecar.read_text(encoding="utf-8"))
+    sidecar.write_text(
+        json.dumps({**config, "mapping": {"pricing": {"premium": "limit"}}}), encoding="utf-8"
+    )
+
+    with pytest.raises(ConfigError, match="config keys the node type does not declare: 'mapping'"):
+        parse_pipeline_file(pipeline_file)
 
 
 def test_a_request_of_several_quotes_fails_a_workbench_output(project: Path) -> None:

@@ -3,11 +3,12 @@
 A Workbench Output's ``tables`` are a copy of the response's tables the project's
 workbench supplies (specs/workbench), as :mod:`haute._workbench_tables` holds them. Each
 table with a column is a port: the frame connected to it fills it, each column from the
-frame's column the ``mapping`` picks or, without a pick, the frame's column of the same
-name, given its declared type. A one-row table holds the quote's one row and a many-row
-table any number. The node's result is its tables; where the pipeline answers a request
-they become the response for one quote, each table under its name, as a quote holds its
-own tables.
+frame's column of exactly its name, given its declared type. A column the frame lacks or
+holds with a type that does not fit, and a table nothing is connected to, fill with nulls,
+so the pipeline runs while it is being built. A one-row table holds the quote's one row and
+a many-row table any number. The node's result is its tables; where the pipeline answers a
+request they become the response for one quote, each table under its name, as a quote holds
+its own tables.
 """
 
 from __future__ import annotations
@@ -61,50 +62,7 @@ def workbench_output_tables(config: Mapping[str, Any]) -> tuple[WorkbenchTable, 
     return ports
 
 
-def workbench_output_mapping(
-    config: Mapping[str, Any], tables: tuple[WorkbenchTable, ...]
-) -> dict[str, dict[str, str | None]]:
-    """The frame column each table column's ``mapping`` entry picks, by table and column.
-
-    An entry is a frame column's name, or ``None`` for none; a column without one is filled
-    by name. An entry for a table or column the tables do not have fails.
-    """
-    mapping = config.get("mapping")
-    if mapping is None:
-        mapping = {}
-    if not isinstance(mapping, dict):
-        raise WorkbenchOutputError(
-            "The Workbench Output's mapping must be an object of tables, each an object of columns."
-        )
-    columns_by_table = {table.name: {c.name for c in table.columns} for table in tables}
-    picks: dict[str, dict[str, str | None]] = {}
-    for label, entries in mapping.items():
-        if label not in columns_by_table:
-            raise WorkbenchOutputError(
-                f"The Workbench Output's mapping has a {label!r} table, which is none of its "
-                f"tables ({', '.join(columns_by_table)})."
-            )
-        if not isinstance(entries, dict):
-            raise WorkbenchOutputError(
-                f"The Workbench Output's mapping for its {label!r} table must be an object of "
-                "columns."
-            )
-        for column, source in entries.items():
-            if column not in columns_by_table[label]:
-                raise WorkbenchOutputError(
-                    f"The Workbench Output's mapping has a {column!r} column in its {label!r} "
-                    "table, which has no such column."
-                )
-            if source is not None and (not isinstance(source, str) or not source):
-                raise WorkbenchOutputError(
-                    f"The Workbench Output's mapping for {label!r}.{column!r} must name a "
-                    "column, or be null for none."
-                )
-        picks[label] = dict(entries)
-    return picks
-
-
-def _fits(declared: str, dtype: pl.DataType) -> bool:
+def column_fits(declared: str, dtype: pl.DataType) -> bool:
     """Whether a frame's column of *dtype* can fill a column declared *declared*."""
     if dtype == pl.Null:
         return True
@@ -120,56 +78,44 @@ def _fits(declared: str, dtype: pl.DataType) -> bool:
 
 
 def fill_workbench_tables(
-    frames: Mapping[str, pl.LazyFrame],
-    tables: tuple[WorkbenchTable, ...],
-    mapping: Mapping[str, Mapping[str, str | None]],
+    frames: Mapping[str, pl.LazyFrame], tables: tuple[WorkbenchTable, ...]
 ) -> WorkbenchOutputTables:
-    """Each table filled from the frame its port has in *frames*, through *mapping*.
+    """Each table filled from the frame its port has in *frames*, by name.
 
-    Nothing is collected: a one-row table checks it has one row when it is read.
+    Nothing is collected: a connected one-row table checks it has one row when it is read.
     """
     filled: dict[str, pl.LazyFrame] = {}
     for table in tables:
         frame = frames.get(table.name)
         if frame is None:
-            raise WorkbenchOutputError(
-                f"Connect a frame to the Workbench Output's {table.name!r} table."
-            )
-        selection = _filled(table, frame, mapping.get(table.name, {}))
+            filled[table.name] = _unconnected(table)
+            continue
+        selection = _filled(table, frame)
         filled[table.name] = _exactly_one_row(table, selection) if table.one_row else selection
     return WorkbenchOutputTables(filled, tables)
 
 
-def _filled(
-    table: WorkbenchTable, frame: pl.LazyFrame, picks: Mapping[str, str | None]
-) -> pl.LazyFrame:
-    """*table*'s columns from *frame*: each from its source, cast to its declared type."""
+def _unconnected(table: WorkbenchTable) -> pl.LazyFrame:
+    """*table* with nothing connected: one row of nulls when it is one-row, else no rows."""
+    rows = [None] if table.one_row else []
+    return pl.LazyFrame(
+        {column.name: rows for column in table.columns},
+        schema={column.name: column.dtype for column in table.columns},
+    )
+
+
+def _filled(table: WorkbenchTable, frame: pl.LazyFrame) -> pl.LazyFrame:
+    """*table*'s columns from *frame*, each from its column of the same name, cast to its
+    declared type; nulls where the frame lacks it or holds it with a type that does not fit."""
     schema = frame.collect_schema()
     columns: list[pl.Expr] = []
     for column in table.columns:
-        if column.name in picks:
-            source = picks[column.name]
-            if source is not None and source not in schema:
-                raise WorkbenchOutputError(
-                    f"The Workbench Output's {table.name!r} table fills {column.name!r} from "
-                    f"{source!r}, which the frame connected to it doesn't have; it has "
-                    f"{', '.join(schema.names()) or 'none'}. Pick another in its mapping."
-                )
+        if column.name in schema and column_fits(column.type, schema[column.name]):
+            columns.append(pl.col(column.name).cast(column.dtype))
         else:
-            source = column.name if column.name in schema else None
-        if source is None:
-            # Nothing fills it: a column of nulls, as long as the frame.
             columns.append(pl.lit(None, dtype=column.dtype).alias(column.name))
-            continue
-        if not _fits(column.type, schema[source]):
-            raise WorkbenchOutputError(
-                f"The Workbench Output's {table.name!r} table declares {column.name!r} as "
-                f"{column.type}, but {source!r}, which fills it, is {schema[source]}. Convert "
-                "it upstream, pick another column, or change its type in the workbench."
-            )
-        columns.append(pl.col(source).cast(column.dtype).alias(column.name))
-    # Added beside the frame's own columns, so a literal takes the frame's length and two
-    # picks may swap names; then cut to the table's columns, in order.
+    # Added beside the frame's own columns, so a literal takes the frame's length (a select
+    # of literals alone would be one row); then cut to the table's columns, in order.
     return frame.with_columns(columns).select([column.name for column in table.columns])
 
 
