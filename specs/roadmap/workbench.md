@@ -36,8 +36,10 @@ cells shown row by row through "this row" tests were offered again and not taken
 quote's alternatives come to share, and its option, which tells them apart. Decisions
 taken 2026-10-23: the quote's name is not carried, being typed, changed and not unique;
 the carried columns show in the schema, fixed, at the head of every table; Duplicate and
-Renew take a new reference, Create alternative its source's with the next option; and a
-quote still takes its reference at its first save.
+Renew take a new reference, Create alternative its source's with the next option; the app
+makes a quote, with its reference and option, when the underwriter creates it; the
+identity is never blank, Preview pricing under a stand-in; and Edge Join and the step
+editor's join are not changed for it.
 
 ## Priorities
 
@@ -488,13 +490,18 @@ groups the options offered on one submission.
 (no typing, no rules, no default), added after `is_renewal`, so a form saved before it
 takes it on as `is_renewal` was taken on. An app quote's reference and option are held on
 `haute_quotes`, unique together where set, and each revision's details row keeps them as
-written; a quote the store saves alone, without details, holds neither. A new quote, a
-Duplicate and a Renew take the next reference and option 1 at their first save, as now.
-Create alternative, from any option of a reference, takes
-that reference and its next option, from a counter row for the reference updated as
-`_next_reference` updates the quotes' counter, in the transaction that writes the quote:
-two alternatives saved at once take two options, and a save repeated with its operation
-key answers with what it wrote. A save keeps the pair. The quote's bar, the Quotes page,
+written; a quote the store saves alone, without details, holds neither. The app makes a
+quote when the underwriter creates it, where today a new quote waits in the browser for its
+first save: New quote, Duplicate, Renew and Create alternative each save it there and then
+as a draft, its first revision unpriced and holding its starting values (the columns'
+defaults, or the values of the revision it is made from), with its reference and option,
+so its first price already has them; one left with nothing typed stays a draft until
+archived. New quote, a Duplicate and a Renew take the next reference and option 1. Create
+alternative, from any option of a reference, takes that reference and its next option,
+from a counter row for the reference updated as `_next_reference` updates the quotes'
+counter, in the transaction that writes the quote: two alternatives made at once take two
+options, and a creation repeated with its operation key answers with the quote it made. A
+save keeps the pair. The quote's bar, the Quotes page,
 its history, its related quotes and the messages naming it show `Q-000123/2`, option 1 as
 `/1`; ordering by reference orders by reference, then option as a number, then id, and the
 page cursor carries all three; a search for `Q-000123` finds every option of it, and one
@@ -524,41 +531,42 @@ build` and the deploy refuse while it stands, and renaming the column, whose val
 kept by its id, clears it at the next save.
 
 A request and a frame differ in shape. A request's tables hold their own columns, the
-identity in `quote_details` alone, and the request the app builds holds it whatever the
-sheets hide; `null_quote`, the sample and the deploy's request schema follow the
-request's shape. A request holding either column in another table is refused naming the
-spot, and an option below 1 is refused as a value that does not fit its column is.
-`read_quote`, which reads the request in deployed scoring and the app's pricing and the
-sample in the editor, Preview and generated code, then puts the quote's `quote_details`
-reference and option on every row of every other table's frame: typed nulls when the quote
-holds none, and no rows for a many-row table without any.
+identity in `quote_details` alone, and the identity is never blank: the request the app
+builds holds the quote's whatever the sheets hide; the sample, read in the editor, Preview
+and generated code, and `null_quote`, which an empty sample and the deploy's dry run use,
+take a stand-in, `PREVIEW` and option 1, the form keeping none; and the deploy's request
+schema requires both, so a request without either in `quote_details`, holding either in
+another table, or with an option below 1 is refused naming the spot. `read_quote`, which
+reads the request in deployed scoring and the app's pricing and the sample everywhere
+else, then puts the quote's `quote_details` reference and option on every row of every
+other table's frame, and no rows on a many-row table without any.
 
 A pipeline need not carry them through to its outputs. The Workbench Output's tables hold
 the two columns as typed nulls whatever the pipeline's frames hold in them, so the editor
 and Preview show them blank; where the response is made from those tables (`as_response`),
 in deployed scoring, which the app's pricing uses, and in `Pipeline.run` and `score`, every
 row takes the identity of the run's `quote_details` frame: the request's in deployed
-scoring, the source's in `run`, the frame given in `score`, and blank when that port is
-unconnected. The price never depends on them: a difference in them alone is not a price
-that moved, and the docs say a rule never reads them.
+scoring, the source's in `run`, the frame given in `score`, and blank only when `score` is
+given no `quote_details` frame, its port unconnected. The price never depends on them: a
+difference in them alone is not a price that moved, and the docs say a rule never reads
+them. The revision is not carried, as a quote is priced before its next revision exists;
+an export keys a revision's rows by reference, option and revision (WB-11).
 
-A new quote is priced before it takes its reference, so its first revision's stored
-response holds blank identity; read out of the store, its rows take their quote's. The
-revision is not carried, as a quote is priced before its next revision exists; an export
-keys a revision's rows by reference, option and revision (WB-11).
+Edge Join and the step editor's join are not changed for this. The identity is never blank
+and is the same on every row of a quote, so two schema tables joined on `reference`,
+`option` and their own key keep one of each and match as they would on their own key
+alone. Joined on their own key alone, the right side's identity stays as `reference_right`
+and `option_right`, and joining a third schema table on after that is refused by Polars,
+`reference_right` being there already. The docs show schema tables joined on `reference`,
+`option` and their own key, and that a selection by type takes `option` with the other
+Integers. A project's pipeline meets the columns at its next save, and its previews show
+any step they stop.
 
-Joins are unchanged. Two schema tables joined on their own key, by Edge Join or the step
-editor's join, keep the right side's identity as `reference_right` and `option_right`, and
-joining a third schema table on after that is refused by Polars, `reference_right` being
-there already; a selection by type takes `option` with the other Integers. The docs show
-the right side's two columns dropped before a further join, never joined on, as they are
-blank before a quote's first save and a blank key matches nothing. A project's pipeline
-meets the columns at its next save, and its previews show any step they stop.
-
-**Acceptance:** Create alternative on `Q-000123/1` saves `Q-000123/2`, and on `/2` saves
-`/3`; a Duplicate and a Renew save new references at `/1`; two alternatives saved at once
-take two options, a save repeated with its operation key answers the option it took, and a
-later save keeps it. Ordered by reference, `/2` comes before `/10` across pages, and a
+**Acceptance:** New quote lists a draft `Q-000124/1` at once, holding its defaults, before
+anything is typed, and its first price's frames hold `Q-000124` and 1. Create alternative
+on `Q-000123/1` makes `Q-000123/2`, and on `/2` makes `/3`; a Duplicate and a Renew make
+new references at `/1`; two alternatives made at once take two options, a creation
+repeated with its operation key answers the quote it made, and later saves keep the pair. Ordered by reference, `/2` comes before `/10` across pages, and a
 search for `Q-000123/2` finds that option alone. A database at the previous schema holding
 app quotes of several revisions and a quote the store saved alone migrates with every app
 quote at option 1 and its reference unchanged, the other holding neither, and a Haute at
@@ -570,17 +578,16 @@ own `option` column keeps it and its values, the clash is named and `haute app b
 refuses, and renaming the column clears it with its values kept. An app quote's
 `coverage` frame holds its reference and option on every row, in deployed scoring and in
 `Pipeline.run`; a Workbench Output many-row table's rows hold them in the response though
-the pipeline's frame does not, and `score` with `quote_details` unconnected answers them
-blank; in Preview both are blank, though the pipeline's frame holds values in them, and
-output rows still line up with the grid's rows by the table's own key. A quote's first
-priced save stores blank identity, and that revision reopened and read out gives its rows
-the quote's. A request with `reference` in `coverage`, or an option of 0, is refused
-naming the spot, while Preview with no sample and the deploy's request schema and dry run
-hold the identity in `quote_details` alone. An Edge Join and a step editor join of
-`coverage` and `vehicles` on `peril` keep `reference_right` and `option_right`; joining
-`drivers` on after that is refused naming `reference_right`; and the docs' pattern,
-dropping them first, gives the same rows and price before and after the quote's first
-save.
+the pipeline's frame does not, and `score` given no `quote_details` frame answers them
+blank; in Preview the frames hold `PREVIEW` and 1, the Workbench Output's tables show the
+two blank though the pipeline's frame holds values in them, and output rows still line up
+with the grid's rows by the table's own key. A request without `option` in
+`quote_details`, with `reference` in `coverage`, or with an option of 0 is refused naming
+the spot, while Preview with no sample and the deploy's dry run hold the stand-in in
+`quote_details` alone. `coverage`, `vehicles` and `drivers` joined on `reference`,
+`option` and `peril`, by Edge Join and by the step editor's join, give one `reference` and
+one `option` and the same rows and price in Preview as in the app; joined on `peril`
+alone, joining `drivers` after `vehicles` is refused naming `reference_right`.
 
 **Dependencies:** None. WB-11's exports key their rows by what this carries; WB-10's
 migrations keep the previous release working save for those, like this one, that name
@@ -595,7 +602,8 @@ themselves the oldest schema, after which WB-08 rolls back by a restore.
 `src/haute/_workbench_form.py::QUOTE_DETAILS_COLUMNS` and
 `::FormSpec._brings_quote_details_up_to_date` (newer columns appended);
 `src/haute/_workbench_app_quotes.py::quote_router` (`create_quote` prices before
-`book.create` takes the reference); `src/haute/_workbench_tables.py::quote_request` (the
+`book.create` takes the reference); `frontend/src/app/useOpenQuoteStore.ts::openNew` (a
+new or derived quote held in the browser until its first save); `src/haute/_workbench_tables.py::quote_request` (the
 cells the sheets hide left out); `src/haute/_workbench_input.py::read_quote` (each table's
 frame holds its own columns alone), `::workbench_request_frames` (one quote per request)
 and `::null_quote` (every declared column of every table);
