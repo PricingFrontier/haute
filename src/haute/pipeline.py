@@ -49,7 +49,7 @@ from haute._types import (
     SubmodelInputPort,
     SubmodelOutputPort,
 )
-from haute._workbench_output import as_response
+from haute._workbench_output import as_response, quote_identity
 from haute.errors import ExecutionError
 from haute.graph_utils import topo_sort_ids
 
@@ -660,6 +660,18 @@ class Pipeline(NodeRegistry):
         base_index, join_index = resolve_edge_join_role_indices(target_handles)
         return [incoming[base_index], incoming[join_index]]
 
+    @staticmethod
+    def _workbench_quote(order: list[Node], outputs: Mapping[str, Any]) -> Any:
+        """The Workbench Input's frames by table as the run holds them, or None without one."""
+        return next(
+            (
+                outputs.get(n.name)
+                for n in order
+                if n.config.get("_node_type") == NodeType.WORKBENCH_INPUT
+            ),
+            None,
+        )
+
     def _resolve_output_node(self, order: list[Node]) -> Node:
         """Return the node whose result :meth:`run`/:meth:`score` should return.
 
@@ -908,7 +920,10 @@ class Pipeline(NodeRegistry):
                 else:
                     self._execute_transform(n, outputs, constants)
 
-            response = as_response(outputs[self._resolve_output_node(order).name])
+            response = as_response(
+                outputs[self._resolve_output_node(order).name],
+                quote_identity(self._workbench_quote(order, outputs)),
+            )
             return _collect_standalone_output(response)
         finally:
             _scenario_ctx.reset(_token)
@@ -1007,7 +1022,13 @@ class Pipeline(NodeRegistry):
                     continue
                 self._execute_transform(n, outputs, constants)
 
-            response = as_response(outputs[self._resolve_output_node(order).name])
+            # The quote's identity is the quote_details frame given, by its port when one
+            # bare frame seeds the one port connected.
+            given = df if isinstance(df, dict) else dict.fromkeys(connected_ports[:1], df)
+            response = as_response(
+                outputs[self._resolve_output_node(order).name],
+                quote_identity(given),
+            )
             return _collect_standalone_output(response)
         finally:
             _scenario_ctx.reset(_token)

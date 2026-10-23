@@ -43,7 +43,7 @@ from haute._types import (
     _Frame,
 )
 from haute._workbench_input import workbench_request_frames
-from haute._workbench_output import as_response
+from haute._workbench_output import as_response, quote_identity
 from haute.execution import (
     _stat_gated_runtime_path_fingerprint,
     execute_lazy_graph,
@@ -1267,8 +1267,17 @@ def _score_graph_lazy(
                 f"Output node '{output_node_id}' produced no result. Executed nodes: {order}"
             )
         # A Workbench Output's result is its tables; the request is answered with their
-        # response, as a Quote Response's result is already.
-        output_lf = as_response(output_lf)
+        # response, under the quote's reference and option as the Workbench Input read them,
+        # as a Quote Response's result is already.
+        workbench_quote = next(
+            (
+                quote_tables[node.id]
+                for node in graph.nodes
+                if node.id in quote_tables and node.data.nodeType is NodeType.WORKBENCH_INPUT
+            ),
+            None,
+        )
+        output_lf = as_response(output_lf, quote_identity(workbench_quote))
 
         if output_fields:
             retained_lazy_frames.append(output_lf)

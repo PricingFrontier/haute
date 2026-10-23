@@ -656,6 +656,102 @@ def test_deploy_answers_with_nulls_for_what_the_pipeline_does_not_fill(project: 
     assert render_output_document(scored) == [{"pricing": {"premium": 50.0}}]
 
 
+_IDENTITY = (("reference", "str"), ("option", "int"))
+
+
+def _identified() -> PipelineGraph:
+    """A quote whose tables lead with its reference and option, as the form makes them: an
+    item's premium, its frame carrying a reference of its own, and a total that drops them."""
+    details = _table("quote_details", ("reference", "str"), ("option", "int"), ("name", "str"))
+    items = _table("items", *_IDENTITY, ("item_id", "str"), ("value", "float"), many=True)
+    sample = {"items": [{"item_id": "A", "value": 10.0}, {"item_id": "B", "value": 30.0}]}
+    return PipelineGraph(
+        nodes=[
+            _node(
+                "request", NodeType.WORKBENCH_INPUT, {"tables": [details, items], "sample": sample}
+            ),
+            _node(
+                "item_premiums",
+                NodeType.POLARS,
+                {
+                    "code": "df = items.with_columns(premium=pl.col('value') * 2, reference=pl.lit('X'))"
+                },
+            ),
+            _node(
+                "total",
+                NodeType.POLARS,
+                {"code": "df = items.select(premium=pl.col('value').sum())"},
+            ),
+            _node(
+                "response",
+                NodeType.WORKBENCH_OUTPUT,
+                {
+                    "tables": [
+                        _table("pricing", *_IDENTITY, ("premium", "float")),
+                        _table("item_prices", *_IDENTITY, ("item_id", "str"), many=True),
+                    ]
+                },
+            ),
+        ],
+        edges=[
+            _edge("request", "item_premiums", frame="items"),
+            _edge("request", "total", frame="items"),
+            _edge("total", "response", table="pricing"),
+            _edge("item_premiums", "response", table="item_prices"),
+        ],
+    )
+
+
+def test_the_response_gives_every_row_the_quotes_reference_and_option(project: Path) -> None:
+    graph = _identified()
+    request = pl.DataFrame(
+        [
+            {
+                "quote_details": {"reference": "Q-000123", "option": 2, "name": "Fleet"},
+                "items": [{"item_id": "A", "value": 10.0}, {"item_id": "B", "value": 30.0}],
+            }
+        ]
+    )
+
+    scored = score_graph(
+        graph=graph,
+        input_df=request,
+        input_node_ids=find_deploy_input_nodes(graph),
+        output_node_id="response",
+    )
+
+    # The total dropped them and the items' frame held a reference of its own: the response
+    # holds the quote's, whatever the pipeline did with them.
+    identity = {"reference": "Q-000123", "option": 2}
+    assert render_output_document(scored) == [
+        {
+            "pricing": {**identity, "premium": 40.0},
+            "item_prices": [{**identity, "item_id": "A"}, {**identity, "item_id": "B"}],
+        }
+    ]
+    # The Workbench Output's own tables hold them blank, as the editor shows them.
+    tables = _tables(graph)
+    assert (
+        tables["item_prices"].select("reference", "option").to_dicts()
+        == [{"reference": None, "option": None}] * 2
+    )
+
+
+def test_generated_code_answers_under_the_quote_details_frame_it_has(project: Path) -> None:
+    pipeline = _import(_write(_identified(), project)).pipeline
+
+    # Run, the sample is priced under the stand-in; scored without quote_details, which
+    # nothing reads here, the identity is blank and left out of the answer.
+    [ran] = render_output_document(_collected(pipeline.run(source="live")))
+    assert ran["item_prices"][0] == {"reference": "PREVIEW", "option": 1, "item_id": "A"}
+    scored = pipeline.score(
+        pl.DataFrame({"reference": ["Q-1"], "option": [1], "item_id": ["Z"], "value": [7.0]})
+    )
+    assert render_output_document(_collected(scored)) == [
+        {"pricing": {"premium": 7.0}, "item_prices": [{"item_id": "Z"}]}
+    ]
+
+
 def _no_tables(graph: PipelineGraph) -> None:
     graph.node_map["response"].data.config["tables"] = []
     graph.edges = [edge for edge in graph.edges if edge.target != "response"]

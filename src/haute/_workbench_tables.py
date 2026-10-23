@@ -247,7 +247,9 @@ def table_disagreements(
 
 
 def quote_schema(tables: Iterable[WorkbenchTable]) -> pl.Schema:
-    """The schema of one quote holding *tables*: each under its name, as a quote holds it."""
+    """The schema of one quote holding *tables* with every column, each under its name, as
+    a quote holds it: a response's, whose tables carry the quote's identity themselves. A
+    request's is :func:`request_schema`."""
     return pl.Schema({table.name: table.quote_dtype for table in tables})
 
 
