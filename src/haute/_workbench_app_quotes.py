@@ -37,9 +37,14 @@ from haute._quote_store import (
     open_store,
     with_details,
 )
-from haute._quote_store._book import MAX_PAGE_SIZE, PAGE_SIZE
+from haute._quote_store._book import MAX_PAGE_SIZE, PAGE_SIZE, identity_label
 from haute._workbench_form import QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, FormSpec
-from haute._workbench_tables import quote_request
+from haute._workbench_tables import (
+    IDENTITY_SHAPE,
+    carries_identity,
+    output_tables,
+    quote_request,
+)
 from haute.deploy._request_limits import (
     RequestBodyHeaderError,
     RequestBodyLimitError,
@@ -110,6 +115,8 @@ def quote_model(quote: AppQuote) -> WorkbenchAppQuote:
     return WorkbenchAppQuote(
         id=quote.id,
         reference=quote.reference,
+        option=quote.option,
+        label=quote.label,
         title=quote.title,
         details=quote.details,
         stage=quote.stage,
@@ -133,6 +140,12 @@ def quote_model(quote: AppQuote) -> WorkbenchAppQuote:
         note_at=_iso(quote.note_at),
         source_quote_id=quote.source_quote_id,
         source_reference=quote.source_reference,
+        source_option=quote.source_option,
+        source_label=(
+            None
+            if quote.source_reference is None or quote.source_option is None
+            else identity_label(quote.source_reference, quote.source_option)
+        ),
         source_revision=quote.source_revision,
         relation=quote.relation,
     )
@@ -219,11 +232,16 @@ class _Prepared:
 
 
 async def _prepared(
-    app: QuoteApp, body: WorkbenchAppQuoteSaveRequest, managed: dict[str, Any]
+    app: QuoteApp,
+    body: WorkbenchAppQuoteSaveRequest,
+    managed: dict[str, Any],
+    *,
+    creating: bool = False,
 ) -> _Prepared:
     """*body*'s save made ready: refused (409) for another sheets' revision or release; its
-    details' app columns set to *managed*; refused (422) with nothing typed; unpriced, or
-    priced again here."""
+    details' app columns set to *managed*; refused (422) with nothing typed, unless
+    *creating*, as the app makes a quote, holding its starting values, when the underwriter
+    asks for it; unpriced, or priced again here."""
     if body.form_revision != app.form_revision or body.release != app.release_id:
         raise HTTPException(
             409,
@@ -235,7 +253,7 @@ async def _prepared(
         name: value for name, value in details_of(body.values).items() if name not in managed
     }
     typed = with_details(body.values, details)
-    if not quote_request(app.form, typed):
+    if not creating and not quote_request(app.form, typed):
         raise HTTPException(422, "Type the quote first")
     values = with_details(typed, {**details, **managed})
     if body.shown is None:
@@ -244,12 +262,40 @@ async def _prepared(
     return _Prepared(values, request, tables)
 
 
-def _moved(revision: QuoteRevision, shown: WorkbenchPricedTables | None) -> bool:
+def _moved(form: FormSpec, revision: QuoteRevision, shown: WorkbenchPricedTables | None) -> bool:
     """Whether the prices *revision* keeps moved from those the page *shown*: a save's, or,
-    for a save repeated with its key, those its first write kept."""
+    for a save repeated with its key, those its first write kept. The quote's reference and
+    option are no price: a page priced under another quote's, saved as a new quote, has not
+    moved."""
     if shown is None or revision.response is None:
         return False
-    return bool(response_changes(revision.response, shown, PRICE_TOLERANCE))
+    carrying = {table.name for table in output_tables(form) if carries_identity(table)}
+    return bool(
+        response_changes(
+            _without_identity(revision.response, carrying),
+            _without_identity(shown, carrying),
+            PRICE_TOLERANCE,
+        )
+    )
+
+
+def _without_identity(tables: Any, carrying: set[str]) -> Any:
+    """*tables* by name, the rows of those in *carrying* without the quote's identity."""
+    if not isinstance(tables, dict):
+        return tables
+    names = {name for name, _ in IDENTITY_SHAPE}
+
+    def bare(row: Any) -> Any:
+        if not isinstance(row, dict):
+            return row
+        return {column: value for column, value in row.items() if column not in names}
+
+    return {
+        name: ([bare(row) for row in rows] if isinstance(rows, list) else bare(rows))
+        if name in carrying
+        else rows
+        for name, rows in tables.items()
+    }
 
 
 def _without_app_details(values: dict[str, Any]) -> dict[str, Any]:
@@ -316,7 +362,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
         """A save's answer: *quote* as the save left it, with the revision it wrote, read by
         its number, and whether its prices moved from those the page *shown*."""
         revision = book.revision(quote.id, quote.latest)
-        return answer(quote, revision, moved=_moved(revision, shown))
+        return answer(quote, revision, moved=_moved(app.form, revision, shown))
 
     async def replayed(
         body: WorkbenchAppQuoteSaveRequest, actor: str, quote_id: str | None
@@ -338,7 +384,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
         if replay is not None:
             return replay
         managed = {**QuoteBook.managed(None, priced=body.shown is not None), "assignee": actor}
-        ready = await _prepared(app, body, managed)
+        ready = await _prepared(app, body, managed, creating=True)
         source = (
             None
             if body.source is None
@@ -487,7 +533,12 @@ def quote_router(app: QuoteApp) -> APIRouter:
 
         def related(each: Any) -> WorkbenchAppRelatedQuote:
             return WorkbenchAppRelatedQuote(
-                id=each.id, reference=each.reference, relation=each.relation, revision=each.revision
+                id=each.id,
+                reference=each.reference,
+                option=each.option,
+                label=identity_label(each.reference, each.option),
+                relation=each.relation,
+                revision=each.revision,
             )
 
         return WorkbenchAppQuoteHistoryResponse(

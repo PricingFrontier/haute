@@ -118,7 +118,7 @@ def test_a_new_file_is_migrated_to_the_schema_and_a_second_migration_changes_not
         with engine.connect() as connection:
             context = MigrationContext.configure(connection, opts={"version_table": VERSION_TABLE})
             assert compare_metadata(context, METADATA) == []
-            assert context.get_current_revision() == "0003"
+            assert context.get_current_revision() == "0004"
     finally:
         engine.dispose()
 
@@ -162,34 +162,97 @@ def test_a_file_at_the_second_schema_takes_is_renewal_null_its_rows_kept_and_its
     try:
         with engine.connect() as connection:
             context = MigrationContext.configure(connection, opts={"version_table": VERSION_TABLE})
-            assert context.get_current_revision() == "0003"
+            assert context.get_current_revision() == "0004"
             assert compare_metadata(context, METADATA) == []
             row = connection.execute(
                 text("SELECT reference, insured, is_renewal FROM haute_quote_details")
             ).one()
             assert tuple(row) == ("Q-000001", "Acme", None)
-            # The third is now the oldest that can use it: a Haute at the second could not
-            # read the forms saved with quotes from now on.
+            # The fourth is now the oldest that can use it, as the third named itself before.
             oldest = connection.execute(
                 text("SELECT oldest_reader FROM haute_quote_store_compat")
             ).scalar_one()
-            assert oldest == "0003"
+            assert oldest == "0004"
     finally:
         engine.dispose()
 
 
-def test_a_haute_at_the_second_schema_refuses_a_database_migrated_to_the_third(
+def test_a_file_at_the_third_schema_gives_each_app_quote_its_reference_and_option_1(
+    url: str,
+) -> None:
+    # A database the third schema's Haute wrote: an app quote of two revisions, whose
+    # reference its details hold, and a quote the store saved alone, with none.
+    engine = create_engine(url)
+    try:
+        with engine.begin() as connection:
+            command.upgrade(_alembic_config(connection), "0003")
+            now = datetime(2026, 10, 20, 9, 0)
+            connection.execute(text("INSERT INTO haute_quote_forms VALUES ('f1', '{}')"))
+            for quote_id, name, latest in (("q1", "Fleet", 2), ("q2", "smoke", 1)):
+                connection.execute(
+                    text("INSERT INTO haute_quotes VALUES (:id, :name, 'ana', :now, :latest)"),
+                    {"id": quote_id, "name": name, "now": now, "latest": latest},
+                )
+                for number in range(1, latest + 1):
+                    connection.execute(
+                        text(
+                            "INSERT INTO haute_quote_revisions VALUES "
+                            "(:id, :number, 'f1', '{}', '{}', NULL, NULL, 'ana', :now)"
+                        ),
+                        {"id": quote_id, "number": number, "now": now},
+                    )
+            for number in (1, 2):
+                connection.execute(
+                    text(
+                        "INSERT INTO haute_quote_details (quote_id, revision, reference, stage, "
+                        "assignee, archived) VALUES ('q1', :number, 'Q-000004', 'draft', 'ana', 0)"
+                    ),
+                    {"number": number},
+                )
+    finally:
+        engine.dispose()
+
+    migrate_store(url)
+
+    engine = create_engine(url)
+    try:
+        with engine.connect() as connection:
+            context = MigrationContext.configure(connection, opts={"version_table": VERSION_TABLE})
+            assert context.get_current_revision() == "0004"
+            assert compare_metadata(context, METADATA) == []
+            quotes = connection.execute(
+                text("SELECT id, reference, option FROM haute_quotes ORDER BY id")
+            ).all()
+            assert [tuple(row) for row in quotes] == [("q1", "Q-000004", 1), ("q2", None, None)]
+            details = connection.execute(
+                text("SELECT revision, option FROM haute_quote_details ORDER BY revision")
+            ).all()
+            assert [tuple(row) for row in details] == [(1, 1), (2, 1)]
+            # An alternative of Q-000004 would take option 2.
+            counted = connection.execute(
+                text("SELECT reference, last_option FROM haute_quote_options")
+            ).all()
+            assert [tuple(row) for row in counted] == [("Q-000004", 1)]
+            oldest = connection.execute(
+                text("SELECT oldest_reader FROM haute_quote_store_compat")
+            ).scalar_one()
+            assert oldest == "0004"
+    finally:
+        engine.dispose()
+
+
+def test_a_haute_at_the_third_schema_refuses_a_database_migrated_to_the_fourth(
     url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     migrate_store(url)
-    # The previous release, rolled back onto it: the first two migrations alone.
+    # The previous release, rolled back onto it: the first three migrations alone.
     previous = tmp_path / "previous_migrations"
-    shutil.copytree(_MIGRATIONS, previous, ignore=shutil.ignore_patterns("0003_*", "__pycache__"))
+    shutil.copytree(_MIGRATIONS, previous, ignore=shutil.ignore_patterns("0004_*", "__pycache__"))
     monkeypatch.setattr("haute._quote_store._store._MIGRATIONS", previous)
 
     with pytest.raises(
         QuoteStoreNotMigratedError,
-        match="newer than this Haute's newest, 0002, and names 0003 as the oldest",
+        match="newer than this Haute's newest, 0003, and names 0004 as the oldest",
     ):
         open_store(url)
     with pytest.raises(QuoteStoreNotMigratedError, match="upgrade Haute"):
@@ -208,7 +271,7 @@ def _ahead(url: str, oldest_reader: str) -> None:
     engine = create_engine(url)
     try:
         with engine.begin() as connection:
-            connection.execute(text(f"UPDATE {VERSION_TABLE} SET version_num = '0004'"))
+            connection.execute(text(f"UPDATE {VERSION_TABLE} SET version_num = '0005'"))
             connection.execute(
                 text("UPDATE haute_quote_store_compat SET oldest_reader = :oldest"),
                 {"oldest": oldest_reader},
@@ -227,9 +290,9 @@ def test_a_database_past_this_hautes_schema_that_names_it_able_opens_as_it_is(ur
 
 
 def test_a_database_past_this_hautes_schema_that_needs_a_newer_one_is_refused(url: str) -> None:
-    _ahead(url, oldest_reader="0004")
+    _ahead(url, oldest_reader="0005")
 
-    with pytest.raises(QuoteStoreNotMigratedError, match="newer than this Haute's newest, 0003"):
+    with pytest.raises(QuoteStoreNotMigratedError, match="newer than this Haute's newest, 0004"):
         open_store(url)
     with pytest.raises(QuoteStoreNotMigratedError, match="upgrade Haute"):
         migrate_store(url)

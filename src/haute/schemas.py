@@ -300,7 +300,11 @@ class WorkbenchAppQuote(BaseModel):
 
     id: str
     reference: str
-    #: What the list shows as the quote: its name, else its insured, else its reference.
+    #: Which of the quotes offered under its reference it is, from 1.
+    option: int
+    #: The quote as the app shows it: its reference and option, ``Q-000123/2``.
+    label: str
+    #: What the list shows as the quote: its name, else its insured, else its label.
     title: str
     #: The ``quote_details`` row, by column name: dates as ISO text, blanks left out.
     details: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
@@ -327,6 +331,9 @@ class WorkbenchAppQuote(BaseModel):
     note_at: str | None = None
     source_quote_id: str | None = None
     source_reference: str | None = None
+    source_option: int | None = None
+    #: The source as the app shows it, ``Q-000123/1``.
+    source_label: str | None = None
     source_revision: int | None = None
     relation: WorkbenchAppQuoteRelation | None = None
 
@@ -472,6 +479,9 @@ class WorkbenchAppRelatedQuote(BaseModel):
 
     id: str
     reference: str
+    option: int
+    #: The quote as the app shows it, ``Q-000123/2``.
+    label: str
     relation: WorkbenchAppQuoteRelation
     revision: int
 

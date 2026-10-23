@@ -73,7 +73,10 @@ QUOTE_FORMS = Table(
     Column("document", Text, nullable=False),
 )
 
-#: A quote: who owns it, and the number of its newest revision.
+#: A quote: who owns it, the number of its newest revision, and, for an app quote, its
+#: reference and option, no two app quotes alike. A quote the store saved alone holds
+#: neither; SQLite and PostgreSQL keep such NULL pairs apart in the unique index, where SQL
+#: Server would need the index filtered to the pairs set.
 QUOTES = Table(
     "haute_quotes",
     METADATA,
@@ -82,7 +85,10 @@ QUOTES = Table(
     Column("owner", String(PRINCIPAL_LENGTH), nullable=False),
     Column("created_at", UtcDateTime, nullable=False),
     Column("latest", Integer, nullable=False),
+    Column("reference", String(REFERENCE_LENGTH), nullable=True),
+    Column("option", Integer, nullable=True),
     Index("ix_haute_quotes_owner", "owner"),
+    Index("ux_haute_quotes_identity", "reference", "option", unique=True),
 )
 
 #: A quote's revisions, each written whole: the values, the request, the response and the
@@ -128,6 +134,7 @@ QUOTE_DETAILS = Table(
     Column("archived", Boolean, nullable=False),
     # Null in the rows written before the third migration, and in those a release before it writes.
     Column("is_renewal", Boolean, nullable=True),
+    Column("option", Integer, nullable=False),
     ForeignKeyConstraint(
         ["quote_id", "revision"],
         ["haute_quote_revisions.quote_id", "haute_quote_revisions.number"],
@@ -157,6 +164,14 @@ QUOTE_COUNTER = Table(
     METADATA,
     Column("scope", String(EVENT_KIND_LENGTH), primary_key=True),
     Column("last_number", Integer, nullable=False),
+)
+
+#: The last option taken under each app quote's reference: an alternative takes the next.
+QUOTE_OPTIONS = Table(
+    "haute_quote_options",
+    METADATA,
+    Column("reference", String(REFERENCE_LENGTH), primary_key=True),
+    Column("last_option", Integer, nullable=False),
 )
 
 #: Each save or creation's operation key, with the quote and revision it wrote, so one

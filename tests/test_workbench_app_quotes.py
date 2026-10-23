@@ -9,6 +9,7 @@ import base64
 import json
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -39,7 +40,12 @@ ANA = {EASY_AUTH_NAME: "ana@example.com"}
 JO = {EASY_AUTH_NAME: "jo@example.com"}
 DETAILS = {"qd_quote_name": "Fleet", "qd_insured": "Acme", "qd_inception_date": "2026-11-01"}
 #: The details the app sets on a first save by Ana, priced.
-SET = {"qd_reference": "Q-000001", "qd_stage": "priced", "qd_assignee": "ana@example.com"}
+SET = {
+    "qd_reference": "Q-000001",
+    "qd_option": "1",
+    "qd_stage": "priced",
+    "qd_assignee": "ana@example.com",
+}
 VALUES = {"t1": [{"c_state": "NY", "c_exposure": "1000"}], "quote_details": [DETAILS]}
 #: VALUES as a priced quote of Ana's keeps them: the details with the app's set over them.
 KEPT = {**VALUES, "quote_details": [{**DETAILS, **SET, "qd_archived": False}]}
@@ -157,9 +163,10 @@ def test_a_priced_save_is_priced_again_on_the_server_and_kept(page: Page) -> Non
         "priced",
         "ana@example.com",
     )
-    assert quote["title"] == "Fleet"
+    assert (quote["option"], quote["label"], quote["title"]) == (1, "Q-000001/1", "Fleet")
     assert quote["details"] == {
         "reference": "Q-000001",
+        "option": 1,
         "quote_name": "Fleet",
         "insured": "Acme",
         "inception_date": "2026-11-01",
@@ -184,13 +191,18 @@ def test_a_save_whose_prices_moved_on_the_server_keeps_the_servers_and_says_so(
     assert created["revision"]["tables"] == PRICED
 
 
-def test_a_quote_saved_unpriced_is_a_draft_and_an_empty_one_is_refused(page: Page) -> None:
+def test_a_quote_is_made_untyped_as_a_draft_and_an_empty_save_is_refused(page: Page) -> None:
     draft = page.create(shown=None).json()
+    # Made when the underwriter asks for it, holding nothing typed yet, with its identity.
+    untyped = page.create(shown=None, values={})
 
     assert (draft["quote"]["stage"], draft["revision"]["tables"]) == ("draft", None)
+    assert untyped.status_code == 200, untyped.text
+    made = untyped.json()["quote"]
+    assert (made["label"], made["stage"]) == ("Q-000002/1", "draft")
     # The details the app sets are not typing, whatever the page sends of them.
     for values in ({}, {"quote_details": [{"qd_reference": "Q-9", "qd_stage": "final"}]}):
-        refused = page.create(shown=None, values=values)
+        refused = page.save(made, shown=None, values=values)
         assert refused.status_code == 422
         assert refused.json()["detail"] == "Type the quote first"
 
@@ -330,6 +342,40 @@ def test_the_history_lists_revisions_events_and_related_quotes(page: Page) -> No
     assert people == ["ana@example.com", "jo@example.com"]
 
 
+def test_an_alternative_is_the_next_option_of_its_sources_reference(page: Page) -> None:
+    quote = page.create().json()["quote"]
+    alternative = page.create(
+        shown=None, source={"quote_id": quote["id"], "revision": 1, "relation": "alternative"}
+    ).json()["quote"]
+
+    assert (alternative["reference"], alternative["option"], alternative["label"]) == (
+        "Q-000001",
+        2,
+        "Q-000001/2",
+    )
+    assert (alternative["source_option"], alternative["source_label"]) == (1, "Q-000001/1")
+    history = page.client.get(f"/api/app/quotes/{quote['id']}/history", headers=ANA).json()
+    assert [(d["label"], d["relation"]) for d in history["derived"]] == [
+        ("Q-000001/2", "alternative")
+    ]
+    listed = page.client.get(
+        "/api/app/quotes", params={"view": "team", "search": "Q-000001/2"}, headers=ANA
+    ).json()
+    assert [q["label"] for q in listed["quotes"]] == ["Q-000001/2"]
+
+
+def test_a_price_differing_only_in_the_quotes_identity_has_not_moved() -> None:
+    form = FormSpec.model_validate(FORM)
+    priced = {"pricing_output": [{"reference": "Q-000002", "option": 1, "premium": 500.0}]}
+    kept = SimpleNamespace(response=priced)
+
+    # A page priced under the quote it was opened on, saved as a new quote.
+    shown = {"pricing_output": [{"reference": "Q-000001", "option": 3, "premium": 500.0}]}
+    assert _workbench_app_quotes._moved(form, kept, shown) is False  # type: ignore[arg-type]
+    shown["pricing_output"][0]["premium"] = 400.0
+    assert _workbench_app_quotes._moved(form, kept, shown) is True  # type: ignore[arg-type]
+
+
 def test_a_revision_is_carried_onto_the_releases_sheets(page: Page) -> None:
     quote = page.create().json()["quote"]
     url = f"/api/app/quotes/{quote['id']}/revisions/1/carry"
@@ -343,11 +389,10 @@ def test_a_revision_is_carried_onto_the_releases_sheets(page: Page) -> None:
     assert derived["dropped"] == []
     assert derived["values"]["t1"] == KEPT["t1"]
     [details] = derived["values"]["quote_details"]
-    assert not {"qd_reference", "qd_stage", "qd_assignee", "qd_archived"} & set(details)
+    managed = {"qd_reference", "qd_option", "qd_stage", "qd_assignee", "qd_archived"}
+    assert not managed & set(details)
     assert {
-        column: value
-        for column, value in KEPT["quote_details"][0].items()
-        if column not in {"qd_reference", "qd_stage", "qd_assignee", "qd_archived"}
+        column: value for column, value in KEPT["quote_details"][0].items() if column not in managed
     } == details
 
 

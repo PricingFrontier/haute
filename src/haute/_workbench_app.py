@@ -43,7 +43,8 @@ from haute._output_assembler import render_output_document
 from haute._sandbox import set_project_root
 from haute._types import PipelineGraph
 from haute._workbench_form import FormSpec, form_revision, render_form
-from haute._workbench_tables import quote_request
+from haute._workbench_input import with_stand_in
+from haute._workbench_tables import input_tables, quote_request
 from haute.deploy._request_limits import (
     RequestBodyHeaderError,
     RequestBodyLimitError,
@@ -669,6 +670,10 @@ def create_app(
         request = quote_request(form, values)
         if not request:
             raise HTTPException(422, "Type the quote first")
+        if book is None:
+            # An app without a quote store has no quote to name: its one quote is priced
+            # under the stand-in, as Preview prices the sample.
+            request = with_stand_in(input_tables(form), request)
 
         def score() -> WorkbenchPricedTables:
             # The admission is held until the answer is the tables sent back: rendering and

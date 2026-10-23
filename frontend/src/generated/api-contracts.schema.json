@@ -16006,6 +16006,10 @@
           "title": "Id",
           "type": "string"
         },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
         "last_saved_at": {
           "title": "Last Saved At",
           "type": "string"
@@ -16046,6 +16050,10 @@
           ],
           "default": null,
           "title": "Note By"
+        },
+        "option": {
+          "title": "Option",
+          "type": "integer"
         },
         "owner": {
           "title": "Owner",
@@ -16088,6 +16096,30 @@
           ],
           "default": null,
           "title": "Release"
+        },
+        "source_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Label"
+        },
+        "source_option": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Option"
         },
         "source_quote_id": {
           "anyOf": [
@@ -16142,6 +16174,8 @@
       "required": [
         "id",
         "reference",
+        "option",
+        "label",
         "title",
         "details",
         "stage",
@@ -16165,6 +16199,8 @@
         "note_at",
         "source_quote_id",
         "source_reference",
+        "source_option",
+        "source_label",
         "source_revision",
         "relation"
       ],
@@ -16800,6 +16836,14 @@
           "title": "Id",
           "type": "string"
         },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "option": {
+          "title": "Option",
+          "type": "integer"
+        },
         "reference": {
           "title": "Reference",
           "type": "string"
@@ -16821,6 +16865,8 @@
       "required": [
         "id",
         "reference",
+        "option",
+        "label",
         "relation",
         "revision"
       ],

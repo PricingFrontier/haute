@@ -1463,7 +1463,9 @@ Out of scope:
   what this one saves names itself as that oldest schema, so the previous release
   refuses the database outright rather than failing on the quotes it cannot read: the
   third does, as the sheets a quote is saved with now hold `is_renewal` in
-  `quote_details`, which a Haute at the second refuses. Rolling back past such a
+  `quote_details`, which a Haute at the second refuses, and the fourth does, as they hold
+  `option` there and the quote's reference and option at the head of every other table,
+  which a Haute at the third refuses. Rolling back past such a
   migration means restoring the database as it was before it. A SQLite store keeps foreign keys on and its rollback journal, never
   write-ahead logging, so the file stands alone between writes.
 

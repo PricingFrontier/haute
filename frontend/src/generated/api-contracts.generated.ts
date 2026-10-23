@@ -2910,17 +2910,21 @@ export interface WorkbenchAppQuote {
   final_revision: number | null;
   form_revision: string;
   id: string;
+  label: string;
   last_saved_at: string;
   last_saved_by: string;
   latest: number;
   note: string;
   note_at: string | null;
   note_by: string | null;
+  option: number;
   owner: string;
   priced: boolean;
   reference: string;
   relation: 'duplicate' | 'renewal' | 'alternative' | null;
   release: string | null;
+  source_label: string | null;
+  source_option: number | null;
   source_quote_id: string | null;
   source_reference: string | null;
   source_revision: number | null;
@@ -2983,6 +2987,8 @@ export interface WorkbenchAppQuoteHistoryResponse {
  */
 export interface WorkbenchAppRelatedQuote {
   id: string;
+  label: string;
+  option: number;
   reference: string;
   relation: 'duplicate' | 'renewal' | 'alternative';
   revision: number;
