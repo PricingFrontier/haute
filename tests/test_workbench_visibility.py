@@ -9,8 +9,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import TypeAdapter
 
-from haute._workbench_form import Condition, FormSpec
+from haute._workbench_form import Condition, FormSpec, SingleCondition
 from haute._workbench_visibility import condition_fits, visibility
 
 FIXTURE = (
@@ -40,18 +41,33 @@ def test_what_shows_is_what_the_shared_cases_say(case: dict[str, Any]) -> None:
     )
     for item_id, show_when in replaced.items():
         shown_by[item_id]["show_when"] = show_when
+    for field in case.get("field_show_when", []):
+        looks = shown_by[field["widget"]]["column_looks"]
+        looks.append({"table": field["table"], "column": field["column"]})
+        looks[-1]["show_when"] = field["show_when"]
     spec = FormSpec.model_validate(form)
 
     result = visibility(spec, case["values"])
 
+    placed = [
+        widget for page in spec.pages for section in page.sections for widget in section.widgets
+    ]
     pages = {page.id for page in spec.pages}
     sections = {section.id for page in spec.pages for section in page.sections}
-    widgets = {
-        widget.id for page in spec.pages for section in page.sections for widget in section.widgets
-    }
+    widgets = {widget.id for widget in placed}
     assert sorted(pages - result.pages) == case["hidden_pages"]
     assert sorted(sections - result.sections) == case["hidden_sections"]
     assert sorted(widgets - result.widgets) == case["hidden_widgets"]
+    # The fields of the components that show, but those the case says hide.
+    fields = {
+        (widget.id, field.table, field.column)
+        for widget in placed
+        if widget.id in result.widgets and widget.type in ("tableInput", "collection")
+        for field in widget.fields
+    }
+    hiding = {tuple(field) for field in case.get("hidden_fields", [])}
+    assert hiding <= fields, "the case hides a field no component that shows has"
+    assert result.fields == fields - hiding
     assert sorted([list(pair) for pair in result.hidden]) == case["hidden_columns"]
 
 
@@ -94,3 +110,46 @@ def test_a_condition_fits_while_its_values_are_ones_its_column_could_hold(
     )
 
     assert condition_fits(every_type_form(), condition) is fits
+
+
+FILLED_V = {"column": "c_v", "op": "filled"}
+
+
+def total(**changed: Any) -> dict[str, Any]:
+    """A sum of t_many's numbers above 1,000, *changed* as given."""
+    condition = {"table": "t_many", "total": "sum", "column": "c_v", "where": []}
+    return {**condition, "op": "above", "value": "£1,000", **changed}
+
+
+@pytest.mark.parametrize(
+    ("condition", "fits"),
+    [
+        ({"table": "t_many", "rows": "every", "where": [FILLED_V]}, True),
+        ({"table": "t_in", "rows": "any", "where": [{"column": "c_num", "op": "filled"}]}, False),
+        ({"table": "t_many", "column": "c_v", "op": "filled"}, False),
+        ({"table": "t_many", "where": [], "op": "at_least", "count": 2}, True),
+        (
+            {
+                "table": "t_many",
+                "where": [{"column": "c_gone", "op": "filled"}],
+                "op": "at_least",
+                "count": 2,
+            },
+            False,
+        ),
+        ({"table": "t_in", "where": [], "op": "at_least", "count": 2}, False),
+        ({"table": "t_out", "where": [], "op": "at_least", "count": 2}, False),
+        (total(), True),
+        (total(where=[FILLED_V, {"column": "c_key", "op": "equals", "values": ["A"]}]), True),
+        (total(column="c_key"), False),
+        (total(column="c_gone"), False),
+        (total(value="lots"), False),
+        (total(where=[{"column": "c_key", "op": "ticked"}]), False),
+    ],
+)
+def test_a_condition_fits_while_its_table_has_the_rows_it_tests(
+    condition: dict[str, Any], fits: bool
+) -> None:
+    single = TypeAdapter(SingleCondition).validate_python(condition)
+
+    assert condition_fits(every_type_form(), single) is fits

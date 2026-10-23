@@ -1,10 +1,9 @@
 /** A Table on a sheet: its fields as a grid of rows, or on its side, with its groups, drawn as its look says (specs/workbench). */
-import { Plus, Trash2 } from "lucide-react"
-import { type CSSProperties } from "react"
+import { Trash2 } from "lucide-react"
+import { useState, type CSSProperties, type MouseEvent } from "react"
 import { cellKey, formattedNumber, presetColumn } from "../../utils/sheetValues"
 import { columnKey } from "../../utils/sheetVisibility"
 import {
-  PLAIN_COLUMN_LOOK,
   answeredOutputs,
   gridInputTables,
   linedUpOutputs,
@@ -16,9 +15,26 @@ import {
   type TableOptions,
 } from "../../utils/workbenchForm"
 import { isNumeric } from "../columnTypes"
+import { ShowWhenMark } from "../ShowWhenEditor"
 import { useSheetValues } from "../useSheetValues"
 import { Cell, FieldLabel } from "./Cell"
-import { type Fillable, type Found, LINE_WIDTH, ROW_HEIGHT, fieldLabel, fieldTitle, fillable, labelColor, shown, typeHere } from "./fieldCells"
+import {
+  type FieldMark,
+  type Fillable,
+  type Found,
+  HIDDEN_OPACITY,
+  LINE_WIDTH,
+  ROW_HEIGHT,
+  fieldLabel,
+  fieldTitle,
+  fillable,
+  headerText,
+  labelFont,
+  looksByKey,
+  shown,
+  typeHere,
+} from "./fieldCells"
+import { RowMenu } from "./RowMenu"
 import { type SheetColours } from "./sheetColours"
 
 /** How wide a transposed grid's column of groups is, so its labels stay in view beside it. */
@@ -48,8 +64,9 @@ function groupRuns(fields: ShownField[]): { group: string; start: number; size: 
 
 /**
  * Many-row columns as a grid that starts with `rows` rows. Its input columns take typing,
- * row by row, and rows are added and deleted in every input table the grid shows at once,
- * so their cells stay side by side; a one-row table's column, which the checks flag here,
+ * row by row, and rows are inserted, through the menu a right-click on a row opens
+ * (`RowMenu`), and deleted in every input table the grid shows at once, so their cells
+ * stay side by side; a one-row table's column, which the checks flag here,
  * shows that table's one value on every row. While its input tables hold no rows it shows
  * `rows` empty ones, which the first value typed into it keeps; once they hold rows it
  * shows every one, so rows can be deleted below `rows`, deleting the last starting it
@@ -60,14 +77,14 @@ function groupRuns(fields: ShownField[]): { group: string; start: number; size: 
  * matched by its keys (`answeredOutputs`), as a Chart of them plots them, none added or
  * deleted. Its options say whether the rows are numbered, how tall they are,
  * which lines it draws, whether every other row is shaded, whether its header's labels are
- * in capitals and whether rows can be added and deleted; fixed, it never shows fewer than
+ * in capitals and whether rows can be inserted and deleted; fixed, it never shows fewer than
  * `rows`, and fixed or not, it shows every row the values hold. Showing a table a column
  * gives a row for each value, it shows those rows, fixed, that column's cells holding each
  * row's value as text, and a value typed writes them whole; beside a table whose rows
  * differ, it shows every row of each, a table's cells past its own rows taking no typing.
  * Transposed, its fields run down its side, each labelled at the start of its line, and its
- * rows across, numbered above with a delete over each and an add at the end; the shading
- * and the lines are the grid's as drawn, an output field ruled off above its line. Showing
+ * rows across, numbered above with a delete over each, a row's menu opening on its column;
+ * the shading and the lines are the grid's as drawn, an output field ruled off above its line. Showing
  * groups, while a field it shows is in one, each run of fields side by side in a schema
  * group is headed by one cell naming it, over their labels, or beside them when
  * transposed (`groupRuns`).
@@ -77,25 +94,35 @@ function groupRuns(fields: ShownField[]): { group: string; start: number; size: 
  * at the foot of the header; its lines' colour and weight, which its gridlines, the rule
  * under its header, the line before an output and a group's rule all take, and its
  * gridlines' style, the rules staying solid; and each column's own look, its label's fill
- * and colour, its cells' fill, colour and weight, where its label and values sit across it
- * and, unless transposed, its width. A colour it sets is drawn over the theme's, and a
+ * and colour, its cells' fill, colour and weight, where its values sit across it and its
+ * label, as its values do until it is given a place of its own, and, unless transposed,
+ * its width. A colour it sets is drawn over the theme's, and a
  * column's over the Table's; a column's fill hides the stripes and the output shade in its
  * cells. Transposed, a column's look is its field's line, its label the line's label.
+ *
+ * It draws the fields it is given, in Preview those that show, its rows those of the input
+ * tables of every field it shows (`rowFields`), so a row inserted or deleted goes from each
+ * of them whatever hides; while building, a column with conditions carries an eye after its
+ * label, and one a new quote hides is faded, its label and its cells (`marks`).
  */
 export function FieldGrid({
   fields,
+  rowFields,
+  marks,
   rows,
   options,
   colours,
 }: {
   fields: ShownField[]
+  rowFields: ShownField[]
+  marks: ReadonlyMap<string, FieldMark>
   rows: number
   options: TableOptions
   colours: SheetColours
 }) {
   const { rows: held, setCell, setRows, price, basis, problems, quoted, readOnly, locked } = useSheetValues()
   const oneRow = (found: Fillable) => found.table.rows === "one"
-  const inputs = gridInputTables(fields)
+  const inputs = gridInputTables(rowFields)
   const inputTables = inputs.map((table) => table.id)
   // The rows a column gives each table that has them, a row for each value: a grid showing one
   // shows every row its tables hold, none added or deleted.
@@ -107,8 +134,8 @@ export function FieldGrid({
   )
   const given = givenRows.size > 0
   const holding = Math.max(0, ...inputTables.map((id) => held[id]?.length ?? 0))
-  // Each many-row output table it shows; showing no input table, their answer gives its rows once priced.
-  const outputs = fields.flatMap(({ found }) => (found !== null && found.table.role === "output" && found.table.rows === "many" ? [found.table] : []))
+  // Each many-row output table of every field, whatever hides; showing no input table, their answer gives its rows once priced.
+  const outputs = rowFields.flatMap(({ found }) => (found !== null && found.table.role === "output" && found.table.rows === "many" ? [found.table] : []))
   const answered = inputs.length === 0 ? answeredOutputs(outputs, price) : null
   const answer = outputs.length === 0 ? undefined : answered?.get(outputs[0].id)
   const count =
@@ -122,7 +149,9 @@ export function FieldGrid({
     if (!inputTables.includes(tableId) || (holding > 0 && !given)) setCell(tableId, row, columnId, value)
     else setRows(Object.fromEntries(inputTables.map((id) => [id, id === tableId ? withCell(shownRows(id), row, columnId, value) : shownRows(id)])))
   }
-  const addRow = () => setRows(Object.fromEntries(inputTables.map((id) => [id, padRows(held[id] ?? [], count + 1)])))
+  // Empty rows put in at `at` in every input table shown, as one edit.
+  const insertRows = (at: number, added: number) =>
+    setRows(Object.fromEntries(inputTables.map((id) => [id, [...shownRows(id).slice(0, at), ...padRows([], added), ...shownRows(id).slice(at)]])))
   const deleteRow = (row: number) => setRows(Object.fromEntries(inputTables.map((id) => [id, shownRows(id).filter((_, i) => i !== row)])))
   const stale = price !== null && price.basis !== basis
   // Each many-row output table's rows lined up with the grid's.
@@ -131,8 +160,18 @@ export function FieldGrid({
     found.table.rows === "one" ? price?.tables[found.table.name]?.[0]?.[found.column.name] : matched.get(found.table.id)?.[row]?.[found.column.name]
 
   const { row_numbers: numbered, gridlines, striped, transposed } = options
-  // Rows are not added or deleted in a grid of fixed rows, of rows a column gives or of no input table, or while the values are read only.
+  // Rows are not inserted or deleted in a grid of fixed rows, of rows a column gives or of no input table, or while the values are read only.
   const fixed = options.fixed_rows || given || readOnly || inputTables.length === 0
+  // The row whose menu is open, and where the right-click was.
+  const [menu, setMenu] = useState<{ row: number; x: number; y: number } | null>(null)
+  // A right-click on a row opens its menu, unless its rows are fixed: then the browser's own opens.
+  const menuOn = (row: number) =>
+    fixed
+      ? undefined
+      : (event: MouseEvent) => {
+          event.preventDefault()
+          setMenu({ row, x: event.clientX, y: event.clientY })
+        }
   const height = ROW_HEIGHT[options.density]
   // Its lines, in its own colour while it sets one, else the theme's, else each line's own:
   // the gridlines in their style, the rules solid.
@@ -158,13 +197,7 @@ export function FieldGrid({
   const rowClass = `transition-colors ${striped ? "even:bg-[var(--chip-rest)] " : ""}hover:bg-[var(--bg-hover)]`
   const headRule = `${weight}px solid ${ruleColour}`
   const headFill = options.header_color ?? (options.frame ? colours.componentFill : colours.sheetFill) ?? "var(--bg-elevated)"
-  // Its labels: as large as its text, or a pixel smaller in capitals, unless it sets their size.
-  const caps = options.header === "caps"
-  const headText = caps ? "tracking-wider uppercase" : ""
-  const headStyle: CSSProperties = {
-    fontSize: options.header_font_size ?? (caps ? options.font_size - 1 : options.font_size),
-    fontWeight: options.header_bold ? 600 : 400,
-  }
+  const { className: headText, style: headStyle } = headerText(options)
   const wrap = options.header_wrap
   const turn = options.header_orientation === "horizontal" ? null : TURNS[options.header_orientation]
   // A rule along the inner edge of a header that stays in view is its cells' shadow: a table's
@@ -173,17 +206,13 @@ export function FieldGrid({
   // The fields under their groups, while it shows them and a field it shows is in one.
   const runs = options.groups && fields.some(({ found }) => (found?.column.group ?? "") !== "") ? groupRuns(fields) : null
   const groupColour = options.header_font_color ?? colours.font ?? "var(--text-secondary)"
-  // Each column's own look, by its field's key, or the plain one.
-  const looks = new Map(options.column_looks.map((look) => [`${look.table}:${look.column}`, look]))
-  const lookOf = (key: string): ColumnLookOptions => looks.get(key) ?? PLAIN_COLUMN_LOOK
+  const lookOf = looksByKey(options)
   // Every column set to a width: the grid is as wide as they are, not its frame.
   const sized = !transposed && fields.length > 0 && fields.every(({ key }) => lookOf(key).width !== null)
   // A column of a set width, unless transposed: exactly that wide.
   const widthOf = (look: ColumnLookOptions): CSSProperties =>
     transposed || look.width === null ? {} : { width: look.width, minWidth: look.width, maxWidth: look.width }
-  // A field's label colour: the column's, else the Table's, else the theme's or its role's; amber while it is gone.
-  const labelColour = (found: Found, look: ColumnLookOptions): string =>
-    found === null ? labelColor(found, null) : (look.header_font_color ?? options.header_font_color ?? labelColor(found, colours.font))
+  const labelColour = (found: Found, look: ColumnLookOptions): string => labelFont(found, look, options, colours.font)
   // A field's label, turned as the header says: a turned label wraps only past a set length.
   const labelText = (found: Found) =>
     turn === null ? (
@@ -196,6 +225,16 @@ export function FieldGrid({
         <FieldLabel found={found} />
       </span>
     )
+  // A column with conditions carries its eye after its label while building, and one a new quote hides is faded.
+  const eyeOf = (key: string) => {
+    const mark = marks.get(key)
+    return mark === undefined ? null : (
+      <span className="ml-1 inline-block align-middle">
+        <ShowWhenMark hidden={mark.hidden} title={mark.conditions} />
+      </span>
+    )
+  }
+  const fadedOf = (key: string): boolean => marks.get(key)?.faded === true
   // How a value sits in its cell: the column's weight and place across it, and the Table's size.
   const valueText = (look: ColumnLookOptions): CSSProperties => ({
     fontSize: options.font_size,
@@ -203,10 +242,12 @@ export function FieldGrid({
     ...(look.align === "auto" ? {} : { textAlign: look.align }),
   })
 
-  /** A field's cell in one of the grid's rows, ruled as `rules` say: one in its line when transposed. */
+  /** A field's cell in one of the grid's rows, ruled as `rules` say: one in its line, opening its row's menu, when transposed. */
   const valueCell = ({ key, found }: ShownField, row: number, rules: CSSProperties) => {
     const look = lookOf(key)
     const text = valueText(look)
+    const menuHere = transposed ? menuOn(row) : undefined
+    const fade = fadedOf(key) ? HIDDEN_OPACITY : 1
     if (found !== null && presetColumn(found.table)?.id === found.column.id) {
       // The column giving its table's rows shows each row's value, and takes no typing.
       const value = held[found.table.id]?.[row]?.[found.column.id]
@@ -214,7 +255,14 @@ export function FieldGrid({
         <td
           key={transposed ? row : key}
           className={`${height} px-2.5 ${isNumeric(found.column.type) ? "text-right tabular-nums" : ""}`}
-          style={{ ...rules, ...widthOf(look), ...text, background: look.cell_color ?? undefined, color: look.font_color ?? colours.font ?? "var(--text-primary)" }}
+          style={{
+            ...rules,
+            ...widthOf(look),
+            ...text,
+            background: look.cell_color ?? undefined,
+            color: look.font_color ?? colours.font ?? "var(--text-primary)",
+            opacity: fade,
+          }}
         >
           {typeof value === "string" ? (formattedNumber(found.column, value) ?? value) : null}
         </td>
@@ -226,8 +274,15 @@ export function FieldGrid({
         <td
           key={transposed ? row : key}
           className={`pointer-events-auto p-0 ${found.column.type === "bool" ? `${height} text-center` : ""}`}
-          style={{ ...rules, ...widthOf(look), ...(look.align === "auto" ? {} : { textAlign: look.align }), background: look.cell_color ?? colours.input ?? undefined }}
+          style={{
+            ...rules,
+            ...widthOf(look),
+            ...(look.align === "auto" ? {} : { textAlign: look.align }),
+            background: look.cell_color ?? colours.input ?? undefined,
+            opacity: fade,
+          }}
           onPointerDown={typeHere}
+          onContextMenu={menuHere}
         >
           <Cell
             found={found}
@@ -235,8 +290,8 @@ export function FieldGrid({
             onChange={(value) => setValue(found.table.id, at, found.column.id, value)}
             label={`${fieldLabel(found)} row ${row + 1}`}
             height={height}
-            boxed={false}
-            colours={look.font_color === null ? colours : { ...colours, font: look.font_color }}
+            box={null}
+            font={look.font_color ?? colours.font}
             textStyle={text}
             problem={problems[cellKey(found.table.id, at, found.column.id)] ?? null}
             disabled={readOnly || locked.has(columnKey(found.table.id, found.column.id))}
@@ -259,8 +314,9 @@ export function FieldGrid({
           background: look.cell_color ?? (output ? (colours.output ?? "var(--workbench-output-cell-bg)") : undefined),
           // The column's own font on anything it shows, an index's numbers and a dash too.
           color: look.font_color ?? (priced === undefined || priced === null ? "var(--text-secondary)" : (colours.font ?? "var(--text-primary)")),
-          opacity: output && stale ? 0.5 : 1,
+          opacity: (output && stale ? 0.5 : 1) * fade,
         }}
+        onContextMenu={menuHere}
       >
         {found?.column.index ? (past(found, row) ? null : row + 1) : output ? shown(priced, found) : null}
       </td>
@@ -268,8 +324,8 @@ export function FieldGrid({
   }
 
   // A row's delete, shown while the pointer is on its row, or on its column's number when
-  // transposed, or while it has focus. Its name and Add row's are the rows' whatever the
-  // grid's orientation; their tooltips say what they do to the grid as drawn.
+  // transposed, or while it has focus. Its name is the row's whatever the grid's
+  // orientation; its tooltip says what it does to the grid as drawn.
   const deleteButton = (row: number) => (
     <button
       type="button"
@@ -281,6 +337,18 @@ export function FieldGrid({
     >
       <Trash2 size={13} aria-hidden="true" />
     </button>
+  )
+  const rowMenu = menu !== null && (
+    <RowMenu
+      key={`${menu.row} ${menu.x} ${menu.y}`}
+      row={menu.row}
+      x={menu.x}
+      y={menu.y}
+      transposed={transposed}
+      onInsert={(side, added) => insertRows(side === "above" ? menu.row : menu.row + 1, added)}
+      onDelete={() => deleteRow(menu.row)}
+      onClose={() => setMenu(null)}
+    />
   )
 
   if (transposed) {
@@ -309,27 +377,12 @@ export function FieldGrid({
                       scope="col"
                       className="group/col sticky top-0 z-[1] h-7 min-w-32 px-2 text-center text-[11px] font-normal tabular-nums"
                       style={{ background: headFill, boxShadow: ruleUnder, borderLeft: columnLine(row), color: "var(--text-disabled)" }}
+                      onContextMenu={menuOn(row)}
                     >
                       {numbered && row + 1}
                       {!fixed && inputTables.length > 0 && <span className="absolute inset-y-0 right-1 flex items-center">{deleteButton(row)}</span>}
                     </th>
                   ))}
-                  {!fixed && (
-                    <th className="sticky top-0 z-[1] w-8 text-center" style={{ background: headFill, boxShadow: ruleUnder }}>
-                      {inputTables.length > 0 && (
-                        <button
-                          type="button"
-                          aria-label="Add row"
-                          title="Add column"
-                          onClick={addRow}
-                          onPointerDown={typeHere}
-                          className="focus-ring pointer-events-auto rounded p-1 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-accent)]"
-                        >
-                          <Plus size={13} aria-hidden="true" />
-                        </button>
-                      )}
-                    </th>
-                  )}
                 </tr>
               </thead>
             )}
@@ -368,12 +421,14 @@ export function FieldGrid({
                       style={{
                         ...headStyle,
                         left: runs === null ? 0 : GROUP_COLUMN_WIDTH - 1,
-                        textAlign: look.align === "auto" ? (turn === null ? "left" : "center") : look.align,
+                        textAlign: look.header_align !== "auto" ? look.header_align : look.align === "auto" ? (turn === null ? "left" : "center") : look.align,
                         background: look.header_color ?? headFill,
                         boxShadow: grouped ? `${ruleLeft}, ${ruleRight}` : ruleRight,
                         borderTop: above,
                         color: labelColour(field.found, look),
+                        opacity: fadedOf(field.key) ? HIDDEN_OPACITY : undefined,
                       }}
+                      data-hidden={fadedOf(field.key) ? "true" : undefined}
                     >
                       {turn === null && wrap ? (
                         // A level label that wraps does so past a set width, as the line's labels are as wide as the widest.
@@ -383,15 +438,16 @@ export function FieldGrid({
                       ) : (
                         labelText(field.found)
                       )}
+                      {eyeOf(field.key)}
                     </th>
                     {Array.from({ length: count }, (_, row) => valueCell(field, row, { borderTop: above, borderLeft: columnLine(row) }))}
-                    {!fixed && <td style={{ borderTop: above }} />}
                   </tr>
                 )
               })}
             </tbody>
           </table>
         </div>
+        {rowMenu}
       </div>
     )
   }
@@ -434,7 +490,17 @@ export function FieldGrid({
                 const look = lookOf(key)
                 // Level, it cuts off or wraps across its column; turned, it sits at the header's foot.
                 const shape = turn !== null ? "px-1.5 py-1.5 align-bottom" : wrap ? "px-2.5 py-1 break-words" : "truncate px-2.5"
-                const across = look.align !== "auto" ? look.align : turn !== null ? "center" : found !== null && isNumeric(found.column.type) ? "right" : undefined
+                // Its own place, else its values': as set, centred turned, a number's on the right.
+                const across =
+                  look.header_align !== "auto"
+                    ? look.header_align
+                    : look.align !== "auto"
+                      ? look.align
+                      : turn !== null
+                        ? "center"
+                        : found !== null && isNumeric(found.column.type)
+                          ? "right"
+                          : undefined
                 return (
                   <th
                     key={key}
@@ -450,9 +516,12 @@ export function FieldGrid({
                       boxShadow: ruleUnder,
                       color: labelColour(found, look),
                       borderLeft: ruleBefore(found, position),
+                      opacity: fadedOf(key) ? HIDDEN_OPACITY : undefined,
                     }}
+                    data-hidden={fadedOf(key) ? "true" : undefined}
                   >
                     {labelText(found)}
+                    {eyeOf(key)}
                   </th>
                 )
               })}
@@ -461,7 +530,7 @@ export function FieldGrid({
           </thead>
           <tbody>
             {Array.from({ length: count }, (_, row) => (
-              <tr key={row} className={`group/row ${rowClass}`} style={{ borderBottom: rowLine }}>
+              <tr key={row} className={`group/row ${rowClass}`} style={{ borderBottom: rowLine }} onContextMenu={menuOn(row)}>
                 {numbered && (
                   <td className="text-center text-[11px] tabular-nums" style={{ color: "var(--text-disabled)" }}>
                     {row + 1}
@@ -473,17 +542,7 @@ export function FieldGrid({
             ))}
           </tbody>
         </table>
-        {inputTables.length > 0 && !fixed && (
-          <button
-            type="button"
-            onClick={addRow}
-            onPointerDown={typeHere}
-            className={`focus-ring pointer-events-auto flex ${height} w-full items-center gap-1.5 px-2.5 text-[11px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-accent)]`}
-          >
-            <Plus size={12} aria-hidden="true" />
-            Add row
-          </button>
-        )}
+        {rowMenu}
       </div>
     </div>
   )

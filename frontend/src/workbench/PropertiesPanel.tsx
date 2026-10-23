@@ -4,7 +4,7 @@
  * rows a Table's grid starts with, whether they are fixed and whether the grid is
  * transposed, a Collection's columns), its
  * look (a Table's density, gridlines, header, row numbers, groups, stripes and frame, a
- * Collection's labels, density and frame), a Chart's chart
+ * Collection's density, labels, boxes and frame, and either's text and columns' own looks), a Chart's chart
  * (`ChartSettings`), the order of the fields it shows, and the fields themselves, ticked
  * from the schema tables of its kind: many-row tables for a Table, one-row tables for a
  * Collection, any table for a Chart, which plots number columns alone, with a Collection's

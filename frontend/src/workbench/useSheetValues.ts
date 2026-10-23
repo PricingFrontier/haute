@@ -55,7 +55,7 @@ export function useSheetValues(): SheetValues {
 const NO_PROBLEMS: Readonly<Record<string, string>> = {}
 const NO_ROWS: RowsByTable = {}
 // Before the form is read nothing draws a sheet; these only fill the shape.
-const NO_VISIBILITY: SheetVisibility = { pages: new Set(), sections: new Set(), widgets: new Set(), hidden: new Set() }
+const NO_VISIBILITY: SheetVisibility = { pages: new Set(), sections: new Set(), widgets: new Set(), fields: new Set(), hidden: new Set() }
 const NO_SCHEMA: FormSchema = { tables: [] }
 const NOTHING_LOCKED: ReadonlySet<string> = new Set()
 const TYPE_NOTHING = () => {}
@@ -64,14 +64,18 @@ const sameMembers = (a: ReadonlySet<string>, b: ReadonlySet<string>): boolean =>
 
 /**
  * The visibility last given while `next` shows and hides the same sheets, sections,
- * components and columns, else `next`: a change that shows and hides nothing new keeps the
- * values the same object.
+ * components, fields and columns, else `next`: a change that shows and hides nothing new
+ * keeps the values the same object.
  */
 function useSteadyVisibility(next: SheetVisibility): SheetVisibility {
   const [kept, setKept] = useState(next)
   if (
     kept === next
-    || (sameMembers(kept.pages, next.pages) && sameMembers(kept.sections, next.sections) && sameMembers(kept.widgets, next.widgets) && sameMembers(kept.hidden, next.hidden))
+    || (sameMembers(kept.pages, next.pages)
+      && sameMembers(kept.sections, next.sections)
+      && sameMembers(kept.widgets, next.widgets)
+      && sameMembers(kept.fields, next.fields)
+      && sameMembers(kept.hidden, next.hidden))
   ) {
     return kept
   }

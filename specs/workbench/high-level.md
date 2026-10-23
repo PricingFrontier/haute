@@ -152,13 +152,25 @@ Out of scope:
   `thick`, 1, 2 or 3px) and `grid_style` (`solid`, `dashed` or `dotted`), its frame's
   `frame_color` and `frame_weight`, each colour `#RRGGBB` in capitals or null for the
   theme's, and `column_looks`, the looks of the columns given one of their own, each the
-  column it shows by `table` and `column`, its label's `header_color` and
-  `header_font_color`, its cells' `cell_color` and `font_color`, `bold`, `align` (`auto`,
-  `left`, `center` or `right`) and `width` (24 to 1000 pixels, or null), one for each
+  column it shows by `table` and `column`, its label's `header_color`,
+  `header_font_color` and `header_align`, its cells' `cell_color` and `font_color`, `bold`,
+  `align` (each align `auto`, `left`, `center` or `right`), `width` (24 to 1000 pixels, or null)
+  and `show_when`, when the column shows in the Table, as a component's (below), one for each
   column at most, none for a column it does not show and none that changes nothing), a
   Collection (`collection`, boxes
-  showing columns of one-row tables, `columns` across, and its `spacers`, the gaps among
-  them, each the number of fields before it, in order and none past the last), a Chart (`chart`, plotting number
+  showing columns of one-row tables, `columns` across, its `spacers`, the gaps among
+  them, each the number of fields before it, in order and none past the last, and its
+  look: `labels` (`above` or `beside`), `density` and `frame`, and, as a Table's are
+  set, `font_size`, its labels' `header`, `header_font_size`, `header_bold`,
+  `header_wrap`, `header_color` (their fill), `header_font_color` and `header_align`, and
+  `label_width`,
+  the percentage of its field a label beside its box takes; its boxes' borders' `box_style`, `box_weight` and
+  `box_color`, as a Table's gridlines' are, `box_align`, where their values sit, and
+  `box_width`; its frame's `frame_color`
+  and `frame_weight`; and `column_looks`, its fields' own looks, as a Table's columns'
+  are, a field's label's `header_color`, `header_font_color` and `header_align`, its box's
+  `cell_color` and `font_color`, `bold`, `align`, its box's `width`, each width 24 to 1000 pixels
+  or null, and its `show_when`), a Chart (`chart`, plotting number
   columns, with what labels the rows of its many-row tables, `category`, a schema column
   named as a field is or null to number them, and how it draws: `chart_type` (`column`,
   `line`, `area` or `pie`), `orientation` (`vertical` or `horizontal`), `stacked`, `legend`
@@ -171,12 +183,24 @@ Out of scope:
   `show_when` of its own, and each but a
   Heading with a `title` and showing its `fields`, schema columns named by table id and
   column id so a rename keeps them. A `show_when` holds `conditions` and whether `all`
-  of them must hold or `any` (`match`); with none, the sheet, section or component always shows. A
-  condition names a column by table id and column id, a test (`op`) and the test's `values`,
+  of them must hold, `any`, or at least a whole number of them, 1 or more (`match`); with
+  none, the sheet, section, component or field always shows.
+  Each is a condition or a group, which holds `conditions` of its own, at least one and no
+  group among them, and whether all of those must hold, any, or at least a number of them
+  (`match`). A
+  condition names a column of a one-row table by table id and column id, a test (`op`) and the test's `values`,
   as text: `ticked` or `not_ticked`, with no value, for a True/false column; `filled` or
   `empty`, with no value, and `equals` or `not_equals`, with one, for any other; `one_of` or
   `not_one_of`, with one or more, for a Text or number column; and `above`, `at_least`,
-  `below` or `at_most`, with one, for a number or a Date column. The sample holds, by table
+  `below` or `at_most`, with one, for a number or a Date column. A condition on a many-row
+  table's rows names the table by id and the tests a row must pass, all in the same row
+  (`where`), each a column of the table other than its index by id, a test and its values,
+  as a one-row table's condition has them; and which rows: `any` of them or `every` one
+  (`rows`), with one test or more; how many, by a test (`op`, `equals`, `not_equals`,
+  `above`, `at_least`, `below` or `at_most`) and a whole number of rows, 0 or more
+  (`count`); or the `sum`, `min`, `max` or `average` (`total`) of a number column's values
+  in them (`column`, not the index), by such a test and a number typed as text (`value`).
+  The sample holds, by table
   id, rows keyed by column id, each value as typed: text or a tick. Haute reads the file whole whenever it needs it and never keeps it in memory, so an
   edit made outside the view reaches the next request. A file that does not exist is the
   blank form, never saved: one sheet 1280 wide holding one section 560 tall, no tables, no
@@ -323,7 +347,9 @@ Out of scope:
   when it becomes or stops being True/false, or becomes a Date while it is not a day.
   Every text field
   commits on blur or Enter, so an edit is one undo step; Enter in the last column's name
-  adds the next column, and in any other only commits it, a column is dragged by its grip within its table, or moved by Alt+Up and
+  adds the next column, and in any other only commits it, a new column, by Enter or Add
+  column, taking the type of the column above it, Text first in its table or under its
+  index, a column is dragged by its grip within its table, or moved by Alt+Up and
   Alt+Down in its name, a table likewise by the grip beside its name or Alt+Up and
   Alt+Down in it, and a new table's or column's name takes the focus. A many-row table can have an index: a column first in the table, `row_number`
   until renamed, an Integer whose type cannot change, numbering the rows from 1, which
@@ -331,7 +357,10 @@ Out of scope:
   and drops its index, with what shows it, and switching it to many rows clears its
   columns' defaults. Removing a column or a table a sheet shows, or a
   sheet's, a section's or a component's condition tests, asks first, and takes it off the
-  sheet, out of those conditions and out of the sample. The editor says what would stop
+  sheet, out of those conditions and out of the sample: a column takes a test of a list's
+  rows on it alone, the list's condition going with it once it has no test while it needs
+  one (in any or every row) or when it totals the column; a group left with none goes with
+  them; and a table takes every condition on its rows. The editor says what would stop
   the schema being the pipeline's tables: a table's name is held to the port rules the
   Quote Input's labels are held to (an identifier, none of the document's reserved labels,
   unique whatever its case), a column's name is an identifier that is not a Python keyword,
@@ -371,7 +400,14 @@ Out of scope:
   the selected section has a handle under the middle of its bottom whose drag sets its
   height, on the grid, never less than its components reach nor than 48, and a
   double-click on it fits the section, 16 below its lowest component, or 48 with none.
-  Each is one undo step. A component stays inside its section: dragged, nudged, dropped
+  While the sheet's own panel is open (the properties panel, below), the sheet has a
+  handle at the middle of its right edge whose drag sets its width, on the grid, never
+  less than its components reach nor than 240, and one under the middle of its bottom
+  whose drag sets its height through its last section's, so the sheet ends where it is
+  dragged to, on the grid, never less than that section's components reach nor than 48
+  for it. While a section's handle or the sheet's is dragged, the viewport scrolls over no
+  less than the sheet as pressed, so a sheet growing shorter or narrower never scrolls the
+  edge away from the pointer; the scroll settles once the drag ends. Each is one undo step. A component stays inside its section: dragged, nudged, dropped
   or copied, it stops at the section's top and bottom, never lying across a border, and
   moves into another section only as its top edge goes over that one; resized past the
   bottom, it grows the section, pushing the sections under it down, as does a component
@@ -388,12 +424,12 @@ Out of scope:
   say: its rows numbered in a column of their own unless `row_numbers` is off, compact rows
   (28px) or comfortable ones (36px), a line between rows and before each output column
   (`rows`), between every column too (`all`) or none at all (`none`), every other row
-  shaded unless `striped` is off, and Add row under the last row and a delete on each row
-  unless its rows are fixed; transposed (`transposed`), the same grid on its side: a line
+  shaded unless `striped` is off, and a delete on each row unless its rows are fixed;
+  transposed (`transposed`), the same grid on its side: a line
   per field, labelled at its start in the header's look, the labels staying in view as
   the rows scroll across and ruled off from them, and a column per row, numbered above
   unless `row_numbers` is off, the numbers staying in view as the fields scroll down,
-  with a delete over each and an add after the last unless its rows are fixed; its
+  with a delete over each unless its rows are fixed; its
   stripes and gridlines are its lines' as drawn, a full grid lining its columns too, and
   an output field is ruled off above its line; showing groups (`groups`), while a field
   it shows is in a schema group, each run of fields side by side in one group headed
@@ -413,15 +449,29 @@ Out of scope:
   `header_color`, its labels and group names in its `header_font_color`; and each column's
   own look over the Table's: its label's fill and font, its cells' fill, drawn over the
   stripes and the output shade, their font, on an index's numbers and a dash too, and
-  weight, where its label and values sit
-  across it, as its type puts them while `auto`, and its width, exactly that wide, the
+  weight, where its values sit across it, as its type puts them while `auto`, and where its
+  label does, as its values do while its `header_align` is `auto`, and its width, exactly that wide, the
   grid as wide as its columns rather than its frame once every column has one;
   transposed, a column's look is its field's line, its label the line's label, and it
   has no width; a Collection as boxes, its columns across, their labels above
   them or, while `labels` is `beside`, beside them, a tick box in a box as the other fields
   are, the boxes compact (28px) or comfortable (36px) as its `density` says, and each
   spacer a gap across its whole width where it sits among the fields, the fields after it
-  starting a new row below the gap; each of the two in a frame, a border round the panel's
+  starting a new row below the gap; and its look as a Table's is set: its values at its
+  `font_size`; its labels at their size, in capitals or as written, bold only while
+  `header_bold`, wrapping with whole words kept rather than cut off while `header_wrap`,
+  in their `header_font_color`, across their field as `header_align` says, at its start
+  while `auto`, and, given a fill, drawn as a cell, padded, and beside its box as tall as
+  it; a label beside its box `label_width` percent of its field wide,
+  else two fifths of it, or what its box leaves while the box has a width; its boxes' borders in their
+  `box_style`, `box_weight` and `box_color`, and each box `box_width` wide, else what its
+  label leaves, never wider than its field, its value across it as `box_align` says, as
+  its type puts it while `auto`, and a narrower box under its label across the field
+  likewise, at its start while `auto`; its frame in its `frame_color` and `frame_weight`, the
+  rule under its title in that colour; and each field's own look over the Collection's:
+  its label's fill and font, its box's fill, over the input and output fills, font and
+  weight, where its label and its value sit across it, each as the Collection's sit while
+  `auto`, and its box's width; each of the two in a frame, a border round the panel's
   colour, unless `frame` is off, when it sits on the sheet as its title and fields alone,
   all in the sheets' colours (below);
   a Chart as its type draws the values it plots (Charts, below); a Heading as its
@@ -500,13 +550,27 @@ Out of scope:
   Rotated up, Rotated down or Stacked, its Fill and Font, and whether it is Bold and
   wraps; its Lines, the Gridlines, their Style, Weight, Thin, Medium or Thick, and Colour;
   its Frame and, while framed, the frame's Weight and Colour; and its Columns, each in its
-  order opened in turn to its own look, its header's Fill and Font, its cells' Fill and
-  Font, Align, Auto, Left, Centre or Right, its Width, blank for Auto, a whole number of
+  order opened in turn to its own look, its header's Fill, Font and Align, its cells' Fill
+  and Font and Align, each Align Auto, Left, Centre or Right, its Width, blank for Auto, a whole number of
   pixels from 24 to 1000 otherwise refused at the field, not while transposed, and Bold,
-  with Clear while it has a look, a column with one marked in the list; a colour picked
+  with Clear while it has a look, which leaves its Show when, and then its Show when, edited
+  as a component's is, a column with a look marked in the list and one with conditions
+  carrying an eye there; a colour picked
   as the sheets' colours are, shown as it is picked and one undo step, a pick that an undo
   or a redo made while its picker has the focus finishes first committing nothing more as
-  the picker is left, and a column that stops being shown losing its look), a Collection's look (its labels, Above or Beside, its density and its frame), a
+  the picker is left, and a column that stops being shown losing its look and its Show
+  when), a
+  Collection's look, set as a Table's is (its density and its text size; its Labels,
+  their Position, Above or Beside, while beside their Width, blank for Auto, a whole
+  percentage of the field from 1 to 99 otherwise refused at the field, their Case, Size,
+  Align, Fill and Font, and whether they are Bold and wrap; its Boxes, their borders'
+  Style, Weight and Colour, their Align, and their Width, blank for Auto, a whole number
+  of pixels from 24 to 1000 otherwise refused at the field; its Frame and, while framed, the frame's
+  Weight and Colour; and its Fields, each in its order opened in turn to its own look, its
+  label's Fill, Font and Align, its box's Fill, Font and Align, Width and Bold, with Clear while
+  it has a look, and its Show when, as a Table's columns have them, marked in the list as
+  theirs are; its colours picked as a Table's are, and a field that stops being shown losing
+  its look and its Show when), a
   Chart's chart (its type, Column, Line,
   Area or Pie; while it plots many-row tables, what labels its rows, "Row number" or a
   column of a table whose rows line up with its fields, other than an index, by table and
@@ -544,7 +608,10 @@ Out of scope:
   also move between. While building, the showing sheet's tab has a settings
   mark, and no delete of its own, that opens the sheet's own panel in the same place, with its
   title, its Show when and its layout, its width in whole pixels (no less than 240 or
-  than its components reach, a value below that refused at the field), and at its foot
+  than its components reach, a value below that refused at the field) and its height in
+  whole pixels, its sections' heights summed, the bars drawn while building no part of
+  it, set through its last section's (no less than the other sections' heights and what
+  the last one's components reach, or 48, a value below that refused at the field), and at its foot
   Delete sheet, disabled while it is the only sheet, which asks first in a dialog of the
   editor's own, never the browser's: it names the sheet and how many components go with
   it, the schema and the sample staying; Cancel, Escape or a press outside it keeps the
@@ -557,9 +624,14 @@ Out of scope:
   under it, selected, and Delete section, asking first when components are in it, disabled
   while it is the sheet's only section. Pressing the empty sheet, Escape, the panel's close,
   or selecting a component or another section closes either. Show when reads "Always" while there are no
-  conditions, and Add condition adds one on the first column of a one-row input table,
-  with the first test its type takes and no value yet; each condition is a row of its
-  column (a select of the one-row input tables' columns, by table, each by its label), its
+  conditions, and Add condition adds one on the first column of a one-row input table, else
+  on any row of a many-row one with a test of its first column but the index,
+  with the first test its type takes and no value yet; Add group adds a group holding such
+  a condition, its conditions all needed while the Show when needs any and any while it needs
+  all, in a frame of its own with its own Add condition and a cross that removes it, as
+  removing its last condition does. Each condition is a row of its
+  column (a select of the one-row input tables' columns, by table, each by its label, and of
+  each many-row input table's rows, "Rows of" the table), its
   test (for True/false "is ticked" and "is not ticked"; for Text "equals", "does not
   equal", "is one of", "is not one of", "is filled" and "is empty"; for a number those and
   "is greater than", "is at least", "is less than" and "is at most"; for a Date "is on",
@@ -567,10 +639,30 @@ Out of scope:
   and "is empty"), its value, the control the column's cell is (a dropdown of the allowed
   values, a date picker, else a text field, committing on blur or Enter), or for "is one
   of" and "is not one of" a tick box per allowed value, or the values typed comma-separated
-  when the column allows any, and a cross that removes it. Choosing another column keeps
+  when the column allows any, and a cross that removes it. A condition on a table's rows
+  says which rows, Any row, Every row, Number of rows, or the Sum, Smallest, Largest or
+  Average of a number column of the table other than its index, chosen beside it, then its
+  tests of a row, all passing in the same row, each a column of the table other than its
+  index with its test and value as above and a cross, and Add test; Any row and Every row
+  need a test, so their only one has no cross; Number of rows and a total end with their
+  test, a number's ("equals" to "is at most"), and a whole number of rows, 0 or more, or a
+  number, typed into a field that refuses anything else.
+  Choosing another column, for a condition or a test of a row, keeps
   the test while the column's type takes it, else the type's first, and the values while
-  they fit the test; with two or more conditions the section reads "Show when [all|any] of
-  these are true". Each change is one undo step.
+  they fit the test. Choosing a table's rows starts Any row with a test of its first column
+  but the index, or, for a condition on a column of the table, a test of that column as
+  the condition has it; choosing a one-row table's column for a condition on rows keeps its
+  test of that column, if it has one. Choosing Number of rows starts it at "is at least"
+  1, a total at "is greater than" with no value, and Any row or Every row adds a test of the
+  first column while there is none, each keeping the tests there are. While a condition's
+  table has switched between one row and many since, its column select holds it, not
+  offered, and its fault says so: choosing the table's rows, or a column, puts it right.
+  With two or more conditions the section reads "Show when [all|any|at least] of
+  these are true", and a group with two or more "[all|any|at least] of these are true", at
+  least with a select of its number beside it, 1 to as many conditions as there are (or to
+  the number, while it asks for more), choosing it starting at 2; one condition reads so
+  too while the match is a number, as fewer conditions than it asks for is a problem to put
+  right. Each change is one undo step.
 - **The sheet's keyboard.** While the sheets show and a component is selected: Escape
   deselects it, Delete or Backspace removes it, Ctrl/Cmd+D duplicates it (16px below and
   to the right, selected), Ctrl/Cmd+C copies it, a note saying so, and the arrow keys nudge it by a grid step, or a pixel with
@@ -613,7 +705,8 @@ Out of scope:
   cells and boxes, in place of their shade. A Table's header strip takes the components'
   background while one is set, or the sheet's while the Table is unframed, else keeps its
   own; its stripes, a light shade, show whatever is under them. A Table's own colours, its
-  lines', its frame's, its header's and its columns', are drawn over the theme's.
+  lines', its frame's, its header's and its columns', are drawn over the theme's, as a
+  Collection's own are, its labels', its boxes', its frame's and its fields'.
 - **A new quote while building.** While building, the sheets are drawn as an underwriter's
   new quote opens: every input cell empty but those a column's default fills, every output
   a dash, every Chart with nothing but defaults to chart, each grid showing the rows it
@@ -642,7 +735,7 @@ Out of scope:
   a row's value is not typing: a quote holding nothing else typed, a row left out included,
   is neither marked nor priced nor saved, and the server takes it as the empty quote, as it
   takes a blank one. A grid showing the table shows its rows, whatever its rows and fixed
-  rows, with no Add row and no delete, the column's cells showing each row's value as text,
+  rows, with no row inserted or deleted, the column's cells showing each row's value as text,
   which takes no typing, and a value typed into the grid writes all its rows. A grid
   showing it beside another many-row table whose rows are not the same (another column's
   values, or rows of its own) shows every row of each, a table's cells past its own rows
@@ -656,8 +749,13 @@ Out of scope:
   sample: the quote an analyst keys in as an underwriter would, saved with the form and
   what the pipeline's previews run on (the Workbench Input, below). A Collection's boxes
   hold its one-row tables' one row; a Table's grid holds its
-  many-row tables' rows, row by row, with Add row and a delete on each row, unless its rows
-  are fixed or a column gives them (above), adding and deleting a row in every input table the grid shows at once, so
+  many-row tables' rows, row by row, with a delete on each row and a menu a right-click on
+  a row opens, unless its rows are fixed or a column gives them (above): Insert, which
+  offers Insert Row Above, Insert Row Below, Insert Multiple Rows Above and Insert
+  Multiple Rows Below, the last two asking in a box how many rows, a whole number from 1,
+  and Delete Row; transposed, the menu opens on a row's column, its number too, and says
+  Column, Columns, Left and Right for Row, Rows, Above and Below. Rows are inserted, empty,
+  and deleted in every input table the grid shows at once, as one undo step, so
   their cells stay side by side; a one-row table's column in a grid shows that table's one
   value on every row. A grid starts with its rows: while its input tables hold no rows it
   shows that many empty ones, which the first value typed into it keeps; once they hold
@@ -1035,13 +1133,15 @@ Out of scope:
   keeps no quotes. One who may only read quotes is offered nothing that changes them: no
   New quote, Duplicate, Archive or Restore on the Quotes page, and every quote read only,
   saying that changing it needs the app's edit role.
-- **Shown when.** A sheet, a section or a component with conditions shows only while they
+- **Shown when.** A sheet, a section, a component, or a Table's column or a Collection's
+  field, with conditions shows only while they
   hold on the values typed into the sheets: a new quote's defaults alone while building, and in
   Preview the sample or the underwriter app's quote; a section on a sheet that does not
   show does not show either, nor does a
-  component in a section that does not show.
+  component in a section that does not show, nor a field of a component that does not show.
   - **A condition holds** while its column is in a one-row input table and on a Table or a
-    Collection that shows, and the value typed into it passes the test, read as the server types it:
+    Collection that shows it, the component showing and so does its field, and the value
+    typed into it passes the test, read as the server types it:
     text without the spaces around it, compared exactly; a tick box ticked or not, one
     never touched unticked; a number read as the sample's numbers are (a currency sign,
     separators and spaces allowed) and compared as a number; a date as the day it names;
@@ -1050,18 +1150,52 @@ Out of scope:
     column's type (text in a number column, or a tick left in a column since retyped)
     `filled`, `not_equals` and `not_one_of` alone. A condition that cannot hold as written
     never holds: one naming a column that is not in a one-row input table (gone, an output
-    table's, a many-row table's), a test its column's type does not take, a number of
+    table's or a many-row table's), a condition on rows naming a table that is not a
+    many-row input table, a test of a row naming a column that is not its table's or is its
+    index, a total of a column that is not a number column of its table other than its
+    index or against a value that is not a number, a test its column's type does not take, a number of
     values its test does not take (none for the ticks, `filled` and `empty`, at least one
     for `one_of` and `not_one_of`, else one), or a value its column could not hold (blank,
     not a number, a fraction for an Integer, not a `YYYY-MM-DD` day).
+  - **On a list.** A condition on a many-row input table's rows holds while each column it
+    tests, and a total's column, is on a Table that shows it (for a count without tests,
+    one of its table's columns other than the index), and its rows pass: any of the table's rows
+    passing all of its tests, every one of them passing them all and there being at least
+    one, the number of rows passing them all by its test, compared as whole numbers, or the
+    total of its column's numbers in those rows by its test, compared as numbers to 15
+    significant digits (so 0.1, 0.2 and 0.3 sum to 0.6), each row's value read as a one-row
+    table's is. A sum of no numbers is 0; a least, greatest or
+    average of none is empty and fails every test; a cell that is blank or not a number adds
+    nothing to a total. A
+    table's rows are those a grid showing it holds (a column giving it a row for each
+    value gives every one of those) with anything but the index typed in them, whatever
+    the sheets hide: a row with nothing typed in it is no row, as the quote leaves it out.
+  - **At least some.** A `show_when` or a group whose `match` is a number holds while at
+    least that many of its conditions hold, a group counting as one: a section that shows
+    while two or three of three cover boxes are ticked needs at least 2 of the three
+    boxes' conditions. Asking for more than it holds, it never holds.
+  - **Groups.** A group holds while all of its conditions hold, any, or at least a number
+    of them, as its `match` says, and counts as one of its `show_when`'s conditions: a
+    section that shows while the cover is Comprehensive and either a driver is under 25 or
+    the claims count is at least 2 needs all of the cover's condition and a group needing
+    any of the other two.
+  - **Fields.** A Table's column or a Collection's field with a Show when of its own hides
+    by it as a component does, within its component: a Collection's fields after it close
+    up, flowing on through its columns, a spacer going with the fields after it, up to the
+    next spacer, while it has some and all of them hide; a Table leaves the column out of
+    its grid, and a transposed Table the field's line. Its conditions may test its
+    component's other fields, which is what they are for: the earthquake fields of a
+    Collection shown while its earthquake box is ticked. A field that its own value alone
+    shows could never show again once hidden, as a section's own tick box inside it could
+    not.
   - **Decided at once.** What shows is decided for the whole form together: everything
     starts shown and anything whose conditions fail is hidden, which may hide a column another
     condition tests, until nothing more hides. So a sheet that shows when a box on a
     hidden sheet is ticked is hidden too, whatever the box holds, as is a section that
-    shows when a box in a hidden section is ticked, and the order of the sheets, sections
-    and components decides nothing.
+    shows when a box in a hidden section is ticked, and the order of the sheets, sections,
+    components and fields decides nothing.
   - **A quote is what the sheets show.** A value typed into an input column that is on
-    Tables or Collections, none of which shows, is left out of the quote, as if it had never
+    Tables or Collections, none of which shows it, is left out of the quote, as if it had never
     been typed: a row with nothing typed in it but such values is left out as an empty row
     is; the index, which nothing is typed into, is never left out; and a column on no Table
     or Collection is not left out. A Chart takes nothing typed, so the columns it plots
@@ -1074,15 +1208,17 @@ Out of scope:
     column shows. The server leaves them out where it makes a quote of the form's values,
     so the sample priced in Preview, the sample the Workbench Input's copy holds and the
     app's quote leave out the same values.
-  - **While building** a new quote decides, its defaults alone typed: a hidden sheet's tab, a hidden section and a
-    hidden component are drawn faded, still shown, selected and edited like any other, the
-    sheet's sections keeping their places, and a sheet, a section or a component with
-    conditions carries an eye (a section's in its bar), struck through while it is
-    hidden, that names its conditions on hover.
+  - **While building** a new quote decides, its defaults alone typed: a hidden sheet's tab, a hidden section, a
+    hidden component and a hidden field are drawn faded, still shown, selected and edited
+    like any other, the sheet's sections and a component's fields keeping their places, and
+    a sheet, a section, a component or a field with conditions carries an eye (a section's
+    in its bar, a field's after its label, or a column's in its header), struck through
+    while it is hidden, that names its conditions on hover.
   - **In Preview** the values decide as they are typed, the sample or the app's quote: a hidden sheet has no tab; a hidden
-    section is not drawn and the sections under it move up to close the space it took; and
+    section is not drawn and the sections under it move up to close the space it took;
     a hidden component is not drawn, its place in its section left empty, since the
-    components are placed freely in it. While the sheet chosen is hidden, the first sheet
+    components are placed freely in it; and a hidden field is not drawn, its component
+    closing up around it (Fields, above). While the sheet chosen is hidden, the first sheet
     that shows is shown in its place, and while none shows the view says "No sheet shows
     for this quote." Fitting takes the components that show. While a pointer's primary
     button is pressed on the sheet, what shows and where, the sheet showing included, stays
@@ -1095,12 +1231,15 @@ Out of scope:
     place stays where it was; nothing scrolls when that section itself closes.
   - **Problems.** The view names, on the dashed frame of a component, on a section's bar
     and in the warning colour on a sheet's tab, on hover and to a screen reader, what stops
-    a sheet's, a section's or a component's conditions doing what they say: a condition
+    a sheet's, a section's, a component's or a field's conditions doing what they say, a
+    field's on its component's frame naming the field: a condition
     that cannot hold as written, saying why; a value that is not one of its column's
-    allowed values; and a sheet, section or component that nothing could show again once
-    hidden, since each column its conditions need is on no Table or Collection, or only on
-    itself, on its own components or on components that cannot show without it, as a tick
-    box in the very section it shows is. None is refused: the form is saved as it is.
+    allowed values; a `show_when` or a group asking for at least more conditions than it
+    holds; and a sheet, section, component or field that nothing could show again once
+    hidden, since each column its conditions need (for a count without tests, each of its
+    table's columns but the index) is on no Table or Collection, or only on
+    itself, on its own components or on components or fields that cannot show without it,
+    as a tick box in the very section it shows is. None is refused: the form is saved as it is.
 - **Saved.** A successful save of the form adopts the file's new revision; the project
   save then fetches the tables afresh, so the Workbench Input's and Workbench Output's
   copies follow the schema, as after any fetch, and saves the pipeline with them. A save refused
@@ -1501,6 +1640,30 @@ Out of scope:
   whatever the order of the sheets and components, a chain of conditions (a sheet shown by
   a box on a sheet shown by another box) is followed without being written twice, and no
   value the underwriter cannot see decides what they see.
+- **One level of groups, all or any.** A group in the Show when says each mix of all and
+  any a sheet asks for, a cover and either of two extras or either of two covers each
+  with its own, since a test's opposite stands in for a "not"; a deeper tree would say
+  nothing more and be harder to read and to lay out in the panel. Neither takes "none of
+  these": a condition fails once its column hides, so "none" could come to hold as hiding
+  went on and show something again, and hiding has to only ever hide more.
+- **At least, never at most.** "At least 2 of these" says two or three of three boxes
+  without writing out every pair as a group of its own. Neither takes "at most" or
+  "exactly", for the reason neither takes "none": hiding a column makes fewer conditions
+  hold, so "at most 1" could come to hold as hiding went on.
+- **A list's rows are its typed rows.** A condition on a many-row table counts each row
+  with anything typed in it, whatever the sheets hide, because counting only what shows
+  would let hiding a column drop a row, so that every row left passes or the count falls
+  under a limit, and show something again. Only a row typed into a Table that hides, while
+  its table is on another that shows, counts without showing, which a table's rows,
+  inserted and deleted in every table a grid shows at once, rarely come to. Every row
+  needs at least one row, as nothing typed decides nothing: a list nobody has filled
+  shows no section waiting on all of it.
+- **A row's tests together.** A condition on a list's rows takes every test a row must pass
+  at once, since two conditions in any row can be met by two different rows: the EQ peril
+  is included only when one row holds both the peril and its cover ticked. Counting and
+  totalling the rows that pass says the rest, at least two perils included or the
+  jobsites' costs above a figure, where the number of a table's rows alone says nothing of
+  a table that gives a row for each value, as every one of those is typed.
 - **A Chart takes nothing.** A quote holds what can be typed into the sheets that show, so
   a column counts for Shown when only on the components it is typed into. Were a Chart's
   columns to count, a Chart that plots a section's values would keep them in the quote
@@ -1546,6 +1709,18 @@ Out of scope:
   never shrinks of its own accord. While building, every section keeps its place under its
   bar, faded while hidden, so it can be edited; Preview stacks those that show, with no
   bars.
+- **Fields close up within their component.** A field that applies only while a box is
+  ticked, such as the four earthquake fields of a building's rating under its earthquake
+  box, would otherwise need a section of its own for each such box, a dozen for one table.
+  A Collection already flows its fields through its columns and a Table lays its columns
+  side by side, so a field that hides is one fewer in that flow, and closing it up moves
+  only the fields after it within the same component, in their order: nothing outside the
+  component moves, and nothing overlaps. The component keeps its size, so a section's
+  layout stays as the builder made it. A field's conditions are written as a component's
+  are and decided in the same rounds, so a field hiding only ever hides more, and a value
+  only hidden fields take is left out of the quote as one only hidden components take is.
+  The conditions that apply are a whole column's: a Table's cell does not hide row by row
+  by its own row's values.
 - **Nothing moves under the underwriter.** A section that opens or closes moves what is
   under it while the underwriter works. A text cell commits as it is left, and pressing a
   tick box or a button leaves it, so the commit could move the press's target between
@@ -1572,7 +1747,8 @@ Out of scope:
   showing a table of the other kind is, and never holds until it is fixed, rather than
   refusing the form or quietly dropping the condition and showing what it hid. Removing a
   column is the one change that takes its conditions with it, as it takes its fields,
-  after the schema editor has asked.
+  after the schema editor has asked, and a group it empties, which would hold nothing to
+  test, goes too.
 - **The view's state is the view's.** Which sheet shows and which of the view's own
   sections (the sheets, the schema or Preview), the selection (a component, a sheet's
   section or the sheet's own panel), the zoom and the panel's width are neither saved with
@@ -1795,9 +1971,12 @@ Out of scope:
   visible in both views until it is fixed.
 - A condition that cannot hold as written is refused nowhere: the form reads, saves and
   serves its tables with it, the condition never holds, so what it is on stays hidden and
-  the values only hidden components show are left out of the quote, and the view names
-  the problem on the sheet or component while building. A `show_when`, a condition or a
-  test the form's shape does not have (an unknown `op`, a `values` entry that is not text)
+  the values only hidden components or fields show are left out of the quote, and the view
+  names the problem on the sheet or component while building. A `show_when`, a condition or a
+  test the form's shape does not have (an unknown `op`, a `values` entry that is not text,
+  a group with no conditions or with a group among them, a condition in any or every row
+  with no test, a total that is not a sum, least, greatest or average, a count that is not a
+  whole number of 0 or more)
   is a form that does not fit, refused as any other.
 - `GET /api/workbench/tables` answers 404 while the workbench is not enabled; the editor
   never asks then. Tables or response tables the pipeline cannot take, such as a table named

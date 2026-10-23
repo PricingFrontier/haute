@@ -1,5 +1,11 @@
 /** The choices a Table's and a Collection's looks are set from in the panel (specs/workbench). */
-import type { ColumnLookOptions, TableOptions } from "../../utils/workbenchForm"
+import type { CollectionOptions, ColumnLookOptions, TableOptions } from "../../utils/workbenchForm"
+
+/** Where a Collection's labels sit. */
+export const POSITIONS: ReadonlyArray<{ value: CollectionOptions["labels"]; label: string }> = [
+  { value: "above", label: "Above" },
+  { value: "beside", label: "Beside" },
+]
 
 export const DENSITIES: ReadonlyArray<{ value: TableOptions["density"]; label: string }> = [
   { value: "compact", label: "Compact" },

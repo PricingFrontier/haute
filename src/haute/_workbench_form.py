@@ -29,7 +29,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, Strict, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    Field,
+    Strict,
+    Tag,
+    ValidationError,
+    model_validator,
+)
 
 from haute._explore_pivots import PIVOT_DECIMAL_PLACES_MAX
 from haute._file_ops import atomic_write_bytes
@@ -52,30 +61,37 @@ Density = Literal["compact", "comfortable"]
 #: column too, or none.
 TableGridlines = Literal["rows", "all", "none"]
 
-#: How a Table's header shows its labels: as written, or in capitals.
+#: How a Table's header, or a Collection, shows its labels: as written, or in capitals.
 TableHeader = Literal["caps", "plain"]
 
 #: Which way a Table's labels read: level, turned to read upwards or downwards, or their
 #: letters stacked one under another.
 HeaderOrientation = Literal["horizontal", "up", "down", "stacked"]
 
-#: How heavy a Table's lines or its frame are: 1, 2 or 3 pixels.
+#: How heavy a Table's lines, a Collection's boxes' borders or either's frame are: 1, 2 or
+#: 3 pixels.
 LineWeight = Literal["thin", "medium", "thick"]
 
-#: How a Table's gridlines are drawn.
+#: How a Table's gridlines, or a Collection's boxes' borders, are drawn.
 LineStyle = Literal["solid", "dashed", "dotted"]
 
-#: Where a Table column's values and label sit across it: as its type puts them, numbers on
-#: the right, or as chosen.
+#: Where a Table column's, or a Collection field's, values or label sit across it: as its
+#: type puts them, numbers on the right, or as chosen; a label while ``auto`` sits as its
+#: component puts it.
 ColumnAlign = Literal["auto", "left", "center", "right"]
 
-#: The sizes a Table's text is in, in pixels.
+#: The sizes a Table's or a Collection's text is in, in pixels.
 FontSize = Literal[10, 11, 12, 13, 14, 16, 18]
 
-#: How narrow and how wide a Table's column can be set, in pixels, as the view's properties
-#: panel takes them (``frontend/src/utils/workbenchForm.ts``).
+#: How narrow and how wide a Table's column, or a Collection's boxes, can be set, in pixels,
+#: as the view's properties panel takes them (``frontend/src/utils/workbenchForm.ts``).
 COLUMN_WIDTH_MIN = 24
 COLUMN_WIDTH_MAX = 1000
+
+#: How little and how much of its field a Collection's label beside its box can take, in
+#: percent, as the view's properties panel takes them, so the box always keeps some.
+LABEL_WIDTH_MIN = 1
+LABEL_WIDTH_MAX = 99
 
 #: Where a Collection's labels sit: above its boxes, or beside them.
 CollectionLabels = Literal["above", "beside"]
@@ -157,7 +173,7 @@ class FieldRef(_Strict):
 
 
 class Condition(_Strict):
-    """A test of a schema column's value, the column by table and column id.
+    """A test of the value in a one-row table's column, the column by table and column id.
 
     The shape is all the file holds a condition to. Whether its column, test and values
     fit one another is ``haute._workbench_visibility.condition_fits``'s question, asked
@@ -172,34 +188,161 @@ class Condition(_Strict):
     values: list[Annotated[str, Strict()]] = Field(default_factory=list)
 
 
-class ShowWhen(_Strict):
-    """When a sheet, a section or a widget shows: always, without conditions; else while all
-    of them hold, or any, as ``match`` says."""
+class RowTest(_Strict):
+    """A test a row of a many-row table must pass: a ``Condition``'s column, test and values,
+    its table the condition's that holds it."""
 
-    match: Literal["all", "any"] = "all"
-    conditions: list[Condition] = Field(default_factory=list)
+    column: str
+    op: ConditionTest
+    values: list[Annotated[str, Strict()]] = Field(default_factory=list)
+
+
+class RowsCondition(_Strict):
+    """A many-row table's rows, by table id, passing all of its tests in the same row: any
+    of them, or every one, as ``rows`` says."""
+
+    table: str
+    rows: Literal["any", "every"]
+    where: list[RowTest] = Field(min_length=1)
+
+
+#: What a count or a total tests its number for.
+CountTest = Literal["equals", "not_equals", "above", "at_least", "below", "at_most"]
+
+
+class RowCount(_Strict):
+    """How many of a many-row table's rows, by table id, pass all of its tests in the same
+    row: every row while it has none."""
+
+    table: str
+    where: list[RowTest]
+    op: CountTest
+    count: Annotated[int, Strict(), Field(ge=0)]
+
+
+#: Which total of a number column's values a total takes.
+TotalKind = Literal["sum", "min", "max", "average"]
+
+
+class RowTotal(_Strict):
+    """A total of a number column's values in the rows of a many-row table, by table id,
+    passing all of its tests in the same row, every row while it has none, tested against
+    a number typed as text."""
+
+    table: str
+    total: TotalKind
+    column: str
+    where: list[RowTest]
+    op: CountTest
+    value: Annotated[str, Strict()]
+
+
+def _condition_kind(value: Any) -> str:
+    """Which entry of a ``show_when`` *value* is, by its fields: a group holds
+    ``conditions``, a total ``total``, a count ``count``, a condition in any or every row
+    ``rows``; anything else is read as one, which then refuses it."""
+    fields = value if isinstance(value, dict) else getattr(type(value), "model_fields", {})
+    if "conditions" in fields:
+        return "group"
+    if "total" in fields:
+        return "total"
+    if "count" in fields:
+        return "count"
+    return "rows" if "rows" in fields else "one"
+
+
+_ONE_CONDITION = (
+    Annotated[Condition, Tag("one")]
+    | Annotated[RowsCondition, Tag("rows")]
+    | Annotated[RowCount, Tag("count")]
+    | Annotated[RowTotal, Tag("total")]
+)
+
+#: One condition: of a one-row table's column, or of a many-row table's rows.
+SingleCondition = Annotated[_ONE_CONDITION, Discriminator(_condition_kind)]
+
+#: A condition on a many-row table's rows.
+ListCondition = RowsCondition | RowCount | RowTotal
+
+
+#: How many of a ``show_when``'s or a group's conditions must hold: all, any, or at least a
+#: number of them.
+Match = Literal["all", "any"] | Annotated[int, Strict(), Field(ge=1)]
+
+
+class ConditionGroup(_Strict):
+    """Conditions that count as one: holding while all of them hold, any, or at least a
+    number of them, as ``match`` says. A group holds no group."""
+
+    match: Match
+    conditions: list[SingleCondition] = Field(min_length=1)
+
+
+#: An entry of a ``show_when``: one condition or a group of them.
+ShowWhenEntry = Annotated[
+    _ONE_CONDITION | Annotated[ConditionGroup, Tag("group")], Discriminator(_condition_kind)
+]
+
+
+class ShowWhen(_Strict):
+    """When a sheet, a section, a widget or a widget's field shows: always, without
+    conditions; else while all of them hold, any, or at least a number of them, as ``match``
+    says, each a condition or a group of them."""
+
+    match: Match = "all"
+    conditions: list[ShowWhenEntry] = Field(default_factory=list)
 
 
 class ColumnLook(_Strict):
-    """How one of a Table's columns looks, its field by table and column id: each colour the
-    Table's own while None, its values and label placed as its type puts them while ``auto``,
-    and as wide as the grid makes it while ``width`` is None."""
+    """How one of a Table's columns, or one of a Collection's fields, looks and when it shows,
+    its field by table and column id: each colour the component's own while None, its values
+    placed as its type puts them, or as the Collection places its boxes', while ``align`` is
+    ``auto``, its label over a Table's column as its values sit, or as the Collection places
+    its labels, while ``header_align`` is, while ``width`` is None, a Table's column as wide as
+    the grid makes it and a Collection's box as wide as the Collection makes it, and shown
+    with its component while ``show_when`` has no conditions."""
 
     table: str
     column: str
-    #: Its label's fill and text, and its cells' fill and text.
+    #: Its label's fill and text, and its cells', or its box's, fill and text.
     header_color: Colour | None = None
     header_font_color: Colour | None = None
+    header_align: ColumnAlign = "auto"
     cell_color: Colour | None = None
     font_color: Colour | None = None
     bold: bool = False
     align: ColumnAlign = "auto"
     width: int | None = Field(default=None, ge=COLUMN_WIDTH_MIN, le=COLUMN_WIDTH_MAX)
+    show_when: ShowWhen = Field(default_factory=ShowWhen)
 
 
-#: A column look that changes nothing, which no Table holds: a column without a look of its
-#: own has none.
-_PLAIN_LOOK = ColumnLook(table="", column="").model_dump(exclude={"table", "column"})
+#: A column look's fields that are not how it looks: its field and when it shows.
+_NOT_ITS_LOOK = {"table", "column", "show_when"}
+
+#: A column look's look that changes nothing: with a ``show_when`` without conditions, which
+#: always shows whatever its ``match``, a look no Table or Collection holds, as a column
+#: without a look of its own has none.
+_PLAIN_LOOK = ColumnLook(table="", column="").model_dump(exclude=_NOT_ITS_LOOK)
+
+
+def _check_column_looks(widget_id: str, fields: list[FieldRef], looks: list[ColumnLook]) -> None:
+    """Refuse a component's look for a column it does not show, a second look for one column,
+    or a look that changes nothing."""
+    shown = {(field.table, field.column) for field in fields}
+    seen: set[tuple[str, str]] = set()
+    for look in looks:
+        at = (look.table, look.column)
+        name = f"{look.table}.{look.column}"
+        if at not in shown:
+            raise ValueError(f"widget {widget_id} has a look for {name}, which it does not show")
+        if at in seen:
+            raise ValueError(f"widget {widget_id} has two looks for {name}")
+        seen.add(at)
+        if look.model_dump(exclude=_NOT_ITS_LOOK) == _PLAIN_LOOK and not look.show_when.conditions:
+            raise ValueError(
+                f"widget {widget_id}'s look for {name} changes nothing: a column without a "
+                "look of its own has none"
+            )
 
 
 class TableInputWidget(_Placed):
@@ -211,8 +354,8 @@ class TableInputWidget(_Placed):
     fields: list[FieldRef] = Field(default_factory=list)
     show_when: ShowWhen = Field(default_factory=ShowWhen)
     rows: int = Field(default=3, ge=1, le=TABLE_ROWS_MAX)
-    # How the grid looks, whether its rows are a set structure with no Add row and no
-    # delete, whether it is transposed, its fields down its side and its rows across, and
+    # How the grid looks, whether its rows are a set structure, none inserted or
+    # deleted, whether it is transposed, its fields down its side and its rows across, and
     # whether its fields' schema groups head their labels: by default numbered, compact,
     # lined between rows, striped, not fixed, its header as written, framed, not
     # transposed and without groups.
@@ -247,27 +390,14 @@ class TableInputWidget(_Placed):
 
     @model_validator(mode="after")
     def _looks_at_its_columns(self) -> TableInputWidget:
-        shown = {(field.table, field.column) for field in self.fields}
-        seen: set[tuple[str, str]] = set()
-        for look in self.column_looks:
-            at = (look.table, look.column)
-            name = f"{look.table}.{look.column}"
-            if at not in shown:
-                raise ValueError(f"widget {self.id} has a look for {name}, which it does not show")
-            if at in seen:
-                raise ValueError(f"widget {self.id} has two looks for {name}")
-            seen.add(at)
-            if look.model_dump(exclude={"table", "column"}) == _PLAIN_LOOK:
-                raise ValueError(
-                    f"widget {self.id}'s look for {name} changes nothing: a column without a "
-                    "look of its own has none"
-                )
+        _check_column_looks(self.id, self.fields, self.column_looks)
         return self
 
 
 class CollectionWidget(_Placed):
     """A Collection: boxes showing columns of one-row schema tables, ``columns`` across, with
-    a gap across it wherever one of its ``spacers`` sits among them."""
+    a gap across it wherever one of its ``spacers`` sits among them, each of its fields given
+    a look of its own looking as its ``column_looks`` entry says."""
 
     type: Literal["collection"]
     title: str = ""
@@ -278,6 +408,31 @@ class CollectionWidget(_Placed):
     labels: CollectionLabels = "above"
     density: Density = "comfortable"
     frame: bool = True
+    # Its text, its labels, its boxes and its frame, as a Table's are set: by default 12px
+    # text, its labels the same size, or a pixel smaller in capitals, as written, neither
+    # bold nor wrapped, unfilled, coloured as the sheets' theme says, at their fields'
+    # start and, beside their boxes, two fifths of a field wide; its boxes' borders thin and
+    # solid, coloured as the theme says, their values placed as their types put them, and
+    # each box as wide as its label leaves; a thin frame, coloured as the theme says.
+    font_size: FontSize = 12
+    header: TableHeader = "plain"
+    header_font_size: FontSize | None = None
+    header_bold: bool = False
+    header_wrap: bool = False
+    header_color: Colour | None = None
+    header_font_color: Colour | None = None
+    header_align: ColumnAlign = "auto"
+    label_width: int | None = Field(default=None, ge=LABEL_WIDTH_MIN, le=LABEL_WIDTH_MAX)
+    box_style: LineStyle = "solid"
+    box_weight: LineWeight = "thin"
+    box_color: Colour | None = None
+    box_align: ColumnAlign = "auto"
+    box_width: int | None = Field(default=None, ge=COLUMN_WIDTH_MIN, le=COLUMN_WIDTH_MAX)
+    frame_color: Colour | None = None
+    frame_weight: LineWeight = "thin"
+    #: The looks of the fields given one of their own, each a column it shows, in no set
+    #: order.
+    column_looks: list[ColumnLook] = Field(default_factory=list)
     #: Each spacer the number of its fields before it, in order, two at one place a wider
     #: gap; the fields after one start a new row.
     spacers: list[Annotated[int, Field(ge=0)]] = Field(default_factory=list)
@@ -294,6 +449,11 @@ class CollectionWidget(_Placed):
                 f"widget {self.id} has a spacer after {self.spacers[-1]} fields, but shows "
                 f"{len(self.fields)}"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _looks_at_its_columns(self) -> CollectionWidget:
+        _check_column_looks(self.id, self.fields, self.column_looks)
         return self
 
 

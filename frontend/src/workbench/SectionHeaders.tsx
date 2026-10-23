@@ -4,14 +4,11 @@ import type { Page, Section } from "../api/types"
 import { altArrowMove, type RefocusAfterMove } from "../hooks/useRefocusAfterMove"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
-import { SECTION_HEADER, type Stacked } from "../utils/sheetGeometry"
+import { EDGE_HANDLE, SECTION_HEADER, type Stacked } from "../utils/sheetGeometry"
 import { fitSection, moveSection } from "../utils/workbenchForm"
 import { deleteSection, startSectionMove, startSectionResize } from "./sheetInteractions"
 import { ShowWhenMark } from "./ShowWhenEditor"
 import { SECTION_KIND } from "./widgetKinds"
-
-/** The selected section's handle under its middle, which sets its height. */
-const HANDLE = { w: 40, h: 8 }
 
 /**
  * A section's bar while building (specs/workbench), drawn first in its section, so Tab and
@@ -126,10 +123,10 @@ export function SectionBar({
           className="absolute cursor-row-resize rounded-sm"
           // Under the middle of the section's bottom, over its components.
           style={{
-            left: `calc(50% - ${HANDLE.w / 2}px)`,
-            top: section.height - HANDLE.h / 2,
-            width: HANDLE.w,
-            height: HANDLE.h,
+            left: `calc(50% - ${EDGE_HANDLE.w / 2}px)`,
+            top: section.height - EDGE_HANDLE.h / 2,
+            width: EDGE_HANDLE.w,
+            height: EDGE_HANDLE.h,
             zIndex: layer,
             border: `${line}px solid var(--accent)`,
             background: "var(--bg-base)",

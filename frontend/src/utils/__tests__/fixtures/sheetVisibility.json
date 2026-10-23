@@ -1,5 +1,5 @@
 {
-  "description": "The cases the workbench's visibility rules are held to, on the server (src/haute/_workbench_visibility.py, tests/test_workbench_visibility.py) and in the view (frontend/src/utils/sheetVisibility.ts, sheetVisibility.test.ts) alike (specs/workbench). Each case names a form, replaces the show_when of the sheets, sections and components it lists, and says, for the values typed (rows by table id, cells by column id), which sheets, sections, components and input columns are hidden; a section on a hidden sheet is hidden too, as is a component in a hidden section.",
+  "description": "The cases the workbench's visibility rules are held to, on the server (src/haute/_workbench_visibility.py, tests/test_workbench_visibility.py) and in the view (frontend/src/utils/sheetVisibility.ts, sheetVisibility.test.ts) alike (specs/workbench). Each case names a form, replaces the show_when of the sheets, sections and components it lists, and of the fields field_show_when lists (each a component, a table and a column, its look given that show_when), and says, for the values typed (rows by table id, cells by column id), which sheets, sections, components and input columns are hidden, and which fields hide in components that show (none where hidden_fields is left out); a section on a hidden sheet is hidden too, as is a component in a hidden section and a field of a hidden component.",
   "forms": {
     "quote": {
       "version": 1,
@@ -354,6 +354,23 @@
                   "labels": "above",
                   "density": "comfortable",
                   "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
                   "spacers": []
                 },
                 {
@@ -370,6 +387,23 @@
                   "labels": "above",
                   "density": "comfortable",
                   "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
                   "spacers": []
                 },
                 {
@@ -435,6 +469,23 @@
                   "labels": "above",
                   "density": "comfortable",
                   "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
                   "spacers": []
                 }
               ]
@@ -470,6 +521,23 @@
                   "labels": "above",
                   "density": "comfortable",
                   "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
                   "spacers": []
                 }
               ]
@@ -546,6 +614,23 @@
                   "labels": "above",
                   "density": "comfortable",
                   "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
                   "spacers": []
                 }
               ]
@@ -839,6 +924,23 @@
                   "labels": "above",
                   "density": "comfortable",
                   "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
                   "spacers": []
                 },
                 {
@@ -889,6 +991,23 @@
                   "labels": "above",
                   "density": "comfortable",
                   "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
                   "spacers": []
                 }
               ]
@@ -921,6 +1040,23 @@
                   "labels": "above",
                   "density": "comfortable",
                   "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
                   "spacers": []
                 }
               ]
@@ -1204,6 +1340,23 @@
                   "labels": "above",
                   "density": "comfortable",
                   "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
                   "spacers": []
                 },
                 {
@@ -1220,6 +1373,23 @@
                   "labels": "above",
                   "density": "comfortable",
                   "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
                   "spacers": []
                 }
               ]
@@ -1265,6 +1435,23 @@
                   "labels": "above",
                   "density": "comfortable",
                   "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
                   "spacers": []
                 },
                 {
@@ -1291,6 +1478,23 @@
                   "labels": "above",
                   "density": "comfortable",
                   "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
                   "spacers": []
                 }
               ]
@@ -1323,6 +1527,23 @@
                   "labels": "above",
                   "density": "comfortable",
                   "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
                   "spacers": []
                 }
               ]
@@ -1352,6 +1573,23 @@
                   "labels": "above",
                   "density": "comfortable",
                   "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
                   "spacers": []
                 }
               ]
@@ -1389,6 +1627,1008 @@
                   "labels": "above",
                   "density": "comfortable",
                   "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
+                  "spacers": []
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "sample": {}
+    },
+    "lists": {
+      "version": 1,
+      "name": "lists",
+      "theme": {
+        "sheet_color": null,
+        "background_color": null,
+        "border_color": null,
+        "font_color": null,
+        "input_cell_color": null,
+        "output_cell_color": null
+      },
+      "schema": {
+        "tables": [
+          {
+            "id": "t_policy",
+            "name": "policy",
+            "role": "input",
+            "rows": "one",
+            "columns": [
+              {
+                "id": "c_cover",
+                "name": "cover",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": ["Comprehensive", "Third party"],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_claims",
+                "name": "claims",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_extras",
+                "name": "extras",
+                "type": "bool",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          },
+          {
+            "id": "t_drivers",
+            "name": "drivers",
+            "role": "input",
+            "rows": "many",
+            "columns": [
+              {
+                "id": "c_row",
+                "name": "row",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": true,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_name",
+                "name": "name",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_age",
+                "name": "age",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_occupation",
+                "name": "occupation",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          },
+          {
+            "id": "t_perils",
+            "name": "perils",
+            "role": "input",
+            "rows": "many",
+            "columns": [
+              {
+                "id": "c_peril",
+                "name": "peril",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": ["Fire", "Flood"],
+                "options_source": null,
+                "row_per_value": true,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_limit",
+                "name": "limit",
+                "type": "float",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          },
+          {
+            "id": "t_claims",
+            "name": "claims",
+            "role": "input",
+            "rows": "many",
+            "columns": [
+              {
+                "id": "c_amount",
+                "name": "amount",
+                "type": "float",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          },
+          {
+            "id": "t_quotes",
+            "name": "quotes",
+            "role": "output",
+            "rows": "many",
+            "columns": [
+              {
+                "id": "c_price",
+                "name": "price",
+                "type": "float",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          },
+          {
+            "id": "t_target",
+            "name": "target",
+            "role": "input",
+            "rows": "one",
+            "columns": [
+              {
+                "id": "c_x",
+                "name": "x",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          }
+        ]
+      },
+      "pages": [
+        {
+          "id": "p_main",
+          "title": "Main",
+          "width": 1280,
+          "show_when": {"match": "all", "conditions": []},
+          "sections": [
+            {
+              "id": "s_main",
+              "title": "Section 1",
+              "height": 520,
+              "show_when": {"match": "all", "conditions": []},
+              "widgets": [
+                {
+                  "id": "w_policy",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 120,
+                  "type": "collection",
+                  "title": "",
+                  "fields": [
+                    {"table": "t_policy", "column": "c_cover"},
+                    {"table": "t_policy", "column": "c_claims"},
+                    {"table": "t_policy", "column": "c_extras"}
+                  ],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
+                  "spacers": []
+                },
+                {
+                  "id": "w_drivers",
+                  "x": 0,
+                  "y": 120,
+                  "w": 720,
+                  "h": 160,
+                  "type": "tableInput",
+                  "title": "",
+                  "fields": [
+                    {"table": "t_drivers", "column": "c_row"},
+                    {"table": "t_drivers", "column": "c_name"},
+                    {"table": "t_drivers", "column": "c_age"}
+                  ],
+                  "show_when": {"match": "all", "conditions": []},
+                  "rows": 3,
+                  "row_numbers": true,
+                  "density": "compact",
+                  "gridlines": "rows",
+                  "striped": true,
+                  "fixed_rows": false,
+                  "header": "plain",
+                  "frame": true,
+                  "transposed": false,
+                  "groups": false,
+                  "font_size": 12,
+                  "header_font_size": null,
+                  "header_bold": true,
+                  "header_wrap": false,
+                  "header_orientation": "horizontal",
+                  "header_color": null,
+                  "header_font_color": null,
+                  "grid_color": null,
+                  "grid_weight": "thin",
+                  "grid_style": "solid",
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": []
+                },
+                {
+                  "id": "w_perils",
+                  "x": 0,
+                  "y": 280,
+                  "w": 720,
+                  "h": 160,
+                  "type": "tableInput",
+                  "title": "",
+                  "fields": [{"table": "t_perils", "column": "c_peril"}, {"table": "t_perils", "column": "c_limit"}],
+                  "show_when": {"match": "all", "conditions": []},
+                  "rows": 3,
+                  "row_numbers": true,
+                  "density": "compact",
+                  "gridlines": "rows",
+                  "striped": true,
+                  "fixed_rows": false,
+                  "header": "plain",
+                  "frame": true,
+                  "transposed": false,
+                  "groups": false,
+                  "font_size": 12,
+                  "header_font_size": null,
+                  "header_bold": true,
+                  "header_wrap": false,
+                  "header_orientation": "horizontal",
+                  "header_color": null,
+                  "header_font_color": null,
+                  "grid_color": null,
+                  "grid_weight": "thin",
+                  "grid_style": "solid",
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": []
+                }
+              ]
+            },
+            {
+              "id": "s_extra",
+              "title": "Extras",
+              "height": 320,
+              "show_when": {
+                "match": "all",
+                "conditions": [{"table": "t_policy", "column": "c_extras", "op": "ticked", "values": []}]
+              },
+              "widgets": [
+                {
+                  "id": "w_occupations",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 160,
+                  "type": "tableInput",
+                  "title": "",
+                  "fields": [{"table": "t_drivers", "column": "c_occupation"}],
+                  "show_when": {"match": "all", "conditions": []},
+                  "rows": 3,
+                  "row_numbers": true,
+                  "density": "compact",
+                  "gridlines": "rows",
+                  "striped": true,
+                  "fixed_rows": false,
+                  "header": "plain",
+                  "frame": true,
+                  "transposed": false,
+                  "groups": false,
+                  "font_size": 12,
+                  "header_font_size": null,
+                  "header_bold": true,
+                  "header_wrap": false,
+                  "header_orientation": "horizontal",
+                  "header_color": null,
+                  "header_font_color": null,
+                  "grid_color": null,
+                  "grid_weight": "thin",
+                  "grid_style": "solid",
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": []
+                },
+                {
+                  "id": "w_claims",
+                  "x": 0,
+                  "y": 160,
+                  "w": 720,
+                  "h": 160,
+                  "type": "tableInput",
+                  "title": "",
+                  "fields": [{"table": "t_claims", "column": "c_amount"}],
+                  "show_when": {"match": "all", "conditions": []},
+                  "rows": 3,
+                  "row_numbers": true,
+                  "density": "compact",
+                  "gridlines": "rows",
+                  "striped": true,
+                  "fixed_rows": false,
+                  "header": "plain",
+                  "frame": true,
+                  "transposed": false,
+                  "groups": false,
+                  "font_size": 12,
+                  "header_font_size": null,
+                  "header_bold": true,
+                  "header_wrap": false,
+                  "header_orientation": "horizontal",
+                  "header_color": null,
+                  "header_font_color": null,
+                  "grid_color": null,
+                  "grid_weight": "thin",
+                  "grid_style": "solid",
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "p_target",
+          "title": "Target",
+          "width": 1280,
+          "show_when": {"match": "all", "conditions": []},
+          "sections": [
+            {
+              "id": "s_target",
+              "title": "Section 1",
+              "height": 160,
+              "show_when": {"match": "all", "conditions": []},
+              "widgets": [
+                {
+                  "id": "w_target",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 120,
+                  "type": "collection",
+                  "title": "",
+                  "fields": [{"table": "t_target", "column": "c_x"}],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
+                  "spacers": []
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "sample": {}
+    },
+    "fields": {
+      "version": 1,
+      "name": "fields",
+      "theme": {
+        "sheet_color": null,
+        "background_color": null,
+        "border_color": null,
+        "font_color": null,
+        "input_cell_color": null,
+        "output_cell_color": null
+      },
+      "schema": {
+        "tables": [
+          {
+            "id": "t_rating",
+            "name": "rating",
+            "role": "input",
+            "rows": "one",
+            "columns": [
+              {
+                "id": "c_eq",
+                "name": "eq_included",
+                "type": "bool",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_eq_limit",
+                "name": "eq_limit",
+                "type": "float",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_eq_ded",
+                "name": "eq_deductible",
+                "type": "float",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_flood",
+                "name": "flood_included",
+                "type": "bool",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_flood_limit",
+                "name": "flood_limit",
+                "type": "float",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_combined",
+                "name": "cat_limit_combined",
+                "type": "bool",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_note",
+                "name": "note",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          },
+          {
+            "id": "t_perils",
+            "name": "perils",
+            "role": "input",
+            "rows": "many",
+            "columns": [
+              {
+                "id": "c_peril",
+                "name": "peril",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_limit",
+                "name": "limit",
+                "type": "float",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_ded",
+                "name": "deductible",
+                "type": "float",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          }
+        ]
+      },
+      "pages": [
+        {
+          "id": "p_main",
+          "title": "Main",
+          "width": 1280,
+          "show_when": {"match": "all", "conditions": []},
+          "sections": [
+            {
+              "id": "s_main",
+              "title": "Section 1",
+              "height": 400,
+              "show_when": {"match": "all", "conditions": []},
+              "widgets": [
+                {
+                  "id": "w_rating",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 120,
+                  "type": "collection",
+                  "title": "",
+                  "fields": [
+                    {"table": "t_rating", "column": "c_eq"},
+                    {"table": "t_rating", "column": "c_eq_limit"},
+                    {"table": "t_rating", "column": "c_eq_ded"},
+                    {"table": "t_rating", "column": "c_flood"},
+                    {"table": "t_rating", "column": "c_flood_limit"},
+                    {"table": "t_rating", "column": "c_combined"}
+                  ],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
+                  "spacers": []
+                },
+                {
+                  "id": "w_perils",
+                  "x": 0,
+                  "y": 140,
+                  "w": 720,
+                  "h": 200,
+                  "type": "tableInput",
+                  "title": "",
+                  "fields": [
+                    {"table": "t_perils", "column": "c_peril"},
+                    {"table": "t_perils", "column": "c_limit"},
+                    {"table": "t_perils", "column": "c_ded"}
+                  ],
+                  "show_when": {"match": "all", "conditions": []},
+                  "rows": 3,
+                  "row_numbers": true,
+                  "density": "compact",
+                  "gridlines": "rows",
+                  "striped": true,
+                  "fixed_rows": false,
+                  "header": "plain",
+                  "frame": true,
+                  "transposed": false,
+                  "groups": false,
+                  "font_size": 12,
+                  "header_font_size": null,
+                  "header_bold": true,
+                  "header_wrap": false,
+                  "header_orientation": "horizontal",
+                  "header_color": null,
+                  "header_font_color": null,
+                  "grid_color": null,
+                  "grid_weight": "thin",
+                  "grid_style": "solid",
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": []
+                },
+                {
+                  "id": "w_summary",
+                  "x": 740,
+                  "y": 0,
+                  "w": 520,
+                  "h": 120,
+                  "type": "collection",
+                  "title": "",
+                  "fields": [{"table": "t_rating", "column": "c_flood_limit"}],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
+                  "spacers": []
+                }
+              ]
+            },
+            {
+              "id": "s_eq",
+              "title": "Section 2",
+              "height": 160,
+              "show_when": {"match": "all", "conditions": []},
+              "widgets": [
+                {
+                  "id": "w_note",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 120,
+                  "type": "collection",
+                  "title": "",
+                  "fields": [{"table": "t_rating", "column": "c_note"}],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
                   "spacers": []
                 }
               ]
@@ -2338,7 +3578,7 @@
       "hidden_columns": [["t_target", "c_x"]]
     },
     {
-      "name": "a many-row table's column never holds",
+      "name": "a condition on one row on a many-row table's column never holds",
       "form": "tests",
       "show_when": {
         "p_target": {"match": "all", "conditions": [{"table": "t_many", "column": "c_v", "op": "filled", "values": []}]}
@@ -2903,6 +4143,1643 @@
         ["t_policy", "c_note"],
         ["t_policy", "c_rate"]
       ]
+    },
+    {
+      "name": "a group under all holds while one of its own holds under any",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Comprehensive"]},
+            {
+              "match": "any",
+              "conditions": [
+                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"]},
+                {"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "below", "values": ["25"]}]}
+              ]
+            }
+          ]
+        }
+      },
+      "values": {
+        "t_policy": [{"c_cover": "Comprehensive", "c_claims": "0"}],
+        "t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "22"}]
+      },
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "a group under all holding does not show what the condition beside it hides",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Third party"]},
+            {
+              "match": "any",
+              "conditions": [
+                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"]},
+                {"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "below", "values": ["25"]}]}
+              ]
+            }
+          ]
+        }
+      },
+      "values": {
+        "t_policy": [{"c_cover": "Comprehensive", "c_claims": "0"}],
+        "t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "22"}]
+      },
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a group under all fails while none of its own holds under any",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Comprehensive"]},
+            {
+              "match": "any",
+              "conditions": [
+                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"]},
+                {"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "below", "values": ["25"]}]}
+              ]
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_cover": "Comprehensive", "c_claims": "0"}], "t_drivers": [{"c_age": "30"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a group under any holds while all of its own hold",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "any",
+          "conditions": [
+            {"table": "t_policy", "column": "c_extras", "op": "ticked", "values": []},
+            {
+              "match": "all",
+              "conditions": [
+                {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Comprehensive"]},
+                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"]}
+              ]
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_cover": "Comprehensive", "c_claims": "3"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "a group under any fails while one of its own fails",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "any",
+          "conditions": [
+            {"table": "t_policy", "column": "c_extras", "op": "ticked", "values": []},
+            {
+              "match": "all",
+              "conditions": [
+                {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Comprehensive"]},
+                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"]}
+              ]
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_cover": "Comprehensive", "c_claims": "1"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a group holding a condition that never holds still holds under any by its other",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "match": "any",
+              "conditions": [
+                {"table": "t_policy", "column": "c_gone", "op": "filled", "values": []},
+                {"table": "t_policy", "column": "c_cover", "op": "filled", "values": []}
+              ]
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_cover": "Comprehensive", "c_claims": "0"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "a group holding a condition that never holds fails under all",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "match": "all",
+              "conditions": [
+                {"table": "t_policy", "column": "c_gone", "op": "filled", "values": []},
+                {"table": "t_policy", "column": "c_cover", "op": "filled", "values": []}
+              ]
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_cover": "Comprehensive", "c_claims": "0"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "any row passes while one typed row passes",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "below", "values": ["25"]}]}]
+        }
+      },
+      "values": {"t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "22"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "any row fails while no typed row passes",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "below", "values": ["25"]}]}]
+        }
+      },
+      "values": {"t_drivers": [{"c_age": "30"}, {"c_age": "41"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "any row fails over no rows, empty included",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "empty", "values": []}]}]
+        }
+      },
+      "values": {"t_drivers": [{}, {"c_row": "2"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "any row empty passes a typed row with nothing in its column",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "empty", "values": []}]}]
+        }
+      },
+      "values": {"t_drivers": [{"c_age": "30"}, {"c_name": "Bo"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "every row passes while each typed row passes, a row with only the index typed no row",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_drivers", "rows": "every", "where": [{"column": "c_age", "op": "at_least", "values": ["25"]}]}]
+        }
+      },
+      "values": {"t_drivers": [{"c_age": "30"}, {}, {"c_age": "41"}, {"c_row": "4"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "every row fails while one typed row fails",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_drivers", "rows": "every", "where": [{"column": "c_age", "op": "at_least", "values": ["25"]}]}]
+        }
+      },
+      "values": {"t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "22"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "every row fails over no rows",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_drivers", "rows": "every", "where": [{"column": "c_age", "op": "empty", "values": []}]}]
+        }
+      },
+      "values": {},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "every row fails a value not of its column's type",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_drivers", "rows": "every", "where": [{"column": "c_age", "op": "at_least", "values": ["25"]}]}]
+        }
+      },
+      "values": {"t_drivers": [{"c_age": "30"}, {"c_age": "old"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "every row fails a typed row with nothing in its column",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_drivers", "rows": "every", "where": [{"column": "c_age", "op": "filled", "values": []}]}]
+        }
+      },
+      "values": {"t_drivers": [{"c_age": "30"}, {"c_name": "Bo"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a condition in any row on a column only on a hidden Table never holds",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_occupation", "op": "filled", "values": []}]}]
+        }
+      },
+      "values": {"t_drivers": [{"c_occupation": "Nurse"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a condition in any row on a column on a Table that shows holds",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_occupation", "op": "filled", "values": []}]}]
+        }
+      },
+      "values": {"t_policy": [{"c_extras": true}], "t_drivers": [{"c_occupation": "Nurse"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a count equals its number of typed rows",
+      "form": "lists",
+      "show_when": {"p_target": {"match": "all", "conditions": [{"table": "t_drivers", "where": [], "op": "equals", "count": 2}]}},
+      "values": {"t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "22"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "a count not_equals fails its number of typed rows",
+      "form": "lists",
+      "show_when": {"p_target": {"match": "all", "conditions": [{"table": "t_drivers", "where": [], "op": "not_equals", "count": 2}]}},
+      "values": {"t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "22"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a count above fails an equal number",
+      "form": "lists",
+      "show_when": {"p_target": {"match": "all", "conditions": [{"table": "t_drivers", "where": [], "op": "above", "count": 2}]}},
+      "values": {"t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "22"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a count at_least passes an equal number",
+      "form": "lists",
+      "show_when": {"p_target": {"match": "all", "conditions": [{"table": "t_drivers", "where": [], "op": "at_least", "count": 2}]}},
+      "values": {"t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "22"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "a count below passes a smaller number",
+      "form": "lists",
+      "show_when": {"p_target": {"match": "all", "conditions": [{"table": "t_drivers", "where": [], "op": "below", "count": 3}]}},
+      "values": {"t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "22"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "a count at_most fails a greater number",
+      "form": "lists",
+      "show_when": {"p_target": {"match": "all", "conditions": [{"table": "t_drivers", "where": [], "op": "at_most", "count": 1}]}},
+      "values": {"t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "22"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a count of no rows is 0, an empty row and the index alone no row",
+      "form": "lists",
+      "show_when": {"p_target": {"match": "all", "conditions": [{"table": "t_drivers", "where": [], "op": "equals", "count": 0}]}},
+      "values": {"t_drivers": [{}, {"c_row": "2"}, {"c_name": " "}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "a count counts a row typed only where the sheets hide it",
+      "form": "lists",
+      "show_when": {"p_target": {"match": "all", "conditions": [{"table": "t_drivers", "where": [], "op": "at_least", "count": 2}]}},
+      "values": {"t_drivers": [{"c_name": "Ann"}, {"c_occupation": "Nurse"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "a count of a table only on a hidden Table never holds",
+      "form": "lists",
+      "show_when": {"p_target": {"match": "all", "conditions": [{"table": "t_claims", "where": [], "op": "at_least", "count": 0}]}},
+      "values": {},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a count of a table on a Table that shows holds",
+      "form": "lists",
+      "show_when": {"p_target": {"match": "all", "conditions": [{"table": "t_claims", "where": [], "op": "at_least", "count": 0}]}},
+      "values": {"t_policy": [{"c_extras": true}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "rows a column gives one for each value are each a row",
+      "form": "lists",
+      "show_when": {"p_target": {"match": "all", "conditions": [{"table": "t_perils", "where": [], "op": "equals", "count": 2}]}},
+      "values": {},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "a row a column gives is tested in its place",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_perils", "rows": "any", "where": [{"column": "c_limit", "op": "above", "values": ["1000000"]}]}]
+        }
+      },
+      "values": {"t_perils": [{"c_peril": "Flood", "c_limit": "2000000"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "a condition in any row on a one-row table's column never holds",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_policy", "rows": "any", "where": [{"column": "c_cover", "op": "filled", "values": []}]}]
+        }
+      },
+      "values": {"t_policy": [{"c_cover": "Comprehensive", "c_claims": "0"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a condition in any row on a column gone never holds",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_gone", "op": "empty", "values": []}]}]
+        }
+      },
+      "values": {"t_drivers": [{"c_name": "Ann"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a condition in any row that does not fit its column never holds",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "above", "values": ["young"]}]}]
+        }
+      },
+      "values": {"t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "22"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a count of a one-row table never holds",
+      "form": "lists",
+      "show_when": {"p_target": {"match": "all", "conditions": [{"table": "t_policy", "where": [], "op": "at_least", "count": 0}]}},
+      "values": {"t_policy": [{"c_cover": "Comprehensive", "c_claims": "0"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a count of an output table never holds",
+      "form": "lists",
+      "show_when": {"p_target": {"match": "all", "conditions": [{"table": "t_quotes", "where": [], "op": "at_least", "count": 0}]}},
+      "values": {},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a count of a table gone never holds",
+      "form": "lists",
+      "show_when": {"p_target": {"match": "all", "conditions": [{"table": "t_gone", "where": [], "op": "at_least", "count": 0}]}},
+      "values": {},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "at least 2 of three holds while two of them hold",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": 2,
+          "conditions": [
+            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": []},
+            {"table": "t_in", "column": "c_text", "op": "equals", "values": ["a"]},
+            {"table": "t_in", "column": "c_int", "op": "above", "values": ["5"]}
+          ]
+        }
+      },
+      "values": {"t_in": [{"c_tick": true, "c_text": "a", "c_int": "1"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "at least 2 of three holds while all three hold",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": 2,
+          "conditions": [
+            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": []},
+            {"table": "t_in", "column": "c_text", "op": "equals", "values": ["a"]},
+            {"table": "t_in", "column": "c_int", "op": "above", "values": ["5"]}
+          ]
+        }
+      },
+      "values": {"t_in": [{"c_tick": true, "c_text": "a", "c_int": "9"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "at least 2 of three fails while one of them holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": 2,
+          "conditions": [
+            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": []},
+            {"table": "t_in", "column": "c_text", "op": "equals", "values": ["a"]},
+            {"table": "t_in", "column": "c_int", "op": "above", "values": ["5"]}
+          ]
+        }
+      },
+      "values": {"t_in": [{"c_tick": true, "c_text": "b", "c_int": "1"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "at least 1 holds as any does",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": 1,
+          "conditions": [
+            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": []},
+            {"table": "t_in", "column": "c_text", "op": "equals", "values": ["a"]},
+            {"table": "t_in", "column": "c_int", "op": "above", "values": ["5"]}
+          ]
+        }
+      },
+      "values": {"t_in": [{"c_tick": false, "c_text": "b", "c_int": "9"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "at least asking for more conditions than it holds never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": 3,
+          "conditions": [
+            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": []},
+            {"table": "t_in", "column": "c_text", "op": "equals", "values": ["a"]}
+          ]
+        }
+      },
+      "values": {"t_in": [{"c_tick": true, "c_text": "a"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "at least with no conditions always shows",
+      "form": "tests",
+      "show_when": {"p_target": {"match": 2, "conditions": []}},
+      "values": {"t_in": [{}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "at least counts a condition on a column that hides as failing",
+      "form": "sections",
+      "show_when": {
+        "p_other": {
+          "match": 2,
+          "conditions": [
+            {"table": "t_policy", "column": "c_cover", "op": "ticked", "values": []},
+            {"table": "t_policy", "column": "c_flood", "op": "ticked", "values": []},
+            {"table": "t_flood", "column": "c_barrier", "op": "ticked", "values": []}
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_cover": true}], "t_flood": [{"c_barrier": true}]},
+      "hidden_pages": ["p_other"],
+      "hidden_sections": ["s_barrier", "s_flood", "s_note", "s_other"],
+      "hidden_widgets": ["w_barrier", "w_flood", "w_flood_extra", "w_flood_heading", "w_note", "w_other"],
+      "hidden_columns": [
+        ["t_flood", "c_barrier"],
+        ["t_flood", "c_depth"],
+        ["t_policy", "c_area"],
+        ["t_policy", "c_note"],
+        ["t_policy", "c_rate"]
+      ]
+    },
+    {
+      "name": "at least counts a condition on a column that shows",
+      "form": "sections",
+      "show_when": {
+        "p_other": {
+          "match": 2,
+          "conditions": [
+            {"table": "t_policy", "column": "c_cover", "op": "ticked", "values": []},
+            {"table": "t_policy", "column": "c_flood", "op": "ticked", "values": []},
+            {"table": "t_flood", "column": "c_barrier", "op": "ticked", "values": []}
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_flood": true}], "t_flood": [{"c_barrier": true}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_note"],
+      "hidden_widgets": ["w_flood_extra", "w_note"],
+      "hidden_columns": [["t_policy", "c_note"], ["t_policy", "c_rate"]]
+    },
+    {
+      "name": "a group asking for at least 2 holds while two of its own hold",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Comprehensive"]},
+            {
+              "match": 2,
+              "conditions": [
+                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"]},
+                {"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "below", "values": ["25"]}]},
+                {"table": "t_policy", "column": "c_extras", "op": "ticked", "values": []}
+              ]
+            }
+          ]
+        }
+      },
+      "values": {
+        "t_policy": [{"c_cover": "Comprehensive", "c_claims": "0", "c_extras": true}],
+        "t_drivers": [{"c_name": "Ann", "c_age": "22"}]
+      },
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a group asking for at least 2 fails while one of its own holds",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Comprehensive"]},
+            {
+              "match": 2,
+              "conditions": [
+                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"]},
+                {"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "below", "values": ["25"]}]},
+                {"table": "t_policy", "column": "c_extras", "op": "ticked", "values": []}
+              ]
+            }
+          ]
+        }
+      },
+      "values": {
+        "t_policy": [{"c_cover": "Comprehensive", "c_claims": "0"}],
+        "t_drivers": [{"c_name": "Ann", "c_age": "22"}]
+      },
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "two tests passing in the same row hold in any row",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_drivers",
+              "rows": "any",
+              "where": [
+                {"column": "c_name", "op": "equals", "values": ["Bo"]},
+                {"column": "c_age", "op": "below", "values": ["25"]}
+              ]
+            }
+          ]
+        }
+      },
+      "values": {"t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "22"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "two tests passing only in two different rows do not hold in any row",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_drivers",
+              "rows": "any",
+              "where": [
+                {"column": "c_name", "op": "equals", "values": ["Ann"]},
+                {"column": "c_age", "op": "below", "values": ["25"]}
+              ]
+            }
+          ]
+        }
+      },
+      "values": {"t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "22"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "every row passing all of its tests holds",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_drivers",
+              "rows": "every",
+              "where": [
+                {"column": "c_name", "op": "filled", "values": []},
+                {"column": "c_age", "op": "at_least", "values": ["18"]}
+              ]
+            }
+          ]
+        }
+      },
+      "values": {"t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "22"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "every row fails while one row fails one of its tests",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_drivers",
+              "rows": "every",
+              "where": [
+                {"column": "c_name", "op": "filled", "values": []},
+                {"column": "c_age", "op": "at_least", "values": ["18"]}
+              ]
+            }
+          ]
+        }
+      },
+      "values": {"t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "16"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a count counts the rows passing its tests",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_drivers",
+              "where": [{"column": "c_age", "op": "below", "values": ["25"]}],
+              "op": "at_least",
+              "count": 2
+            }
+          ]
+        }
+      },
+      "values": {"t_drivers": [{"c_age": "22"}, {"c_age": "23"}, {"c_age": "40"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "a count of the rows passing its tests fails under its number",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_drivers",
+              "where": [{"column": "c_age", "op": "below", "values": ["25"]}],
+              "op": "at_least",
+              "count": 2
+            }
+          ]
+        }
+      },
+      "values": {"t_drivers": [{"c_age": "22"}, {"c_age": "30"}, {"c_age": "40"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a count of a table giving a row for each value counts the rows passing its tests alone",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_perils",
+              "where": [{"column": "c_limit", "op": "filled", "values": []}],
+              "op": "equals",
+              "count": 1
+            }
+          ]
+        }
+      },
+      "values": {"t_perils": [{"c_peril": "Flood", "c_limit": "500"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "a preset row's value and another column's are tested in the same row",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_perils",
+              "rows": "any",
+              "where": [
+                {"column": "c_peril", "op": "equals", "values": ["Flood"]},
+                {"column": "c_limit", "op": "above", "values": ["1000"]}
+              ]
+            }
+          ]
+        }
+      },
+      "values": {"t_perils": [{"c_peril": "Fire", "c_limit": "5000"}, {"c_peril": "Flood", "c_limit": "500"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a sum totals a column's numbers over every row",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_perils", "total": "sum", "column": "c_limit", "where": [], "op": "at_least", "value": "3500"}
+          ]
+        }
+      },
+      "values": {"t_perils": [{"c_peril": "Fire", "c_limit": "1,000"}, {"c_peril": "Flood", "c_limit": "£2,500"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "a sum totals a column's numbers over the rows passing its tests",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_perils",
+              "total": "sum",
+              "column": "c_limit",
+              "where": [{"column": "c_peril", "op": "equals", "values": ["Flood"]}],
+              "op": "equals",
+              "value": "2500"
+            }
+          ]
+        }
+      },
+      "values": {"t_perils": [{"c_peril": "Fire", "c_limit": "1,000"}, {"c_peril": "Flood", "c_limit": "£2,500"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "a sum leaves out a blank cell and one that is not a number",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_drivers", "total": "sum", "column": "c_age", "where": [], "op": "equals", "value": "22"}
+          ]
+        }
+      },
+      "values": {"t_drivers": [{"c_age": "22"}, {"c_name": "Cy"}, {"c_age": "old"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "a sum of no rows is 0",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_perils",
+              "total": "sum",
+              "column": "c_limit",
+              "where": [{"column": "c_peril", "op": "equals", "values": ["Earthquake"]}],
+              "op": "equals",
+              "value": "0"
+            }
+          ]
+        }
+      },
+      "values": {"t_perils": [{"c_peril": "Fire", "c_limit": "1000"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "a least of no rows fails every test",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_perils",
+              "total": "min",
+              "column": "c_limit",
+              "where": [{"column": "c_peril", "op": "equals", "values": ["Earthquake"]}],
+              "op": "not_equals",
+              "value": "0"
+            }
+          ]
+        }
+      },
+      "values": {"t_perils": [{"c_peril": "Fire", "c_limit": "1000"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a least, a greatest and an average take a column's numbers",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_drivers", "total": "min", "column": "c_age", "where": [], "op": "equals", "value": "22"},
+            {"table": "t_drivers", "total": "max", "column": "c_age", "where": [], "op": "equals", "value": "31"},
+            {"table": "t_drivers", "total": "average", "column": "c_age", "where": [], "op": "above", "value": "26"},
+            {"table": "t_drivers", "total": "average", "column": "c_age", "where": [], "op": "below", "value": "26.6"}
+          ]
+        }
+      },
+      "values": {"t_drivers": [{"c_age": "22"}, {"c_age": "31"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
+    },
+    {
+      "name": "a count fails while a column it tests is on no Table that shows",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_drivers",
+              "where": [{"column": "c_occupation", "op": "empty", "values": []}],
+              "op": "at_least",
+              "count": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "22"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a count holds once a column it tests is on a Table that shows",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_drivers",
+              "where": [{"column": "c_occupation", "op": "empty", "values": []}],
+              "op": "at_least",
+              "count": 0
+            }
+          ]
+        }
+      },
+      "values": {
+        "t_policy": [{"c_extras": true}],
+        "t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "22"}]
+      },
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a total fails while its column is on no Table that shows",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_claims", "total": "sum", "column": "c_amount", "where": [], "op": "at_least", "value": "0"}
+          ]
+        }
+      },
+      "values": {},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a test of the index never fits",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_drivers", "rows": "any", "where": [{"column": "c_row", "op": "filled", "values": []}]}
+          ]
+        }
+      },
+      "values": {"t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "22"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a total of a Text column never fits",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_drivers", "total": "sum", "column": "c_name", "where": [], "op": "at_least", "value": "0"}
+          ]
+        }
+      },
+      "values": {"t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "22"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a total is compared at 15 significant digits, so 0.1, 0.2 and 0.3 sum to 0.6",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_claims", "total": "sum", "column": "c_amount", "where": [], "op": "equals", "value": "0.6"}
+          ]
+        }
+      },
+      "values": {
+        "t_policy": [{"c_extras": true}],
+        "t_claims": [{"c_amount": "0.1"}, {"c_amount": "0.2"}, {"c_amount": "0.3"}]
+      },
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a total halfway between two 15-digit numbers takes the one away from zero",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_claims", "total": "sum", "column": "c_amount", "where": [], "op": "equals", "value": "1.00003051757813"}
+          ]
+        }
+      },
+      "values": {
+        "t_policy": [{"c_extras": true}],
+        "t_claims": [{"c_amount": "1.000030517578125"}]
+      },
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a field shows while a condition on another field of its Collection holds",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+          }
+        },
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_ded",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+          }
+        }
+      ],
+      "values": {"t_rating": [{"c_eq": true}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a field hides while its condition fails, its value left out of the quote",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+          }
+        },
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_ded",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+          }
+        }
+      ],
+      "values": {"t_rating": [{"c_eq_limit": "1000000"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [["w_rating", "t_rating", "c_eq_ded"], ["w_rating", "t_rating", "c_eq_limit"]],
+      "hidden_columns": [["t_rating", "c_eq_ded"], ["t_rating", "c_eq_limit"]]
+    },
+    {
+      "name": "a column on a field that hides stays in the quote while another component shows it as a field that shows",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_flood_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_flood", "op": "ticked", "values": []}]
+          }
+        }
+      ],
+      "values": {},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [["w_rating", "t_rating", "c_flood_limit"]],
+      "hidden_columns": []
+    },
+    {
+      "name": "a column hidden on every field that shows it is left out",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_flood_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_flood", "op": "ticked", "values": []}]
+          }
+        },
+        {
+          "widget": "w_summary",
+          "table": "t_rating",
+          "column": "c_flood_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_combined", "op": "ticked", "values": []}]
+          }
+        }
+      ],
+      "values": {},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [["w_rating", "t_rating", "c_flood_limit"], ["w_summary", "t_rating", "c_flood_limit"]],
+      "hidden_columns": [["t_rating", "c_flood_limit"]]
+    },
+    {
+      "name": "a condition on a field that hides fails",
+      "form": "fields",
+      "show_when": {
+        "s_eq": {
+          "match": "all",
+          "conditions": [{"table": "t_rating", "column": "c_eq_limit", "op": "filled", "values": []}]
+        }
+      },
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+          }
+        }
+      ],
+      "values": {"t_rating": [{"c_eq_limit": "5"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_eq"],
+      "hidden_widgets": ["w_note"],
+      "hidden_fields": [["w_rating", "t_rating", "c_eq_limit"]],
+      "hidden_columns": [["t_rating", "c_eq_limit"], ["t_rating", "c_note"]]
+    },
+    {
+      "name": "fields waiting on each other in a chain hide together",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+          }
+        },
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_ded",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq_limit", "op": "filled", "values": []}]
+          }
+        }
+      ],
+      "values": {"t_rating": [{"c_eq_limit": "5", "c_eq_ded": "1"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [["w_rating", "t_rating", "c_eq_ded"], ["w_rating", "t_rating", "c_eq_limit"]],
+      "hidden_columns": [["t_rating", "c_eq_ded"], ["t_rating", "c_eq_limit"]]
+    },
+    {
+      "name": "fields waiting on each other in a chain show while its first condition holds",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+          }
+        },
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_ded",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq_limit", "op": "filled", "values": []}]
+          }
+        }
+      ],
+      "values": {"t_rating": [{"c_eq": true, "c_eq_limit": "5", "c_eq_ded": "1"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a field waiting on a column in a hidden section hides",
+      "form": "fields",
+      "show_when": {
+        "s_eq": {
+          "match": "all",
+          "conditions": [{"table": "t_rating", "column": "c_combined", "op": "ticked", "values": []}]
+        }
+      },
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_note", "op": "filled", "values": []}]
+          }
+        }
+      ],
+      "values": {"t_rating": [{"c_note": "Refer"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_eq"],
+      "hidden_widgets": ["w_note"],
+      "hidden_fields": [["w_rating", "t_rating", "c_eq_limit"]],
+      "hidden_columns": [["t_rating", "c_eq_limit"], ["t_rating", "c_note"]]
+    },
+    {
+      "name": "a Table's column hides whole, in every row",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_perils",
+          "table": "t_perils",
+          "column": "c_ded",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_combined", "op": "not_ticked", "values": []}]
+          }
+        }
+      ],
+      "values": {
+        "t_rating": [{"c_combined": true}],
+        "t_perils": [{"c_peril": "EQ", "c_ded": "500"}, {"c_peril": "Flood", "c_ded": "250"}]
+      },
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [["w_perils", "t_perils", "c_ded"]],
+      "hidden_columns": [["t_perils", "c_ded"]]
+    },
+    {
+      "name": "a Table's column shows while its condition holds",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_perils",
+          "table": "t_perils",
+          "column": "c_ded",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_combined", "op": "not_ticked", "values": []}]
+          }
+        }
+      ],
+      "values": {"t_perils": [{"c_peril": "EQ", "c_ded": "500"}, {"c_peril": "Flood", "c_ded": "250"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a condition on a list's rows fails once a column it tests hides as a field",
+      "form": "fields",
+      "show_when": {
+        "s_eq": {
+          "match": "all",
+          "conditions": [
+            {"table": "t_perils", "rows": "any", "where": [{"column": "c_ded", "op": "filled", "values": []}]}
+          ]
+        }
+      },
+      "field_show_when": [
+        {
+          "widget": "w_perils",
+          "table": "t_perils",
+          "column": "c_ded",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_combined", "op": "not_ticked", "values": []}]
+          }
+        }
+      ],
+      "values": {
+        "t_rating": [{"c_combined": true}],
+        "t_perils": [{"c_peril": "EQ", "c_ded": "500"}, {"c_peril": "Flood", "c_ded": "250"}]
+      },
+      "hidden_pages": [],
+      "hidden_sections": ["s_eq"],
+      "hidden_widgets": ["w_note"],
+      "hidden_fields": [["w_perils", "t_perils", "c_ded"]],
+      "hidden_columns": [["t_perils", "c_ded"], ["t_rating", "c_note"]]
+    },
+    {
+      "name": "a field is hidden with its component, whatever its own conditions say",
+      "form": "fields",
+      "show_when": {
+        "w_rating": {
+          "match": "all",
+          "conditions": [{"table": "t_rating", "column": "c_note", "op": "filled", "values": []}]
+        }
+      },
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+          }
+        },
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_ded",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+          }
+        }
+      ],
+      "values": {"t_rating": [{"c_eq": true}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": ["w_rating"],
+      "hidden_fields": [],
+      "hidden_columns": [
+        ["t_rating", "c_combined"],
+        ["t_rating", "c_eq"],
+        ["t_rating", "c_eq_ded"],
+        ["t_rating", "c_eq_limit"],
+        ["t_rating", "c_flood"]
+      ]
+    },
+    {
+      "name": "a field testing its own column shows while its value passes",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq_limit", "op": "filled", "values": []}]
+          }
+        }
+      ],
+      "values": {"t_rating": [{"c_eq_limit": "5"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a field testing its own column hides once its value does not pass, and stays hidden",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_eq_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_rating", "column": "c_eq_limit", "op": "filled", "values": []}]
+          }
+        }
+      ],
+      "values": {},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [["w_rating", "t_rating", "c_eq_limit"]],
+      "hidden_columns": [["t_rating", "c_eq_limit"]]
+    },
+    {
+      "name": "a field's conditions take groups and at least a number of them",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_flood_limit",
+          "show_when": {
+            "match": 1,
+            "conditions": [
+              {"table": "t_rating", "column": "c_flood", "op": "ticked", "values": []},
+              {
+                "match": "all",
+                "conditions": [
+                  {"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []},
+                  {"table": "t_rating", "column": "c_combined", "op": "ticked", "values": []}
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "values": {"t_rating": [{"c_eq": true, "c_combined": true}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a field's group failing hides it",
+      "form": "fields",
+      "field_show_when": [
+        {
+          "widget": "w_rating",
+          "table": "t_rating",
+          "column": "c_flood_limit",
+          "show_when": {
+            "match": 1,
+            "conditions": [
+              {"table": "t_rating", "column": "c_flood", "op": "ticked", "values": []},
+              {
+                "match": "all",
+                "conditions": [
+                  {"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []},
+                  {"table": "t_rating", "column": "c_combined", "op": "ticked", "values": []}
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "values": {"t_rating": [{"c_eq": true}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_fields": [["w_rating", "t_rating", "c_flood_limit"]],
+      "hidden_columns": []
     }
   ]
 }

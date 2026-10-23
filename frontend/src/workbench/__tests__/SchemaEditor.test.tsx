@@ -262,6 +262,8 @@ describe("SchemaEditor", () => {
 
     fireEvent.keyDown(exposure, { key: "Enter" })
     expect(columnNames("policy_details")).toEqual(["region", "exposure", "column"])
+    // It takes the type of the column above, Decimal.
+    expect(current().schema.tables[0].columns[2].type).toBe("float")
     const added = within(tableNamed("policy_details")).getAllByRole("textbox", { name: "Column name" })[2]
     expect(added).toBe(document.activeElement)
 
@@ -269,6 +271,22 @@ describe("SchemaEditor", () => {
     expect(columnNames("policy_details")).toEqual(["region", "column", "exposure"])
     // The name field keeps the focus in its new place.
     expect(within(tableNamed("policy_details")).getAllByRole("textbox", { name: "Column name" })[1]).toBe(document.activeElement)
+  })
+
+  it("adds a column of the last column's type with Add column", () => {
+    render(<SchemaEditor />)
+    const addColumn = () => fireEvent.click(within(tableNamed("policy_details")).getByRole("button", { name: "Add column" }))
+
+    addColumn()
+    fireEvent.change(screen.getByRole("combobox", { name: "Type of column" }), { target: { value: "date" } })
+    addColumn()
+
+    expect(current().schema.tables[0].columns.map((c) => [c.name, c.type])).toEqual([
+      ["state", "str"],
+      ["exposure", "float"],
+      ["column", "date"],
+      ["column_2", "date"],
+    ])
   })
 
   it("moves a table with Alt+Up and Alt+Down in its name, keeping the focus, quote_details staying first", () => {

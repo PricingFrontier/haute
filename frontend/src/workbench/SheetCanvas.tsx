@@ -3,10 +3,10 @@ import type { Page, Section } from "../api/types"
 import useRefocusAfterMove from "../hooks/useRefocusAfterMove"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { activePage, previewSections, shownPage } from "../stores/useWorkbenchViewStore"
-import { GRID, readingOrder, SECTION_HEADER, SHEET_PADDING, sheetHeight, stackBottom, stackSections } from "../utils/sheetGeometry"
+import { EDGE_HANDLE, GRID, readingOrder, SECTION_HEADER, SHEET_PADDING, sheetHeight, stackBottom, stackSections } from "../utils/sheetGeometry"
 import { pageWidgets, sectionProblems, showWhenText, widgetProblems } from "../utils/workbenchForm"
 import { SectionBar, SectionMoveLine } from "./SectionHeaders"
-import { dropAt, leaveField, sectionDropAt } from "./sheetInteractions"
+import { dropAt, leaveField, sectionDropAt, startSheetResize } from "./sheetInteractions"
 import SheetWidget from "./SheetWidget"
 import { useHeldWhilePressed, useKeptPlace } from "./steadyPreview"
 import { SheetValuesContext, useNewQuoteValues, useQuoteValues, useSampleValues } from "./useSheetValues"
@@ -24,7 +24,7 @@ const NO_SECTIONS: readonly Section[] = []
  * while building, a ghost where a component dragged out of the palette would land, or a
  * line where a section would start. While building every section and component is drawn,
  * those a new quote hides faded, each section under its bar (`SectionBar`), drawn first in
- * it; in
+ * it, and while the sheet's own panel is open its handles (`SheetHandles`); in
  * Preview only the sections and components the values show, on
  * the first sheet that shows when the chosen one does not, the sections that show closing
  * up the space of those that do not, held while a pointer is pressed on the sheet and kept
@@ -37,10 +37,11 @@ const NO_SECTIONS: readonly Section[] = []
  * the selected one covers both and the ghost covers all. Pressing the empty sheet
  * deselects, a field being typed into in the panel committing first. The sheet and its
  * viewport are registered with the view store, which places drops on them and fits the
- * zoom to them; what is on the sheet is fitted to the viewport when the sheets first show
- * for a form, and a zoom chosen since is kept across a trip to the schema or the pipeline
- * editor. Only the values in use are made, and a component is drawn again only when what it
- * shows changes, so a drag redraws what it moves.
+ * zoom to them, the viewport scrolling over no less than the sheet as pressed while one of
+ * its edges or a section's is dragged (`heldSize`); what is on the sheet is fitted to the
+ * viewport when the sheets first show for a form, and a zoom chosen since is kept across a
+ * trip to the schema or the pipeline editor. Only the values in use are made, and a
+ * component is drawn again only when what it shows changes, so a drag redraws what it moves.
  */
 export default function SheetCanvas() {
   const form = useWorkbenchFormStore((s) => s.form)
@@ -50,6 +51,8 @@ export default function SheetCanvas() {
   const zoom = useWorkbenchViewStore((s) => s.zoom)
   const selectedId = useWorkbenchViewStore((s) => s.selectedId)
   const selectedSection = useWorkbenchViewStore((s) => s.sectionId)
+  const sheetSelected = useWorkbenchViewStore((s) => s.sheetSelected)
+  const heldSize = useWorkbenchViewStore((s) => s.heldSize)
   const select = useWorkbenchViewStore((s) => s.select)
   const setSheet = useWorkbenchViewStore((s) => s.setSheet)
   const setViewport = useWorkbenchViewStore((s) => s.setViewport)
@@ -84,18 +87,24 @@ export default function SheetCanvas() {
   let showing: Page | null = null
   if (form !== null) showing = previewing ? shownPage(form, pageId, visibility.pages) : activePage(form, pageId)
   const live = useMemo(
-    () => ({ page: showing, sections: showing === null ? NO_SECTIONS : previewing ? previewSections(showing, visibility) : showing.sections }),
+    () => ({
+      page: showing,
+      sections: showing === null ? NO_SECTIONS : previewing ? previewSections(showing, visibility) : showing.sections,
+      fields: visibility.fields,
+    }),
     [showing, previewing, visibility],
   )
-  // In Preview nothing moves under a pressed pointer, the sheet showing included, and the
-  // underwriter's place is kept.
-  const { page, sections } = useHeldWhilePressed(live, previewing, viewport)
+  // In Preview nothing moves under a pressed pointer, the sheet showing and the fields that
+  // show included, and the underwriter's place is kept.
+  const { page, sections, fields } = useHeldWhilePressed(live, previewing, viewport)
   // While building each section sits under the bar that names it; Preview has none.
   const stack = useMemo(() => stackSections(sections, previewing ? 0 : SECTION_HEADER), [sections, previewing])
   useKeptPlace(viewport, stack, zoom, previewing && page !== null ? page.id : null)
   if (form === null) throw new Error("The sheet needs the form loaded")
   const width = page === null ? 0 : page.width
   const height = sheetHeight(stackBottom(stack))
+  // While an edge is dragged, never less than the sheet as pressed, so the scroll stays put.
+  const scrolled = { width: Math.max(width, heldSize?.w ?? 0), height: Math.max(height, heldSize?.h ?? 0) }
   // Each component's place in the stack, the form's order, and above them all the selected one, then the ghost.
   const layers = new Map((page === null ? [] : pageWidgets(page)).map((widget, index) => [widget.id, index + 1] as const))
   const top = layers.size + 1
@@ -120,7 +129,7 @@ export default function SheetCanvas() {
           No sheet shows for this quote.
         </div>
       ) : (
-        <div className="relative" style={{ width: width * zoom + SHEET_PADDING * 2, height: height * zoom + SHEET_PADDING * 2 }}>
+        <div className="relative" style={{ width: scrolled.width * zoom + SHEET_PADDING * 2, height: scrolled.height * zoom + SHEET_PADDING * 2 }}>
           <div
             ref={setSheet}
             data-testid="sheet"
@@ -169,6 +178,7 @@ export default function SheetCanvas() {
                         // Preview draws only what shows, but for what a press holds, never faded.
                         hidden={!previewing && !visibility.widgets.has(widget.id)}
                         conditions={previewing || widget.show_when.conditions.length === 0 ? null : showWhenText(form, widget.show_when)}
+                        fieldsShowing={fields}
                         layer={selected ? top : (layers.get(widget.id) ?? top)}
                       />
                     )
@@ -177,6 +187,7 @@ export default function SheetCanvas() {
               ))}
             </SheetValuesContext>
             {!previewing && <SectionMoveLine stack={stack} zoom={zoom} layer={top + 1} />}
+            {!previewing && sheetSelected && <SheetHandles page={page} height={height} zoom={zoom} layer={top + 1} />}
             {!previewing && <DropGhost layer={top + 1} zoom={zoom} />}
           </div>
         </div>
@@ -221,6 +232,36 @@ function SheetSection({
     >
       {children}
     </div>
+  )
+}
+
+/**
+ * The sheet's handles while its own panel is open: one at the middle of its right edge,
+ * `page.width` across, setting its width, and one under the middle of its bottom, `height`
+ * down, setting its height through its last section's, at `layer`, over every component,
+ * outlined a screen pixel thick whatever the zoom.
+ */
+function SheetHandles({ page, height, zoom, layer }: { page: Page; height: number; zoom: number; layer: number }) {
+  const look = { zIndex: layer, border: `${1 / zoom}px solid var(--accent)`, background: "var(--bg-base)" }
+  return (
+    <>
+      <div
+        data-testid="sheet-edge-width"
+        aria-hidden="true"
+        title="Width"
+        onPointerDown={(event) => startSheetResize(event, page.id, "width")}
+        className="absolute cursor-col-resize rounded-sm"
+        style={{ left: page.width - EDGE_HANDLE.h / 2, top: `calc(50% - ${EDGE_HANDLE.w / 2}px)`, width: EDGE_HANDLE.h, height: EDGE_HANDLE.w, ...look }}
+      />
+      <div
+        data-testid="sheet-edge-height"
+        aria-hidden="true"
+        title="Height"
+        onPointerDown={(event) => startSheetResize(event, page.id, "height")}
+        className="absolute cursor-row-resize rounded-sm"
+        style={{ left: `calc(50% - ${EDGE_HANDLE.w / 2}px)`, top: height - EDGE_HANDLE.h / 2, width: EDGE_HANDLE.w, height: EDGE_HANDLE.h, ...look }}
+      />
+    </>
   )
 }
 

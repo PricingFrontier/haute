@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -315,8 +315,8 @@ def preset_column(table: SchemaTable) -> SchemaColumn | None:
 
 
 def preset_rows(
-    table: SchemaTable, rows: Sequence[dict[str, str | bool]]
-) -> list[dict[str, str | bool]]:
+    table: SchemaTable, rows: Sequence[Mapping[str, str | bool]]
+) -> list[Mapping[str, str | bool]]:
     """*rows* as *table* holds them: with a column giving it a row for each value, those
     rows in the values' order, each value's row the first holding it there, the rows holding
     nothing there filling the rows left in order, each holding its value, and any other row
@@ -332,8 +332,8 @@ def preset_rows(
     places: dict[str, int] = {}
     for place, value in enumerate(column.options):
         places.setdefault(value, place)
-    placed: list[dict[str, str | bool] | None] = [None] * len(column.options)
-    loose: list[dict[str, str | bool]] = []
+    placed: list[Mapping[str, str | bool] | None] = [None] * len(column.options)
+    loose: list[Mapping[str, str | bool]] = []
     for row in rows:
         raw = row.get(column.id)
         if not _filled(raw):
@@ -350,7 +350,7 @@ def preset_rows(
 
 
 def _record(
-    columns: Sequence[SchemaColumn], row: dict[str, str | bool], number: int
+    columns: Sequence[SchemaColumn], row: Mapping[str, str | bool], number: int
 ) -> dict[str, Any]:
     """Row *number*'s values in *columns* by column name, or nothing when nothing was typed
     in them."""

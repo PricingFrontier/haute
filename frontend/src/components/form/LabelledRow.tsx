@@ -28,21 +28,23 @@ export function LabelledRow({ label, children }: { label?: string; children: Rea
   )
 }
 
-/** A labelled select of `choices`, its label its name too. */
+/** A labelled select of `choices`, its label its name too unless given a `name` of its own. */
 export function SelectRow<T extends string>({
   label,
+  name = label,
   value,
   choices,
   onChange,
 }: {
   label: string
+  name?: string
   value: T
   choices: ReadonlyArray<{ value: T; label: string }>
   onChange: (value: T) => void
 }) {
   return (
     <LabelledRow label={label}>
-      <select aria-label={label} value={value} onChange={(event) => onChange(event.target.value as T)} className={FIELD_CLASS} style={INPUT_STYLE}>
+      <select aria-label={name} value={value} onChange={(event) => onChange(event.target.value as T)} className={FIELD_CLASS} style={INPUT_STYLE}>
         {choices.map((choice) => (
           <option key={choice.value} value={choice.value}>
             {choice.label}

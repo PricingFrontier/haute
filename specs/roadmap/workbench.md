@@ -19,6 +19,19 @@ that fill the sheets from databases and APIs.
 sign-in, which waits on the Azure work. It names the review's findings it closes
 (`FB-n`), and the review holds their evidence.
 
+`WB-28` and `WB-29` give the Show when of a sheet, a section, a component and a field
+more to test: other fields, text within text, dates apart and the price. A Table's column
+and a Collection's field have a Show when of their own ([workbench](../workbench/high-level.md)),
+the whole column hiding; a Table's cell does not hide row by row. The packages keep the
+rule that decides what shows now:
+everything starts shown and rounds only hide, so a condition fails once what it tests
+hides, and there is no "none of", "at most", "exactly" or "not" over a group, any of which
+could come to hold as hiding went on. Decisions taken 2026-10-20: the rounds stay, reading
+a hidden value as empty in dependency order, which would allow those four, not planned;
+and rules named once and used by many sheets were offered and not taken. Fields and
+columns with conditions of their own, not taken that day, were asked for on 2026-10-22;
+cells shown row by row through "this row" tests were offered again and not taken.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -31,6 +44,8 @@ sign-in, which waits on the Azure work. It names the review's findings it closes
 | WB-12 | Planned | P3 | A test quote whose response runs past what Preview shows is saved, run and compared in full, as every other test quote is. |
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, sees which quotes are about to lapse, records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
+| WB-28 | Planned | P3 | A condition tests a field against another field, text within text, and a date against another date give or take a number of days. |
+| WB-29 | Planned | P3 | A component that takes nothing typed, or a section or a sheet holding only such components, shows by conditions on the price, applied after it so the price never decides what is priced. |
 
 ## Planned improvements
 
@@ -391,3 +406,60 @@ misconfiguration either way.
 headers when the release names its host); `frontend/src/app/useOpenQuoteStore.ts::openNew`
 (`asRenewal`, the browser's tick).
 
+### WB-28 — Other values to test against
+**Why:** A condition tests a column against values typed into the condition. It cannot
+test one field against another (in the commercial-pricing project, `policy_limit` above
+`mga_limit`), text within text (an insured whose name contains "Holdings"), or one date
+against another (a project completing more than 365 days after it starts,
+`project_completion_date` against `project_start_date`).
+
+**Plan:** A condition's value may be another field of the same type instead of values
+typed: a one-row table's column, or, in a test of a list's rows, a column of the same
+row. A date compared with another date may add or take away a whole number of days.
+Text gains contains, does not contain, starts with and ends with, compared as equals
+compares text. A test against another field holds only while both are fields that show,
+so hiding still only hides more, and reads the other field's value as
+it reads its own. A date against today is left out: a saved quote would then show other
+sheets, and so be priced otherwise, on another day; a date field on the form stands in for
+it.
+
+**Acceptance:** A section shown while `policy_limit` is above `mga_limit`, one while the
+insured contains "Holdings", and one while the completion date is more than 365 days after
+the start date, each failing while either field hides; the server and the view are held to
+new cases in the shared visibility fixture.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_workbench_visibility.py::_passes` (each test against the
+condition's own values); `src/haute/_workbench_form.py::Condition` (`values`, typed text
+alone).
+
+### WB-29 — Conditions on the price
+**Why:** Conditions test input tables alone; one naming an output column is a problem
+("which is in an output table"). In the commercial-pricing project the referral reasons
+(`product_premium.referral_reasons`) matter only while `premium.referral_count` is above 0,
+and a warning on rate adequacy only while `rate_adequacy` is below 1.
+
+**Plan:** A condition may test an output column, but only in the Show when of what takes
+nothing typed: a Heading, a Chart, a Collection or a Table of output columns alone, a
+field of an output column, or a section or a sheet holding only those. Hiding it never changes the quote, so the price never
+decides what is priced: the rounds decide what shows from the inputs, these conditions
+holding, and these conditions are then applied to the price the sheets show, the last one
+while a new one is on its way, and before the first every output read as empty. The
+server's `visibility` leaves them out, as they never change `hidden`. An input component
+placed later in a section with such a condition, or such a condition on what takes
+values, is named as a problem, not refused. An output table with many rows is
+tested as a list is.
+
+**Acceptance:** A Table of referral reasons, and a section holding it, each shown while
+`referral_count` is above 0, hidden before the first price and after a price with none, in
+the sheets, Preview and the app; an output condition on a section holding an input
+Collection, or on an input Collection, named as a problem; the quote the same whatever the output conditions say, held by cases on both
+sides.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/utils/sheetVisibility.ts::conditionFault` (a column of an output
+table named as a fault); `src/haute/_workbench_visibility.py::_tested_column` (input tables
+alone); `src/haute/_workbench_tables.py::sample_quote` (the hidden columns the quote leaves
+out).

@@ -149,6 +149,8 @@ type ValidatedTextFieldProps = {
   dataTestId: string
   /** The input's id, for a `<label htmlFor>` outside the field. */
   id?: string
+  /** The input's name for a screen reader, where no `<label>` names it. */
+  ariaLabel?: string
   containerClassName: string
   className: string
   style: CSSProperties
@@ -169,6 +171,7 @@ export function ValidatedTextField({
   warning = null,
   dataTestId,
   id,
+  ariaLabel,
   containerClassName,
   className,
   style,
@@ -185,6 +188,7 @@ export function ValidatedTextField({
         id={id}
         type="text"
         value={shown}
+        aria-label={ariaLabel}
         aria-invalid={error !== null ? true : undefined}
         placeholder={placeholder}
         onChange={(e) => setDraft(e.target.value)}

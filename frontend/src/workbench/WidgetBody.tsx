@@ -6,26 +6,28 @@
  * underwriter app's quote in Preview, through the control its type calls for, marked when
  * the value breaks the column's rules; an output column is shaded and shows what pricing
  * those values gave its row, dimmed until the next answer. Pressing a cell types there.
+ * It draws the fields `drawn` gives: in Preview those that show, while building every one.
  */
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
-import { BLANK_THEME, type ShownField, type Widget } from "../utils/workbenchForm"
+import { BLANK_THEME, type Widget } from "../utils/workbenchForm"
 import ChartBody from "./ChartBody"
 import { FieldBoxes } from "./sheet/FieldBoxes"
-import { LINE_WIDTH } from "./sheet/fieldCells"
+import { LINE_WIDTH, type DrawnFields } from "./sheet/fieldCells"
 import { FieldGrid } from "./sheet/FieldGrid"
 import { HeadingBody } from "./sheet/HeadingBody"
 import { sheetColours } from "./sheet/sheetColours"
 
-export default function WidgetBody({ widget, fields }: { widget: Widget; fields: ShownField[] }) {
+export default function WidgetBody({ widget, drawn }: { widget: Widget; drawn: DrawnFields }) {
   const previewing = useWorkbenchViewStore((s) => s.section === "preview")
   const colours = sheetColours(useWorkbenchFormStore((s) => s.form?.theme ?? BLANK_THEME))
   if (widget.type === "heading") return <HeadingBody widget={widget} colours={colours} />
   // A Table or a Collection without its frame sits on the sheet as its title and fields alone.
   const framed = widget.type === "chart" || widget.frame
-  // A Table's frame, and the rule under its title, in its own colour and weight while it sets them.
-  const frame = widget.type === "tableInput" ? (widget.frame_color ?? colours.frame) : colours.frame
-  const frameWidth = widget.type === "tableInput" ? LINE_WIDTH[widget.frame_weight] : 1
+  // A Table's or a Collection's frame, and the rule under its title, in its own colour and weight while it sets them.
+  const frame = widget.type === "chart" ? colours.frame : (widget.frame_color ?? colours.frame)
+  const frameWidth = widget.type === "chart" ? 1 : LINE_WIDTH[widget.frame_weight]
+  const { fields } = drawn
   return (
     <div
       className={`flex h-full flex-col overflow-hidden ${framed ? "rounded-lg" : ""}`}
@@ -49,9 +51,9 @@ export default function WidgetBody({ widget, fields }: { widget: Widget; fields:
       ) : widget.type === "chart" ? (
         <ChartBody widget={widget} />
       ) : widget.type === "collection" ? (
-        <FieldBoxes fields={fields} columns={widget.columns} options={widget} colours={colours} />
+        <FieldBoxes fields={fields} spacers={drawn.spacers} marks={drawn.marks} columns={widget.columns} options={widget} colours={colours} />
       ) : (
-        <FieldGrid fields={fields} rows={widget.rows} options={widget} colours={colours} />
+        <FieldGrid fields={fields} rowFields={drawn.rowFields} marks={drawn.marks} rows={widget.rows} options={widget} colours={colours} />
       )}
     </div>
   )

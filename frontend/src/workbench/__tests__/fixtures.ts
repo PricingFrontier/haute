@@ -119,7 +119,7 @@ export const sheetForm = (): FormSpec => ({
   },
   pages: [
     sheet("p1", "Sheet 1", [
-      { id: "w_boxes", type: "collection", x: 16, y: 16, w: 400, h: 120, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "policy", column: "policy.state" }], show_when: { match: "all", conditions: [] } },
+      { id: "w_boxes", type: "collection", x: 16, y: 16, w: 400, h: 120, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, column_looks: [], spacers: [], fields: [{ table: "policy", column: "policy.state" }], show_when: { match: "all", conditions: [] } },
       {
         id: "w_grid",
         type: "tableInput",
@@ -130,6 +130,7 @@ export const sheetForm = (): FormSpec => ({
         title: "Equipment",
         rows: 3,
         ...TABLE_OPTIONS,
+        column_looks: [],
         fields: [{ table: "equipment", column: "equipment.item" }, { table: "equipment", column: "equipment.value" }],
         show_when: { match: "all", conditions: [] },
       },
@@ -165,6 +166,7 @@ export const hiddenPerilsForm = (): FormSpec => {
     title: "",
     rows: 3,
     ...TABLE_OPTIONS,
+    column_looks: [],
     fields: [{ table: "coverage", column: shown }],
     show_when: showWhen,
   })
@@ -226,7 +228,7 @@ export const coverForm = (): FormSpec => {
         title: "Year",
         fields: [{ table: "policy", column: "policy.year" }],
         show_when: { match: "all", conditions: [] },
-        columns: 2, ...COLLECTION_OPTIONS,
+        columns: 2, ...COLLECTION_OPTIONS, column_looks: [], spacers: [],
       },
     ],
     { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [] }] },

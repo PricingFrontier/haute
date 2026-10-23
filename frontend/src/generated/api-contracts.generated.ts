@@ -2529,15 +2529,16 @@ export interface Section {
   widgets: (TableInputWidget | CollectionWidget | ChartWidget | HeadingWidget)[];
 }
 /**
- * When a sheet, a section or a widget shows: always, without conditions; else while all
- * of them hold, or any, as ``match`` says.
+ * When a sheet, a section, a widget or a widget's field shows: always, without
+ * conditions; else while all of them hold, any, or at least a number of them, as ``match``
+ * says, each a condition or a group of them.
  */
 export interface ShowWhen {
-  conditions: Condition[];
-  match: 'all' | 'any';
+  conditions: (Condition | RowsCondition | RowCount | RowTotal | ConditionGroup)[];
+  match: ('all' | 'any') | number;
 }
 /**
- * A test of a schema column's value, the column by table and column id.
+ * A test of the value in a one-row table's column, the column by table and column id.
  *
  * The shape is all the file holds a condition to. Whether its column, test and values
  * fit one another is ``haute._workbench_visibility.condition_fits``'s question, asked
@@ -2560,6 +2561,73 @@ export interface Condition {
     | 'at_most';
   table: string;
   values: string[];
+}
+/**
+ * A many-row table's rows, by table id, passing all of its tests in the same row: any
+ * of them, or every one, as ``rows`` says.
+ */
+export interface RowsCondition {
+  rows: 'any' | 'every';
+  table: string;
+  /**
+   * @minItems 1
+   */
+  where: RowTest[];
+}
+/**
+ * A test a row of a many-row table must pass: a ``Condition``'s column, test and values,
+ * its table the condition's that holds it.
+ */
+export interface RowTest {
+  column: string;
+  op:
+    | 'ticked'
+    | 'not_ticked'
+    | 'filled'
+    | 'empty'
+    | 'equals'
+    | 'not_equals'
+    | 'one_of'
+    | 'not_one_of'
+    | 'above'
+    | 'at_least'
+    | 'below'
+    | 'at_most';
+  values: string[];
+}
+/**
+ * How many of a many-row table's rows, by table id, pass all of its tests in the same
+ * row: every row while it has none.
+ */
+export interface RowCount {
+  count: number;
+  op: 'equals' | 'not_equals' | 'above' | 'at_least' | 'below' | 'at_most';
+  table: string;
+  where: RowTest[];
+}
+/**
+ * A total of a number column's values in the rows of a many-row table, by table id,
+ * passing all of its tests in the same row, every row while it has none, tested against
+ * a number typed as text.
+ */
+export interface RowTotal {
+  column: string;
+  op: 'equals' | 'not_equals' | 'above' | 'at_least' | 'below' | 'at_most';
+  table: string;
+  total: 'sum' | 'min' | 'max' | 'average';
+  value: string;
+  where: RowTest[];
+}
+/**
+ * Conditions that count as one: holding while all of them hold, any, or at least a
+ * number of them, as ``match`` says. A group holds no group.
+ */
+export interface ConditionGroup {
+  /**
+   * @minItems 1
+   */
+  conditions: (Condition | RowsCondition | RowCount | RowTotal)[];
+  match: ('all' | 'any') | number;
 }
 /**
  * A Table: a grid showing columns of many-row schema tables, each of its columns given
@@ -2600,9 +2668,13 @@ export interface TableInputWidget {
   y: number;
 }
 /**
- * How one of a Table's columns looks, its field by table and column id: each colour the
- * Table's own while None, its values and label placed as its type puts them while ``auto``,
- * and as wide as the grid makes it while ``width`` is None.
+ * How one of a Table's columns, or one of a Collection's fields, looks and when it shows,
+ * its field by table and column id: each colour the component's own while None, its values
+ * placed as its type puts them, or as the Collection places its boxes', while ``align`` is
+ * ``auto``, its label over a Table's column as its values sit, or as the Collection places
+ * its labels, while ``header_align`` is, while ``width`` is None, a Table's column as wide as
+ * the grid makes it and a Collection's box as wide as the Collection makes it, and shown
+ * with its component while ``show_when`` has no conditions.
  */
 export interface ColumnLook {
   align: 'auto' | 'left' | 'center' | 'right';
@@ -2610,8 +2682,10 @@ export interface ColumnLook {
   cell_color: string | null;
   column: string;
   font_color: string | null;
+  header_align: 'auto' | 'left' | 'center' | 'right';
   header_color: string | null;
   header_font_color: string | null;
+  show_when: ShowWhen;
   table: string;
   width: number | null;
 }
@@ -2624,15 +2698,33 @@ export interface FieldRef {
 }
 /**
  * A Collection: boxes showing columns of one-row schema tables, ``columns`` across, with
- * a gap across it wherever one of its ``spacers`` sits among them.
+ * a gap across it wherever one of its ``spacers`` sits among them, each of its fields given
+ * a look of its own looking as its ``column_looks`` entry says.
  */
 export interface CollectionWidget {
+  box_align: 'auto' | 'left' | 'center' | 'right';
+  box_color: string | null;
+  box_style: 'solid' | 'dashed' | 'dotted';
+  box_weight: 'thin' | 'medium' | 'thick';
+  box_width: number | null;
+  column_looks: ColumnLook[];
   columns: number;
   density: 'compact' | 'comfortable';
   fields: FieldRef[];
+  font_size: 10 | 11 | 12 | 13 | 14 | 16 | 18;
   frame: boolean;
+  frame_color: string | null;
+  frame_weight: 'thin' | 'medium' | 'thick';
   h: number;
+  header: 'caps' | 'plain';
+  header_align: 'auto' | 'left' | 'center' | 'right';
+  header_bold: boolean;
+  header_color: string | null;
+  header_font_color: string | null;
+  header_font_size: 10 | 11 | 12 | 13 | 14 | 16 | 18 | null;
+  header_wrap: boolean;
   id: string;
+  label_width: number | null;
   labels: 'above' | 'beside';
   show_when: ShowWhen;
   spacers: number[];

@@ -84,7 +84,7 @@ In a many-row input table, **Rows** under a column's allowed values gives the ta
 for each** of them, in their order. A `coverage` table whose `peril` column takes its values
 from `perils.csv` (AOP, EQ, NW, WD, SCS, FLD) then has exactly six rows, one for each peril,
 and the underwriter types the other columns on each. The Tables that show it have those rows
-and no Add row or delete; the peril cells show the peril and take no typing. A Table showing
+and no rows can be inserted or deleted; the peril cells show the peril and take no typing. A Table showing
 it beside another table whose rows differ shows every row of both and says their rows do
 not line up. Every row goes
 to the pipeline once the quote is priced, a peril with nothing else typed included, but the
@@ -103,7 +103,8 @@ quote holding nothing but its defaults is not priced, marked or saved until some
 typed, and a value typed equal to its default counts as the default.
 
 - Enter in the last column's name adds the next column; in any other column's name it just
-  keeps what you typed.
+  keeps what you typed. A column added, by Enter or **Add column**, takes the type of the
+  column above it: Text when it is the table's first or comes under the index.
 - Drag a column by the grip at its left, or press Alt+Up and Alt+Down in its name, to move
   it within its table. Drag a table by the grip beside its name, or press Alt+Up and
   Alt+Down in its name, to move the table. A grip shows while the pointer is over its row.
@@ -157,7 +158,7 @@ smaller from that corner; wider than the window, it scrolls across.
 It is a stack of **sections**: strips across its whole width, one under the next, each
 holding the components placed in it. A new sheet is one section; hide a section and, in
 Preview, the sections under it move up to close the gap (see
-[Showing sheets, sections and components conditionally](#showing-sheets-sections-and-components-conditionally)).
+[Showing sheets, sections, components and fields conditionally](#showing-sheets-sections-components-and-fields-conditionally)).
 The palette on the left offers four components and a section; drag a component onto the
 sheet (a ghost shows where it lands) and it goes into the section under the top of the
 ghost. From the keyboard, Tab to an item and press Enter: a component goes into the
@@ -187,11 +188,11 @@ square, and the sheet shows a colour as you pick it. They apply wherever the
 sheets show, Preview and the underwriter app included.
 
 Select a component to open its properties on the right: its title, when it shows (see
-[Showing sheets, sections and components conditionally](#showing-sheets-sections-and-components-conditionally)), its layout (the rows a
-Table starts with, whether they are **fixed**, with no Add row or delete, and whether it is
+[Showing sheets, sections, components and fields conditionally](#showing-sheets-sections-components-and-fields-conditionally)), its layout (the rows a
+Table starts with, whether they are **fixed**, with no rows inserted or deleted, and whether it is
 **transposed**, or a Collection's columns across), a Table's **look** (see
-[A Table's look](#a-tables-look)), a Collection's **look** (labels above or beside the boxes; compact or comfortable
-boxes; a frame or none), the **order** of the fields it shows (drag, or
+[A Table's look](#a-tables-look)), a Collection's **look** (see
+[A Collection's look](#a-collections-look)), the **order** of the fields it shows (drag, or
 Alt+Up and Alt+Down), and its **fields**, ticked from the schema tables of its kind. A
 Chart's settings are its **Type** (Column, Line, Area or Pie), **Rows** (what labels the
 rows of many-row tables, or Row number), its **Legend**, and whether it is **Stacked**,
@@ -201,7 +202,7 @@ field, tables whose rows do not line up with it (keyed differently) are greyed o
 input table and an output table with the same key line up, so each row can show its
 premium. Output columns are shaded. A transposed Table turns its grid on its side: each
 field is a line, labelled at its left, and each row is a column, numbered along the top,
-with **+** at the end of the numbers to add one and a delete over each number; its stripes
+with a delete over each number; its stripes
 and gridlines follow the lines as drawn. With **groups** ticked, the columns side by side
 in one schema group share a heading over their labels, as merged cells over a table's
 headers would in Excel; a column in no group has none. Transposed, the groups sit in a
@@ -255,8 +256,11 @@ double-click it to fit the section to what it holds. A section never shrinks by 
 Sheets have tabs along the top: **+** adds one, the Left and Right arrows (and Home and
 End) go from tab to tab, double-click (or F2) renames one, dragging
 a tab onto another moves its sheet there (or press Alt+Left and Alt+Right on a tab), the
-settings mark on the showing tab opens the sheet's own panel (its title, when it shows
-and its width). **Delete sheet** at the foot of that panel deletes the sheet once you
+settings mark on the showing tab opens the sheet's own panel (its title, when it shows,
+its width and its height). The height is the sections' heights added up, and changing it
+changes the last section's. While that panel is open, the sheet has a handle on the
+middle of its right edge and one under the middle of its bottom: drag them to set its
+width and height. **Delete sheet** at the foot of that panel deletes the sheet once you
 confirm it in the box that opens, which says how many components go with it; the schema
 and the sample stay, and Ctrl+Z brings the sheet back. The last sheet cannot be deleted.
 
@@ -282,24 +286,66 @@ toolbar; a colour you set on a Table, or on one of its columns, is drawn over th
   output columns, which stay solid.
 - **Frame**: whether it is framed and, if so, the frame's **Weight** and **Colour** (the
   rule under its title takes the colour too).
-- **Columns**: click a column to open its own look: its header's **Fill** and **Font**, its
-  cells' **Fill** and **Font**, **Align** (Auto puts numbers on the right), **Width** in
-  pixels (blank for Auto, from 24 to 1000) and **Bold**. **Clear** takes the column's look
+- **Columns**: click a column to open its own look: its header's **Fill**, **Font** and
+  **Align** (Auto sits the header as its cells sit, though a transposed Table's label sits
+  at its start while its cells' Align is Auto too), its cells' **Fill**, **Font** and
+  **Align** (Auto puts numbers on the right), **Width** in pixels (blank for Auto, from 24
+  to 1000) and **Bold**. **Clear** takes the column's look
   away; a dot marks a column that has one. A column's fill covers the stripes and the
   output shade in its cells. Once every column has a width, the grid is as wide as its
-  columns rather than its frame. When you stop showing a column, its look goes with it.
+  columns rather than its frame. Under its look, the column's own **Show when** (see
+  [Showing sheets, sections, components and fields conditionally](#showing-sheets-sections-components-and-fields-conditionally));
+  an eye marks a column that has conditions, and **Clear** leaves them. When you stop
+  showing a column, its look and its Show when go with it.
 
 On a transposed Table, a column's look applies along its field's line: its header colours
 on the line's label and its cell colours across the line. Widths don't apply to a
 transposed Table, so **Width** is hidden there.
 
-## Showing sheets, sections and components conditionally
+### A Collection's look
 
-A sheet, a section or a component can show only when the quote calls for it: a business
-interruption sheet only while its cover is ticked, a flood section only while flood is
-ticked, a referral note only while the sum insured is above a limit. Set it under **Show
-when**, in a component's properties or in a sheet's or a section's own panel. **Add
-condition** tests a column of a one-row input table:
+A Collection's **Display** pane sets its look the way a Table's does. Any colour you leave
+on **Automatic** follows the sheets' colours from **Display** in the toolbar; a colour you
+set on a Collection, or on one of its fields, is drawn over them.
+
+- **Look**: compact or comfortable boxes, and the **Text size** of the values in them.
+- **Labels**: their **Position**, **Above** or **Beside** the boxes; while beside, their
+  **Width** as a percentage of the field (blank for Auto, from 1 to 99); **As written** or
+  in **Capitals**, their **Size** (**Auto** is the values' size, a pixel smaller in
+  capitals), **Align** (Auto puts them at the left), a **Fill** and **Font** colour,
+  **Bold**, and **Wrap**. A label with a fill is drawn as a shaded cell,
+  as tall as its box when it sits beside it. Wrapped labels break between words onto more
+  lines rather than being cut off.
+- **Boxes**: their borders' **Style** (solid, dashed or dotted), **Weight** (thin, medium or
+  thick) and **Colour**, **Align**, where the values sit in the boxes (Auto puts numbers on
+  the right), and their **Width** in pixels (blank for Auto, from 24 to 1000). Labels and
+  boxes align apart: labels on the left with values centred, say.
+- **Frame**: whether it is framed and, if so, the frame's **Weight** and **Colour** (the
+  rule under its title takes the colour too).
+- **Fields**: click a field to open its own look: its label's **Fill**, **Font** and
+  **Align**, its box's **Fill**, **Font** and **Align** (each Align on Auto follows the
+  Collection's), its box's **Width** in pixels (blank for the Collection's) and **Bold**. **Clear** takes the
+  field's look away; a dot marks a field that has one. A field's fill covers the output
+  shade in its box. Under its look, the field's own **Show when**, as a Table's columns
+  have; an eye marks a field that has conditions. When you stop showing a field, its look
+  and its Show when go with it.
+
+With labels beside the boxes and both widths on Auto, each label takes two fifths of its
+field and its box the rest. Give the labels a width, say 80%, and the boxes take the
+rest; give the boxes a width instead and the labels take the rest: for a Collection of
+tick boxes in one column, set the boxes' **Width** to about 40 for wide labels and small
+boxes. A box never grows wider than its field. With labels above, a box narrower than its
+field sits at the field's left, or where the boxes' **Align** puts it.
+
+## Showing sheets, sections, components and fields conditionally
+
+A sheet, a section, a component, or one of a Table's columns or a Collection's fields, can
+show only when the quote calls for it: a business interruption sheet only while its cover
+is ticked, a flood section only while flood is ticked, a referral note only while the sum
+insured is above a limit, the earthquake limit and deductible only while the earthquake box
+beside them is ticked. Set it under **Show when**, in a component's properties, in a
+sheet's or a section's own panel, or in a column's or a field's own look in its
+component's **Display** pane. **Add condition** tests a column of an input table:
 
 - a tick box **is ticked** or **is not ticked**;
 - any other column **is filled** or **is empty**, and **equals** or **does not equal** a
@@ -310,20 +356,62 @@ condition** tests a column of a one-row input table:
   value, and a date **is after**, **is on or after**, **is before** or **is on or before**
   one.
 
-With two or more conditions, choose whether **all** or **any** of them must hold. A
-section on a hidden sheet is hidden too, as is a component in a hidden section, and a sheet
-or a section waiting on a box that sits somewhere hidden is hidden with it, so a cover and
-its extensions hide and show in a chain.
+With two or more conditions, choose whether **all** or **any** of them must hold, or **at
+least** a number of them: a section shown while two or three of three cover boxes are
+ticked needs at least 2 of the three boxes' **is ticked** conditions. There is no "at most"
+or "exactly": hiding a box makes its condition fail, so those would show a section again
+as more of the form hid.
 
-While building, a new quote decides, holding its defaults alone: a hidden sheet's tab, a hidden
-section and a hidden component are faded, their eye struck through (hover it to read the
-conditions), and you can still select and edit them; every section keeps its place. In
+A many-row table, such as the drivers on a motor quote, is tested by its rows: choose
+**Rows of** the table, then which rows, and the tests a row must pass, each with its own
+column, test and value. **Add test** adds another, and a row must pass all of them at
+once, so a section for a covered earthquake can show while the perils table has a row
+whose peril is EQ and whose cover is ticked; two separate conditions could be met by two
+different rows. Which rows can be:
+
+- **Any row** or **Every row** passing the tests: a young drivers section can show while
+  any driver is under 25. **Every row** needs at least one row, so a list nobody has
+  filled in shows nothing waiting on every row of it.
+- **Number of rows** passing the tests, every row while there are none: a section shown
+  while at least 2 perils have their cover ticked, or a second vehicle section while the
+  vehicles table has at least 2 rows.
+- **Sum**, **Smallest**, **Largest** or **Average** of a number column over the rows
+  passing the tests: a large schedules section shown while the jobsites' hard costs add up
+  past a figure. A blank cell, or one that isn't a number, adds nothing; the sum of no rows
+  is 0, and the others of no rows fail every test.
+
+Only rows with something typed in them count.
+
+**Add group** adds a group of conditions that counts as one, with its own **Add
+condition** and its own **all**, **any** or **at least**. Use it to mix them: a section shown while
+the cover is Comprehensive and either a driver is under 25 or the claims count is at least
+2 needs **all** of the cover's condition and a group needing **any** of the other two. A
+new group starts needing the opposite of the Show when around it, since one needing the
+same would change nothing. Removing a group's last condition removes the group.
+
+A section on a hidden sheet is hidden too, as is a component in a hidden section and a field
+of a hidden component, and a sheet, a section or a field waiting on a box that sits
+somewhere hidden is hidden with it, so a cover and its extensions hide and show in a chain.
+
+A field's conditions can test the other fields of its own component: put the earthquake
+box and its limit and deductible in one Collection, and give the limit and the deductible
+a Show when of **EQ included is ticked**. A field shown only by its own value could never
+show again once hidden, so the view names it as a problem.
+
+While building, a new quote decides, holding its defaults alone: a hidden sheet's tab, a
+hidden section, a hidden component and a hidden field are faded, their eye struck through
+(hover it to read the conditions), and you can still select and edit them; every section
+keeps its place, and every field its place in its component. In
 Preview the sample decides as you type it, and in the underwriter app the quote: a hidden
 sheet has no tab; a hidden section is not drawn and the
-sections under it move up to close the gap; and a hidden component is not drawn, its space
-in its section left empty, since components are placed freely. So give what should close
-up a section of its own, with its Heading in it, and put the tick box that controls it
-just above it, where the underwriter is working. While the underwriter holds a mouse
+sections under it move up to close the gap; a hidden component is not drawn, its space
+in its section left empty, since components are placed freely; and a hidden field is not
+drawn, its component closing up around it: a Collection's other fields move up through its
+columns, a spacer going with the fields after it when all of them hide, and a Table leaves
+out the column (or, transposed, the field's line). A whole column hides; its cells don't
+hide row by row. So give a set of components that should close up a section of its own, with its
+Heading in it, and put the tick box that controls it just above it, where the underwriter
+is working; fields that hide together with their box can stay in one Collection. While the underwriter holds a mouse
 button down on the sheet nothing moves, so a click is never pulled from under them, and
 when a section above them opens or closes the sheet scrolls to keep their place.
 
@@ -332,11 +420,12 @@ priced, as if they had never been typed, for the sample priced in Preview (and t
 Workbench Input's copy of it) and for a quote in the underwriter app, and a hidden required
 cell is never marked. The values are kept, so ticking the cover again brings them back. A Chart takes
 nothing typed, so a column only a Chart plots never hides and a condition on it never
-holds, and a value only a hidden component takes is left out even when a Chart that shows
-plots it. A Heading takes nothing either; it just hides and shows. A condition
-that cannot work (its column gone or retyped, a missing value) and a sheet or a section
-nothing could show again once hidden (its tick box only inside it) are named on the
-sheet's tab, the section's header or the component's dashed frame.
+holds, and a value only a hidden component or a hidden field takes is left out even when a
+Chart that shows plots it. A Heading takes nothing either; it just hides and shows. A
+condition that cannot work (its column gone or retyped, a missing value) and a sheet, a
+section or a field nothing could show again once hidden (its tick box only inside it) are
+named on the sheet's tab, the section's header or the component's dashed frame, a field's
+by its label.
 
 ## Building: a new quote
 
@@ -356,11 +445,15 @@ type the **sample**, a quote you key in as an underwriter would: it is saved wit
 sheets, and it is what the [Workbench Input](nodes/workbench-input.md)'s previews run on
 once saved.
 
-A Collection's boxes hold its tables' one row, and a Table's grid holds its tables' rows,
-with **Add row** and a delete on each row unless its rows are fixed (they add and delete
-the row in every input table the grid shows, so the cells stay side by side). A Table
+A Collection's boxes hold its tables' one row, and a Table's grid holds its tables' rows.
+Unless its rows are fixed, right-click a row for its menu: **Insert** opens **Insert Row
+Above**, **Insert Row Below**, **Insert Multiple Rows Above** and **Insert Multiple Rows
+Below**, the last two asking how many rows to insert, and **Delete Row** deletes it, as
+does the delete at the end of each row. On a transposed Table, right-click a column, or
+its number, and the menu inserts columns to the left or right. Rows are inserted and
+deleted in every input table the grid shows, so the cells stay side by side. A Table
 starts with its rows, empty; the first value you type keeps them, and from then on the
-rows are yours to add and delete, fewer than it started with too, though a Table of fixed
+rows are yours to insert and delete, fewer than it started with too, though a Table of fixed
 rows never shows fewer. Change a Table's rows while building and Preview shows it: empty
 rows after the last one you typed into go, or more are added. A Table showing a table that
 has a row for each value (see [Schema](#schema)) shows those rows whatever its own rows

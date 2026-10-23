@@ -4,7 +4,7 @@
  * and what would stop the schema being the pipeline's tables.
  */
 import { describe, expect, it } from "vitest"
-import type { ChartWidget, CollectionWidget, Condition, FieldRef, FormSchema, FormSpec, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
+import type { ChartWidget, CollectionWidget, Condition, FieldRef, FormSchema, FormSpec, RowCount, RowsCondition, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
 import {
   addPage,
   addSchemaColumn,
@@ -32,6 +32,7 @@ import {
   findSection,
   findWidget,
   fitSection,
+  hasOwnLook,
   HEADING_OPTIONS,
   keptInside,
   labelColumns,
@@ -65,6 +66,7 @@ import {
   sectionName,
   sectionProblems,
   setColumnLook,
+  setPageHeight,
   setPageShowWhen,
   setPageWidth,
   setRowPerValue,
@@ -184,6 +186,20 @@ describe("names", () => {
       ["column_2", "str", false, "", ""],
     ])
     expect(messages(spec)).toEqual([])
+  })
+
+  it("gives a new column the type of the column above it, Text first in its table or under its index", () => {
+    let spec = addSchemaTable(blank(), { ...createSchemaTable(blank()), id: "t", rows: "many" })
+    expect(createSchemaColumn(spec, "t").type).toBe("str")
+    spec = addSchemaColumn(spec, "t", createIndexColumn(spec, "t"), 0)
+    expect(createSchemaColumn(spec, "t").type).toBe("str")
+
+    spec = addSchemaColumn(spec, "t", { ...createSchemaColumn(spec, "t"), id: "a", type: "float", min: 0, number_format: "percent" })
+    spec = addSchemaColumn(spec, "t", { ...createSchemaColumn(spec, "t"), id: "b", type: "date" })
+    // At the end by default, or under the column at the place before the one given; the type alone, none of its rules or format.
+    expect(createSchemaColumn(spec, "t")).toMatchObject({ type: "date" })
+    expect(createSchemaColumn(spec, "t", 2)).toMatchObject({ type: "float", min: null, number_format: "general" })
+    expect(createSchemaColumn(spec, "t", 1).type).toBe("str")
   })
 })
 
@@ -568,9 +584,37 @@ describe("what the sheets show", () => {
     // fixed, its header as written and framed; a Collection labelled above its boxes, comfortable
     // and framed.
     expect(grid).toMatchObject({ type: "tableInput", title: "", fields: [], rows: 3, row_numbers: true, density: "compact", gridlines: "rows", striped: true, fixed_rows: false, header: "plain", frame: true })
-    expect(boxes).toMatchObject({ type: "collection", title: "", fields: [], columns: 3, labels: "above", density: "comfortable", frame: true, spacers: [] })
-    // Spacers of its own, not the options' one list.
+    // Its look as the server's defaults have it too: 12px text, its labels the same size, as written,
+    // neither bold nor wrapped and Auto wide, its boxes' borders thin and solid and the boxes Auto wide,
+    // a thin frame, each colour the theme's, and no field with a look of its own.
+    expect(boxes).toMatchObject({
+      type: "collection",
+      title: "",
+      fields: [],
+      columns: 3,
+      labels: "above",
+      density: "comfortable",
+      frame: true,
+      font_size: 12,
+      header: "plain",
+      header_font_size: null,
+      header_bold: false,
+      header_wrap: false,
+      header_color: null,
+      header_font_color: null,
+      label_width: null,
+      box_style: "solid",
+      box_weight: "thin",
+      box_color: null,
+      box_width: null,
+      frame_color: null,
+      frame_weight: "thin",
+      column_looks: [],
+      spacers: [],
+    })
+    // Column looks and spacers of its own, not the options' one lists.
     expect(boxes.spacers).not.toBe(COLLECTION_OPTIONS.spacers)
+    expect(boxes.column_looks).not.toBe(COLLECTION_OPTIONS.column_looks)
     expect(grid).not.toHaveProperty("columns")
     expect(boxes).not.toHaveProperty("gridlines")
     // In the file's order, so a component the view made compares equal to it saved.
@@ -610,7 +654,39 @@ describe("what the sheets show", () => {
     ])
     // Column looks of its own, not the options' one list.
     expect(grid.column_looks).not.toBe(TABLE_OPTIONS.column_looks)
-    expect(Object.keys(boxes)).toEqual(["id", "x", "y", "w", "h", "type", "title", "fields", "show_when", "columns", "labels", "density", "frame", "spacers"])
+    expect(Object.keys(boxes)).toEqual([
+      "id",
+      "x",
+      "y",
+      "w",
+      "h",
+      "type",
+      "title",
+      "fields",
+      "show_when",
+      "columns",
+      "labels",
+      "density",
+      "frame",
+      "font_size",
+      "header",
+      "header_font_size",
+      "header_bold",
+      "header_wrap",
+      "header_color",
+      "header_font_color",
+      "header_align",
+      "label_width",
+      "box_style",
+      "box_weight",
+      "box_color",
+      "box_align",
+      "box_width",
+      "frame_color",
+      "frame_weight",
+      "column_looks",
+      "spacers",
+    ])
 
     spec = addWidget(addWidget(spec, "s", grid), "s", boxes)
     spec = updateWidget(spec, grid.id, { title: "Equipment", rows: 5, x: 16, gridlines: "all", fixed_rows: true })
@@ -622,15 +698,39 @@ describe("what the sheets show", () => {
     })
     expect(() => updateWidget(spec, grid.id, { columns: 2 })).toThrow("Only a Collection has columns")
     expect(() => updateWidget(spec, boxes.id, { rows: 2 })).toThrow("Only a Table has rows")
-    // A Collection takes its own look, the density and the frame a Table has too, and none of a Table's own.
-    spec = updateWidget(spec, boxes.id, { labels: "beside", density: "compact", frame: false })
-    expect(findWidget(spec, boxes.id)?.widget).toMatchObject({ labels: "beside", density: "compact", frame: false })
-    expect(() => updateWidget(spec, boxes.id, { header: "caps" })).toThrow("Only a Table has header")
+    // A Collection takes its own look, the look a Table has too, and none of a Table's own.
+    const look = {
+      labels: "beside",
+      density: "compact",
+      frame: false,
+      font_size: 14,
+      header: "caps",
+      header_font_size: 11,
+      header_bold: true,
+      header_wrap: true,
+      header_color: "#F1F5F9",
+      header_font_color: "#1E293B",
+      header_align: "left",
+      label_width: 60,
+      box_style: "dashed",
+      box_weight: "medium",
+      box_color: "#DC2626",
+      box_align: "center",
+      box_width: 96,
+      frame_color: "#000000",
+      frame_weight: "thick",
+    } as const
+    spec = updateWidget(spec, boxes.id, look)
+    expect(findWidget(spec, boxes.id)?.widget).toMatchObject(look)
+    expect(() => updateWidget(spec, boxes.id, { header_orientation: "up" })).toThrow("Only a Table has header_orientation")
     expect(() => updateWidget(spec, boxes.id, { transposed: true })).toThrow("Only a Table has transposed")
     expect(() => updateWidget(spec, boxes.id, { groups: true })).toThrow("Only a Table has groups")
     expect(() => updateWidget(spec, boxes.id, { grid_color: "#2563EB" })).toThrow("Only a Table has grid_color")
-    expect(() => updateWidget(spec, boxes.id, { column_looks: [] })).toThrow("Only a Table has column_looks")
     expect(() => updateWidget(spec, grid.id, { labels: "beside" })).toThrow("Only a Collection has labels")
+    expect(() => updateWidget(spec, grid.id, { label_width: 60 })).toThrow("Only a Collection has label_width")
+    expect(() => updateWidget(spec, grid.id, { box_style: "dashed" })).toThrow("Only a Collection has box_style")
+    expect(() => updateWidget(spec, grid.id, { header_align: "left" })).toThrow("Only a Collection has header_align")
+    expect(() => updateWidget(spec, grid.id, { box_align: "center" })).toThrow("Only a Collection has box_align")
     expect(() => updateWidget(spec, "missing", { title: "x" })).toThrow("No sheet has a component missing")
 
     const copied = duplicateWidget(spec, grid.id)
@@ -665,6 +765,8 @@ describe("what the sheets show", () => {
     expect(() => updateWidget(spec, chart.id, { columns: 2 })).toThrow("Only a Collection has columns")
     expect(() => updateWidget(spec, chart.id, { frame: false })).toThrow("Only a Table or a Collection has frame")
     expect(() => updateWidget(spec, chart.id, { density: "compact" })).toThrow("Only a Table or a Collection has density")
+    expect(() => updateWidget(spec, chart.id, { header: "caps" })).toThrow("Only a Table or a Collection has header")
+    expect(() => updateWidget(spec, chart.id, { column_looks: [] })).toThrow("Only a Table or a Collection has column_looks")
 
     const copied = duplicateWidget(spec, chart.id)
     expect(findWidget(copied.spec, copied.id)).toMatchObject({ index: 1, widget: { type: "chart", title: "Premiums", x: 16, y: 16, ...options } })
@@ -761,9 +863,19 @@ describe("what the sheets show", () => {
     expect(grid(removeSchemaColumn(spec, "equipment", "equipment.item")).column_looks.map((look) => look.column)).toEqual(["equipment.value"])
     expect(grid(removeSchemaTable(spec, "equipment")).column_looks).toEqual([])
 
-    // Only a Table's columns have looks, and only those it shows.
-    expect(() => setColumnLook(spec, "w_boxes", { table: "policy", column: "policy.state" }, { bold: true })).toThrow("Only a Table has column looks")
+    // A Collection's fields have looks as a Table's columns do, dropped as the field goes.
+    const state = { table: "policy", column: "policy.state" }
+    const boxes = (form: FormSpec) => widgetsOf(form)[0] as Extract<Widget, { type: "collection" }>
+    const boxed = setColumnLook(spec, "w_boxes", state, { header_color: "#2563EB", header_align: "left", width: 64 })
+    expect(boxes(boxed).column_looks).toEqual([{ ...state, ...PLAIN_COLUMN_LOOK, header_color: "#2563EB", header_align: "left", width: 64 }])
+    expect(boxes(setColumnLook(boxed, "w_boxes", state, "clear")).column_looks).toEqual([])
+    expect(boxes(toggleField(boxed, "w_boxes", state)).column_looks).toEqual([])
+
+    // Only a Table's columns and a Collection's fields have looks, and only those it shows.
+    const charted = addWidget(spec, "s", { ...createWidget("chart", { x: 0, y: 400, w: 480, h: 280 }), id: "w_chart", fields: [value] })
+    expect(() => setColumnLook(charted, "w_chart", value, { bold: true })).toThrow("Only a Table or a Collection has column looks")
     expect(() => setColumnLook(unticked, "w_grid", value, { bold: true })).toThrow("The Table does not show equipment.equipment.value")
+    expect(() => setColumnLook(spec, "w_boxes", value, { bold: true })).toThrow("The Collection does not show equipment.equipment.value")
   })
 
   it("puts spacers among a Collection's fields, moves and removes them, and keeps their places as fields come and go", () => {
@@ -839,6 +951,25 @@ describe("what the sheets show", () => {
     const grid = findWidget(looked, "w_grid")!.widget
     const pastedGrid = pasteWidget(removeSchemaColumn(looked, "equipment", "equipment.value"), grid, "s")
     expect(findWidget(pastedGrid.spec, pastedGrid.id)?.widget).toMatchObject({ column_looks: [{ table: "equipment", column: "equipment.item", bold: true }] })
+  })
+
+  it("leaves out of a copy pasted what its conditions test of a column lost since, a group left with none, and a count of a table lost since", () => {
+    const onState: Condition = { table: "policy", column: "policy.state", op: "equals", values: ["NY"] }
+    const onValue: RowsCondition = { table: "equipment", rows: "every", where: [{ column: "equipment.value", op: "above", values: ["50"] }] }
+    const count: RowCount = { table: "equipment", where: [{ column: "equipment.value", op: "filled", values: [] }], op: "at_least", count: 1 }
+    const spec = updateWidget(sheet(), "w_boxes", {
+      show_when: { match: "any", conditions: [{ match: "all", conditions: [onState, onValue] }, { match: "all", conditions: [count] }] },
+    })
+    const copied = findWidget(spec, "w_boxes")!.widget
+
+    // In every row with no test left goes; a count keeps counting, its test on the column gone.
+    const lostValue = pasteWidget(removeSchemaColumn(spec, "equipment", "equipment.value"), copied, "s")
+    expect(findWidget(lostValue.spec, lostValue.id)?.widget.show_when).toEqual({
+      match: "any",
+      conditions: [{ match: "all", conditions: [onState] }, { match: "all", conditions: [{ ...count, where: [] }] }],
+    })
+    const lostTable = pasteWidget(removeSchemaTable(spec, "equipment"), copied, "s")
+    expect(findWidget(lostTable.spec, lostTable.id)?.widget.show_when).toEqual({ match: "any", conditions: [{ match: "all", conditions: [onState] }] })
   })
 
   it("sets one of the sheets' colours, leaving the others the editor's own, and the editor's own again", () => {
@@ -1429,6 +1560,21 @@ describe("sections", () => {
     expect(() => setPageWidth(spec, "missing", 1000)).toThrow("The form has no sheet missing")
   })
 
+  it("sets a sheet's height, its sections' heights summed, through its last section's, never under what that one's components reach or 48, the form as given while it is that already", () => {
+    // 136 + 232 + 48, Notes empty.
+    const spec = stacked()
+
+    expect(heights(setPageHeight(spec, "p", 600))).toEqual([136, 232, 232])
+    expect(heights(setPageHeight(spec, "p", 600.4))).toEqual([136, 232, 232])
+    expect(setPageHeight(spec, "p", 300)).toBe(spec)
+    expect(setPageHeight(spec, "p", 416)).toBe(spec)
+    expect(setPageHeight(spec, "p", NaN)).toBe(spec)
+    // A component in the last section keeps it as tall as it reaches, 100 + 40.
+    const noting = addWidget(setSectionHeight(spec, "s_notes", 200), "s_notes", { ...createWidget("heading", { x: 16, y: 100, w: 480, h: 40 }), id: "w_note" })
+    expect(heights(setPageHeight(noting, "p", 400))).toEqual([136, 232, 140])
+    expect(() => setPageHeight(spec, "missing", 1000)).toThrow("The form has no sheet missing")
+  })
+
   it("leaves its input untouched", () => {
     const before = stacked()
     const snapshot = JSON.stringify(before)
@@ -1467,7 +1613,7 @@ describe("when sheets and components show", () => {
     title,
     fields: columns.map(([tableId, columnId]) => ({ table: tableId, column: columnId })),
     show_when: showWhen,
-    columns: 3, ...COLLECTION_OPTIONS,
+    columns: 3, ...COLLECTION_OPTIONS, column_looks: [], spacers: [],
   })
   /**
    * A tick box and a class on the main sheet, in its section "Policy", and a sheet of
@@ -1538,6 +1684,45 @@ describe("when sheets and components show", () => {
     expect(withoutPolicy.pages[1].show_when.conditions).toEqual([])
     expect(findSection(withoutPolicy, "s_bi")?.section.show_when.conditions).toEqual([])
     expect(findWidget(withoutPolicy, "w_bi")?.widget.show_when.conditions).toEqual([])
+  })
+
+  it("gives a field a Show when of its own in its look, which its uses count and its column takes out with it", () => {
+    const bi = { table: "policy", column: "policy.bi" }
+    const klass = { table: "policy", column: "policy.class" }
+    const onClass: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"] }
+    const policy = (form: FormSpec) => findWidget(form, "w_policy")?.widget as Extract<Widget, { type: "collection" }>
+    const spec = setColumnLook(covered(), "w_policy", bi, { show_when: { match: "any", conditions: [onClass] } })
+    expect(policy(spec).column_looks).toEqual([{ ...bi, ...PLAIN_COLUMN_LOOK, show_when: { match: "any", conditions: [onClass] } }])
+    expect(hasOwnLook(columnLook(policy(spec), bi))).toBe(false)
+    expect(conditionUses(spec, "policy", "policy.class").map((holder) => holder.id)).toEqual(["w_policy"])
+
+    // Clear puts back its look and keeps its Show when; emptied of conditions, it always
+    // shows, so a look that sets nothing else goes.
+    const bold = setColumnLook(spec, "w_policy", bi, { bold: true })
+    expect(hasOwnLook(columnLook(policy(bold), bi))).toBe(true)
+    expect(policy(setColumnLook(bold, "w_policy", bi, "clear")).column_looks).toEqual(policy(spec).column_looks)
+    expect(policy(setColumnLook(spec, "w_policy", bi, { show_when: { match: 2, conditions: [] } })).column_looks).toEqual([])
+    expect(policy(setColumnLook(bold, "w_policy", bi, { show_when: { match: 2, conditions: [] } })).column_looks).toEqual([
+      { ...bi, ...PLAIN_COLUMN_LOOK, bold: true, show_when: { match: "all", conditions: [] } },
+    ])
+
+    // Its conditions go with the column they test, and its look with them while it sets nothing else.
+    expect(policy(removeSchemaColumn(spec, "policy", "policy.class")).column_looks).toEqual([])
+    expect(policy(removeSchemaColumn(setColumnLook(spec, "w_policy", bi, { bold: true }), "policy", "policy.class")).column_looks).toEqual([
+      { ...bi, ...PLAIN_COLUMN_LOOK, bold: true, show_when: { match: "all", conditions: [] } },
+    ])
+    expect(policy(removeSchemaColumn(spec, "policy", "policy.start")).column_looks).toEqual(policy(spec).column_looks)
+
+    // Pasted after the column it tests is gone, the copy holds no condition on it.
+    const copied = policy(spec)
+    const pasted = pasteWidget(removeSchemaColumn(spec, "policy", "policy.class"), copied, "s_main")
+    expect((findWidget(pasted.spec, pasted.id)?.widget as Extract<Widget, { type: "collection" }>).column_looks).toEqual([])
+
+    // A field waiting on itself is named on its component, by its label.
+    const own = setColumnLook(covered(), "w_policy", klass, { show_when: { match: "all", conditions: [onClass] } })
+    expect(widgetProblems(own).map((p) => p.message)).toEqual([
+      'Collection "Policy"\'s field "Class" waits on class, which is only on fields that hide with it, so it could not show again once hidden',
+    ])
   })
 
   it("counts a Heading's conditions as any component's, and takes them out with their column or table", () => {
@@ -1624,6 +1809,127 @@ describe("when sheets and components show", () => {
     expect(showWhenText(spec, { match: "any", conditions: [ticked, onClass] })).toBe(
       "Shows when any of these are true: BI cover is ticked; Class is one of Motor, Fleet",
     )
+  })
+
+  /** `covered`, with a many-row table of drivers, its ages on a Table in `sectionId` and its covers on none. */
+  const listed = (sectionId = "s_main"): FormSpec => {
+    const spec = covered()
+    const columns = [column("drivers.age", "age", { type: "int", label: "Age" }), column("drivers.cover", "cover", { options: ["Full", "Partial"] })]
+    spec.schema.tables.push(table("drivers", "drivers", { rows: "many", columns }))
+    return addWidget(spec, sectionId, {
+      id: "w_drivers",
+      type: "tableInput",
+      x: 0,
+      y: 0,
+      w: 720,
+      h: 120,
+      title: "Drivers",
+      rows: 3,
+      ...TABLE_OPTIONS,
+      fields: [{ table: "drivers", column: "drivers.age" }],
+      show_when: always(),
+    })
+  }
+  const young: RowsCondition = { table: "drivers", rows: "any", where: [{ column: "drivers.age", op: "below", values: ["25"] }] }
+  const twoDrivers: RowCount = { table: "drivers", where: [], op: "at_least", count: 2 }
+  const aged: RowCount = { table: "drivers", where: [{ column: "drivers.age", op: "filled", values: [] }], op: "at_least", count: 1 }
+  const ageSum: RowTotal = { table: "drivers", total: "sum", column: "drivers.age", where: [], op: "above", value: "50" }
+
+  it("takes what a group's conditions test of a column out with it, a group left with none with it, and a count out with its table alone", () => {
+    const onClass: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"] }
+    const spec = setSectionShowWhen(listed(), "s_bi", {
+      match: "all",
+      conditions: [onClass, { match: "any", conditions: [young, twoDrivers, aged, ageSum] }, { match: "any", conditions: [ticked] }],
+    })
+    expect(conditionUses(spec, "drivers", "drivers.age").map((holder) => holder.id)).toEqual(["s_bi"])
+    expect(conditionUses(spec, "drivers").map((holder) => holder.id)).toEqual(["s_bi"])
+    expect(conditionUses(spec, "policy", "policy.bi").map((holder) => holder.id)).toEqual(["p_bi", "s_bi"])
+    const shown = (next: FormSpec) => findSection(next, "s_bi")?.section.show_when
+
+    // In any row with no test left goes, as does a total of the column; a count keeps counting.
+    expect(shown(removeSchemaColumn(spec, "drivers", "drivers.age"))).toEqual({
+      match: "all",
+      conditions: [onClass, { match: "any", conditions: [twoDrivers, { ...aged, where: [] }] }, { match: "any", conditions: [ticked] }],
+    })
+    expect(shown(removeSchemaColumn(spec, "policy", "policy.bi"))).toEqual({
+      match: "all",
+      conditions: [onClass, { match: "any", conditions: [young, twoDrivers, aged, ageSum] }],
+    })
+    expect(conditionUses(spec, "drivers", "drivers.cover")).toEqual([])
+    expect(shown(removeSchemaTable(spec, "drivers"))).toEqual({ match: "all", conditions: [onClass, { match: "any", conditions: [ticked] }] })
+  })
+
+  it("says what stops a group's conditions and a count doing what they say", () => {
+    const spec = listed("s_bi")
+    expect([...pageProblems(spec), ...sectionProblems(spec), ...widgetProblems(spec)]).toEqual([])
+    const showing = (next: FormSpec, showWhen: ShowWhen) => pageProblems(setPageShowWhen(next, "p_bi", showWhen)).map((p) => p.message)
+
+    // A condition in a group that cannot hold is named as any other.
+    const classTicked: Condition = { table: "policy", column: "policy.class", op: "ticked", values: [] }
+    expect(showing(spec, { match: "all", conditions: [{ match: "any", conditions: [ticked, classTicked] }] })).toEqual([
+      'Sheet "BI" tests class with "is ticked", which a Text column cannot take',
+    ])
+    // Rows typed only on the sheet the count shows, or on no Table: nothing could show it again.
+    expect(showing(spec, { match: "all", conditions: [twoDrivers] })).toEqual([
+      'Sheet "BI" waits on the rows of drivers, which are only on components that hide with it, so it could not show again once hidden',
+    ])
+    expect(showing(removeWidget(spec, "w_drivers"), { match: "all", conditions: [twoDrivers] })).toEqual(['Sheet "BI" waits on the rows of drivers, which are on no Table'])
+    // A condition on rows with tests waits on each column it tests, named while it is on no Table.
+    expect(showing(spec, { match: "all", conditions: [young] })).toEqual([
+      'Sheet "BI" waits on the rows of drivers, which are only on components that hide with it, so it could not show again once hidden',
+    ])
+    expect(showing(removeWidget(spec, "w_drivers"), { match: "all", conditions: [young] })).toEqual(['Sheet "BI" waits on age, which is on no Table'])
+    // A test of a row against a value no allowed value can match.
+    const uncovered: RowsCondition = { table: "drivers", rows: "any", where: [{ column: "drivers.cover", op: "equals", values: ["None"] }] }
+    expect(showing(spec, { match: "all", conditions: [uncovered] })).toEqual([
+      'Sheet "BI" tests cover against "None", which isn\'t one of its allowed values',
+      'Sheet "BI" waits on cover, which is on no Table',
+    ])
+  })
+
+  it("reads a condition in any or every row, a count and a group as sentences", () => {
+    const spec = listed()
+    expect(conditionText(spec, young)).toBe("Age is less than 25 in any row of drivers")
+    expect(conditionText(spec, { ...young, rows: "every", where: [{ column: "drivers.age", op: "filled", values: [] }] })).toBe("Age is filled in every row of drivers")
+    const full = { column: "drivers.cover", op: "equals" as const, values: ["Full"] }
+    expect(conditionText(spec, { ...young, where: [...young.where, full] })).toBe("Age is less than 25 and Cover equals Full in any row of drivers")
+    expect(conditionText(spec, twoDrivers)).toBe("Number of rows in drivers is at least 2")
+    expect(conditionText(spec, { ...twoDrivers, where: young.where })).toBe("Number of rows in drivers where Age is less than 25 is at least 2")
+    expect(conditionText(spec, { table: "gone", where: [], op: "equals", count: 0 })).toBe("Number of rows in a missing table equals 0")
+    expect(conditionText(spec, ageSum)).toBe("Sum of Age in drivers is greater than 50")
+    expect(conditionText(spec, { ...ageSum, total: "average", where: [full] })).toBe("Average of Age in drivers where Cover equals Full is greater than 50")
+    expect(conditionText(spec, { ...ageSum, total: "min", column: "drivers.gone" })).toBe("Smallest of A missing column in drivers is greater than 50")
+
+    expect(showWhenText(spec, { match: "all", conditions: [ticked, { match: "any", conditions: [young, twoDrivers] }] })).toBe(
+      "Shows when all of these are true: BI cover is ticked; any of (Age is less than 25 in any row of drivers, Number of rows in drivers is at least 2)",
+    )
+    expect(showWhenText(spec, { match: "all", conditions: [{ match: "any", conditions: [ticked] }] })).toBe("Shows when BI cover is ticked")
+  })
+
+  it("says when at least a number asks for more conditions than its Show when or a group holds", () => {
+    const spec = listed()
+    const showing = (showWhen: ShowWhen) => pageProblems(setPageShowWhen(spec, "p_bi", showWhen)).map((p) => p.message)
+    const motor: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Motor"] }
+
+    expect(showing({ match: 2, conditions: [ticked, motor] })).toEqual([])
+    expect(showing({ match: 3, conditions: [ticked, motor] })).toEqual(['Sheet "BI" needs at least 3 conditions to hold but has only 2, so it never shows'])
+    // With none it always shows, whatever the number.
+    expect(showing({ match: 3, conditions: [] })).toEqual([])
+    expect(showing({ match: "any", conditions: [ticked, { match: 2, conditions: [motor] }] })).toEqual([
+      'Sheet "BI" has a group that needs at least 2 conditions to hold but holds only 1',
+    ])
+  })
+
+  it("reads at least a number as a sentence, however many conditions it holds", () => {
+    const spec = listed()
+    expect(showWhenText(spec, { match: 2, conditions: [ticked, young, twoDrivers] })).toBe(
+      "Shows when at least 2 of these are true: BI cover is ticked; Age is less than 25 in any row of drivers; Number of rows in drivers is at least 2",
+    )
+    expect(showWhenText(spec, { match: 2, conditions: [ticked] })).toBe("Shows when at least 2 of these are true: BI cover is ticked")
+    expect(showWhenText(spec, { match: "all", conditions: [ticked, { match: 2, conditions: [young, twoDrivers] }] })).toBe(
+      "Shows when all of these are true: BI cover is ticked; at least 2 of (Age is less than 25 in any row of drivers, Number of rows in drivers is at least 2)",
+    )
+    expect(showWhenText(spec, { match: "all", conditions: [{ match: 1, conditions: [ticked] }] })).toBe("Shows when at least 1 of (BI cover is ticked)")
   })
 
   it("prices what the sheets show: a condition that hides or shows a column changes the basis, a move does not", () => {

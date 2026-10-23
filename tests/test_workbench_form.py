@@ -161,6 +161,53 @@ FORM: dict[str, Any] = {
                             "labels": "beside",
                             "density": "compact",
                             "frame": False,
+                            # Its text larger, its labels in capitals, smaller, bold,
+                            # wrapped, filled, coloured, centred and 60 percent of a field
+                            # wide; its boxes' borders red, heavier and dotted, their values
+                            # on the left, each box 96px wide; its frame black and heavier
+                            # still; and its state's label coloured and on the left, and its
+                            # box coloured, bold, on the right and narrower.
+                            "font_size": 13,
+                            "header": "caps",
+                            "header_font_size": 11,
+                            "header_bold": True,
+                            "header_wrap": True,
+                            "header_color": "#F1F5F9",
+                            "header_font_color": "#1E293B",
+                            "header_align": "center",
+                            "label_width": 60,
+                            "box_style": "dotted",
+                            "box_weight": "medium",
+                            "box_color": "#DC2626",
+                            "box_align": "left",
+                            "box_width": 96,
+                            "frame_color": "#000000",
+                            "frame_weight": "thick",
+                            "column_looks": [
+                                {
+                                    "table": "t_policy",
+                                    "column": "c_state",
+                                    "header_color": "#2563EB",
+                                    "header_font_color": "#FFFFFF",
+                                    "header_align": "left",
+                                    "cell_color": "#DBEAFE",
+                                    "font_color": "#000000",
+                                    "bold": True,
+                                    "align": "right",
+                                    "width": 64,
+                                    "show_when": {
+                                        "match": "all",
+                                        "conditions": [
+                                            {
+                                                "table": "t_policy",
+                                                "column": "c_exposure",
+                                                "op": "filled",
+                                                "values": [],
+                                            }
+                                        ],
+                                    },
+                                }
+                            ],
                             "spacers": [1],
                         },
                         {
@@ -199,7 +246,8 @@ FORM: dict[str, Any] = {
                             # Its text and its header's larger, its labels plain, wrapped,
                             # turned upwards and coloured; its lines red, heavy and dashed;
                             # its frame black and heavier still; and its limit's column
-                            # filled, bold, centred and a set width.
+                            # filled, bold, its label on the right over its values centred,
+                            # and a set width.
                             "font_size": 14,
                             "header_font_size": 16,
                             "header_bold": False,
@@ -218,11 +266,13 @@ FORM: dict[str, Any] = {
                                     "column": "c_limit",
                                     "header_color": "#2563EB",
                                     "header_font_color": "#FFFFFF",
+                                    "header_align": "right",
                                     "cell_color": "#DBEAFE",
                                     "font_color": "#000000",
                                     "bold": True,
                                     "align": "center",
                                     "width": 120,
+                                    "show_when": {"match": "all", "conditions": []},
                                 }
                             ],
                         },
@@ -463,7 +513,29 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         "frame_weight",
         "column_looks",
     )
-    collection_options = ("labels", "density", "frame", "spacers")
+    collection_options = (
+        "labels",
+        "density",
+        "frame",
+        "font_size",
+        "header",
+        "header_font_size",
+        "header_bold",
+        "header_wrap",
+        "header_color",
+        "header_font_color",
+        "header_align",
+        "label_width",
+        "box_style",
+        "box_weight",
+        "box_color",
+        "box_align",
+        "box_width",
+        "frame_color",
+        "frame_weight",
+        "column_looks",
+        "spacers",
+    )
     chart_options = ("category", "chart_type", "orientation", "stacked", "legend", "data_labels")
     sparse = json.loads(json.dumps(FORM))
     del sparse["sample"]
@@ -524,12 +596,34 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         "frame_weight": "thin",
         "column_looks": [],
     }
-    # A Collection labelled above its boxes, comfortable and framed, with no spacers.
+    # A Collection labelled above its boxes, comfortable and framed, with no spacers: 12px
+    # text, its labels the same size, as written, neither bold nor wrapped, in the theme's
+    # colours, at their fields' start and two fifths of a field wide beside their boxes; its
+    # boxes' borders thin, solid and in the theme's colour, their values placed as their
+    # types put them, each box as wide as its label leaves; a thin frame in the theme's
+    # colour, and no field with a look.
     boxes = widgets(written)[0]
     assert {field: boxes[field] for field in collection_options} == {
         "labels": "above",
         "density": "comfortable",
         "frame": True,
+        "font_size": 12,
+        "header": "plain",
+        "header_font_size": None,
+        "header_bold": False,
+        "header_wrap": False,
+        "header_color": None,
+        "header_font_color": None,
+        "header_align": "auto",
+        "label_width": None,
+        "box_style": "solid",
+        "box_weight": "thin",
+        "box_color": None,
+        "box_align": "auto",
+        "box_width": None,
+        "frame_color": None,
+        "frame_weight": "thin",
+        "column_looks": [],
         "spacers": [],
     }
     # The sheets in the editor's own colours.
@@ -578,8 +672,14 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         (lambda f: widgets(f)[1].update(gridlines="dotted"), "gridlines"),
         # A Collection has none of a Table's own options, and a Table none of a Collection's.
         (lambda f: widgets(f)[0].update(striped=True), "striped"),
-        (lambda f: widgets(f)[0].update(header="caps"), "header"),
+        (lambda f: widgets(f)[0].update(gridlines="all"), "gridlines"),
+        (lambda f: widgets(f)[0].update(header_orientation="up"), "header_orientation"),
         (lambda f: widgets(f)[1].update(labels="above"), "labels"),
+        (lambda f: widgets(f)[1].update(label_width=60), "label_width"),
+        (lambda f: widgets(f)[1].update(box_style="solid"), "box_style"),
+        (lambda f: widgets(f)[1].update(box_width=96), "box_width"),
+        (lambda f: widgets(f)[1].update(box_align="left"), "box_align"),
+        (lambda f: widgets(f)[1].update(header_align="left"), "header_align"),
         (lambda f: widgets(f)[0].update(labels="under"), "labels"),
         (lambda f: widgets(f)[0].update(density="roomy"), "density"),
         (lambda f: widgets(f)[1].update(header="bold"), "header"),
@@ -594,7 +694,34 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         (lambda f: widgets(f)[1].update(grid_color="#dc2626"), "grid_color"),
         # Only a Table has them.
         (lambda f: widgets(f)[0].update(grid_color="#DC2626"), "grid_color"),
-        (lambda f: widgets(f)[0].update(column_looks=[]), "column_looks"),
+        # A Collection's boxes come in a Table's line weights and styles and are as wide as a
+        # Table's columns can be, and its labels take from 1 to 99 percent of a field.
+        (lambda f: widgets(f)[0].update(box_style="double"), "box_style"),
+        (lambda f: widgets(f)[0].update(box_weight="hairline"), "box_weight"),
+        (lambda f: widgets(f)[0].update(box_color="#dc2626"), "box_color"),
+        (lambda f: widgets(f)[0].update(label_width=0), "label_width"),
+        (lambda f: widgets(f)[0].update(label_width=100), "label_width"),
+        (lambda f: widgets(f)[0].update(box_width=1001), "box_width"),
+        (lambda f: widgets(f)[0].update(box_align="middle"), "box_align"),
+        (lambda f: widgets(f)[0].update(header_align="justify"), "header_align"),
+        (lambda f: widgets(f)[0]["column_looks"][0].update(header_align="middle"), "header_align"),
+        (lambda f: widgets(f)[0].update(font_size=15), "font_size"),
+        # A field's look on a Collection is held as a Table column's is.
+        (
+            lambda f: widgets(f)[0]["column_looks"][0].update(column="c_limit"),
+            "has a look for t_policy.c_limit, which it does not show",
+        ),
+        (
+            lambda f: widgets(f)[0]["column_looks"].append(dict(widgets(f)[0]["column_looks"][0])),
+            "has two looks for t_policy.c_state",
+        ),
+        (
+            lambda f: widgets(f)[0].update(
+                column_looks=[{"table": "t_policy", "column": "c_state", "bold": False}]
+            ),
+            "look for t_policy.c_state changes nothing",
+        ),
+        (lambda f: widgets(f)[0]["column_looks"][0].update(width=23), "width"),
         # A column's look is for a column the Table shows, one for each, and changes something.
         (
             lambda f: widgets(f)[1]["column_looks"][0].update(column="c_state"),
@@ -609,6 +736,24 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
                 column_looks=[{"table": "t_layers", "column": "c_limit", "align": "auto"}]
             ),
             "look for t_layers.c_limit changes nothing",
+        ),
+        # A column always shown with its Table changes nothing either, whatever its match;
+        # its Show when is a component's.
+        (
+            lambda f: widgets(f)[1].update(
+                column_looks=[
+                    {
+                        "table": "t_layers",
+                        "column": "c_limit",
+                        "show_when": {"match": "any", "conditions": []},
+                    }
+                ]
+            ),
+            "look for t_layers.c_limit changes nothing",
+        ),
+        (
+            lambda f: widgets(f)[1]["column_looks"][0].update(show_when={"match": "none"}),
+            "show_when.match",
         ),
         (lambda f: widgets(f)[1]["column_looks"][0].update(width=23), "width"),
         (lambda f: widgets(f)[1]["column_looks"][0].update(width=1001), "width"),
@@ -689,6 +834,14 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         (lambda f: f["pages"][0]["sections"][1]["show_when"].update(match="most"), "match"),
         (lambda f: widgets(f)[0].update(type="slider"), "type"),
         (lambda f: f["pages"][0]["show_when"].update(match="none"), "match"),
+        # At least a number of conditions is a whole number from 1, not a tick or text.
+        (lambda f: f["pages"][0]["show_when"].update(match=0), "match"),
+        (lambda f: f["pages"][0]["show_when"].update(match=True), "match"),
+        (lambda f: f["pages"][0]["show_when"].update(match="2"), "match"),
+        (lambda f: f["pages"][0]["show_when"].update(match=1.5), "match"),
+        # A condition or a group is an object: anything else is refused as the shape is.
+        (lambda f: f["pages"][0]["show_when"]["conditions"].append(None), "conditions"),
+        (lambda f: f["pages"][0]["show_when"]["conditions"].append("x"), "conditions"),
         (
             lambda f: widgets(f)[1]["show_when"]["conditions"][0].update(op="has"),
             "op",
@@ -740,6 +893,25 @@ def test_an_unknown_field_or_a_value_outside_the_shape_is_refused(
     ) as caught:
         read_form_document(config(tmp_path))
     assert where in str(caught.value)
+
+
+def test_a_column_look_holding_only_a_show_when_is_kept() -> None:
+    form = json.loads(json.dumps(FORM))
+    show_when = {
+        "match": "any",
+        "conditions": [
+            {"table": "t_policy", "column": "c_state", "op": "equals", "values": ["NY"]}
+        ],
+    }
+    widgets(form)[1]["column_looks"] = [
+        {"table": "t_layers", "column": "c_limit", "show_when": show_when}
+    ]
+
+    look = widgets(FormSpec.model_validate(form).model_dump(mode="json"))[1]["column_looks"]
+
+    assert [(entry["column"], entry["show_when"], entry["bold"]) for entry in look] == [
+        ("c_limit", show_when, False)
+    ]
 
 
 def test_a_section_or_sheet_too_small_for_a_component_is_grown_as_it_is_read_and_said(

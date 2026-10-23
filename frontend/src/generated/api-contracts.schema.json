@@ -732,8 +732,73 @@
     },
     "CollectionWidget": {
       "additionalProperties": false,
-      "description": "A Collection: boxes showing columns of one-row schema tables, ``columns`` across, with\na gap across it wherever one of its ``spacers`` sits among them.",
+      "description": "A Collection: boxes showing columns of one-row schema tables, ``columns`` across, with\na gap across it wherever one of its ``spacers`` sits among them, each of its fields given\na look of its own looking as its ``column_looks`` entry says.",
       "properties": {
+        "box_align": {
+          "default": "auto",
+          "enum": [
+            "auto",
+            "left",
+            "center",
+            "right"
+          ],
+          "title": "Box Align",
+          "type": "string"
+        },
+        "box_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Box Color"
+        },
+        "box_style": {
+          "default": "solid",
+          "enum": [
+            "solid",
+            "dashed",
+            "dotted"
+          ],
+          "title": "Box Style",
+          "type": "string"
+        },
+        "box_weight": {
+          "default": "thin",
+          "enum": [
+            "thin",
+            "medium",
+            "thick"
+          ],
+          "title": "Box Weight",
+          "type": "string"
+        },
+        "box_width": {
+          "anyOf": [
+            {
+              "maximum": 1000,
+              "minimum": 24,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Box Width"
+        },
+        "column_looks": {
+          "items": {
+            "$ref": "#/$defs/ColumnLook"
+          },
+          "title": "Column Looks",
+          "type": "array"
+        },
         "columns": {
           "default": 3,
           "maximum": 12,
@@ -757,19 +822,147 @@
           "title": "Fields",
           "type": "array"
         },
+        "font_size": {
+          "default": 12,
+          "enum": [
+            10,
+            11,
+            12,
+            13,
+            14,
+            16,
+            18
+          ],
+          "title": "Font Size",
+          "type": "integer"
+        },
         "frame": {
           "default": true,
           "title": "Frame",
           "type": "boolean"
+        },
+        "frame_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Frame Color"
+        },
+        "frame_weight": {
+          "default": "thin",
+          "enum": [
+            "thin",
+            "medium",
+            "thick"
+          ],
+          "title": "Frame Weight",
+          "type": "string"
         },
         "h": {
           "exclusiveMinimum": 0,
           "title": "H",
           "type": "integer"
         },
+        "header": {
+          "default": "plain",
+          "enum": [
+            "caps",
+            "plain"
+          ],
+          "title": "Header",
+          "type": "string"
+        },
+        "header_align": {
+          "default": "auto",
+          "enum": [
+            "auto",
+            "left",
+            "center",
+            "right"
+          ],
+          "title": "Header Align",
+          "type": "string"
+        },
+        "header_bold": {
+          "default": false,
+          "title": "Header Bold",
+          "type": "boolean"
+        },
+        "header_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Header Color"
+        },
+        "header_font_color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-F]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Header Font Color"
+        },
+        "header_font_size": {
+          "anyOf": [
+            {
+              "enum": [
+                10,
+                11,
+                12,
+                13,
+                14,
+                16,
+                18
+              ],
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Header Font Size"
+        },
+        "header_wrap": {
+          "default": false,
+          "title": "Header Wrap",
+          "type": "boolean"
+        },
         "id": {
           "title": "Id",
           "type": "string"
+        },
+        "label_width": {
+          "anyOf": [
+            {
+              "maximum": 99,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label Width"
         },
         "labels": {
           "default": "above",
@@ -831,6 +1024,23 @@
         "labels",
         "density",
         "frame",
+        "font_size",
+        "header",
+        "header_font_size",
+        "header_bold",
+        "header_wrap",
+        "header_color",
+        "header_font_color",
+        "header_align",
+        "label_width",
+        "box_style",
+        "box_weight",
+        "box_color",
+        "box_align",
+        "box_width",
+        "frame_color",
+        "frame_weight",
+        "column_looks",
         "spacers"
       ],
       "title": "CollectionWidget",
@@ -856,7 +1066,7 @@
     },
     "ColumnLook": {
       "additionalProperties": false,
-      "description": "How one of a Table's columns looks, its field by table and column id: each colour the\nTable's own while None, its values and label placed as its type puts them while ``auto``,\nand as wide as the grid makes it while ``width`` is None.",
+      "description": "How one of a Table's columns, or one of a Collection's fields, looks and when it shows,\nits field by table and column id: each colour the component's own while None, its values\nplaced as its type puts them, or as the Collection places its boxes', while ``align`` is\n``auto``, its label over a Table's column as its values sit, or as the Collection places\nits labels, while ``header_align`` is, while ``width`` is None, a Table's column as wide as\nthe grid makes it and a Collection's box as wide as the Collection makes it, and shown\nwith its component while ``show_when`` has no conditions.",
       "properties": {
         "align": {
           "default": "auto",
@@ -904,6 +1114,17 @@
           "default": null,
           "title": "Font Color"
         },
+        "header_align": {
+          "default": "auto",
+          "enum": [
+            "auto",
+            "left",
+            "center",
+            "right"
+          ],
+          "title": "Header Align",
+          "type": "string"
+        },
         "header_color": {
           "anyOf": [
             {
@@ -930,6 +1151,9 @@
           "default": null,
           "title": "Header Font Color"
         },
+        "show_when": {
+          "$ref": "#/$defs/ShowWhen"
+        },
         "table": {
           "title": "Table",
           "type": "string"
@@ -954,18 +1178,20 @@
         "column",
         "header_color",
         "header_font_color",
+        "header_align",
         "cell_color",
         "font_color",
         "bold",
         "align",
-        "width"
+        "width",
+        "show_when"
       ],
       "title": "ColumnLook",
       "type": "object"
     },
     "Condition": {
       "additionalProperties": false,
-      "description": "A test of a schema column's value, the column by table and column id.\n\nThe shape is all the file holds a condition to. Whether its column, test and values\nfit one another is ``haute._workbench_visibility.condition_fits``'s question, asked\nwhere conditions are tested: retyping a column can unfit a condition the form holds.",
+      "description": "A test of the value in a one-row table's column, the column by table and column id.\n\nThe shape is all the file holds a condition to. Whether its column, test and values\nfit one another is ``haute._workbench_visibility.condition_fits``'s question, asked\nwhere conditions are tested: retyping a column can unfit a condition the form holds.",
       "properties": {
         "column": {
           "title": "Column",
@@ -1008,6 +1234,55 @@
         "values"
       ],
       "title": "Condition",
+      "type": "object"
+    },
+    "ConditionGroup": {
+      "additionalProperties": false,
+      "description": "Conditions that count as one: holding while all of them hold, any, or at least a\nnumber of them, as ``match`` says. A group holds no group.",
+      "properties": {
+        "conditions": {
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/Condition"
+              },
+              {
+                "$ref": "#/$defs/RowsCondition"
+              },
+              {
+                "$ref": "#/$defs/RowCount"
+              },
+              {
+                "$ref": "#/$defs/RowTotal"
+              }
+            ]
+          },
+          "minItems": 1,
+          "title": "Conditions",
+          "type": "array"
+        },
+        "match": {
+          "anyOf": [
+            {
+              "enum": [
+                "all",
+                "any"
+              ],
+              "type": "string"
+            },
+            {
+              "minimum": 1,
+              "type": "integer"
+            }
+          ],
+          "title": "Match"
+        }
+      },
+      "required": [
+        "match",
+        "conditions"
+      ],
+      "title": "ConditionGroup",
       "type": "object"
     },
     "DispersionEstimateResponse": {
@@ -12478,6 +12753,180 @@
       "title": "RatingLevelsResponse",
       "type": "object"
     },
+    "RowCount": {
+      "additionalProperties": false,
+      "description": "How many of a many-row table's rows, by table id, pass all of its tests in the same\nrow: every row while it has none.",
+      "properties": {
+        "count": {
+          "minimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "op": {
+          "enum": [
+            "equals",
+            "not_equals",
+            "above",
+            "at_least",
+            "below",
+            "at_most"
+          ],
+          "title": "Op",
+          "type": "string"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        },
+        "where": {
+          "items": {
+            "$ref": "#/$defs/RowTest"
+          },
+          "title": "Where",
+          "type": "array"
+        }
+      },
+      "required": [
+        "table",
+        "where",
+        "op",
+        "count"
+      ],
+      "title": "RowCount",
+      "type": "object"
+    },
+    "RowTest": {
+      "additionalProperties": false,
+      "description": "A test a row of a many-row table must pass: a ``Condition``'s column, test and values,\nits table the condition's that holds it.",
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "op": {
+          "enum": [
+            "ticked",
+            "not_ticked",
+            "filled",
+            "empty",
+            "equals",
+            "not_equals",
+            "one_of",
+            "not_one_of",
+            "above",
+            "at_least",
+            "below",
+            "at_most"
+          ],
+          "title": "Op",
+          "type": "string"
+        },
+        "values": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Values",
+          "type": "array"
+        }
+      },
+      "required": [
+        "column",
+        "op",
+        "values"
+      ],
+      "title": "RowTest",
+      "type": "object"
+    },
+    "RowTotal": {
+      "additionalProperties": false,
+      "description": "A total of a number column's values in the rows of a many-row table, by table id,\npassing all of its tests in the same row, every row while it has none, tested against\na number typed as text.",
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "op": {
+          "enum": [
+            "equals",
+            "not_equals",
+            "above",
+            "at_least",
+            "below",
+            "at_most"
+          ],
+          "title": "Op",
+          "type": "string"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        },
+        "total": {
+          "enum": [
+            "sum",
+            "min",
+            "max",
+            "average"
+          ],
+          "title": "Total",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        },
+        "where": {
+          "items": {
+            "$ref": "#/$defs/RowTest"
+          },
+          "title": "Where",
+          "type": "array"
+        }
+      },
+      "required": [
+        "table",
+        "total",
+        "column",
+        "where",
+        "op",
+        "value"
+      ],
+      "title": "RowTotal",
+      "type": "object"
+    },
+    "RowsCondition": {
+      "additionalProperties": false,
+      "description": "A many-row table's rows, by table id, passing all of its tests in the same row: any\nof them, or every one, as ``rows`` says.",
+      "properties": {
+        "rows": {
+          "enum": [
+            "any",
+            "every"
+          ],
+          "title": "Rows",
+          "type": "string"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        },
+        "where": {
+          "items": {
+            "$ref": "#/$defs/RowTest"
+          },
+          "minItems": 1,
+          "title": "Where",
+          "type": "array"
+        }
+      },
+      "required": [
+        "table",
+        "rows",
+        "where"
+      ],
+      "title": "RowsCondition",
+      "type": "object"
+    },
     "SaveCapture": {
       "description": "A write's capture on the clone's save ledger, answered the same way by every route\nthat writes project files: the pipeline's save, the form's save, a test-quote write, a\nproject file written or deleted, and ``POST /api/git/capture``.\n\n``warnings`` are non-fatal, since the write has landed: a capture that failed among\nthem, and anything else left to see to (a transform with no code); an empty list means\nno issues. ``git_sha`` is the ledger commit the write produced when the clone has a\nworking branch, else null. ``identity_required`` is true only when the capture was\nskipped because git has no commit identity (a restored hosted container), for the\neditor to ask for one. ``uncaptured`` names the files, relative to the project in POSIX\nform, that a skipped or failed capture left off the ledger: the editor keeps them and\n``POST /api/git/capture`` takes them later.",
       "properties": {
@@ -13102,23 +13551,47 @@
     },
     "ShowWhen": {
       "additionalProperties": false,
-      "description": "When a sheet, a section or a widget shows: always, without conditions; else while all\nof them hold, or any, as ``match`` says.",
+      "description": "When a sheet, a section, a widget or a widget's field shows: always, without\nconditions; else while all of them hold, any, or at least a number of them, as ``match``\nsays, each a condition or a group of them.",
       "properties": {
         "conditions": {
           "items": {
-            "$ref": "#/$defs/Condition"
+            "oneOf": [
+              {
+                "$ref": "#/$defs/Condition"
+              },
+              {
+                "$ref": "#/$defs/RowsCondition"
+              },
+              {
+                "$ref": "#/$defs/RowCount"
+              },
+              {
+                "$ref": "#/$defs/RowTotal"
+              },
+              {
+                "$ref": "#/$defs/ConditionGroup"
+              }
+            ]
           },
           "title": "Conditions",
           "type": "array"
         },
         "match": {
-          "default": "all",
-          "enum": [
-            "all",
-            "any"
+          "anyOf": [
+            {
+              "enum": [
+                "all",
+                "any"
+              ],
+              "type": "string"
+            },
+            {
+              "minimum": 1,
+              "type": "integer"
+            }
           ],
-          "title": "Match",
-          "type": "string"
+          "default": "all",
+          "title": "Match"
         }
       },
       "required": [

@@ -5,7 +5,7 @@
  * pipeline's tables or a sheet, a section or a component showing what it should. Each
  * operation returns a new form and leaves its input untouched.
  */
-import type { ChartWidget, ColumnLook, Condition, FieldRef, FormSchema, FormSpec, HeadingWidget, Page, SchemaColumn, SchemaTable, Section, ShowWhen, Theme } from "../api/types"
+import type { ChartWidget, ColumnLook, FieldRef, FormSchema, FormSpec, HeadingWidget, Page, SchemaColumn, SchemaTable, Section, ShowWhen, Theme } from "../api/types"
 import { ASCII_IDENTIFIER_RE, apiInputLabelIssue, apiInputLabelIssueMessage } from "./apiInputPorts"
 import { PYTHON_KEYWORDS } from "./globalConstants"
 import {
@@ -16,11 +16,35 @@ import {
   freePlace,
   leastSectionHeight,
   leastSheetWidth,
+  sectionsHeight,
   type Rect,
   type Size,
 } from "./sheetGeometry"
 import { cellProblem, filled, isDay, parseTypedNumber, presetColumn, pricedRows, valuesBasis, type PricedRows, type RowsByTable } from "./sheetValues"
-import { columnKey, conditionFault, fieldKeys, neverShown, sheetVisibility, testLabel } from "./sheetVisibility"
+import {
+  ALWAYS,
+  columnKey,
+  conditionFault,
+  fieldKey,
+  fieldKeys,
+  fieldShowWhen,
+  isGroup,
+  isListCondition,
+  isRowCount,
+  isRowsCondition,
+  isRowTotal,
+  leafConditions,
+  listColumns,
+  neverShown,
+  sheetVisibility,
+  testLabel,
+  TOTALS,
+  type ColumnTest,
+  type ConditionTest,
+  type ListCondition,
+  type ShowWhenEntry,
+  type SingleCondition,
+} from "./sheetVisibility"
 
 /** A section's widget: a Table, a Collection, a Chart or a Heading. */
 export type Widget = Section["widgets"][number]
@@ -32,7 +56,7 @@ export type FieldsWidget = Exclude<Widget, HeadingWidget>
 /** A column's type: the Quote Input's column types. */
 export type ColumnType = SchemaColumn["type"]
 /**
- * How a Table's grid looks, whether its rows are fixed: no Add row and no delete, whether it
+ * How a Table's grid looks, whether its rows are fixed: none inserted or deleted, whether it
  * is transposed: its fields down its side, its rows across, whether its fields' schema
  * groups head their labels, its text, its header, its lines and its frame, and its columns'
  * own looks.
@@ -62,10 +86,39 @@ export type TableOptions = Pick<
   | "frame_weight"
   | "column_looks"
 >
-/** How one of a Table's columns looks: a `ColumnLook` without the field it is for. */
+/** How one of a Table's columns, or one of a Collection's fields, looks: a `ColumnLook` without the field it is for. */
 export type ColumnLookOptions = Omit<ColumnLook, "table" | "column">
-/** How a Collection's boxes look, and the gaps among them. */
-export type CollectionOptions = Pick<Extract<Widget, { type: "collection" }>, "labels" | "density" | "frame" | "spacers">
+/**
+ * How a Collection's boxes look, and the gaps among them: where its labels sit, how dense
+ * and whether framed, and, as a Table's are set, its text, its labels, its boxes' borders
+ * and widths, its frame and its fields' own looks.
+ */
+export type CollectionOptions = Pick<
+  Extract<Widget, { type: "collection" }>,
+  | "labels"
+  | "density"
+  | "frame"
+  | "font_size"
+  | "header"
+  | "header_font_size"
+  | "header_bold"
+  | "header_wrap"
+  | "header_color"
+  | "header_font_color"
+  | "header_align"
+  | "label_width"
+  | "box_style"
+  | "box_weight"
+  | "box_color"
+  | "box_align"
+  | "box_width"
+  | "frame_color"
+  | "frame_weight"
+  | "column_looks"
+  | "spacers"
+>
+/** The look a Table and a Collection share: its density, its frame, its text, its labels' and its columns' own looks. */
+export type SharedLook = Pick<TableOptions, keyof TableOptions & keyof CollectionOptions>
 /** A place in a component's order: one of its fields, or one of a Collection's spacers. */
 export type OrderItem = { kind: "field"; field: FieldRef } | { kind: "spacer" }
 /** What names a Chart's rows, and how it draws. */
@@ -160,27 +213,35 @@ export const createSchemaTable = (spec: FormSpec): SchemaTable => ({
   columns: [],
 })
 
-export const createSchemaColumn = (spec: FormSpec, tableId: string): SchemaColumn => ({
-  id: newId("c"),
-  name: uniqueName("column", schemaTableOf(spec, tableId).columns.map((column) => column.name)),
-  type: "str",
-  label: "",
-  group: "",
-  key: false,
-  required: false,
-  min: null,
-  max: null,
-  options: [],
-  options_source: null,
-  row_per_value: false,
-  index: false,
-  help: "",
-  placeholder: "",
-  default_value: "",
-  number_format: "general",
-  decimal_places: null,
-  use_grouping: true,
-})
+/**
+ * A new column for a table, to go at `at` among its columns (the end by default): of the
+ * type of the column above it, or Text first in the table or under its index.
+ */
+export const createSchemaColumn = (spec: FormSpec, tableId: string, at?: number): SchemaColumn => {
+  const { columns } = schemaTableOf(spec, tableId)
+  const above = columns[(at ?? columns.length) - 1]
+  return {
+    id: newId("c"),
+    name: uniqueName("column", columns.map((column) => column.name)),
+    type: above === undefined || above.index ? "str" : above.type,
+    label: "",
+    group: "",
+    key: false,
+    required: false,
+    min: null,
+    max: null,
+    options: [],
+    options_source: null,
+    row_per_value: false,
+    index: false,
+    help: "",
+    placeholder: "",
+    default_value: "",
+    number_format: "general",
+    decimal_places: null,
+    use_grouping: true,
+  }
+}
 
 /** A table's index: a column holding each row's number, from 1, as the rows stand. */
 export const createIndexColumn = (spec: FormSpec, tableId: string): SchemaColumn => ({
@@ -232,22 +293,62 @@ const dropFields = (draft: FormSpec, drop: (field: FieldRef) => boolean): void =
   for (const widget of allWidgets(draft)) dropShown(widget, drop)
 }
 
-/** Take the conditions `drop` matches out of every sheet, section and widget that tests them. */
-const dropConditions = (draft: FormSpec, drop: (condition: Condition) => boolean): void => {
-  for (const holder of [...draft.pages, ...allSections(draft), ...allWidgets(draft)]) {
-    holder.show_when.conditions = holder.show_when.conditions.filter((condition) => !drop(condition))
+/**
+ * A `show_when` with each condition as `keep` leaves it, those it gives null taken out, a
+ * group left with none going too, as it would hold nothing to test.
+ */
+const withoutConditions = (showWhen: ShowWhen, keep: (condition: SingleCondition) => SingleCondition | null): ShowWhen => {
+  const kept = (conditions: readonly SingleCondition[]): SingleCondition[] =>
+    conditions.flatMap((condition) => {
+      const left = keep(condition)
+      return left === null ? [] : [left]
+    })
+  return {
+    match: showWhen.match,
+    conditions: showWhen.conditions.flatMap((entry): ShowWhenEntry[] => {
+      if (!isGroup(entry)) return kept([entry])
+      const left = kept(entry.conditions)
+      return left.length === 0 ? [] : [{ ...entry, conditions: left }]
+    }),
   }
+}
+
+/** Leave every sheet's, section's, widget's and field's conditions as `keep` leaves them (`withoutConditions`). */
+const dropConditions = (draft: FormSpec, keep: (condition: SingleCondition) => SingleCondition | null): void => {
+  for (const holder of [...draft.pages, ...allSections(draft), ...allWidgets(draft)]) {
+    holder.show_when = withoutConditions(holder.show_when, keep)
+  }
+  for (const widget of allWidgets(draft)) {
+    if (widget.type === "tableInput" || widget.type === "collection") widget.column_looks = looksKeeping(widget.column_looks, keep)
+  }
+}
+
+/** The ids of the columns of its table a condition tests: a one-row table's condition's own, or those a list's tests of a row and its total test. */
+const conditionColumns = (condition: SingleCondition): string[] => (isListCondition(condition) ? listColumns(condition) : [condition.column])
+
+/**
+ * A condition without what it tests of a column: none for a one-row table's condition on
+ * it or a total of it; a list's tests of a row on it taken out, a condition in any or
+ * every row left with none going too, as it needs one.
+ */
+function withoutColumn(condition: SingleCondition, tableId: string, columnId: string): SingleCondition | null {
+  if (condition.table !== tableId) return condition
+  if (!isListCondition(condition)) return condition.column === columnId ? null : condition
+  if (isRowTotal(condition) && condition.column === columnId) return null
+  const where = condition.where.filter((test) => test.column !== columnId)
+  if (where.length === condition.where.length) return condition
+  return isRowsCondition(condition) && where.length === 0 ? null : { ...condition, where }
 }
 
 /**
  * Removing a table removes its columns from the widgets that show them, or label a Chart's
- * rows, and the conditions that test them, and its sample rows.
+ * rows, and the conditions on it, and its sample rows.
  */
 export const removeSchemaTable = (spec: FormSpec, id: string): FormSpec =>
   edit(spec, (draft) => {
     draft.schema.tables = draft.schema.tables.filter((table) => table.id !== id)
     dropFields(draft, (field) => field.table === id)
-    dropConditions(draft, (condition) => condition.table === id)
+    dropConditions(draft, (condition) => (condition.table === id ? null : condition))
     delete draft.sample[id]
   })
 
@@ -352,14 +453,14 @@ export const changeSchemaColumnType = (
 
 /**
  * Removing a column removes it from the widgets that show it, or label a Chart's rows,
- * and the conditions that test it, and its sample values.
+ * and what the conditions test of it (`withoutColumn`), and its sample values.
  */
 export const removeSchemaColumn = (spec: FormSpec, tableId: string, columnId: string): FormSpec =>
   edit(spec, (draft) => {
     const table = schemaTableOf(draft, tableId)
     table.columns = table.columns.filter((column) => column.id !== columnId)
     dropFields(draft, (field) => field.table === tableId && field.column === columnId)
-    dropConditions(draft, (condition) => condition.table === tableId && condition.column === columnId)
+    dropConditions(draft, (condition) => withoutColumn(condition, tableId, columnId))
     for (const row of draft.sample[tableId] ?? []) delete row[columnId]
   })
 
@@ -371,13 +472,14 @@ export const fieldUses = (spec: FormSpec, tableId: string, columnId?: string): W
     ),
   )
 
-/** The sheets, sections and widgets whose conditions test a schema table's columns, or just one of them. */
-export const conditionUses = (spec: FormSpec, tableId: string, columnId?: string): (Page | Section | Widget)[] =>
-  [...spec.pages, ...allSections(spec), ...allWidgets(spec)].filter((holder) =>
-    holder.show_when.conditions.some(
-      (condition) => condition.table === tableId && (columnId === undefined || condition.column === columnId),
-    ),
+/** The sheets, sections and widgets whose conditions, or whose fields' conditions, are on a schema table, or test just one of its columns. */
+export const conditionUses = (spec: FormSpec, tableId: string, columnId?: string): (Page | Section | Widget)[] => {
+  const uses = (showWhen: ShowWhen): boolean =>
+    leafConditions(showWhen).some((condition) => condition.table === tableId && (columnId === undefined || conditionColumns(condition).includes(columnId)))
+  return [...spec.pages, ...allSections(spec), ...allWidgets(spec)].filter(
+    (holder) => uses(holder.show_when) || ("column_looks" in holder && holder.column_looks.some((look) => uses(look.show_when))),
   )
+}
 
 /** The schema table and column a field names, or null when it is no longer in the schema: of a form, or of the schema alone. */
 export function fieldColumn({ schema }: Pick<FormSpec, "schema">, field: FieldRef): { table: SchemaTable; column: SchemaColumn } | null {
@@ -480,6 +582,17 @@ export function setPageWidth(spec: FormSpec, id: string, width: number): FormSpe
   return edit(spec, (draft) => {
     pageOf(draft, id).width = kept
   })
+}
+
+/**
+ * Set a sheet's height, its sections' heights summed (`sectionsHeight`), through its last
+ * section's (`setSectionHeight`), so never under `leastSheetHeight`.
+ */
+export function setPageHeight(spec: FormSpec, id: string, height: number): FormSpec {
+  const { sections } = pageOf(spec, id)
+  const last = sections.at(-1)
+  if (last === undefined) throw new Error(`The sheet ${id} has no sections`)
+  return setSectionHeight(spec, last.id, height - sectionsHeight(sections) + last.height)
 }
 
 /** Remove a sheet with its components; the schema and the sample stay. The last sheet stays. */
@@ -645,61 +758,121 @@ export const TABLE_OPTIONS: Readonly<TableOptions> = {
   column_looks: [],
 }
 
-/** A Table column's look before any is given: the Table's own colours, bold off, placed as its type puts it and as wide as the grid makes it. */
+/**
+ * A Table column's or a Collection field's look before any is given: the component's own
+ * colours, bold off, its label and values placed as the component puts them and as wide as
+ * the grid, or the Collection, makes it, and shown while its component is.
+ */
 export const PLAIN_COLUMN_LOOK: Readonly<ColumnLookOptions> = {
   header_color: null,
   header_font_color: null,
+  header_align: "auto",
   cell_color: null,
   font_color: null,
   bold: false,
   align: "auto",
   width: null,
+  show_when: ALWAYS,
 }
 
 /**
- * How narrow and how wide a Table's column can be set, in pixels, as the server's form
- * takes them (`COLUMN_WIDTH_MIN` and `COLUMN_WIDTH_MAX` in `src/haute/_workbench_form.py`).
+ * How narrow and how wide a Table's column, or a Collection's boxes, can be set, in pixels,
+ * as the server's form takes them (`COLUMN_WIDTH_MIN` and `COLUMN_WIDTH_MAX` in
+ * `src/haute/_workbench_form.py`).
  */
 export const COLUMN_WIDTH_MIN = 24
 export const COLUMN_WIDTH_MAX = 1000
 
-/** The look of a Table's column, its field's: its own, or the plain one while it has none. */
-export const columnLook = (widget: Pick<TableOptions, "column_looks">, field: FieldRef): ColumnLookOptions => {
+/**
+ * How little and how much of its field a Collection's label beside its box can take, in
+ * percent, as the server's form takes them (`LABEL_WIDTH_MIN` and `LABEL_WIDTH_MAX` there).
+ */
+export const LABEL_WIDTH_MIN = 1
+export const LABEL_WIDTH_MAX = 99
+
+/** The look of a Table's column or a Collection's field: its own, or the plain one while it has none. */
+export const columnLook = (widget: Pick<SharedLook, "column_looks">, field: FieldRef): ColumnLookOptions => {
   const look = widget.column_looks.find((at) => at.table === field.table && at.column === field.column)
   if (look === undefined) return PLAIN_COLUMN_LOOK
   const { table: _table, column: _column, ...options } = look
   return options
 }
 
-/** Whether a column look changes nothing, so no Table holds it. */
-const plainLook = (look: ColumnLookOptions): boolean =>
-  (Object.keys(PLAIN_COLUMN_LOOK) as (keyof ColumnLookOptions)[]).every((key) => look[key] === PLAIN_COLUMN_LOOK[key])
+/** Whether a column look sets anything but when its column shows: a fill, a font, a place, a width or bold. */
+export const hasOwnLook = (look: ColumnLookOptions): boolean =>
+  (Object.keys(PLAIN_COLUMN_LOOK) as (keyof ColumnLookOptions)[]).some((key) => key !== "show_when" && look[key] !== PLAIN_COLUMN_LOOK[key])
+
+/** Whether a column look changes nothing, so no Table or Collection holds it. */
+const plainLook = (look: ColumnLookOptions): boolean => !hasOwnLook(look) && look.show_when.conditions.length === 0
 
 /**
- * The form with a Table's column, one it shows, looking as `patch` says over its look as it
- * was; a look that comes to change nothing is taken away, as `clear` takes it away whatever
- * it holds. A new look goes after the others, in the file's order.
+ * A component's looks with each `show_when` as `withoutConditions` leaves it for `keep`, one
+ * left with no conditions always shown and one left changing nothing taken away.
+ */
+const looksKeeping = (looks: readonly ColumnLook[], keep: (condition: SingleCondition) => SingleCondition | null): ColumnLook[] =>
+  looks.flatMap((look) => {
+    const showWhen = withoutConditions(look.show_when, keep)
+    const kept = { ...look, show_when: showWhen.conditions.length === 0 ? alwaysShown() : showWhen }
+    return plainLook(kept) ? [] : [kept]
+  })
+
+/**
+ * The form with a Table's column or a Collection's field, one it shows, looking as `patch`
+ * says over its look as it was, a `show_when` left with no conditions always shown; a look
+ * that comes to change nothing is taken away, and `clear` puts back all but its `show_when`.
+ * A new look goes after the others, in the file's order.
  */
 export const setColumnLook = (spec: FormSpec, widgetId: string, field: FieldRef, patch: Partial<ColumnLookOptions> | "clear"): FormSpec =>
   edit(spec, (draft) => {
     const widget = widgetOf(draft, widgetId)
-    if (widget.type !== "tableInput") throw new Error("Only a Table has column looks")
+    if (widget.type !== "tableInput" && widget.type !== "collection") throw new Error("Only a Table or a Collection has column looks")
     if (!widget.fields.some((shown) => shown.table === field.table && shown.column === field.column)) {
-      throw new Error(`The Table does not show ${field.table}.${field.column}`)
+      throw new Error(`The ${widget.type === "collection" ? "Collection" : "Table"} does not show ${field.table}.${field.column}`)
     }
     const at = widget.column_looks.findIndex((look) => look.table === field.table && look.column === field.column)
-    const next = patch === "clear" ? PLAIN_COLUMN_LOOK : { ...columnLook(widget, field), ...patch }
+    const was = columnLook(widget, field)
+    const next = patch === "clear" ? { ...PLAIN_COLUMN_LOOK, show_when: was.show_when } : { ...was, ...patch }
     if (plainLook(next)) {
       if (at >= 0) widget.column_looks.splice(at, 1)
       return
     }
-    const look: ColumnLook = { table: field.table, column: field.column, ...next }
+    const showWhen = next.show_when.conditions.length === 0 ? alwaysShown() : next.show_when
+    const look: ColumnLook = { table: field.table, column: field.column, ...next, show_when: showWhen }
     if (at >= 0) widget.column_looks[at] = look
     else widget.column_looks.push(look)
   })
 
-/** A new Collection's options: its labels above its boxes, comfortable, framed and with no spacers among them. */
-export const COLLECTION_OPTIONS: Readonly<CollectionOptions> = { labels: "above", density: "comfortable", frame: true, spacers: [] }
+/**
+ * A new Collection's options: its labels above its boxes, comfortable and framed; 12px
+ * text, its labels the same size, as written, neither bold nor wrapped, in the theme's
+ * colours, at their fields' start and two fifths of a field wide beside their boxes; its
+ * boxes' borders thin, solid and in the theme's colour, their values placed as their types
+ * put them, each box as wide as its label leaves; a thin frame in the theme's colour; and
+ * no field with a look of its own and no spacers among them.
+ */
+export const COLLECTION_OPTIONS: Readonly<CollectionOptions> = {
+  labels: "above",
+  density: "comfortable",
+  frame: true,
+  font_size: 12,
+  header: "plain",
+  header_font_size: null,
+  header_bold: false,
+  header_wrap: false,
+  header_color: null,
+  header_font_color: null,
+  header_align: "auto",
+  label_width: null,
+  box_style: "solid",
+  box_weight: "thin",
+  box_color: null,
+  box_align: "auto",
+  box_width: null,
+  frame_color: null,
+  frame_weight: "thin",
+  column_looks: [],
+  spacers: [],
+}
 
 /** A new Chart's options: its rows numbered, columns, upright, unstacked, its legend at the bottom and no data labels. */
 export const CHART_OPTIONS: Readonly<ChartOptions> = {
@@ -723,8 +896,8 @@ export function createWidget(type: WidgetType, rect: Rect): Widget {
   const showing = { title: "", fields: [] as FieldRef[], show_when: alwaysShown() }
   switch (type) {
     case "collection":
-      // Spacers of its own, not the options' one list.
-      return { ...placed, type, ...showing, columns: 3, ...COLLECTION_OPTIONS, spacers: [] }
+      // Column looks and spacers of its own, not the options' one lists.
+      return { ...placed, type, ...showing, columns: 3, ...COLLECTION_OPTIONS, column_looks: [], spacers: [] }
     case "chart":
       return { ...placed, type, ...showing, ...CHART_OPTIONS }
     case "tableInput":
@@ -788,8 +961,8 @@ export function addWidgetInFreePlace(spec: FormSpec, sectionId: string, type: Wi
 
 /**
  * What any component can be given; `rows` and the Table's options are a Table's alone,
- * `columns` and the Collection's options a Collection's, but for the `density` and `frame`
- * the two share, the Chart's options a Chart's, and `text`, `description` and the
+ * `columns` and the Collection's options a Collection's, but for the look the two share
+ * (`SharedLook`), the Chart's options a Chart's, and `text`, `description` and the
  * Heading's options a Heading's, which has no `title` or `fields`.
  */
 export type WidgetPatch = Partial<Rect> & {
@@ -805,8 +978,8 @@ export type WidgetPatch = Partial<Rect> & {
   Partial<ChartOptions> &
   Partial<HeadingOptions>
 
-/** What a Table and a Collection both have: how dense they are, and whether they are framed. */
-const TABLE_OR_COLLECTION = ["density", "frame"]
+/** What a Table and a Collection both have: the keys both kinds' options hold (`SharedLook`). */
+const TABLE_OR_COLLECTION = Object.keys(TABLE_OPTIONS).filter((key) => key in COLLECTION_OPTIONS)
 const TABLE_ONLY = ["rows", ...Object.keys(TABLE_OPTIONS).filter((key) => !TABLE_OR_COLLECTION.includes(key))]
 const COLLECTION_ONLY = ["columns", ...Object.keys(COLLECTION_OPTIONS).filter((key) => !TABLE_OR_COLLECTION.includes(key))]
 const CHART_ONLY = Object.keys(CHART_OPTIONS)
@@ -936,7 +1109,16 @@ export function pasteWidget(spec: FormSpec, widget: Widget, sectionId: string): 
   const copy: Widget = { ...structuredClone(widget), id, ...at }
   const gone = (field: FieldRef) => fieldColumn(spec, field) === null
   dropShown(copy, gone)
-  copy.show_when.conditions = copy.show_when.conditions.filter((condition) => !gone(condition))
+  const keep = (condition: SingleCondition): SingleCondition | null => {
+    if (!spec.schema.tables.some((table) => table.id === condition.table)) return null
+    let kept: SingleCondition | null = condition
+    for (const column of conditionColumns(condition)) {
+      if (kept !== null && gone({ table: condition.table, column })) kept = withoutColumn(kept, condition.table, column)
+    }
+    return kept
+  }
+  copy.show_when = withoutConditions(copy.show_when, keep)
+  if (copy.type === "tableInput" || copy.type === "collection") copy.column_looks = looksKeeping(copy.column_looks, keep)
   return { spec: addWidget(spec, sectionId, copy), id }
 }
 
@@ -1017,8 +1199,8 @@ function setOrder(widget: FieldsWidget, items: readonly OrderItem[]): void {
   }
   widget.fields = fields
   if (widget.type === "collection") widget.spacers = fields.length === 0 ? [] : spacers
-  // A column the Table stops showing loses its look.
-  if (widget.type === "tableInput") {
+  // A column the Table or the Collection stops showing loses its look.
+  if (widget.type === "tableInput" || widget.type === "collection") {
     widget.column_looks = widget.column_looks.filter((look) => fields.some((field) => field.table === look.table && field.column === look.column))
   }
 }
@@ -1269,6 +1451,14 @@ export function widgetProblems(spec: FormSpec): WidgetProblem[] {
       }
     }
     for (const message of conditionProblems(spec, widget, never)) problem(message)
+    if (widget.type !== "tableInput" && widget.type !== "collection") continue
+    for (const field of widget.fields) {
+      const holder = { id: fieldKey(widget.id, field.table, field.column), show_when: fieldShowWhen(widget, field) }
+      const label = columnLabel(fieldColumn(spec, field)?.column)
+      for (const message of conditionProblems(spec, holder, never, "fields")) {
+        problems.push({ widgetId: widget.id, message: `${name}'s field "${label}" ${message}` })
+      }
+    }
   }
   return problems
 }
@@ -1333,7 +1523,7 @@ export function sectionProblems(spec: FormSpec): SectionProblem[] {
 }
 
 /** The tests that compare a value with the condition's own, which allowed values should be. */
-const EQUALITY_TESTS: ReadonlySet<Condition["op"]> = new Set(["equals", "not_equals", "one_of", "not_one_of"])
+const EQUALITY_TESTS: ReadonlySet<ConditionTest> = new Set(["equals", "not_equals", "one_of", "not_one_of"])
 
 /** Whether `value` is one of `column`'s allowed values, a number's read as numbers. */
 function allowed(column: SchemaColumn, value: string): boolean {
@@ -1347,52 +1537,127 @@ function allowed(column: SchemaColumn, value: string): boolean {
 /**
  * What stops a sheet's, a section's or a component's conditions doing what they say: a
  * condition that cannot hold as written (`conditionFault`); a value tested for equality that
- * is not one of its column's allowed values, which no value chosen from them can match; and,
- * while neither, nothing able to show it again once hidden (`neverShown`).
+ * is not one of its column's allowed values, which no value chosen from them can match; a
+ * number `match` asking for more conditions than its `show_when` or group holds; and,
+ * while neither, nothing able to show it again once hidden (`neverShown`), its `id` a
+ * field's `fieldKey` for a field, whose columns waited on hide with other `fields`.
  */
-function conditionProblems(spec: FormSpec, holder: Page | Section | Widget, never: ReadonlyMap<string, Condition>): string[] {
+function conditionProblems(
+  spec: FormSpec,
+  holder: { id: string; show_when: ShowWhen },
+  never: ReadonlyMap<string, SingleCondition>,
+  hidingWith: "components" | "fields" = "components",
+): string[] {
   const problems: string[] = []
-  for (const condition of holder.show_when.conditions) {
+  const { match, conditions } = holder.show_when
+  // With no conditions it always shows, whatever the match asks for.
+  if (typeof match === "number" && conditions.length > 0 && match > conditions.length) {
+    problems.push(`needs at least ${match} conditions to hold but has only ${conditions.length}, so it never shows`)
+  }
+  for (const entry of conditions) {
+    if (isGroup(entry) && typeof entry.match === "number" && entry.match > entry.conditions.length) {
+      problems.push(`has a group that needs at least ${entry.match} conditions to hold but holds only ${entry.conditions.length}`)
+    }
+  }
+  for (const condition of leafConditions(holder.show_when)) {
     const fault = conditionFault(spec, condition)
     if (fault !== null) {
       problems.push(fault)
       continue
     }
-    // A condition that fits names a column the schema has.
-    const column = fieldColumn(spec, condition)?.column
-    if (!column?.options.length || !EQUALITY_TESTS.has(condition.op)) continue
-    for (const value of condition.values) {
-      if (!allowed(column, value)) problems.push(`tests ${column.name} against "${value}", which isn't one of its allowed values`)
+    // A condition that fits names a table, and the columns of it it tests, the schema has.
+    const table = schemaTableOf(spec, condition.table)
+    const tests: ColumnTest[] = isListCondition(condition) ? condition.where : [condition]
+    for (const test of tests) {
+      const column = table.columns.find((candidate) => candidate.id === test.column) as SchemaColumn
+      if (!column.options.length || !EQUALITY_TESTS.has(test.op)) continue
+      for (const value of test.values) {
+        if (!allowed(column, value)) problems.push(`tests ${column.name} against "${value}", which isn't one of its allowed values`)
+      }
     }
   }
   const waiting = never.get(holder.id)
   if (waiting !== undefined) {
-    const name = fieldColumn(spec, waiting)?.column.name ?? waiting.column
     // Typed into a Table or a Collection: a Chart only plots and a Heading shows none, so neither counts.
-    const entered = allWidgets(spec).some((widget) => fieldKeys(widget).includes(columnKey(waiting.table, waiting.column)))
-    problems.push(
-      entered
-        ? `waits on ${name}, which is only on components that hide with it, so it could not show again once hidden`
-        : `waits on ${name}, which is on no Table or Collection`,
-    )
+    const entered = (keys: string[]) => allWidgets(spec).some((widget) => fieldKeys(widget).some((key) => keys.includes(key)))
+    if (isListCondition(waiting)) {
+      // A condition on rows that never shows again fits, so its table and the columns it tests are in the schema.
+      const table = schemaTableOf(spec, waiting.table)
+      const tested = listColumns(waiting)
+      const missing = tested.find((id) => !entered([columnKey(table.id, id)]))
+      const keys = table.columns.filter((column) => !column.index).map((column) => columnKey(table.id, column.id))
+      if (missing !== undefined) {
+        problems.push(`waits on ${(table.columns.find((column) => column.id === missing) as SchemaColumn).name}, which is on no Table`)
+      } else {
+        problems.push(
+          tested.length > 0 || entered(keys)
+            ? `waits on the rows of ${table.name}, which are only on ${hidingWith} that hide with it, so it could not show again once hidden`
+            : `waits on the rows of ${table.name}, which are on no Table`,
+        )
+      }
+    } else {
+      const name = fieldColumn(spec, waiting)?.column.name ?? waiting.column
+      problems.push(
+        entered([columnKey(waiting.table, waiting.column)])
+          ? `waits on ${name}, which is only on ${hidingWith} that hide with it, so it could not show again once hidden`
+          : `waits on ${name}, which is on no Table or Collection`,
+      )
+    }
   }
   return problems
 }
 
-/** A condition read by its column's label: `Cover BI is ticked`, `Class of business is one of Motor, Fleet`. */
-export function conditionText(spec: FormSpec, condition: Condition): string {
-  const found = fieldColumn(spec, condition)
-  const label = found === null ? "A missing column" : found.column.label || readableName(found.column.name)
-  const test = testLabel(condition.op, found?.column.type ?? "str")
-  return condition.values.length === 0 ? `${label} ${test}` : `${label} ${test} ${condition.values.join(", ")}`
+/**
+ * A condition read by its columns' labels and its table's name: `Cover BI is ticked`,
+ * `Class of business is one of Motor, Fleet`, `Age is less than 25 in any row of drivers`,
+ * `Number of rows in perils where Include coverage is ticked is at least 2`, `Sum of Limit in
+ * perils is greater than 1000000`.
+ */
+export function conditionText(spec: Pick<FormSpec, "schema">, condition: SingleCondition): string {
+  if (isListCondition(condition)) return listText(spec, condition)
+  return testText(fieldColumn(spec, condition)?.column ?? null, condition)
 }
 
-/** When a sheet, a section or a component shows, as its eye's title says it. */
-export function showWhenText(spec: FormSpec, showWhen: ShowWhen): string {
-  const parts = showWhen.conditions.map((condition) => conditionText(spec, condition))
+/** A column's label, or what stands for one gone. */
+const columnLabel = (column: SchemaColumn | null | undefined): string =>
+  column === null || column === undefined ? "A missing column" : column.label || readableName(column.name)
+
+/** A test of a column read by its label: `Age is less than 25`. */
+function testText(column: SchemaColumn | null | undefined, test: ColumnTest): string {
+  const words = testLabel(test.op, column?.type ?? "str")
+  const text = `${columnLabel(column)} ${words}`
+  return test.values.length === 0 ? text : `${text} ${test.values.join(", ")}`
+}
+
+/** A condition on a list's rows read as `conditionText` says. */
+function listText(spec: Pick<FormSpec, "schema">, condition: ListCondition): string {
+  const table = spec.schema.tables.find((candidate) => candidate.id === condition.table)
+  const name = table?.name ?? "a missing table"
+  const columnOf = (id: string) => table?.columns.find((column) => column.id === id)
+  const tests = condition.where.map((test) => testText(columnOf(test.column), test)).join(" and ")
+  if (isRowsCondition(condition)) return `${tests} in ${condition.rows} row of ${name}`
+  const where = condition.where.length === 0 ? "" : ` where ${tests}`
+  if (isRowCount(condition)) return `Number of rows in ${name}${where} ${testLabel(condition.op, "int")} ${condition.count}`
+  const kind = TOTALS.find((total) => total.value === condition.total)?.label ?? condition.total
+  return `${kind} of ${columnLabel(columnOf(condition.column))} in ${name}${where} ${testLabel(condition.op, "float")} ${condition.value}`
+}
+
+/** A match as the sentences say it: `all`, `any` or `at least 2`. */
+const matchText = (match: ShowWhen["match"]): string => (typeof match === "number" ? `at least ${match}` : match)
+
+/**
+ * When a sheet, a section or a component shows, as its eye's title says it: a group of two or
+ * more as `any of (…, …)`, and one asking for at least a number however many it holds.
+ */
+export function showWhenText(spec: Pick<FormSpec, "schema">, showWhen: ShowWhen): string {
+  const parts = showWhen.conditions.map((entry) => {
+    if (!isGroup(entry)) return conditionText(spec, entry)
+    const texts = entry.conditions.map((condition) => conditionText(spec, condition))
+    return texts.length === 1 && typeof entry.match !== "number" ? texts[0] : `${matchText(entry.match)} of (${texts.join(", ")})`
+  })
   if (parts.length === 0) return "Always shows"
-  if (parts.length === 1) return `Shows when ${parts[0]}`
-  return `Shows when ${showWhen.match} of these are true: ${parts.join("; ")}`
+  if (parts.length === 1 && typeof showWhen.match !== "number") return `Shows when ${parts[0]}`
+  return `Shows when ${matchText(showWhen.match)} of these are true: ${parts.join("; ")}`
 }
 
 // ─── Problems ────────────────────────────────────────────────────────────

@@ -1,9 +1,10 @@
 /**
  * Pointer interactions on a sheet while building (specs/workbench): dragging a new
  * component or a new section out of the palette, moving or resizing a component by its
- * frame or a handle, and setting a section's height by its handle or moving the section by
- * its header; and deleting a section, asking first (`confirmed`). Positions on the sheet are in unzoomed
- * pixels, each section under the bar that names it while building (`SECTION_HEADER`);
+ * frame or a handle, setting a section's height by its handle or moving the section by its
+ * header, and setting the sheet's width or height by its own handles; and deleting a
+ * section, asking first (`confirmed`). Positions on the sheet are in unzoomed pixels, each
+ * section under the bar that names it while building (`SECTION_HEADER`);
  * a gesture follows the pointer on the live sheet, so a scroll while dragging is followed
  * too, and ends at a release, on a release outside the window (a move with no button down)
  * and when the window loses the focus. A move or a resize is one undo step: the form is
@@ -12,7 +13,7 @@
  * records nothing and only the section a component lands in grows.
  */
 import type { PointerEvent as ReactPointerEvent } from "react"
-import type { Page, Section } from "../api/types"
+import type { FormSpec, Page, Section } from "../api/types"
 import { confirmed } from "../stores/useQuestionStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { activePage } from "../stores/useWorkbenchViewStore"
@@ -25,6 +26,8 @@ import {
   resizeRect,
   SECTION_HEADER,
   sectionAt,
+  sectionsHeight,
+  sheetHeight,
   snap,
   stackBottom,
   stackSections,
@@ -44,6 +47,8 @@ import {
   moveSection,
   placeWidget,
   removeSection,
+  setPageHeight,
+  setPageWidth,
   setSectionHeight,
   splitSection,
   updateWidget,
@@ -382,7 +387,52 @@ export function startSectionResize(e: ReactPointerEvent, sectionId: string): voi
     },
     () => useWorkbenchFormStore.getState().endGesture(),
   )
-  useWorkbenchFormStore.getState().beginGesture(pressed, stop)
+  beginEdgeGesture(pressed, found.page, stop)
+}
+
+/**
+ * Begin a gesture dragging an edge, a section's bottom or the sheet's, on `page` in the form
+ * as `pressed`: the sheet's size as pressed held in the view store until the gesture stops,
+ * so the viewport scrolls over no less. A sheet growing shorter or narrower would otherwise
+ * shrink what the viewport scrolls over, and the scroll it gives up carries the sheet under
+ * the pointer, which then moves the edge further still.
+ */
+function beginEdgeGesture(pressed: FormSpec, page: Page, stop: () => void): void {
+  useWorkbenchFormStore.getState().beginGesture(pressed, () => {
+    stop()
+    useWorkbenchViewStore.getState().setHeldSize(null)
+  })
+  // Once the gesture has begun, since beginning one stops any other, which lets its size go.
+  useWorkbenchViewStore.getState().setHeldSize({ w: page.width, h: sheetHeight(stackBottom(buildStack(page))) })
+}
+
+/**
+ * Drag one of the showing sheet's handles to set its width, or its height through its last
+ * section's (`setPageHeight`), from the size as pressed, snapped, one undo step, a gesture as
+ * a section's resize is.
+ */
+export function startSheetResize(e: ReactPointerEvent, pageId: string, edge: "width" | "height"): void {
+  if (e.button !== 0) return
+  e.stopPropagation()
+  e.preventDefault()
+  leaveField(e.currentTarget)
+  const { form } = useWorkbenchFormStore.getState()
+  const page = form?.pages.find((sheet) => sheet.id === pageId)
+  if (form === null || page === undefined) return
+  const pressed = form
+  const { width } = page
+  const height = sectionsHeight(page.sections)
+  const stop = track(
+    e,
+    edge === "width" ? "col-resize" : "row-resize",
+    (dx, dy) => {
+      const store = useWorkbenchFormStore.getState()
+      if (store.form === null) return
+      store.setFormRaw(edge === "width" ? setPageWidth(pressed, pageId, snap(width + dx)) : setPageHeight(pressed, pageId, snap(height + dy)))
+    },
+    () => useWorkbenchFormStore.getState().endGesture(),
+  )
+  beginEdgeGesture(pressed, page, stop)
 }
 
 /**

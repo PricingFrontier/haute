@@ -4,13 +4,13 @@
  * Preview), whose values Preview shows (the form's sample, or the underwriter app's
  * quote), which sheet, the selected component, the selected section or the sheet's own
  * panel, the sheet's zoom, a component being dragged out of the palette, a section being
- * moved by its header, the properties panel's width and the pane it last showed for each
- * component, the component copied, and the sheet and viewport elements that drops are placed
- * on and the zoom fits to. None of it is part of the form, so none is saved or undone.
+ * moved by its header, the sheet's size as pressed while an edge is dragged, the properties
+ * panel's width and the pane it last showed for each component, the component copied, and
+ * the sheet and viewport elements that drops are placed on and the zoom fits to. None of it is part of the form, so none is saved or undone.
  */
 import { create } from "zustand"
 import type { FormSpec, Page, Section } from "../api/types"
-import { SHEET_PADDING, fitZoom as zoomToFit } from "../utils/sheetGeometry"
+import { SHEET_PADDING, fitZoom as zoomToFit, type Size } from "../utils/sheetGeometry"
 import { sheetVisibility, type SheetVisibility } from "../utils/sheetVisibility"
 import { findWidget, type PaletteType, type Widget } from "../utils/workbenchForm"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
@@ -87,6 +87,12 @@ interface WorkbenchViewState {
   fitted: boolean
   creating: Creating | null
   movingSection: MovingSection | null
+  /**
+   * The sheet's size as pressed, its height as drawn while building, while one of its
+   * handles or a section's is dragged: the viewport scrolls over no less, so a sheet growing
+   * shorter or narrower never scrolls the edge from the pointer.
+   */
+  heldSize: Size | null
   /** The properties panel's width, kept between openings. */
   panelWidth: number
   /** The pane each component's properties panel last showed, by component id; Config until another is chosen. */
@@ -114,6 +120,7 @@ interface WorkbenchViewState {
   fitZoom: () => void
   setCreating: (creating: Creating | null) => void
   setMovingSection: (moving: MovingSection | null) => void
+  setHeldSize: (size: Size | null) => void
   setPanelWidth: (width: number) => void
   setWidgetPane: (id: string, pane: WidgetPane) => void
   setCopied: (copied: Copied | null) => void
@@ -132,6 +139,7 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   fitted: false,
   creating: null,
   movingSection: null,
+  heldSize: null,
   panelWidth: DEFAULT_PANEL_WIDTH,
   widgetPanes: {},
   copied: null,
@@ -162,6 +170,7 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   },
   setCreating: (creating) => set({ creating }),
   setMovingSection: (movingSection) => set({ movingSection }),
+  setHeldSize: (heldSize) => set({ heldSize }),
   setPanelWidth: (panelWidth) => set({ panelWidth }),
   setWidgetPane: (id, pane) => set((s) => ({ widgetPanes: { ...s.widgetPanes, [id]: pane } })),
   setCopied: (copied) => set({ copied }),
