@@ -31,6 +31,7 @@ from haute._workbench_form import (
     blank_form,
     form_file_revision,
     form_revision,
+    identity_clashes,
     quote_details_table,
     read_form_document,
     render_form,
@@ -64,6 +65,13 @@ def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
     }
 
 
+#: The quote's reference and option, which every table but quote_details leads with.
+IDENTITY: list[dict[str, Any]] = [
+    {**column("reference"), "id": "quote_reference"},
+    {**column("option", "int"), "id": "quote_option"},
+]
+
+
 # The test project's shape: one-row and many-row input tables, an index column, an output
 # table, a Collection, a Table and a Chart in one section and a Heading in a second, the
 # Table and the second section each shown while a condition holds, and a sample typed into
@@ -90,6 +98,7 @@ FORM: dict[str, Any] = {
                 "role": "input",
                 "rows": "one",
                 "columns": [
+                    *IDENTITY,
                     column(
                         "state",
                         options=["CA", "NY"],
@@ -115,6 +124,7 @@ FORM: dict[str, Any] = {
                 "role": "input",
                 "rows": "many",
                 "columns": [
+                    *IDENTITY,
                     column("layer", "int", key=True, index=True),
                     column("limit", "float"),
                     column("layer_name"),
@@ -125,7 +135,7 @@ FORM: dict[str, Any] = {
                 "name": "pricing_output",
                 "role": "output",
                 "rows": "one",
-                "columns": [column("premium", "float")],
+                "columns": [*IDENTITY, column("premium", "float")],
             },
         ]
     },
@@ -547,7 +557,7 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
             del col["index"]
             for field in display:
                 del col[field]
-    sparse["schema"]["tables"][1]["columns"][0]["index"] = True
+    sparse["schema"]["tables"][1]["columns"][2]["index"] = True
     for field in options:
         del widgets(sparse)[1][field]
     for field in collection_options:
@@ -565,12 +575,18 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
     spec = read_form_document(config(tmp_path)).spec
 
     assert spec.sample == {}
-    assert [c.index for c in spec.data_schema.tables[2].columns] == [True, False, False]
+    assert [c.index for c in spec.data_schema.tables[2].columns] == [
+        False,
+        False,
+        True,
+        False,
+        False,
+    ]
     written = json.loads(render_form(spec))
     assert written["sample"] == {}
     assert all("index" in c for t in written["schema"]["tables"] for c in t["columns"])
-    assert written["schema"]["tables"][1]["columns"][1] == column("exposure", "float", min=0.0)
-    assert written["schema"]["tables"][1]["columns"][0]["default_value"] == ""
+    assert written["schema"]["tables"][1]["columns"][3] == column("exposure", "float", min=0.0)
+    assert written["schema"]["tables"][1]["columns"][2]["default_value"] == ""
     grid = widgets(written)[1]
     assert {field: grid[field] for field in options} == {
         "row_numbers": True,
@@ -877,8 +893,8 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
             "Two tables have the id 't_policy'",
         ),
         (
-            lambda f: f["schema"]["tables"][0]["columns"][1].update(
-                id=f["schema"]["tables"][0]["columns"][0]["id"]
+            lambda f: f["schema"]["tables"][0]["columns"][3].update(
+                id=f["schema"]["tables"][0]["columns"][2]["id"]
             ),
             "Two columns of policy_details have the id",
         ),
@@ -1073,7 +1089,7 @@ def test_a_form_saved_before_is_renewal_takes_it_on_after_the_columns_it_has(
     tmp_path: Path,
 ) -> None:
     # As a project saved before is_renewal holds it: the first eleven, one with a label.
-    held = _with_details_table(lambda table: table["columns"].pop())
+    held = _with_details_table(lambda table: table.update(columns=table["columns"][:11]))
     held["schema"]["tables"][0]["columns"][2]["label"] = "Insured name"
     assert [c["name"] for c in held["schema"]["tables"][0]["columns"]] == [
         name for _, name, _ in QUOTE_DETAILS_FIRST
@@ -1086,28 +1102,109 @@ def test_a_form_saved_before_is_renewal_takes_it_on_after_the_columns_it_has(
 
     details = spec.data_schema.tables[0]
     assert [(c.id, c.name, c.type) for c in details.columns] == list(QUOTE_DETAILS_COLUMNS)
-    assert details.columns[-1] == SchemaColumn(id="qd_is_renewal", name="is_renewal", type="bool")
+    assert details.columns[11] == SchemaColumn(id="qd_is_renewal", name="is_renewal", type="bool")
+    assert details.columns[12] == SchemaColumn(id="qd_option", name="option", type="int")
     assert details.columns[2].label == "Insured name"
     # Written with it, and the data it was read from left as it was.
     written = json.loads(render_form(spec))["schema"]["tables"][0]["columns"]
-    assert written[-1]["name"] == "is_renewal"
+    assert [column["name"] for column in written[11:]] == ["is_renewal", "option"]
     assert json.dumps(held) == as_saved
-    assert FormSpec.model_validate(held).data_schema.tables[0].columns[-1].name == "is_renewal"
+    assert FormSpec.model_validate(held).data_schema.tables[0].columns[-1].name == "option"
+
+
+def _without_identity() -> dict[str, Any]:
+    form = _with_details_table()
+    for table in form["schema"]["tables"][1:]:
+        table["columns"] = table["columns"][2:]
+    return form
+
+
+def test_every_table_but_quote_details_takes_the_quote_identity_at_its_head() -> None:
+    held = _without_identity()
+    as_saved = json.dumps(held)
+
+    spec = FormSpec.model_validate(held)
+
+    identity = [
+        SchemaColumn(id="quote_reference", name="reference", type="str"),
+        SchemaColumn(id="quote_option", name="option", type="int"),
+    ]
+    details, *others = spec.data_schema.tables
+    assert [table.columns[:2] for table in others] == [identity] * len(others)
+    assert [c.name for c in others[0].columns[2:]] == ["state", "exposure"]
+    assert not any(c.id.startswith("quote_") for c in details.columns)
+    # The data it was read from is left as it was.
+    assert json.dumps(held) == as_saved
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda columns: columns[0].update(name="ref"),
+        lambda columns: columns[1].update(type="float"),
+        lambda columns: columns.insert(0, columns.pop(2)),
+        lambda columns: columns[0].update(label="Reference"),
+        lambda columns: columns[1].update(help="Which option"),
+        lambda columns: columns[1].update(required=True),
+        lambda columns: columns[0].update(key=True),
+        lambda columns: columns.pop(1),
+    ],
+)
+def test_the_quote_identity_of_a_table_is_haute_s_and_locked(change: Any) -> None:
+    form = json.loads(json.dumps(FORM))
+    change(form["schema"]["tables"][1]["columns"])
+
+    with pytest.raises(ValidationError, match="layers leads with the quote's reference and option"):
+        FormSpec.model_validate(form)
+
+
+def test_a_table_with_its_own_reference_or_option_keeps_it_and_the_clash_is_named() -> None:
+    held = _without_identity()
+    policy = held["schema"]["tables"][1]
+    # Its own reference first, Text, as the identity's would be, and an option further on.
+    policy["columns"].insert(0, column("reference"))
+    policy["columns"].append(column("option", "float"))
+
+    spec = FormSpec.model_validate(held)
+
+    table = spec.data_schema.tables[1]
+    assert [c.id for c in table.columns] == ["c_reference", "c_state", "c_exposure", "c_option"]
+    assert identity_clashes(spec) == [
+        f"policy_details.{name} has a name Haute keeps for the quote's {name} in every table: "
+        "rename it, and the table takes the quote's reference and option at the next save"
+        for name in ("reference", "option")
+    ]
+    # Renamed, the columns keep their ids, and so their values, and the table takes the
+    # identity when the form is next read or saved.
+    policy["columns"][0]["name"] = "broker_reference"
+    policy["columns"][-1]["name"] = "option_load"
+    renamed = FormSpec.model_validate(held)
+    assert [c.id for c in renamed.data_schema.tables[1].columns] == [
+        "quote_reference",
+        "quote_option",
+        "c_reference",
+        "c_state",
+        "c_exposure",
+        "c_option",
+    ]
+    assert identity_clashes(renamed) == []
 
 
 def test_a_form_saved_by_any_earlier_haute_takes_on_the_columns_added_since(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Today's twelve, and the eleven before is_renewal, as a later Haute with one more reads them.
-    twelve = _with_details_table()
-    eleven = _with_details_table(lambda table: table["columns"].pop())
+    # Today's thirteen, the twelve before option and the eleven before is_renewal, as a later
+    # Haute with one more reads them.
+    thirteen = _with_details_table()
+    twelve = _with_details_table(lambda table: table["columns"].pop())
+    eleven = _with_details_table(lambda table: table.update(columns=table["columns"][:11]))
     swapped = _with_details_table(
         lambda table: table["columns"].insert(10, table["columns"].pop(11))
     )
     later = (*QUOTE_DETAILS_COLUMNS, ("qd_renewal_of", "renewal_of", "str"))
     monkeypatch.setattr("haute._workbench_form.QUOTE_DETAILS_COLUMNS", later)
 
-    for held in (twelve, eleven):
+    for held in (thirteen, twelve, eleven):
         details = FormSpec.model_validate(held).data_schema.tables[0]
         assert [(c.id, c.name, c.type) for c in details.columns] == list(later)
     # Out of order, they are no Haute's: left as they are, and refused.

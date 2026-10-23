@@ -1786,10 +1786,26 @@ export const QUOTE_DETAILS_COLUMNS: ReadonlyArray<readonly [id: string, name: st
   ["qd_assignee", "assignee", "str"],
   ["qd_archived", "archived", "bool"],
   ["qd_is_renewal", "is_renewal", "bool"],
+  ["qd_option", "option", "int"],
 ]
 
 /** The columns the underwriter app sets over whatever is typed, which take no rules (`QUOTE_DETAILS_MANAGED`). */
-export const QUOTE_DETAILS_MANAGED: ReadonlySet<string> = new Set(["qd_reference", "qd_stage", "qd_assignee", "qd_archived"])
+export const QUOTE_DETAILS_MANAGED: ReadonlySet<string> = new Set(["qd_reference", "qd_option", "qd_stage", "qd_assignee", "qd_archived"])
+
+/**
+ * The quote's identity at the head of every other table, as id, name and type
+ * (`IDENTITY_COLUMNS`): the same ids in every table, locked, and never offered to the sheets.
+ */
+export const IDENTITY_COLUMNS: ReadonlyArray<readonly [id: string, name: string, type: SchemaColumn["type"]]> = [
+  ["quote_reference", "reference", "str"],
+  ["quote_option", "option", "int"],
+]
+const IDENTITY_IDS: ReadonlySet<string> = new Set(IDENTITY_COLUMNS.map(([id]) => id))
+/** The names the identity holds in every table, which a table's own column cannot take. */
+export const IDENTITY_NAMES: ReadonlySet<string> = new Set(IDENTITY_COLUMNS.map(([, name]) => name))
+
+/** Whether `column` is one of the quote's identity columns Haute keeps at the head of a table. */
+export const isIdentityColumn = (column: Pick<SchemaColumn, "id">): boolean => IDENTITY_IDS.has(column.id)
 
 /** Whether `table` is Haute's quote_details table, whose structure the editor does not change. */
 export const isQuoteDetails = (table: Pick<SchemaTable, "id">): boolean => table.id === QUOTE_DETAILS_ID

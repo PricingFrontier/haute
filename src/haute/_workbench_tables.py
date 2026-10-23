@@ -7,7 +7,10 @@ many, and its typed columns, ``{"name": "equipment", "rows": "many", "columns": 
 "value", "type": "float"}]}``. The form's rules, labels and keys stay in the form. In a
 quote, and in a priced quote, a one-row table is an object under its name and a many-row
 table a list of objects, ``{"policy_details": {...}, "equipment": [{...}, ...]}``. A table
-with no columns yet is not a port: there is nothing to read into or to fill.
+with no columns yet is not a port: there is nothing to read into or to fill. Every table but
+``quote_details`` leads with the quote's identity, its ``reference`` and ``option``: a
+request gives them in ``quote_details`` alone (:func:`request_columns`), and the frames and
+the response carry them on every row.
 """
 
 from __future__ import annotations
@@ -22,7 +25,12 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from haute._graph_utils import is_frame_label
-from haute._workbench_form import ColumnType
+from haute._workbench_form import (
+    IDENTITY_COLUMNS,
+    QUOTE_DETAILS_ID,
+    QUOTE_IDENTITY_DETAILS,
+    ColumnType,
+)
 from haute.errors import HauteError
 
 if TYPE_CHECKING:
@@ -154,6 +162,36 @@ def port_tables(tables: Iterable[WorkbenchTable]) -> tuple[WorkbenchTable, ...]:
     return tuple(table for table in tables if table.columns)
 
 
+#: The quote's identity at the head of a table, as a node's copy holds it: each column's
+#: name and type.
+IDENTITY_SHAPE: tuple[tuple[str, ColumnType], ...] = tuple(
+    (name, column_type) for _, name, column_type in IDENTITY_COLUMNS
+)
+
+
+def carries_identity(table: WorkbenchTable) -> bool:
+    """Whether *table* leads with the quote's identity, its reference and option: every
+    table the form makes but ``quote_details``, which holds the identity itself. A node's
+    copy has no ids, so the columns are known by their place, names and types."""
+    held = tuple((column.name, column.type) for column in table.columns[: len(IDENTITY_SHAPE)])
+    return table.name != QUOTE_DETAILS_ID and held == IDENTITY_SHAPE
+
+
+def request_columns(table: WorkbenchTable) -> list[WorkbenchColumn]:
+    """The columns a request gives *table*: its own, the identity left to ``quote_details``."""
+    return table.columns[len(IDENTITY_SHAPE) :] if carries_identity(table) else table.columns
+
+
+def request_schema(tables: Iterable[WorkbenchTable]) -> pl.Schema:
+    """The schema of one request holding *tables*: each under its name, of the columns a
+    request gives it (:func:`request_columns`), as a quote holds it."""
+    schema: dict[str, pl.DataType] = {}
+    for table in tables:
+        struct = pl.Struct({column.name: column.dtype for column in request_columns(table)})
+        schema[table.name] = struct if table.one_row else pl.List(struct)
+    return pl.Schema(schema)
+
+
 def table_disagreements(
     defined: Sequence[WorkbenchTable], copied: Sequence[WorkbenchTable]
 ) -> list[str]:
@@ -263,9 +301,11 @@ def sample_quote(spec: FormSpec) -> dict[str, Any]:
     each filled by its value; but those values are not typing, so a quote holding nothing else
     is empty, as a blank one is, and so are the defaults a new quote starts with, which are
     not typing either. A value in a column the sheets hide is left out, as if it had
-    never been typed. Values take their column's type: a number typed with a currency sign or
-    separators becomes a number, and an unticked box in a filled row is false. A value that
-    isn't of its column's type stays as typed, for the Workbench Input to report.
+    never been typed, save the quote's reference and option in ``quote_details``, which the
+    app sets and every request holds. Values take their column's type: a number typed with a
+    currency sign or separators becomes a number, and an unticked box in a filled row is
+    false. A value that isn't of its column's type stays as typed, for the Workbench Input to
+    report.
     """
     # Imported here: the visibility rules read cells as this module types them.
     from haute._workbench_visibility import visibility
@@ -279,7 +319,12 @@ def sample_quote(spec: FormSpec) -> dict[str, Any]:
         rows = preset_rows(table, spec.sample.get(table.id, []))
         if table.rows == "one":
             rows = rows[:1]
-        columns = [column for column in table.columns if (table.id, column.id) not in hidden]
+        columns = [
+            column
+            for column in table.columns
+            if (table.id, column.id) not in hidden
+            or (table.id == QUOTE_DETAILS_ID and column.id in QUOTE_IDENTITY_DETAILS)
+        ]
         given = preset_column(table)
         typed = typed or any(
             _filled(row.get(column.id)) and not _starting(table, column, row.get(column.id))

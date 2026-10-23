@@ -147,7 +147,12 @@ def test_the_tables_are_served_from_the_form_as_it_is_now(project: Path) -> None
         {
             "name": "policy_details",
             "rows": "one",
-            "columns": [{"name": "state", "type": "str"}, {"name": "exposure", "type": "float"}],
+            "columns": [
+                {"name": "reference", "type": "str"},
+                {"name": "option", "type": "int"},
+                {"name": "state", "type": "str"},
+                {"name": "exposure", "type": "float"},
+            ],
         },
     ]
     assert body["sample"] == {"policy_details": {"state": "NY", "exposure": 1000.0}}
@@ -194,7 +199,7 @@ def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path
     # Every field is served, defaults included, as the file is written; Haute's quote_details
     # table first, which the file written before it takes on at its save.
     assert body["form"]["schema"]["tables"][0]["name"] == "quote_details"
-    assert body["form"]["schema"]["tables"][1]["columns"][1] == {
+    assert body["form"]["schema"]["tables"][1]["columns"][3] == {
         "id": "c_exposure",
         "name": "exposure",
         "type": "float",

@@ -15,11 +15,13 @@ is never overwritten.
 
 Every form holds Haute's own input table, ``quote_details``, first: the details of a quote
 (its reference, name, insured, broker, dates and currency, its stage, who it is with and
-whether it is archived, which the underwriter app sets itself, and whether it is a renewal).
-Its structure is Haute's and a form that changes it is refused; a form read or saved without
-it has it added, and one holding its columns as an earlier Haute wrote them has the newer
-ones added after them, the one exception to nothing migrating, so a project written before
-either takes them on.
+whether it is archived, which the underwriter app sets itself, whether it is a renewal, and
+its option, which the app sets too). Its structure is Haute's and a form that changes it is
+refused; a form read or saved without it has it added, and one holding its columns as an
+earlier Haute wrote them has the newer ones added after them, the one exception to nothing
+migrating, so a project written before either takes them on. Every other table leads with
+the quote's identity, its reference and option, locked, added the same way to a table
+without it unless a column of the table's own holds either name.
 """
 
 from __future__ import annotations
@@ -666,11 +668,45 @@ class FormSpec(_Strict):
             return {**data, "schema": {**schema, "tables": held}}
         return data
 
+    @model_validator(mode="before")
+    @classmethod
+    def _gives_every_table_the_quote_identity(cls, data: Any) -> Any:
+        """Every table but ``quote_details`` leads with the quote's identity
+        (``IDENTITY_COLUMNS``), added at its head when it has none, the caller's data left as
+        it was. A table with a column of its own under either name is left without it: the
+        clash is the project's to resolve (:func:`identity_clashes`)."""
+        schema = data.get("schema") if isinstance(data, dict) else None
+        if not isinstance(schema, dict) or not isinstance(schema.get("tables"), list):
+            return data
+        held: list[Any] = []
+        for table in schema["tables"]:
+            columns = table.get("columns", []) if isinstance(table, dict) else None
+            if (
+                not isinstance(columns, list)
+                or table.get("id") == QUOTE_DETAILS_ID
+                or table.get("name") == QUOTE_DETAILS_ID
+                or any(
+                    isinstance(column, dict)
+                    and (column.get("id") in IDENTITY_IDS or column.get("name") in IDENTITY_NAMES)
+                    for column in columns
+                )
+            ):
+                held.append(table)
+                continue
+            identity = [
+                {"id": column_id, "name": name, "type": column_type}
+                for column_id, name, column_type in IDENTITY_COLUMNS
+            ]
+            held.append({**table, "columns": [*identity, *columns]})
+        return {**data, "schema": {**schema, "tables": held}}
+
     @model_validator(mode="after")
     def _keeps_quote_details_as_hautes(self) -> FormSpec:
         for table in self.data_schema.tables:
             if table.id == QUOTE_DETAILS_ID or table.name == QUOTE_DETAILS_ID:
                 _check_quote_details(table)
+            else:
+                _check_identity(table)
         return self
 
     @model_validator(mode="after")
@@ -717,6 +753,7 @@ QUOTE_DETAILS_COLUMNS: tuple[tuple[str, str, ColumnType], ...] = (
     ("qd_assignee", "assignee", "str"),
     ("qd_archived", "archived", "bool"),
     ("qd_is_renewal", "is_renewal", "bool"),
+    ("qd_option", "option", "int"),
 )
 #: The columns it had first, before ``is_renewal``: a form holding these, or more of its
 #: columns after them in order, takes on the rest.
@@ -724,8 +761,19 @@ QUOTE_DETAILS_FIRST = QUOTE_DETAILS_COLUMNS[:11]
 #: The columns the underwriter app sets itself, whatever a page sends: read only on its
 #: sheets, and taking no rules.
 QUOTE_DETAILS_MANAGED: frozenset[str] = frozenset(
-    {"qd_reference", "qd_stage", "qd_assignee", "qd_archived"}
+    {"qd_reference", "qd_option", "qd_stage", "qd_assignee", "qd_archived"}
 )
+#: The quote's identity in ``quote_details``: its reference and its option, which every
+#: request holds whatever the sheets hide.
+QUOTE_IDENTITY_DETAILS: frozenset[str] = frozenset({"qd_reference", "qd_option"})
+#: The quote's identity at the head of every other table, each one's id, name and type: the
+#: same ids in every table, as a column's id is its table's own.
+IDENTITY_COLUMNS: tuple[tuple[str, str, ColumnType], ...] = (
+    ("quote_reference", "reference", "str"),
+    ("quote_option", "option", "int"),
+)
+IDENTITY_IDS: frozenset[str] = frozenset(column_id for column_id, _, _ in IDENTITY_COLUMNS)
+IDENTITY_NAMES: frozenset[str] = frozenset(name for _, name, _ in IDENTITY_COLUMNS)
 
 
 def _column_shapes(columns: list[Any]) -> list[tuple[Any, Any, Any]]:
@@ -784,6 +832,40 @@ def _check_quote_details(table: SchemaTable) -> None:
                 f"{QUOTE_DETAILS_ID}.{column.name} is set by the underwriter app and takes no "
                 "rules or default"
             )
+
+
+def _check_identity(table: SchemaTable) -> None:
+    """Refuse a table whose identity columns are not Haute's: when it holds them, they are
+    its first two, as ``IDENTITY_COLUMNS`` has them, with nothing of their own set."""
+    held = [column for column in table.columns if column.id in IDENTITY_IDS]
+    if not held:
+        return
+    expected = [
+        SchemaColumn(id=column_id, name=name, type=column_type)
+        for column_id, name, column_type in IDENTITY_COLUMNS
+    ]
+    if table.columns[: len(expected)] != expected or len(held) != len(expected):
+        raise ValueError(
+            f"{table.name} leads with the quote's reference and option, which Haute keeps "
+            "first in every table as it makes them: their place, names, types and details "
+            "are not changed"
+        )
+
+
+def identity_clashes(spec: FormSpec) -> list[str]:
+    """The tables a column of the project's own keeps from the quote's identity: each such
+    column, said with what resolves it. Building the app and deploying refuse while any
+    stands; the editor names them among the schema's problems."""
+    return [
+        f"{table.name}.{column.name} has a name Haute keeps for the quote's {column.name} in "
+        "every table: rename it, and the table takes the quote's reference and option at the "
+        "next save"
+        for table in spec.data_schema.tables
+        if table.id != QUOTE_DETAILS_ID
+        and not any(column.id in IDENTITY_IDS for column in table.columns)
+        for column in table.columns
+        if column.name in IDENTITY_NAMES
+    ]
 
 
 def with_quote_details(spec: FormSpec) -> FormSpec:
