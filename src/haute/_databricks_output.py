@@ -28,6 +28,7 @@ import polars as pl
 from haute._databricks_credentials import DatabricksConfigError
 from haute._databricks_io import _TABLE_NAME_RE, _connection_settings, _quoted_table_name
 from haute._logging import get_logger
+from haute._polars_utils import streaming_collect
 from haute.errors import HauteError
 
 if TYPE_CHECKING:
@@ -142,7 +143,11 @@ def write_databricks_output(
             execution_context=execution_context,
             node_id=node_id,
         )
-        rows = int(pl.scan_parquet(local).select(pl.len()).collect(engine="streaming").item())
+        rows = int(
+            streaming_collect(
+                pl.scan_parquet(local).select(pl.len()), execution_context=execution_context
+            ).item()
+        )
         if execution_context is not None:
             execution_context.checkpoint(label="before_databricks_load", node_id=node_id)
         try:
