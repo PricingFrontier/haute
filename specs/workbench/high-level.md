@@ -460,10 +460,10 @@ Out of scope:
   stripes and gridlines are its lines' as drawn, a full grid lining its columns too, and
   an output field is ruled off above its line; showing groups (`groups`), while a field
   it shows is in a schema group, each run of fields side by side in one group headed
-  by one cell naming it, a row of them over the labels with each name ruled under
-  inside its cell, so groups side by side stay apart, and a blank cell over a field in
-  none and the numbers, or, transposed, a column of them before the
-  labels, which stay in view beside it; and its look as a spreadsheet's is set: its values
+  by one cell naming it, the name centred whatever its `header_align`, a row of them
+  over the labels with each name ruled under inside its cell, so groups side by side
+  stay apart, and a blank cell over a field in none and the numbers, or, transposed, a
+  column of them before the labels, which stay in view beside it; and its look as a spreadsheet's is set: its values
   at its `font_size`; its labels at their size, bold unless `header_bold` is off, wrapping
   across their column with whole words kept rather than cut off while `header_wrap`, and
   turned as `header_orientation` says, reading upwards, downwards or their letters stacked

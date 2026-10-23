@@ -487,8 +487,9 @@ describe("WidgetBody", () => {
     cleanup()
 
     // Transposed, a cell beside each run's labels spans their lines, the corner over both, the
-    // labels kept in view beside the groups, over their column's last pixel.
-    loadForm(updateWidget(grouped, "w_grid", { transposed: true }))
+    // labels kept in view beside the groups, over their column's last pixel; the names centred
+    // whatever the labels' place.
+    loadForm(updateWidget(grouped, "w_grid", { transposed: true, header_align: "right" }))
     renderBody("w_grid")
     const headers = screen.getAllByRole("rowheader") as HTMLTableCellElement[]
     expect(headers.map((header) => [header.textContent, header.rowSpan])).toEqual([
@@ -498,6 +499,8 @@ describe("WidgetBody", () => {
       ["Price", 1],
       ["Premium", 1],
     ])
+    expect(headers[0]).toHaveClass("text-center")
+    expect(headers[1]).toHaveStyle({ textAlign: "right" })
     expect((screen.getAllByRole("columnheader")[0] as HTMLTableCellElement).colSpan).toBe(2)
     expect(headers[1].style.left).toBe("95px")
   })

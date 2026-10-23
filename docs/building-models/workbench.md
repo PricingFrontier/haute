@@ -291,7 +291,7 @@ toolbar; a colour you set on a Table, or on one of its columns, is drawn over th
   under another; turned labels sit at the foot of the header, so set narrow column widths
   to fit more columns across. Wrapped labels break between words onto more lines rather
   than being cut off; a turned label that wraps starts a new line beside itself. Group
-  names stay level.
+  names stay level and centred.
 - **Lines**: which **Gridlines** to draw (between rows, a full grid or none), their
   **Style** (solid, dashed or dotted), **Weight** (thin, medium or thick) and **Colour**.
   The weight and colour also apply to the rule under the header and the line before the

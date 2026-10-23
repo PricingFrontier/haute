@@ -388,7 +388,7 @@ export function FieldGrid({
                       <th
                         scope="row"
                         rowSpan={run.size}
-                        className={`sticky left-0 z-[1] px-2.5 text-left [overflow-wrap:anywhere] ${headText}`}
+                        className={`sticky left-0 z-[1] px-2.5 text-center [overflow-wrap:anywhere] ${headText}`}
                         style={{
                           ...headStyle,
                           // Its least width too, or a grid wider than its frame squeezes it.
