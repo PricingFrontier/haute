@@ -1393,7 +1393,7 @@ describe("WidgetBody", () => {
     act(() => useWorkbenchViewStore.setState({ mode: "preview" }))
     rerender(body("w_head"))
     expect(screen.getByText("Each item insured, with its value").parentElement).toHaveClass("text-right")
-    act(() => useWorkbenchViewStore.setState({ mode: "build", section: "sheets" }))
+    act(() => useWorkbenchViewStore.setState({ mode: "build", schemaOpen: false }))
     rerender(body("w_head"))
 
     // Only spaces are no description; and a Heading with no text shows its hint alone.

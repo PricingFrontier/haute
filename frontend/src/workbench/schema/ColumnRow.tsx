@@ -27,11 +27,13 @@ interface ColumnRowProps {
   onInsertAfter: () => void
   /** In Haute's quote_details table: the column's name and type are fixed, and it stays. */
   locked: boolean
+  /** In Preview: the column shows as it is, its details too, nothing in it changed. */
+  readOnly: boolean
   /** Its part in dragging the table's columns into a new order; none for the index or in quote_details, which stay. */
   drag: RowDrag | undefined
 }
 
-export function ColumnRow({ form, table, column, index, refocus, fresh, open, onToggleDetails, onInsertAfter, locked, drag }: ColumnRowProps) {
+export function ColumnRow({ form, table, column, index, refocus, fresh, open, onToggleDetails, onInsertAfter, locked, readOnly, drag }: ColumnRowProps) {
   const change = useWorkbenchFormStore((s) => s.change)
   const row = useRef<HTMLDivElement>(null)
   const shown = fieldUses(form, table.id, column.id).length
@@ -46,13 +48,15 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
   const { label, icon: Icon, color } = COLUMN_TYPES[column.type]
   // A column the underwriter app sets takes no rules.
   const managed = locked && QUOTE_DETAILS_MANAGED.has(column.id)
+  // Its name and type stay, and it stays: in quote_details, and in Preview.
+  const fixed = locked || readOnly
   const summary = table.role === "input" ? rulesSummary(table, column) : ""
   const set = (patch: Partial<SchemaColumn>) => change((f) => updateSchemaColumn(f, table.id, column.id, patch))
 
   // Enter in the last column's name adds the next column, and in any other only commits it;
   // Alt+Up and Alt+Down move this one.
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (locked) return
+    if (fixed) return
     if (e.key === "Enter") {
       e.preventDefault()
       if (index === table.columns.length - 1) onInsertAfter()
@@ -78,7 +82,7 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
     >
       <div className="group flex items-stretch gap-1 rounded">
         <DragGrip drag={drag} image={row} />
-        {column.index || locked ? (
+        {column.index || fixed ? (
           // The index is always an Integer; Haute's columns keep their types.
           <span
             className={`relative flex w-6 shrink-0 items-center justify-center rounded-md ${color}`}
@@ -102,11 +106,11 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
         <CommittedTextField
           ref={refocus.register(column.id)}
           aria-label="Column name"
-          aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+          aria-keyshortcuts={fixed ? undefined : "Alt+ArrowUp Alt+ArrowDown"}
           value={column.name}
           onCommit={(name) => set({ name })}
           {...fresh}
-          readOnly={locked}
+          readOnly={fixed}
           onKeyDown={onKeyDown}
           className={`${COMPACT_FIELD_CLASS} flex-1 font-mono`}
           style={INPUT_STYLE}
@@ -121,6 +125,7 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
             icon={KeyRound}
             onClick={() => set({ key: !column.key })}
             aria-pressed={column.key}
+            disabled={readOnly}
             aria-label={`Key: ${column.name}`}
             title={column.key ? "A key: it says which row is which (click to unmark)" : "Make this a key: it says which row is which"}
             className="self-center"
@@ -136,7 +141,7 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
           className={`self-center ${open ? "" : HOVER_ONLY}`}
           style={{ color: open ? "var(--text-primary)" : "var(--text-muted)" }}
         />
-        {locked ? (
+        {fixed ? (
           <span className="size-5 shrink-0" aria-hidden="true" />
         ) : (
           <IconButton
@@ -148,7 +153,7 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
           />
         )}
       </div>
-      {open && <ColumnDetails table={table} column={column} managed={managed} set={set} />}
+      {open && <ColumnDetails table={table} column={column} managed={managed} readOnly={readOnly} set={set} />}
     </div>
   )
 }

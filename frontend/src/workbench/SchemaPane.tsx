@@ -1,0 +1,41 @@
+import { Database } from "lucide-react"
+import { SidePanel } from "../haute-ui"
+import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
+import SchemaEditor from "./SchemaEditor"
+import { COMPONENT_COLOR } from "./widgetKinds"
+
+const MIN_WIDTH = 320
+
+/** At most half the window, so the sheet stays in view beside it. */
+const maxWidth = () => Math.max(MIN_WIDTH, Math.floor(window.innerWidth / 2))
+
+/**
+ * The schema's pane (specs/workbench): over the sheet's left part, under the sheet tabs,
+ * while the toolbar's Schema has it open, on Haute's side panel opened on the left. The
+ * sheet stays where it is under it. It edits the schema while building and shows it read
+ * only in Preview. It registers itself with the view store, so nothing dragged out of the
+ * palette lands on the sheet it covers.
+ */
+export default function SchemaPane() {
+  const previewing = useWorkbenchViewStore((s) => s.mode === "preview")
+  const width = useWorkbenchViewStore((s) => s.schemaWidth)
+  const setWidth = useWorkbenchViewStore((s) => s.setSchemaWidth)
+  const setOpen = useWorkbenchViewStore((s) => s.setSchemaOpen)
+  const setPane = useWorkbenchViewStore((s) => s.setSchemaPane)
+  return (
+    <div ref={setPane} className="absolute inset-y-0 left-0 z-20 flex shadow-2xl" data-testid="schema-pane">
+      <SidePanel
+        side="left"
+        title="Schema"
+        icon={<Database size={14} style={{ color: COMPONENT_COLOR }} />}
+        onClose={() => setOpen(false)}
+        width={width}
+        onWidthChange={setWidth}
+        minWidth={MIN_WIDTH}
+        maxWidth={maxWidth}
+      >
+        <SchemaEditor readOnly={previewing} />
+      </SidePanel>
+    </div>
+  )
+}

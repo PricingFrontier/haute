@@ -5,7 +5,9 @@
  * column is dragged by its grip, or moved by Alt+Up and Alt+Down in its name, as the step
  * editor's cards move. Removing what a sheet shows asks first. Haute's quote_details table,
  * first, keeps its structure and its place: its columns' labels, groups and help, and the
- * rules and defaults of those the underwriter types, are the project's.
+ * rules and defaults of those the underwriter types, are the project's. Read only, in
+ * Preview, it shows the schema as it is: a table still collapses and a column's details still
+ * open, but nothing in it changes.
  */
 import { useMemo, useState } from "react"
 import { QuietAction } from "../components/form"
@@ -17,8 +19,8 @@ import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import { addSchemaTable, createSchemaTable, isQuoteDetails, moveSchemaTable, schemaProblems } from "../utils/workbenchForm"
 import { TableBlock } from "./schema/TableBlock"
 
-/** The Schema section: the form's tables of named, typed columns. */
-export default function SchemaEditor() {
+/** The schema's pane's editor: the form's tables of named, typed columns. */
+export default function SchemaEditor({ readOnly = false }: { readOnly?: boolean }) {
   const form = useWorkbenchFormStore((s) => s.form)
   const change = useWorkbenchFormStore((s) => s.change)
   const reservedLabels = useDocumentStatusStore((s) => s.capabilities?.reserved_api_input_frame_labels)
@@ -57,7 +59,8 @@ export default function SchemaEditor() {
             table={table}
             index={index}
             refocus={refocus}
-            drag={isQuoteDetails(table) ? undefined : dragTable(index)}
+            drag={readOnly || isQuoteDetails(table) ? undefined : dragTable(index)}
+            readOnly={readOnly}
             added={added}
             setAdded={setAdded}
             details={details}
@@ -67,7 +70,7 @@ export default function SchemaEditor() {
             problems={problems.filter((p) => p.tableId === table.id).map((p) => p.message)}
           />
         ))}
-        <QuietAction onClick={addTable} className="justify-self-start">Add table</QuietAction>
+        {!readOnly && <QuietAction onClick={addTable} className="justify-self-start">Add table</QuietAction>}
       </div>
     </div>
   )

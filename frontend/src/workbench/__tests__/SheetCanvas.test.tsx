@@ -1106,6 +1106,32 @@ describe("SheetCanvas", () => {
     expect(useWorkbenchFormStore.getState().undoStack).toEqual([])
   })
 
+  it("adds nothing dropped where the schema's pane covers the sheet, a component or a Section, and lands one dropped beside it", () => {
+    withPalette()
+    // The pane over the viewport's left 300 pixels.
+    const pane = document.body.appendChild(document.createElement("div"))
+    pane.getBoundingClientRect = () => ({ left: 0, top: 0, right: 300, bottom: 800, width: 300, height: 800, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect
+    act(() => useWorkbenchViewStore.setState({ schemaPane: pane }))
+    const item = screen.getByTestId("palette-item-collection")
+
+    pointer("pointerdown", 10, 10, item)
+    pointer("pointermove", 200, 412)
+    expect(screen.queryByTestId("drop-ghost")).not.toBeInTheDocument()
+    pointer("pointerup", 200, 412)
+    expect(widgetsOf(currentForm())).toHaveLength(2)
+
+    dragSection(200, 300)
+    pointer("pointerup", 200, 300)
+    expect(heights()).toEqual([560])
+
+    pointer("pointerdown", 10, 10, item)
+    pointer("pointermove", 400, 412)
+    expect(screen.getByTestId("drop-ghost")).toBeInTheDocument()
+    pointer("pointerup", 400, 412)
+    expect(widgetsOf(currentForm())).toHaveLength(3)
+    pane.remove()
+  })
+
   /** `sheetForm` with Headings below its components, each always shown. */
   const headed = (...headings: { id: string; text: string; size: "large" | "medium" | "small"; y: number }[]) => {
     const form = sheetForm()

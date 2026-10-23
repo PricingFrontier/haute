@@ -108,7 +108,7 @@ describe("ChartBody", () => {
     loadForm()
     useWorkbenchPricingStore.setState({ price: null, error: null })
     useWorkbenchPreviewStore.setState({ quote: {}, price: null, error: null, pricing: false })
-    useWorkbenchViewStore.setState({ mode: "build", section: "sheets" })
+    useWorkbenchViewStore.setState({ mode: "build", schemaOpen: false })
   })
 
   afterEach(() => {

@@ -22,11 +22,14 @@ export function ColumnDetails({
   table,
   column,
   managed,
+  readOnly,
   set,
 }: {
   table: SchemaTable
   column: SchemaColumn
   managed: boolean
+  /** In Preview: every field shows its value and none takes a change. */
+  readOnly: boolean
   set: (patch: Partial<SchemaColumn>) => void
 }) {
   const change = useWorkbenchFormStore((s) => s.change)
@@ -41,8 +44,9 @@ export function ColumnDetails({
     text.trim() === "" || Number.isFinite(Number(text)) ? null : "Enter a number."
   const bound = (text: string): number | null => (text.trim() === "" ? null : Number(text))
   return (
-    <div
-      className="mr-12 ml-7 grid grid-cols-[4.75rem_minmax(0,1fr)] items-center gap-x-2 gap-y-1 rounded-md px-2 py-1.5 text-[11px]"
+    <fieldset
+      disabled={readOnly}
+      className="mr-12 ml-7 grid min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-center gap-x-2 gap-y-1 rounded-md px-2 py-1.5 text-[11px]"
       style={{ border: "1px solid var(--border)", background: "var(--bg-base)" }}
     >
       <span style={{ color: "var(--text-muted)" }}>Label</span>
@@ -182,6 +186,6 @@ export function ColumnDetails({
           )}
         </>
       )}
-    </div>
+    </fieldset>
   )
 }

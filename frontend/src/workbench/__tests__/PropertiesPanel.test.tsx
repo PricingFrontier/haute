@@ -710,7 +710,7 @@ describe("PropertiesPanel", () => {
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(6)
   })
 
-  it("points at the schema when it has no tables of the component's kind", () => {
+  it("points at the schema when it has no tables of the component's kind, opening its pane with the component still selected", () => {
     const form = sheetForm()
     form.schema.tables = form.schema.tables.filter((candidate) => candidate.rows !== "one")
     loadForm(form)
@@ -719,7 +719,7 @@ describe("PropertiesPanel", () => {
 
     expect(screen.getByText(/The schema has no one-row tables yet/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Open the schema" }))
-    expect(useWorkbenchViewStore.getState().section).toBe("schema")
+    expect(useWorkbenchViewStore.getState()).toMatchObject({ schemaOpen: true, selectedId: "w_boxes" })
   })
 
   it("sets when a component shows, each change one undo step", () => {

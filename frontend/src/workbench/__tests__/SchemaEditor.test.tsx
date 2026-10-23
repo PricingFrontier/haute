@@ -771,4 +771,38 @@ describe("SchemaEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Expand policy_details" }))
     expect(columnNames("policy_details")).toEqual(["state", "exposure"])
   })
+
+  it("shows the schema read only, as Preview does: a table collapses and a column's details open, but nothing in it changes", () => {
+    render(<SchemaEditor readOnly />)
+    const layers = tableNamed("layers")
+
+    expect(tableNameField("layers")).toHaveAttribute("readonly")
+    expect(within(layers).getByRole("combobox", { name: "Role of layers" })).toBeDisabled()
+    expect(within(layers).getByRole("combobox", { name: "Rows of layers" })).toBeDisabled()
+    expect(within(layers).queryByRole("combobox", { name: /^Type of/ })).toBeNull()
+    for (const name of within(layers).getAllByRole("textbox", { name: "Column name" })) expect(name).toHaveAttribute("readonly")
+    expect(within(layers).getByRole("button", { name: "Key: layer" })).toBeDisabled()
+    expect(within(layers).queryByRole("button", { name: "Delete table layers" })).toBeNull()
+    expect(within(layers).queryByRole("button", { name: /^Remove column/ })).toBeNull()
+    expect(within(layers).queryByRole("button", { name: "Add column" })).toBeNull()
+    expect(within(layers).queryByLabelText("Add index to layers")).toBeNull()
+    expect(screen.queryByRole("button", { name: "Add table" })).toBeNull()
+    expect(tableGrip("layers")).toBeNull()
+    expect(columnGrip("c_limit")).toBeNull()
+
+    // Enter in the last column's name adds none, and Alt+Up moves neither a column nor a table.
+    const last = within(layers).getAllByRole("textbox", { name: "Column name" })[1]
+    fireEvent.keyDown(last, { key: "Enter" })
+    fireEvent.keyDown(last, { key: "ArrowUp", altKey: true })
+    fireEvent.keyDown(tableNameField("layers"), { key: "ArrowUp", altKey: true })
+    expect(columnNames("layers")).toEqual(["layer", "limit"])
+    expect(tableNames()).toEqual(["policy_details", "layers"])
+
+    // A column's label and rules open, each field in them disabled.
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of limit" }))
+    expect(screen.getByRole("textbox", { name: "Label of limit" })).toBeDisabled()
+    fireEvent.click(screen.getByRole("button", { name: "Collapse policy_details" }))
+    expect(within(tableNamed("policy_details")).queryAllByRole("textbox", { name: "Column name" })).toEqual([])
+    expect(useWorkbenchFormStore.getState().undoStack).toEqual([])
+  })
 })

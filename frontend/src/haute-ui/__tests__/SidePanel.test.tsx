@@ -40,6 +40,29 @@ describe("haute-ui side panel", () => {
     expect(onWidthChange).toHaveBeenLastCalledWith(320)
   })
 
+  it("opens on the left with its handle on its right edge, widening as that edge is dragged right", () => {
+    const onWidthChange = vi.fn()
+    render(
+      <SidePanel side="left" width={360} onWidthChange={onWidthChange} minWidth={320} maxWidth={() => 500} testId="panel">
+        <p>Fields</p>
+      </SidePanel>,
+    )
+    const panel = screen.getByTestId("panel")
+    const handle = screen.getByTestId("panel-resize-handle")
+    expect(panel).toHaveClass("side-panel", "left")
+    expect(panel.lastElementChild).toBe(handle)
+
+    fireEvent.mouseDown(handle, { clientX: 400 })
+    fireEvent.mouseMove(window, { clientX: 460, buttons: 1 })
+    fireEvent.mouseUp(window)
+    expect(onWidthChange).toHaveBeenLastCalledWith(420)
+
+    fireEvent.mouseDown(handle, { clientX: 400 })
+    fireEvent.mouseMove(window, { clientX: 100, buttons: 1 }) // 360 - 300 is under the minimum
+    fireEvent.mouseUp(window)
+    expect(onWidthChange).toHaveBeenLastCalledWith(320)
+  })
+
   it("ends a resize however it ends: released outside the window, the window losing the focus, or the panel going", () => {
     const onWidthChange = vi.fn()
     const { unmount } = render(

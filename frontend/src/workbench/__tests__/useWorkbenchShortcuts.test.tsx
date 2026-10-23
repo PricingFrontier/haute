@@ -4,7 +4,7 @@
  * with a component selected Escape deselects, Delete removes, Ctrl+D duplicates, Ctrl+C
  * copies and the arrows nudge as one undo step per burst, kept inside its section, top and
  * bottom, never growing it; Ctrl+V pastes the copy, selected or not; none of the sheet's
- * keys from a field or a select, nor on the schema section, nor in Preview, where Ctrl+1
+ * keys from a field or a select, nor from inside the schema's pane, nor in Preview, where Ctrl+1
  * applies, and undo and redo for the sample typed there; the selection's keys only from
  * the sheet or with nothing focused.
  */
@@ -171,7 +171,7 @@ describe("useWorkbenchShortcuts on the sheets", () => {
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(4)
   })
 
-  it("pastes nothing before anything is copied, and copies and pastes nothing from a field, on the schema section or in Preview", () => {
+  it("pastes nothing before anything is copied, and copies and pastes nothing from a field, from inside the schema's pane or in Preview", () => {
     key({ key: "v", ctrlKey: true })
     expect(widgets()).toHaveLength(2)
 
@@ -185,9 +185,12 @@ describe("useWorkbenchShortcuts on the sheets", () => {
     field.remove()
     expect(widgets()).toHaveLength(2)
 
-    useWorkbenchViewStore.setState({ section: "schema" })
-    key({ key: "v", ctrlKey: true })
-    useWorkbenchViewStore.setState({ mode: "preview", section: "sheets" })
+    const pane = document.body.appendChild(document.createElement("div"))
+    const inPane = pane.appendChild(document.createElement("span"))
+    useWorkbenchViewStore.setState({ schemaPane: pane })
+    key({ key: "v", ctrlKey: true }, inPane)
+    pane.remove()
+    useWorkbenchViewStore.setState({ schemaPane: null, mode: "preview" })
     key({ key: "v", ctrlKey: true })
     expect(widgets()).toHaveLength(2)
   })
@@ -327,7 +330,7 @@ describe("useWorkbenchShortcuts on the sheets", () => {
     expect(fitZoom).toHaveBeenCalledTimes(1)
   })
 
-  it("leaves keys in a field or a select alone, and does nothing on the schema section", () => {
+  it("leaves keys in a field or a select alone, and those from inside the schema's pane", () => {
     const select = document.createElement("select")
     document.body.appendChild(select)
     key({ key: "Delete" }, select)
@@ -335,10 +338,16 @@ describe("useWorkbenchShortcuts on the sheets", () => {
     expect(widgets()).toHaveLength(2)
     select.remove()
 
-    useWorkbenchViewStore.setState({ section: "schema" })
-    key({ key: "Delete" })
-    key({ key: "d", ctrlKey: true })
+    // The pane's keys are its own: Escape there never deselects, nor do Delete or Ctrl+D act.
+    const pane = document.body.appendChild(document.createElement("div"))
+    const inPane = pane.appendChild(document.createElement("span"))
+    useWorkbenchViewStore.setState({ schemaPane: pane })
+    key({ key: "Delete" }, inPane)
+    key({ key: "d", ctrlKey: true }, inPane)
+    key({ key: "Escape" }, inPane)
+    pane.remove()
     expect(widgets()).toHaveLength(2)
+    expect(useWorkbenchViewStore.getState().selectedId).toBe("w_boxes")
   })
 
   it("acts on the selection from the sheet or with nothing focused, never from a panel, the toolbar or a tab", () => {

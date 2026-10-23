@@ -1,6 +1,6 @@
 /**
- * The workbench view's own state (specs/workbench): the mode, which of the view's sections
- * and which sheet show, a component, a section or the sheet's own panel selected, a section moved by
+ * The workbench view's own state (specs/workbench): the mode, the schema's pane, which sheet
+ * shows, a component, a section or the sheet's own panel selected, a section moved by
  * its header, the sections and components Preview draws, the zoom within its bounds and
  * fitted to the viewport, and the properties panel's width.
  */
@@ -23,17 +23,17 @@ function viewport(width: number): HTMLElement {
 describe("useWorkbenchViewStore", () => {
   beforeEach(() => loadForm())
 
-  it("shows a sheet on the sheets section with nothing selected, in either mode", () => {
+  it("shows a sheet with nothing selected, in either mode, the schema's pane kept open", () => {
     const store = useWorkbenchViewStore.getState
-    store().showSection("schema")
+    store().setSchemaOpen(true)
     store().select("w_boxes")
 
     store().showPage("p2")
-    expect(store()).toMatchObject({ mode: "build", section: "sheets", pageId: "p2", selectedId: null })
+    expect(store()).toMatchObject({ mode: "build", schemaOpen: true, pageId: "p2", selectedId: null })
 
     store().showMode("preview")
     store().showPage("p1")
-    expect(store()).toMatchObject({ mode: "preview", section: "sheets", pageId: "p1" })
+    expect(store()).toMatchObject({ mode: "preview", schemaOpen: true, pageId: "p1" })
 
     // The sheet named, or the first when none is or it was removed.
     expect(activePage(sheetForm(), "p2").id).toBe("p2")
@@ -117,36 +117,38 @@ describe("useWorkbenchViewStore", () => {
     expect(store()).toMatchObject({ sectionId: null, sheetSelected: true })
   })
 
-  it("closes the section's panel as another sheet or another of the view's sections shows", () => {
+  it("closes the section's panel as another sheet or the other mode shows, but not as the schema's pane opens", () => {
     const store = useWorkbenchViewStore.getState
     store().selectSection("s_p1")
     store().showPage("p2")
     expect(store()).toMatchObject({ pageId: "p2", sectionId: null })
 
     store().selectSection("s_p2")
-    store().showSection("schema")
-    expect(store()).toMatchObject({ section: "schema", sectionId: null })
-    store().showSection("sheets")
-    store().selectSection("s_p2")
+    store().setSchemaOpen(true)
+    expect(store()).toMatchObject({ schemaOpen: true, sectionId: "s_p2" })
     store().showMode("preview")
-    expect(store()).toMatchObject({ mode: "preview", section: "sheets", sectionId: null })
+    expect(store()).toMatchObject({ mode: "preview", schemaOpen: true, sectionId: null })
   })
 
-  it("shows either mode on the sheets with nothing selected, from the schema too", () => {
+  it("shows either mode with nothing selected, the schema's pane as it was, and opens and closes the pane keeping the selection", () => {
     const store = useWorkbenchViewStore.getState
-    store().showSection("schema")
-    store().showMode("preview")
-    expect(store()).toMatchObject({ mode: "preview", section: "sheets" })
-
-    store().showMode("build")
-    store().showSection("schema")
-    store().showMode("build")
-    expect(store()).toMatchObject({ mode: "build", section: "sheets" })
-
     store().select("w_grid")
+    store().setSchemaOpen(true)
+    expect(store()).toMatchObject({ schemaOpen: true, selectedId: "w_grid" })
+    store().setSchemaOpen(false)
+    expect(store()).toMatchObject({ schemaOpen: false, selectedId: "w_grid" })
+
     store().showMode("preview")
+    expect(store()).toMatchObject({ mode: "preview", schemaOpen: false, selectedId: null })
+    store().setSchemaOpen(true)
     store().showMode("build")
-    expect(store()).toMatchObject({ mode: "build", section: "sheets", selectedId: null })
+    expect(store()).toMatchObject({ mode: "build", schemaOpen: true })
+
+    // Its width is kept between openings.
+    store().setSchemaWidth(560)
+    store().setSchemaOpen(false)
+    store().setSchemaOpen(true)
+    expect(store().schemaWidth).toBe(560)
   })
 
   it("follows a section dragged by its header, with the place it would move to, until it is let go", () => {

@@ -30,10 +30,9 @@ shortcuts are off meanwhile, so nothing you press in the workbench edits the pip
 toolbar keeps Haute's project controls (**Pipeline files** and **Local files**, Assistant,
 Help, the branch, **Save** and **Commit**) and the source dropdown over the **Pipeline**
 button, and shows the workbench's own: **Undo** over **Redo** and **Zoom In** over **Zoom
-Out**, in the same places as the pipeline editor's, then **Build** over **Preview**,
-**Sheets** over **Schema** and **Display**. They stay in place in both modes: Sheets,
-Schema and Display are greyed out in Preview, and the zoom while the schema shows. Preview
-prices the sample on the source the dropdown shows.
+Out**, in the same places as the pipeline editor's, then **Build** over **Preview** and
+**Schema** over **Display**. They stay in place in both modes: Display is greyed out in
+Preview. Preview prices the sample on the source the dropdown shows.
 
 **Save** and Ctrl+S save the project, the same from either view: `forms/form.json` first
 when the workbench has unsaved edits, then the pipeline, with the Workbench Input's and
@@ -52,7 +51,12 @@ Both workbench nodes' panels have **Edit in Workbench**, which opens the view.
 
 ## Schema
 
-The tables the sheets work with, and the pipeline's tables. Each table has a name, a role —
+**Schema** in the toolbar opens the schema in a pane over the left of the sheet; **Schema**
+again, or the pane's close button, closes it, and dragging its right edge widens it. The
+sheet stays where it is under the pane, and the pane stays open as you switch sheets or go
+to Preview, where it shows the schema without letting you change it.
+
+The schema holds the tables the sheets work with, and the pipeline's tables. Each table has a name, a role —
 **Input**, sent to the pricing engine, or **Output**, returned by it — and its rows: **One
 row** per quote, such as policy details, or **Many rows**, such as an equipment schedule.
 Each column has a type (Text, Integer, Decimal, True/false or Date, drawn as the step editor
@@ -129,7 +133,7 @@ typed, and a value typed equal to its default counts as the default.
 
 ### Quote details
 
-Every workbench has Haute's own table, `quote_details`, first in the Schema section, where
+Every workbench has Haute's own table, `quote_details`, first in the schema, where
 it stays: one row of a quote's details, which the underwriter app keeps with each saved quote and lists
 on its Quotes page. Its columns are fixed: **reference**, **quote_name**, **insured**,
 **broker**, **inception_date**, **expiry_date**, **valid_until**, **currency**, **stage**,

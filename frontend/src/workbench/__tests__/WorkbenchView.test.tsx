@@ -1,6 +1,6 @@
 /**
  * The workbench's view (specs/workbench): the form read when it first shows, its states,
- * the sections, the way out of a refused save, the view's keyboard shortcuts, and the
+ * the schema's pane over the sheet, the way out of a refused save, the view's keyboard shortcuts, and the
  * project's panels beside it.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -18,8 +18,8 @@ import WorkbenchView from "../WorkbenchView"
 import { sheetForm } from "./fixtures"
 
 vi.mock("../SchemaEditor", () => ({
-  default: () => (
-    <div data-testid="schema-editor">
+  default: ({ readOnly }: { readOnly?: boolean }) => (
+    <div data-testid="schema-editor" data-read-only={readOnly ? "true" : "false"}>
       <input aria-label="Column name" />
     </div>
   ),
@@ -58,7 +58,7 @@ describe("WorkbenchView", () => {
   beforeEach(() => {
     useWorkbenchFormStore.setState({ status: "ready", loadError: null, stale: false, form: null, ...actions })
     useWorkbenchPricingStore.setState({ ...pricing, error: null, price: null })
-    useWorkbenchViewStore.setState({ mode: "build", section: "sheets", selectedId: null })
+    useWorkbenchViewStore.setState({ mode: "build", schemaOpen: false, selectedId: null })
     useWorkbenchStore.setState({ enabled: true, activeView: "workbench", formPath: "forms/form.json" })
     useUIStore.setState({ gitOpen: false, assistantOpen: false, paletteOpen: true })
   })
@@ -81,38 +81,45 @@ describe("WorkbenchView", () => {
     expect(within(screen.getByRole("group", { name: "Views" })).getByRole("button", { name: "Workbench" })).toHaveAttribute("aria-pressed", "true")
   })
 
-  it("shows the schema editor in the schema section, and the properties panel beside the sheets", () => {
+  it("opens the schema's pane over the sheet under its tabs, the sheet and the properties panel still showing, and closes it", () => {
     renderView()
     act(() => {
-      useWorkbenchViewStore.getState().showSection("schema")
+      useWorkbenchViewStore.getState().setSchemaOpen(true)
     })
-    expect(screen.getByTestId("schema-editor")).toBeInTheDocument()
-    expect(screen.queryByTestId("sheet-canvas")).not.toBeInTheDocument()
-    expect(screen.queryByTestId("properties-panel")).not.toBeInTheDocument()
-
-    act(() => {
-      useWorkbenchViewStore.getState().showSection("sheets")
-    })
+    const pane = screen.getByTestId("schema-pane")
+    expect(within(pane).getByTestId("schema-editor")).toHaveAttribute("data-read-only", "false")
+    expect(within(pane).getByText("Schema")).toBeInTheDocument()
+    expect(screen.getByTestId("sheet-canvas")).toBeInTheDocument()
     expect(screen.getByTestId("properties-panel")).toBeInTheDocument()
+    // Laid over the sheet, in the box it shares with the canvas, the tabs above it.
+    expect(pane.parentElement).toContainElement(screen.getByTestId("sheet-canvas"))
+    expect(pane.parentElement).not.toContainElement(screen.getByTestId("page-tabs"))
+    expect(pane).toHaveClass("absolute", "left-0")
+    expect(useWorkbenchViewStore.getState().schemaPane).toBe(pane)
+
+    fireEvent.click(within(pane).getByTitle("Close"))
+    expect(screen.queryByTestId("schema-pane")).not.toBeInTheDocument()
+    expect(useWorkbenchViewStore.getState()).toMatchObject({ schemaOpen: false, schemaPane: null })
   })
 
-  it("lays Preview out as building, on the sheets from the schema too, the palette's components disabled and no properties panel", () => {
+  it("lays Preview out as building, the schema's pane kept open and read only, the palette's components disabled and no properties panel", () => {
     renderView()
     expect(screen.getByTestId("properties-panel")).toBeInTheDocument()
 
     act(() => {
-      useWorkbenchViewStore.getState().showSection("schema")
+      useWorkbenchViewStore.getState().setSchemaOpen(true)
       useWorkbenchViewStore.getState().showMode("preview")
     })
     expect(screen.getByTestId("page-tabs")).toBeInTheDocument()
     expect(screen.getByTestId("sheet-canvas")).toBeInTheDocument()
-    expect(screen.queryByTestId("schema-editor")).not.toBeInTheDocument()
+    expect(screen.getByTestId("schema-editor")).toHaveAttribute("data-read-only", "true")
     expect(screen.getByTestId("palette-item-tableInput")).toHaveAttribute("aria-disabled", "true")
     expect(screen.queryByTestId("properties-panel")).not.toBeInTheDocument()
 
     act(() => {
       useWorkbenchViewStore.getState().showMode("build")
     })
+    expect(screen.getByTestId("schema-editor")).toHaveAttribute("data-read-only", "false")
     expect(screen.getByTestId("palette-item-tableInput")).not.toHaveAttribute("aria-disabled")
     expect(screen.getByTestId("properties-panel")).toBeInTheDocument()
   })
@@ -147,7 +154,7 @@ describe("WorkbenchView", () => {
   it("saves the project through the host on Ctrl+S, with a focused field's edit included", async () => {
     vi.useFakeTimers()
     try {
-      useWorkbenchViewStore.setState({ section: "schema" })
+      useWorkbenchViewStore.setState({ schemaOpen: true })
       renderView()
       const field = screen.getByRole("textbox", { name: "Column name" })
       field.focus()
@@ -166,7 +173,7 @@ describe("WorkbenchView", () => {
   })
 
   it("undoes and redoes with Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y, not while typing or in a dialog", () => {
-    useWorkbenchViewStore.setState({ section: "schema" })
+    useWorkbenchViewStore.setState({ schemaOpen: true })
     renderView()
     key(window, { key: "z", ctrlKey: true })
     key(window, { key: "Z", ctrlKey: true, shiftKey: true })
@@ -207,11 +214,11 @@ describe("WorkbenchView", () => {
 
     expect(pricing.setPricer).toHaveBeenCalledTimes(1)
     expect(pricing.setPricer.mock.calls[0][0]).toEqual(expect.any(Function))
-    // Building, the sheets are a new quote's: nothing is priced, the schema section neither.
+    // Building, the sheets are a new quote's: nothing is priced, with the schema's pane open neither.
     expect(pricing.schedule).not.toHaveBeenCalled()
     act(() => {
       useWorkbenchFormStore.setState({ form: { ...form, sample: { t: [{ c: "1" }] } } })
-      useWorkbenchViewStore.getState().showSection("schema")
+      useWorkbenchViewStore.getState().setSchemaOpen(true)
       useWorkbenchFormStore.setState({ form: { ...form, sample: { t: [{ c: "2" }] } } })
     })
     expect(pricing.schedule).not.toHaveBeenCalled()

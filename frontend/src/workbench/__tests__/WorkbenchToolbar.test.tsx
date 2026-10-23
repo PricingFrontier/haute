@@ -2,7 +2,7 @@
  * The toolbar while the workbench's view shows (specs/workbench), the same controls in
  * both modes, those a mode has no use for disabled: the brand, the pipeline toolbar's Source
  * over Pipeline, the form's Undo and Redo and the sheet's zoom where the pipeline toolbar has
- * its own, Build over Preview, the sections and Display, the project's controls,
+ * its own, Build over Preview, Schema over Display, the project's controls,
  * Save and Commit, both the host's as the pipeline toolbar's are, and in Preview why pricing
  * the sample failed, with no Price or Clear: the sample is priced as it is typed.
  */
@@ -106,7 +106,7 @@ describe("WorkbenchToolbar", () => {
 
   beforeEach(() => {
     useWorkbenchFormStore.setState({ form, status: "ready", saving: false, undoStack: [], redoStack: [], ...actions })
-    useWorkbenchViewStore.setState({ mode: "build", section: "sheets", zoom: 1 })
+    useWorkbenchViewStore.setState({ mode: "build", schemaOpen: false, zoom: 1 })
     useWorkbenchPricingStore.setState({ error: null })
     useSettingsStore.setState({ sources: ["live"], activeSource: "live" })
     useUIStore.setState({ calculationMode: "automatic" })
@@ -117,7 +117,7 @@ describe("WorkbenchToolbar", () => {
     vi.clearAllMocks()
   })
 
-  it("has the brand, Source over Pipeline, Undo and Redo, the zoom, Build pressed over Preview, the sections, and the project's controls with Save and Commit", () => {
+  it("has the brand, Source over Pipeline, Undo and Redo, the zoom, Build pressed over Preview, Schema over Display, and the project's controls with Save and Commit", () => {
     renderToolbar()
 
     expect(screen.getByRole("toolbar", { name: "Workbench toolbar" })).toBeInTheDocument()
@@ -126,7 +126,7 @@ describe("WorkbenchToolbar", () => {
     expect(screen.getByTestId("toolbar-pipeline-settings")).toHaveTextContent(/^Pipeline$/)
     expect(screen.getByRole("button", { name: "Build" })).toHaveAttribute("aria-pressed", "true")
     expect(screen.getByRole("button", { name: "Preview" })).toHaveAttribute("aria-pressed", "false")
-    expect(screen.getByRole("button", { name: "Sheets" })).toHaveAttribute("aria-pressed", "true")
+    expect(screen.queryByRole("button", { name: "Sheets" })).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Schema" })).toHaveAttribute("aria-pressed", "false")
     expect(screen.getByTestId("toolbar-undo")).toBeDisabled()
     expect(screen.getByTestId("toolbar-redo")).toBeDisabled()
@@ -138,25 +138,38 @@ describe("WorkbenchToolbar", () => {
     expect(screen.getByTestId("toolbar-save-commit")).toBeEnabled()
   })
 
-  it("switches between the sheets and the schema, where the zoom is disabled", () => {
+  it("opens and closes the schema's pane, pressed while it is open, the zoom on either way", () => {
     renderToolbar()
 
     fireEvent.click(screen.getByRole("button", { name: "Schema" }))
-    expect(useWorkbenchViewStore.getState().section).toBe("schema")
+    expect(useWorkbenchViewStore.getState().schemaOpen).toBe(true)
     expect(screen.getByRole("button", { name: "Schema" })).toHaveAttribute("aria-pressed", "true")
-    expect(screen.getByTestId("toolbar-zoom-in")).toBeDisabled()
-    expect(screen.getByTestId("toolbar-zoom-out")).toBeDisabled()
-
-    fireEvent.click(screen.getByRole("button", { name: "Sheets" }))
-    expect(useWorkbenchViewStore.getState().section).toBe("sheets")
     expect(screen.getByTestId("toolbar-zoom-in")).toBeEnabled()
+    expect(screen.getByTestId("toolbar-zoom-out")).toBeEnabled()
+
+    fireEvent.click(screen.getByRole("button", { name: "Schema" }))
+    expect(useWorkbenchViewStore.getState().schemaOpen).toBe(false)
+    expect(screen.getByRole("button", { name: "Schema" })).toHaveAttribute("aria-pressed", "false")
+  })
+
+  it("stacks Schema over Display in one column", () => {
+    renderToolbar()
+    const column = screen.getByRole("button", { name: "Schema" }).parentElement!
+    expect(column).toHaveClass("toolbar-column")
+    expect(column).toContainElement(screen.getByRole("button", { name: "Display" }))
+  })
+
+  it("has Schema off until the form is read", () => {
+    useWorkbenchFormStore.setState({ status: "loading" })
+    renderToolbar()
+    expect(screen.getByRole("button", { name: "Schema" })).toBeDisabled()
   })
 
   it("keeps the same controls in both modes, in the same places", () => {
     const controls = () => within(screen.getByTestId("workbench-toolbar-actions")).getAllByRole("button").map((button) => button.textContent)
     renderToolbar()
     const building = controls()
-    expect(building).toEqual(["Undo", "Redo", "Zoom In", "Zoom Out", "Build", "Preview", "Sheets", "Schema", "Display"])
+    expect(building).toEqual(["Undo", "Redo", "Zoom In", "Zoom Out", "Build", "Preview", "Schema", "Display"])
 
     fireEvent.click(screen.getByRole("button", { name: "Preview" }))
     expect(controls()).toEqual(building)
@@ -177,16 +190,17 @@ describe("WorkbenchToolbar", () => {
     expect(screen.getByTestId("toolbar-pipeline-settings")).toHaveTextContent(/^Offline$/)
   })
 
-  it("switches to Preview on the sheets, from the schema too, its sections disabled, the zoom and the form's Undo and Redo on, no Price or Clear, and back to Build", () => {
-    useWorkbenchViewStore.setState({ section: "schema" })
+  it("switches to Preview with the schema's pane kept open, Schema still on, the zoom and the form's Undo and Redo on, no Price or Clear, and back to Build", () => {
+    useWorkbenchViewStore.setState({ schemaOpen: true })
     renderToolbar()
 
     fireEvent.click(screen.getByRole("button", { name: "Preview" }))
-    expect(useWorkbenchViewStore.getState()).toMatchObject({ mode: "preview", section: "sheets" })
+    expect(useWorkbenchViewStore.getState()).toMatchObject({ mode: "preview", schemaOpen: true })
     expect(screen.getByRole("button", { name: "Preview" })).toHaveAttribute("aria-pressed", "true")
-    expect(screen.getByRole("button", { name: "Sheets" })).toHaveAttribute("aria-pressed", "true")
-    expect(screen.getByRole("button", { name: "Sheets" })).toBeDisabled()
-    expect(screen.getByRole("button", { name: "Schema" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Schema" })).toHaveAttribute("aria-pressed", "true")
+    expect(screen.getByRole("button", { name: "Schema" })).toBeEnabled()
+    fireEvent.click(screen.getByRole("button", { name: "Schema" }))
+    expect(useWorkbenchViewStore.getState().schemaOpen).toBe(false)
     expect(screen.getByTestId("toolbar-undo")).toBeInTheDocument()
     expect(screen.getByTestId("toolbar-zoom-in")).toBeEnabled()
     // The sample is priced as it is typed, and nothing empties it.
@@ -194,7 +208,7 @@ describe("WorkbenchToolbar", () => {
     expect(screen.queryByRole("button", { name: "Clear" })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button", { name: "Build" }))
-    expect(useWorkbenchViewStore.getState()).toMatchObject({ mode: "build", section: "sheets" })
+    expect(useWorkbenchViewStore.getState()).toMatchObject({ mode: "build", schemaOpen: false })
     expect(screen.getByRole("button", { name: "Schema" })).toBeEnabled()
   })
 

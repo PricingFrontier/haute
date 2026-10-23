@@ -1,4 +1,4 @@
-import { Database, Eye, Sheet, Wrench } from "lucide-react"
+import { Database, Eye, Wrench } from "lucide-react"
 import ProjectControls from "../components/ProjectControls"
 import SourcePipelineControls from "../components/SourcePipelineControls"
 import type { WsStatus } from "../hooks/useWebSocketSync"
@@ -26,12 +26,12 @@ interface WorkbenchToolbarProps {
 
 /**
  * The toolbar while the workbench's view shows (specs/workbench), the same in both modes,
- * so it keeps its layout as the mode changes, a control the mode or the section showing has
- * no use for disabled in its place: the brand; the pipeline toolbar's Source over Pipeline;
- * the form's Undo and Redo; Zoom In over Zoom Out, disabled while the schema shows, these
- * three where the pipeline toolbar has them; Build over Preview; Sheets over Schema, and
- * Display and the box of the sheets' colours it opens, disabled in Preview, which shows the
- * sheets; in Preview, why pricing the sample last failed; and
+ * so it keeps its layout as the mode changes, a control the mode has no use for disabled in
+ * its place: the brand; the pipeline toolbar's Source over Pipeline; the form's Undo and Redo;
+ * Zoom In over Zoom Out, these three where the pipeline toolbar has them; Build over Preview;
+ * Schema, opening and closing the schema's pane in either mode, over Display and the box of
+ * the sheets' colours it opens, disabled in Preview; in Preview, why pricing the sample last
+ * failed; and
  * the project's controls, the host's and the same as the pipeline toolbar's: Save saves the
  * project, the form and then the pipeline, and Commit records a milestone after that save.
  */
@@ -48,9 +48,9 @@ export default function WorkbenchToolbar({
   const undo = useWorkbenchFormStore((s) => s.undo)
   const redo = useWorkbenchFormStore((s) => s.redo)
   const previewing = useWorkbenchViewStore((s) => s.mode === "preview")
-  const section = useWorkbenchViewStore((s) => s.section)
+  const schemaOpen = useWorkbenchViewStore((s) => s.schemaOpen)
   const showMode = useWorkbenchViewStore((s) => s.showMode)
-  const showSection = useWorkbenchViewStore((s) => s.showSection)
+  const setSchemaOpen = useWorkbenchViewStore((s) => s.setSchemaOpen)
   const zoomBy = useWorkbenchViewStore((s) => s.zoomBy)
   const error = useWorkbenchPricingStore((s) => s.error)
 
@@ -60,7 +60,7 @@ export default function WorkbenchToolbar({
       <SourcePipelineControls wsStatus={wsStatus} editingDisabled={editingDisabled} sourceSelectionTrusted={sourceSelectionTrusted} />
       <div className="ml-2.5 flex flex-wrap items-center gap-2.5" data-testid="workbench-toolbar-actions">
         <UndoRedo canUndo={ready && canUndo} canRedo={ready && canRedo} onUndo={undo} onRedo={redo} />
-        <ZoomInOut onZoomIn={() => zoomBy(ZOOM_STEP)} onZoomOut={() => zoomBy(-ZOOM_STEP)} disabled={section === "schema"} />
+        <ZoomInOut onZoomIn={() => zoomBy(ZOOM_STEP)} onZoomOut={() => zoomBy(-ZOOM_STEP)} />
         <ToolbarColumn role="group" aria-label="Mode">
           <ToolbarButton icon={Wrench} aria-pressed={!previewing} onClick={() => showMode("build")} title="Lay out the sheets and the schema">
             Build
@@ -69,15 +69,10 @@ export default function WorkbenchToolbar({
             Preview
           </ToolbarButton>
         </ToolbarColumn>
-        <ToolbarColumn role="group" aria-label="Section">
-          <ToolbarButton icon={Sheet} aria-pressed={section === "sheets"} onClick={() => showSection("sheets")} disabled={previewing} title="Lay out the sheets">
-            Sheets
-          </ToolbarButton>
-          <ToolbarButton icon={Database} aria-pressed={section === "schema"} onClick={() => showSection("schema")} disabled={previewing} title="The tables the sheets work with">
+        <ToolbarColumn>
+          <ToolbarButton icon={Database} aria-pressed={schemaOpen} onClick={() => setSchemaOpen(!schemaOpen)} disabled={!ready} title="The tables the sheets work with">
             Schema
           </ToolbarButton>
-        </ToolbarColumn>
-        <ToolbarColumn role="group" aria-label="Display">
           <WorkbenchDisplay disabled={!ready || previewing} />
         </ToolbarColumn>
         {previewing && error !== null && (

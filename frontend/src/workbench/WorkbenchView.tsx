@@ -11,7 +11,7 @@ import { pricingBasis } from "../utils/workbenchForm"
 import PageTabs from "./PageTabs"
 import { priceSample } from "./priceSample"
 import PropertiesPanel from "./PropertiesPanel"
-import SchemaEditor from "./SchemaEditor"
+import SchemaPane from "./SchemaPane"
 import SheetCanvas from "./SheetCanvas"
 import { dropAt, sectionDropAt } from "./sheetInteractions"
 import useWorkbenchShortcuts from "./useWorkbenchShortcuts"
@@ -43,9 +43,9 @@ const BANNER_STYLE = {
 /**
  * The workbench's view, over the area below the toolbar while it is the active view
  * (specs/workbench), laid out alike in both modes: the component palette with the switcher
- * back to the pipeline, then the section the toolbar chose, the sheets (their tabs over the
- * sheet showing) or, while building, the schema editor, on the form the store reads when
- * the view first shows. While building the selected component's properties panel opens on
+ * back to the pipeline, then the sheets, their tabs over the sheet showing, with the schema's
+ * pane over the sheet's left part while the toolbar's Schema has it open, on the form the
+ * store reads when the view first shows. While building the selected component's properties panel opens on
  * the right; in Preview the sheets are as an underwriter sees them, with the sample keyed
  * into them. A save refused because the file changed on disk is reported in a banner with
  * the way out, a reload. The toolbar's Git, Assistant and
@@ -62,7 +62,7 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
   // The pipeline, its data, its source or the document moved: Preview prices again.
   const context = usePricingContext()
   const previewing = useWorkbenchViewStore((s) => s.mode === "preview")
-  const section = useWorkbenchViewStore((s) => s.section)
+  const schemaOpen = useWorkbenchViewStore((s) => s.schemaOpen)
   const setPricer = useWorkbenchPricingStore((s) => s.setPricer)
   const schedule = useWorkbenchPricingStore((s) => s.schedule)
   const cancel = useWorkbenchPricingStore((s) => s.cancel)
@@ -109,16 +109,15 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
           </div>
         )}
         {status === "ready" ? (
-          section === "schema" ? (
-            <SchemaEditor />
-          ) : (
-            <>
-              <div className="px-4 pt-2">
-                <PageTabs />
-              </div>
+          <>
+            <div className="px-4 pt-2">
+              <PageTabs />
+            </div>
+            <div className="relative flex min-h-0 flex-1 flex-col">
               <SheetCanvas />
-            </>
-          )
+              {schemaOpen && <SchemaPane />}
+            </div>
+          </>
         ) : status === "failed" ? (
           <div
             role="alert"
@@ -160,7 +159,7 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
             <FilesPanel key={filesPlace} place={filesPlace} onClose={() => setFilesPlace(null)} />
           </Suspense>
         </aside>
-      ) : status === "ready" && !previewing && section === "sheets" ? (
+      ) : status === "ready" && !previewing ? (
         <PropertiesPanel />
       ) : null}
       <DragChip />

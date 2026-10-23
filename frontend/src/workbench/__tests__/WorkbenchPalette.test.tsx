@@ -20,7 +20,7 @@ describe("WorkbenchPalette", () => {
     cleanup()
     useUIStore.setState({ paletteOpen: true })
     useWorkbenchStore.setState({ enabled: false, activeView: "pipeline" })
-    useWorkbenchViewStore.setState({ mode: "build", section: "sheets", creating: null })
+    useWorkbenchViewStore.setState({ mode: "build", schemaOpen: false, creating: null })
   })
 
   it("offers a Section, then a Heading, a Collection, a Table and a Chart, with the switcher at the bottom", () => {

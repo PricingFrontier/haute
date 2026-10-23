@@ -1,6 +1,6 @@
 /**
  * The workbench end to end (specs/workbench): switched on for the project, its schema read
- * into the Schema section, a Collection dragged onto a sheet and given its fields, drawn
+ * into the schema's pane, a Collection dragged onto a sheet and given its fields, drawn
  * while building as a new quote, the sample typed in Preview and priced live on the
  * pipeline open in the editor, with no Price or Clear, a column added to the schema, and
  * the project saved in one Save: the sheets and the sample to forms/form.json and the
@@ -190,15 +190,17 @@ test.describe("workbench", () => {
     await page.reload()
     await expect(page.getByRole("button", { name: /Workbench Input node: quote/i })).toBeVisible()
 
-    // The view, with the schema the sheets work with.
+    // The view, with the schema the sheets work with in its pane over the sheet.
     await page.getByTestId("view-switcher-workbench").click()
     await expect(page.getByRole("toolbar", { name: "Workbench toolbar" })).toBeVisible()
     await page.getByRole("button", { name: "Schema" }).click()
+    await expect(page.getByTestId("schema-pane")).toBeVisible()
     // Haute's quote_details table first, as every form holds it, then the project's.
     await expect(page.getByLabel("Table name").nth(0)).toHaveValue("quote_details")
     await expect(page.getByLabel("Table name").nth(1)).toHaveValue("policy")
     await expect(page.getByLabel("Table name").nth(2)).toHaveValue("pricing")
-    await page.getByRole("button", { name: "Sheets" }).click()
+    await page.getByRole("button", { name: "Schema" }).click()
+    await expect(page.getByTestId("schema-pane")).toHaveCount(0)
 
     // A Collection dragged out of the palette onto the sheet, then given its fields.
     const item = await centre(page.getByTestId("palette-item-collection"))

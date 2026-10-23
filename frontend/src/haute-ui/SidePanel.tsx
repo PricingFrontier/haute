@@ -12,7 +12,7 @@ export interface SidePanelHeaderProps {
   actions?: ReactNode
 }
 
-/** A right-hand panel's header: its icon, title and subtitle, any actions, and Close. */
+/** A side panel's header: its icon, title and subtitle, any actions, and Close. */
 export function SidePanelHeader({ title, onClose, icon, subtitle, actions }: SidePanelHeaderProps) {
   return (
     <div className="side-panel-header">
@@ -47,23 +47,25 @@ export type SidePanelProps = SidePanelHeading & {
   /** Merged over the panel's own style, such as to dim it. */
   style?: CSSProperties
   testId?: string
+  /** The side of the editor it opens on; right unless said otherwise. */
+  side?: "left" | "right"
 }
 
 /**
- * A panel on the right of the editor, resized by dragging its left edge, which
- * slides in when it opens. Its styles are side-panel.css.
+ * A panel on the right of the editor, or the left, resized by dragging its inner
+ * edge, which slides in from its side when it opens. Its styles are side-panel.css.
  */
-export function SidePanel({ children, width, onWidthChange, minWidth, maxWidth, style, testId, ...heading }: SidePanelProps) {
+export function SidePanel({ children, width, onWidthChange, minWidth, maxWidth, style, testId, side = "right", ...heading }: SidePanelProps) {
   const panel = useRef<HTMLDivElement>(null)
   const dragging = useRef(false)
   const start = useRef({ x: 0, width })
   const current = useRef(width)
   // Mirrors `dragging` so the handle keeps its accent while the pointer strays off it.
   const [dragActive, setDragActive] = useState(false)
-  // The latest limits and callback, for the window listeners added once.
-  const latest = useRef({ minWidth, maxWidth, onWidthChange })
+  // The latest limits, side and callback, for the window listeners added once.
+  const latest = useRef({ minWidth, maxWidth, onWidthChange, side })
   useLayoutEffect(() => {
-    latest.current = { minWidth, maxWidth, onWidthChange }
+    latest.current = { minWidth, maxWidth, onWidthChange, side }
   })
 
   useEffect(() => {
@@ -83,8 +85,10 @@ export function SidePanel({ children, width, onWidthChange, minWidth, maxWidth, 
         finish()
         return
       }
-      const { minWidth: min, maxWidth: max } = latest.current
-      const next = Math.min(max(), Math.max(min, start.current.width + start.current.x - e.clientX))
+      const { minWidth: min, maxWidth: max, side: from } = latest.current
+      // Dragged outwards, away from the panel's side, it widens.
+      const moved = from === "left" ? e.clientX - start.current.x : start.current.x - e.clientX
+      const next = Math.min(max(), Math.max(min, start.current.width + moved))
       current.current = next
       // Straight to the element while dragging; the host hears once, at the end.
       if (panel.current) panel.current.style.width = `${next}px`
@@ -109,18 +113,22 @@ export function SidePanel({ children, width, onWidthChange, minWidth, maxWidth, 
     setDragActive(true)
   }
 
+  const handle = (
+    <div
+      onMouseDown={onDragStart}
+      data-testid="panel-resize-handle"
+      className={dragActive ? "panel-drag-handle dragging" : "panel-drag-handle"}
+      style={{ background: "var(--chrome-border)" }}
+    />
+  )
   return (
-    <div ref={panel} data-testid={testId} className="side-panel" style={{ width, background: "var(--bg-panel)", ...style }}>
-      <div
-        onMouseDown={onDragStart}
-        data-testid="panel-resize-handle"
-        className={dragActive ? "panel-drag-handle dragging" : "panel-drag-handle"}
-        style={{ background: "var(--chrome-border)" }}
-      />
+    <div ref={panel} data-testid={testId} className={side === "left" ? "side-panel left" : "side-panel"} style={{ width, background: "var(--bg-panel)", ...style }}>
+      {side === "right" && handle}
       <div className="side-panel-body">
         {heading.title !== undefined && <SidePanelHeader {...heading} />}
         {children}
       </div>
+      {side === "left" && handle}
     </div>
   )
 }

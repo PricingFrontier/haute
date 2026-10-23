@@ -254,8 +254,8 @@ Out of scope:
 - **The view.** While the workbench is enabled, a view switcher at the bottom of the left
   palette offers "Pricing", the pipeline editor, and "Workbench".
   - **Showing it.** The Workbench view covers the area below the toolbar: its own left
-    column, the component palette with the switcher back, and the section the toolbar
-    chooses. Meanwhile the pipeline editor stays mounted (live sync, the document and its
+    column, the component palette with the switcher back, and the sheets, which the
+    schema's pane slides over from the left when the toolbar's Schema opens it. Meanwhile the pipeline editor stays mounted (live sync, the document and its
     undo history go on) but invisible and inert, its keyboard shortcuts, Ctrl/Cmd+Enter and
     React Flow's delete and pan keys off and its floating menus closed, so a key pressed in
     the view never edits the hidden pipeline. The Git, Assistant and Files panels open
@@ -266,15 +266,25 @@ Out of scope:
     Assistant, Help, the branch, Save and Commit) and shows the view's own, the same in
     both modes, so the toolbar keeps its layout as the mode changes: the form's Undo and
     Redo and Zoom In over Zoom Out, where the pipeline toolbar has its own Undo and Redo and
-    zoom, then Build over Preview, Sheets over Schema and Display, then, in Preview, why
-    pricing the sample last failed; there is no Price and no Clear. A
-    control the mode or the section showing has no use for stays in its place, disabled, as
-    the palette's components are in Preview:
+    zoom, then Build over Preview and Schema over Display, then, in Preview, why pricing
+    the sample last failed; there is no Price and no Clear. Schema opens and closes the
+    schema's pane in either mode, pressed while it is open. A control the mode has no use
+    for stays in its place, disabled, as the palette's components are in Preview:
 
     | Control | Disabled |
     |---|---|
-    | Sheets over Schema, Display | In Preview, which shows the sheets |
-    | Zoom In over Zoom Out | While the schema shows |
+    | Display | In Preview |
+
+  - **The schema's pane.** Schema opens the schema editor in a pane that slides in from
+    the left over the sheet, under the sheet tabs, covering the sheet's left part without
+    moving it; the part it covers takes no presses and no drops while it is open. Its
+    right edge is dragged to resize it, from 320px to half the window, its width kept while
+    the editor is open, and its Close, or Schema again, closes it. It stays open as the mode
+    changes and as another sheet shows, and opening it keeps the selection and the
+    properties panel. While building it edits the schema; in Preview it shows the schema
+    read only: a table still collapses and expands and a column's label and rules still
+    open, but no field takes typing, no select takes a choice, and no table or column is
+    added, removed or moved. Keys pressed in it are its own, never the sheet's.
 
   - **Save.** Save and Ctrl/Cmd+S save the project, the same from either toolbar, with a
     focused field's edit included: the form is saved first when it holds unsaved edits or
@@ -667,13 +677,13 @@ Out of scope:
   the number, while it asks for more), choosing it starting at 2; one condition reads so
   too while the match is a number, as fewer conditions than it asks for is a problem to put
   right. Each change is one undo step.
-- **The sheet's keyboard.** While the sheets show and a component is selected: Escape
+- **The sheet's keyboard.** With a component selected: Escape
   deselects it, Delete or Backspace removes it, Ctrl/Cmd+D duplicates it (16px below and
   to the right, selected), Ctrl/Cmd+C copies it, a note saying so, and the arrow keys nudge it by a grid step, or a pixel with
   Shift, and with Ctrl/Cmd resize it from its bottom-right corner by as much, never under
   its kind's least size, its section and the sheet growing to hold it as the handle's
   resize grows them, a burst of nudges or resizes within 800ms being one undo step, kept
-  inside its section, a nudge or resize that cannot change it recording nothing. While the sheets show, selected or not,
+  inside its section, a nudge or resize that cannot change it recording nothing. Selected or not,
   Ctrl/Cmd+V pastes a copy of the component copied, as it was when copied but for the
   columns the schema has lost since, which it no longer shows or tests, onto the sheet
   showing: into the section selected, else the selected component's, else the section it
@@ -865,9 +875,9 @@ Out of scope:
   one under the next and each component where it sits in its section, read and
   tabbed through in the order they sit, no section bars, their
   tabs only switching sheets, the components neither selected nor moved, the palette's
-  components and the toolbar's Sheets over Schema and Display disabled (the toolbar,
-  above), no properties panel, and the zoom. Either button shows the sheets, from the
-  schema too, with nothing selected. The sheets are drawn as the
+  components and the toolbar's Display disabled (the toolbar, above), no properties
+  panel, the schema's pane read only while it is open, and the zoom. Either button leaves
+  nothing selected and the schema's pane as it was. The sheets are drawn as the
   underwriter app draws them, through the same components. The analyst keys the sample in
   as an underwriter keys a quote, through the same controls, and it is priced live
   (above), read as a request is, so it prices as it would deployed: every output column
@@ -1829,8 +1839,8 @@ Out of scope:
   error toast and changes no Workbench Input or Workbench Output; a fetch made for an
   earlier document never changes the current one, and an update it started that is still
   waiting on identity resolution is dropped with the commit controller's usual message. A
-  read of the form that fails is shown in the view in place of the schema editor, with a
-  way to try again.
+  read of the form that fails is shown in the view in place of the sheets, with a way to
+  try again.
 - `GET /api/workbench/params` answers 404 while the workbench is not enabled, and 409
   with why a file or a column cannot give values: the project has no pipeline folder,
   the name is not a CSV directly in `files/params/`, the file does not exist, is empty,

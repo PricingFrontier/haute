@@ -23,7 +23,7 @@ const WIDGET_PANES = [
 
 export function FieldsSettings({ form, widget }: { form: FormSpec; widget: FieldsWidget }) {
   const change = useWorkbenchFormStore((s) => s.change)
-  const showSection = useWorkbenchViewStore((s) => s.showSection)
+  const setSchemaOpen = useWorkbenchViewStore((s) => s.setSchemaOpen)
   const { collapsed, toggle: toggleCollapsed } = useCollapsedSet()
   // A Chart plots either kind of table; a Table and a Collection each show one.
   const rows = widget.type === "chart" ? null : rowsShown(widget)
@@ -141,7 +141,7 @@ export function FieldsSettings({ form, widget }: { form: FormSpec; widget: Field
             {tables.length === 0 ? (
               <p style={{ color: "var(--text-muted)" }}>
                 The schema has no {rows === null ? "" : rows === "one" ? "one-row " : "many-row "}tables yet.{" "}
-                <button type="button" onClick={() => showSection("schema")} className="quiet-action focus-ring rounded">
+                <button type="button" onClick={() => setSchemaOpen(true)} className="quiet-action focus-ring rounded">
                   Open the schema
                 </button>
               </p>
