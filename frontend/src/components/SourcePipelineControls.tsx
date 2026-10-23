@@ -2,7 +2,6 @@ import { Suspense, lazy, useState, useRef, useCallback } from "react"
 import { ChevronDown, Plus, Trash2 } from "lucide-react"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import useSettingsStore from "../stores/useSettingsStore"
-import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
 import { confirmed } from "../stores/useQuestionStore"
 import { constantsWithSourceValue, withoutSource } from "../utils/globalConstants"
@@ -59,7 +58,6 @@ export default function SourcePipelineControls({
   const setActiveSource = useSettingsStore((s) => s.setActiveSource)
   const addSource = useSettingsStore((s) => s.addSource)
   const removeSource = useSettingsStore((s) => s.removeSource)
-  const calculationMode = useUIStore((s) => s.calculationMode)
   // Local, not in the UI store: this column is the only thing that opens the
   // pipeline settings pane, so no other surface needs to read or set this.
   const [pipelineSettingsOpen, setPipelineSettingsOpen] = useState(false)
@@ -197,10 +195,10 @@ export default function SourcePipelineControls({
             </div>
           )}
         </div>
-        {/* The button names the pipeline's live state, so the server going
-            away is reported here: nothing calculates while it is offline.
+        {/* The button reads "Pipeline" whatever the calculation mode, and
+            "Offline" while the server is away, as nothing calculates then.
             "Offline" is no wider than "Pipeline", so going offline never
-            widens the column; like "Manual", it can narrow it. */}
+            widens the column. */}
         {/* Spelled as the Source selector over it is, whose chevron the kit's
             centred action would not take, so the two texts line up. */}
         <button
@@ -212,7 +210,7 @@ export default function SourcePipelineControls({
           style={offlineTitle ? { color: 'var(--danger)' } : undefined}
           title={offlineTitle ?? PIPELINE_SETTINGS_TITLE}
         >
-          {offlineTitle ? "Offline" : calculationMode === "manual" ? "Manual" : "Pipeline"}
+          {offlineTitle ? "Offline" : "Pipeline"}
         </button>
       </div>
       {pipelineSettingsOpen && (

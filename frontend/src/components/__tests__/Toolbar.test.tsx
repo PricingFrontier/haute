@@ -635,7 +635,7 @@ describe("Toolbar", () => {
   })
 
   it.each(["idle", "connecting", "connected"] as const)(
-    "the Pipeline button names the calculation mode while live sync is %s",
+    "the Pipeline button reads Pipeline while live sync is %s",
     (wsStatus) => {
       // Neither idle nor a first attempt in flight is evidence the server is
       // down, so a page load never flashes "Offline".
@@ -650,13 +650,13 @@ describe("Toolbar", () => {
     },
   )
 
-  it("returns from Offline to the calculation mode when the server comes back", () => {
+  it("returns from Offline to Pipeline when the server comes back, under manual calculation too", () => {
     useUIStore.setState({ calculationMode: "manual" })
     const { rerender } = render(<Toolbar {...makeProps({ wsStatus: "reconnecting" })} />)
     const button = screen.getByTestId("toolbar-pipeline-settings")
     expect(button).toHaveTextContent("Offline")
     rerender(<Toolbar {...makeProps({ wsStatus: "connected" })} />)
-    expect(button).toHaveTextContent(/^Manual$/)
+    expect(button).toHaveTextContent(/^Pipeline$/)
     useUIStore.setState({ calculationMode: "automatic" })
   })
 
@@ -794,14 +794,14 @@ describe("Toolbar", () => {
     expect(screen.getByRole("menu", { name: "Help" })).toHaveStyle({ color: "var(--text-primary)" })
   })
 
-  it("the Pipeline button names the calculation mode", () => {
+  it("the Pipeline button reads Pipeline whatever the calculation mode", () => {
     useUIStore.setState({ calculationMode: "automatic" })
     render(<Toolbar {...makeProps()} />)
     const button = screen.getByTestId("toolbar-pipeline-settings")
-    expect(button).toHaveTextContent("Pipeline")
+    expect(button).toHaveTextContent(/^Pipeline$/)
 
     act(() => useUIStore.setState({ calculationMode: "manual" }))
-    expect(button).toHaveTextContent("Manual")
+    expect(button).toHaveTextContent(/^Pipeline$/)
     useUIStore.setState({ calculationMode: "automatic" })
   })
 

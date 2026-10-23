@@ -261,11 +261,13 @@ Out of scope:
     the view never edits the hidden pipeline. The Git, Assistant and Files panels open
     beside the view, in the properties panel's place. The Workbench Input's and Workbench
     Output's panels offer "Edit in Workbench", which shows the view.
-  - **The toolbar** keeps the brand and the project's controls (Pipeline files and Local
-    files, Assistant, Help, the branch, Save and Commit) and shows the view's own, the same
-    in both modes, so the toolbar keeps its layout as the mode changes: Build over Preview,
-    Sheets over Schema, Display, the form's Undo and Redo, and Zoom In over Zoom Out, then,
-    in Preview, why pricing the sample last failed; there is no Price and no Clear. A
+  - **The toolbar** keeps the brand, the pipeline toolbar's source selector over its
+    Pipeline control, and the project's controls (Pipeline files and Local files,
+    Assistant, Help, the branch, Save and Commit) and shows the view's own, the same in
+    both modes, so the toolbar keeps its layout as the mode changes: the form's Undo and
+    Redo and Zoom In over Zoom Out, where the pipeline toolbar has its own Undo and Redo and
+    zoom, then Build over Preview, Sheets over Schema and Display, then, in Preview, why
+    pricing the sample last failed; there is no Price and no Clear. A
     control the mode or the section showing has no use for stays in its place, disabled, as
     the palette's components are in Preview:
 
