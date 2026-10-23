@@ -310,7 +310,8 @@ set on a Collection, or on one of its fields, is drawn over them.
 
 - **Look**: compact or comfortable boxes, and the **Text size** of the values in them.
 - **Labels**: their **Position**, **Above** or **Beside** the boxes; while beside, their
-  **Width** as a percentage of the field (blank for Auto, from 1 to 99); **As written** or
+  **Width** as a percentage of the field (blank for Auto, from 1 to 99), always leaving the
+  box at least 24 pixels; **As written** or
   in **Capitals**, their **Size** (**Auto** is the values' size, a pixel smaller in
   capitals), **Align** (Auto puts them at the left), a **Fill** and **Font** colour,
   **Bold**, and **Wrap**. A label with a fill is drawn as a shaded cell,

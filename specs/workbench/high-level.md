@@ -463,7 +463,8 @@ Out of scope:
   in their `header_font_color`, across their field as `header_align` says, at its start
   while `auto`, and, given a fill, drawn as a cell, padded, and beside its box as tall as
   it; a label beside its box `label_width` percent of its field wide,
-  else two fifths of it, or what its box leaves while the box has a width; its boxes' borders in their
+  else two fifths of it, either never leaving its box narrower than 24 pixels, or what its
+  box leaves while the box has a width; its boxes' borders in their
   `box_style`, `box_weight` and `box_color`, and each box `box_width` wide, else what its
   label leaves, never wider than its field, its value across it as `box_align` says, as
   its type puts it while `auto`, and a narrower box under its label across the field

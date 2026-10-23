@@ -578,8 +578,9 @@ describe("WidgetBody", () => {
     expect(root.style.border).toBe("2px solid rgb(147, 51, 234)")
     expect(screen.getByText("Policy").style.borderBottom).toBe("1px solid rgb(147, 51, 234)")
     // Its labels filled, drawn as a cell as tall as the box beside it, in its font, its width,
-    // capitals, size and weight, wrapping rather than cut off.
-    expect(label()).toHaveStyle({ background: "#1E293B", color: "#FFFFFF", width: "60%" })
+    // capitals, size and weight, wrapping rather than cut off; never so wide that its box is
+    // narrower than a box's narrowest width, 24 pixels, after the 8 between them.
+    expect(label()).toHaveStyle({ background: "#1E293B", color: "#FFFFFF", width: "60%", maxWidth: "calc(100% - 32px)" })
     expect(label()).toHaveClass("rounded-md", "px-2.5", "self-stretch")
     const labelText = label().firstElementChild as HTMLElement
     expect(labelText).toHaveClass("uppercase", "break-words")
