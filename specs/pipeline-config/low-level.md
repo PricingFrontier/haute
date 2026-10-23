@@ -362,7 +362,16 @@ through `_release_input_dirs` when `workbench` is set) and rendered by
 `azure_devops_yml` take `workbench`, which `handle_init` passes from `--workbench`, as do
 `github_ci_yml` and `gitlab_ci_yml`, which then add the test-quote report job
 (`_GITHUB_TEST_QUOTES_JOB`, `_GITLAB_TEST_QUOTES_JOB`, `_AZURE_TEST_QUOTES_JOB`, the last
-added to Azure DevOps' Validate stage).
+added to Azure DevOps' Validate stage). Every CI generator also takes `python_version`
+(default `DEFAULT_CI_PYTHON`, `haute._project_python.DEFAULT_PYTHON`, 3.11):
+`_pin_ci_python` moves each job's Python pin (setup-uv's `python-version`, Azure's
+`versionSpec`, GitLab's job `image`) to it, and `haute_toml` takes the same
+`python_version` for a container target's `base_image` (`container_base_image`, a
+patch-pinned `python:<x.y.z>-slim`). `handle_init` passes the project's own Python
+(`project_python_version`: `.python-version` at the precision it is written in, else the
+lowest `3.x` from 3.11 that `requires-python` admits) and writes `.python-version` with it
+when the project has none, so uv's local environment, every CI job and the deployed model
+(see [deploy](../deploy/low-level.md)) run one Python.
 `handle_init` calls exactly the generator(s) for the chosen
 `ci` value (`"none"` calls none of them); on `--force` it first calls
 `_prune_stale_ci_files(project_dir, keep=ci)` (defined in `src/haute/cli/_init_cmd.py`),

@@ -113,7 +113,11 @@
 **Resolution (`src/haute/deploy/_config.py::resolve_config`)**
 1. Re-validate base-image pinning (config may have been mutated after `__post_init__` via
    `.override()` or env overrides).
-2. Load `.env` (idempotent).
+2. Load `.env` (idempotent), then `_validate_python_versions`: the interpreter running the
+   deploy must be `.python-version`'s pin (or satisfy `requires-python` when there is no
+   pin), and a container target's official `python:` base image must run the deployed
+   Python (`haute._project_python`), so local, CI and the deployed model run one Python;
+   an image whose tag names no Python version is not checked.
 3. `parse_pipeline_file(config.pipeline_file)` → `full_graph`; error if empty;
    `validate_singleton_groups(flatten_graph(full_graph))` refuses a second request input or
    response node, as save does.
@@ -442,7 +446,8 @@ first (see [modelling](../modelling/low-level.md)). The client creates the
 `mlflow.start_run(run_id=...)`, the one fluent call logs `HauteModel` as a `pyfunc`
 model-from-code with the manifest + every bundled artefact attached, the bundled `utility` package as its only MLflow
 `code_paths` entry (MLflow copies it under the model's `code/` directory and puts that on
-`sys.path` when the model loads), a `conda_env` with Python 3.11.11 and Haute exactly
+`sys.path` when the model loads), a `conda_env` with the project's Python (`_project_python.deployed_python_version`:
+`.python-version`'s pin, else the `major.minor` the deploy runs on, which CI tested) and Haute exactly
 pinned but `polars>=1.44.2` (Haute's own Polars floor) as a lower bound (the pinned Haute
 brings its own model engines, CatBoost among them), and
 `registered_model_name` set to the UC
@@ -466,8 +471,10 @@ Model Serving endpoint client keep the `DATABRICKS_RATING_HOST`/`DATABRICKS_RATI
 pair. Deploy never uses the general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair.
 
 **Runtime scoring (`_scorer.py::score_graph_lazy` → `score_graph`)**
-1. Resolve the graph's relative path configs against `graph.source_file`
-   (`_resolve_runtime_graph_paths`) and attach bundled feature-contract paths to
+1. Resolve the graph's relative path configs as bundling does, the directory of
+   `graph.source_file` first and then the project root, backslashes read as separators
+   (`_resolve_runtime_graph_paths`, through `_path_resolution.resolve_graph_source_path`,
+   which `_schema._resolve_pipeline_path` shares for schema inference and the sample row) and attach bundled feature-contract paths to
    `modelScore` node configs (`_attach_bundled_feature_contracts`). When a remapped
    native model has no bundled feature-contract sidecar, load that local model through
    the shared stat-gated local-model cache (`load_local_model_cached`) and attach its
