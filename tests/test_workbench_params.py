@@ -185,7 +185,8 @@ def test_a_column_s_values_are_read_again_from_its_file(project: Path) -> None:
 
     read = with_param_options(spec, project)
 
-    state, cover = read.data_schema.tables[0].columns
+    # After the quote's reference and option, which lead every table.
+    _, _, state, cover = read.data_schema.tables[0].columns
     assert state.options == ["NY", "CA", "TX"]
     assert state.options_source == OptionsSource(file="states.csv", column="state")
     # Values typed are the form's own.
