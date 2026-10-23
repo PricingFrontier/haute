@@ -113,16 +113,16 @@ describe("WidgetBody", () => {
     expect(currentForm().sample.equipment).toEqual([{}, { "equipment.item": "Crane" }, {}, {}])
     expect(screen.getAllByRole("row")).toHaveLength(5)
 
-    fireEvent.click(screen.getByRole("button", { name: "Delete row 1" }))
+    fromRowMenu(screen.getByRole("textbox", { name: "Item row 1" }), "Delete Row")
     expect(currentForm().sample.equipment).toEqual([{ "equipment.item": "Crane" }, {}, {}])
     expect(screen.getAllByRole("row")).toHaveLength(4)
 
     // Below the rows it starts with; deleting the last starts it again.
-    fireEvent.click(screen.getByRole("button", { name: "Delete row 3" }))
-    fireEvent.click(screen.getByRole("button", { name: "Delete row 2" }))
+    fromRowMenu(screen.getByRole("textbox", { name: "Item row 3" }), "Delete Row")
+    fromRowMenu(screen.getByRole("textbox", { name: "Item row 2" }), "Delete Row")
     expect(currentForm().sample.equipment).toEqual([{ "equipment.item": "Crane" }])
     expect(screen.getAllByRole("row")).toHaveLength(2)
-    fireEvent.click(screen.getByRole("button", { name: "Delete row 1" }))
+    fromRowMenu(screen.getByRole("textbox", { name: "Item row 1" }), "Delete Row")
     expect(currentForm().sample.equipment).toEqual([])
     expect(screen.getAllByRole("row")).toHaveLength(4)
     cleanup()
@@ -130,7 +130,7 @@ describe("WidgetBody", () => {
     // A starting row deletes while nothing is typed.
     loadForm()
     renderBody("w_grid")
-    fireEvent.click(screen.getByRole("button", { name: "Delete row 2" }))
+    fromRowMenu(screen.getByRole("textbox", { name: "Item row 2" }), "Delete Row")
     expect(currentForm().sample.equipment).toEqual([{}, {}])
     expect(screen.getAllByRole("row")).toHaveLength(3)
   })
@@ -271,7 +271,6 @@ describe("WidgetBody", () => {
     // Its values take no typing, and no row is inserted or deleted.
     expect(screen.queryByRole("textbox", { name: "Item row 1" })).not.toBeInTheDocument()
     expectNoRowMenu(screen.getByRole("textbox", { name: "Value row 1" }))
-    expect(screen.queryByRole("button", { name: "Delete row 1" })).not.toBeInTheDocument()
 
     const value = screen.getByRole("textbox", { name: "Value row 1" })
     fireEvent.change(value, { target: { value: "5000" } })
@@ -322,18 +321,17 @@ describe("WidgetBody", () => {
     expect(screen.getByRole("textbox", { name: "Days row 3" })).toHaveValue("3")
   })
 
-  it("draws a Table as its options say, and with its rows fixed shows every row typed but no row menu or delete", () => {
+  it("draws a Table as its options say, and with its rows fixed shows every row typed but no row menu", () => {
     const bodyRows = () => screen.getAllByRole("row").slice(1)
     const cellOf = (name: string) => screen.getByRole("textbox", { name }).closest("td")
 
-    // By default: numbered, compact rows lined between them, every other one shaded, each
-    // with a delete at its end.
+    // By default: numbered, compact rows lined between them, every other one shaded.
     renderBody("w_grid")
-    expect(screen.getAllByRole("columnheader")).toHaveLength(4)
+    expect(screen.getAllByRole("columnheader")).toHaveLength(3)
     expect(screen.getAllByRole("columnheader")[0]).toHaveTextContent("#")
     // The number's and the fields' headers each head their column.
     expect(screen.getAllByRole("columnheader").slice(0, 3).map((header) => header.getAttribute("scope"))).toEqual(["col", "col", "col"])
-    expect(bodyRows()[0].children).toHaveLength(4)
+    expect(bodyRows()[0].children).toHaveLength(3)
     expect(bodyRows()[0].children[0]).toHaveTextContent("1")
     expect(bodyRows()[0]).toHaveClass("even:bg-[var(--chip-rest)]")
     expect(bodyRows()[0].style.borderBottom).toBe("1px solid var(--border-subtle)")
@@ -356,7 +354,6 @@ describe("WidgetBody", () => {
     expect(bodyRows()).toHaveLength(4)
     expect(screen.getByRole("textbox", { name: "Item row 4" })).toHaveValue("D")
     expectNoRowMenu(screen.getByRole("textbox", { name: "Item row 1" }))
-    expect(screen.queryByRole("button", { name: "Delete row 1" })).not.toBeInTheDocument()
     cleanup()
 
     // No gridlines: no line between the rows, nor before an output column.
@@ -406,7 +403,7 @@ describe("WidgetBody", () => {
     expect(screen.getByTestId("priced-premiums:premiums.premium-1").style.borderTop).toBe("1px solid var(--border)")
     expect(cellOf("Value row 1")?.style.borderTop).toBe("")
 
-    // Typed, inserted and deleted as its rows are, the menu and the deletes saying what they do as drawn.
+    // Typed, inserted and deleted as its rows are, the menu saying what it does as drawn.
     const item = screen.getByRole("textbox", { name: "Item row 2" })
     fireEvent.change(item, { target: { value: "Crane" } })
     fireEvent.keyDown(item, { key: "Enter" })
@@ -432,17 +429,23 @@ describe("WidgetBody", () => {
     fromRowMenu(screen.getByRole("textbox", { name: "Item row 2" }), "Delete Column")
     fromRowMenu(screen.getByRole("textbox", { name: "Item row 1" }), "Delete Column")
     expect(currentForm().sample.equipment).toEqual([{}, { "equipment.item": "Crane" }, {}, {}])
-    expect(screen.getByRole("button", { name: "Delete row 1" })).toHaveAttribute("title", "Delete column")
-    fireEvent.click(screen.getByRole("button", { name: "Delete row 1" }))
+    fromRowMenu(within(lines()[0]).getAllByRole("columnheader")[1], "Delete Column")
     expect(currentForm().sample.equipment).toEqual([{ "equipment.item": "Crane" }, {}, {}])
     cleanup()
 
-    // Fixed and unnumbered, nothing goes above the fields; a full grid lines the rows' columns, the first ruled off by the labels alone.
+    // Unnumbered, nothing goes above the fields, the menu opening on their cells.
+    loadForm(updateWidget(form, "w_grid", { row_numbers: false }))
+    renderBody("w_grid")
+    expect(screen.queryAllByRole("columnheader")).toHaveLength(0)
+    fromRowMenu(screen.getByRole("textbox", { name: "Item row 1" }), "Delete Column")
+    expect(currentForm().sample.equipment).toEqual([{}, {}])
+    cleanup()
+
+    // Fixed, no menu; a full grid lines the rows' columns, the first ruled off by the labels alone.
     loadForm(updateWidget(form, "w_grid", { fixed_rows: true, row_numbers: false, gridlines: "all" }))
     renderBody("w_grid")
     expect(screen.queryAllByRole("columnheader")).toHaveLength(0)
     expectNoRowMenu(screen.getByRole("textbox", { name: "Item row 1" }))
-    expect(screen.queryByRole("button", { name: "Delete row 1" })).not.toBeInTheDocument()
     expect(cellOf("Item row 1")?.style.borderLeft).toBe("")
     expect(cellOf("Item row 2")?.style.borderLeft).toBe("1px solid var(--border-subtle)")
   })
@@ -462,12 +465,12 @@ describe("WidgetBody", () => {
     cleanup()
 
     // Shown: a row over the labels, a cell spanning each run of fields in a group and ruled
-    // under its name, blank over the numbers and the deletes, an output's run ruled before it.
+    // under its name, blank over the numbers, an output's run ruled before it.
     const grouped = updateWidget(form, "w_grid", { groups: true })
     loadForm(grouped)
     renderBody("w_grid")
     expect(headerRows()).toHaveLength(2)
-    expect(spans(headerRows()[0])).toEqual([["", 1], ["Asset", 2], ["Price", 1], ["", 1]])
+    expect(spans(headerRows()[0])).toEqual([["", 1], ["Asset", 2], ["Price", 1]])
     const asset = headerRows()[0].children[1] as HTMLElement
     expect((asset.firstElementChild as HTMLElement).style.borderBottom).toBe("1px solid var(--border-bright)")
     expect((headerRows()[0].children[2] as HTMLElement).style.borderLeft).toBe("1px solid var(--border)")
@@ -476,7 +479,7 @@ describe("WidgetBody", () => {
     // A field in no group has a blank cell of its own; with no field in a group, no row.
     loadForm(updateSchemaColumn(grouped, "equipment", "equipment.item", { group: "" }))
     renderBody("w_grid")
-    expect(spans(headerRows()[0])).toEqual([["", 1], ["", 1], ["Asset", 1], ["Price", 1], ["", 1]])
+    expect(spans(headerRows()[0])).toEqual([["", 1], ["", 1], ["Asset", 1], ["Price", 1]])
     cleanup()
     loadForm(updateWidget(sheetForm(), "w_grid", { groups: true }))
     renderBody("w_grid")
@@ -744,9 +747,9 @@ describe("WidgetBody", () => {
     expect(within(grid()).getAllByRole("img", { name: "Hidden for a new quote. Shows when Cover is ticked" })).toHaveLength(2)
 
     act(() => useWorkbenchViewStore.setState({ mode: "preview" }))
-    expect(within(grid()).getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["#", "Item", ""])
+    expect(within(grid()).getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["#", "Item"])
     // A row deleted goes from every table the grid shows, the one whose columns all hide too.
-    fireEvent.click(within(grid()).getByRole("button", { name: "Delete row 1" }))
+    fromRowMenu(within(grid()).getByRole("textbox", { name: "Item row 1" }), "Delete Row")
     expect(currentForm().sample.equipment).toEqual([{ "equipment.item": "Lift" }])
     expect(currentForm().sample.extras).toEqual([{ "extras.note": "second" }])
 
@@ -1140,7 +1143,6 @@ describe("WidgetBody", () => {
     expect(cell("premium", 3)).toHaveTextContent("—")
     expect(cell("premium", 4)).toBeNull()
     expectNoRowMenu(cell("premium", 1) as HTMLElement)
-    expect(screen.queryByRole("button", { name: "Delete row 1" })).toBeNull()
 
     // Priced: a row for each of the answer's, as a Chart of the same columns plots them.
     act(() =>
@@ -1415,7 +1417,6 @@ describe("WidgetBody", () => {
     renderBody("w_grid", "quote")
     expect(screen.getByRole("textbox", { name: "Item row 1" })).toBeDisabled()
     expectNoRowMenu(screen.getByRole("textbox", { name: "Item row 1" }))
-    expect(screen.queryByRole("button", { name: "Delete row 1" })).not.toBeInTheDocument()
     act(() => useWorkbenchPreviewStore.getState().setCell("policy", 0, "policy.state", "CA"))
     expect(useWorkbenchPreviewStore.getState().quote.policy[0]["policy.state"]).toBe("NY")
   })

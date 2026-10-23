@@ -1,5 +1,4 @@
 /** A Table on a sheet: its fields as a grid of rows, or on its side, with its groups, drawn as its look says (specs/workbench). */
-import { Trash2 } from "lucide-react"
 import { useState, type CSSProperties, type MouseEvent } from "react"
 import { cellKey, formattedNumber, presetColumn } from "../../utils/sheetValues"
 import { columnKey } from "../../utils/sheetVisibility"
@@ -83,7 +82,7 @@ function groupRuns(fields: ShownField[]): { group: string; start: number; size: 
  * row's value as text, and a value typed writes them whole; beside a table whose rows
  * differ, it shows every row of each, a table's cells past its own rows taking no typing.
  * Transposed, its fields run down its side, each labelled at the start of its line, and its
- * rows across, numbered above with a delete over each, a row's menu opening on its column;
+ * rows across, numbered above, a row's menu opening on its column;
  * the shading and the lines are the grid's as drawn, an output field ruled off above its line. Showing
  * groups, while a field it shows is in one, each run of fields side by side in a schema
  * group is headed by one cell naming it, over their labels, or beside them when
@@ -323,21 +322,6 @@ export function FieldGrid({
     )
   }
 
-  // A row's delete, shown while the pointer is on its row, or on its column's number when
-  // transposed, or while it has focus. Its name is the row's whatever the grid's
-  // orientation; its tooltip says what it does to the grid as drawn.
-  const deleteButton = (row: number) => (
-    <button
-      type="button"
-      aria-label={`Delete row ${row + 1}`}
-      title={transposed ? "Delete column" : "Delete row"}
-      onClick={() => deleteRow(row)}
-      onPointerDown={typeHere}
-      className={`icon-danger-btn focus-ring pointer-events-auto rounded p-1 opacity-0 ${transposed ? "group-hover/col:opacity-100" : "group-hover/row:opacity-100"} focus-visible:opacity-100`}
-    >
-      <Trash2 size={13} aria-hidden="true" />
-    </button>
-  )
   const rowMenu = menu !== null && (
     <RowMenu
       key={`${menu.row} ${menu.x} ${menu.y}`}
@@ -360,7 +344,7 @@ export function FieldGrid({
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="min-h-0 flex-1 overflow-auto">
           <table className="w-full border-collapse" style={{ fontSize: options.font_size }}>
-            {(numbered || !fixed) && (
+            {numbered && (
               <thead>
                 <tr>
                   <th
@@ -369,18 +353,17 @@ export function FieldGrid({
                     className="sticky top-0 left-0 z-10 h-7 w-px px-2.5 text-left font-semibold"
                     style={{ background: headFill, boxShadow: `${ruleRight}, ${ruleUnder}`, color: "var(--text-disabled)" }}
                   >
-                    {numbered && "#"}
+                    #
                   </th>
                   {Array.from({ length: count }, (_, row) => (
                     <th
                       key={row}
                       scope="col"
-                      className="group/col sticky top-0 z-[1] h-7 min-w-32 px-2 text-center text-[11px] font-normal tabular-nums"
+                      className="sticky top-0 z-[1] h-7 min-w-32 px-2 text-center text-[11px] font-normal tabular-nums"
                       style={{ background: headFill, boxShadow: ruleUnder, borderLeft: columnLine(row), color: "var(--text-disabled)" }}
                       onContextMenu={menuOn(row)}
                     >
-                      {numbered && row + 1}
-                      {!fixed && inputTables.length > 0 && <span className="absolute inset-y-0 right-1 flex items-center">{deleteButton(row)}</span>}
+                      {row + 1}
                     </th>
                   ))}
                 </tr>
@@ -477,7 +460,6 @@ export function FieldGrid({
                     )}
                   </th>
                 ))}
-                {!fixed && <th />}
               </tr>
             )}
             <tr className={`text-left ${headText}`} style={headStyle}>
@@ -525,19 +507,17 @@ export function FieldGrid({
                   </th>
                 )
               })}
-              {!fixed && <th className="w-8" style={{ boxShadow: ruleUnder }} />}
             </tr>
           </thead>
           <tbody>
             {Array.from({ length: count }, (_, row) => (
-              <tr key={row} className={`group/row ${rowClass}`} style={{ borderBottom: rowLine }} onContextMenu={menuOn(row)}>
+              <tr key={row} className={rowClass} style={{ borderBottom: rowLine }} onContextMenu={menuOn(row)}>
                 {numbered && (
                   <td className="text-center text-[11px] tabular-nums" style={{ color: "var(--text-disabled)" }}>
                     {row + 1}
                   </td>
                 )}
                 {fields.map((field, position) => valueCell(field, row, { borderLeft: ruleBefore(field.found, position) }))}
-                {!fixed && <td className="text-center">{inputTables.length > 0 && deleteButton(row)}</td>}
               </tr>
             ))}
           </tbody>

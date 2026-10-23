@@ -452,18 +452,17 @@ Out of scope:
   say: its rows numbered in a column of their own unless `row_numbers` is off, compact rows
   (28px) or comfortable ones (36px), a line between rows and before each output column
   (`rows`), between every column too (`all`) or none at all (`none`), every other row
-  shaded unless `striped` is off, and a delete on each row unless its rows are fixed;
+  shaded unless `striped` is off;
   transposed (`transposed`), the same grid on its side: a line
   per field, labelled at its start in the header's look, the labels staying in view as
   the rows scroll across and ruled off from them, and a column per row, numbered above
-  unless `row_numbers` is off, the numbers staying in view as the fields scroll down,
-  with a delete over each unless its rows are fixed; its
+  unless `row_numbers` is off, the numbers staying in view as the fields scroll down; its
   stripes and gridlines are its lines' as drawn, a full grid lining its columns too, and
   an output field is ruled off above its line; showing groups (`groups`), while a field
   it shows is in a schema group, each run of fields side by side in one group headed
   by one cell naming it, a row of them over the labels with each name ruled under
   inside its cell, so groups side by side stay apart, and a blank cell over a field in
-  none, the numbers and the deletes, or, transposed, a column of them before the
+  none and the numbers, or, transposed, a column of them before the
   labels, which stay in view beside it; and its look as a spreadsheet's is set: its values
   at its `font_size`; its labels at their size, bold unless `header_bold` is off, wrapping
   across their column with whole words kept rather than cut off while `header_wrap`, and

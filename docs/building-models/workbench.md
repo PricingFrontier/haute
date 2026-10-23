@@ -213,9 +213,8 @@ other than an index. A grid holds one kind of row, so once a Table or a Chart sh
 field, tables whose rows do not line up with it (keyed differently) are greyed out; an
 input table and an output table with the same key line up, so each row can show its
 premium. Output columns are shaded. A transposed Table turns its grid on its side: each
-field is a line, labelled at its left, and each row is a column, numbered along the top,
-with a delete over each number; its stripes
-and gridlines follow the lines as drawn. With **groups** ticked, the columns side by side
+field is a line, labelled at its left, and each row is a column, numbered along the top;
+its stripes and gridlines follow the lines as drawn. With **groups** ticked, the columns side by side
 in one schema group share a heading over their labels, as merged cells over a table's
 headers would in Excel; a column in no group has none. Transposed, the groups sit in a
 column before the labels. Order the fields so each group's columns are together. To
@@ -463,8 +462,8 @@ once saved.
 A Collection's boxes hold its tables' one row, and a Table's grid holds its tables' rows.
 Unless its rows are fixed, right-click a row for its menu: **Insert** opens **Insert Row
 Above**, **Insert Row Below**, **Insert Multiple Rows Above** and **Insert Multiple Rows
-Below**, the last two asking how many rows to insert, and **Delete Row** deletes it, as
-does the delete at the end of each row. On a transposed Table, right-click a column, or
+Below**, the last two asking how many rows to insert, and **Delete Row** deletes it. On a
+transposed Table, right-click a column, or
 its number, and the menu inserts columns to the left or right. Rows are inserted and
 deleted in every input table the grid shows, so the cells stay side by side. A Table
 starts with its rows, empty; the first value you type keeps them, and from then on the
