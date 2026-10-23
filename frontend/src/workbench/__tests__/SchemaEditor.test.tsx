@@ -664,6 +664,30 @@ describe("SchemaEditor", () => {
     expect(columnNames("layers")).toEqual(["layer", "limit"])
   })
 
+  it("adds a table leading with the quote's reference and option, locked, its index after them", () => {
+    render(<SchemaEditor />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Add table" }))
+    fireEvent.change(screen.getByRole("combobox", { name: "Rows of table" }), { target: { value: "many" } })
+
+    expect(columnNames("table")).toEqual(["reference", "option"])
+    for (const [id, name] of [["quote_reference", "reference"], ["quote_option", "option"]]) {
+      const row = screen.getByTestId(`schema-column-${id}`)
+      // Not moved, retyped, renamed, keyed, given details or removed.
+      expect(columnGrip(id)).toBeNull()
+      expect(within(row).queryByRole("combobox", { name: `Type of ${name}` })).toBeNull()
+      expect(within(row).getByRole("textbox", { name: "Column name" })).toHaveAttribute("readonly")
+      expect(within(row).queryByRole("button", { name: `Key: ${name}` })).toBeNull()
+      expect(within(row).queryByRole("button", { name: `Label and rules of ${name}` })).toBeNull()
+      expect(within(row).queryByRole("button", { name: `Remove column ${name}` })).toBeNull()
+      expect(within(row).getByLabelText("Haute's column")).toBeInTheDocument()
+    }
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Add index to table" }))
+    fireEvent.click(within(tableNamed("table")).getByRole("button", { name: "Add column" }))
+    expect(columnNames("table")).toEqual(["reference", "option", "row_number", "column"])
+  })
+
   it("asks before removing an index a sheet shows", async () => {
     const indexed = form(POLICY, { ...LAYERS, columns: [column("c_row", "row_number", { type: "int", index: true }), ...LAYERS.columns] })
     indexed.pages[0].sections[0].widgets = [

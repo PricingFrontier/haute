@@ -10,6 +10,7 @@ const FILL_BORDERS: Readonly<Record<ColumnFill["kind"], string>> = {
   mistyped: "var(--caution)",
   filled: "var(--border)",
   unknown: "var(--border)",
+  haute: "var(--border)",
 }
 
 function fillTitle(fill: ColumnFill): string | undefined {
@@ -22,8 +23,9 @@ function fillTitle(fill: ColumnFill): string | undefined {
  * The Workbench Output's panel (specs/workbench): the response's tables the project's
  * workbench supplies, each with the node connected to its port, and each of its columns,
  * which the connected frame's column of exactly its name fills, bordered red while it is
- * missing and orange while that column is of a type that does not fit. The tables are
- * read-only (the editor keeps them current, `useWorkbenchTables`).
+ * missing and orange while that column is of a type that does not fit; the quote's reference
+ * and option, which the response gives, are neither. The tables are read-only (the editor
+ * keeps them current, `useWorkbenchTables`).
  */
 export default function WorkbenchOutputEditor({
   config,
@@ -104,12 +106,12 @@ function OutputTable({
             {source === null ? "Not connected" : `From ${source.sourceLabel}`}
           </p>
           <ul className="mt-1 space-y-1">
-            {table.columns.map((column) => (
+            {table.columns.map((column, at) => (
               <OutputColumn
                 key={column.name}
                 table={table.name}
                 column={column}
-                fill={columnFill(column, source !== null, source?.columns)}
+                fill={columnFill(table, at, source !== null, source?.columns)}
               />
             ))}
           </ul>

@@ -101,6 +101,32 @@ describe("WorkbenchOutputEditor", () => {
     expect(border("layers", "premium")).toBe("var(--border)")
   })
 
+  it("never borders the quote's reference and option, which the response gives, connected or not", () => {
+    const identity = [column("reference", "str"), column("option", "int")]
+    render(
+      <WorkbenchOutputEditor
+        config={{
+          tables: [
+            { name: "pricing_output", rows: "one", columns: [...identity, column("premium", "float")] },
+            { name: "layers", rows: "many", columns: [...identity, column("layer", "int")] },
+          ],
+        }}
+        // The frame holds a reference of another type, and none of the option.
+        inputSources={[{ ...priced, columns: [{ name: "premium", dtype: "Float64" }, { name: "reference", dtype: "Int64" }] }]}
+        reservedFrameLabels={new Set()}
+      />,
+    )
+
+    for (const table of ["pricing_output", "layers"]) {
+      for (const name of ["reference", "option"]) {
+        expect(border(table, name)).toBe("var(--border)")
+        expect(screen.getByTestId(`workbench-column-${table}-${name}`)).not.toHaveAttribute("title")
+      }
+    }
+    // Its own columns are still judged: nothing is connected to layers.
+    expect(border("layers", "layer")).toBe("var(--danger)")
+  })
+
   it("judges no column of a connected frame not previewed yet", () => {
     renderEditor({ inputSources: [{ ...priced, columns: undefined }] })
 

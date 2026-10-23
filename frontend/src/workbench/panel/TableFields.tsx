@@ -2,6 +2,7 @@
 import { ChevronDown, ChevronRight } from "lucide-react"
 import type { SchemaTable } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import { sheetColumns } from "../../utils/quoteIdentity"
 import { plottable, readableName, toggleField, type FieldsWidget } from "../../utils/workbenchForm"
 import { COLUMN_TYPES } from "../columnTypes"
 
@@ -27,9 +28,11 @@ export function TableFields({
 }) {
   const change = useWorkbenchFormStore((s) => s.change)
   const isShown = (columnId: string) => widget.fields.some((field) => field.table === table.id && field.column === columnId)
-  const shown = table.columns.filter((column) => isShown(column.id)).length
+  // The quote's reference and option are never on the sheets: they are not offered.
+  const offered = sheetColumns(table)
+  const shown = offered.filter((column) => isShown(column.id)).length
   const Chevron = collapsed ? ChevronRight : ChevronDown
-  const columns = matched === null ? table.columns : table.columns.filter((column) => matched.has(column.id))
+  const columns = matched === null ? offered : offered.filter((column) => matched.has(column.id))
 
   return (
     <div
@@ -52,12 +55,12 @@ export function TableFields({
           {table.role === "input" ? "Input" : "Output"}
         </span>
         <span className="w-8 text-right text-[11px]" style={{ color: "var(--text-muted)" }}>
-          {shown}/{table.columns.length}
+          {shown}/{offered.length}
         </span>
       </button>
       {!collapsed && (
         <div className="flex flex-col px-1 py-1" style={{ borderTop: "1px solid var(--border)" }}>
-          {table.columns.length === 0 && (
+          {offered.length === 0 && (
             <p className="px-1.5 py-0.5" style={{ color: "var(--text-muted)" }}>
               No columns yet
             </p>

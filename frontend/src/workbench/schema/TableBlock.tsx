@@ -7,6 +7,7 @@ import useListReorder, { type RowDrag } from "../../hooks/useListReorder"
 import useRefocusAfterMove, { altArrowMove, type RefocusAfterMove } from "../../hooks/useRefocusAfterMove"
 import { confirmed } from "../../stores/useQuestionStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import { isIdentityColumn } from "../../utils/quoteIdentity"
 import { addSchemaColumn, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
 import { ColumnRow } from "./ColumnRow"
 import { DragGrip } from "./DragGrip"
@@ -196,12 +197,12 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
               locked={locked}
               readOnly={readOnly}
               filtering={filtering}
-              drag={fixed || filtering || column.index ? undefined : dragColumn(at)}
+              drag={fixed || filtering || column.index || isIdentityColumn(column) ? undefined : dragColumn(at)}
             />
           ))}
           {locked ? (
             <p className="px-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
-              Kept with each quote and listed on the Quotes page; the app sets reference, stage, assignee and archived.
+              Kept with each quote and listed on the Quotes page; the app sets reference, option, stage, assignee and archived.
             </p>
           ) : readOnly || filtering ? null : (
             <div className="flex items-center gap-3">

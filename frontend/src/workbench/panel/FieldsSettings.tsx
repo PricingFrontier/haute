@@ -6,6 +6,7 @@ import useCollapsedSet from "../../hooks/useCollapsedSet"
 import PreviewPanelTabs, { type PreviewPanelTab } from "../../panels/PreviewPanelTabs"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { type WidgetPane } from "../../stores/useWorkbenchViewStore"
+import { sheetColumns } from "../../utils/quoteIdentity"
 import { chartGrain, COLLECTION_COLUMNS_MAX, fieldColumn, readableName, rowsShown, setTableRows, TABLE_ROWS_MAX, tableGrain, updateWidget, type FieldsWidget } from "../../utils/workbenchForm"
 import ChartSettings from "../ChartSettings"
 import { columnMatches } from "../schema/schemaText"
@@ -42,7 +43,7 @@ export function FieldsSettings({ form, widget }: { form: FormSpec; widget: Field
   const matches = (column: SchemaColumn) => columnMatches(column, query) || readableName(column.name).toLowerCase().includes(query.toLowerCase())
   // While searched, the columns of a table the search matches, by id; null while it is not.
   const matched = (table: SchemaTable): ReadonlySet<string> | null =>
-    filtering ? new Set(table.columns.filter(matches).map((column) => column.id)) : null
+    filtering ? new Set(sheetColumns(table).filter(matches).map((column) => column.id)) : null
   const shownTables = tables.map((table) => ({ table, shown: matched(table) })).filter(({ shown }) => shown === null || shown.size > 0)
 
   const kind = WIDGET_KINDS[widget.type]

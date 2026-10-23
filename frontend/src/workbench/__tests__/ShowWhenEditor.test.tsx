@@ -54,6 +54,20 @@ describe("ShowWhenEditor", () => {
     expect(within(condition(1)).getByText("Needs a value for its test of state")).toBeInTheDocument()
   })
 
+  it("never tests the quote's reference or option, leading a table: a new condition takes the column after them", () => {
+    const form = currentForm()
+    form.schema.tables[0].columns.unshift(column("quote_reference", "reference"), column("quote_option", "option", { type: "int" }))
+    loadForm(form)
+    render(<Editor />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Add condition" }))
+
+    expect(showWhen().conditions).toEqual([{ table: "policy", column: "policy.state", op: "equals", values: [] }])
+    const offered = options(screen.getByRole("combobox", { name: "Condition 1 column" }))
+    expect(offered.filter((name) => /reference|option/i.test(name ?? ""))).toEqual([])
+    expect(offered.length).toBeGreaterThan(0)
+  })
+
   it("takes a date condition's day once it is committed, not as each digit of its year is typed", () => {
     render(<Editor />)
     fireEvent.click(screen.getByRole("button", { name: "Add condition" }))

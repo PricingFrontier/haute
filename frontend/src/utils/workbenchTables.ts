@@ -10,6 +10,7 @@ import type { WorkbenchColumn, WorkbenchTable } from "../api/types"
 import { canonicalJson } from "./canonicalJson"
 import { NODE_TYPES } from "./nodeTypes"
 import { castFamily } from "./polarsDtypes"
+import { IDENTITY_COLUMNS } from "./quoteIdentity"
 
 /** The workbench's tables and sample quote from one fetch, numbered so that only the newest counts. */
 export interface WorkbenchTables {
@@ -117,21 +118,36 @@ export function dtypeFits(declared: WorkbenchColumn["type"], dtype: string): boo
 
 /**
  * How a Workbench Output's column is filled from the frame connected to its table, which a
- * run fills with nulls unless it is `filled`; `unknown` while the frame's columns are.
+ * run fills with nulls unless it is `filled`; `unknown` while the frame's columns are; and
+ * `haute` for the quote's reference and option, which the response gives whatever the frame
+ * holds.
  */
-export type ColumnFill = { kind: "filled" | "missing" | "unknown" } | { kind: "mistyped"; dtype: string }
+export type ColumnFill = { kind: "filled" | "missing" | "unknown" | "haute" } | { kind: "mistyped"; dtype: string }
 
 /**
- * How *column* is filled: `missing` while nothing is connected to its table or the frame
- * has no column of exactly its name, `mistyped` when the frame's column is of a type that
- * does not fit, else `filled`. *frameColumns* are the connected frame's columns as its last
- * preview recorded them, undefined until it has one.
+ * Whether a node's copy of a table leads with the quote's reference and option: every table
+ * but quote_details (`carries_identity` in `src/haute/_workbench_tables.py`). A copy has no
+ * ids, so the columns are known by their place, names and types.
+ */
+export const carriesIdentity = (table: WorkbenchTable): boolean =>
+  table.name !== "quote_details" &&
+  IDENTITY_COLUMNS.every(([, name, type], at) => table.columns[at]?.name === name && table.columns[at]?.type === type)
+
+/**
+ * How *table*'s column at *at* is filled: `haute` for the quote's identity, `missing` while
+ * nothing is connected to its table or the frame has no column of exactly its name,
+ * `mistyped` when the frame's column is of a type that does not fit, else `filled`.
+ * *frameColumns* are the connected frame's columns as its last preview recorded them,
+ * undefined until it has one.
  */
 export function columnFill(
-  column: WorkbenchColumn,
+  table: WorkbenchTable,
+  at: number,
   connected: boolean,
   frameColumns: readonly { name: string; dtype: string }[] | undefined,
 ): ColumnFill {
+  const column = table.columns[at]
+  if (at < IDENTITY_COLUMNS.length && carriesIdentity(table)) return { kind: "haute" }
   if (!connected) return { kind: "missing" }
   if (frameColumns === undefined) return { kind: "unknown" }
   const held = frameColumns.find((each) => each.name === column.name)

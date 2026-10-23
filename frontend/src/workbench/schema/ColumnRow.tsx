@@ -1,5 +1,5 @@
 /** A schema column's row: its type and name, its summary under them, dragged or moved, removed and opened for its details (specs/workbench). */
-import { KeyRound, SlidersHorizontal, X } from "lucide-react"
+import { KeyRound, Lock, SlidersHorizontal, X } from "lucide-react"
 import { useRef, type KeyboardEvent } from "react"
 import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
 import { COMPACT_FIELD_CLASS, CommittedTextField, IconSelect, INPUT_STYLE } from "../../components/form"
@@ -7,6 +7,7 @@ import type { RowDrag } from "../../hooks/useListReorder"
 import { altArrowMove, type RefocusAfterMove } from "../../hooks/useRefocusAfterMove"
 import { confirmed } from "../../stores/useQuestionStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import { isIdentityColumn } from "../../utils/quoteIdentity"
 import { changeSchemaColumnType, conditionUses, fieldUses, moveSchemaColumn, QUOTE_DETAILS_MANAGED, removeSchemaColumn, updateSchemaColumn } from "../../utils/workbenchForm"
 import { COLUMN_TYPES, COLUMN_TYPE_OPTIONS } from "../columnTypes"
 import { ColumnDetails } from "./ColumnDetails"
@@ -31,7 +32,7 @@ interface ColumnRowProps {
   readOnly: boolean
   /** While the schema is searched: the column is not moved, nor does Enter add the next. */
   filtering: boolean
-  /** Its part in dragging the table's columns into a new order; none for the index or in quote_details, which stay. */
+  /** Its part in dragging the table's columns into a new order; none for the quote's identity, the index or in quote_details, which stay. */
   drag: RowDrag | undefined
 }
 
@@ -50,8 +51,10 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
   const { label, icon: Icon, color } = COLUMN_TYPES[column.type]
   // A column the underwriter app sets takes no rules.
   const managed = locked && QUOTE_DETAILS_MANAGED.has(column.id)
-  // Its name and type stay, and it stays: in quote_details, and in Preview.
-  const fixed = locked || readOnly
+  // The quote's reference and option are Haute's: nothing of them changes.
+  const identity = isIdentityColumn(column)
+  // Its name and type stay, and it stays: in quote_details, the quote's identity, and in Preview.
+  const fixed = locked || readOnly || identity
   const summary = columnSummary(table, column)
   const set = (patch: Partial<SchemaColumn>) => change((f) => updateSchemaColumn(f, table.id, column.id, patch))
 
@@ -117,7 +120,7 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
           className={`${COMPACT_FIELD_CLASS} flex-1 font-mono`}
           style={INPUT_STYLE}
         />
-        {table.rows === "many" && (
+        {table.rows === "many" && !identity && (
           <IconButton
             icon={KeyRound}
             onClick={() => set({ key: !column.key })}
@@ -129,15 +132,19 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
             style={{ color: column.key ? "var(--accent)" : "var(--text-muted)" }}
           />
         )}
-        <IconButton
-          icon={SlidersHorizontal}
-          onClick={onToggleDetails}
-          aria-expanded={open}
-          aria-label={`Label and rules of ${column.name}`}
-          title="Label, help, rules and format"
-          className={`self-center ${open ? "" : HOVER_ONLY}`}
-          style={{ color: open ? "var(--text-primary)" : "var(--text-muted)" }}
-        />
+        {identity ? (
+          <Lock size={11} aria-label="Haute's column" className="shrink-0 self-center" style={{ color: "var(--text-muted)" }} />
+        ) : (
+          <IconButton
+            icon={SlidersHorizontal}
+            onClick={onToggleDetails}
+            aria-expanded={open}
+            aria-label={`Label and rules of ${column.name}`}
+            title="Label, help, rules and format"
+            className={`self-center ${open ? "" : HOVER_ONLY}`}
+            style={{ color: open ? "var(--text-primary)" : "var(--text-muted)" }}
+          />
+        )}
         {fixed ? (
           <span className="size-5 shrink-0" aria-hidden="true" />
         ) : (
@@ -156,7 +163,7 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
           {summary}
         </p>
       )}
-      {open && <ColumnDetails table={table} column={column} managed={managed} readOnly={readOnly} set={set} />}
+      {open && !identity && <ColumnDetails table={table} column={column} managed={managed} readOnly={readOnly} set={set} />}
     </div>
   )
 }

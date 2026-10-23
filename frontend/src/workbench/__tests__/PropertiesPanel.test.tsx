@@ -634,6 +634,23 @@ describe("PropertiesPanel", () => {
     expect(screen.getByText("2 shown")).toBeInTheDocument()
   })
 
+  it("never offers the quote's reference and option among a component's fields", () => {
+    const form = sheetForm()
+    const [equipment] = form.schema.tables.filter((candidate) => candidate.id === "equipment")
+    equipment.columns.unshift(column("quote_reference", "reference"), column("quote_option", "option", { type: "int" }))
+    loadForm(form)
+    select("w_grid")
+    render(<PropertiesPanel />)
+    const fields = screen.getByRole("region", { name: "Fields" })
+
+    expect(within(fields).queryByRole("checkbox", { name: "Show equipment reference" })).toBeNull()
+    expect(within(fields).queryByRole("checkbox", { name: "Show equipment option" })).toBeNull()
+    // Counted out of what can be shown, and not found by a search.
+    expect(within(screen.getByTestId("fields-table-equipment")).getByText("2/2")).toBeInTheDocument()
+    fireEvent.change(within(fields).getByRole("textbox", { name: "Search fields" }), { target: { value: "option" } })
+    expect(within(fields).getByText("No fields match")).toBeInTheDocument()
+  })
+
   it("greys out a table whose rows do not line up with the fields already chosen", () => {
     const form = sheetForm()
     form.schema.tables.push(table("claims", "claims", { rows: "many", columns: [column("claims.id", "id", { key: true })] }))

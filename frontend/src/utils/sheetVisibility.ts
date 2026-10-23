@@ -7,6 +7,7 @@
  * are held to the cases in __tests__/fixtures/sheetVisibility.json.
  */
 import type { Condition, ConditionGroup, FieldRef, FormSchema, FormSpec, RowCount, RowsCondition, RowTest, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen } from "../api/types"
+import { sheetColumns } from "./quoteIdentity"
 import { filled, isDay, parseTypedNumber, parseTypedWhole, presetRows, quoteTyped, rowFilled, withPresetRows, type RowsByTable } from "./sheetValues"
 
 export type ConditionTest = Condition["op"]
@@ -640,9 +641,12 @@ export function neverShown(spec: FormSpec): ReadonlyMap<string, SingleCondition>
   return causes
 }
 
-/** The columns of an input table a condition can test: a many-row table's but its index, which nothing is typed into. */
+/**
+ * The columns of an input table a condition can test: a many-row table's but its index, which
+ * nothing is typed into, and never the quote's identity, which the sheets do not show.
+ */
 export const testableColumns = (table: SchemaTable): SchemaColumn[] =>
-  table.role === "input" ? table.columns.filter((column) => !(table.rows === "many" && column.index)) : []
+  table.role === "input" ? sheetColumns(table).filter((column) => !(table.rows === "many" && column.index)) : []
 
 /** The columns of a many-row table a total takes: its number columns but the index. */
 export const totalColumns = (table: SchemaTable): SchemaColumn[] =>
