@@ -567,24 +567,26 @@ def _validate_python_versions(config: DeployConfig, project_root: Path) -> None:
 
     The deployed model runs ``deployed_python_version``: the project's
     ``.python-version`` pin, or else the Python this deploy runs on, which CI tested.
-    So the interpreter running the deploy must be the pinned one, and a container's
-    ``python`` base image must run that same version; an image Haute cannot read a
-    version from (a custom image, a digest pin) is the project's to keep in step.
+    So the interpreter running the deploy must be the pinned one, and a pinned
+    project's container ``python`` base image must run that same version. A project
+    that pins no Python (one ``haute init`` predates) keeps the base image it chose; an
+    image Haute cannot read a version from (a custom image, a digest pin) is the
+    project's to keep in step.
     """
     from haute._project_python import (
         base_image_python_version,
         deploy_python_mismatch,
-        deployed_python_version,
+        pinned_python_version,
         python_version_matches,
     )
 
     mismatch = deploy_python_mismatch(project_root)
     if mismatch is not None:
         raise DeployError(mismatch, project_root=str(project_root))
-    if config.target not in _CONTAINER_BASED_TARGETS:
+    serving = pinned_python_version(project_root)
+    if config.target not in _CONTAINER_BASED_TARGETS or serving is None:
         return
     image_python = base_image_python_version(config.container.base_image)
-    serving = deployed_python_version(project_root)
     if image_python is not None and not python_version_matches(serving, image_python):
         raise DeployError(
             f"container.base_image {config.container.base_image!r} runs Python "

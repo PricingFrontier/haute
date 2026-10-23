@@ -142,7 +142,7 @@ def write_databricks_output(
             execution_context=execution_context,
             node_id=node_id,
         )
-        rows = int(pl.scan_parquet(local).select(pl.len()).collect().item())
+        rows = int(pl.scan_parquet(local).select(pl.len()).collect(engine="streaming").item())
         if execution_context is not None:
             execution_context.checkpoint(label="before_databricks_load", node_id=node_id)
         try:

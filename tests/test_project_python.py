@@ -150,3 +150,10 @@ def test_init_keeps_an_existing_python_version(
     assert (tmp_path / ".python-version").read_text(encoding="utf-8") == "3.12.8\n"
     workflow = (tmp_path / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert 'python-version: "3.12.8"' in workflow
+
+
+def test_an_unpinned_projects_base_image_is_its_own(tmp_path: Path) -> None:
+    """A project that pins no Python (one older than this check) keeps its base image."""
+    project = _project(tmp_path, requires=">=3.11")
+
+    _validate_python_versions(_container_config(project, f"python:{OTHER_MINOR}.9-slim"), project)

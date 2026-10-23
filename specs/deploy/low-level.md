@@ -137,9 +137,10 @@
    `.override()` or env overrides).
 2. Load `.env` (idempotent), then `_validate_python_versions`: the interpreter running the
    deploy must be `.python-version`'s pin (or satisfy `requires-python` when there is no
-   pin), and a container target's official `python:` base image must run the deployed
-   Python (`haute._project_python`), so local, CI and the deployed model run one Python;
-   an image whose tag names no Python version is not checked.
+   pin), and a pinned project's container target's official `python:` base image must run
+   the pinned Python (`haute._project_python`), so local, CI and the deployed model run one
+   Python; a project with no `.python-version`, or an image whose tag names no Python
+   version, keeps the base image it chose.
 3. `parse_pipeline_file(config.pipeline_file)` → `full_graph`; error if empty;
    `validate_singleton_groups(flatten_graph(full_graph))` refuses a second request input or
    response node, as save does.
