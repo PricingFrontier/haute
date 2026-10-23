@@ -6,13 +6,11 @@ import useUIStore from "../stores/useUIStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPricingStore, { usePricingContext } from "../stores/useWorkbenchPricingStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
-import useWorkbenchTestQuotesStore from "../stores/useWorkbenchTestQuotesStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { pricingBasis } from "../utils/workbenchForm"
 import PageTabs from "./PageTabs"
 import { priceSample } from "./priceSample"
 import PropertiesPanel from "./PropertiesPanel"
-import TestQuotesPanel from "./TestQuotesPanel"
 import SchemaEditor from "./SchemaEditor"
 import SheetCanvas from "./SheetCanvas"
 import { dropAt, sectionDropAt } from "./sheetInteractions"
@@ -49,8 +47,8 @@ const BANNER_STYLE = {
  * sheet showing) or, while building, the schema editor, on the form the store reads when
  * the view first shows. While building the selected component's properties panel opens on
  * the right; in Preview the sheets are as an underwriter sees them, with the sample keyed
- * into them, and the test quotes open there. A save refused because the file changed on disk
- * is reported in a banner with the way out, a reload. The toolbar's Git, Assistant and
+ * into them. A save refused because the file changed on disk is reported in a banner with
+ * the way out, a reload. The toolbar's Git, Assistant and
  * Files panels open beside the view, in the properties panel's place. While Preview shows, the
  * sample is priced on the pipeline whenever the schema or the sample changes once typing
  * pauses, and when Preview shows, as the pipeline may have changed meanwhile.
@@ -66,7 +64,6 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
   const previewing = useWorkbenchViewStore((s) => s.mode === "preview")
   const section = useWorkbenchViewStore((s) => s.section)
   const setPricer = useWorkbenchPricingStore((s) => s.setPricer)
-  const setSnapshot = useWorkbenchPricingStore((s) => s.setSnapshot)
   const schedule = useWorkbenchPricingStore((s) => s.schedule)
   const cancel = useWorkbenchPricingStore((s) => s.cancel)
   const formPath = useWorkbenchStore((s) => s.formPath) ?? "forms/form.json"
@@ -75,7 +72,6 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
   const assistantOpen = useUIStore((s) => s.assistantOpen)
   const filesPlace = useUIStore((s) => s.filesPlace)
   const setFilesPlace = useUIStore((s) => s.setFilesPlace)
-  const testQuotesOpen = useWorkbenchTestQuotesStore((s) => s.open)
 
   useEffect(() => {
     void useWorkbenchFormStore.getState().load()
@@ -84,18 +80,8 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
   // The pricer prices on the document and the source as they are when it is called.
   useEffect(() => {
     setPricer((workbench) => priceSample(resolveGraph(), workbench, useSettingsStore.getState().activeSource))
-    // A test quote's pricer is fixed on the document and the source as they are when it is
-    // asked for, and answers in full.
-    setSnapshot(() => {
-      const graph = resolveGraph()
-      const source = useSettingsStore.getState().activeSource
-      return (workbench) => priceSample(graph, workbench, source, { complete: true })
-    })
-    return () => {
-      setPricer(null)
-      setSnapshot(null)
-    }
-  }, [resolveGraph, setPricer, setSnapshot])
+    return () => setPricer(null)
+  }, [resolveGraph, setPricer])
   // Preview prices the sample; leaving it drops what waits to be priced, so nothing is
   // priced while building.
   useEffect(() => {
@@ -173,10 +159,6 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
           <Suspense fallback={null}>
             <FilesPanel key={filesPlace} place={filesPlace} onClose={() => setFilesPlace(null)} />
           </Suspense>
-        </aside>
-      ) : status === "ready" && previewing && testQuotesOpen ? (
-        <aside aria-label="Test quotes">
-          <TestQuotesPanel />
         </aside>
       ) : status === "ready" && !previewing && section === "sheets" ? (
         <PropertiesPanel />

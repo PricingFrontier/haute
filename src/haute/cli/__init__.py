@@ -19,7 +19,6 @@ from haute.cli._run import run
 from haute.cli._serve import serve
 from haute.cli._smoke import smoke
 from haute.cli._status import status
-from haute.cli._test_quotes import test_quotes
 from haute.cli._train import train
 
 
@@ -40,5 +39,4 @@ cli.add_command(run)
 cli.add_command(serve)
 cli.add_command(smoke)
 cli.add_command(status)
-cli.add_command(test_quotes)
 cli.add_command(train)

@@ -89,7 +89,6 @@ import {
   widgetName,
   widgetProblems,
   withCell,
-  withSample,
   withSampleCell,
   withSampleRows,
   type Widget,
@@ -979,15 +978,6 @@ describe("what the sheets show", () => {
     expect(coloured.theme).toEqual({ ...BLANK_THEME, border_color: "#2563EB" })
     expect(spec.theme).toEqual(BLANK_THEME)
     expect(setThemeColour(coloured, "border_color", null).theme).toEqual(BLANK_THEME)
-  })
-
-  it("replaces the sample whole, as a test quote opened does, leaving the values given untouched", () => {
-    const values = { equipment: [{ "equipment.item": "Z" }] }
-    const spec = withSample(sheet(), values)
-    expect(spec.sample).toEqual({ equipment: [{ "equipment.item": "Z" }] })
-    expect(spec.sample).not.toBe(values)
-    spec.sample.equipment[0]["equipment.item"] = "Y"
-    expect(values.equipment[0]["equipment.item"]).toBe("Z")
   })
 
   it("sets a sample cell, adding empty rows up to it, and replaces several tables' rows as one edit", () => {

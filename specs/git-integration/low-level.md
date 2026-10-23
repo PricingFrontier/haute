@@ -98,9 +98,7 @@ repository with no callers leaves no permanent registry entry.
 
 **Gitignore guards** (`_gitignore_guard.py`): `GITIGNORE_GUARD_ENTRIES` is exactly
 `.env`, `.haute/`, `impact_report.md`, `.haute_cache/`, `mlruns/`, `/data/`, `/outputs/`,
-`/.cache/`, `.haute_build/`, `__pycache__/`, `.venv/`, and SQLite's side files
-`*.sqlite-journal`, `*.sqlite-wal` and `*.sqlite-shm`, which never sit beside a committed
-test-quote file ([workbench](../workbench/high-level.md)). `/data/`, `/outputs/` and
+`/.cache/`, `.haute_build/`, `__pycache__/` and `.venv/`. `/data/`, `/outputs/` and
 `/.cache/` are anchored to the project root, so the pipeline folder's `files/data/` stays
 versioned; an unanchored `data/` line in an existing project ignores it, and the project
 fixes that line by hand.
@@ -156,7 +154,7 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 **Save.** `commit_save(paths, working, cwd, message)` → `resolve_ledger(working)` (find-or-
 lazily-spawn the ledger at the working branch's current tip, checkout if not already
 current) → `git status --porcelain -- <paths>` to check anything in *paths* actually
-changed (idempotent no-op returns `None`) → `_settle_sqlite_journals` (a `*.sqlite` path with a non-empty `-journal` beside it is opened and read, which plays a hot journal back as SQLite's next open would; an open that fails raises `GitDomainError` naming the path, nothing committed) → `git add -- <paths>` → `git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `git commit -m <msg> --
+changed (idempotent no-op returns `None`) → `git add -- <paths>` → `git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `git commit -m <msg> --
 <paths>` (pathspec-scoped, so it commits only those paths' working-tree state regardless of
 what else the user may have pre-staged) → returns the new SHA. Every path reaches Git as a
 `:(literal)` pathspec, so a filename holding `*`, `?` or `[` names only itself, as in the
@@ -570,8 +568,7 @@ process failures, and precise ref-movement races deterministic.
 - **`tests/test_git_engine.py`** — the primary unit suite for the Git facade and domain
   modules, organized into
   focused test classes covering: slugification, branch-category naming, ledger
-  resolve/spawn, `commit_save` (including idempotent-no-op saves, a SQLite file's hot
-  journal played back before the commit and one SQLite cannot settle refusing it, and a
+  resolve/spawn, `commit_save` (including idempotent-no-op saves and a
   filename with glob characters committing only itself), the milestone sweep of the pipeline
   folder (a new file there recorded, a new file outside it, an ignored file, `__pycache__/`,
   `.haute_build/`, bytecode and the names the Files panels hide left out, and a file over the

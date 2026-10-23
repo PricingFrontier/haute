@@ -337,8 +337,10 @@ def test_a_save_over_a_revision_the_quote_has_moved_past_is_refused_naming_who(
     assert book.get(quote.id).latest == 2
 
 
-def test_a_test_quote_has_no_details_and_is_not_listed(book: QuoteBook) -> None:
-    test_quote = book.store.create(
+def test_a_quote_the_store_saved_alone_has_no_details_and_is_not_listed(
+    book: QuoteBook,
+) -> None:
+    alone = book.store.create(
         name="smoke",
         owner=ANA,
         saved_by=ANA,
@@ -350,9 +352,9 @@ def test_a_test_quote_has_no_details_and_is_not_listed(book: QuoteBook) -> None:
     )
 
     with pytest.raises(QuoteNotFoundError):
-        book.get(test_quote.quote_id)
-    # A test quote keeps its details among its values, as it is typed.
-    assert "quote_details" in book.store.revision(test_quote.quote_id).inputs
+        book.get(alone.quote_id)
+    # Saved by the store alone, it keeps its details among its values, as they were typed.
+    assert "quote_details" in book.store.revision(alone.quote_id).inputs
     assert book.page(actor=ANA, view="team").quotes == []
 
 

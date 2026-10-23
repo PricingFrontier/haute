@@ -74,7 +74,7 @@ describe("UnderwriterApp", () => {
     expect(screen.getByRole("tab", { name: "Sheet 1" })).toBeInTheDocument()
     expect(screen.getByText("Equipment")).toBeInTheDocument()
     expect(useWorkbenchViewStore.getState()).toMatchObject({ mode: "preview", section: "sheets", underwriterApp: true })
-    for (const builder of ["Build", "Preview", "Sheets", "Schema", "Save", "Test quotes"]) {
+    for (const builder of ["Build", "Preview", "Sheets", "Schema", "Save"]) {
       expect(screen.queryByRole("button", { name: builder })).toBeNull()
     }
     // The quote is priced as it is typed, and nothing empties it.

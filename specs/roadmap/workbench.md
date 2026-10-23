@@ -11,7 +11,7 @@ specification](../deploy/high-level.md). The packages below are what neither cov
 underwriter app, which carries the sheets and the pipeline to the host a project uses; the
 delivery of a workbench project through CI, from a merge to `main` to that app; the store
 the app saves quotes to on the server; how underwriters manage their quotes in the app;
-exports from the app; the test quotes analysts keep and re-price in Preview; and the actions
+exports from the app; test quotes analysts keep and price again; and the actions
 that fill the sheets from databases and APIs.
 
 `WB-25` takes on what is left of the [review of 15 October
@@ -41,7 +41,7 @@ cells shown row by row through "this row" tests were offered again and not taken
 | WB-09 | Decision | P2 | A Button on a sheet, or a lookup beside a key cell, runs an action the project declares against a database or an API and fills input cells with what comes back, through the server with no credential in the browser, while pricing stays as pure as it is. |
 | WB-10 | Planned | P2 | The quote store runs on the SQL instance the project's IT team provides, migrated by the deploy under an identity of its own, with the release before a candidate proved to work on the schema the candidate leaves. |
 | WB-11 | Decision | P2 | An underwriter exports a saved quote from the app in the formats the project needs, naming the release that priced it. |
-| WB-12 | Planned | P3 | A test quote whose response runs past what Preview shows is saved, run and compared in full, as every other test quote is. |
+| WB-12 | Decision | P3 | Analysts keep test quotes and price them again as the pipeline changes, built again after the first version was taken out. |
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, sees which quotes are about to lapse, records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-28 | Planned | P3 | A condition tests a field against another field, text within text, and a date against another date give or take a number of days. |
@@ -317,35 +317,26 @@ show); `frontend/src/workbench/useSheetValues.ts` (the one path for a sheet's va
 `src/haute/_workbench_tables.py::quote_schema` (a quote's columns as typed).
 
 ### WB-12 — Test quotes in Preview
-**Why:** Analysts keep test quotes in Preview ([workbench](../workbench/high-level.md)):
-saved from the sheets, opened back onto them, run in bulk on a pipeline fixed when the run
-starts, accepted and deleted from a panel, kept in a SQLite file committed with the project
-that git diffs as text and merges quote by quote, and priced again by deploy's check and the
-smoke, with a report of each pull request's changes to them. A test quote keeps its response
-whole only while Preview shows it whole: its pricing goes through the preview route, which
-answers at most 10,000 rows of a table, fewer for a wide one, and a response cut short is
-refused rather than kept cut. A quote whose many-row table runs past that cannot be a test
-quote.
+**Why:** Analysts need quotes they keep and price again as the pipeline changes, so a change
+to the pricing shows on the quotes they know. A first version was taken out on 23 October
+2026, to be built out again later. Its quotes were saved from the sheets in Preview, run in
+bulk, accepted and deleted from a panel there, and kept in a SQLite file committed with the
+project, which git diffed as text and merged quote by quote. Deploy's check and the smoke
+test priced them again, and a pull request's changes to them were reported on it. Its
+commits are `352823c4d`, `d4249d583`, `448aee189`, `42a7309b3` and `5ccc51fff`. Its
+pricing went through the preview route, which answers at most 10,000 rows of a table, so a
+quote whose many-row table ran past that could not be kept.
 
-**Plan:** A pricing for test quotes that answers the Workbench Output's response whole for
-the editor's graph, apart from the preview route's limits: the patched graph run as the dry
-run runs a deployed pipeline, on the worker pool with its admission limits, answering the
-response document a deployed pipeline gives. The panel's saves and runs use it; Preview
-keeps the preview route for what it shows.
+**Plan:** Decided with the owner before work starts: what a test quote is, where it is
+kept, how it is run and reviewed, and how CI uses it. A pricing that answers the Workbench
+Output's response whole, apart from the preview route's limits, keeps long quotes in full.
 
-**Acceptance:** A test quote whose many-row table holds more rows than Preview shows is
-saved, run and compared in full, a change in a row past Preview's limit listed as any other
-is; a response too large for the worker's limits is refused naming its size; Preview itself
-prices as it does now.
+**Acceptance:** Set with the plan.
 
 **Dependencies:** None.
 
-**Evidence:** `frontend/src/workbench/priceSample.ts::priceSample` (the preview route's row
-limit, and a table cut short refused); `src/haute/executor.py::_preview_row_limit_for_width`
-(Preview's cell limit); `src/haute/_workbench_output.py::workbench_response` (the response
-whole, as a deployed pipeline gives it);
-`src/haute/deploy/_validators.py::score_test_quotes` (the dry run's pricing of each quote
-alone).
+**Evidence:** The commits above; `src/haute/deploy/_validators.py::score_test_quotes` (the
+dry run's pricing of deploy's JSON test quotes, one request each).
 
 ### WB-13 — Managing quotes in the underwriter app
 **Why:** The underwriter app opens on its quotes ([workbench](../workbench/high-level.md)):

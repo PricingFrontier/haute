@@ -1172,8 +1172,8 @@ export interface GitMilestoneFork {
 }
 /**
  * A write's capture on the clone's save ledger, answered the same way by every route
- * that writes project files: the pipeline's save, the form's save, a test-quote write, a
- * project file written or deleted, and ``POST /api/git/capture``.
+ * that writes project files: the pipeline's save, the form's save, a project file written
+ * or deleted, and ``POST /api/git/capture``.
  *
  * ``warnings`` are non-fatal, since the write has landed: a capture that failed among
  * them, and anything else left to see to (a transform with no code); an empty list means
@@ -2843,82 +2843,6 @@ export interface WorkbenchFormSaveResponse {
 export interface WorkbenchParamFileResponse {
   columns: string[];
   values: string[];
-}
-/**
- * The project's test quotes, the most recently saved first.
- */
-export interface WorkbenchTestQuotesResponse {
-  quotes: WorkbenchTestQuoteSummary[];
-}
-/**
- * A test quote as the list shows it: its newest revision's number, saver and time.
- */
-export interface WorkbenchTestQuoteSummary {
-  id: string;
-  name: string;
-  number: number;
-  priced: boolean;
-  saved_at: string;
-  saved_by: string;
-}
-/**
- * The branch the test quotes are on now, which a save names; null outside a
- * repository. Read without opening the test-quote file, so a file an older Haute wrote,
- * which a save brings up to date, does not stop it.
- */
-export interface WorkbenchTestQuotesBranchResponse {
-  branch: string | null;
-}
-/**
- * A test-quote write and its capture on the save ledger.
- *
- * ``quote`` is the test quote as written, null after a delete.
- */
-export interface WorkbenchTestQuoteWriteResponse {
-  git_sha: string | null;
-  identity_required: boolean;
-  quote: WorkbenchTestQuoteSummary | null;
-  uncaptured: string[];
-  warnings: string[];
-}
-/**
- * A test quote's newest revision, its values carried onto the view's form.
- *
- * ``dropped`` names each filled value with no place on that form, ``table.column`` by the
- * names it was saved under; ``response`` is the response the quote was accepted with.
- */
-export interface WorkbenchTestQuoteOpenResponse {
-  dropped: string[];
-  id: string;
-  name: string;
-  number: number;
-  response: {
-    [k: string]: unknown;
-  } | null;
-  revision_digest: string;
-  values: {
-    [k: string]: {
-      [k: string]: string | boolean;
-    }[];
-  };
-}
-/**
- * Every place a run's response, or the request it priced, differs from the revision it
- * read, a request's places under ``request.``; none: unchanged.
- */
-export interface WorkbenchTestQuoteCompareResponse {
-  changes: WorkbenchTestQuoteChange[];
-  number: number;
-  revision_digest: string;
-}
-/**
- * One place the priced response differs from the accepted one.
- */
-export interface WorkbenchTestQuoteChange {
-  accepted: unknown;
-  kind: 'changed' | 'added' | 'removed';
-  path: string;
-  priced: unknown;
 }
 /**
  * The underwriter app's release, and who the host signed in.

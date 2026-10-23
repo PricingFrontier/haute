@@ -32,11 +32,6 @@ GITIGNORE_GUARD_ENTRIES: tuple[str, ...] = (
     # Without this, .venv/ contents would pass the seed's *.py allowlist
     # pathspec — the deny gate has to carry it.
     ".venv/",
-    # SQLite's side files: a rollback journal left by a write that never finished, and the
-    # write-ahead log a store opened that way would keep. The test-quote file stands alone.
-    "*.sqlite-journal",
-    "*.sqlite-wal",
-    "*.sqlite-shm",
 )
 
 

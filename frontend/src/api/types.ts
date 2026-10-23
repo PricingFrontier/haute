@@ -584,12 +584,6 @@ export type {
   WorkbenchStatusResponse,
   WorkbenchTable,
   WorkbenchTablesResponse,
-  WorkbenchTestQuoteChange,
-  WorkbenchTestQuoteCompareResponse,
-  WorkbenchTestQuoteOpenResponse,
-  WorkbenchTestQuotesResponse,
-  WorkbenchTestQuoteSummary,
-  WorkbenchTestQuoteWriteResponse,
 } from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------

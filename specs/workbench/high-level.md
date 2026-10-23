@@ -55,8 +55,6 @@ In scope:
   editor keeps current and shows, and whose ports take the frames that fill them.
 - The quote store: saved quotes and their revisions, each with the form it was keyed
   into, on a SQLite file, its schema and the migrations that bring a database to it.
-- The test quotes an analyst keeps in Preview, in the project's test-quote file, and the
-  routes that save, list, open, compare, accept and delete them.
 
 Out of scope:
 
@@ -266,15 +264,14 @@ Out of scope:
   - **The toolbar** keeps the brand and the project's controls (Pipeline files and Local
     files, Assistant, Help, the branch, Save and Commit) and shows the view's own, the same
     in both modes, so the toolbar keeps its layout as the mode changes: Build over Preview,
-    Sheets over Schema, Display, Test quotes, the form's Undo and Redo, and Zoom In over
-    Zoom Out, then, in Preview, why pricing the sample last failed; there is no Price and no
-    Clear. A control the mode or the section showing has no use for stays in its place,
-    disabled, as the palette's components are in Preview:
+    Sheets over Schema, Display, the form's Undo and Redo, and Zoom In over Zoom Out, then,
+    in Preview, why pricing the sample last failed; there is no Price and no Clear. A
+    control the mode or the section showing has no use for stays in its place, disabled, as
+    the palette's components are in Preview:
 
     | Control | Disabled |
     |---|---|
     | Sheets over Schema, Display | In Preview, which shows the sheets |
-    | Test quotes | While building |
     | Zoom In over Zoom Out | While the schema shows |
 
   - **Save.** Save and Ctrl/Cmd+S save the project, the same from either toolbar, with a
@@ -732,7 +729,7 @@ Out of scope:
   its value in that column, a new quote's included, and since its allowed values come from
   a params file, the rows follow a refresh and `haute app build`. The rows are read so
   wherever a table's values are read, on the sheets and in what the server prices, whatever
-  the sample, a quote or a test quote holds: each value's row is the first holding it there,
+  the sample or a quote holds: each value's row is the first holding it there,
   the rows holding nothing there fill the rows left in order, and any other row is left
   out. Each row is filled by its value, so once anything else in the quote is typed every
   one goes to the pipeline (while the sheets hide that column, its value is left out, as any
@@ -798,7 +795,7 @@ Out of scope:
   included; with nothing typed in the cells the sheets show, the defaults a new quote
   starts with aside, it is not priced, as a deployed request never holds a blank quote,
   and its outputs show dashes with nothing said. Whether anything is typed is one rule,
-  which Preview, the app's pricing and its Save, the test quotes and the server all apply:
+  which Preview, the app's pricing and its Save, and the server all apply:
   a value in a column the sheets show, other than a column the app sets, the index, the
   column giving a table its rows and a column's default. A pricing asks `POST /api/workbench/tables` for the tables
   and sample Haute takes from the form as it stands, then previews the Workbench Output a
@@ -887,94 +884,6 @@ Out of scope:
   marks never stop the pricing. Ctrl/Cmd+S still saves the project in Preview, Ctrl/Cmd+1
   fits the sheet, and Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z (or Ctrl/Cmd+Y) undo and redo
   outside a text field, as Undo and Redo do; the sheet's editing keys do nothing.
-- **Test quotes.** An analyst keeps test quotes in Preview, in the project's test-quote
-  file: `test_quotes.sqlite` in the test-quote directory (`[test_quotes] dir` of
-  `haute.toml`, `tests/quotes` when absent), held by the quote store. The file and the
-  project's `.gitattributes` are ordinary files of the project's own, as the Files panels
-  take one: a path reached through a link or junction, or a file hard linked to another,
-  is refused naming why, before anything is written. The toolbar's Test
-  quotes, in Preview, opens a panel beside the sheets that lists them, the most recently
-  saved first:
-  - **Saved.** The quote on the sheets, the sample, under a name, with its values whatever
-    its cells hold (one with nothing typed in the cells the sheets show is refused, "Type
-    the quote first"), the request built from them as a pricing builds it (the cells the
-    sheets hide left out), and the response its
-    pricing gave as a deployed pipeline answers it: each output table under its name, a
-    one-row table as an object of its columns and a many-row table as a list of them. A
-    response that Preview cut short, past its row or cell limit, is refused naming the
-    table and its rows, and so is a one-row table priced with other than one row. The form
-    as the view holds it is kept with the quote.
-  - **Opened.** A test quote's values replace the sample, one undo step, carried onto the
-    form as the view holds it by the stable ids; each filled value with no place on it is
-    named, by the names it was saved under.
-  - **Run.** Run prices every test quote, or those ticked, one request each, on the
-    pipeline, the data source and the form as they were when the run started, and compares
-    each answer with the response the quote was accepted with: a number matches within one
-    part in a billion and anything else exactly, walked into the response's tables, every
-    difference listed by its place (`table.column`, `table[row].column`), the accepted
-    value beside the new, a value on one side only as added or removed. Both responses
-    are compared as a deployed pipeline answers, a null value and an empty table left out
-    of each, so null and absent are alike. A quote with nothing typed in the cells the sheets
-    show once it is carried onto the form is not priced and fails, as a save refuses one.
-    Each quote shows
-    unchanged, changed or failed with its reason, and a change to the pipeline, the source
-    or the form after the run started marks the run's results stale.
-  - **Accepted.** Accepting a changed quote saves its new response as a new revision,
-    after the revision the run read; a quote saved since is refused, with nothing written,
-    to be run again.
-  - **Deleted.** Deleting a test quote, after a confirmation, removes it and its revisions.
-
-  Every write to the file runs under the project's save lock and the repository's lock,
-  which a commit, a branch switch and a merge hold, with the file opened for that write
-  alone and closed before the lock is let go, and is captured on the save ledger as a save
-  of the file, so a commit or a switch never meets the file half-written or open. A read
-  holds the repository's lock alone. A file an older Haute wrote is brought to the newest
-  schema by the next write and refused by a read until then, naming the save that brings
-  it up to date; a project with no file lists no test quotes, and a read creates none.
-  `haute init --workbench` writes the file empty, at the newest schema, so a milestone's
-  sweep tracks it from the start, with its git drivers when the project is already a
-  repository, and the `.gitignore` guards keep SQLite's journal files out of the
-  repository.
-
-  In git the file is a binary, so each clone is given two drivers when Haute reads or
-  writes its test quotes: `.gitattributes` names the file with
-  `diff=haute-test-quotes merge=haute-test-quotes`, written and captured with the file, and
-  the clone's own git configuration runs `haute test-quotes dump` to show the file as text
-  in a diff (each quote by name: its revision, who saved it and when, its request and its
-  response) and `haute test-quotes merge` to merge it, through the Python running Haute
-  (`python -m haute._test_quote_driver`, a module of their own, so Python warns of no
-  module run twice, and without the CLI's start-up, whose log line would join a diff's
-  text). The configuration is checked once a process for each project and interpreter; a
-  registration that fails is said on the save and tried again at the next.
-  The merge takes the two sides quote by quote, by id, against their common base: a quote
-  one side added, changed or deleted while the other left it as the base had it takes that
-  side's; a quote changed on both sides, or changed on one and deleted on the other, is a
-  conflict, named, the file left as it was on the branch being merged into, and the message
-  says how to resolve it: one side's file with `git checkout --ours` or `--theirs`, then
-  those quotes run in Preview and the results kept accepted. A provider's
-  merge button runs no driver, so a pull request in conflict over the file is brought up
-  to date where git runs it, on an analyst's machine (`git merge` of the target branch).
-  Before Haute commits the file, it settles a rollback journal a write that never finished
-  left beside it, as SQLite would on its next open: a hot journal is played back and
-  removed, and one the write never synced is left, harmless, never committed. A file
-  SQLite cannot open to settle refuses the commit, naming it.
-
-  In CI, deploy's check reads the test quotes where the editor keeps them, `[test_quotes]
-  dir` or `tests/quotes` when `haute.toml` names none, and builds each quote's request as
-  a run does: its newest revision's values carried onto the form as the project holds it,
-  each input column's allowed values read again from its params file as the app's release
-  reads them. A value with no place on the form, a request that differs from the one the
-  revision keeps (named by its place under `request.`), or nothing typed at all fails the
-  quote. It then prices that request, one request each, and compares its answer with the
-  response it was accepted with as a run compares it, so a change the panel shows is a
-  change the check fails on; a test quote saved unpriced is priced with nothing to
-  compare. `haute app build` checks against the form it ships, and the smoke test does
-  the same against the deployed endpoint ([deploy](../deploy/high-level.md)). `haute test-quotes report` says what a
-  branch does to the test quotes against its base: those added, removed and accepted
-  anew, each with the outputs that moved; a workbench project's generated pull-request
-  checks post it on the pull request on GitHub and keep it with the run on GitLab and
-  Azure DevOps ([cli](../cli/high-level.md),
-  [pipeline-config](../pipeline-config/high-level.md)).
 - **The underwriter app.** The sheets reach underwriters through an app Haute builds from
   the project, apart from the builder. `haute app build` writes a release: the pipeline's
   bundle as a deploy builds it (the sample left out), the form without its sample
@@ -1457,9 +1366,8 @@ Out of scope:
     such connections, but cannot add, change, rename or delete one: its node card says the
     tables are the workbench's and the analyst adds the node from the palette.
 - **The quote store.** Quotes keyed into the sheets are saved to a store of Haute's, one
-  schema for every database it runs on: a SQLite file now, for an analyst's machine and
-  CI, and a server database the project's IT team provides for the underwriter app
-  later. A quote has a stable id, a name, its owner, when it was made and numbered
+  schema for every database it runs on: a SQLite file, for an analyst's machine and CI,
+  and a server database the project's IT team provides for a hosted underwriter app. A quote has a stable id, a name, its owner, when it was made and numbered
   revisions. Each revision is written whole, in one transaction: the values as typed into
   the sheets, in the sample's shape (by table and column id, the cells the sheets hide
   kept); the request as it was priced; the response's tables in full, or none when it was
@@ -1468,8 +1376,8 @@ Out of scope:
   names it. A new revision names the one it follows and is refused, with nothing
   written, when the quote has moved on since. The owner is recorded and the list of
   quotes can be read for one owner. A quote the underwriter app keeps has, for each
-  revision, that revision's `quote_details` row in a table of its own, a column each,
-  which a test quote never has; the revision's values hold every other table, so the
+  revision, that revision's `quote_details` row in a table of its own, a column each;
+  the revision's values hold every other table, so the
   details are kept once. The row holds the details the underwriter typed and those the
   app sets: a reference, `Q-` and six digits, taken from a counter in the transaction
   that creates the quote, so two quotes made at once take two and one whose creation
@@ -1807,9 +1715,9 @@ Out of scope:
 - **One release.** The form, the sheets and the pipeline ship in one release, so form
   v12 prices on pipeline v12 by construction, and a page that holds another release's
   form is refused rather than priced on a contract it was not drawn for.
-- **One store, two databases.** An analyst saving a test quote and an underwriter saving
-  a quote go through the same code, so what an analyst's machine and CI prove holds for
-  the underwriter app; only the connection differs. SQLAlchemy Core and Alembic, which
+- **One store, two databases.** A quote saved by `haute app serve` on an analyst's
+  machine or in CI and one saved by a hosted app go through the same code, so what the
+  SQLite file proves holds for the server database; only the connection differs. SQLAlchemy Core and Alembic, which
   MLflow already installs with Haute, speak to SQLite and the server engines alike.
 - **A quote keeps its form.** The current form cannot show a field it no longer has, so
   each revision names the form it was keyed into, kept under its content hash, the

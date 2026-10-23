@@ -375,10 +375,7 @@ scaffolded `haute.toml` names, and the test quotes' folder, `_RELEASE_INPUT_FILE
 `DEFAULT_FORM_PATH`'s directory
 through `_release_input_dirs` when `workbench` is set) and rendered by
 `_github_trigger_paths` and `_azure_devops_trigger_paths`; `github_deploy_yml` and
-`azure_devops_yml` take `workbench`, which `handle_init` passes from `--workbench`, as do
-`github_ci_yml` and `gitlab_ci_yml`, which then add the test-quote report job
-(`_GITHUB_TEST_QUOTES_JOB`, `_GITLAB_TEST_QUOTES_JOB`, `_AZURE_TEST_QUOTES_JOB`, the last
-added to Azure DevOps' Validate stage).
+`azure_devops_yml` take `workbench`, which `handle_init` passes from `--workbench`.
 `handle_init` calls exactly the generator(s) for the chosen
 `ci` value (`"none"` calls none of them); on `--force` it first calls
 `_prune_stale_ci_files(project_dir, keep=ci)` (defined in `src/haute/cli/_init_cmd.py`),
@@ -791,8 +788,7 @@ API and real JSON round-trips rather than mocks:
   matching, and round-trip drift (`TestRoundTripDrift`).
 - **`test_scaffold.py`** — every CI provider × deploy target combination, complete
   YAML/TOML structural validation (including release conditions and exact secret
-  placement, the test-quote report's GitHub comment only on a same-repository pull
-  request and GitLab's whole-history clone, the deploy triggers naming only the pipeline
+  placement, the deploy triggers naming only the pipeline
   folder and the test quotes' folder among folders), blank starter pipeline/test content, root-`main.py` removal, and absence of
   generated prompts and node sidecars.
 - **`test_docs_accuracy.py`** — executable deployment-documentation parity for the

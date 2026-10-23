@@ -1284,12 +1284,6 @@ export const withSampleRows = (spec: FormSpec, rowsByTable: Record<string, Sampl
     for (const [tableId, rows] of Object.entries(rowsByTable)) draft.sample[tableId] = rows
   })
 
-/** The sample replaced whole, as a test quote opened puts its values in its place. */
-export const withSample = (spec: FormSpec, sample: Record<string, SampleRow[]>): FormSpec =>
-  edit(spec, (draft) => {
-    draft.sample = structuredClone(sample)
-  })
-
 /** `rows` with empty rows added to make `length`. */
 export const padRows = (rows: readonly SampleRow[], length: number): SampleRow[] => [
   ...rows,

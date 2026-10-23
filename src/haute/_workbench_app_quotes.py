@@ -38,8 +38,8 @@ from haute._quote_store import (
     with_details,
 )
 from haute._quote_store._book import MAX_PAGE_SIZE, PAGE_SIZE
-from haute._test_quotes import ACCEPTED_TOLERANCE, quote_request
 from haute._workbench_form import QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, FormSpec
+from haute._workbench_tables import quote_request
 from haute.deploy._request_limits import (
     RequestBodyHeaderError,
     RequestBodyLimitError,
@@ -74,6 +74,10 @@ from haute.schemas import (
 
 T = TypeVar("T")
 M = TypeVar("M", bound=BaseModel)
+
+#: A kept price and the one the page showed are matched within one part in a billion, so
+#: a pricing that differs only in a float's last bits has not moved.
+PRICE_TOLERANCE = 1e-9
 
 #: Prices a quote's values through the release's pipeline: its output tables by name and
 #: the request priced, or an HTTP error saying why not.
@@ -245,7 +249,7 @@ def _moved(revision: QuoteRevision, shown: WorkbenchPricedTables | None) -> bool
     for a save repeated with its key, those its first write kept."""
     if shown is None or revision.response is None:
         return False
-    return bool(response_changes(revision.response, shown, ACCEPTED_TOLERANCE))
+    return bool(response_changes(revision.response, shown, PRICE_TOLERANCE))
 
 
 def _without_app_details(values: dict[str, Any]) -> dict[str, Any]:

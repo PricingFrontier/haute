@@ -21,7 +21,6 @@ from haute._quote_store._book import (
 )
 from haute._quote_store._store import (
     CarriedValues,
-    QuoteHistory,
     QuoteNotFoundError,
     QuoteRevision,
     QuoteStore,
@@ -46,7 +45,6 @@ __all__ = [
     "RelatedQuote",
     "RevisionSummary",
     "Source",
-    "QuoteHistory",
     "QuoteNotFoundError",
     "QuoteRevision",
     "QuoteStore",

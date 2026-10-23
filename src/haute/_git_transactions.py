@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
-from contextlib import closing
 from pathlib import Path, PurePosixPath
 
 # The command core is the sole process boundary.  Its helpers are imported
@@ -51,33 +49,6 @@ __all__ = [
 ]
 
 
-def _settle_sqlite_journals(paths: list[str], cwd: Path | None) -> None:
-    """Settle a SQLite file in *paths* beside which a write that never finished left its
-    rollback journal, so the commit never takes a half-written file.
-
-    Opening the file does what SQLite's next open would: a hot journal is played back and
-    removed, and one that is not hot (the write never reached the file) is left, harmless and
-    never committed. Refuses, naming the file, when SQLite cannot open it to do so.
-    """
-    root = cwd if cwd is not None else Path.cwd()
-    for relative in paths:
-        if not relative.endswith(".sqlite"):
-            continue
-        database = root / relative
-        journal = database.with_name(f"{database.name}-journal")
-        if not database.is_file() or not journal.exists() or journal.stat().st_size == 0:
-            continue
-        try:
-            with closing(sqlite3.connect(database)) as connection:
-                connection.execute("PRAGMA schema_version").fetchone()
-        except sqlite3.Error as exc:
-            raise GitDomainError(
-                f"{relative} has a rollback journal beside it that SQLite could not settle "
-                f"({exc}), so it may be half-written. Close anything that has it open and save "
-                "again."
-            ) from exc
-
-
 @_serialized_mutation
 def commit_save(
     paths: list[str], working: str, cwd: Path | None = None, message: str | None = None
@@ -100,7 +71,6 @@ def commit_save(
     if not ok or not status.strip():
         return None
 
-    _settle_sqlite_journals(paths, cwd)
     # New files must be known to git before a pathspec'd commit can include
     # them; the explicit-path add also stages deletions of tracked paths.
     _run_git("add", "--", *pathspecs, cwd=cwd)

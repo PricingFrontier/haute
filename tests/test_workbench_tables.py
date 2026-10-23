@@ -15,7 +15,6 @@ import polars as pl
 import pytest
 
 from haute._json_shred._shred import _POLARS_TYPE_MAP
-from haute._test_quotes import quote_request
 from haute._workbench_form import FormSpec, SchemaTable
 from haute._workbench_input import workbench_request_frames, workbench_table_frames
 from haute._workbench_tables import (
@@ -29,6 +28,7 @@ from haute._workbench_tables import (
     parse_workbench_tables,
     port_tables,
     preset_rows,
+    quote_request,
     quote_schema,
     sample_quote,
     workbench_tables,

@@ -10,7 +10,7 @@ whole, in one transaction with its event of who did what: a save writes the valu
 prices; assigning, archiving, restoring, marking final and reopening write a revision of the
 newest's values, request and prices with the details the change sets. Each change names the
 revision it was made on and is refused, with nothing written, when the quote has moved past
-it. The test quotes of the analysts' Preview share the store and have no details.
+it.
 """
 
 from __future__ import annotations
@@ -325,9 +325,10 @@ def _quote(row: RowMapping) -> AppQuote:
 
 
 def _newest(at: int | None = None) -> Select[Any]:
-    """Each app quote's newest revision with its details: the quotes that have details, which
-    the test quotes do not. Given *at*, revision *at* in its place, as the quote stood when
-    that revision was its newest: what a save repeated with its key answers."""
+    """Each app quote's newest revision with its details: the quotes that have details, a
+    quote the store saved alone having none. Given *at*, revision *at* in its place, as the
+    quote stood when that revision was its newest: what a save repeated with its key
+    answers."""
     revision = QUOTE_DETAILS.c.revision
     newest = QUOTES.c.latest == revision if at is None else revision == at
     latest = QUOTES.c.latest if at is None else literal(at, Integer).label("latest")
@@ -823,7 +824,6 @@ class QuoteBook:
                 connection,
                 quote_id,
                 after=quote.latest,
-                after_digest=None,
                 saved_by=actor,
                 saved_at=now,
                 form=form,

@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from haute._artifact_paths import PATH_PROBLEMS, ordinary_path_problem
 from haute._graph_shape import validate_singleton_groups
 from haute._io import read_user_text
 from haute._logging import get_logger
@@ -459,17 +460,34 @@ class DeployConfig:
         return c
 
 
-def _test_quotes_dir(project_dir: Path, table: object) -> Path | None:
-    """The test quotes' folder, read as the editor reads it (``test_quotes_path``):
-    ``[test_quotes] dir``, or ``tests/quotes`` when *table* names none, which is checked only
-    while it holds test quotes, so a project with neither has no gate to fail."""
-    from haute._test_quotes import WorkbenchTestQuoteError, test_quote_files, test_quotes_path
+#: The test quotes' folder when ``haute.toml`` names none, as ``haute init`` writes it.
+DEFAULT_TEST_QUOTES_DIR = "tests/quotes"
 
-    try:
-        directory = test_quotes_path(project_dir, table).parent
-    except WorkbenchTestQuoteError as exc:
-        raise ValueError(exc.message) from exc
-    named = isinstance(table, dict) and bool(table.get("dir"))
+
+def test_quote_files(directory: Path) -> list[Path]:
+    """The test-quote files in *directory*: its JSON files, by name."""
+    return sorted(directory.glob("*.json"))
+
+
+def _test_quotes_dir(project_dir: Path, table: object) -> Path | None:
+    """The test quotes' folder: ``[test_quotes] dir``, or ``tests/quotes`` when *table*
+    names none, which is checked only while it holds test quotes, so a project with neither
+    has no gate to fail. The folder is the project's own, as the Files panels take a path:
+    one outside the project, or reached through a link or junction, is refused naming why."""
+    configured = table.get("dir") if isinstance(table, dict) else None
+    named = isinstance(configured, str) and bool(configured)
+    relative = configured if isinstance(configured, str) and configured else DEFAULT_TEST_QUOTES_DIR
+    directory, problem = ordinary_path_problem(project_dir, relative)
+    if problem is not None:
+        shown = (
+            Path(relative).as_posix()
+            if problem == "not_ordinary"
+            else directory.relative_to(project_dir.resolve()).as_posix()
+        )
+        raise ValueError(
+            f"{shown} {PATH_PROBLEMS[problem]}: [test_quotes] dir must be a folder of the "
+            "project's own."
+        )
     return directory if named or test_quote_files(directory) else None
 
 

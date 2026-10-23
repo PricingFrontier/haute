@@ -29,10 +29,9 @@ editor; **Pricing** brings the pipeline back. The pipeline editor keeps everythi
 shortcuts are off meanwhile, so nothing you press in the workbench edits the pipeline. The
 toolbar keeps Haute's project controls (**Pipeline files** and **Local files**, Assistant,
 Help, the branch, **Save** and **Commit**) and shows the workbench's own: **Build** over
-**Preview**, **Sheets** over **Schema**, **Display**, **Test quotes**, **Undo** over
-**Redo**, and **Zoom In** over **Zoom Out**. They stay in place in both modes: Sheets,
-Schema and Display are greyed out in Preview, Test quotes while building, and the zoom
-while the schema shows.
+**Preview**, **Sheets** over **Schema**, **Display**, **Undo** over **Redo**, and **Zoom
+In** over **Zoom Out**. They stay in place in both modes: Sheets, Schema and Display are
+greyed out in Preview, and the zoom while the schema shows.
 
 **Save** and Ctrl+S save the project, the same from either view: `forms/form.json` first
 when the workbench has unsaved edits, then the pipeline, with the Workbench Input's and
@@ -486,37 +485,6 @@ outlined, naming the problem when you hover, and priced all the same. When prici
 no Workbench Output on the pipeline, a value that does not fit its column — the toolbar
 says why. An output table with nothing connected, or an output column the pipeline doesn't
 fill, prices all the same and shows dashes (see [Workbench Output](nodes/workbench-output.md#filling-the-tables)). Ctrl+S still saves the project in Preview.
-
-## Test quotes
-
-Keep the quotes you check rates with as **test quotes**. In Preview, **Test quotes** opens
-a panel beside the sheets. Type a quote into the sheets, the sample, name it in the panel
-and press **Save quote**: Haute prices it in full on the pipeline as it is now, whatever its
-cells hold, and keeps it with its prices, in `tests/quotes/test_quotes.sqlite` (in the folder
-`[test_quotes] dir` in `haute.toml` names). Save and Commit carry the file with the rest of
-the project.
-
-- **Open** puts a test quote on the sheets in place of the sample (**Undo** brings the
-  sample back). Its values follow the tables and columns
-  they were typed into, renamed or not; the panel names any value that has no place on
-  the sheets now.
-- **Run all** (or **Run ticked**) prices each test quote on the pipeline as it is when you
-  press it, and compares what comes out with the prices you accepted for it: each shows
-  **Unchanged**, **Changed** or **Failed**. Click a changed quote to see every output that
-  moved, the accepted value beside the new. Change the pipeline or the sheets while a
-  run's results are showing and the panel says to run again.
-- **Accept** (the tick) keeps a changed quote's new prices as the ones to expect, when the
-  change was meant. **Delete** (the bin) removes a test quote, after asking.
-
-When the project deploys, the dry run prices every test quote again and fails on any
-output that moved and was not accepted, so a rate change arrives with its test quotes
-accepted. On a pull request, a project set up with `haute init --workbench` reports what
-the change does to the test quotes: GitHub adds the report to the run's summary and
-posts it on a pull request from the repository itself, and GitLab and Azure DevOps keep it
-with the run. `haute test-quotes report` writes the same report on your machine. If a
-merge finds the same test quote changed on both sides, git names it: keep one side's file
-with `git checkout --ours` or `--theirs`, then run those quotes in Preview and accept the
-results you want to keep.
 
 ## The underwriter app
 Underwriters use the sheets in an app of their own, apart from Haute: the sheets drawn as

@@ -259,8 +259,8 @@ def capture_save_in_ledger(
 
     *rel_paths* are the files the save wrote or removed, relative to *root* in
     POSIX form: the commit's pathspec. Every route that writes project files
-    captures them through it: the pipeline save, the form save, a test-quote
-    write, a project file written or deleted, and the capture retry.
+    captures them through it: the pipeline save, the form save, a project file
+    written or deleted, and the capture retry.
 
     ``identity_required`` is True only when the capture was skipped because git
     has no commit identity — a restored hosted container starts that way, and

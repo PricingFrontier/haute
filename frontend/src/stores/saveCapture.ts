@@ -1,7 +1,7 @@
 /**
  * What a save answered about its version capture (specs/git-integration), reported the
- * same way whichever write it was (the pipeline's save, the form's save, a test-quote
- * write, a Pipeline file written or deleted): the ledger commit to the toolbar's branch
+ * same way whichever write it was (the pipeline's save, the form's save, a Pipeline file
+ * written or deleted): the ledger commit to the toolbar's branch
  * indicator, an open Git panel told to fetch its history again, each warning in a toast of
  * its own, the files the capture skipped or failed on kept until a capture takes them, and
  * the git-identity prompt when the capture was skipped for want of one, unless it was

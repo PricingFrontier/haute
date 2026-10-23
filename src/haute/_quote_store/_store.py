@@ -30,7 +30,6 @@ from sqlalchemy import (
     RowMapping,
     Select,
     create_engine,
-    delete,
     event,
     func,
     insert,
@@ -97,23 +96,6 @@ class QuoteRevision:
     saved_by: str
     saved_at: datetime
 
-    @property
-    def digest(self) -> str:
-        """What this revision is, beyond its number: two branches can each hold a revision 2
-        of one quote, saved apart. A content hash of who saved what, when."""
-        from haute._cache import canonical_json
-        from haute._hashing import content_hash_bytes
-
-        material = {
-            "quote_id": self.quote_id,
-            "number": self.number,
-            "saved_at": self.saved_at.isoformat(),
-            "saved_by": self.saved_by,
-            "request": self.request,
-            "response": self.response,
-        }
-        return content_hash_bytes(canonical_json(material).encode("utf-8"))
-
 
 @dataclass(frozen=True, slots=True)
 class QuoteSummary:
@@ -128,21 +110,6 @@ class QuoteSummary:
     saved_by: str
     saved_at: datetime
     priced: bool
-
-
-@dataclass(frozen=True)
-class QuoteHistory:
-    """A quote whole, as its rows hold it: the quote, every revision in order and the forms
-    they name, so it can be compared with another file's and put into it."""
-
-    quote: dict[str, Any]
-    revisions: list[dict[str, Any]]
-    #: Each form a revision names, by its revision.
-    forms: dict[str, str]
-
-    @property
-    def name(self) -> str:
-        return str(self.quote["name"])
 
 
 @dataclass(frozen=True, slots=True)
@@ -436,7 +403,6 @@ class QuoteStore:
         quote_id: str,
         *,
         after: int,
-        after_digest: str | None = None,
         saved_by: str,
         form: FormSpec,
         inputs: Values,
@@ -446,17 +412,15 @@ class QuoteStore:
     ) -> QuoteRevision:
         """The revision following revision *after* of quote *quote_id*.
 
-        Raises :class:`StaleQuoteError` when the quote's newest revision is not *after*, or,
-        given *after_digest*, is a revision *after* other than the one that digest names (one
-        saved apart on another branch); :class:`QuoteNotFoundError` when there is no such
-        quote. Nothing is written either way.
+        Raises :class:`StaleQuoteError` when the quote's newest revision is not *after*;
+        :class:`QuoteNotFoundError` when there is no such quote. Nothing is written either
+        way.
         """
         with self._engine.begin() as connection:
             return self._save_in(
                 connection,
                 quote_id,
                 after=after,
-                after_digest=after_digest,
                 saved_by=saved_by,
                 saved_at=self._clock(),
                 form=form,
@@ -472,7 +436,6 @@ class QuoteStore:
         quote_id: str,
         *,
         after: int,
-        after_digest: str | None,
         saved_by: str,
         saved_at: datetime,
         form: FormSpec,
@@ -482,7 +445,7 @@ class QuoteStore:
         release: str | None,
     ) -> QuoteRevision:
         """:meth:`save_revision` on *connection*, in its transaction."""
-        self._advance(connection, quote_id, after, after_digest)
+        self._advance(connection, quote_id, after)
         return self._write_revision(
             connection,
             quote_id,
@@ -510,7 +473,7 @@ class QuoteStore:
         release kept as they were, its values *inputs*. Refused as :meth:`save_revision` is
         when the quote has moved past *after*."""
         kept = _read_revision(connection, quote_id, after)
-        self._advance(connection, quote_id, after, None)
+        self._advance(connection, quote_id, after)
         values = _checked_values(inputs)
         connection.execute(
             insert(QUOTE_REVISIONS).values(
@@ -539,11 +502,9 @@ class QuoteStore:
             saved_at=saved_at,
         )
 
-    def _advance(
-        self, connection: Connection, quote_id: str, after: int, after_digest: str | None
-    ) -> None:
+    def _advance(self, connection: Connection, quote_id: str, after: int) -> None:
         """Move quote *quote_id*'s newest revision on from *after*, refusing a quote that has
-        moved past it or, given *after_digest*, whose revision *after* is not that one."""
+        moved past it."""
         moved = connection.execute(
             update(QUOTES)
             .where(QUOTES.c.id == quote_id, QUOTES.c.latest == after)
@@ -558,14 +519,6 @@ class QuoteStore:
             raise StaleQuoteError(
                 f"Quote {quote_id!r} has moved on since revision {after}: its newest is "
                 f"{latest}. Open it again to save over the newest."
-            )
-        if after_digest is not None and _read_revision(connection, quote_id, after).digest != (
-            after_digest
-        ):
-            # Raised inside the transaction, so the move above is rolled back.
-            raise StaleQuoteError(
-                f"Quote {quote_id!r} revision {after} is not the one that was read: it was "
-                "saved apart, on another branch. Open it again to save over it."
             )
 
     def revision(self, quote_id: str, number: int | None = None) -> QuoteRevision:
@@ -603,67 +556,6 @@ class QuoteStore:
         if row is None:
             raise QuoteNotFoundError(f"The quote store holds no quote {quote_id!r}.")
         return _summary(row)
-
-    def histories(self) -> dict[str, QuoteHistory]:
-        """Every quote whole, by id."""
-        with self._engine.connect() as connection:
-            quotes = connection.execute(select(QUOTES)).mappings().all()
-            revisions = (
-                connection.execute(
-                    select(QUOTE_REVISIONS).order_by(
-                        QUOTE_REVISIONS.c.quote_id, QUOTE_REVISIONS.c.number
-                    )
-                )
-                .mappings()
-                .all()
-            )
-            # Iterated, not passed to dict(): a result's keys() would make it read as a mapping.
-            forms = {
-                revision: document
-                for revision, document in connection.execute(
-                    select(QUOTE_FORMS.c.revision, QUOTE_FORMS.c.document)
-                ).tuples()
-            }
-        by_quote: dict[str, list[dict[str, Any]]] = {}
-        for revision in revisions:
-            by_quote.setdefault(revision["quote_id"], []).append(dict(revision))
-        histories: dict[str, QuoteHistory] = {}
-        for quote in quotes:
-            held = by_quote.get(quote["id"], [])
-            named = {revision["form_revision"] for revision in held}
-            histories[quote["id"]] = QuoteHistory(
-                quote=dict(quote),
-                revisions=held,
-                forms={key: forms[key] for key in sorted(named)},
-            )
-        return histories
-
-    def put_history(self, history: QuoteHistory) -> None:
-        """Put *history* in place of whatever this store holds of its quote, in one write."""
-        quote_id = history.quote["id"]
-        with self._engine.begin() as connection:
-            for revision, document in history.forms.items():
-                _keep_form(connection, revision, document)
-            connection.execute(
-                delete(QUOTE_REVISIONS).where(QUOTE_REVISIONS.c.quote_id == quote_id)
-            )
-            connection.execute(delete(QUOTES).where(QUOTES.c.id == quote_id))
-            connection.execute(insert(QUOTES).values(**history.quote))
-            if history.revisions:
-                connection.execute(insert(QUOTE_REVISIONS), history.revisions)
-
-    def delete(self, quote_id: str) -> None:
-        """Remove quote *quote_id* and its revisions; the forms they name stay kept.
-
-        Raises :class:`QuoteNotFoundError` when there is no such quote.
-        """
-        with self._engine.begin() as connection:
-            connection.execute(
-                delete(QUOTE_REVISIONS).where(QUOTE_REVISIONS.c.quote_id == quote_id)
-            )
-            removed = connection.execute(delete(QUOTES).where(QUOTES.c.id == quote_id))
-            if removed.rowcount != 1:
-                raise QuoteNotFoundError(f"The quote store holds no quote {quote_id!r}.")
 
     def _write_revision(
         self,

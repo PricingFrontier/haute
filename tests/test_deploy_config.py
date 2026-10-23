@@ -155,16 +155,18 @@ model_name = "simple"
         config = DeployConfig.from_toml(path)
         assert config.output_fields == ([] if value == "[]" else ["premium", "age"])
 
-    def test_reads_the_test_quotes_where_the_editor_keeps_them(self, tmp_path: Path) -> None:
+    def test_reads_the_test_quotes_from_tests_quotes_when_none_is_named(
+        self, tmp_path: Path
+    ) -> None:
         path = tmp_path / "haute.toml"
         path.write_text('[project]\nname = "x"\n', encoding="utf-8")
         quotes = tmp_path / "tests" / "quotes"
 
-        # haute.toml names no folder: the editor's, tests/quotes, once it holds test quotes.
+        # haute.toml names no folder: tests/quotes, once it holds test quotes.
         assert DeployConfig.from_toml(path).test_quotes_dir is None
         quotes.mkdir(parents=True)
         assert DeployConfig.from_toml(path).test_quotes_dir is None
-        (quotes / "test_quotes.sqlite").write_bytes(b"")
+        (quotes / "golden.json").write_text("[]", encoding="utf-8")
         assert DeployConfig.from_toml(path).test_quotes_dir == quotes.resolve()
 
         path.write_text('[project]\nname = "x"\n[test_quotes]\ndir = "../outside"\n')
@@ -497,7 +499,7 @@ class TestValidateDeploy:
             result = validate_deploy(resolved)
 
         assert result is quote_results
-        scorer.assert_called_once_with(resolved, tmp_path, form=None)
+        scorer.assert_called_once_with(resolved, tmp_path)
 
     def test_failed_quote_warns_once_and_raises_from_the_same_scoring_pass(
         self,
@@ -535,7 +537,7 @@ class TestValidateDeploy:
         ):
             validate_deploy(resolved)
 
-        scorer.assert_called_once_with(resolved, tmp_path, form=None)
+        scorer.assert_called_once_with(resolved, tmp_path)
         warning.assert_called_once_with(
             "validation_failed",
             structural_errors=0,

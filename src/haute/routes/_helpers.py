@@ -218,8 +218,8 @@ _T = TypeVar("_T")
 
 
 async def project_write(project_root: Path, work: Callable[[], _T]) -> _T:
-    """*work*, a write into the project at *project_root*: the form's save, a test quote's,
-    or a Files panel's upload or delete. It takes its turn with every other save
+    """*work*, a write into the project at *project_root*: the form's save, or a Files
+    panel's upload or delete. It takes its turn with every other save
     (``save_lock``, which the pipeline's save takes too) and runs in the thread pool under
     the repository's lock, which a branch switch holds too (``repository_mutation``), so
     the write's checks, the write and its capture on the save ledger are never split by

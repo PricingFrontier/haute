@@ -1,17 +1,15 @@
 /**
  * The toolbar while the workbench's view shows (specs/workbench), the same controls in
  * both modes, those a mode has no use for disabled: the brand, Build over Preview, the
- * sections and Display, Test quotes, the form's Undo and Redo, the sheet's zoom, the
- * project's controls, Save and Commit, both the host's as the pipeline toolbar's are, and in
- * Preview why pricing the sample failed, with no Price or Clear: the sample is priced as it
- * is typed.
+ * sections and Display, the form's Undo and Redo, the sheet's zoom, the project's controls,
+ * Save and Commit, both the host's as the pipeline toolbar's are, and in Preview why pricing
+ * the sample failed, with no Price or Clear: the sample is priced as it is typed.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import type { FormSpec } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPricingStore from "../../stores/useWorkbenchPricingStore"
-import useWorkbenchTestQuotesStore from "../../stores/useWorkbenchTestQuotesStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { BLANK_THEME } from "../../utils/workbenchForm"
 import WorkbenchToolbar from "../WorkbenchToolbar"
@@ -64,7 +62,6 @@ describe("WorkbenchToolbar", () => {
     useWorkbenchFormStore.setState({ form, status: "ready", saving: false, undoStack: [], redoStack: [], ...actions })
     useWorkbenchViewStore.setState({ mode: "build", section: "sheets", zoom: 1 })
     useWorkbenchPricingStore.setState({ error: null })
-    useWorkbenchTestQuotesStore.setState({ open: false })
   })
 
   afterEach(() => {
@@ -109,7 +106,7 @@ describe("WorkbenchToolbar", () => {
     const controls = () => within(screen.getByTestId("workbench-toolbar-actions")).getAllByRole("button").map((button) => button.textContent)
     renderToolbar()
     const building = controls()
-    expect(building).toEqual(["Build", "Preview", "Sheets", "Schema", "Display", "Test quotes", "Undo", "Redo", "Zoom In", "Zoom Out"])
+    expect(building).toEqual(["Build", "Preview", "Sheets", "Schema", "Display", "Undo", "Redo", "Zoom In", "Zoom Out"])
 
     fireEvent.click(screen.getByRole("button", { name: "Preview" }))
     expect(controls()).toEqual(building)
@@ -144,21 +141,6 @@ describe("WorkbenchToolbar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Preview" }))
     expect(screen.queryByRole("dialog", { name: "Display" })).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Display" })).toBeDisabled()
-  })
-
-  it("opens and closes the test quotes in Preview, disabled and never pressed while building", () => {
-    useWorkbenchTestQuotesStore.setState({ open: true })
-    renderToolbar()
-    expect(screen.getByRole("button", { name: "Test quotes" })).toBeDisabled()
-    expect(screen.getByRole("button", { name: "Test quotes" })).toHaveAttribute("aria-pressed", "false")
-
-    useWorkbenchTestQuotesStore.setState({ open: false })
-    fireEvent.click(screen.getByRole("button", { name: "Preview" }))
-    fireEvent.click(screen.getByRole("button", { name: "Test quotes" }))
-    expect(useWorkbenchTestQuotesStore.getState().open).toBe(true)
-    expect(screen.getByRole("button", { name: "Test quotes" })).toHaveAttribute("aria-pressed", "true")
-    fireEvent.click(screen.getByRole("button", { name: "Test quotes" }))
-    expect(useWorkbenchTestQuotesStore.getState().open).toBe(false)
   })
 
   it("zooms the sheet in and out by a step", () => {

@@ -41,9 +41,9 @@ from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._output_assembler import render_output_document
 from haute._sandbox import set_project_root
-from haute._test_quotes import quote_request
 from haute._types import PipelineGraph
 from haute._workbench_form import FormSpec, form_revision, render_form
+from haute._workbench_tables import quote_request
 from haute.deploy._request_limits import (
     RequestBodyHeaderError,
     RequestBodyLimitError,
@@ -330,7 +330,7 @@ def build_release(
     try:
         try:
             try:
-                results = validate_deploy(resolved, form=form)
+                results = validate_deploy(resolved)
             except DeployError as exc:
                 context = exc.context if isinstance(exc.context, dict) else {}
                 details = [

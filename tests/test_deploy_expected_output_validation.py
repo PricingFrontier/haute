@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
@@ -11,7 +10,6 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
-from haute._workbench_form import FormSpec
 from haute.deploy._config import DeployConfig, ResolvedDeploy
 from haute.deploy._project_modules import ProjectModules
 from haute.deploy._request_rows import RequestRows
@@ -508,162 +506,3 @@ def test_validate_deploy_blocks_expected_output_drift(tmp_path: Path) -> None:
         and "actual=102.25" in err
         for err in exc_info.value.context["test_quote_errors"]
     )
-
-
-def _form(*columns: tuple[str, str]) -> FormSpec:
-    """A form whose one-row input table ``policy`` has *columns*, each ``(id, name)``, ints."""
-    return FormSpec.model_validate(
-        {
-            "name": "motor",
-            "schema": {
-                "tables": [
-                    {
-                        "id": "t_policy",
-                        "name": "policy",
-                        "rows": "one",
-                        "columns": [
-                            {"id": column_id, "name": name, "type": "int"}
-                            for column_id, name in columns
-                        ],
-                    }
-                ]
-            },
-            "pages": [
-                {
-                    "id": "p",
-                    "title": "Sheet 1",
-                    "width": 1280,
-                    "sections": [{"id": "s", "title": "s", "height": 120, "widgets": []}],
-                }
-            ],
-        }
-    )
-
-
-#: The form the test quotes below were saved on: the policy's limit.
-FORM = _form(("c_limit", "limit"))
-
-
-def _saved_test_quotes(quotes_dir: Path, *responses: dict[str, object] | None) -> None:
-    """The workbench's test-quote file holding one test quote per response, named in order,
-    each its limit the quote's number, with the request the form builds from it."""
-    from haute._quote_store import migrate_store, open_store, store_url
-    from haute._test_quotes import quote_request
-
-    url = store_url(quotes_dir / "test_quotes.sqlite")
-    migrate_store(url)
-    with open_store(url) as store:
-        for index, response in enumerate(responses):
-            values = {"t_policy": [{"c_limit": str(index)}]}
-            store.create(
-                name=f"quote {index}",
-                owner="ana",
-                saved_by="ana",
-                form=FORM,
-                inputs=values,
-                request=quote_request(FORM, values),
-                response=response,
-                release=None,
-            )
-
-
-def test_the_workbench_test_quotes_are_priced_each_alone_and_compared_whole(
-    tmp_path: Path,
-) -> None:
-    quotes_dir = tmp_path / "quotes"
-    quotes_dir.mkdir()
-    accepted = {"pricing": {"premium": 50.0, "start": "2026-10-12"}}
-    _saved_test_quotes(quotes_dir, accepted, accepted, None)
-    resolved = _resolved_with_quotes(quotes_dir, request_input=NodeType.WORKBENCH_INPUT)
-
-    def answer(premium: float) -> pl.DataFrame:
-        # The answer as scored: a date as a date, which the check reads as a preview does.
-        return pl.DataFrame({"pricing": [{"premium": premium, "start": date(2026, 10, 12)}]})
-
-    with patch("haute.deploy._validators.score_graph") as score_graph:
-        score_graph.side_effect = [answer(50.0), answer(50.0), answer(1.0)]
-        [unchanged] = score_test_quotes(resolved, form=FORM)
-        score_graph.side_effect = [answer(50.0), answer(61.0), answer(1.0)]
-        [moved] = score_test_quotes(resolved, form=FORM)
-
-    assert unchanged["status"] == "ok", unchanged
-    assert unchanged["file"] == "test_quotes.sqlite"
-    sent = [call.kwargs["input_df"] for call in score_graph.call_args_list[:3]]
-    assert sent == [QuoteRequest(({"policy": {"limit": index}},)) for index in range(3)]
-    assert moved["status"] == "error"
-    assert "quote 'quote 1': pricing.premium changed, accepted 50.0, answered 61.0" in str(
-        moved["error"]
-    )
-
-
-def test_a_test_quote_directory_holding_only_the_test_quote_file_passes_the_gate(
-    tmp_path: Path,
-) -> None:
-    quotes_dir = tmp_path / "quotes"
-    quotes_dir.mkdir()
-    _saved_test_quotes(quotes_dir)
-    resolved = _resolved_with_quotes(quotes_dir, request_input=NodeType.WORKBENCH_INPUT)
-
-    with patch("haute.deploy._validators.score_graph") as score_graph:
-        [result] = validate_deploy(resolved, form=FORM)
-
-    assert result == {**result, "file": "test_quotes.sqlite", "rows": 0, "status": "ok"}
-    score_graph.assert_not_called()
-
-
-def test_a_test_quote_is_priced_on_the_request_the_form_builds_now(tmp_path: Path) -> None:
-    quotes_dir = tmp_path / "quotes"
-    quotes_dir.mkdir()
-    accepted = {"pricing": {"premium": 50.0}}
-    _saved_test_quotes(quotes_dir, accepted)
-    resolved = _resolved_with_quotes(quotes_dir, request_input=NodeType.WORKBENCH_INPUT)
-    # The column was renamed since: the app now sends `cover` where the quote kept `limit`.
-    renamed = _form(("c_limit", "cover"))
-
-    with patch("haute.deploy._validators.score_graph") as score_graph:
-        score_graph.return_value = pl.DataFrame({"pricing": [{"premium": 50.0}]})
-        [result] = score_test_quotes(resolved, form=renamed)
-
-    assert [call.kwargs["input_df"] for call in score_graph.call_args_list] == [
-        QuoteRequest(({"policy": {"cover": 0}},))
-    ]
-    assert result["status"] == "error"
-    assert "quote 'quote 0': request.policy.limit removed, accepted 0, built None" in str(
-        result["error"]
-    )
-    assert "quote 'quote 0': request.policy.cover added, accepted None, built 0" in str(
-        result["error"]
-    )
-
-
-def test_a_test_quote_with_nothing_left_on_the_form_fails_unpriced(tmp_path: Path) -> None:
-    quotes_dir = tmp_path / "quotes"
-    quotes_dir.mkdir()
-    _saved_test_quotes(quotes_dir, {"pricing": {"premium": 50.0}})
-    resolved = _resolved_with_quotes(quotes_dir, request_input=NodeType.WORKBENCH_INPUT)
-
-    with patch("haute.deploy._validators.score_graph") as score_graph:
-        [result] = score_test_quotes(resolved, form=_form(("c_other", "other")))
-
-    score_graph.assert_not_called()
-    assert result["status"] == "error"
-    assert "quote 'quote 0': policy.limit has no place on the sheets now" in str(result["error"])
-    assert "quote 'quote 0': nothing typed in it has a place on the sheets now" in str(
-        result["error"]
-    )
-
-
-def test_the_test_quote_file_is_refused_without_the_workbench_form(tmp_path: Path) -> None:
-    quotes_dir = tmp_path / "quotes"
-    quotes_dir.mkdir()
-    _saved_test_quotes(quotes_dir, None)
-    (tmp_path / "haute.toml").write_text('[project]\nname = "motor"\n', encoding="utf-8")
-    resolved = _resolved_with_quotes(quotes_dir, request_input=NodeType.WORKBENCH_INPUT)
-    resolved.config.project_dir = tmp_path
-
-    with patch("haute.deploy._validators.score_graph") as score_graph:
-        [result] = score_test_quotes(resolved)
-
-    score_graph.assert_not_called()
-    assert result["status"] == "error"
-    assert "turn the workbench on" in str(result["error"])

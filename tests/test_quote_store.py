@@ -361,61 +361,6 @@ def test_a_revision_after_one_the_quote_has_moved_past_is_refused_with_nothing_w
         assert raw.execute("SELECT COUNT(*) FROM haute_quote_forms").fetchone() == (1,)
 
 
-def test_a_revision_saved_apart_under_the_same_number_is_refused_by_its_digest(
-    store: QuoteStore,
-) -> None:
-    first = _create(store)
-    fields = {
-        "saved_by": "ben@example.com",
-        "form": FORM,
-        "inputs": VALUES,
-        "request": REQUEST,
-        "response": RESPONSE,
-        "release": None,
-    }
-    second = store.save_revision(first.quote_id, after=1, **fields)
-    # The digest names the revision by what was saved, beyond its number.
-    assert second.digest == store.revision(first.quote_id, 2).digest
-    assert second.digest != first.digest
-
-    # A run read revision 2 as another branch saved it.
-    with pytest.raises(StaleQuoteError, match="saved apart, on another branch"):
-        store.save_revision(first.quote_id, after=2, after_digest=first.digest, **fields)
-    assert store.revision(first.quote_id).number == 2
-
-    third = store.save_revision(first.quote_id, after=2, after_digest=second.digest, **fields)
-    assert third.number == 3
-
-
-def test_two_revisions_saved_apart_under_one_number_have_different_digests(
-    tmp_path: Path, url: str, store: QuoteStore
-) -> None:
-    first = _create(store)
-    fields = {
-        "saved_by": "ben@example.com",
-        "form": FORM,
-        "request": REQUEST,
-        "response": RESPONSE,
-        "release": None,
-    }
-    # Two branches part after revision 1, and each saves its own revision 2.
-    path = Path(url.removeprefix("sqlite:///"))
-    branch = tmp_path / "branch.sqlite"
-    shutil.copyfile(path, branch)
-    other_values = {**VALUES, "t_policy": [{"c_region": "south"}]}
-    here = store.save_revision(first.quote_id, after=1, inputs=VALUES, **fields)
-    with open_store(store_url(branch)) as other:
-        there = other.save_revision(first.quote_id, after=1, inputs=other_values, **fields)
-
-    assert (here.number, there.number) == (2, 2)
-    assert here.digest != there.digest
-    # A run read the other branch's revision 2: here it is refused, not compared.
-    with pytest.raises(StaleQuoteError, match="saved apart, on another branch"):
-        store.save_revision(
-            first.quote_id, after=2, after_digest=there.digest, inputs=VALUES, **fields
-        )
-
-
 def test_an_unknown_quote_or_revision_is_refused_naming_it(store: QuoteStore) -> None:
     created = _create(store)
 

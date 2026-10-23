@@ -109,7 +109,7 @@ QUOTE_REVISIONS = Table(
 
 #: The details of each revision of a quote the underwriter app keeps: the row of the form's
 #: ``quote_details`` table in typed columns, the one place they are held (the revision's
-#: values leave the table out). A test quote has none.
+#: values leave the table out).
 QUOTE_DETAILS = Table(
     "haute_quote_details",
     METADATA,

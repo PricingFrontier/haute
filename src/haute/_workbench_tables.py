@@ -298,6 +298,13 @@ def sample_quote(spec: FormSpec) -> dict[str, Any]:
     return sample if typed else {}
 
 
+def quote_request(spec: FormSpec, values: Mapping[str, Any]) -> dict[str, Any]:
+    """The request a pricing builds from *values* typed into *spec*'s sheets: each input
+    table's filled rows by name, read as :func:`sample_quote` reads the sample, the cells the
+    sheets hide left out."""
+    return sample_quote(spec.model_copy(update={"sample": dict(values)}))
+
+
 def preset_column(table: SchemaTable) -> SchemaColumn | None:
     """The column giving *table* a row for each of its allowed values: in a many-row input
     table, the first marked ``row_per_value`` that is not the index and has values; None

@@ -5,9 +5,7 @@
  * with the tables and sample the form gives, in this request alone, as a fetch gives them
  * copies; a Workbench Input inside a submodel keeps its copy, and the document itself is
  * left alone. A pipeline without a top-level Workbench Input, which alone is given the
- * sheets' values, is refused, saying what to replace or move. Asked for the complete
- * response, as a test quote keeps it, a table Preview cut short at its row or cell limit is
- * refused, naming the table and its rows.
+ * sheets' values, is refused, saying what to replace or move.
  */
 import { previewNode } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
@@ -22,7 +20,6 @@ export async function priceSample(
   graph: GraphPayload,
   workbench: WorkbenchTablesResponse,
   source: string,
-  { complete = false }: { complete?: boolean } = {},
 ): Promise<PricedSample> {
   const copies = { tables: workbench.tables, sample: workbench.sample, responseTables: workbench.response_tables }
   const nodes = graph.nodes.map((node) => {
@@ -59,11 +56,6 @@ export async function priceSample(
   const tables = labels.map((label) => {
     const table = result.port_previews?.[label]
     if (table === undefined) throw new Error(`The Workbench Output's '${label}' table was not previewed.`)
-    if (complete && table.preview_truncated) {
-      throw new Error(
-        `The '${label}' table has ${table.row_count} rows, more than Preview returns: a test quote keeps the whole response.`,
-      )
-    }
     return [label, table.preview] as const
   })
   return { tables: Object.fromEntries(tables) }

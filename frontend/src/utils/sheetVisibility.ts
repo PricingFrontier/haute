@@ -541,8 +541,8 @@ const NO_COLUMNS: ReadonlySet<string> = new Set()
  * Whether a quote has anything typed to price or save, as the server counts it: a value in
  * a column the sheets show, other than a column the app sets (`locked`, by `columnKey`),
  * the index, the column giving a table its rows (`withPresetRows`) and the default a new
- * quote starts a column with (`quoteTyped`). Preview, the app's pricing and its Save, and
- * the test quotes all ask this one rule, which the server's is held to by a shared fixture.
+ * quote starts a column with (`quoteTyped`). Preview and the app's pricing and its Save
+ * all ask this one rule, which the server's is held to by a shared fixture.
  */
 export function quoteEligible(form: FormSpec, values: RowsByTable, locked: ReadonlySet<string> = NO_COLUMNS): boolean {
   const { hidden } = sheetVisibility(form, values)
