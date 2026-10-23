@@ -102,7 +102,7 @@ describe("WorkbenchOutputEditor", () => {
   })
 
   it("never borders the quote's reference and option, which the response gives, connected or not", () => {
-    const identity = [column("reference", "str"), column("option", "int")]
+    const identity = [column("quote_reference", "str"), column("quote_option", "int")]
     render(
       <WorkbenchOutputEditor
         config={{
@@ -111,14 +111,14 @@ describe("WorkbenchOutputEditor", () => {
             { name: "layers", rows: "many", columns: [...identity, column("layer", "int")] },
           ],
         }}
-        // The frame holds a reference of another type, and none of the option.
-        inputSources={[{ ...priced, columns: [{ name: "premium", dtype: "Float64" }, { name: "reference", dtype: "Int64" }] }]}
+        // The frame holds a quote_reference of another type, and no quote_option.
+        inputSources={[{ ...priced, columns: [{ name: "premium", dtype: "Float64" }, { name: "quote_reference", dtype: "Int64" }] }]}
         reservedFrameLabels={new Set()}
       />,
     )
 
     for (const table of ["pricing_output", "layers"]) {
-      for (const name of ["reference", "option"]) {
+      for (const name of ["quote_reference", "quote_option"]) {
         expect(border(table, name)).toBe("var(--border)")
         expect(screen.getByTestId(`workbench-column-${table}-${name}`)).not.toHaveAttribute("title")
       }

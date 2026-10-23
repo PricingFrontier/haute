@@ -1809,7 +1809,7 @@ export const QUOTE_DETAILS_REFUSAL = "quote_details is Haute's own table of a qu
 
 /** Its columns, in order, as id, name and type (`QUOTE_DETAILS_COLUMNS`); their structure is fixed. */
 export const QUOTE_DETAILS_COLUMNS: ReadonlyArray<readonly [id: string, name: string, type: SchemaColumn["type"]]> = [
-  ["qd_reference", "reference", "str"],
+  ["qd_reference", "quote_reference", "str"],
   ["qd_quote_name", "quote_name", "str"],
   ["qd_insured", "insured", "str"],
   ["qd_broker", "broker", "str"],
@@ -1821,7 +1821,7 @@ export const QUOTE_DETAILS_COLUMNS: ReadonlyArray<readonly [id: string, name: st
   ["qd_assignee", "assignee", "str"],
   ["qd_archived", "archived", "bool"],
   ["qd_is_renewal", "is_renewal", "bool"],
-  ["qd_option", "option", "int"],
+  ["qd_option", "quote_option", "int"],
 ]
 
 /** The columns the underwriter app sets over whatever is typed, which take no rules (`QUOTE_DETAILS_MANAGED`). */
@@ -1829,7 +1829,7 @@ export const QUOTE_DETAILS_MANAGED: ReadonlySet<string> = new Set(["qd_reference
 
 /** Why a table's own column keeps the quote's identity from it, in the server's words (`identity_clashes`). */
 const identityClash = (table: SchemaTable, column: SchemaColumn): string =>
-  `${table.name}.${column.name} has a name Haute keeps for the quote's ${column.name} in every table: rename it, and the table takes the quote's reference and option at the next save`
+  `${table.name}.${column.name} has a name Haute keeps for the quote's identity in every table: rename it, and the table takes quote_reference and quote_option at the next save`
 
 /** Whether `table` is Haute's quote_details table, whose structure the editor does not change. */
 export const isQuoteDetails = (table: Pick<SchemaTable, "id">): boolean => table.id === QUOTE_DETAILS_ID

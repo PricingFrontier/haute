@@ -148,8 +148,8 @@ def test_the_tables_are_served_from_the_form_as_it_is_now(project: Path) -> None
             "name": "policy_details",
             "rows": "one",
             "columns": [
-                {"name": "reference", "type": "str"},
-                {"name": "option", "type": "int"},
+                {"name": "quote_reference", "type": "str"},
+                {"name": "quote_option", "type": "int"},
                 {"name": "state", "type": "str"},
                 {"name": "exposure", "type": "float"},
             ],

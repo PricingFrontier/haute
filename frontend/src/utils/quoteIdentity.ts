@@ -10,8 +10,8 @@ import type { SchemaColumn, SchemaTable } from "../api/types"
  * (`IDENTITY_COLUMNS` in `src/haute/_workbench_form.py`): the same ids in every table.
  */
 export const IDENTITY_COLUMNS: ReadonlyArray<readonly [id: string, name: string, type: SchemaColumn["type"]]> = [
-  ["quote_reference", "reference", "str"],
-  ["quote_option", "option", "int"],
+  ["quote_reference", "quote_reference", "str"],
+  ["quote_option", "quote_option", "int"],
 ]
 const IDENTITY_IDS: ReadonlySet<string> = new Set(IDENTITY_COLUMNS.map(([id]) => id))
 /** The names the identity holds in every table, which a table's own column cannot take. */

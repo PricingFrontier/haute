@@ -67,8 +67,8 @@ def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
 
 #: The quote's reference and option, which every table but quote_details leads with.
 IDENTITY: list[dict[str, Any]] = [
-    {**column("reference"), "id": "quote_reference"},
-    {**column("option", "int"), "id": "quote_option"},
+    {**column("quote_reference"), "id": "quote_reference"},
+    {**column("quote_option", "int"), "id": "quote_option"},
 ]
 
 
@@ -1088,11 +1088,14 @@ def test_a_form_holding_hautes_quote_details_reads_and_writes_as_it_is(tmp_path:
 def test_a_form_saved_before_is_renewal_takes_it_on_after_the_columns_it_has(
     tmp_path: Path,
 ) -> None:
-    # As a project saved before is_renewal holds it: the first eleven, one with a label.
+    # As a project saved before is_renewal holds it: the first eleven, one with a label,
+    # its reference under the name it had then.
     held = _with_details_table(lambda table: table.update(columns=table["columns"][:11]))
     held["schema"]["tables"][0]["columns"][2]["label"] = "Insured name"
+    held["schema"]["tables"][0]["columns"][0]["name"] = "reference"
     assert [c["name"] for c in held["schema"]["tables"][0]["columns"]] == [
-        name for _, name, _ in QUOTE_DETAILS_FIRST
+        "reference",
+        *(name for _, name, _ in QUOTE_DETAILS_FIRST[1:]),
     ]
     as_saved = json.dumps(held)
     (tmp_path / "forms").mkdir()
@@ -1103,13 +1106,14 @@ def test_a_form_saved_before_is_renewal_takes_it_on_after_the_columns_it_has(
     details = spec.data_schema.tables[0]
     assert [(c.id, c.name, c.type) for c in details.columns] == list(QUOTE_DETAILS_COLUMNS)
     assert details.columns[11] == SchemaColumn(id="qd_is_renewal", name="is_renewal", type="bool")
-    assert details.columns[12] == SchemaColumn(id="qd_option", name="option", type="int")
+    assert details.columns[0].name == "quote_reference"
+    assert details.columns[12] == SchemaColumn(id="qd_option", name="quote_option", type="int")
     assert details.columns[2].label == "Insured name"
     # Written with it, and the data it was read from left as it was.
     written = json.loads(render_form(spec))["schema"]["tables"][0]["columns"]
-    assert [column["name"] for column in written[11:]] == ["is_renewal", "option"]
+    assert [column["name"] for column in written[11:]] == ["is_renewal", "quote_option"]
     assert json.dumps(held) == as_saved
-    assert FormSpec.model_validate(held).data_schema.tables[0].columns[-1].name == "option"
+    assert FormSpec.model_validate(held).data_schema.tables[0].columns[-1].name == "quote_option"
 
 
 def _without_identity() -> dict[str, Any]:
@@ -1126,8 +1130,8 @@ def test_every_table_but_quote_details_takes_the_quote_identity_at_its_head() ->
     spec = FormSpec.model_validate(held)
 
     identity = [
-        SchemaColumn(id="quote_reference", name="reference", type="str"),
-        SchemaColumn(id="quote_option", name="option", type="int"),
+        SchemaColumn(id="quote_reference", name="quote_reference", type="str"),
+        SchemaColumn(id="quote_option", name="quote_option", type="int"),
     ]
     details, *others = spec.data_schema.tables
     assert [table.columns[:2] for table in others] == [identity] * len(others)
@@ -1154,37 +1158,49 @@ def test_the_quote_identity_of_a_table_is_haute_s_and_locked(change: Any) -> Non
     form = json.loads(json.dumps(FORM))
     change(form["schema"]["tables"][1]["columns"])
 
-    with pytest.raises(ValidationError, match="layers leads with the quote's reference and option"):
+    with pytest.raises(
+        ValidationError, match="layers leads with the quote's quote_reference and quote_option"
+    ):
         FormSpec.model_validate(form)
 
 
-def test_a_table_with_its_own_reference_or_option_keeps_it_and_the_clash_is_named() -> None:
+def test_a_table_with_its_own_quote_reference_or_option_keeps_it_and_the_clash_is_named() -> None:
     held = _without_identity()
     policy = held["schema"]["tables"][1]
-    # Its own reference first, Text, as the identity's would be, and an option further on.
-    policy["columns"].insert(0, column("reference"))
-    policy["columns"].append(column("option", "float"))
+    # Its own quote_reference first, Text, as the identity's would be, and a quote_option
+    # further on; a column of its own named reference or option is no clash.
+    policy["columns"].insert(0, column("quote_reference"))
+    policy["columns"].append(column("quote_option", "float"))
+    policy["columns"].append(column("option"))
 
     spec = FormSpec.model_validate(held)
 
     table = spec.data_schema.tables[1]
-    assert [c.id for c in table.columns] == ["c_reference", "c_state", "c_exposure", "c_option"]
+    assert [c.id for c in table.columns] == [
+        "c_quote_reference",
+        "c_state",
+        "c_exposure",
+        "c_quote_option",
+        "c_option",
+    ]
     assert identity_clashes(spec) == [
-        f"policy_details.{name} has a name Haute keeps for the quote's {name} in every table: "
-        "rename it, and the table takes the quote's reference and option at the next save"
-        for name in ("reference", "option")
+        f"policy_details.{name} has a name Haute keeps for the quote's identity in every "
+        "table: rename it, and the table takes quote_reference and quote_option at the next "
+        "save"
+        for name in ("quote_reference", "quote_option")
     ]
     # Renamed, the columns keep their ids, and so their values, and the table takes the
     # identity when the form is next read or saved.
     policy["columns"][0]["name"] = "broker_reference"
-    policy["columns"][-1]["name"] = "option_load"
+    policy["columns"][-2]["name"] = "option_load"
     renamed = FormSpec.model_validate(held)
     assert [c.id for c in renamed.data_schema.tables[1].columns] == [
         "quote_reference",
         "quote_option",
-        "c_reference",
+        "c_quote_reference",
         "c_state",
         "c_exposure",
+        "c_quote_option",
         "c_option",
     ]
     assert identity_clashes(renamed) == []

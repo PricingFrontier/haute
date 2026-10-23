@@ -80,7 +80,7 @@ sums up what is set: required, its range and default, shown in its format, its a
 values, and a number's format and decimal places.
 
 Every table but `quote_details` starts with two columns Haute keeps for the quote,
-**reference** and **option**, which say which quote a row belongs to once rows of many
+**quote_reference** and **quote_option**, which say which quote a row belongs to once rows of many
 quotes are put together, in the app's saved quotes, in exports and in joins. They come
 first and are locked: they cannot be renamed, retyped, moved or removed, take no label,
 group, help, rules, default or format, and are not offered to the sheets, where
@@ -129,8 +129,9 @@ typed, and a value typed equal to its default counts as the default.
 - Drag a column by the grip at its left, or press Alt+Up and Alt+Down in its name, to move
   it within its table. Drag a table by the grip beside its name, or press Alt+Up and
   Alt+Down in its name, to move the table. A grip shows while the pointer is over its row.
-- **Add index** on a many-row table adds a column first in the table after **reference**
-  and **option**, `row_number` until renamed, that numbers the rows from 1. It is an Integer and can be the table's key.
+- **Add index** on a many-row table adds a column first in the table after
+  **quote_reference** and **quote_option**, `row_number` until renamed, that numbers the
+  rows from 1. It is an Integer and can be the table's key.
 - The editor says what would stop the schema being the pipeline's tables: a table's name is
   held to the rules a Quote Input's labels follow (an identifier, no reserved name, unique
   whatever its case), a column's name is an identifier that is not a Python keyword, unique
@@ -144,7 +145,7 @@ typed, and a value typed equal to its default counts as the default.
   True/false, or becomes a Date while it is not a date; switching a table to many rows
   clears its defaults, and to one row its keys and its row for each value.
 - Removing a column or a table a sheet shows asks first, and takes it off the sheet.
-- A column of a table's own named **reference** or **option**, as a project saved before
+- A column of a table's own named **quote_reference** or **quote_option**, as a project saved before
   Haute kept those names may hold, keeps its place and its values, and the table goes
   without the quote's reference and option; the editor names it among the schema's
   problems, and `haute app build` and deploying refuse while it stands. Rename it, and the
@@ -154,17 +155,17 @@ typed, and a value typed equal to its default counts as the default.
 
 Every workbench has Haute's own table, `quote_details`, first in the schema, where
 it stays: one row of a quote's details, which the underwriter app keeps with each saved quote and lists
-on its Quotes page. Its columns are fixed: **reference**, **quote_name**, **insured**,
+on its Quotes page. Its columns are fixed: **quote_reference**, **quote_name**, **insured**,
 **broker**, **inception_date**, **expiry_date**, **valid_until**, **currency**, **stage**,
-**assignee**, **archived**, **is_renewal** and **option**. Put them on the sheets as any other columns, and give them
+**assignee**, **archived**, **is_renewal** and **quote_option**. Put them on the sheets as any other columns, and give them
 labels, groups, help, placeholders, defaults and rules; the pipeline receives the table as
 it receives any other input, so a rule can read a quote's inception date or its stage.
 **is_renewal** is a tick box: a quote made with the app's **Renew** opens with it ticked,
 and an underwriter ticks it for a renewal started any other way. A project saved before
-**is_renewal** or **option** existed takes them on when it is opened; save once so the
-Workbench Input copies them.
+**is_renewal** or **quote_option** existed takes them on when it is opened, and its
+**reference** is named **quote_reference**; save once so the Workbench Input copies them.
 
-The app sets **reference**, **option**, **stage**, **assignee** and **archived** itself:
+The app sets **quote_reference**, **quote_option**, **stage**, **assignee** and **archived** itself:
 their cells take no typing in the app and take no rules and no default. Assigning,
 archiving, restoring, marking final and reopening a quote each save a new revision with
 those details changed and its values and price kept, so the history shows when a quote
@@ -181,16 +182,16 @@ the pipeline is saved with them in the same save. Until then it is on the sheets
 ### Joining the schema's tables
 
 Every table but `quote_details` holds the quote's reference and option on every row. Join
-two of them on **reference**, **option** and their own key, and each stays once: a Left,
-Inner or Right join keeps one **reference** and one **option**, and a Semi or Anti join the
-first table's alone. A Full join keeps both tables' keys, the second's as `reference_right`
-and `option_right`: in an [Edge Join](nodes/edge-join.md), set **COALESCE** to **True** to
-keep one of each; after a Transform's **Join another input**, fill **reference**,
-**option** and your own key from their `_right` copies where a row came from the second
+two of them on **quote_reference**, **quote_option** and their own key, and each stays once: a Left,
+Inner or Right join keeps one **quote_reference** and one **quote_option**, and a Semi or Anti join the
+first table's alone. A Full join keeps both tables' keys, the second's as `quote_reference_right`
+and `quote_option_right`: in an [Edge Join](nodes/edge-join.md), set **COALESCE** to **True** to
+keep one of each; after a Transform's **Join another input**, fill **quote_reference**,
+**quote_option** and your own key from their `_right` copies where a row came from the second
 table alone, then remove the copies. A cross join takes no keys: remove the second table's
-**reference** and **option** after it. Joined on their own key alone, the second table's
-are kept as `reference_right` and `option_right`, and joining a third table after that is
-refused, as `reference_right` is there already. **option** is an Integer, so a step that
+**quote_reference** and **quote_option** after it. Joined on their own key alone, the second table's
+are kept as `quote_reference_right` and `quote_option_right`, and joining a third table after that is
+refused, as `quote_reference_right` is there already. **quote_option** is an Integer, so a step that
 takes every Integer column takes it too.
 
 ## Sheets
@@ -572,7 +573,7 @@ builder on screen. With a quote store it is where they manage their quotes too.
   so, and prices its one quote as `PREVIEW`, option 1. The app does not start on a database it has not been migrated to:
   run `haute app migrate` (with `HAUTE_QUOTE_STORE_URL` set, or `--url`) before a release
   that needs it starts. Back the database up first: after some migrations, such as those
-  that add **is_renewal** and **option**, an earlier release no longer starts on the
+  that add **is_renewal** and **quote_option**, an earlier release no longer starts on the
   database, so rolling back means restoring that backup.
 
 A page opened before a new release is refused when it prices or saves, and reloading it

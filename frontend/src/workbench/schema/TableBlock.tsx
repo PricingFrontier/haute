@@ -202,7 +202,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
           ))}
           {locked ? (
             <p className="px-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
-              Kept with each quote and listed on the Quotes page; the app sets reference, option, stage, assignee and archived.
+              Kept with each quote and listed on the Quotes page; the app sets quote_reference, quote_option, stage, assignee and archived.
             </p>
           ) : readOnly || filtering ? null : (
             <div className="flex items-center gap-3">

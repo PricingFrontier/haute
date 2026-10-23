@@ -121,7 +121,7 @@ QUOTE_DETAILS = Table(
     METADATA,
     Column("quote_id", String(ID_LENGTH), primary_key=True),
     Column("revision", Integer, primary_key=True),
-    Column("reference", String(REFERENCE_LENGTH), nullable=False),
+    Column("quote_reference", String(REFERENCE_LENGTH), nullable=False),
     Column("quote_name", Text, nullable=True),
     Column("insured", Text, nullable=True),
     Column("broker", Text, nullable=True),
@@ -134,13 +134,13 @@ QUOTE_DETAILS = Table(
     Column("archived", Boolean, nullable=False),
     # Null in the rows written before the third migration, and in those a release before it writes.
     Column("is_renewal", Boolean, nullable=True),
-    Column("option", Integer, nullable=False),
+    Column("quote_option", Integer, nullable=False),
     ForeignKeyConstraint(
         ["quote_id", "revision"],
         ["haute_quote_revisions.quote_id", "haute_quote_revisions.number"],
         name="fk_haute_quote_details_revision",
     ),
-    Index("ix_haute_quote_details_reference", "reference"),
+    Index("ix_haute_quote_details_quote_reference", "quote_reference"),
     Index("ix_haute_quote_details_assignee", "assignee"),
 )
 

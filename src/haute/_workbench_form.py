@@ -643,7 +643,8 @@ class FormSpec(_Strict):
     @classmethod
     def _brings_quote_details_up_to_date(cls, data: Any) -> Any:
         """A form saved by an earlier Haute holds ``quote_details`` with the columns it had
-        then: the first ones (``QUOTE_DETAILS_FIRST``), or more of them in order. The newer
+        then: the first ones (``QUOTE_DETAILS_FIRST``), or more of them in order, a column
+        under the name it had then (``QUOTE_DETAILS_NAMED_BEFORE``) taking today's. The newer
         ones are added after them as Haute makes them, the caller's data left as it was."""
         schema = data.get("schema") if isinstance(data, dict) else None
         if not isinstance(schema, dict) or not isinstance(schema.get("tables"), list):
@@ -655,16 +656,17 @@ class FormSpec(_Strict):
             columns = table.get("columns")
             if not isinstance(columns, list):
                 return data
-            count = len(columns)
-            if not len(QUOTE_DETAILS_FIRST) <= count < len(QUOTE_DETAILS_COLUMNS):
-                return data
-            if _column_shapes(columns) != list(QUOTE_DETAILS_COLUMNS[:count]):
-                return data
-            newer = [
-                {"id": column_id, "name": name, "type": column_type}
-                for column_id, name, column_type in QUOTE_DETAILS_COLUMNS[count:]
-            ]
-            held = [*tables[:index], {**table, "columns": [*columns, *newer]}, *tables[index + 1 :]]
+            renamed = [_named_today(column) for column in columns]
+            count = len(renamed)
+            newer: list[dict[str, Any]] = []
+            if len(QUOTE_DETAILS_FIRST) <= count < len(QUOTE_DETAILS_COLUMNS) and _column_shapes(
+                renamed
+            ) == list(QUOTE_DETAILS_COLUMNS[:count]):
+                newer = [
+                    {"id": column_id, "name": name, "type": column_type}
+                    for column_id, name, column_type in QUOTE_DETAILS_COLUMNS[count:]
+                ]
+            held = [*tables[:index], {**table, "columns": [*renamed, *newer]}, *tables[index + 1 :]]
             return {**data, "schema": {**schema, "tables": held}}
         return data
 
@@ -741,7 +743,7 @@ QUOTE_DETAILS_REFUSAL = (
 )
 #: Its columns, in order: each one's id, name and type.
 QUOTE_DETAILS_COLUMNS: tuple[tuple[str, str, ColumnType], ...] = (
-    ("qd_reference", "reference", "str"),
+    ("qd_reference", "quote_reference", "str"),
     ("qd_quote_name", "quote_name", "str"),
     ("qd_insured", "insured", "str"),
     ("qd_broker", "broker", "str"),
@@ -753,11 +755,13 @@ QUOTE_DETAILS_COLUMNS: tuple[tuple[str, str, ColumnType], ...] = (
     ("qd_assignee", "assignee", "str"),
     ("qd_archived", "archived", "bool"),
     ("qd_is_renewal", "is_renewal", "bool"),
-    ("qd_option", "option", "int"),
+    ("qd_option", "quote_option", "int"),
 )
 #: The columns it had first, before ``is_renewal``: a form holding these, or more of its
 #: columns after them in order, takes on the rest.
 QUOTE_DETAILS_FIRST = QUOTE_DETAILS_COLUMNS[:11]
+#: The names an earlier Haute gave its columns, by id: a form holding one takes today's.
+QUOTE_DETAILS_NAMED_BEFORE: dict[str, str] = {"qd_reference": "reference"}
 #: The columns the underwriter app sets itself, whatever a page sends: read only on its
 #: sheets, and taking no rules.
 QUOTE_DETAILS_MANAGED: frozenset[str] = frozenset(
@@ -769,11 +773,23 @@ QUOTE_IDENTITY_DETAILS: frozenset[str] = frozenset({"qd_reference", "qd_option"}
 #: The quote's identity at the head of every other table, each one's id, name and type: the
 #: same ids in every table, as a column's id is its table's own.
 IDENTITY_COLUMNS: tuple[tuple[str, str, ColumnType], ...] = (
-    ("quote_reference", "reference", "str"),
-    ("quote_option", "option", "int"),
+    ("quote_reference", "quote_reference", "str"),
+    ("quote_option", "quote_option", "int"),
 )
 IDENTITY_IDS: frozenset[str] = frozenset(column_id for column_id, _, _ in IDENTITY_COLUMNS)
 IDENTITY_NAMES: frozenset[str] = frozenset(name for _, name, _ in IDENTITY_COLUMNS)
+
+
+def _named_today(column: Any) -> Any:
+    """*column* of ``quote_details`` under today's name, when it holds the one an earlier Haute
+    gave it."""
+    if not isinstance(column, dict):
+        return column
+    before = QUOTE_DETAILS_NAMED_BEFORE.get(column.get("id", ""))
+    if before is None or column.get("name") != before:
+        return column
+    today = next(name for column_id, name, _ in QUOTE_DETAILS_COLUMNS if column_id == column["id"])
+    return {**column, "name": today}
 
 
 def _column_shapes(columns: list[Any]) -> list[tuple[Any, Any, Any]]:
@@ -846,9 +862,9 @@ def _check_identity(table: SchemaTable) -> None:
     ]
     if table.columns[: len(expected)] != expected or len(held) != len(expected):
         raise ValueError(
-            f"{table.name} leads with the quote's reference and option, which Haute keeps "
-            "first in every table as it makes them: their place, names, types and details "
-            "are not changed"
+            f"{table.name} leads with the quote's quote_reference and quote_option, which "
+            "Haute keeps first in every table as it makes them: their place, names, types and "
+            "details are not changed"
         )
 
 
@@ -857,9 +873,9 @@ def identity_clashes(spec: FormSpec) -> list[str]:
     column, said with what resolves it. Building the app and deploying refuse while any
     stands; the editor names them among the schema's problems."""
     return [
-        f"{table.name}.{column.name} has a name Haute keeps for the quote's {column.name} in "
-        "every table: rename it, and the table takes the quote's reference and option at the "
-        "next save"
+        f"{table.name}.{column.name} has a name Haute keeps for the quote's identity in every "
+        "table: rename it, and the table takes quote_reference and quote_option at the next "
+        "save"
         for table in spec.data_schema.tables
         if table.id != QUOTE_DETAILS_ID
         and not any(column.id in IDENTITY_IDS for column in table.columns)

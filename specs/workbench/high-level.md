@@ -123,21 +123,24 @@ Out of scope:
   pivot's values take one, `number_format` (`general`, `number`, `percent`,
   `currency_gbp`, `currency_usd`, `currency_eur`), `decimal_places` (0 to 10, or null for
   automatic) and `use_grouping`. Every schema holds Haute's own table of a quote's
-  details, `quote_details`, first: one row, an input, its columns `reference`,
+  details, `quote_details`, first: one row, an input, its columns `quote_reference`,
   `quote_name`, `insured`, `broker`, `inception_date`, `expiry_date`, `valid_until`,
-  `currency`, `stage`, `assignee`, `archived`, `is_renewal` and `option`, in that order,
-  the three dates Dates, `archived` and `is_renewal` True/false, `option` an Integer and
+  `currency`, `stage`, `assignee`, `archived`, `is_renewal` and `quote_option`, in that
+  order, the three dates Dates, `archived` and `is_renewal` True/false, `quote_option` an
+  Integer and
   the rest Text, each with the id `qd_` and its name. A form read or saved without it takes
   it on, and one holding its columns as an earlier Haute made them (the first eleven, before
-  `is_renewal`, or more of them in order) takes the newer ones on after them; one whose
+  `is_renewal`, or more of them in order) takes the newer ones on after them, and one naming its reference
+  `reference`, as an earlier Haute did, names it `quote_reference`; one whose
   `quote_details` is not Haute's (the name on another table, or its role, rows, columns,
-  keys or index changed) is refused, as is a rule or a default on `reference`, `option`,
+  keys or index changed) is refused, as is a rule or a default on `quote_reference`,
+  `quote_option`,
   `stage`, `assignee` or `archived`, which the underwriter app sets. Its labels, groups,
   help and placeholders are the project's, as are the rules and defaults of the columns the
   underwriter types; the sheets show its columns, and the pipeline receives it, as any other
-  input table's. Every other table leads with the quote's identity: `reference` (Text, id
-  `quote_reference`) and `option` (Integer, id `quote_option`), the same ids in every
-  table, with nothing else of theirs set. A form read or saved without them gives them to
+  input table's. Every other table leads with the quote's identity: `quote_reference`
+  (Text) and `quote_option` (Integer), named as `quote_details` names them, the ids the
+  names in every table, with nothing else of theirs set. A form read or saved without them gives them to
   each table at its head, unless the table holds a column of its own under either name,
   which keeps its place and values, the table going without them: that clash is named
   among the schema's problems and refused by building the app and by deploying
@@ -409,9 +412,10 @@ Out of scope:
   allowed values. Haute's `quote_details` table, first, keeps
   its structure and its place: its name, role and rows and its columns' names, types and
   order are fixed, it is neither deleted nor given a column, and no table moves above it; its columns take labels, groups and help, and
-  those the underwriter types their defaults, placeholders and rules, while `reference`,
-  `option`, `stage`, `assignee` and `archived`, which the app sets, take a label, a group
-  and help alone. Every other table's `reference` and `option` lead it, locked: not
+  those the underwriter types their defaults, placeholders and rules, while
+  `quote_reference`, `quote_option`, `stage`, `assignee` and `archived`, which the app sets,
+  take a label, a group and help alone. Every other table's `quote_reference` and
+  `quote_option` lead it, locked: not
   renamed, retyped, moved or removed, and taking no label, group, help, rule, default or
   format; a table added has them at once, and an index goes after them. They are not keys,
   and the sheets are never offered them: a component's fields, a Show when's columns and a
@@ -1004,7 +1008,7 @@ Out of scope:
   history (`GET
   /api/app/quotes/{id}/history`) and the people quotes are with (`GET /api/app/people`).
   A save names the sheets' revision and the release it was drawn for, refused (409) for
-  another, and an operation key; the details the app sets, `reference`, `option`,
+  another, and an operation key; the details the app sets, `quote_reference`, `quote_option`,
   `stage`, `assignee` and `archived`, are set over whatever the page sent, and with
   nothing else typed there is nothing to save (422), save a creation, which makes the quote
   holding what it starts with. It saves the quote unpriced, or, given the prices
@@ -1063,7 +1067,7 @@ Out of scope:
   as it was sent, in this browser's draft too, so the next Save repeats it exactly before
   saving anything typed since as the quote's next revision; only a refusal (a status
   below 500) lets it go. While a save or a change is being made, Save and every control
-  that changes the quote are off. The cells of `reference`, `option`,
+  that changes the quote are off. The cells of `quote_reference`, `quote_option`,
   `stage`, `assignee` and `archived` take no typing; assigning,
   archiving, restoring, marking final and reopening each write a revision of the newest
   with those details changed, its values and prices kept, which the sheets take on, what
@@ -1508,7 +1512,7 @@ Out of scope:
   refuses the database outright rather than failing on the quotes it cannot read: the
   third does, as the sheets a quote is saved with now hold `is_renewal` in
   `quote_details`, which a Haute at the second refuses, and the fourth does, as they hold
-  `option` there and the quote's reference and option at the head of every other table,
+  `quote_option` there and the quote's reference and option at the head of every other table,
   which a Haute at the third refuses. Rolling back past such a
   migration means restoring the database as it was before it. A SQLite store keeps foreign keys on and its rollback journal, never
   write-ahead logging, so the file stands alone between writes.

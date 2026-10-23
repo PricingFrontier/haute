@@ -36,8 +36,8 @@ from haute._workbench_tables import (
 )
 
 #: The quote's reference and option, which every table but quote_details leads with.
-IDENTITY = [{"name": "reference", "type": "str"}, {"name": "option", "type": "int"}]
-IDENTITY_DTYPES = {"reference": pl.String, "option": pl.Int64}
+IDENTITY = [{"name": "quote_reference", "type": "str"}, {"name": "quote_option", "type": "int"}]
+IDENTITY_DTYPES = {"quote_reference": pl.String, "quote_option": pl.Int64}
 
 
 def form(*tables: dict[str, Any], pages: list[dict[str, Any]] | None = None) -> FormSpec:
@@ -381,15 +381,15 @@ def test_a_sample_with_an_empty_many_row_table_prices_as_its_quote_would_when_de
     quote = sample_quote(spec)
     assert quote == {"policy_details": {"state": "TX"}}
     sampled = workbench_table_frames({"tables": tables, "sample": quote})
-    request = {**quote, "quote_details": {"reference": "Q-000001", "option": 2}}
+    request = {**quote, "quote_details": {"quote_reference": "Q-000001", "quote_option": 2}}
     requested = workbench_request_frames({"tables": tables}, [request])
     assert sampled["equipment"].collect().to_dicts() == [] == requested["equipment"].to_dicts()
     # The sample is priced under the stand-in identity, a request under its own.
     assert sampled["policy_details"].collect().to_dicts() == [
-        {"reference": "PREVIEW", "option": 1, "state": "TX"}
+        {"quote_reference": "PREVIEW", "quote_option": 1, "state": "TX"}
     ]
     assert requested["policy_details"].to_dicts() == [
-        {"reference": "Q-000001", "option": 2, "state": "TX"}
+        {"quote_reference": "Q-000001", "quote_option": 2, "state": "TX"}
     ]
 
 
@@ -670,10 +670,10 @@ def test_the_quotes_reference_and_option_are_priced_whatever_the_sheets_hide() -
     # The second sheet hides: the quote's name goes with it, its reference and option stay.
     assert quote_request(spec, values) == {
         "quote_details": {
-            "reference": "Q-000007",
+            "quote_reference": "Q-000007",
             "archived": False,
             "is_renewal": False,
-            "option": 2,
+            "quote_option": 2,
         },
         "policy": {"bi_cover": False, "assured": "Acme"},
     }
@@ -706,37 +706,48 @@ def _identity_tables() -> list[dict[str, Any]]:
 
 def test_a_request_names_the_quote_in_quote_details_and_every_table_takes_it() -> None:
     request = {
-        "quote_details": {"reference": "Q-000004", "option": 3},
+        "quote_details": {"quote_reference": "Q-000004", "quote_option": 3},
         "policy": {"state": "TX"},
         "equipment": [{"item_id": "A"}, {"item_id": "B"}],
     }
 
     frames = workbench_request_frames({"tables": _identity_tables()}, [request])
 
-    assert frames["policy"].to_dicts() == [{"reference": "Q-000004", "option": 3, "state": "TX"}]
+    assert frames["policy"].to_dicts() == [
+        {"quote_reference": "Q-000004", "quote_option": 3, "state": "TX"}
+    ]
     assert frames["equipment"].to_dicts() == [
-        {"reference": "Q-000004", "option": 3, "item_id": "A"},
-        {"reference": "Q-000004", "option": 3, "item_id": "B"},
+        {"quote_reference": "Q-000004", "quote_option": 3, "item_id": "A"},
+        {"quote_reference": "Q-000004", "quote_option": 3, "item_id": "B"},
     ]
 
 
 @pytest.mark.parametrize(
     ("change", "refusal"),
     [
-        (lambda r: r.pop("quote_details"), "quote_details.reference is None"),
-        (lambda r: r["quote_details"].update(reference=" "), "quote_details.reference is ' '"),
-        (lambda r: r["quote_details"].pop("option"), "quote_details.option is None"),
-        (lambda r: r["quote_details"].update(option=0), "quote_details.option is 0"),
-        (lambda r: r["quote_details"].update(option=True), "quote_details.option is True"),
-        (lambda r: r["policy"].update(option=3), "policy.option is given"),
-        (lambda r: r["equipment"][1].update(reference="X"), r"equipment\[1\].reference is given"),
+        (lambda r: r.pop("quote_details"), "quote_details.quote_reference is None"),
+        (
+            lambda r: r["quote_details"].update(quote_reference=" "),
+            "quote_details.quote_reference is ' '",
+        ),
+        (lambda r: r["quote_details"].pop("quote_option"), "quote_details.quote_option is None"),
+        (lambda r: r["quote_details"].update(quote_option=0), "quote_details.quote_option is 0"),
+        (
+            lambda r: r["quote_details"].update(quote_option=True),
+            "quote_details.quote_option is True",
+        ),
+        (lambda r: r["policy"].update(quote_option=3), "policy.quote_option is given"),
+        (
+            lambda r: r["equipment"][1].update(quote_reference="X"),
+            r"equipment\[1\].quote_reference is given",
+        ),
     ],
 )
 def test_a_request_without_the_quotes_identity_or_giving_it_twice_is_refused(
     change: Any, refusal: str
 ) -> None:
     request: dict[str, Any] = {
-        "quote_details": {"reference": "Q-000004", "option": 3},
+        "quote_details": {"quote_reference": "Q-000004", "quote_option": 3},
         "policy": {"state": "TX"},
         "equipment": [{"item_id": "A"}, {"item_id": "B"}],
     }
@@ -753,10 +764,10 @@ def test_the_quote_of_nulls_is_a_request_priced_under_the_stand_in_identity() ->
 
     # Each table's own columns null, its identity the stand-in.
     assert frames["policy"].collect().to_dicts() == [
-        {"reference": "PREVIEW", "option": 1, "state": None}
+        {"quote_reference": "PREVIEW", "quote_option": 1, "state": None}
     ]
     assert frames["equipment"].collect().to_dicts() == [
-        {"reference": "PREVIEW", "option": 1, "item_id": None}
+        {"quote_reference": "PREVIEW", "quote_option": 1, "item_id": None}
     ]
     # Tables leading with the identity without quote_details to give it cannot be read.
     with pytest.raises(WorkbenchTablesError, match="the tables hold no quote_details"):

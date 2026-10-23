@@ -146,7 +146,8 @@ def _kinds(book: QuoteBook, quote_id: str) -> list[str]:
 def _row(url: str, quote_id: str, revision: int) -> tuple[Any, ...]:
     with sqlite3.connect(url.removeprefix("sqlite:///")) as raw:
         return raw.execute(
-            "SELECT reference, quote_name, insured, inception_date, stage, assignee, archived "
+            "SELECT quote_reference, quote_name, insured, inception_date, stage, assignee, "
+            "archived "
             "FROM haute_quote_details WHERE quote_id = ? AND revision = ?",
             (quote_id, revision),
         ).fetchone()
@@ -156,15 +157,15 @@ def _row(url: str, quote_id: str, revision: int) -> tuple[Any, ...]:
 
 
 def test_a_new_quote_keeps_its_details_in_the_typed_table_alone(book: QuoteBook, url: str) -> None:
-    quote = _create(book, inputs=_values(reference="Q-999", stage="final", assignee=JO))
+    quote = _create(book, inputs=_values(quote_reference="Q-999", stage="final", assignee=JO))
 
     assert (quote.reference, quote.option, quote.label) == ("Q-000001", 1, "Q-000001/1")
     assert (quote.stage, quote.assignee, quote.archived, quote.latest) == ("priced", ANA, False, 1)
     assert quote.title == "Fleet renewal"
     assert quote.details == {
         **TYPED,
-        "reference": "Q-000001",
-        "option": 1,
+        "quote_reference": "Q-000001",
+        "quote_option": 1,
         "stage": "priced",
         "assignee": ANA,
         "archived": False,
@@ -676,7 +677,7 @@ def test_an_alternative_takes_its_sources_reference_and_the_next_option(book: Qu
     saved = _save(book, third)
     assigned = book.assign(third.id, version=saved.latest, actor=ANA, assignee=JO)
     assert (assigned.reference, assigned.option) == ("Q-000001", 3)
-    assert details_of(book.revision(third.id).inputs)["option"] == 3
+    assert details_of(book.revision(third.id).inputs)["quote_option"] == 3
 
 
 def test_alternatives_made_at_once_take_different_options(url: str) -> None:

@@ -165,7 +165,7 @@ def test_a_file_at_the_second_schema_takes_is_renewal_null_its_rows_kept_and_its
             assert context.get_current_revision() == "0004"
             assert compare_metadata(context, METADATA) == []
             row = connection.execute(
-                text("SELECT reference, insured, is_renewal FROM haute_quote_details")
+                text("SELECT quote_reference, insured, is_renewal FROM haute_quote_details")
             ).one()
             assert tuple(row) == ("Q-000001", "Acme", None)
             # The fourth is now the oldest that can use it, as the third named itself before.
@@ -225,7 +225,7 @@ def test_a_file_at_the_third_schema_gives_each_app_quote_its_reference_and_optio
             ).all()
             assert [tuple(row) for row in quotes] == [("q1", "Q-000004", 1), ("q2", None, None)]
             details = connection.execute(
-                text("SELECT revision, option FROM haute_quote_details ORDER BY revision")
+                text("SELECT revision, quote_option FROM haute_quote_details ORDER BY revision")
             ).all()
             assert [tuple(row) for row in details] == [(1, 1), (2, 1)]
             # An alternative of Q-000004 would take option 2.

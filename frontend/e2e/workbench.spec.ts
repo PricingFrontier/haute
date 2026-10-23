@@ -253,15 +253,15 @@ test.describe("workbench", () => {
     await expect(page.getByTestId("toast-notification").filter({ hasText: /Saved → rating[\\/]main\.py/ })).toBeVisible()
     const saved = JSON.parse(readFileSync(resolve(e2eProjectRoot, "forms", "form.json"), "utf8"))
     expect(saved.schema.tables.map((table: { name: string }) => table.name)).toEqual(["quote_details", "policy", "pricing"])
-    expect(saved.schema.tables[1].columns.map((column: { name: string }) => column.name)).toEqual(["reference", "option", "limit", "region", "excess"])
+    expect(saved.schema.tables[1].columns.map((column: { name: string }) => column.name)).toEqual(["quote_reference", "quote_option", "limit", "region", "excess"])
     const copy = JSON.parse(readFileSync(resolve(e2eProjectRoot, "rating", "config", "workbench_input", "quote.json"), "utf8"))
     expect(copy.tables.map((table: { name: string }) => table.name)).toEqual(["quote_details", "policy"])
     expect(copy.tables[1]).toEqual({
       name: "policy",
       rows: "one",
       columns: [
-        { name: "reference", type: "str" },
-        { name: "option", type: "int" },
+        { name: "quote_reference", type: "str" },
+        { name: "quote_option", type: "int" },
         { name: "limit", type: "int" },
         { name: "region", type: "str" },
         { name: "excess", type: "str" },

@@ -35,6 +35,8 @@ from haute._workbench_tables import (
 )
 
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+#: The quote's identity's names, in every table and in quote_details alike.
+_REFERENCE, _OPTION = (name for name, _ in IDENTITY_SHAPE)
 
 #: The identity a quote that is not one of the app's is priced under: the sample in the
 #: editor, Preview and generated code, the quote of nulls deploy's dry run reads, and the
@@ -102,8 +104,8 @@ def read_quote(
         if carries_identity(table):
             if identity is None:
                 raise WorkbenchInputError(
-                    f"{table.name} leads with the quote's reference and option, which a quote "
-                    f"gives in {QUOTE_DETAILS_ID}, and the tables hold no {QUOTE_DETAILS_ID}"
+                    f"{table.name} leads with the quote's {_REFERENCE} and {_OPTION}, which a "
+                    f"quote gives in {QUOTE_DETAILS_ID}, and the tables hold no {QUOTE_DETAILS_ID}"
                 )
             rows = [_identified(table, row, index, identity) for index, row in enumerate(rows)]
         frames[table.name] = _frame(table, rows)
@@ -120,19 +122,19 @@ def _identity(
         return None
     part = quote.get(QUOTE_DETAILS_ID)
     held = part if isinstance(part, dict) else {}
-    reference = held.get("reference")
-    option = held.get("option")
+    reference = held.get(_REFERENCE)
+    option = held.get(_OPTION)
     if not isinstance(reference, str) or not reference.strip():
         raise WorkbenchInputError(
-            f"{QUOTE_DETAILS_ID}.reference is {_shown(reference)}: {what} names the quote's "
+            f"{QUOTE_DETAILS_ID}.{_REFERENCE} is {_shown(reference)}: {what} names the quote's "
             "reference, a text"
         )
     if isinstance(option, bool) or not isinstance(option, int) or option < 1:
         raise WorkbenchInputError(
-            f"{QUOTE_DETAILS_ID}.option is {_shown(option)}: {what} names the quote's option, "
-            "a whole number from 1"
+            f"{QUOTE_DETAILS_ID}.{_OPTION} is {_shown(option)}: {what} names the quote's "
+            "option, a whole number from 1"
         )
-    return {"reference": reference, "option": option}
+    return {_REFERENCE: reference, _OPTION: option}
 
 
 def _names_identity(tables: Sequence[WorkbenchTable]) -> bool:
@@ -254,7 +256,7 @@ def with_stand_in(tables: Sequence[WorkbenchTable], quote: Mapping[str, Any]) ->
         return dict(quote)
     held = quote.get(QUOTE_DETAILS_ID)
     row = dict(held) if isinstance(held, dict) else {}
-    row.update(reference=STAND_IN_REFERENCE, option=STAND_IN_OPTION)
+    row.update({_REFERENCE: STAND_IN_REFERENCE, _OPTION: STAND_IN_OPTION})
     return {**quote, QUOTE_DETAILS_ID: row}
 
 

@@ -1,8 +1,9 @@
-"""The quote store's fourth schema: a quote's option, and its reference and option held on
-the quote itself.
+"""The quote store's fourth schema: a quote's option, its reference and option held on the
+quote itself, and the details rows' reference named as the sheets name it.
 
 An app quote takes the reference of its newest details row and option 1, and its details
-rows option 1; a quote the store saved alone holds neither. The pair is unique among app
+rows option 1, their columns ``quote_reference`` and ``quote_option`` as ``quote_details``
+names them now; a quote the store saved alone holds neither. The pair is unique among app
 quotes, and the last option taken under each reference is counted, so an alternative takes
 the next. A Haute at the third schema could not read the forms this one saves with each
 quote: their ``quote_details`` holds ``option`` and their other tables lead with the quote's
@@ -24,10 +25,19 @@ depends_on = None
 def upgrade() -> None:
     op.add_column("haute_quotes", sa.Column("reference", sa.String(40), nullable=True))
     op.add_column("haute_quotes", sa.Column("option", sa.Integer, nullable=True))
-    # Every details row written before is option 1.
-    op.add_column(
-        "haute_quote_details",
-        sa.Column("option", sa.Integer, nullable=False, server_default="1"),
+    # The details rows' columns as quote_details names them; every row written before is
+    # option 1. SQLite renames a column by copying the table, so its index is made again.
+    op.drop_index("ix_haute_quote_details_reference", table_name="haute_quote_details")
+    with op.batch_alter_table("haute_quote_details") as batch:
+        batch.alter_column(
+            "reference",
+            new_column_name="quote_reference",
+            existing_type=sa.String(40),
+            existing_nullable=False,
+        )
+        batch.add_column(sa.Column("quote_option", sa.Integer, nullable=False, server_default="1"))
+    op.create_index(
+        "ix_haute_quote_details_quote_reference", "haute_quote_details", ["quote_reference"]
     )
     quotes = sa.table(
         "haute_quotes",
@@ -40,10 +50,10 @@ def upgrade() -> None:
         "haute_quote_details",
         sa.column("quote_id", sa.String),
         sa.column("revision", sa.Integer),
-        sa.column("reference", sa.String),
+        sa.column("quote_reference", sa.String),
     )
     newest = (
-        sa.select(details.c.reference)
+        sa.select(details.c.quote_reference)
         .where(details.c.quote_id == quotes.c.id, details.c.revision == quotes.c.latest)
         .scalar_subquery()
     )

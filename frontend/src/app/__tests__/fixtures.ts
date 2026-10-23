@@ -25,7 +25,7 @@ export function appQuote(overrides: Partial<WorkbenchAppQuote> = {}): WorkbenchA
     option: 1,
     label,
     title: "Fleet",
-    details: { reference: "Q-000001", option: 1, quote_name: "Fleet", insured: "Acme", stage: "priced", assignee: "ana@example.com", archived: false },
+    details: { quote_reference: "Q-000001", quote_option: 1, quote_name: "Fleet", insured: "Acme", stage: "priced", assignee: "ana@example.com", archived: false },
     stage: "priced",
     archived: false,
     priced: true,

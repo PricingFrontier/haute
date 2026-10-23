@@ -670,8 +670,8 @@ describe("SchemaEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add table" }))
     fireEvent.change(screen.getByRole("combobox", { name: "Rows of table" }), { target: { value: "many" } })
 
-    expect(columnNames("table")).toEqual(["reference", "option"])
-    for (const [id, name] of [["quote_reference", "reference"], ["quote_option", "option"]]) {
+    expect(columnNames("table")).toEqual(["quote_reference", "quote_option"])
+    for (const [id, name] of [["quote_reference", "quote_reference"], ["quote_option", "quote_option"]]) {
       const row = screen.getByTestId(`schema-column-${id}`)
       // Not moved, retyped, renamed, keyed, given details or removed.
       expect(columnGrip(id)).toBeNull()
@@ -685,7 +685,7 @@ describe("SchemaEditor", () => {
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Add index to table" }))
     fireEvent.click(within(tableNamed("table")).getByRole("button", { name: "Add column" }))
-    expect(columnNames("table")).toEqual(["reference", "option", "row_number", "column"])
+    expect(columnNames("table")).toEqual(["quote_reference", "quote_option", "row_number", "column"])
   })
 
   it("asks before removing an index a sheet shows", async () => {

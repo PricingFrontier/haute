@@ -99,7 +99,7 @@ MAX_PEOPLE = 500
 DETAIL_IDS: dict[str, str] = {name: column_id for column_id, name, _ in QUOTE_DETAILS_COLUMNS}
 _DATES = frozenset(name for _, name, kind in QUOTE_DETAILS_COLUMNS if kind == "date")
 _WHOLE = frozenset(name for _, name, kind in QUOTE_DETAILS_COLUMNS if kind == "int")
-_SEARCHED = ("reference", "quote_name", "insured", "broker")
+_SEARCHED = ("quote_reference", "quote_name", "insured", "broker")
 #: A word of a search naming a reference and an option, as a quote is shown: ``Q-000123/2``.
 _REFERENCE_OPTION = re.compile(r"(.+)/(\d+)")
 _OPERATION = re.compile(rf"[A-Za-z0-9_-]{{8,{OPERATION_LENGTH}}}")
@@ -338,8 +338,8 @@ def _columns(details: Mapping[str, Any]) -> dict[str, Any]:
 def _quote(row: RowMapping) -> AppQuote:
     return AppQuote(
         id=row["quote_id"],
-        reference=row["reference"],
-        option=row["option"],
+        reference=row["quote_reference"],
+        option=row["quote_option"],
         details=_row_details(row),
         stage=row["stage"],
         assignee=row["assignee"],
@@ -394,10 +394,10 @@ def _view_filter(view: View, actor: str) -> ColumnElement[bool]:
 def _search_filter(term: str) -> ColumnElement[bool]:
     named = _REFERENCE_OPTION.fullmatch(term)
     if named is not None:
-        reference = func.lower(QUOTE_DETAILS.c.reference)
+        reference = func.lower(QUOTE_DETAILS.c.quote_reference)
         return and_(
             reference.like(_search_like(named.group(1)), escape="\\"),
-            QUOTE_DETAILS.c.option == int(named.group(2)),
+            QUOTE_DETAILS.c.quote_option == int(named.group(2)),
         )
     like = _search_like(term)
     return or_(
@@ -412,7 +412,7 @@ def _sort_key(sort: Sort) -> Any:
     if sort == "saved":
         return QUOTE_REVISIONS.c.saved_at
     if sort == "reference":
-        return QUOTE_DETAILS.c.reference
+        return QUOTE_DETAILS.c.quote_reference
     return func.lower(func.coalesce(QUOTE_DETAILS.c.insured, ""))
 
 
@@ -423,7 +423,7 @@ def _encode_cursor(sort: Sort, row: RowMapping) -> str:
     key = row["sort_key"]
     if isinstance(key, datetime):
         key = key.isoformat()
-    raw = json.dumps([sort, key, row["option"], row["quote_id"]]).encode("utf-8")
+    raw = json.dumps([sort, key, row["quote_option"], row["quote_id"]]).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii")
 
 
@@ -447,8 +447,8 @@ def _cursor_filter(sort: Sort, cursor: str) -> ColumnElement[bool]:
     if sort == "reference":
         # The newest reference first, and under it its options in order.
         later = or_(
-            QUOTE_DETAILS.c.option > option,
-            and_(QUOTE_DETAILS.c.option == option, quote < quote_id),
+            QUOTE_DETAILS.c.quote_option > option,
+            and_(QUOTE_DETAILS.c.quote_option == option, quote < quote_id),
         )
         return or_(column < value, and_(column == value, later))
     return or_(column < value, and_(column == value, quote < quote_id))
@@ -459,7 +459,11 @@ def _order(sort: Sort) -> list[Any]:
     if sort == "insured":
         return [column.asc(), QUOTE_DETAILS.c.quote_id.asc()]
     if sort == "reference":
-        return [column.desc(), QUOTE_DETAILS.c.option.asc(), QUOTE_DETAILS.c.quote_id.desc()]
+        return [
+            column.desc(),
+            QUOTE_DETAILS.c.quote_option.asc(),
+            QUOTE_DETAILS.c.quote_id.desc(),
+        ]
     return [column.desc(), QUOTE_DETAILS.c.quote_id.desc()]
 
 
@@ -745,8 +749,8 @@ class QuoteBook:
         stage the price gives. A new quote's reference and option are taken as it is
         written."""
         return {
-            "reference": None if quote is None else quote.reference,
-            "option": None if quote is None else quote.option,
+            "quote_reference": None if quote is None else quote.reference,
+            "quote_option": None if quote is None else quote.option,
             "assignee": None if quote is None else quote.assignee,
             "archived": False if quote is None else quote.archived,
             "stage": _stage_of(priced),
@@ -811,8 +815,8 @@ class QuoteBook:
             details = {
                 **details_of(inputs),
                 **self.managed(None, priced=response is not None),
-                "reference": reference,
-                "option": option,
+                "quote_reference": reference,
+                "quote_option": option,
                 "assignee": actor,
             }
             revision = self.store._create_in(

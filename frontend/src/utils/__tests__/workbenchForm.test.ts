@@ -182,8 +182,8 @@ describe("names", () => {
 
     expect(spec.schema.tables.map((t) => t.name)).toEqual(["table", "table_2"])
     expect(spec.schema.tables[0].columns.map((c) => [c.id, c.name, c.type, c.index, c.group, c.default_value])).toEqual([
-      ["quote_reference", "reference", "str", false, "", ""],
-      ["quote_option", "option", "int", false, "", ""],
+      ["quote_reference", "quote_reference", "str", false, "", ""],
+      ["quote_option", "quote_option", "int", false, "", ""],
       [expect.any(String), "column", "str", false, "", ""],
       [expect.any(String), "column_2", "str", false, "", ""],
     ])
@@ -233,19 +233,20 @@ describe("problems", () => {
     ])
   })
 
-  it("names a table's own column taking the quote's reference or option as the server does, never a missing identity", () => {
-    const spec = withTable(column("a", "reference"), column("b", "option", { type: "int" }), column("c", "limit"))
+  it("names a table's own column taking the quote's quote_reference or quote_option as the server does, never a missing identity", () => {
+    // A column of its own named reference or option is no clash.
+    const spec = withTable(column("a", "quote_reference"), column("b", "quote_option", { type: "int" }), column("c", "limit"), column("e", "option"))
 
     expect(messages(spec)).toEqual(
-      ["reference", "option"].map(
+      ["quote_reference", "quote_option"].map(
         (name) =>
-          `t.${name} has a name Haute keeps for the quote's ${name} in every table: rename it, and the table takes the quote's reference and option at the next save`,
+          `t.${name} has a name Haute keeps for the quote's identity in every table: rename it, and the table takes quote_reference and quote_option at the next save`,
       ),
     )
     // A table leading with the identity: a second column of either name repeats it.
     let held = addSchemaTable(blank(), { ...createSchemaTable(blank()), id: "u", name: "u" })
-    held = addSchemaColumn(held, "u", column("d", "option"))
-    expect(messages(held)).toEqual(['Column "option" in Table "u" repeats the name option'])
+    held = addSchemaColumn(held, "u", column("d", "quote_option"))
+    expect(messages(held)).toEqual(['Column "quote_option" in Table "u" repeats the name quote_option'])
     // A table without it and without such a column is no problem.
     expect(messages(withTable(column("e", "limit")))).toEqual([])
   })

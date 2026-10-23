@@ -599,7 +599,7 @@ def test_a_project_builds_a_release_that_prices_as_its_pipeline(project: Path) -
     priced = _price(client, PROJECT_VALUES)
     assert priced.status_code == 200, priced.text
     # Without a quote store, the one quote is priced under the stand-in identity.
-    stand_in = {"reference": "PREVIEW", "option": 1}
+    stand_in = {"quote_reference": "PREVIEW", "quote_option": 1}
     assert priced.json()["tables"] == {
         "pricing": [{**stand_in, "premium": 100.0, "limit": 1000.0, "referral": "none"}],
         "item_prices": [
@@ -704,7 +704,13 @@ def test_the_app_prices_on_the_utility_code_the_release_carries(project: Path) -
     assert completed.returncode == 0, completed.stderr[-4000:]
     priced = json.loads(completed.stdout.strip().splitlines()[-1])
     assert priced["tables"]["pricing"] == [
-        {"reference": "PREVIEW", "option": 1, "premium": 100.0, "limit": 1000.0, "referral": "none"}
+        {
+            "quote_reference": "PREVIEW",
+            "quote_option": 1,
+            "premium": 100.0,
+            "limit": 1000.0,
+            "referral": "none",
+        }
     ]
 
 
@@ -1062,8 +1068,8 @@ def test_the_release_prices_and_keeps_quotes_with_only_the_images_runtime_instal
     assert result["status"] == 200, result
     assert result["body"]["tables"]["pricing"] == [
         {
-            "reference": "Q-000001",
-            "option": 1,
+            "quote_reference": "Q-000001",
+            "quote_option": 1,
             "premium": 100.0,
             "limit": 1000.0,
             "referral": "none",

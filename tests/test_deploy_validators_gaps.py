@@ -345,7 +345,7 @@ _FORM_TABLES: list[dict[str, Any]] = [
 
 def _identity() -> list[dict[str, str]]:
     """The quote's reference and option, which every table but quote_details leads with."""
-    return [_column("reference", "str"), _column("option", "int")]
+    return [_column("quote_reference", "str"), _column("quote_option", "int")]
 
 
 def _input_copy() -> list[dict[str, Any]]:
@@ -521,18 +521,18 @@ class TestValidateDeployWorkbenchForm:
     def test_a_table_whose_own_column_takes_an_identity_name_is_refused(
         self, tmp_path: Path
     ) -> None:
-        _FORM_TABLES[1]["columns"].append({"id": "c_option", "name": "option", "type": "str"})
+        _FORM_TABLES[1]["columns"].append({"id": "c_option", "name": "quote_option", "type": "str"})
         try:
             _workbench_project(tmp_path)
         finally:
             _FORM_TABLES[1]["columns"].pop()
         input_copy = _input_copy()
-        input_copy[1]["columns"] = [_column("value", "float"), _column("option", "str")]
+        input_copy[1]["columns"] = [_column("value", "float"), _column("quote_option", "str")]
 
         assert _form_check_errors(tmp_path, input_copy, _output_copy()) == [
-            "forms/form.json: items.option has a name Haute keeps for the quote's option in "
-            "every table: rename it, and the table takes the quote's reference and option at "
-            "the next save."
+            "forms/form.json: items.quote_option has a name Haute keeps for the quote's "
+            "identity in every table: rename it, and the table takes quote_reference and "
+            "quote_option at the next save."
         ]
 
     def test_a_copy_saved_before_quote_details_existed_asks_for_a_save(

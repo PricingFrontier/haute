@@ -165,8 +165,8 @@ def test_a_priced_save_is_priced_again_on_the_server_and_kept(page: Page) -> Non
     )
     assert (quote["option"], quote["label"], quote["title"]) == (1, "Q-000001/1", "Fleet")
     assert quote["details"] == {
-        "reference": "Q-000001",
-        "option": 1,
+        "quote_reference": "Q-000001",
+        "quote_option": 1,
         "quote_name": "Fleet",
         "insured": "Acme",
         "inception_date": "2026-11-01",
@@ -366,11 +366,15 @@ def test_an_alternative_is_the_next_option_of_its_sources_reference(page: Page) 
 
 def test_a_price_differing_only_in_the_quotes_identity_has_not_moved() -> None:
     form = FormSpec.model_validate(FORM)
-    priced = {"pricing_output": [{"reference": "Q-000002", "option": 1, "premium": 500.0}]}
+    priced = {
+        "pricing_output": [{"quote_reference": "Q-000002", "quote_option": 1, "premium": 500.0}]
+    }
     kept = SimpleNamespace(response=priced)
 
     # A page priced under the quote it was opened on, saved as a new quote.
-    shown = {"pricing_output": [{"reference": "Q-000001", "option": 3, "premium": 500.0}]}
+    shown = {
+        "pricing_output": [{"quote_reference": "Q-000001", "quote_option": 3, "premium": 500.0}]
+    }
     assert _workbench_app_quotes._moved(form, kept, shown) is False  # type: ignore[arg-type]
     shown["pricing_output"][0]["premium"] = 400.0
     assert _workbench_app_quotes._moved(form, kept, shown) is True  # type: ignore[arg-type]

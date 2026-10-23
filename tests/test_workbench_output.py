@@ -656,13 +656,15 @@ def test_deploy_answers_with_nulls_for_what_the_pipeline_does_not_fill(project: 
     assert render_output_document(scored) == [{"pricing": {"premium": 50.0}}]
 
 
-_IDENTITY = (("reference", "str"), ("option", "int"))
+_IDENTITY = (("quote_reference", "str"), ("quote_option", "int"))
 
 
 def _identified() -> PipelineGraph:
     """A quote whose tables lead with its reference and option, as the form makes them: an
     item's premium, its frame carrying a reference of its own, and a total that drops them."""
-    details = _table("quote_details", ("reference", "str"), ("option", "int"), ("name", "str"))
+    details = _table(
+        "quote_details", ("quote_reference", "str"), ("quote_option", "int"), ("name", "str")
+    )
     items = _table("items", *_IDENTITY, ("item_id", "str"), ("value", "float"), many=True)
     sample = {"items": [{"item_id": "A", "value": 10.0}, {"item_id": "B", "value": 30.0}]}
     return PipelineGraph(
@@ -676,7 +678,7 @@ def _identified() -> PipelineGraph:
                 {
                     "code": (
                         "df = items.with_columns(premium=pl.col('value') * 2, "
-                        "reference=pl.lit('X'))"
+                        "quote_reference=pl.lit('X'))"
                     )
                 },
             ),
@@ -710,7 +712,11 @@ def test_the_response_gives_every_row_the_quotes_reference_and_option(project: P
     request = pl.DataFrame(
         [
             {
-                "quote_details": {"reference": "Q-000123", "option": 2, "name": "Fleet"},
+                "quote_details": {
+                    "quote_reference": "Q-000123",
+                    "quote_option": 2,
+                    "name": "Fleet",
+                },
                 "items": [{"item_id": "A", "value": 10.0}, {"item_id": "B", "value": 30.0}],
             }
         ]
@@ -725,7 +731,7 @@ def test_the_response_gives_every_row_the_quotes_reference_and_option(project: P
 
     # The total dropped them and the items' frame held a reference of its own: the response
     # holds the quote's, whatever the pipeline did with them.
-    identity = {"reference": "Q-000123", "option": 2}
+    identity = {"quote_reference": "Q-000123", "quote_option": 2}
     assert render_output_document(scored) == [
         {
             "pricing": {**identity, "premium": 40.0},
@@ -735,8 +741,8 @@ def test_the_response_gives_every_row_the_quotes_reference_and_option(project: P
     # The Workbench Output's own tables hold them blank, as the editor shows them.
     tables = _tables(graph)
     assert (
-        tables["item_prices"].select("reference", "option").to_dicts()
-        == [{"reference": None, "option": None}] * 2
+        tables["item_prices"].select("quote_reference", "quote_option").to_dicts()
+        == [{"quote_reference": None, "quote_option": None}] * 2
     )
 
 
@@ -746,9 +752,15 @@ def test_generated_code_answers_under_the_quote_details_frame_it_has(project: Pa
     # Run, the sample is priced under the stand-in; scored without quote_details, which
     # nothing reads here, the identity is blank and left out of the answer.
     [ran] = render_output_document(_collected(pipeline.run(source="live")))
-    assert ran["item_prices"][0] == {"reference": "PREVIEW", "option": 1, "item_id": "A"}
+    assert ran["item_prices"][0] == {
+        "quote_reference": "PREVIEW",
+        "quote_option": 1,
+        "item_id": "A",
+    }
     scored = pipeline.score(
-        pl.DataFrame({"reference": ["Q-1"], "option": [1], "item_id": ["Z"], "value": [7.0]})
+        pl.DataFrame(
+            {"quote_reference": ["Q-1"], "quote_option": [1], "item_id": ["Z"], "value": [7.0]}
+        )
     )
     assert render_output_document(_collected(scored)) == [
         {"pricing": {"premium": 7.0}, "item_prices": [{"item_id": "Z"}]}
