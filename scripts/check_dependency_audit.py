@@ -7,6 +7,7 @@ import datetime as dt
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -212,7 +213,16 @@ def evaluate(
 
 
 def _run(command: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=False)
+    # Resolve the tool on PATH first: Windows ships npm as npm.cmd, which a bare "npm"
+    # never launches, and a missing scanner must fail closed with a reason, not a
+    # traceback. Decode as UTF-8 whatever the locale: uv and npm write UTF-8, and
+    # pip-audit's JSON is ASCII.
+    executable = shutil.which(command[0])
+    if executable is None:
+        raise PolicyError(f"{command[0]} not found on PATH")
+    return subprocess.run(
+        [executable, *command[1:]], cwd=cwd, encoding="utf-8", capture_output=True, check=False
+    )
 
 
 def live_reports(reports_dir: Path | None) -> tuple[Any, Any]:

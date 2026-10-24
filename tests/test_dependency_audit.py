@@ -290,6 +290,31 @@ def test_live_npm_scanner_bad_return_code_fails(monkeypatch, tmp_path, returncod
         audit.live_reports(tmp_path)
 
 
+def test_scanners_resolve_through_path_and_decode_utf8(monkeypatch):
+    """A bare ``npm`` never launches on Windows, where npm is ``npm.cmd``.
+
+    So every scanner is resolved on PATH before it runs, and its output is read as
+    UTF-8 whatever the locale's code page: the bytes of ``Á`` and ``ō`` are
+    undefined in cp1252, Windows' usual default.
+    """
+    script = "import sys; sys.stdout.buffer.write('\\u00c1\\u014d\\u2014'.encode('utf-8'))"
+    monkeypatch.setattr(
+        audit.shutil, "which", lambda name: sys.executable if name == "scanner" else None
+    )
+
+    result = audit._run(["scanner", "-c", script])
+
+    assert result.args[0] == sys.executable
+    assert result.stdout == "Áō—"
+
+
+def test_missing_scanner_fails_closed_naming_it(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(audit.shutil, "which", lambda name: None)
+
+    assert audit.main(["--reports-dir", str(tmp_path)]) == 2
+    assert "uv not found on PATH" in capsys.readouterr().err
+
+
 def test_policy_file_errors_annotate_too(tmp_path, capsys, monkeypatch):
     """A broken policy file must explain itself like a blocked advisory does.
 
