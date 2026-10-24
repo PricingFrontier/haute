@@ -22,7 +22,7 @@
 | `src/haute/deploy/_model_code.py` | MLflow models-from-code entry point: `HauteModel` (`mlflow.pyfunc.PythonModel` subclass) wrapping `score_graph` under the manifest's `RequestRows`; `_request` hands a Workbench Input, and a Quote Input with tables, its quotes as the records MLflow passed (`QuoteRequest`, numpy's values made plain by `_plain`), never a frame inferred from them, and any other request input the frame. |
 | `src/haute/deploy/_container.py` | Container build/push orchestration, the bundle a deploy and a workbench release share (`write_bundle`: the manifest with its artifacts at `artifacts/<name>` and the caller's extras, the artifacts, each copied by `copy_verified` under the digest resolution recorded, and the utility package), build-directory preparation (`prepare_build_directory`, the bundle with the container's pinned dependencies, and a Dockerfile copying any extra files the caller writes beside `app.py`, a workbench release's, and installing any extra distributions it needs pinned to the versions installed, the underwriter app's quote store's), generated FastAPI `/health` and `/quote` runtime, stable JSON/NDJSON response handling, pinned Dockerfile generation, Docker subprocess calls, and the platform service-update stub.; `runtime_versions`, the installed versions of the runtime a served pipeline prices on (the scoring runtime, the graph's and the artifacts' own, but `haute`), sorted, which the underwriter app's release id reads for any build, an image or not. |
 | `scripts/container_smoke.py` | Standalone CLI script to verify the container deployment pipeline for an example (copy bundle, resolve deploy config, prepare build directory, and optionally execute a live uvicorn process smoke check). |
-| `src/haute/deploy/_impact.py` | Impact analysis: batched endpoint scoring (Databricks SDK or HTTP `/quote`), quote-envelope normalisation, a response's one-row tables flattened into `<table>.<column>` columns so they are compared (`_flatten_structs`), percent-change statistics, categorical segment breakdown, terminal/Markdown report formatting. |
+| `src/haute/deploy/_impact.py` | Impact analysis: batched endpoint scoring (Databricks SDK or HTTP `/quote`), quote-envelope normalisation, a response's one-row tables flattened into `<table>.<column>` columns so they are compared (`_flatten_structs`, the schema inferred from every answer so a field first answered late is never dropped), an output left empty refused by name, percent-change statistics, categorical segment breakdown, terminal/Markdown report formatting. |
 | `src/haute/deploy/_request_limits.py` | Deployed-container request-body size limiting: environment resolution, `Content-Length` and streamed-byte enforcement before JSON materialisation, and structured limit/header/parse errors. |
 
 ## Key types and data structures
@@ -598,7 +598,10 @@ the general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair. `haute deploy` checks bef
 the MLflow destination resolves and the serving pair is set (`check_databricks_credentials`),
 naming every gap at once; a profile `MLFLOW_TRACKING_URI=databricks://<profile>` selects is
 read as MLflow reads it (`_profile_problem`, `get_databricks_host_creds`) and must give a host
-and a personal access token.
+and a personal access token, a failure reported by its exception type alone, since a malformed
+config file's parse error quotes its lines. Before the model uploads, `_check_registry_schema`
+looks up `<catalog>.<schema>` with the registry's own credentials and refuses a schema that does
+not exist, listing the catalogs the token can see (many workspaces have no `main`).
 
 **Runtime scoring (`_scorer.py::score_graph_lazy` → `score_graph`)**
 0. A request of several quotes is answered as `request_rows` says (`answers_quote_by_quote`).

@@ -459,3 +459,26 @@ def test_a_one_row_tables_numbers_are_compared() -> None:
     [stats] = report.column_stats
     assert stats.name == "pricing.premium"
     assert stats.mean_change_pct == pytest.approx(100.0)
+
+
+def test_a_field_first_answered_late_is_never_silently_dropped() -> None:
+    """Haute leaves a null output field out of a response, so a field may first appear
+    after the hundredth answer. It is read, not dropped by a schema sampled from the
+    first answers, and the answers that leave it empty are refused by name."""
+    from haute.deploy._impact import build_report
+
+    def answers(premium: float) -> list[dict]:
+        early = [{"pricing": {"base": 1.0}} for _ in range(100)]
+        return [*early, {"pricing": {"base": 1.0, "premium": premium}}]
+
+    with pytest.raises(ValueError, match=r"leave output 'pricing.premium' empty on 100 rows"):
+        build_report(
+            staging_preds=answers(200.0),
+            prod_preds=answers(100.0),
+            input_df=pl.DataFrame([{}] * 101),
+            pipeline_name="p",
+            staging_endpoint="s",
+            prod_endpoint="p",
+            dataset_path="test quotes (tests/quotes)",
+            total_rows=101,
+        )

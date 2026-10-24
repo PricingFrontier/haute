@@ -154,6 +154,9 @@ CREATE SCHEMA IF NOT EXISTS main.pricing;
 
 You can name the schema anything you like - `pricing` is a sensible default.
 
+!!! tip "No `main` catalog?"
+    Newer workspaces often have no `main` catalog: theirs is usually called `workspace`. Use the catalog your workspace has, both in the `CREATE SCHEMA` command and in `haute.toml`. `haute deploy` checks the schema exists before it uploads the model, and if it does not, names the catalogs your token can see.
+
 ### Update `haute.toml`
 
 Make sure your `haute.toml` matches:

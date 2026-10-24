@@ -420,3 +420,76 @@ def test_a_profile_with_a_host_and_token_passes(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
 
     check_databricks_credentials()
+
+
+# ---------------------------------------------------------------------------
+# The Unity Catalog schema is checked before the model uploads
+# ---------------------------------------------------------------------------
+
+
+def _registry_check(ws: MagicMock) -> None:
+    from haute.deploy import _mlflow
+    from haute.deploy._config import DatabricksConfig
+
+    config = _deploy_config()
+    config.databricks = DatabricksConfig(catalog="main", schema="pricing")
+    with (
+        patch.object(_mlflow, "pat_workspace_client", return_value=ws) as client,
+        patch(
+            "mlflow.utils.databricks_utils.get_databricks_host_creds",
+            return_value=SimpleNamespace(host=_HOST, token="dapi-registry"),
+        ),
+    ):
+        _mlflow._check_registry_schema(config, "databricks-uc")
+    client.assert_called_once_with(_HOST, "dapi-registry")
+
+
+def test_a_missing_registry_schema_is_refused_naming_the_catalogs_there_are() -> None:
+    from haute.errors import DeployError
+
+    ws = MagicMock()
+    ws.schemas.get.side_effect = NotFound("SCHEMA_DOES_NOT_EXIST")
+    ws.catalogs.list.return_value = [
+        SimpleNamespace(name="workspace"),
+        SimpleNamespace(name="samples"),
+    ]
+
+    with pytest.raises(DeployError) as excinfo:
+        _registry_check(ws)
+
+    message = str(excinfo.value)
+    assert "Unity Catalog schema main.pricing does not exist" in message
+    assert "CREATE SCHEMA `main`.`pricing`" in message
+    assert "The catalogs this token can see: samples, workspace." in message
+    ws.schemas.get.assert_called_once_with(full_name="main.pricing")
+
+
+def test_an_existing_registry_schema_passes() -> None:
+    ws = MagicMock()
+
+    _registry_check(ws)
+
+    ws.schemas.get.assert_called_once_with(full_name="main.pricing")
+    ws.catalogs.list.assert_not_called()
+
+
+@pytest.mark.usefixtures("no_databricks_credentials")
+def test_a_malformed_profile_file_is_named_without_its_contents(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A parse error quotes the file's lines, so its message is never repeated."""
+    from haute.deploy._mlflow import check_databricks_credentials
+    from haute.errors import DeployError
+
+    config_file = tmp_path / "databrickscfg"
+    config_file.write_text("[team]\nhost = https://adb-7.example\ndapi-leaked-secret\n")
+    monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config_file))
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+    monkeypatch.setenv(RATING_HOST_ENV, _HOST)
+    monkeypatch.setenv(RATING_TOKEN_ENV, _TOKEN)
+
+    with pytest.raises(DeployError) as excinfo:
+        check_databricks_credentials()
+
+    assert "selects the Databricks profile 'team'" in str(excinfo.value)
+    assert "dapi-leaked-secret" not in str(excinfo.value)

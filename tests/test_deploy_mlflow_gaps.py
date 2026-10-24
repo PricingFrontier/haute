@@ -79,6 +79,7 @@ def mock_mlflow_deploy():
         patch("mlflow.pyfunc.log_model") as m_log_model,
         patch("mlflow.tracking.MlflowClient") as m_client,
         patch("haute.deploy._mlflow._check_databricks_connectivity") as m_conn,
+        patch("haute.deploy._mlflow._check_registry_schema"),
         patch("haute.deploy._mlflow._build_signature") as m_sig,
         patch("haute.deploy._mlflow._create_or_update_serving_endpoint") as m_ep,
         # The tests run on an editable haute, which a served model cannot install.

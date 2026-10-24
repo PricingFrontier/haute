@@ -34,6 +34,7 @@ from haute.deploy._databricks_serving import (
     endpoint_update_state,
     missing_serving_credentials,
     missing_serving_credentials_message,
+    pat_workspace_client,
     serving_credentials,
     serving_workspace_client,
     wait_for_endpoint,
@@ -137,6 +138,7 @@ def _deploy_to_mlflow(
     tracking_uri, registry_uri = _resolve_mlflow_databricks()
     _log("Connecting to Databricks MLflow...")
     _check_databricks_connectivity(_log)
+    _check_registry_schema(config, registry_uri)
     client = MlflowClient(tracking_uri=tracking_uri, registry_uri=registry_uri)
 
     # Use Unity Catalog three-level namespace: catalog.schema.model_name
@@ -539,6 +541,34 @@ def check_databricks_credentials() -> None:
         )
 
 
+def _check_registry_schema(config: DeployConfig, registry_uri: str) -> None:
+    """Refuse a deploy whose Unity Catalog schema does not exist, before the model uploads.
+
+    MLflow registers the model as ``<catalog>.<schema>.<model>`` only after uploading it,
+    and many workspaces have no ``main`` catalog (a newer workspace's is named
+    ``workspace``), so a missing schema is looked up first, with the registry's own
+    credentials, and its error lists the catalogs the token can see.
+    """
+    from databricks.sdk.errors import NotFound
+    from mlflow.utils.databricks_utils import get_databricks_host_creds
+
+    catalog, schema = config.databricks.catalog, config.databricks.schema
+    creds = get_databricks_host_creds(registry_uri)
+    ws = pat_workspace_client(creds.host, creds.token)
+    try:
+        ws.schemas.get(full_name=f"{catalog}.{schema}")
+    except NotFound:
+        catalogs = sorted(c.name for c in ws.catalogs.list() if c.name)
+        raise DeployError(
+            f"Unity Catalog schema {catalog}.{schema} does not exist, so the model cannot be "
+            f"registered there. Create it (CREATE SCHEMA `{catalog}`.`{schema}`), or set "
+            "[deploy.databricks] catalog and schema in haute.toml to a schema that exists. "
+            f"The catalogs this token can see: {', '.join(catalogs) or 'none'}.",
+            catalog=catalog,
+            schema=schema,
+        ) from None
+
+
 def _profile_problem(tracking_uri: str) -> str | None:
     """Why the profile a ``databricks://<profile>`` URI selects cannot register a model.
 
@@ -552,10 +582,13 @@ def _profile_problem(tracking_uri: str) -> str | None:
     profile = tracking_uri.removeprefix("databricks://")
     try:
         creds = get_databricks_host_creds(tracking_uri)
-    except Exception as exc:  # noqa: BLE001 - MLflow's reason is reported, not hidden
+    except Exception as exc:  # noqa: BLE001 - reported by type; see below
+        # The message is left out: a malformed config file's parse error quotes its lines,
+        # whichever profile they belong to, credentials included.
         return (
             f"MLFLOW_TRACKING_URI selects the Databricks profile '{profile}', which MLflow "
-            f"cannot read: {exc}"
+            f"cannot read ({type(exc).__name__}): the Databricks config file does not hold it, "
+            "or the file or the profile is incomplete or malformed."
         )
     if not creds.host or not creds.token:
         return (

@@ -257,7 +257,9 @@ def _preds_to_df(preds: list) -> pl.DataFrame:
         return pl.DataFrame()
     first = preds[0]
     if isinstance(first, dict):
-        return _flatten_structs(pl.DataFrame(preds))
+        # Every response's fields: an output field Haute omits while it is null may first
+        # appear late, and a sample of the first rows would drop it silently.
+        return _flatten_structs(pl.DataFrame(preds, infer_schema_length=None))
     if isinstance(first, (list, tuple)):
         cols = [f"output_{i}" for i in range(len(first))]
         return pl.DataFrame(preds, schema=cols, orient="row")
@@ -277,7 +279,15 @@ def _non_finite_count(series: pl.Series) -> int:
 
 
 def _raise_for_non_finite_predictions(stg: pl.Series, prd: pl.Series, name: str) -> None:
+    """Refuse an output impact cannot compare: a missing value or a NaN or infinity."""
     for label, series in (("staging", stg), ("production", prd)):
+        missing = series.null_count()
+        if missing:
+            row_word = "row" if missing == 1 else "rows"
+            raise ValueError(
+                f"Cannot compute impact: {label} predictions leave output {name!r} empty on "
+                f"{missing} {row_word} (the answer omits the field, or gives null)."
+            )
         count = _non_finite_count(series)
         if count:
             value_word = "value" if count == 1 else "values"
