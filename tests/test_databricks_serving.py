@@ -566,7 +566,7 @@ def test_a_deactivated_workspace_is_named_as_the_reason_retrying_will_not_help()
 
     assert reason.startswith("Cannot create or update model serving endpoints, please try")
     assert "marked the workspace inactive (DENY_NEW_AND_EXISTING_RESOURCES, INACTIVE)" in reason
-    assert "retrying will not help" in reason
+    assert "retrying alone will not help" in reason
 
 
 @pytest.mark.parametrize(
