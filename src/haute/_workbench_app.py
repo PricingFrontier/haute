@@ -42,7 +42,14 @@ from haute._logging import get_logger
 from haute._output_assembler import render_output_document
 from haute._sandbox import set_project_root
 from haute._types import PipelineGraph
-from haute._workbench_form import FormSpec, form_revision, render_form
+from haute._workbench_form import (
+    QUOTE_DETAILS_COLUMNS,
+    QUOTE_DETAILS_ID,
+    QUOTE_DETAILS_MANAGED,
+    FormSpec,
+    form_revision,
+    render_form,
+)
 from haute._workbench_input import with_stand_in
 from haute._workbench_tables import input_tables, quote_request
 from haute.deploy._request_limits import (
@@ -513,6 +520,21 @@ def quote_store_url() -> str | None:
     return url or None
 
 
+#: The names of the quote_details columns the app sets (``QUOTE_DETAILS_MANAGED``).
+_APP_DETAILS = frozenset(
+    name for column_id, name, _ in QUOTE_DETAILS_COLUMNS if column_id in QUOTE_DETAILS_MANAGED
+)
+
+
+def _without_app_details(request: dict[str, Any]) -> dict[str, Any]:
+    """*request* with none of the quote_details the app sets for a quote it keeps."""
+    held = request.get(QUOTE_DETAILS_ID)
+    if not isinstance(held, dict):
+        return request
+    row = {name: value for name, value in held.items() if name not in _APP_DETAILS}
+    return {**request, QUOTE_DETAILS_ID: row}
+
+
 def _cross_site(request: Request) -> bool:
     """A write sent by a page of another site: the browser says so or, from a browser that
     does not say, its origin is not this host. What the browser says is taken as it is: a
@@ -602,7 +624,7 @@ def create_app(
     if store_url is not None:
         from haute._workbench_app_quotes import open_book
 
-        book = open_book(store_url)
+        book = open_book(store_url, haute_version=release.haute_version)
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -672,8 +694,9 @@ def create_app(
             raise HTTPException(422, "Type the quote first")
         if book is None:
             # An app without a quote store has no quote to name: its one quote is priced
-            # under the stand-in, as Preview prices the sample.
-            request = with_stand_in(input_tables(form), request)
+            # under the stand-in, as Preview prices the sample, holding none of the details
+            # the app sets for a quote it keeps, whatever the page sent.
+            request = with_stand_in(input_tables(form), _without_app_details(request))
 
         def score() -> WorkbenchPricedTables:
             # The admission is held until the answer is the tables sent back: rendering and

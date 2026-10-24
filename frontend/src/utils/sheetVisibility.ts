@@ -7,7 +7,7 @@
  * are held to the cases in __tests__/fixtures/sheetVisibility.json.
  */
 import type { Condition, ConditionGroup, FieldRef, FormSchema, FormSpec, RowCount, RowsCondition, RowTest, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen } from "../api/types"
-import { sheetColumns } from "./quoteIdentity"
+import { QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, sheetColumns } from "./quoteIdentity"
 import { filled, isDay, parseTypedNumber, parseTypedWhole, presetRows, quoteTyped, rowFilled, withPresetRows, type RowsByTable } from "./sheetValues"
 
 export type ConditionTest = Condition["op"]
@@ -524,16 +524,29 @@ export function sheetVisibility(spec: FormSpec, rows: RowsByTable): SheetVisibil
   return visibility
 }
 
-/** The schema without the hidden columns, the quote's tables as the server reads them. */
-export function quotedSchema(schema: FormSchema, hidden: ReadonlySet<string>): FormSchema {
-  if (hidden.size === 0) return schema
+/** The schema without `columns` (by `columnKey`). */
+function withoutColumns(schema: FormSchema, columns: ReadonlySet<string>): FormSchema {
+  if (columns.size === 0) return schema
   return {
     ...schema,
     tables: schema.tables.map((table) => {
-      const columns = table.columns.filter((column) => !hidden.has(columnKey(table.id, column.id)))
-      return columns.length === table.columns.length ? table : { ...table, columns }
+      const kept = table.columns.filter((column) => !columns.has(columnKey(table.id, column.id)))
+      return kept.length === table.columns.length ? table : { ...table, columns: kept }
     }),
   }
+}
+
+/** Whether a column, by `columnKey`, is one of quote_details the app sets (`QUOTE_DETAILS_MANAGED`). */
+const appSet = (key: string): boolean => key.startsWith(`${QUOTE_DETAILS_ID}:`) && QUOTE_DETAILS_MANAGED.has(key.slice(QUOTE_DETAILS_ID.length + 1))
+
+/**
+ * The schema without the hidden columns, the quote's tables as the server reads them: the
+ * columns of quote_details the app sets stay whatever the sheets hide, as every request holds
+ * them.
+ */
+export function quotedSchema(schema: FormSchema, hidden: ReadonlySet<string>): FormSchema {
+  const left = [...hidden].filter((key) => !appSet(key))
+  return withoutColumns(schema, left.length === hidden.size ? hidden : new Set(left))
 }
 
 const NO_COLUMNS: ReadonlySet<string> = new Set()
@@ -547,7 +560,7 @@ const NO_COLUMNS: ReadonlySet<string> = new Set()
  */
 export function quoteEligible(form: FormSpec, values: RowsByTable, locked: ReadonlySet<string> = NO_COLUMNS): boolean {
   const { hidden } = sheetVisibility(form, values)
-  return quoteTyped(quotedSchema(quotedSchema(form.schema, hidden), locked), withPresetRows(form.schema, values))
+  return quoteTyped(withoutColumns(quotedSchema(form.schema, hidden), locked), withPresetRows(form.schema, values))
 }
 
 /**

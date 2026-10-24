@@ -28,7 +28,7 @@ from haute._graph_utils import is_frame_label
 from haute._workbench_form import (
     IDENTITY_COLUMNS,
     QUOTE_DETAILS_ID,
-    QUOTE_IDENTITY_DETAILS,
+    QUOTE_DETAILS_MANAGED,
     ColumnType,
 )
 from haute.errors import HauteError
@@ -303,11 +303,11 @@ def sample_quote(spec: FormSpec) -> dict[str, Any]:
     each filled by its value; but those values are not typing, so a quote holding nothing else
     is empty, as a blank one is, and so are the defaults a new quote starts with, which are
     not typing either. A value in a column the sheets hide is left out, as if it had
-    never been typed, save the quote's reference and option in ``quote_details``, which the
-    app sets and every request holds. Values take their column's type: a number typed with a
-    currency sign or separators becomes a number, and an unticked box in a filled row is
-    false. A value that isn't of its column's type stays as typed, for the Workbench Input to
-    report.
+    never been typed, save the columns of ``quote_details`` the app sets
+    (``QUOTE_DETAILS_MANAGED``), which every request holds whatever the sheets hide. Values
+    take their column's type: a number typed with a currency sign or separators becomes a
+    number, and an unticked box in a filled row is false. A value that isn't of its column's
+    type stays as typed, for the Workbench Input to report.
     """
     # Imported here: the visibility rules read cells as this module types them.
     from haute._workbench_visibility import visibility
@@ -325,7 +325,7 @@ def sample_quote(spec: FormSpec) -> dict[str, Any]:
             column
             for column in table.columns
             if (table.id, column.id) not in hidden
-            or (table.id == QUOTE_DETAILS_ID and column.id in QUOTE_IDENTITY_DETAILS)
+            or (table.id == QUOTE_DETAILS_ID and column.id in QUOTE_DETAILS_MANAGED)
         ]
         given = preset_column(table)
         typed = typed or any(

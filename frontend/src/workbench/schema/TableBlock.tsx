@@ -8,12 +8,16 @@ import useRefocusAfterMove, { altArrowMove, type RefocusAfterMove } from "../../
 import { confirmed } from "../../stores/useQuestionStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { isIdentityColumn } from "../../utils/quoteIdentity"
-import { addSchemaColumn, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
+import { addSchemaColumn, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_MANAGED, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
 import { ColumnRow } from "./ColumnRow"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
 import { IndexControl } from "./IndexControl"
 import { CHIP_CLASS, DETAILS_TITLE, type Fresh, HOVER_ONLY, currentForm, selectAll, usedBy } from "./schemaText"
+
+/** The quote_details columns the app sets, by name, in order: "a, b and c". */
+const appSetNames = QUOTE_DETAILS_COLUMNS.filter(([id]) => QUOTE_DETAILS_MANAGED.has(id)).map(([, name]) => name)
+const APP_SET = `${appSetNames.slice(0, -1).join(", ")} and ${appSetNames[appSetNames.length - 1]}`
 
 const ROLES: ReadonlyArray<{ value: SchemaTable["role"]; label: string; title: string }> = [
   { value: "input", label: "Input", title: "Sent to the pricing engine" },
@@ -202,7 +206,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
           ))}
           {locked ? (
             <p className="px-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
-              Kept with each quote and listed on the Quotes page; the app sets quote_reference, quote_option, stage, assignee and archived.
+              Kept with each quote and listed on the Quotes page; the app sets {APP_SET}.
             </p>
           ) : readOnly || filtering ? null : (
             <div className="flex items-center gap-3">

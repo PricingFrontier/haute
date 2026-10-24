@@ -617,7 +617,7 @@ def test_a_value_in_a_column_the_sheets_hide_is_left_out_of_the_sample() -> None
     }
 
 
-def test_the_quotes_reference_and_option_are_priced_whatever_the_sheets_hide() -> None:
+def test_the_columns_the_app_sets_are_priced_whatever_the_sheets_hide() -> None:
     spec = with_quote_details(
         form(
             {
@@ -655,6 +655,9 @@ def test_the_quotes_reference_and_option_are_priced_whatever_the_sheets_hide() -
                                 "quote_details.qd_reference",
                                 "quote_details.qd_option",
                                 "quote_details.qd_quote_name",
+                                "quote_details.qd_stage",
+                                "quote_details.qd_modified_date",
+                                "quote_details.qd_created_by",
                             ),
                         )
                     ],
@@ -663,17 +666,30 @@ def test_the_quotes_reference_and_option_are_priced_whatever_the_sheets_hide() -
         )
     )
     values = {
-        "quote_details": [{"qd_reference": "Q-000007", "qd_option": "2", "qd_quote_name": "Fleet"}],
+        "quote_details": [
+            {
+                "qd_reference": "Q-000007",
+                "qd_option": "2",
+                "qd_quote_name": "Fleet",
+                "qd_stage": "priced",
+                "qd_modified_date": "2026-10-12",
+                "qd_created_by": "ana@example.com",
+            }
+        ],
         "t1": [{"c_bi_cover": False, "c_assured": "Acme"}],
     }
 
-    # The second sheet hides: the quote's name goes with it, its reference and option stay.
+    # The second sheet hides: the quote's name goes with it; the columns the app sets stay,
+    # its reference and option, its stage and its administration.
     assert quote_request(spec, values) == {
         "quote_details": {
             "quote_reference": "Q-000007",
-            "archived": False,
-            "is_renewal": False,
             "quote_option": 2,
+            "is_renewal": False,
+            "stage": "priced",
+            "archived": False,
+            "created_by": "ana@example.com",
+            "modified_date": "2026-10-12",
         },
         "policy": {"bi_cover": False, "assured": "Acme"},
     }

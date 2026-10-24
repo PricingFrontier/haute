@@ -101,9 +101,10 @@ class QuoteApp:
     price: Pricer
 
 
-def open_book(url: str) -> QuoteBook:
-    """The book of the store at *url*, which must be migrated."""
-    return QuoteBook(open_store(url))
+def open_book(url: str, *, haute_version: str) -> QuoteBook:
+    """The book of the store at *url*, which must be migrated, written by an app running
+    Haute *haute_version*."""
+    return QuoteBook(open_store(url), haute_version=haute_version)
 
 
 def _iso(moment: Any) -> str | None:
@@ -387,7 +388,8 @@ def quote_router(app: QuoteApp) -> APIRouter:
         replay = await replayed(body, actor, None)
         if replay is not None:
             return replay
-        managed = {**QuoteBook.managed(None, priced=False), "assignee": actor}
+        at = book.now()
+        managed = book.managed(None, priced=False, at=at, actor=actor)
         ready = await _prepared(app, body, managed, creating=True)
         source = (
             None
@@ -404,6 +406,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
                 request=ready.request,
                 response=ready.tables,
                 release=None if ready.tables is None else app.release_id,
+                at=at,
                 source=source,
             )
             return saved(quote, body.shown)
@@ -450,9 +453,10 @@ def quote_router(app: QuoteApp) -> APIRouter:
         if replay is not None:
             return replay
         current = await _call(app, lambda: book.get(quote_id))
-        ready = await _prepared(
-            app, body, QuoteBook.managed(current, priced=body.shown is not None)
-        )
+        # One instant stamps the save: the request priced, the revision and its details.
+        at = book.now()
+        managed = book.managed(current, priced=body.shown is not None, at=at, actor=actor)
+        ready = await _prepared(app, body, managed)
 
         def save() -> WorkbenchAppQuoteResponse:
             quote = book.save(
@@ -465,6 +469,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
                 request=ready.request,
                 response=ready.tables,
                 release=None if ready.tables is None else app.release_id,
+                at=at,
             )
             return saved(quote, body.shown)
 

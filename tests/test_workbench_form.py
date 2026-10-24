@@ -18,7 +18,6 @@ from haute._workbench_form import (
     BLANK_SHEET_WIDTH,
     COLLECTION_COLUMNS_MAX,
     QUOTE_DETAILS_COLUMNS,
-    QUOTE_DETAILS_FIRST,
     QUOTE_DETAILS_MANAGED,
     QUOTE_DETAILS_REFUSAL,
     TABLE_ROWS_MAX,
@@ -360,11 +359,11 @@ def config(project: Path, form: str = "forms/form.json") -> WorkbenchConfig:
 
 
 def test_the_editor_names_the_quote_details_columns_the_server_does() -> None:
-    source = (
-        Path(__file__).resolve().parents[1] / "frontend" / "src" / "utils" / "workbenchForm.ts"
-    ).read_text(encoding="utf-8")
+    utils = Path(__file__).resolve().parents[1] / "frontend" / "src" / "utils"
+    source = (utils / "workbenchForm.ts").read_text(encoding="utf-8")
     columns = re.findall(r'\["(qd_\w+)", "(\w+)", "(\w+)"\]', source)
-    managed = re.search(r"QUOTE_DETAILS_MANAGED[^=]*= new Set\(\[([^\]]*)\]\)", source)
+    identity = (utils / "quoteIdentity.ts").read_text(encoding="utf-8")
+    managed = re.search(r"QUOTE_DETAILS_MANAGED[^=]*= new Set\(\[([^\]]*)\]\)", identity)
 
     assert tuple(columns) == QUOTE_DETAILS_COLUMNS
     assert managed is not None
@@ -1063,13 +1062,13 @@ def _with_details_table(change: Any = None) -> dict[str, Any]:
 
 def test_a_form_holding_hautes_quote_details_reads_and_writes_as_it_is(tmp_path: Path) -> None:
     held = _with_details_table(
-        lambda table: table["columns"][1].update(label="Quote", help="As the broker calls it")
+        lambda table: table["columns"][2].update(label="Quote", help="As the broker calls it")
     )
-    # Its currency's allowed values read from a params file, as any column it types can.
-    held["schema"]["tables"][0]["columns"][7].update(
-        options=["GBP", "USD"],
-        options_source={"file": "currencies.csv", "column": "code"},
-        default_value="GBP",
+    # Its broker's allowed values read from a params file, as any column it types can.
+    held["schema"]["tables"][0]["columns"][4].update(
+        options=["Marsh", "Aon"],
+        options_source={"file": "brokers.csv", "column": "name"},
+        default_value="Marsh",
     )
     held["schema"]["tables"][0]["columns"][0]["group"] = "Quote"
     held["schema"]["tables"][0]["columns"][10]["default_value"] = False
@@ -1085,35 +1084,60 @@ def test_a_form_holding_hautes_quote_details_reads_and_writes_as_it_is(tmp_path:
     assert with_quote_details(spec) is spec
 
 
-def test_a_form_saved_before_is_renewal_takes_it_on_after_the_columns_it_has(
-    tmp_path: Path,
-) -> None:
-    # As a project saved before is_renewal holds it: the first eleven, one with a label,
-    # its reference under the name it had then.
-    held = _with_details_table(lambda table: table.update(columns=table["columns"][:11]))
-    held["schema"]["tables"][0]["columns"][2]["label"] = "Insured name"
-    held["schema"]["tables"][0]["columns"][0]["name"] = "reference"
-    assert [c["name"] for c in held["schema"]["tables"][0]["columns"]] == [
-        "reference",
-        *(name for _, name, _ in QUOTE_DETAILS_FIRST[1:]),
+#: quote_details as an earlier Haute made it: its reference under the name it had then,
+#: valid_until and currency, which Haute makes no more, and option last.
+EARLIER_DETAILS = [
+    ("qd_reference", "reference", "str"),
+    ("qd_quote_name", "quote_name", "str"),
+    ("qd_insured", "insured", "str"),
+    ("qd_broker", "broker", "str"),
+    ("qd_inception_date", "inception_date", "date"),
+    ("qd_expiry_date", "expiry_date", "date"),
+    ("qd_valid_until", "valid_until", "date"),
+    ("qd_currency", "currency", "str"),
+    ("qd_stage", "stage", "str"),
+    ("qd_assignee", "assignee", "str"),
+    ("qd_archived", "archived", "bool"),
+    ("qd_is_renewal", "is_renewal", "bool"),
+    ("qd_option", "quote_option", "int"),
+]
+
+
+def _earlier(count: int) -> dict[str, Any]:
+    """A form holding the first *count* of an earlier Haute's quote_details columns, its
+    insured labelled and its currency taking allowed values, as a project gave them."""
+    columns = [
+        {"id": column_id, "name": name, "type": kind}
+        for column_id, name, kind in EARLIER_DETAILS[:count]
     ]
+    columns[2]["label"] = "Insured name"
+    columns[7].update(options=["GBP", "USD"], default_value="GBP")
+    return _with_details_table(lambda table: table.update(columns=columns))
+
+
+@pytest.mark.parametrize("count", [11, 12, 13], ids=["before-is-renewal", "before-option", "wb30"])
+def test_a_form_saved_by_an_earlier_haute_takes_todays_quote_details_by_id(
+    tmp_path: Path, count: int
+) -> None:
+    held = _earlier(count)
     as_saved = json.dumps(held)
     (tmp_path / "forms").mkdir()
     (tmp_path / "forms" / "form.json").write_text(as_saved, encoding="utf-8")
 
     spec = read_form_document(config(tmp_path)).spec
 
+    # Today's columns in today's order: the reference renamed, valid_until and currency
+    # dropped, the missing ones added, what the project gave the kept ones kept.
     details = spec.data_schema.tables[0]
     assert [(c.id, c.name, c.type) for c in details.columns] == list(QUOTE_DETAILS_COLUMNS)
-    assert details.columns[11] == SchemaColumn(id="qd_is_renewal", name="is_renewal", type="bool")
-    assert details.columns[0].name == "quote_reference"
-    assert details.columns[12] == SchemaColumn(id="qd_option", name="quote_option", type="int")
-    assert details.columns[2].label == "Insured name"
-    # Written with it, and the data it was read from left as it was.
+    assert details.columns[3].label == "Insured name"
+    assert details.columns[15] == SchemaColumn(
+        id="qd_haute_version", name="haute_version", type="str"
+    )
     written = json.loads(render_form(spec))["schema"]["tables"][0]["columns"]
-    assert [column["name"] for column in written[11:]] == ["is_renewal", "quote_option"]
+    assert not {"valid_until", "currency"} & {column["name"] for column in written}
+    # The data it was read from is left as it was.
     assert json.dumps(held) == as_saved
-    assert FormSpec.model_validate(held).data_schema.tables[0].columns[-1].name == "quote_option"
 
 
 def _without_identity() -> dict[str, Any]:
@@ -1209,23 +1233,17 @@ def test_a_table_with_its_own_quote_reference_or_option_keeps_it_and_the_clash_i
 def test_a_form_saved_by_any_earlier_haute_takes_on_the_columns_added_since(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Today's thirteen, the twelve before option and the eleven before is_renewal, as a later
-    # Haute with one more reads them.
-    thirteen = _with_details_table()
-    twelve = _with_details_table(lambda table: table["columns"].pop())
-    eleven = _with_details_table(lambda table: table.update(columns=table["columns"][:11]))
-    swapped = _with_details_table(
-        lambda table: table["columns"].insert(10, table["columns"].pop(11))
-    )
+    # Today's columns, some left out and some out of order, as a later Haute with one more
+    # reads them: by id, in its order.
+    today = _with_details_table()
+    fewer = _with_details_table(lambda table: table.update(columns=table["columns"][:9]))
+    swapped = _with_details_table(lambda table: table["columns"].insert(3, table["columns"].pop(9)))
     later = (*QUOTE_DETAILS_COLUMNS, ("qd_renewal_of", "renewal_of", "str"))
     monkeypatch.setattr("haute._workbench_form.QUOTE_DETAILS_COLUMNS", later)
 
-    for held in (thirteen, twelve, eleven):
+    for held in (today, fewer, swapped):
         details = FormSpec.model_validate(held).data_schema.tables[0]
         assert [(c.id, c.name, c.type) for c in details.columns] == list(later)
-    # Out of order, they are no Haute's: left as they are, and refused.
-    with pytest.raises(ValidationError, match="is Haute's: a one-row input table"):
-        FormSpec.model_validate(swapped)
 
 
 @pytest.mark.parametrize(
@@ -1233,18 +1251,29 @@ def test_a_form_saved_by_any_earlier_haute_takes_on_the_columns_added_since(
     [
         (lambda t: t.update(rows="many"), "is Haute's: a one-row input table"),
         (lambda t: t.update(role="output"), "is Haute's: a one-row input table"),
-        # A column of the first eleven taken out is not the table as it was, so is refused.
-        (lambda t: t["columns"].pop(2), "is Haute's: a one-row input table"),
-        (lambda t: t["columns"][11].update(type="str"), "is Haute's: a one-row input table"),
-        (lambda t: t["columns"][1].update(name="title"), "is Haute's: a one-row input table"),
-        (lambda t: t["columns"][4].update(type="str"), "is Haute's: a one-row input table"),
+        # A column Haute does not make is no Haute's: left as it is, and refused.
         (
-            lambda t: t["columns"][1].update(row_per_value=True),
+            lambda t: t["columns"].append({"id": "qd_extra", "name": "extra", "type": "str"}),
+            "is Haute's: a one-row input table",
+        ),
+        (lambda t: t["columns"][7].update(type="str"), "is Haute's: a one-row input table"),
+        (lambda t: t["columns"][2].update(name="title"), "is Haute's: a one-row input table"),
+        (lambda t: t["columns"][5].update(type="str"), "is Haute's: a one-row input table"),
+        (
+            lambda t: t["columns"][2].update(row_per_value=True),
             "is Haute's: a one-row input table",
         ),
         (
             lambda t: t["columns"][0].update(required=True),
             "reference is set by the underwriter app",
+        ),
+        (
+            lambda t: t["columns"][12].update(default_value="ana@example.com"),
+            "created_by is set by the underwriter app and takes no rules or default",
+        ),
+        (
+            lambda t: t["columns"][15].update(options=["1.0.0"]),
+            "haute_version is set by the underwriter app",
         ),
         (
             lambda t: t["columns"][8].update(options=["draft"]),
@@ -1269,12 +1298,14 @@ def test_a_form_saved_by_any_earlier_haute_takes_on_the_columns_added_since(
     ids=[
         "many-rows",
         "output",
-        "column-gone",
+        "unknown-column",
         "is-renewal-retyped",
         "renamed",
         "retyped",
         "row-per-value",
         "rule",
+        "created-by-default",
+        "haute-version-options",
         "options",
         "options-source",
         "default",

@@ -608,6 +608,12 @@ def test_a_project_builds_a_release_that_prices_as_its_pipeline(project: Path) -
         ],
     }
 
+    # Nor does it hold the details the app sets for a quote it keeps, whatever the page sends.
+    claimed = {"qd_stage": "final", "qd_created_by": "mallory", "qd_haute_version": "0.0.1"}
+    sent = _price(client, {**PROJECT_VALUES, "quote_details": [claimed]})
+    # The row filled, its typed tick reads unticked.
+    assert sent.json()["request"]["quote_details"] == {**stand_in, "is_renewal": False}
+
     # Built again, into the same directory or another, it is the same release.
     assert build_release(project, project / "build" / "app").id == built.id
     assert build_release(project, project / "elsewhere").id == built.id

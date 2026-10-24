@@ -127,14 +127,22 @@ QUOTE_DETAILS = Table(
     Column("broker", Text, nullable=True),
     Column("inception_date", Date, nullable=True),
     Column("expiry_date", Date, nullable=True),
-    Column("valid_until", Date, nullable=True),
-    Column("currency", Text, nullable=True),
     Column("stage", String(STAGE_LENGTH), nullable=False),
     Column("assignee", String(PRINCIPAL_LENGTH), nullable=False),
     Column("archived", Boolean, nullable=False),
     # Null in the rows written before the third migration, and in those a release before it writes.
     Column("is_renewal", Boolean, nullable=True),
     Column("quote_option", Integer, nullable=False),
+    # When the quote was made and by whom, and when this revision was written and by whom,
+    # as dates in UTC: what the quote's own row and the revision's hold, as the request
+    # priced held them.
+    Column("created_date", Date, nullable=False),
+    Column("created_by", String(PRINCIPAL_LENGTH), nullable=False),
+    Column("modified_date", Date, nullable=False),
+    Column("modified_by", String(PRINCIPAL_LENGTH), nullable=False),
+    # The Haute version of the release the revision was written on; null in the rows
+    # written before the fourth migration, which recorded none.
+    Column("haute_version", Text, nullable=True),
     ForeignKeyConstraint(
         ["quote_id", "revision"],
         ["haute_quote_revisions.quote_id", "haute_quote_revisions.number"],

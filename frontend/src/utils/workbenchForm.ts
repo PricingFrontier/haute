@@ -20,7 +20,7 @@ import {
   type Rect,
   type Size,
 } from "./sheetGeometry"
-import { IDENTITY_COLUMNS, IDENTITY_NAMES, identityCount, isIdentityColumn, sheetColumns } from "./quoteIdentity"
+import { IDENTITY_COLUMNS, IDENTITY_NAMES, identityCount, isIdentityColumn, QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, sheetColumns } from "./quoteIdentity"
 import { cellProblem, filled, isDay, parseTypedNumber, presetColumn, pricedRows, valuesBasis, type PricedRows, type RowsByTable } from "./sheetValues"
 import {
   ALWAYS,
@@ -1798,34 +1798,29 @@ function defaultProblem(column: SchemaColumn): string | null {
 
 // ── Haute's quote_details table ──────────────────────────────────────────
 
-/**
- * The id and name of Haute's own input table of a quote's details, first in every form
- * (`haute._workbench_form.QUOTE_DETAILS_ID`): the underwriter app keeps its row with each
- * revision, and its Quotes page lists them.
- */
-export const QUOTE_DETAILS_ID = "quote_details"
+export { QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED }
 /** Why another table under its name is refused, in the server's words (`QUOTE_DETAILS_REFUSAL` in `src/haute/_workbench_form.py`). */
 export const QUOTE_DETAILS_REFUSAL = "quote_details is Haute's own table of a quote's details: name yours otherwise"
 
-/** Its columns, in order, as id, name and type (`QUOTE_DETAILS_COLUMNS`); their structure is fixed. */
+/** Its columns, in order, as id, name and type (`QUOTE_DETAILS_COLUMNS`), a quote's administration; their structure is fixed. */
 export const QUOTE_DETAILS_COLUMNS: ReadonlyArray<readonly [id: string, name: string, type: SchemaColumn["type"]]> = [
   ["qd_reference", "quote_reference", "str"],
+  ["qd_option", "quote_option", "int"],
   ["qd_quote_name", "quote_name", "str"],
   ["qd_insured", "insured", "str"],
   ["qd_broker", "broker", "str"],
   ["qd_inception_date", "inception_date", "date"],
   ["qd_expiry_date", "expiry_date", "date"],
-  ["qd_valid_until", "valid_until", "date"],
-  ["qd_currency", "currency", "str"],
+  ["qd_is_renewal", "is_renewal", "bool"],
   ["qd_stage", "stage", "str"],
   ["qd_assignee", "assignee", "str"],
   ["qd_archived", "archived", "bool"],
-  ["qd_is_renewal", "is_renewal", "bool"],
-  ["qd_option", "quote_option", "int"],
+  ["qd_created_date", "created_date", "date"],
+  ["qd_created_by", "created_by", "str"],
+  ["qd_modified_date", "modified_date", "date"],
+  ["qd_modified_by", "modified_by", "str"],
+  ["qd_haute_version", "haute_version", "str"],
 ]
-
-/** The columns the underwriter app sets over whatever is typed, which take no rules (`QUOTE_DETAILS_MANAGED`). */
-export const QUOTE_DETAILS_MANAGED: ReadonlySet<string> = new Set(["qd_reference", "qd_option", "qd_stage", "qd_assignee", "qd_archived"])
 
 /** Why a table's own column keeps the quote's identity from it, in the server's words (`identity_clashes`). */
 const identityClash = (table: SchemaTable, column: SchemaColumn): string =>

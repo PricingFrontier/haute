@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import json
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -17,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from haute import _workbench_app_quotes
 from haute._quote_store import (
+    QuoteBook,
     QuoteStoreNotMigratedError,
     migrate_store,
     open_store,
@@ -32,7 +34,12 @@ from haute._workbench_app import (
     easy_auth_roles,
     write_release,
 )
-from haute._workbench_form import QUOTE_DETAILS_ID, FormSpec, with_quote_details
+from haute._workbench_form import (
+    QUOTE_DETAILS_ID,
+    QUOTE_DETAILS_MANAGED,
+    FormSpec,
+    with_quote_details,
+)
 from haute._workbench_tables import input_tables
 from haute.deploy._utils import shipped_graph
 from tests.test_workbench_app import _graph
@@ -49,8 +56,27 @@ SET = {
     "qd_assignee": "ana@example.com",
 }
 VALUES = {"t1": [{"c_state": "NY", "c_exposure": "1000"}], "quote_details": [DETAILS]}
-#: VALUES as a priced quote of Ana's keeps them: the details with the app's set over them.
-KEPT = {**VALUES, "quote_details": [{**DETAILS, **SET, "qd_archived": False}]}
+#: The quote's administration, by name, which the app sets on every revision.
+ADMIN = ("created_date", "created_by", "modified_date", "modified_by", "haute_version")
+
+
+def _kept(quote: dict[str, Any], by: str = "ana@example.com") -> dict[str, Any]:
+    """VALUES as Ana's priced *quote* keeps them at its newest revision, written by *by*: the
+    details with the app's set over them, when the quote was made and by whom, when this
+    revision was written and by whom, as UTC dates, and the release's Haute version."""
+    details = {
+        **DETAILS,
+        **SET,
+        "qd_archived": False,
+        "qd_created_date": quote["created_at"][:10],
+        "qd_created_by": "ana@example.com",
+        "qd_modified_date": quote["last_saved_at"][:10],
+        "qd_modified_by": by,
+        "qd_haute_version": "9.9.9",
+    }
+    return {**VALUES, "quote_details": [details]}
+
+
 PRICED = {"pricing_output": [{"premium": 500.0}]}
 FORM = with_quote_details(FormSpec.model_validate(form(POLICY, PRICING))).model_dump(
     mode="json", by_alias=True
@@ -179,7 +205,15 @@ def test_the_release_says_the_app_keeps_quotes(client: TestClient, release_dir: 
 
 
 def test_a_priced_save_is_priced_again_on_the_server_and_kept(page: Page) -> None:
-    sent = {**VALUES, "quote_details": [{**DETAILS, "qd_assignee": "jo", "qd_stage": "final"}]}
+    # What the page sends of the details the app sets is overruled, its administration too.
+    claimed = {
+        "qd_assignee": "jo",
+        "qd_stage": "final",
+        "qd_created_by": "mallory",
+        "qd_modified_date": "2020-01-01",
+        "qd_haute_version": "0.0.1",
+    }
+    sent = {**VALUES, "quote_details": [{**DETAILS, **claimed}]}
     made = page.create(values=sent).json()["quote"]
     saved = page.save(made, values=sent)
 
@@ -201,6 +235,11 @@ def test_a_priced_save_is_priced_again_on_the_server_and_kept(page: Page) -> Non
         "stage": "priced",
         "assignee": "ana@example.com",
         "archived": False,
+        "created_date": quote["created_at"][:10],
+        "created_by": "ana@example.com",
+        "modified_date": quote["last_saved_at"][:10],
+        "modified_by": "ana@example.com",
+        "haute_version": "9.9.9",
     }
     # The values read back hold the details, the app's set over what the page sent.
     assert answered["revision"]["values"]["quote_details"][0]["qd_stage"] == "priced"
@@ -208,6 +247,10 @@ def test_a_priced_save_is_priced_again_on_the_server_and_kept(page: Page) -> Non
     # Priced under the quote's own identity, which the pipeline's request names.
     request = answered["revision"]["request"]["quote_details"]
     assert (request["quote_reference"], request["quote_option"]) == ("Q-000001", 1)
+    # The pipeline priced the administration the details row keeps.
+    assert {name: request[name] for name in ADMIN} == {
+        name: quote["details"][name] for name in ADMIN
+    }
     assert answered["revision"]["release"] == page.release
     assert answered["moved"] is False
     assert answered["form"] is None
@@ -221,6 +264,26 @@ def test_a_save_whose_prices_moved_on_the_server_keeps_the_servers_and_says_so(
 
     assert saved["moved"] is True
     assert saved["revision"]["tables"] == PRICED
+
+
+def test_one_instant_stamps_a_save_its_request_its_revision_and_its_details(
+    page: Page, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    made = page.create().json()["quote"]
+    # Read before pricing, a second before midnight UTC on a day long past: the store's own
+    # clock, read again, would give today.
+    instant = datetime(2026, 10, 12, 23, 59, 59, tzinfo=UTC)
+    monkeypatch.setattr(QuoteBook, "now", lambda _book: instant)
+
+    saved = page.save(made, headers=JO).json()
+
+    revision = saved["revision"]
+    assert revision["saved_at"] == instant.isoformat()
+    assert revision["request"]["quote_details"]["modified_date"] == "2026-10-12"
+    assert saved["quote"]["details"]["modified_date"] == "2026-10-12"
+    assert revision["values"]["quote_details"][0]["qd_modified_by"] == "jo@example.com"
+    history = page.client.get(f"/api/app/quotes/{made['id']}/history", headers=ANA).json()
+    assert history["events"][-1]["at"] == instant.isoformat()
 
 
 def test_a_new_quote_given_a_price_is_refused_as_it_is_made_unpriced(page: Page) -> None:
@@ -276,7 +339,7 @@ def test_a_quote_opens_with_its_newest_revision_and_each_revision_by_number(page
     first = page.client.get(f"/api/app/quotes/{quote['id']}/revisions/1", headers=ANA).json()
 
     assert (opened["revision"]["number"], opened["revision"]["saved_by"]) == (2, "jo@example.com")
-    assert opened["revision"]["values"] == KEPT
+    assert opened["revision"]["values"] == _kept(opened["quote"], by="jo@example.com")
     assert (first["revision"]["number"], first["revision"]["tables"]) == (1, None)
     missing = page.client.get("/api/app/quotes/nope", headers=ANA)
     assert missing.status_code == 404
@@ -428,14 +491,16 @@ def test_a_revision_is_carried_onto_the_releases_sheets(page: Page) -> None:
     # A quote made from it takes none of them: they are the source's.
     derived = page.client.get(url, headers=ANA).json()
 
-    assert same == {"values": KEPT, "dropped": []}
+    kept = _kept(quote)
+    assert same == {"values": kept, "dropped": []}
     assert derived["dropped"] == []
-    assert derived["values"]["t1"] == KEPT["t1"]
+    assert derived["values"]["t1"] == kept["t1"]
     [details] = derived["values"]["quote_details"]
-    managed = {"qd_reference", "qd_option", "qd_stage", "qd_assignee", "qd_archived"}
-    assert not managed & set(details)
+    assert not QUOTE_DETAILS_MANAGED & set(details)
     assert {
-        column: value for column, value in KEPT["quote_details"][0].items() if column not in managed
+        column: value
+        for column, value in kept["quote_details"][0].items()
+        if column not in QUOTE_DETAILS_MANAGED
     } == details
 
 

@@ -61,8 +61,7 @@ TYPED = {
     "insured": "Acme Engineering",
     "broker": "Marsh",
     "inception_date": "2026-11-01",
-    "valid_until": "2026-11-30",
-    "currency": "GBP",
+    "expiry_date": "2027-10-31",
 }
 VALUES = with_details({"t_policy": [{"c_region": "north"}]}, TYPED)
 REQUEST = {"policy": {"region": "north"}}
@@ -70,6 +69,8 @@ RESPONSE = {"pricing": [{"premium": 512.4}]}
 RELEASE = "release-1"
 ANA = "ana@example.com"
 JO = "jo@example.com"
+#: The Haute the app writing the quotes runs.
+HAUTE = "9.9.9"
 
 
 class Clock:
@@ -97,7 +98,7 @@ def clock() -> Clock:
 @pytest.fixture
 def book(url: str, clock: Clock) -> Iterator[QuoteBook]:
     migrate_store(url)
-    with QuoteBook(open_store(url, clock=clock)) as opened:
+    with QuoteBook(open_store(url, clock=clock), haute_version=HAUTE) as opened:
         yield opened
 
 
@@ -122,7 +123,7 @@ def _create(book: QuoteBook, **overrides: Any) -> Any:
         "response": RESPONSE,
         "release": RELEASE,
     }
-    return book.create(**{**fields, **overrides})
+    return book.create(**{**fields, "at": book.now(), **overrides})
 
 
 def _save(book: QuoteBook, quote: Any, **overrides: Any) -> Any:
@@ -136,7 +137,7 @@ def _save(book: QuoteBook, quote: Any, **overrides: Any) -> Any:
         "response": RESPONSE,
         "release": RELEASE,
     }
-    return book.save(quote.id, **{**fields, **overrides})
+    return book.save(quote.id, **{**fields, "at": book.now(), **overrides})
 
 
 def _kinds(book: QuoteBook, quote_id: str) -> list[str]:
@@ -169,6 +170,11 @@ def test_a_new_quote_keeps_its_details_in_the_typed_table_alone(book: QuoteBook,
         "stage": "priced",
         "assignee": ANA,
         "archived": False,
+        "created_date": "2026-10-12",
+        "created_by": ANA,
+        "modified_date": "2026-10-12",
+        "modified_by": ANA,
+        "haute_version": HAUTE,
     }
     assert _row(url, quote.id, 1) == (
         "Q-000001",
@@ -231,7 +237,7 @@ def test_quotes_created_at_once_take_different_references(url: str) -> None:
 
     def make() -> None:
         try:
-            with QuoteBook(open_store(url)) as own:
+            with QuoteBook(open_store(url), haute_version=HAUTE) as own:
                 references.append(_create(own).reference)
         except BaseException as exc:  # noqa: BLE001 - reported below
             errors.append(exc)
@@ -324,8 +330,91 @@ def test_a_save_takes_the_typed_details_and_keeps_the_apps(book: QuoteBook, cloc
     assert (saved.latest, saved.stage, saved.title) == (2, "draft", "Fleet 2027")
     assert (saved.reference, saved.assignee, saved.archived) == ("Q-000001", ANA, False)
     assert (saved.last_saved_by, saved.last_saved_at) == (JO, clock.now)
+    # Who made it stays; who changed it last is who saved, unpriced as priced.
+    assert (saved.details["created_by"], saved.details["modified_by"]) == (ANA, JO)
     assert details_of(book.revision(quote.id, 1).inputs)["quote_name"] == "Fleet renewal"
     assert _kinds(book, quote.id) == ["created", "saved"]
+
+
+def test_a_save_is_stamped_with_the_instant_it_is_given_not_the_clock_at_its_write(
+    book: QuoteBook, clock: Clock
+) -> None:
+    quote = _create(book)
+    # Read before pricing, a second before midnight UTC; written after it.
+    at = datetime(2026, 10, 12, 23, 59, 59, tzinfo=UTC)
+    clock.now = datetime(2026, 10, 13, 0, 0, 30, tzinfo=UTC)
+
+    saved = _save(book, quote, actor=JO, at=at)
+
+    assert saved.last_saved_at == at
+    assert (saved.details["modified_date"], saved.details["created_date"]) == (
+        "2026-10-12",
+        "2026-10-12",
+    )
+    assert book.timeline(quote.id).events[-1].at == at
+    # Repeated with its key later, it answers what it wrote, stamped as it was.
+    operation = _op()
+    first = _save(book, saved, operation=operation, at=clock())
+    again = _save(book, saved, operation=operation, at=clock())
+    assert (again.latest, again.last_saved_at) == (first.latest, first.last_saved_at)
+    assert again.details["modified_date"] == "2026-10-13"
+
+
+def test_a_change_says_who_made_it_when_and_on_which_haute_keeping_the_price(
+    book: QuoteBook, url: str
+) -> None:
+    quote = _create(book)
+    priced = book.revision(quote.id, 1)
+    # The app moved to a release of another Haute version.
+    with QuoteBook(open_store(url), haute_version="10.0.0") as newer:
+        assigned = newer.assign(quote.id, version=1, actor=JO, assignee=JO)
+        archived = newer.archive(quote.id, version=assigned.latest, actor=ANA)
+        restored = newer.restore(quote.id, version=archived.latest, actor=JO)
+        noted = newer.set_note(quote.id, actor=ANA, note="Call the broker")
+
+        for changed, by in ((assigned, JO), (archived, ANA), (restored, JO)):
+            assert (changed.details["modified_by"], changed.details["haute_version"]) == (
+                by,
+                "10.0.0",
+            )
+            assert changed.details["created_by"] == ANA
+            kept = newer.revision(quote.id, changed.latest)
+            assert (kept.request, kept.response, kept.release) == (
+                priced.request,
+                priced.response,
+                RELEASE,
+            )
+        # A note writes no revision: who changed it last stays.
+        assert (noted.latest, noted.details["modified_by"]) == (restored.latest, JO)
+
+        # Priced on the earlier release, it is not marked final on this one, nothing written.
+        with pytest.raises(QuoteLockedError, match="priced on release release-1"):
+            newer.finalise(
+                quote.id, version=noted.latest, actor=ANA, revision=noted.latest, release="r2"
+            )
+        assert newer.get(quote.id).latest == noted.latest
+        repriced = newer.save(
+            quote.id,
+            operation=_op(),
+            version=noted.latest,
+            actor=ANA,
+            form=FORM,
+            inputs=VALUES,
+            request=REQUEST,
+            response={"pricing": [{"premium": 600.0}]},
+            release="r2",
+            at=newer.now(),
+        )
+        final = newer.finalise(
+            quote.id, version=repriced.latest, actor=JO, revision=repriced.latest, release="r2"
+        )
+        assert (final.details["modified_by"], final.details["haute_version"]) == (JO, "10.0.0")
+        assert newer.revision(quote.id, final.latest).response == {"pricing": [{"premium": 600.0}]}
+        reopened = newer.reopen(quote.id, version=final.latest, actor=ANA, reason="Cover changed")
+        assert (reopened.details["modified_by"], reopened.details["haute_version"]) == (
+            ANA,
+            "10.0.0",
+        )
 
 
 def test_a_save_over_a_revision_the_quote_has_moved_past_is_refused_naming_who(
@@ -682,14 +771,14 @@ def test_an_alternative_takes_its_sources_reference_and_the_next_option(book: Qu
 
 def test_alternatives_made_at_once_take_different_options(url: str) -> None:
     migrate_store(url)
-    with QuoteBook(open_store(url)) as own:
+    with QuoteBook(open_store(url), haute_version=HAUTE) as own:
         origin = _create(own)
     options: list[int] = []
     errors: list[BaseException] = []
 
     def make() -> None:
         try:
-            with QuoteBook(open_store(url)) as own:
+            with QuoteBook(open_store(url), haute_version=HAUTE) as own:
                 made = _create(own, source=Source(origin.id, 1, "alternative"))
                 options.append(made.option)
         except BaseException as exc:  # noqa: BLE001 - reported below

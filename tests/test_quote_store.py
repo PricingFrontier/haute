@@ -4,6 +4,7 @@ and a saved quote's values carried onto the current form."""
 
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 from collections.abc import Iterator
@@ -19,6 +20,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 
 from haute._quote_store import (
+    QuoteBook,
     QuoteNotFoundError,
     QuoteStore,
     QuoteStoreError,
@@ -181,12 +183,15 @@ def test_a_file_at_the_third_schema_gives_each_app_quote_its_reference_and_optio
     url: str,
 ) -> None:
     # A database the third schema's Haute wrote: an app quote of two revisions, whose
-    # reference its details hold, and a quote the store saved alone, with none.
+    # reference its details hold, the second saved by Jo a day later and priced with a
+    # validity date, and a quote the store saved alone, with none.
+    priced = json.dumps({"quote_details": {"reference": "Q-000004", "valid_until": "2026-11-30"}})
     engine = create_engine(url)
     try:
         with engine.begin() as connection:
             command.upgrade(_alembic_config(connection), "0003")
             now = datetime(2026, 10, 20, 9, 0)
+            later = datetime(2026, 10, 21, 23, 59)
             connection.execute(text("INSERT INTO haute_quote_forms VALUES ('f1', '{}')"))
             for quote_id, name, latest in (("q1", "Fleet", 2), ("q2", "smoke", 1)):
                 connection.execute(
@@ -194,18 +199,26 @@ def test_a_file_at_the_third_schema_gives_each_app_quote_its_reference_and_optio
                     {"id": quote_id, "name": name, "now": now, "latest": latest},
                 )
                 for number in range(1, latest + 1):
+                    second = quote_id == "q1" and number == 2
                     connection.execute(
                         text(
                             "INSERT INTO haute_quote_revisions VALUES "
-                            "(:id, :number, 'f1', '{}', '{}', NULL, NULL, 'ana', :now)"
+                            "(:id, :number, 'f1', '{}', :request, '{}', NULL, :by, :at)"
                         ),
-                        {"id": quote_id, "number": number, "now": now},
+                        {
+                            "id": quote_id,
+                            "number": number,
+                            "request": priced if second else "{}",
+                            "by": "jo" if second else "ana",
+                            "at": later if second else now,
+                        },
                     )
             for number in (1, 2):
                 connection.execute(
                     text(
                         "INSERT INTO haute_quote_details (quote_id, revision, reference, stage, "
-                        "assignee, archived) VALUES ('q1', :number, 'Q-000004', 'draft', 'ana', 0)"
+                        "assignee, archived, valid_until, currency) VALUES ('q1', :number, "
+                        "'Q-000004', 'draft', 'ana', 0, '2026-11-30', 'GBP')"
                     ),
                     {"number": number},
                 )
@@ -225,9 +238,21 @@ def test_a_file_at_the_third_schema_gives_each_app_quote_its_reference_and_optio
             ).all()
             assert [tuple(row) for row in quotes] == [("q1", "Q-000004", 1), ("q2", None, None)]
             details = connection.execute(
-                text("SELECT revision, quote_option FROM haute_quote_details ORDER BY revision")
+                text(
+                    "SELECT revision, quote_option, created_date, created_by, modified_date, "
+                    "modified_by, haute_version FROM haute_quote_details ORDER BY revision"
+                )
             ).all()
-            assert [tuple(row) for row in details] == [(1, 1), (2, 1)]
+            # Made by Ana on the 20th; each revision written when and by whom it was; no
+            # version recorded.
+            assert [tuple(row) for row in details] == [
+                (1, 1, "2026-10-20", "ana", "2026-10-20", "ana", None),
+                (2, 1, "2026-10-20", "ana", "2026-10-21", "jo", None),
+            ]
+            columns = {
+                row[1] for row in connection.execute(text("PRAGMA table_info(haute_quote_details)"))
+            }
+            assert not {"valid_until", "currency"} & columns
             # An alternative of Q-000004 would take option 2.
             counted = connection.execute(
                 text("SELECT reference, last_option FROM haute_quote_options")
@@ -239,6 +264,17 @@ def test_a_file_at_the_third_schema_gives_each_app_quote_its_reference_and_optio
             assert oldest == "0004"
     finally:
         engine.dispose()
+    # The revision priced with a validity date keeps it in its request, and a change after
+    # the migration copies it.
+    with QuoteBook(open_store(url), haute_version="9.9.9") as book:
+        assigned = book.assign("q1", version=2, actor="jo", assignee="jo")
+        copied = book.revision("q1", 3).request
+        assert copied["quote_details"] == json.loads(priced)["quote_details"]
+        assert (assigned.details["modified_by"], assigned.details["haute_version"]) == (
+            "jo",
+            "9.9.9",
+        )
+        assert "valid_until" not in assigned.details
 
 
 def test_a_haute_at_the_third_schema_refuses_a_database_migrated_to_the_fourth(

@@ -733,6 +733,23 @@ describe("WidgetBody", () => {
     expect(within(boxes()).getAllByTestId("collection-spacer")).toHaveLength(1)
   })
 
+  it("names a field whose column is gone while building, a column Haute makes no more among them, and leaves it out in Preview", () => {
+    // A field on quote_details' valid_until, which an earlier Haute made, beside the state.
+    const fields = [{ table: "policy", column: "policy.state" }, { table: "quote_details", column: "qd_valid_until" }]
+    loadForm(updateWidget(coverForm(), "w_boxes", { fields, spacers: [1] }))
+    render(<SheetCanvas />)
+    const boxes = () => screen.getByTestId("sheet-widget-w_boxes")
+
+    expect(within(boxes()).getByText("Missing column")).toBeInTheDocument()
+    expect(within(boxes()).getAllByTestId("collection-spacer")).toHaveLength(1)
+
+    act(() => useWorkbenchViewStore.setState({ mode: "preview" }))
+    expect(within(boxes()).queryByText("Missing column")).not.toBeInTheDocument()
+    expect(within(boxes()).getByRole("combobox", { name: "State" })).toBeInTheDocument()
+    // Its spacer goes with it, as with a field that hides.
+    expect(within(boxes()).queryAllByTestId("collection-spacer")).toHaveLength(0)
+  })
+
   it("leaves a Table's column that hides out of its grid in Preview, transposed its line, its rows still moving with every table it shows", () => {
     const value = { table: "equipment", column: "equipment.value" }
     const note = { table: "extras", column: "extras.note" }

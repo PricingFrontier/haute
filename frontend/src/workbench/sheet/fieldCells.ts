@@ -133,16 +133,19 @@ export function everyField(schema: FormSchema, widget: Widget): DrawnFields {
 
 /**
  * What a component draws of its fields for the fields that show (`showing`, by `fieldKey`):
- * in Preview those alone, a Collection's spacers placed among them (`spacersShown`); while
- * `building` every field, each with conditions marked, hidden while `showing` lacks it and
- * faded for it while the component itself shows (`hidden` false).
+ * in Preview and the app those alone whose column the schema holds, a Collection's spacers
+ * placed among them (`spacersShown`); while `building` every field, one whose column is gone
+ * named as missing, each with conditions marked, hidden while `showing` lacks it and faded
+ * for it while the component itself shows (`hidden` false).
  */
 export function drawnFields(schema: FormSchema, widget: Widget, showing: ReadonlySet<string>, building: boolean, hidden: boolean): DrawnFields {
   const every = everyField(schema, widget)
   if (widget.type !== "tableInput" && widget.type !== "collection") return every
   const shows = widget.fields.map((field) => showing.has(fieldKey(widget.id, field.table, field.column)))
   if (!building) {
-    return { ...every, fields: every.fields.filter((_, at) => shows[at]), spacers: widget.type === "collection" ? spacersShown(widget.spacers, shows) : [] }
+    // A field whose column is gone, one Haute makes no more among them, is the editor's to name.
+    const drawn = shows.map((show, at) => show && every.fields[at].found !== null)
+    return { ...every, fields: every.fields.filter((_, at) => drawn[at]), spacers: widget.type === "collection" ? spacersShown(widget.spacers, drawn) : [] }
   }
   const marks = new Map<string, FieldMark>()
   widget.fields.forEach((field, at) => {
