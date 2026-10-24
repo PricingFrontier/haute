@@ -6,6 +6,8 @@ occurrence named like an inner node would collide with it. The response
 reads the occurrence through its public output port, `enriched`.
 """
 
+from modules import reusable_enrichment
+
 import haute
 
 pipeline = haute.Pipeline(
@@ -22,6 +24,6 @@ def quotes(): ...
 def response(enriched): ...
 
 
-pipeline.submodel("modules/reusable_enrichment.py", "enrichment")
+pipeline.submodel(reusable_enrichment.submodel, "enrichment")
 pipeline.connect("quotes", "enrichment", target_port="quotes")
 pipeline.connect("enrichment", "response", source_port="enriched")

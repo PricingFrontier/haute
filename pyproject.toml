@@ -576,6 +576,13 @@ disallow_untyped_defs = false
 check_untyped_defs = true
 
 [[tool.mypy.overrides]]
+# An example pipeline imports its submodel modules from the folder beside it
+# (`from modules import x`), where Python finds them when the example runs; mypy,
+# checking the package, does not look there.
+module = ["modules", "modules.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 module = [
     "catboost.*",
     "joblib.*",

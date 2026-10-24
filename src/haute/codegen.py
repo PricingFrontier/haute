@@ -10,6 +10,7 @@ single-node dispatcher that drives the unified
 from __future__ import annotations
 
 import ast
+import functools
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
@@ -41,9 +42,23 @@ from haute._graph_utils import (
 )
 from haute._logging import get_logger
 from haute._registry import NODE_REGISTRY
-from haute._source_layout import Doc, arguments, literal, print_doc, quote_string
+from haute._source_layout import (
+    INDENT,
+    LINE_WIDTH,
+    Doc,
+    arguments,
+    literal,
+    print_doc,
+    quote_string,
+    width,
+)
 from haute._submodel_instances import ResolvedSubmodelInstance, resolve_submodel_instances
-from haute._submodel_paths import definition_pipeline_dir
+from haute._submodel_paths import (
+    SUBMODEL_PACKAGE,
+    MalformedSubmodelPathError,
+    definition_pipeline_dir,
+    submodel_module_name,
+)
 from haute._topo import topo_sort_ids
 from haute._types import (
     GLOBAL_CONSTANTS_FILE,
@@ -681,6 +696,76 @@ def declares_global_constants(graph: PipelineGraph) -> bool:
     return bool(graph.global_constants) or graph.global_constants_error is not None
 
 
+def _is_digit(char: str) -> bool:
+    return "0" <= char <= "9"
+
+
+def _compare_digit_runs(a: str, i: int, b: str, j: int) -> tuple[int, int, int]:
+    """Compare the digit runs at ``a[i:]`` and ``b[j:]`` as natord does; where they end.
+
+    A run starting with ``0`` compares digit by digit from the left, so ``02`` sorts
+    before ``1``; otherwise the longer run is the larger number, and runs of one length
+    compare at their first different digit.
+    """
+    left_aligned = a[i] == "0" or b[j] == "0"
+    bias = 0
+    while True:
+        a_digit = i < len(a) and _is_digit(a[i])
+        b_digit = j < len(b) and _is_digit(b[j])
+        if not a_digit or not b_digit:
+            if a_digit != b_digit:
+                return (1 if a_digit else -1), i, j
+            return (0 if left_aligned else bias), i, j
+        if a[i] != b[j]:
+            order = -1 if a[i] < b[j] else 1
+            if left_aligned:
+                return order, i, j
+            bias = bias or order
+        i, j = i + 1, j + 1
+
+
+def _natord(a: str, b: str) -> int:
+    """Natural order as the natord crate, which ruff's isort uses, compares strings."""
+    i = j = 0
+    while i < len(a) and j < len(b):
+        if _is_digit(a[i]) and _is_digit(b[j]):
+            order, i, j = _compare_digit_runs(a, i, b, j)
+            if order:
+                return order
+            continue
+        if a[i] != b[j]:
+            return -1 if a[i] < b[j] else 1
+        i, j = i + 1, j + 1
+    return (i < len(a)) - (j < len(b))
+
+
+def _isort_member_rank(name: str) -> int:
+    """Constants, then classes, then the rest, as ruff's ``order-by-type`` ranks them."""
+    return 0 if len(name) > 1 and name.isupper() else 1 if name[:1].isupper() else 2
+
+
+def _isort_member_order(a: str, b: str) -> int:
+    """How ruff's isort orders two names of a ``from ... import``.
+
+    By type, then case-insensitively (lowercased, not casefolded) in natural order,
+    then exactly.
+    """
+    ranks = _isort_member_rank(a) - _isort_member_rank(b)
+    if ranks:
+        return -1 if ranks < 0 else 1
+    return _natord(a.lower(), b.lower()) or _natord(a, b)
+
+
+def _submodel_import(modules: list[str]) -> str:
+    """``from modules import <each>``, in ruff's order, wrapped as ruff wraps it."""
+    names = sorted(dict.fromkeys(modules), key=functools.cmp_to_key(_isort_member_order))
+    flat = f"from {SUBMODEL_PACKAGE} import {', '.join(names)}"
+    if width(flat) <= LINE_WIDTH:
+        return flat
+    lines = "".join(f"{INDENT}{name},\n" for name in names)
+    return f"from {SUBMODEL_PACKAGE} import (\n{lines})"
+
+
 def _render_module(
     *,
     kind: Literal["pipeline", "submodel"],
@@ -691,13 +776,15 @@ def _render_module(
     connect_pairs: list[_ConnectPair],
     preserved_blocks: list[str] | None = None,
     registrations: list[str] | None = None,
+    submodel_import: str = "",
     constructor_keywords: Sequence[tuple[str, object]] = (),
     dedup_connects: bool = False,
     declares_global_constants: bool = False,
 ) -> str:
     """Assemble a pipeline or submodel file, laid out as ``ruff format`` would.
 
-    The header docstring, the imports, the authored preamble, the object's
+    The header docstring, the imports (a pipeline's submodel modules in their own
+    block after ``haute`` and ``polars``), the authored preamble, the object's
     construction, preserved blocks, one function per node, submodel
     registrations and the connect calls, separated by ruff's blank lines.
     ``import polars as pl`` is emitted only when the rest of the module
@@ -737,7 +824,10 @@ def _render_module(
 
     uses_pl = _refers_to_pl("\n\n".join(block.text for block in body))
     imports = "import haute\nimport polars as pl" if uses_pl else "import haute"
-    return _join_blocks([header, _Block(imports), *body])
+    head = [header, _Block(imports)]
+    if submodel_import:
+        head.append(_Block(submodel_import))
+    return _join_blocks([*head, *body])
 
 
 # ---------------------------------------------------------------------------
@@ -925,6 +1015,7 @@ def _graph_to_code_multi_instances(
             definition_order.append(instance.config.definition_id)
 
     files_by_identity: dict[str, str] = {}
+    module_names: dict[str, str] = {}
     for definition_id in definition_order:
         definition = definitions[definition_id]
         if not definition.file:
@@ -932,6 +1023,10 @@ def _graph_to_code_multi_instances(
                 "Reusable submodel definition has no source file.",
                 definition_id=definition_id,
             )
+        try:
+            module_names[definition_id] = submodel_module_name(definition.file)
+        except MalformedSubmodelPathError as exc:
+            raise ParseError(str(exc), definition_id=definition_id) from exc
         normalised_file = definition.file.replace("\\", "/")
         file_identity = normalised_file.casefold()
         previous = files_by_identity.get(file_identity)
@@ -1140,7 +1235,7 @@ def _graph_to_code_multi_instances(
                 _call(
                     "pipeline.submodel",
                     [
-                        quote_string(instance.definition.file.replace("\\", "/")),
+                        f"{module_names[instance.config.definition_id]}.submodel",
                         quote_string(name),
                         _keyword("instance_of", owner_name),
                     ],
@@ -1151,7 +1246,7 @@ def _graph_to_code_multi_instances(
                 _call(
                     "pipeline.submodel",
                     [
-                        quote_string(instance.definition.file.replace("\\", "/")),
+                        f"{module_names[instance.config.definition_id]}.submodel",
                         quote_string(name),
                     ],
                 )
@@ -1179,6 +1274,7 @@ def _graph_to_code_multi_instances(
             preserved_blocks if preserved_blocks is not None else graph.preserved_blocks or None
         ),
         registrations=registrations,
+        submodel_import=_submodel_import(list(module_names.values())),
         dedup_connects=True,
         declares_global_constants=declares_global_constants(graph),
     )

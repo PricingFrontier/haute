@@ -195,11 +195,11 @@ def base_rate() -> pl.LazyFrame:
 """)
         (tmp_path / "pipeline.py").write_text("""\
 import haute
+
+from modules import pricing
+
 pipeline = haute.Pipeline("main")
-pipeline.submodel(
-    "modules/pricing.py",
-    "pricing",
-)
+pipeline.submodel(pricing.submodel, "pricing")
 """)
         resp = client.get("/api/submodel/pricing", params={"source_file": "pipeline.py"})
         assert resp.status_code == 200
@@ -266,11 +266,11 @@ def base_rate() -> pl.LazyFrame:
         pipeline_file = tmp_path / "pipeline.py"
         pipeline_file.write_text("""\
 import haute
+
+from modules import pricing
+
 pipeline = haute.Pipeline("main")
-pipeline.submodel(
-    "modules/pricing.py",
-    "pricing",
-)
+pipeline.submodel(pricing.submodel, "pricing")
 """)
         revision = client.get("/api/pipeline").json()["source_revision"]
 

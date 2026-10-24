@@ -5,16 +5,17 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/_submodel_instances.py` | Canonical reusable-instance resolver and validator, qualified-id expansion, schema-led reference rewriting, public-port binding, create-instance alias allocation, and targeted occurrence flattening. |
-| `src/haute/_submodel_paths.py` | Validate route-level names, resolve recorded submodel references relative to the active pipeline directory, enforce project containment, and return typed malformed/outside-project errors plus the directory used as config base; `submodel_source_key` is the resolved-file identity by which the parser and recovery group registrations; `definition_pipeline_dir` turns a registration path into a definition file's `pipeline_dir` and `is_pipeline_dir` validates one. |
+| `src/haute/_submodel_paths.py` | Validate route-level names, resolve recorded submodel references relative to the active pipeline directory, enforce project containment, and return typed malformed/outside-project errors plus the directory used as config base; `submodel_source_key` is the resolved-file identity by which the parser and recovery group registrations; `definition_pipeline_dir` turns a definition file's path into its `pipeline_dir` and `is_pipeline_dir` validates one. `SUBMODEL_PACKAGE` (`"modules"`) is the package beside a pipeline that holds its definition modules: `submodel_module_file` is the file `from modules import <name>` imports, `modules/<name>.py`, and `submodel_module_name` the name a definition file imports as, raising `MalformedSubmodelPathError` for a file that is not directly in `modules/` or whose name is not a canonical identifier as a node's is (ASCII letters, digits and underscores, not starting with a digit), is a keyword, starts with two underscores or is a Python built-in. |
 | `src/haute/_pipeline_revision.py` | Build deterministic canonical-graph revisions and the separate raw-artifact editor-document revision used by recovery-aware compare-and-swap. |
 | `src/haute/_flatten.py` | Public flatten/dissolve entry point: validates and expands canonical occurrences through `_submodel_instances.py`. `flatten_executable_graph` is the entry every route running a browser graph uses: it refuses a graph with an executable-name violation (codegen naming rule) before flattening, while internal flattening (a staged dissolve, save) uses `flatten_graph`, since a partly dissolved graph repeats a shared definition's child names. |
 | `src/haute/routes/_submodel_ops.py` | Pure (no I/O) graph transform: extract selected nodes out of a `PipelineGraph` into a new submodel, producing the updated parent graph and submodel metadata. |
 | `src/haute/routes/submodel.py` | FastAPI router (`/api/submodel/*`): transform-only `POST /create` and `POST /dissolve`, plus read-only persisted `GET /{definition_id}`. It validates the current parent revision and maps failures without writing files. |
 
 Related but external to this component:
-- `src/haute/_parser_submodels.py` ([expression-parsing](../expression-parsing/low-level.md)) — parses
-  `pipeline.submodel(...)` calls and submodel `.py` files, and calls into
-  canonical reusable-instance helpers to build the hierarchical view at parse
+- `src/haute/_parser_submodels.py` ([expression-parsing](../expression-parsing/low-level.md)) — reads
+  a pipeline file's submodel imports (`submodel_imports`) and its
+  `pipeline.submodel(<module>.submodel, ...)` registrations, parses submodel `.py` files,
+  and calls into canonical reusable-instance helpers to build the hierarchical view at parse
   time. Parsed child graphs retain their declared description,
   preamble, and column-zero preserved blocks. It checks the constructor's
   `pipeline_dir` against the file's folder below the registering pipeline (a
@@ -24,7 +25,10 @@ Related but external to this component:
 - `src/haute/routes/_save_pipeline.py::SavePipelineService` (server-api) —
   owns the sole persistence boundary. Explicit Save derives added and removed
   definition files from the persisted-versus-submitted graph and applies
-  no-clobber, ownership, reference-audit, and rollback rules there.
+  no-clobber, ownership, reference-audit, and rollback rules there. Writing the
+  generated files, it also writes an empty `<pipeline_dir>/modules/__init__.py` beside a
+  definition module when none exists, never overwriting one, so the pipeline's
+  `from modules import ...` resolves to that regular package.
 
 ## Key types and data structures
 
@@ -93,28 +97,40 @@ copy, a definition with no owner or two, an input port bound twice) marks the
 occurrences it names unavailable (`submodel_instance_invalid`), each of which can be
 removed.
 
-The source form persists identity on both sides of the relationship:
+The source form persists identity on both sides of the relationship. The definition is
+the module `modules/scoring.py`, beside the pipeline; the pipeline file imports it and
+registers each occurrence of the definition it defines:
 
 ```python
-pipeline.submodel(
-    "modules/scoring.py",
-    "scoring_primary",
-)
+from modules import scoring
 
-pipeline.submodel(
-    "modules/scoring.py",
-    "scoring_secondary",
-    instance_of="scoring_primary",
-)
+pipeline.submodel(scoring.submodel, "scoring_primary")
+pipeline.submodel(scoring.submodel, "scoring_secondary", instance_of="scoring_primary")
 ```
 
 Generated and authored definition source must persist its `definition_id` and
-structured public port declarations. Every parent registration must persist
-its path and occurrence name, plus `instance_of` for every
-read-only instance. Missing identity is a parse error;
-the parser never derives it. Duplicate aliases in one parent, conflicting
+structured public port declarations. Every parent registration names its
+definition as `<module>.submodel` for a module the file imports with
+`from modules import <module>`, and persists its occurrence name, plus
+`instance_of` for every read-only instance. The import names the file:
+`submodel_imports` maps each imported name to `modules/<name>.py`
+(`submodel_module_file`), and a registration's `SubmodelRegistration.path` is
+that derived file, its `binding` the imported name. Missing identity is a parse
+error; the parser never derives it. Duplicate aliases in one parent, conflicting
 definition ids for one resolved path, and one definition id resolving to
 different files are parse errors.
+
+Each definition module is imported once, by its own name: an import from
+`modules` in any other spelling (relative, dotted, `import modules...`, an alias,
+`*`), a module imported twice, a name `submodel_module_name` refuses, a
+registration whose first argument is not `<module>.submodel` for an imported
+module (the definition is positional: `definition=` is refused too), and, when a
+whole file is read, an import no registration uses are parse errors. A registration by file path, positional or `file=`, is the removed
+form: it raises `ParseError` whose `remediation` is the exact import form
+(`from modules import scoring`, then
+`pipeline.submodel(scoring.submodel, 'scoring_primary')`), or, for a path no
+import could name, tells the author to move the definition into
+`modules/<name>.py` first. Nothing migrates it.
 
 Expansion is a pure transform per instance:
 
@@ -376,12 +392,19 @@ Acquires `save_lock` and runs the body in a threadpool:
 
 ## Edge cases and invariants
 
-Registrations that resolve to the same contained source file share one definition,
-including equivalent dot-segment spellings and filesystem-normalized casing.
-The parser carries this resolved association into occurrence construction rather
-than matching the authored path strings a second time. The editor's recovery loader
-groups registrations by the same key (`submodel_source_key`), also while the definition
-fails to load, and both record the first registration's path as the definition's file.
+Registrations that resolve to the same contained source file share one definition:
+every registration naming one imported module, and imports that resolve to one file
+under filesystem-normalized casing. The parser carries this resolved association into
+occurrence construction rather than matching the derived paths a second time. The
+editor's recovery loader groups registrations by the same key (`submodel_source_key`),
+also while the definition fails to load, and both record the first registration's path,
+the `modules/<name>.py` its import names, as the definition's file.
+
+In a pipeline file, an import from `modules` is generated code wherever it sits
+(`src/haute/_ast_helpers.py::is_submodel_import`): codegen rewrites it from the
+registrations, so preamble extraction leaves its lines out. In a definition file the
+same statement is ordinary preamble, and a registration there is refused as nested
+whatever its arguments.
 
 Changing a definition's output count across the one/multiple boundary recomputes
 parent edge names for every occurrence. Existing consumer bindings are reconciled
@@ -452,6 +475,14 @@ scalar input selectors follow renamed edges. A collision refuses the entire edit
 | Drill-down parent does not contain the exact definition id, or its recorded `.py` is missing | `HTTPException(404, <definition detail>)` | `_get_submodel_blocking`. |
 | Empty/NUL-containing reference, explicit `..` reference component, or route name containing `/` or `\` | `MalformedSubmodelPathError` → `HTTPException(400)` | `_submodel_paths.py`, mapped by drill-down/dissolve. |
 | Recorded reference resolves outside project root | `SubmodelPathOutsideProjectError` → `HTTPException(403)` | `_submodel_paths.py`, mapped by drill-down/dissolve. |
+| A registration by file path, positional or `file=` (the removed form) | `ParseError` with `path` and `line`; its `remediation` is the exact import form, or for a path that is not a `modules/<name>.py` module, moving the definition there first | `src/haute/_parser_submodels.py::extract_submodel_registrations`; the editor shows the occurrence unavailable with that message (`submodel_registration_invalid`). Nothing migrates it. |
+| An import from `modules` in another spelling (relative, dotted, `import modules...`, an alias, `*`), or a module imported twice | `ParseError` with the import's `line`; a misspelling's `remediation` gives `from modules import <name>` | `src/haute/_parser_submodels.py::submodel_imports`; the editor reports `submodel_import_invalid` on the import and still reads the well-formed imports. |
+| An imported module whose name is not a canonical identifier (a non-ASCII letter, say), starts with two underscores or is named like a Python built-in (a keyword cannot be imported at all: the file does not parse) | `MalformedSubmodelPathError` → `ParseError` with `name` and `line` | `src/haute/_submodel_paths.py::submodel_module_name`, raised through `submodel_imports`; `submodel_import_invalid` in the editor. |
+| A registration whose first argument is not `<module>.submodel` (`definition=` included), or names a module the file does not import | `ParseError` with `line`; its `remediation` gives the import form or adds the missing import | `extract_submodel_registrations`; `submodel_registration_invalid`, with no occurrence card, so the occurrence's connections are unresolved. |
+| A `modules` import no registration uses | `ParseError` listing the modules (`names`), with a `remediation` to register or remove them | `extract_submodel_registrations` reading a whole file; the editor, which reads the imports one statement at a time, lists the strict refusal as `pipeline_parse_invalid`. |
+| A definition file holding a `pipeline.submodel(...)` registration | `ParseError("Nested submodels are not supported.")` with `source_file` and `nested_lines` | `src/haute/_parser_submodels.py::parse_submodel_source`. |
+| A definition whose file is not a `modules/<name>.py` module reaches codegen | `ParseError` with `definition_id` and `submodel_module_name`'s message, mapped by Save to `400` | `src/haute/codegen.py::graph_to_code_multi`, before any source is emitted. |
+| The live `Pipeline.submodel()` is given a file path, or anything that is not a `Submodel` | `TypeError`; a path's message names the import form | `src/haute/pipeline.py::Pipeline.submodel`. A module without a `submodel` fails earlier, with Python's own `AttributeError`, when the pipeline file is imported. |
 | A graph still holding an occurrence or a port reaches an executor | `ExecutionError` naming the occurrence (its alias and `definition_id`) or the port | `_builders._build_submodel` / `_build_submodel_port`; every executor, deploy's resolution included, expands the occurrences first. |
 | Null handle on an inbound edge targeting a selected submodel | `ParseError` with definition/instance/edge context | `flatten_graph` raises through `resolve_submodel_instances` (matching `_port_name`); the transform returns no graph and touches no files. |
 | Missing or wrong-prefixed public handle, undeclared port id, or invalid definition endpoint passed to `flatten_graph` | `ParseError` with definition/instance/edge context | `_submodel_instances` validation; the transform returns no graph and touches no files. |
@@ -476,8 +507,11 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
   parse to occurrences whose node id, label and alias are the name and whose
   `definitionId` is the child file's declaration; `definition_id=`,
   `instance_id=` and `alias=` keywords, a missing name and a non-canonical
-  name fail to parse with the fix named; codegen emits
-  `pipeline.submodel(path, name[, instance_of=owner])` and round-trips
+  name fail to parse with the fix named; a definition imported any way but
+  `from modules import <module>` (an alias, `*`, a relative or dotted import, the
+  definition imported itself, a module imported twice) is refused at the import's
+  line; codegen emits
+  `pipeline.submodel(<module>.submodel, name[, instance_of=owner])` and round-trips
   byte-identically; a stale editor node id never reaches generated code;
   runtime ids read `submodel_runtime/<name>/<child>`; grouping mints the name
   as the node id; sidecar positions are keyed by the alias.
@@ -534,12 +568,16 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
   submodel-specific filesystem contract: derived new-definition ownership,
   case-insensitive no-clobber, managed child position sidecars, rejection of
   hand-authored/orphan-sidecar clobber and in-place definition-identity
-  replacement, safe source-plus-sidecar deletion with rollback, and retention
+  replacement, safe source-plus-sidecar deletion with rollback, retention
   when another pipeline references the child or the project-wide audit is
-  incomplete.
+  incomplete, and the empty package marker written in `modules/` with the first
+  definition module and never overwritten by a later save.
 - `tests/test_parser_submodels.py` — expression parsing, recursive loading,
   canonical child metadata, cross-boundary port reconstruction, and
-  hierarchical/flat parser behaviour.
+  hierarchical/flat parser behaviour; the submodel import table and each refusal of the
+  registration and import forms (the removed path form with its import-form remediation,
+  another spelling of the import, an unused import, an unimported module, a module named
+  like a built-in).
 - `frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts` — boundary
   connection editing, input-port removal, and parent-binding cleanup.
 - `frontend/src/utils/__tests__/submodelDeletionPolicy.test.ts` — deletion

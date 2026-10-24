@@ -737,13 +737,16 @@ test.describe("core browser flows", () => {
     const previewTable = page.getByRole("table").first()
     await expect(previewTable).toBeVisible()
 
-    // (c) After Save, pipeline source contains pipeline.submodel("modules/browser_group.py", "<new name>"), connect("<new name>", and no instance_id=, definition_id=, alias=, or label=
+    // (c) After Save, pipeline source imports the module and registers pipeline.submodel(browser_group.submodel, "<new name>"), connect("<new name>", and no instance_id=, definition_id=, alias=, or label=
     await page.getByRole("button", { name: "Save", exact: true }).click()
     await expect(page.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()
 
     await expect
       .poll(() => readFileSync(gitMainPath, "utf8"))
-      .toContain(`pipeline.submodel("modules/browser_group.py", "${renamedOccurrence}")`)
+      .toContain(`pipeline.submodel(browser_group.submodel, "${renamedOccurrence}")`)
+    await expect
+      .poll(() => readFileSync(gitMainPath, "utf8"))
+      .toContain("from modules import browser_group")
     await expect
       .poll(() => readFileSync(gitMainPath, "utf8"))
       .toContain(`connect("${renamedOccurrence}"`)

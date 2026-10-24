@@ -68,38 +68,49 @@ submodel.connect("base_rate", "adjust")
 """
 
 
+#: ``from modules import pricing``, as a pipeline file imports ``modules/pricing.py``.
+_IMPORT = "from modules import pricing\n"
+
+
 class TestExtractSubmodelRegistrations:
     def test_extracts_explicit_identity(self) -> None:
-        tree = ast.parse('pipeline.submodel("modules/pricing.py", "pricing")')
+        tree = ast.parse(_IMPORT + 'pipeline.submodel(pricing.submodel, "pricing")')
 
         assert extract_submodel_registrations(tree) == [
             SubmodelRegistration(
                 path="modules/pricing.py",
                 name="pricing",
-                line=1,
+                line=2,
+                binding="pricing",
             )
         ]
 
-    def test_accepts_the_file_and_name_keywords(self) -> None:
-        tree = ast.parse('pipeline.submodel(file="modules/pricing.py", name="pricing")')
+    def test_accepts_the_name_keyword(self) -> None:
+        tree = ast.parse(_IMPORT + 'pipeline.submodel(pricing.submodel, name="pricing")')
 
         assert extract_submodel_registrations(tree) == [
-            SubmodelRegistration(path="modules/pricing.py", name="pricing", line=1)
+            SubmodelRegistration(
+                path="modules/pricing.py", name="pricing", line=2, binding="pricing"
+            )
         ]
 
     @pytest.mark.parametrize(
-        "source",
-        ["pipeline.submodel()", 'pipeline.submodel(name="pricing")'],
+        ("source", "message"),
+        [
+            ("pipeline.submodel()", "requires the occurrence name"),
+            ('pipeline.submodel(name="pricing")', r"definition first, .* it was given nothing"),
+        ],
         ids=["no-arguments", "name-only"],
     )
-    def test_rejects_a_registration_without_a_file_path(self, source: str) -> None:
-        with pytest.raises(ParseError, match="requires a file path"):
+    def test_rejects_a_registration_without_a_definition(self, source: str, message: str) -> None:
+        """With no arguments at all, the missing name is reported first."""
+        with pytest.raises(ParseError, match=message):
             extract_submodel_registrations(ast.parse(source))
 
     def test_preserves_chained_registration_order(self) -> None:
         tree = ast.parse(
-            'pipeline.submodel("modules/pricing.py", "pricing")'
-            '.submodel("modules/pricing.py", "pricing_2", instance_of="pricing")'
+            _IMPORT + 'pipeline.submodel(pricing.submodel, "pricing")'
+            '.submodel(pricing.submodel, "pricing_2", instance_of="pricing")'
         )
 
         registrations = extract_submodel_registrations(tree)
@@ -111,15 +122,17 @@ class TestExtractSubmodelRegistrations:
 
     def test_ignores_non_pipeline_receivers_and_non_expression_calls(self) -> None:
         tree = ast.parse(
-            'other.submodel("ignored.py", "ignored")\n'
-            'value = pipeline.submodel("also_ignored.py", "ignored")\n'
+            'other.submodel(ignored.submodel, "ignored")\n'
+            'value = pipeline.submodel(also_ignored.submodel, "ignored")\n'
         )
 
         assert extract_submodel_registrations(tree) == []
 
     @pytest.mark.parametrize("keyword", ["definition_id", "instance_id", "alias"])
     def test_rejects_obsolete_keywords(self, keyword: str) -> None:
-        tree = ast.parse(f'pipeline.submodel("modules/pricing.py", "pricing", {keyword}="foo")')
+        tree = ast.parse(
+            _IMPORT + f'pipeline.submodel(pricing.submodel, "pricing", {keyword}="foo")'
+        )
 
         with pytest.raises(ParseError, match="not accepted") as exc_info:
             extract_submodel_registrations(tree)
@@ -127,52 +140,226 @@ class TestExtractSubmodelRegistrations:
         assert exc_info.value.context["keyword"] == keyword
 
     def test_rejects_missing_name(self) -> None:
-        tree = ast.parse('pipeline.submodel("modules/pricing.py")')
+        tree = ast.parse(_IMPORT + "pipeline.submodel(pricing.submodel)")
 
         with pytest.raises(ParseError, match="requires the occurrence name") as exc_info:
             extract_submodel_registrations(tree)
 
-        assert exc_info.value.context["path"] == "modules/pricing.py"
+        assert exc_info.value.context["line"] == 2
 
-    def test_rejects_dynamic_path(self) -> None:
-        tree = ast.parse('pipeline.submodel(path_value, "pricing")')
+    @pytest.mark.parametrize(
+        "definition",
+        [
+            pytest.param("definition_value", id="a-variable"),
+            pytest.param("pricing", id="the-module-itself"),
+            pytest.param("pricing.other", id="another-attribute"),
+            pytest.param("package.pricing.submodel", id="a-dotted-module"),
+        ],
+    )
+    def test_rejects_dynamic_definition(self, definition: str) -> None:
+        """The first argument is ``<module>.submodel``, read from the source, never computed."""
+        tree = ast.parse(_IMPORT + f'pipeline.submodel({definition}, "pricing")')
 
-        with pytest.raises(ParseError, match="string literal"):
+        with pytest.raises(ParseError, match=r"definition first, `<module>\.submodel`") as exc_info:
             extract_submodel_registrations(tree)
+
+        assert "`from modules import <module>`" in exc_info.value.context["remediation"]
 
     @pytest.mark.parametrize(
         ("source", "message"),
         [
             (
-                'pipeline.submodel("modules/pricing.py", "pricing", name="duplicate")',
+                'pipeline.submodel(pricing.submodel, "pricing", name="duplicate")',
                 "duplicate keyword",
             ),
             (
-                'pipeline.submodel("modules/pricing.py", pricing_var)',
+                "pipeline.submodel(pricing.submodel, pricing_var)",
                 "string literal",
             ),
             (
-                'pipeline.submodel("modules/pricing.py", " pricing")',
+                'pipeline.submodel(pricing.submodel, " pricing")',
                 "non-empty and unpadded",
-            ),
-            (
-                'pipeline.submodel(" modules/pricing.py", "pricing")',
-                "path must be non-empty and unpadded",
             ),
         ],
     )
     def test_rejects_invalid_registration_literals(self, source: str, message: str) -> None:
         with pytest.raises(ParseError, match=message):
-            extract_submodel_registrations(ast.parse(source))
+            extract_submodel_registrations(ast.parse(_IMPORT + source))
 
     def test_rejects_duplicate_occurrence_identity(self) -> None:
         source = (
-            'pipeline.submodel("modules/pricing.py", "pricing")\n'
-            'pipeline.submodel("modules/pricing.py", "pricing")\n'
+            _IMPORT + 'pipeline.submodel(pricing.submodel, "pricing")\n'
+            'pipeline.submodel(pricing.submodel, "pricing")\n'
         )
 
         with pytest.raises(ParseError, match="duplicated"):
             extract_submodel_registrations(ast.parse(source))
+
+    def test_refuses_the_definition_as_a_keyword(self) -> None:
+        """One spelling: the definition is the first argument, as codegen writes it and
+        as the live API's positional-only parameter takes it."""
+        source = (
+            "from modules import pricing\n"
+            'pipeline.submodel(definition=pricing.submodel, name="pricing")\n'
+        )
+
+        with pytest.raises(ParseError, match="as its first argument.*not as definition="):
+            extract_submodel_registrations(ast.parse(source))
+
+    @pytest.mark.parametrize(
+        ("registration", "path"),
+        [
+            pytest.param(
+                'pipeline.submodel("modules/pricing.py", "pricing")',
+                "modules/pricing.py",
+                id="a-path",
+            ),
+            pytest.param(
+                'pipeline.submodel(file="modules/pricing.py", name="pricing")',
+                "modules/pricing.py",
+                id="the-file-keyword",
+            ),
+        ],
+    )
+    def test_refuses_the_removed_path_form_naming_the_import_form(
+        self, registration: str, path: str
+    ) -> None:
+        """A file path in ``modules/`` is refused, with the import that replaces it."""
+        with pytest.raises(
+            ParseError, match="registers 'pricing' by its file path, which was removed"
+        ) as exc_info:
+            extract_submodel_registrations(ast.parse(registration))
+
+        assert exc_info.value.context["path"] == path
+        assert exc_info.value.context["remediation"] == (
+            "Write `from modules import pricing`, then "
+            "`pipeline.submodel(pricing.submodel, 'pricing')`."
+        )
+
+    @pytest.mark.parametrize(
+        ("registration", "path"),
+        [
+            pytest.param(
+                'pipeline.submodel("pricing.py", "pricing")', "pricing.py", id="beside-the-pipeline"
+            ),
+            pytest.param(
+                'pipeline.submodel("lib/pricing.py", "pricing")', "lib/pricing.py", id="elsewhere"
+            ),
+            pytest.param(
+                'pipeline.submodel("modules/rating/pricing.py", "pricing")',
+                "modules/rating/pricing.py",
+                id="nested-in-modules",
+            ),
+            pytest.param(
+                'pipeline.submodel("../pricing.py", "pricing")', "../pricing.py", id="climbing"
+            ),
+            pytest.param(
+                'pipeline.submodel(" modules/pricing.py", "pricing")',
+                " modules/pricing.py",
+                id="padded",
+            ),
+            pytest.param(
+                'pipeline.submodel(file=path_value, name="pricing")', None, id="computed-file"
+            ),
+        ],
+    )
+    def test_refuses_a_path_no_import_can_name_saying_where_the_file_belongs(
+        self, registration: str, path: str | None
+    ) -> None:
+        """``from modules import x`` always means ``modules/x.py``: nothing else is expressible."""
+        with pytest.raises(
+            ParseError, match="registers 'pricing' by its file path, which was removed"
+        ) as exc_info:
+            extract_submodel_registrations(ast.parse(registration))
+
+        assert exc_info.value.context["path"] == path
+        assert exc_info.value.context["remediation"].startswith(
+            "Move the definition into modules/<name>.py beside the pipeline, "
+            "then write `from modules import <name>`"
+        )
+
+    @pytest.mark.parametrize(
+        ("imports", "message"),
+        [
+            pytest.param("from modules import pricing as rates", r"without `as` or `\*`", id="as"),
+            pytest.param("from modules import *", r"without `as` or `\*`", id="star"),
+            pytest.param("from .modules import pricing", "is not that form", id="relative"),
+            pytest.param("from modules.pricing import submodel", "is not that form", id="dotted"),
+            pytest.param("import modules.pricing", "is not that form", id="import-dotted"),
+            pytest.param("import modules", "is not that form", id="import-package"),
+            pytest.param("from modules import pricing, pricing", "imported twice", id="twice"),
+        ],
+    )
+    def test_refuses_an_import_that_is_not_from_modules_import_name(
+        self, imports: str, message: str
+    ) -> None:
+        source = f'{imports}\npipeline.submodel(pricing.submodel, "pricing")\n'
+
+        with pytest.raises(ParseError, match=message) as exc_info:
+            extract_submodel_registrations(ast.parse(source))
+
+        assert exc_info.value.context["line"] == 1
+
+    @pytest.mark.parametrize(
+        ("source", "unused"),
+        [
+            pytest.param(
+                "from modules import pricing, rates\n"
+                'pipeline.submodel(pricing.submodel, "pricing")',
+                ["rates"],
+                id="one-of-two",
+            ),
+            pytest.param(_IMPORT, ["pricing"], id="no-registration-at-all"),
+        ],
+    )
+    def test_refuses_an_import_no_registration_uses(self, source: str, unused: list[str]) -> None:
+        with pytest.raises(ParseError, match="from modules without registering it") as exc_info:
+            extract_submodel_registrations(ast.parse(source))
+
+        assert exc_info.value.context["names"] == unused
+
+    def test_imports_the_caller_gives_are_not_checked_for_use(self) -> None:
+        """Recovery reads each registration alone, passing in the whole file's imports:
+        one another statement registers is not unused."""
+        tree = ast.parse('pipeline.submodel(pricing.submodel, "pricing")')
+        imports = {"pricing": "modules/pricing.py", "rates": "modules/rates.py"}
+
+        registrations = extract_submodel_registrations(tree, imports=imports)
+
+        assert [(item.path, item.binding) for item in registrations] == [
+            ("modules/pricing.py", "pricing")
+        ]
+
+    def test_refuses_a_registration_naming_an_unimported_module(self) -> None:
+        tree = ast.parse('pipeline.submodel(pricing.submodel, "pricing")')
+
+        with pytest.raises(
+            ParseError, match="registers pricing.submodel, but 'pricing' is not imported"
+        ) as exc_info:
+            extract_submodel_registrations(tree)
+
+        assert exc_info.value.context["remediation"] == (
+            "Add `from modules import pricing` with the imports."
+        )
+
+    @pytest.mark.parametrize(
+        ("module", "message"),
+        [
+            pytest.param("__init__", "not starting with '__'", id="dunder"),
+            pytest.param("input", "hides Python's built-in", id="built-in"),
+            # Named as a node is, as Create Submodel names it: ASCII only.
+            pytest.param("straße", "ASCII letters, digits and underscores", id="non-ASCII"),
+        ],
+    )
+    def test_refuses_a_module_name_python_reserves(self, module: str, message: str) -> None:
+        """A keyword cannot be imported at all: ``from modules import class`` does not parse."""
+        source = f'from modules import {module}\npipeline.submodel({module}.submodel, "pricing")\n'
+
+        with pytest.raises(ParseError, match=message) as exc_info:
+            extract_submodel_registrations(ast.parse(source))
+
+        assert exc_info.value.context["name"] == module
+        assert exc_info.value.context["remediation"].startswith(f"Rename modules/{module}.py")
 
 
 class TestParseSubmodelSource:
@@ -248,18 +435,24 @@ class TestParseSubmodelSource:
         with pytest.raises(ParseError, match="must assign"):
             parse_submodel_source("", "empty.py")
 
-    def test_rejects_nested_submodel_registrations(self) -> None:
-        nested = (
-            _VALID_SUBMODEL
-            + """\
-pipeline.submodel("modules/inner.py", "inner")
-"""
-        )
+    @pytest.mark.parametrize(
+        "registration",
+        [
+            pytest.param(
+                'from modules import inner\n\npipeline.submodel(inner.submodel, "inner")\n',
+                id="imported",
+            ),
+            pytest.param('pipeline.submodel("modules/inner.py", "inner")\n', id="by-file-path"),
+        ],
+    )
+    def test_rejects_nested_submodel_registrations(self, registration: str) -> None:
+        """A registration in a definition file is nesting, whatever it registers."""
+        nested = _VALID_SUBMODEL + registration
 
         with pytest.raises(ParseError, match="Nested submodels") as exc_info:
             parse_submodel_source(nested, "modules/pricing.py")
 
-        assert exc_info.value.context["nested_paths"] == ["modules/inner.py"]
+        assert exc_info.value.context["nested_lines"] == [len(nested.splitlines())]
 
     def test_reports_syntax_errors_with_source_identity(self) -> None:
         with pytest.raises(ParseError, match="syntax errors") as exc_info:

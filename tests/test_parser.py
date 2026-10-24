@@ -23,6 +23,15 @@ def _write_pipeline(tmp_path: Path, code: str) -> Path:
     return p
 
 
+def _write_module(tmp_path: Path, name: str, code: str) -> Path:
+    """Write ``modules/<name>.py`` beside the pipeline, which ``from modules import <name>``
+    imports, and return its path."""
+    p = tmp_path / "modules" / f"{name}.py"
+    p.parent.mkdir(exist_ok=True)
+    p.write_text(code)
+    return p
+
+
 # ---------------------------------------------------------------------------
 # Basic parsing
 # ---------------------------------------------------------------------------
@@ -1010,11 +1019,18 @@ pipeline.connect("source", "transform")
 
 class TestCircularSubmodelReferences:
     def test_circular_submodel_refs_fail_at_nested_boundary(self, tmp_path):
+        """A definition that registers a submodel fails before anything recurses.
+
+        The pipeline file is not in ``modules/``, so no import can name it: the
+        cycle here is the definition registering its own module again.
+        """
         main_src_config = write_data_input_config(tmp_path, "src", "d.parquet")
         sub_src_config = write_data_input_config(tmp_path, "b_node", "d.parquet")
         main_code = f"""\
 import polars as pl
 import haute
+
+from modules import sub_b
 
 pipeline = haute.Pipeline("circular_main")
 
@@ -1023,32 +1039,29 @@ pipeline = haute.Pipeline("circular_main")
 def src(): ...
 
 
-pipeline.submodel(
-    "sub_b.py",
-    "circular_b",
-)
+pipeline.submodel(sub_b.submodel, "circular_b")
 """
         sub_b_code = f"""\
 import polars as pl
 import haute
 
+from modules import sub_b
+
 pipeline = haute.Pipeline("circular_b")
 
-pipeline.submodel(
-    "test_pipeline.py",
-    "circular_main",
-)
+pipeline.submodel(sub_b.submodel, "circular_b")
 
 @pipeline.data_input(config="{sub_src_config}")
 def b_node(): ...
 """
         (tmp_path / "test_pipeline.py").write_text(main_code)
-        (tmp_path / "sub_b.py").write_text(sub_b_code)
+        _write_module(tmp_path, "sub_b", sub_b_code)
 
         with pytest.raises(ParseError, match="Nested submodels") as exc_info:
             parse_pipeline_file(tmp_path / "test_pipeline.py")
 
-        assert exc_info.value.context["nested_paths"] == ["test_pipeline.py"]
+        assert exc_info.value.context["nested_lines"] == [8]
+        assert exc_info.value.context["source_file"].endswith("sub_b.py")
 
 
 class TestNonExistentSubmodelFilePath:
@@ -1058,6 +1071,8 @@ class TestNonExistentSubmodelFilePath:
 import polars as pl
 import haute
 
+from modules import also_missing, nonexistent
+
 pipeline = haute.Pipeline("missing_sub")
 
 
@@ -1065,21 +1080,15 @@ pipeline = haute.Pipeline("missing_sub")
 def src(): ...
 
 
-pipeline.submodel(
-    "nonexistent.py",
-    "missing_one",
-)
-pipeline.submodel(
-    "modules/also_missing.py",
-    "missing_two",
-)
+pipeline.submodel(nonexistent.submodel, "missing_one")
+pipeline.submodel(also_missing.submodel, "missing_two")
 """
         p = _write_pipeline(tmp_path, code)
         with pytest.raises(ParseError, match="submodel file") as exc_info:
             parse_pipeline_file(p)
 
         assert exc_info.value.context["missing_paths"] == [
-            "nonexistent.py",
+            "modules/nonexistent.py",
             "modules/also_missing.py",
         ]
 
@@ -1119,6 +1128,7 @@ submodel = haute.Submodel(
     definition_id="definition_a",
     input_ports=[],
     output_ports=[],
+    pipeline_dir="..",
 )
 
 
@@ -1136,6 +1146,7 @@ submodel = haute.Submodel(
     definition_id="definition_b",
     input_ports=[],
     output_ports=[],
+    pipeline_dir="..",
 )
 
 
@@ -1148,6 +1159,8 @@ def step_from_b() -> pl.DataFrame:
 import polars as pl
 import haute
 
+from modules import sub_a, sub_b
+
 pipeline = haute.Pipeline("collision_parent")
 
 
@@ -1155,24 +1168,18 @@ pipeline = haute.Pipeline("collision_parent")
 def src(): ...
 
 
-pipeline.submodel(
-    "sub_a.py",
-    "a",
-)
-pipeline.submodel(
-    "sub_b.py",
-    "b",
-)
+pipeline.submodel(sub_a.submodel, "a")
+pipeline.submodel(sub_b.submodel, "b")
 """
-        (tmp_path / "sub_a.py").write_text(sub_a_code)
-        (tmp_path / "sub_b.py").write_text(sub_b_code)
+        _write_module(tmp_path, "sub_a", sub_a_code)
+        _write_module(tmp_path, "sub_b", sub_b_code)
         p = _write_pipeline(tmp_path, main_code)
         graph = parse_pipeline_file(p)
 
         assert graph.submodels is not None
         assert set(graph.submodels) == {"definition_a", "definition_b"}
-        assert graph.submodels["definition_a"].file == "sub_a.py"
-        assert graph.submodels["definition_b"].file == "sub_b.py"
+        assert graph.submodels["definition_a"].file == "modules/sub_a.py"
+        assert graph.submodels["definition_b"].file == "modules/sub_b.py"
         occurrences = {
             node.id: node.data.config for node in graph.nodes if node.data.nodeType == "submodel"
         }
@@ -1187,6 +1194,8 @@ class TestEmptySubmodelFile:
 import polars as pl
 import haute
 
+from modules import empty_sub
+
 pipeline = haute.Pipeline("empty_sub_parent")
 
 
@@ -1194,12 +1203,9 @@ pipeline = haute.Pipeline("empty_sub_parent")
 def src(): ...
 
 
-pipeline.submodel(
-    "empty_sub.py",
-    "empty",
-)
+pipeline.submodel(empty_sub.submodel, "empty")
 """
-        (tmp_path / "empty_sub.py").write_text("")
+        _write_module(tmp_path, "empty_sub", "")
         p = _write_pipeline(tmp_path, main_code)
         with pytest.raises(ParseError, match="must assign a haute.Submodel constructor"):
             parse_pipeline_file(p)
@@ -1235,15 +1241,13 @@ submodel.connect("raw_rows", "enriched")
         main_code = """\
 import haute
 
+from modules import scoring
+
 pipeline = haute.Pipeline("submodel_only")
 
-pipeline.submodel(
-    "modules/scoring.py",
-    "scoring",
-)
+pipeline.submodel(scoring.submodel, "scoring")
 """
-        (tmp_path / "modules").mkdir()
-        (tmp_path / "modules" / "scoring.py").write_text(child_code)
+        _write_module(tmp_path, "scoring", child_code)
         p = _write_pipeline(tmp_path, main_code)
 
         graph = parse_pipeline_file(p)
@@ -1278,6 +1282,8 @@ def broken_step() -> pl.DataFrame:
 import polars as pl
 import haute
 
+from modules import broken_sub
+
 pipeline = haute.Pipeline("syntax_err_parent")
 
 
@@ -1285,12 +1291,9 @@ pipeline = haute.Pipeline("syntax_err_parent")
 def src(): ...
 
 
-pipeline.submodel(
-    "broken_sub.py",
-    "broken_sub",
-)
+pipeline.submodel(broken_sub.submodel, "broken_sub")
 """
-        (tmp_path / "broken_sub.py").write_text(broken_sub_code)
+        _write_module(tmp_path, "broken_sub", broken_sub_code)
         p = _write_pipeline(tmp_path, main_code)
         with pytest.raises(ParseError, match="syntax errors") as exc_info:
             parse_pipeline_file(p)

@@ -24,6 +24,7 @@ from haute._ast_helpers import (
     _get_decorator_kwargs,
     _is_pipeline_authored_decorator,
     _is_submodel_authored_decorator,
+    is_submodel_import,
     unkept_module_statements,
 )
 from haute._cache import canonical_json
@@ -48,6 +49,7 @@ from haute._parser_submodels import (
     _extract_definition_contract,
     extract_submodel_registrations,
     parse_submodel_source,
+    submodel_imports,
 )
 from haute._pipeline_revision import pipeline_recovery_revision
 from haute._sidecar import (
@@ -594,7 +596,36 @@ def _recover_ast_submodel_registrations(
     unavailable_candidates: list[_RecoveredCandidate] | None = None,
     include_invalid_references: bool = False,
 ) -> list[SubmodelRegistration]:
-    """Recover independent valid registrations when one sibling is malformed."""
+    """Recover independent valid registrations when one sibling is malformed.
+
+    The submodel imports are read one statement at a time too, so a malformed import
+    is its own diagnostic and the well-formed ones still name their files.
+    """
+    imports: dict[str, str] = {}
+    for statement in tree.body:
+        if not is_submodel_import(statement):
+            continue
+        try:
+            imports.update(submodel_imports(ast.Module(body=[statement], type_ignores=[])))
+        except HauteError as exc:
+            diagnostics.append(
+                _diagnostic(
+                    code="submodel_import_invalid",
+                    scope="submodel",
+                    message=_exception_message(exc),
+                    source_file=source_file,
+                    source_span=_span(
+                        statement.lineno,
+                        statement.col_offset,
+                        statement.end_lineno or statement.lineno,
+                        statement.end_col_offset or statement.col_offset,
+                    ),
+                    remediation=exc.context.get(
+                        "remediation",
+                        "Import each submodel module as `from modules import <name>`.",
+                    ),
+                )
+            )
     registrations: list[SubmodelRegistration] = []
     for statement in tree.body:
         if not _is_receiver_method_statement(
@@ -605,7 +636,9 @@ def _recover_ast_submodel_registrations(
             continue
         try:
             registrations.extend(
-                extract_submodel_registrations(ast.Module(body=[statement], type_ignores=[]))
+                extract_submodel_registrations(
+                    ast.Module(body=[statement], type_ignores=[]), imports=imports
+                )
             )
         except HauteError as exc:
             span = _span(
@@ -614,7 +647,7 @@ def _recover_ast_submodel_registrations(
                 statement.end_lineno or statement.lineno,
                 statement.end_col_offset or statement.col_offset,
             )
-            evidence = submodel_registration_evidence(statement)
+            evidence = submodel_registration_evidence(statement, imports=imports)
             diagnostic = _diagnostic(
                 code="submodel_registration_invalid",
                 scope="submodel",
@@ -2287,15 +2320,26 @@ def _load_readable_pipeline_editor_document(
             # belongs to one: unless a diagnostic already shows it, the parse's
             # own refusal is shown, so no other problem on screen can hide it.
             if not _strict_failure_shown(strict_failure, diagnostics):
+                failure = strict_failure or ParseError("Pipeline parsing failed.")
+                context = failure.context if isinstance(failure, HauteError) else {}
+                line = context.get("line")
+                lines = source.splitlines()
                 diagnostics.append(
                     _diagnostic(
                         code="pipeline_parse_invalid",
                         scope="pipeline",
-                        message=_exception_message(
-                            strict_failure or ParseError("Pipeline parsing failed.")
-                        ),
+                        message=_exception_message(failure),
                         source_file=source_file,
-                        remediation="Review the pipeline-level topology or submodel diagnostic.",
+                        # The parse's own line and fix, where its refusal names them.
+                        source_span=(
+                            _span(line, 0, line, len(lines[line - 1]))
+                            if isinstance(line, int) and 0 < line <= len(lines)
+                            else None
+                        ),
+                        remediation=str(
+                            context.get("remediation")
+                            or "Review the pipeline-level topology or submodel diagnostic."
+                        ),
                     )
                 )
 

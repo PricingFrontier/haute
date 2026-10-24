@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from haute._global_constants import module_binding_lines
+from haute._submodel_paths import SUBMODEL_PACKAGE
 from haute._types import (
     DECORATOR_TO_NODE_TYPE,
     GLOBAL_CONSTANTS_FILE,
@@ -679,14 +680,46 @@ def _slice_without_module_preserve_spans(
     lines: list[str],
     start: int,
     stop: int,
+    *,
+    generated: frozenset[int] = frozenset(),
 ) -> list[str]:
-    """Slice source lines while excluding completed module preserve blocks."""
+    """Slice source lines while excluding completed module preserve blocks.
+
+    *generated* holds further zero-based line indices codegen writes itself (the
+    submodel imports), which are left out the same way.
+    """
     excluded = {
         line_index
         for span_start, span_end in _module_preserve_spans(lines)
         for line_index in range(span_start, span_end + 1)
-    }
+    } | generated
     return [lines[index] for index in range(start, stop) if index not in excluded]
+
+
+def is_submodel_import(statement: ast.stmt) -> bool:
+    """Whether *statement* imports from the pipeline's submodel package (``modules``).
+
+    Codegen writes a pipeline's submodel imports from its registrations, so a pipeline
+    file's ``from modules import ...`` is generated code wherever it sits, never
+    preamble. Relative and aliased spellings still count: the parser refuses them.
+    """
+    if isinstance(statement, ast.ImportFrom):
+        module = statement.module or ""
+        return module == SUBMODEL_PACKAGE or module.startswith(f"{SUBMODEL_PACKAGE}.")
+    return isinstance(statement, ast.Import) and any(
+        alias.name == SUBMODEL_PACKAGE or alias.name.startswith(f"{SUBMODEL_PACKAGE}.")
+        for alias in statement.names
+    )
+
+
+def _submodel_import_lines(tree: ast.Module) -> frozenset[int]:
+    """Zero-based indices of the lines a pipeline file's submodel imports span."""
+    return frozenset(
+        index
+        for statement in tree.body
+        if is_submodel_import(statement)
+        for index in range(statement.lineno - 1, statement.end_lineno or statement.lineno)
+    )
 
 
 @dataclass(frozen=True)
@@ -811,6 +844,7 @@ def _extract_preamble_from_ast(
         lines,
         boundaries.last_standard_line,
         boundaries.generated_start_line - 1,
+        generated=_submodel_import_lines(tree) if receiver == "pipeline" else frozenset(),
     )
     while preamble_lines and not preamble_lines[0].strip():
         preamble_lines.pop(0)
@@ -910,6 +944,8 @@ def unkept_module_statements(
             if not (
                 (index == 0 and _is_docstring(statement))
                 or _is_standard_import(statement, constructor_name)
+                # Rewritten from the registrations, wherever it sits.
+                or (receiver == "pipeline" and is_submodel_import(statement))
                 # Preamble: after the standard imports; there is none without them.
                 or 0 < boundaries.last_standard_line < start
             ):
@@ -919,6 +955,7 @@ def unkept_module_statements(
             _is_receiver_construction(statement, receiver, boundaries.is_constructor)
             or _is_global_constants_binding(statement, receiver)
             or _is_generated_call(statement, receiver)
+            or (receiver == "pipeline" and is_submodel_import(statement))
             or (
                 isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and any(boundaries.is_node_decorator(decorator) for decorator in decorators)
@@ -958,6 +995,24 @@ def _extract_preamble(
         receiver=receiver,
         constructor_name=constructor_name,
     )
+
+
+_RE_SUBMODEL_IMPORT = re.compile(rf"from\s+{SUBMODEL_PACKAGE}(?:\.\w+)*\s+import\b")
+
+
+def _textual_submodel_import_lines(lines: list[str]) -> frozenset[int]:
+    """The lines of a file that does not parse that its submodel imports span.
+
+    A parenthesised import runs to the line that closes it.
+    """
+    found: set[int] = set()
+    open_import = False
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if open_import or _RE_SUBMODEL_IMPORT.match(stripped):
+            found.add(index)
+            open_import = ("(" in stripped or open_import) and ")" not in stripped
+    return frozenset(found)
 
 
 def _extract_preamble_textual(
@@ -1028,6 +1083,7 @@ def _extract_preamble_textual(
         lines,
         last_standard_idx + 1,
         generated_start_idx,
+        generated=_textual_submodel_import_lines(lines) if receiver == "pipeline" else frozenset(),
     )
 
     # Strip leading/trailing blank lines

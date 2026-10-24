@@ -298,12 +298,14 @@ class TestParserSubmodel:
             f"""\
             import haute
 
+            from modules import scoring
+
             pipeline = haute.Pipeline("test")
 
             @pipeline.data_input(config="{source_config}")
             def Source(): ...
 
-            pipeline.submodel("modules/scoring.py", "scoring")
+            pipeline.submodel(scoring.submodel, "scoring")
 
             pipeline.connect("Source", "scoring", target_port="source")
         """,

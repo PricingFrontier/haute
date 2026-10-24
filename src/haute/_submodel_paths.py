@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import builtins
+import keyword
 from os.path import normcase
 from pathlib import Path
+
+#: The package beside a pipeline that holds its submodel modules, one per definition:
+#: ``modules/<name>.py``, imported by the pipeline as ``from modules import <name>``.
+SUBMODEL_PACKAGE = "modules"
 
 
 class SubmodelPathError(ValueError):
@@ -29,6 +35,49 @@ def validate_submodel_definition_id(definition_id: str) -> None:
         raise MalformedSubmodelPathError(
             "Submodel definition id must be one non-empty path segment.",
         )
+
+
+def submodel_module_file(name: str) -> str:
+    """The file, relative to the pipeline, that ``from modules import <name>`` imports."""
+    return f"{SUBMODEL_PACKAGE}/{name}.py"
+
+
+def submodel_module_name(rel_path: str) -> str:
+    """The name ``from modules import <name>`` imports the definition file *rel_path* by.
+
+    A definition is a module directly in the pipeline's ``modules/`` folder, named as a
+    node is (a canonical identifier, as Create Submodel names it), and not a keyword, a
+    dunder name or a Python built-in. Anything else raises
+    ``MalformedSubmodelPathError``, saying where the file belongs or what to rename.
+    """
+    from haute._graph_utils import _sanitize_func_name
+
+    parts = [part for part in rel_path.replace("\\", "/").split("/") if part not in ("", ".")]
+    name = parts[-1].removesuffix(".py") if parts else ""
+    if len(parts) != 2 or parts[0] != SUBMODEL_PACKAGE or not parts[1].endswith(".py"):
+        raise MalformedSubmodelPathError(
+            f"Submodel file {rel_path!r} is not a module in the pipeline's "
+            f"{SUBMODEL_PACKAGE}/ folder: a submodel is defined in "
+            f"{SUBMODEL_PACKAGE}/<name>.py, imported by the pipeline as "
+            f"`from {SUBMODEL_PACKAGE} import <name>`."
+        )
+    if (
+        not name
+        or _sanitize_func_name(name) != name
+        or keyword.iskeyword(name)
+        or name.startswith("__")
+    ):
+        raise MalformedSubmodelPathError(
+            f"Submodel file {rel_path!r} cannot be imported by its name: a submodel module "
+            "is named as a node is, with ASCII letters, digits and underscores, not a "
+            "keyword, and not starting with '__'."
+        )
+    if hasattr(builtins, name):
+        raise MalformedSubmodelPathError(
+            f"Submodel file {rel_path!r} would import as {name!r}, which hides Python's "
+            "built-in of that name in the pipeline file: rename the submodel."
+        )
+    return name
 
 
 def resolve_submodel_reference(

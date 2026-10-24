@@ -7,7 +7,7 @@
 | `src/haute/parser.py` | Strict public entry points `parse_pipeline_file` / `parse_submodel_file` / `parse_pipeline_source`. Orchestrates AST metadata/node/edge extraction, submodel resolution + merge, conservation, and graph-shape validation for valid pipeline source; whole-file syntax errors raise contextual `ParseError`. `load_declared_global_constants` loads the global constants file a constructor declares, through an injected byte reader when editor recovery supplies its capture, and returns the reason instead of failing when the file is missing, unreadable, invalid or outside the pipeline folder; the parser records it as `global_constants_error` and in the graph warning. |
 | `src/haute/_parser_conservation.py` | Strict fail-loud acceptance gate. Verifies that parsed root node IDs, ordered edge/handle identities, submodel references, and cross-boundary endpoints conserve the authored structure; also builds the deterministic missing-submodel diagnostic. |
 | `src/haute/_parser_bindings.py` | Strict parameter binding gate: every parsed Polars node's positional parameters must equal its connected executable input names after `inputMapping`, in parent files (`assert_polars_parameters_bound`, after the merge) and definition files (`assert_definition_parameters_bound`, which the submodel parse runs on its own file, public input ports binding the sanitised port ID); any other shape is a `ParseError` with `node_id`, `unbound_parameters`, `unconsumed_inputs`, `connected_inputs` and `remediation`, plus `source_file` for a definition file (F13). |
-| `src/haute/_parser_submodels.py` | `extract_submodel_registrations` / `parse_submodel_source` / `merge_submodels`: resolves explicit `pipeline.submodel("path", ...)` registrations, parses each referenced submodel file into its own `PipelineGraph` (`_validate_pipeline_dir` checks the constructor's way back to the pipeline against where the file sits), and merges canonical occurrences into the parent (hierarchical or flattened). |
+| `src/haute/_parser_submodels.py` | `submodel_imports` / `extract_submodel_registrations` / `parse_submodel_source` / `merge_submodels`: reads a pipeline file's submodel imports (`submodel_imports`: each name of `from modules import a, b` bound to its file `modules/<name>.py`; any other spelling of an import from `modules`, a module imported twice and a name `submodel_module_name` refuses raise `ParseError`), extracts each explicit registration through that table (`extract_submodel_registrations`: the first argument `<module>.submodel` for an imported module, giving a `SubmodelRegistration` whose `path` is the module's file and `binding` its imported name; the removed file-path form is refused with the import form as remediation, an unimported module is refused, and reading a whole file refuses an import no registration uses, while a caller passing `imports=` reads one statement at a time), parses each referenced submodel file into its own `PipelineGraph` (`_validate_pipeline_dir` checks the constructor's way back to the pipeline against where the file sits; a registration in it is nested, refused with `nested_lines`), and merges canonical occurrences into the parent (hierarchical or flattened). |
 | `src/haute/_expression_parser.py` | `parse_expression` / `evaluate_expression` / `parse_expression_chain` and their supporting classes: AST-based conversion of a Polars with-columns expression to human-readable text (`_ExprConverter`), and Polars evaluation of the located expression on the traced row (`_locate_defining_expression`, `_row_value`, `_branch_selection`). `evaluate_expression` shows each scalar global constant the formula reads (a date as `pl.date(...)`) as its value, never touching quoted text, and inlines it before evaluation (`_global_constant_values`, `_inline_global_constants`); `parse_expression` never counts `global_constants.<name>` as a referenced column. |
 
 ## Key types and data structures
@@ -59,14 +59,19 @@
 
 **`parse_pipeline_source`** (`parser.py`): `ast.parse(source)` → on `SyntaxError`, raise a
 contextual `ParseError` naming the source and syntax location → otherwise extract pipeline meta /
-decorated nodes / connect edges / preamble / preserved blocks using the AST
+decorated nodes / connect edges / preamble (without the file's imports from `modules`,
+which codegen writes) / preserved blocks using the AST
 primitives from `src/haute/_ast_helpers.py` → collect labels from any node whose
 config carries `_load_error` into a graph-level `warning` (nothing in `src/haute`
 produces that key; the config path raises `ConfigError` instead, so the step is reached
-only by tests that plant the marker) → if any
-`pipeline.submodel()` calls were found, require `_base_dir` or `_submodel_base_dir` (otherwise
-raise with every unresolved authored path), resolve registrations, group repeated paths by canonical definition id, parse
-each definition file once, and call `_parser_submodels.merge_submodels` → run
+only by tests that plant the marker) → extract the submodel registrations through the file's
+submodel imports (`_parser_submodels.extract_submodel_registrations`, which refuses a
+non-canonical import or registration and an unused import) → if any
+were found, require `_base_dir` or `_submodel_base_dir` (otherwise
+raise with every unresolved path), resolve each registration's `modules/<name>.py` within the
+project, raise one `ParseError` listing every missing file, group registrations by resolved file
+(`submodel_source_key`), parse
+each definition file once (one definition id in two files is a `ParseError`), and call `_parser_submodels.merge_submodels` → run
 the structure-conservation gate → `validate_pipeline_graph_shape_contracts` (owned outside this
 component) → log `pipeline_parsed`.
 
@@ -75,14 +80,15 @@ child file has literal structured input/output ports present and extract its
 declared `definition_id`. Build one `SubmodelDefinition` per definition id and
 one `SUBMODEL` occurrence per registration; each occurrence uses its name as
 node id (`node.id == label == alias == name`), config `{definitionId, alias}`, and
-derives its node label directly from the name (registrations accept `(path, name, *, instance_of=None)`
+derives its node label directly from the name (registrations accept `(<module>.submodel, name, *, instance_of=None)`
 and reject `definition_id=`, `instance_id=`, `alias=`, and `label=`).
 Parent connect endpoints use names and declared
 public port names, which become `in__<name>`/`out__<name>` graph handles;
 internal child ids are never accepted as parent endpoints. Only when
 `flatten=True` is the canonical hierarchical graph passed to
-`flatten_graph`. A submodel file containing its own registration raises
-`ParseError`, preserving the one-level nesting contract.
+`flatten_graph`. A submodel file containing its own registration, whatever its
+arguments, raises `ParseError` with the registrations' lines (`nested_lines`),
+preserving the one-level nesting contract.
 
 **`parse_expression`** (`_expression_parser.py`): strip a leading BOM → `_cached_parse(code)` →
 bail to `_opaque(...)` on empty input or `SyntaxError` → `_has_control_flow_wrapping_target`: if
@@ -198,31 +204,54 @@ no alias or migration shim; direct test callers use the same current contract.
   recoverable import lines independently, including comma-separated names and trailing comments,
   so both `import haute as <alias>` and `from haute import Pipeline as <alias>` preserve the same
   user preamble without capturing the constructor.
+- **A pipeline file's submodel imports are generated code**: `is_submodel_import` recognises an
+  import from `modules` in any spelling, and preamble extraction leaves out the lines of every
+  such statement in a pipeline file, wherever it sits, because codegen rewrites the imports
+  from the registrations; a file that does not parse has its `from modules ... import` lines
+  left out textually, a parenthesised import to its closing line. In a definition file the
+  same import is ordinary preamble.
+- **Submodel imports have one spelling**: `from modules import <name>`, each module once and
+  by its own name. A relative or dotted import, `import modules...`, an alias or `*`, a
+  module imported twice, and a module whose name `submodel_module_name` refuses (not a
+  canonical identifier as a node's is, starting with `__`, or a Python built-in) raise
+  `ParseError` from `submodel_imports`; a keyword cannot be imported at all.
+- **A registration's definition is an imported module's `submodel`**: its first argument is
+  `<name>.submodel` for an imported `<name>`, and the derived path, `modules/<name>.py`,
+  is all a registration records of its file. A string first argument or any `file=` is the
+  removed path form, refused with the exact import form as remediation (or, for a path no
+  import could name, with moving the definition into `modules/` first); the definition is
+  positional, so `definition=` is refused, and an attribute of an
+  unimported name is refused with a remediation adding the import. Reading a whole file
+  refuses an import no registration uses; a caller passing `imports=`, which reads one
+  statement at a time, gets no such check.
 - **Nested submodels capped at one level**: a submodel file's own
-  `pipeline.submodel(...)` calls raise `ParseError` as a group; they are never recursed into or
-  omitted from an otherwise healthy-looking graph.
+  `pipeline.submodel(...)` calls, whatever their arguments, raise one `ParseError` listing their
+  lines (`nested_lines`); they are never recursed into or omitted from an otherwise
+  healthy-looking graph.
 - **Missing submodel files are aggregated**: all resolved paths are checked before merge. One or
   more missing files produce one `ParseError` with deterministic `missing_paths` detail in
   authored order.
 - **Submodel resolution roots are mandatory**: healthy in-memory parsing cannot conserve a
-  `pipeline.submodel()` reference without `_base_dir` or `_submodel_base_dir`, so it raises with
+  `pipeline.submodel()` registration without `_base_dir` or `_submodel_base_dir`, so it raises with
   `unresolved_paths` instead of returning a root-only graph. Editor recovery resolves submodel
   fragments against the explicitly supplied project and parent-pipeline roots.
 - **Repeated definition files are intentional for reusable occurrences**:
-  registrations resolving to one file are grouped and parsed once.
+  registrations naming one imported module, or otherwise resolving to one file, are grouped
+  and parsed once.
 - **Definition/file identity is one-to-one**: one definition id resolving to
   multiple files, conflicting definition ids for one file, or an unreadable
   child raises `ParseError`.
-- **Occurrence identity is explicit**: missing/non-literal/blank
-  `file` or `name` fields, rejected legacy keywords (`definition_id=`, `instance_id=`, `alias=`, `label=`),
-  and duplicate occurrence names fail before merge. No file/name/node-id inference is attempted.
+- **Occurrence identity is explicit**: a definition other than an imported `<module>.submodel`,
+  a missing/non-literal/blank/non-canonical `name`, rejected keywords (`definition_id=`,
+  `instance_id=`, `alias=`, `label=`), and duplicate occurrence names fail before merge. No
+  file/name/node-id inference is attempted.
 - **Public boundary connections are explicit**: a parent `connect` endpoint
   that names an occurrence alias must also name a declared public port id.
   Function-parameter inference remains inside its owning root or definition
   graph; it never reaches through a definition interface or exposes an
   internal child id.
 - **Conservation is an acceptance gate**: the parser compares authored root
-  nodes and ordered edges, registration paths and explicit identity fields,
+  nodes and ordered edges, the registrations' derived paths and explicit identity fields,
   occurrence aliases and public port ids (a parent `connect` that names a
   definition-owned child id or any other unknown endpoint is rejected as
   dangling with its authored identity), and the constructed
@@ -249,12 +278,18 @@ no alias or migration shim; direct test callers use the same current contract.
 - **`ParseError`** (raised, not caught, by this component) for: an unclosed
   `pipeline.connect()`/`pipeline.submodel()`/`Pipeline(...)`/decorator-argument-list scan
   (`_scan_call_end` exhausts the source without balancing); a decorator/submodel/metadata call
-  with trailing text after its closing paren; a decorator keyword argument or
-  `pipeline.submodel()` path that is not a literal (only
+  with trailing text after its closing paren; a decorator keyword argument that is not a
+  literal (only
   Python literals and the sanctioned `Contract(...)` constructor are resolvable at parse time);
-  `**kwargs` expansion in a decorator; an `async def` pipeline node
+  `**kwargs` expansion in a decorator; an import from `modules` other than
+  `from modules import <name>` (relative, dotted, `import modules...`, aliased, `*`), a module
+  imported twice or whose name is not a canonical identifier, starts with `__` or is a Python
+  built-in; a registration whose first
+  argument is not `<module>.submodel` for an imported module, including the removed file-path
+  form (positional or `file=`), whose `remediation` is the exact import form; an import no
+  registration uses; an `async def` pipeline node
   function; a syntactically invalid referenced submodel file; a missing submodel file; a
-  submodel reference without a resolution root; a conflicting definition/file registration; a missing or duplicate
+  submodel registration without a resolution root; a conflicting definition/file registration; a missing or duplicate
   canonical occurrence identity; an invalid structured public-port contract; nested submodel references; an exact duplicate
   edge identity; a structure-conservation mismatch; a submodel path that escapes the project
   root; or, in the strict form only, once the graph is built, any
@@ -288,8 +323,12 @@ Tests live under `tests/`, split by concern:
   path, syntax fail-loud behavior, submodel file parsing, the `flatten` parameter, decorator/config
   edge cases, malformed decorator kwargs, docstring stripping, preamble/preserved-block edge
   cases, roundtrip parsing, circular/non-existent/colliding/empty submodels, UTF-8 BOM handling.
-- **`test_parser_submodels.py`** — `extract_submodel_registrations`, `parse_submodel_source`,
-  `merge_submodels`, and cross-boundary-edge reconstruction.
+- **`test_parser_submodels.py`** — `submodel_imports` and `extract_submodel_registrations`
+  (the import form, every other spelling of the import refused at its line, the removed
+  file-path form refused with the import form or with where the file belongs, an unused
+  import, an unimported module, a module named like a built-in or a dunder, nested
+  registrations), `parse_submodel_source`, `merge_submodels`, and cross-boundary-edge
+  reconstruction.
 - **`test_submodel_endpoint_properties.py`** — the generated graph/source family (ENG-T11):
   generated child definitions (an identity chain behind one public input and one public
   output port), one or two occurrences, and 1..4 authored parent connections drawn from the

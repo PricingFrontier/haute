@@ -31,7 +31,7 @@ from haute._types import (
 from haute.codegen import graph_to_code_multi
 from haute.errors import ParseError
 from haute.parser import parse_pipeline_source
-from haute.pipeline import Pipeline
+from haute.pipeline import Pipeline, Submodel
 
 _CHILD_SUBMODEL_SOURCE = """\
 import polars as pl
@@ -88,7 +88,10 @@ def _make_definition() -> SubmodelDefinition:
 
 
 def test_parsing_parent_with_label_raises_parse_error() -> None:
-    tree = ast.parse('pipeline.submodel("modules/pricing.py", "pricing", label="My Pricing")')
+    tree = ast.parse(
+        "from modules import pricing\n"
+        'pipeline.submodel(pricing.submodel, "pricing", label="My Pricing")'
+    )
 
     with pytest.raises(ParseError) as exc_info:
         extract_submodel_registrations(tree)
@@ -97,10 +100,9 @@ def test_parsing_parent_with_label_raises_parse_error() -> None:
         "pipeline.submodel() no longer accepts label=; an occurrence's name is the second argument."
     )
     assert exc_info.value.context["remediation"] == (
-        "Write pipeline.submodel(<path>, <name>) and let the child file declare its definition id."
+        "Write pipeline.submodel(<module>.submodel, <name>) and let the definition declare its id."
     )
-    assert exc_info.value.context["path"] == "modules/pricing.py"
-    assert exc_info.value.context["line"] == 1
+    assert exc_info.value.context["line"] == 2
 
 
 @pytest.mark.parametrize(
@@ -114,7 +116,9 @@ def test_parsing_non_canonical_alias_raises_parse_error(
     raw_name: str,
     expected_sanitised: str,
 ) -> None:
-    tree = ast.parse(f'pipeline.submodel("modules/pricing.py", "{raw_name}")')
+    tree = ast.parse(
+        f'from modules import pricing\npipeline.submodel(pricing.submodel, "{raw_name}")'
+    )
 
     with pytest.raises(ParseError) as exc_info:
         extract_submodel_registrations(tree)
@@ -122,7 +126,7 @@ def test_parsing_non_canonical_alias_raises_parse_error(
     assert exc_info.value.message == ("Submodel instance name must be a canonical identifier.")
     assert exc_info.value.context["name"] == raw_name
     assert exc_info.value.context["expected"] == expected_sanitised
-    assert exc_info.value.context["line"] == 1
+    assert exc_info.value.context["line"] == 2
 
 
 def test_after_parsing_occurrence_label_equals_alias(tmp_path: Path) -> None:
@@ -134,13 +138,15 @@ def test_after_parsing_occurrence_label_equals_alias(tmp_path: Path) -> None:
 import polars as pl
 import haute
 
+from modules import pricing
+
 pipeline = haute.Pipeline("main")
 
 pipeline.submodel(
-    "modules/pricing.py",
+    pricing.submodel,
     "primary_pricing",
 ).submodel(
-    "modules/pricing.py",
+    pricing.submodel,
     "secondary_pricing",
     instance_of="primary_pricing",
 )
@@ -179,10 +185,12 @@ pipeline.connect("secondary_pricing", "sink", source_port="premium")
 
 def test_pipeline_submodel_dsl_validation() -> None:
     p = Pipeline("main")
+    # The definition ``from modules import pricing`` would bind as ``pricing.submodel``.
+    definition = Submodel("pricing", definition_id="def_pricing", input_ports=[], output_ports=[])
 
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="label"):
         p.submodel(  # type: ignore[call-arg]
-            "modules/pricing.py",
+            definition,
             "pricing_1",
             label="Pricing One",
         )
@@ -195,7 +203,7 @@ def test_pipeline_submodel_dsl_validation() -> None:
         ),
     ):
         p.submodel(
-            "modules/pricing.py",
+            definition,
             "My Pricing",
         )
 
@@ -207,9 +215,10 @@ def test_pipeline_submodel_dsl_validation() -> None:
         ),
     ):
         p.submodel(
-            "modules/pricing.py",
+            definition,
             "class",
         )
+    assert p.submodel_registrations == []
 
 
 def test_codegen_two_occurrences_no_label_roundtrip_byte_identical(tmp_path: Path) -> None:
@@ -221,13 +230,15 @@ def test_codegen_two_occurrences_no_label_roundtrip_byte_identical(tmp_path: Pat
 import polars as pl
 import haute
 
+from modules import pricing
+
 pipeline = haute.Pipeline("main")
 
 pipeline.submodel(
-    "modules/pricing.py",
+    pricing.submodel,
     "pricing_a",
 ).submodel(
-    "modules/pricing.py",
+    pricing.submodel,
     "pricing_b",
     instance_of="pricing_a",
 )
@@ -261,8 +272,9 @@ pipeline.connect("pricing_b", "sink", source_port="premium")
     main_code = generated_files["main.py"]
 
     assert "label=" not in main_code
-    assert 'pipeline.submodel("modules/pricing.py", "pricing_a")' in main_code
-    expected_b = 'pipeline.submodel("modules/pricing.py", "pricing_b", instance_of="pricing_a")'
+    assert "import haute\nimport polars as pl\n\nfrom modules import pricing\n\n" in main_code
+    assert 'pipeline.submodel(pricing.submodel, "pricing_a")' in main_code
+    expected_b = 'pipeline.submodel(pricing.submodel, "pricing_b", instance_of="pricing_a")'
     assert expected_b in main_code
 
     reparsed = parse_pipeline_source(

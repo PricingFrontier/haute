@@ -22,7 +22,8 @@ In scope:
   from cross-boundary edges, and rewiring those edges to/from the occurrence
   (`src/haute/_submodel_instances.py`).
 - Resolving a submodel's `.py` file relative to the active pipeline directory,
-  using the same convention as the parser (`src/haute/_submodel_paths.py`).
+  and the `modules/<name>.py` convention by which a pipeline imports a definition
+  module, shared with the parser and codegen (`src/haute/_submodel_paths.py`).
 - The pure, I/O-free graph transform that extracts selected nodes out of a
   `PipelineGraph` into a new submodel (`src/haute/routes/_submodel_ops.py`).
 - Flattening one named submodel or every submodel into a flat execution graph, including boundary
@@ -33,7 +34,8 @@ In scope:
   `POST /api/submodel/dissolve` (`src/haute/routes/submodel.py`).
 
 Out of scope (owned elsewhere, linked where relevant):
-- Parsing `pipeline.submodel("path")` calls out of a pipeline file's AST,
+- Reading a pipeline file's submodel imports (`from modules import <name>`) and its
+  `pipeline.submodel(<name>.submodel, "<occurrence>")` registrations out of its AST,
   parsing an individual submodel `.py` file's `@submodel.<type>` decorators,
   and merging parsed submodel graphs into the parent's hierarchical form
   (`_parser_submodels.py`, `parser.py`) — owned by
@@ -70,8 +72,31 @@ by one shared **definition** and any number of parent-graph **instances**:
   and multiple owners are invalid. The node owns its occurrence name
   and position, while its incident parent edges own its bindings.
   `node.id == node.data.label == config.alias` is an invariant enforced on validation (raising `ParseError` if violated).
-  The registration signature `pipeline.submodel(file, name, *, instance_of=None)` accepts `name` as positional argument and does not accept `definition_id=`, `instance_id=`, `alias=`, or `label=`.
+  The registration signature `pipeline.submodel(definition, /, name, *, instance_of=None)`
+  takes the definition imported from its module (`<module>.submodel`) positionally, then the
+  occurrence `name`, and does not accept `definition_id=`, `instance_id=`, `alias=`, or `label=`.
   Recovery uses the alias only.
+- A definition's source is a Python module directly in the `modules/` folder beside the
+  pipeline, `modules/<name>.py`, named as a node is: a canonical identifier of ASCII letters,
+  digits and underscores that does not start with a digit or `__`, and neither a keyword nor
+  a Python built-in. The pipeline file imports it,
+  `from modules import <name>`, and registers each occurrence of the definition it defines:
+
+  ```python
+  from modules import factors
+
+  pipeline.submodel(factors.submodel, "factors")
+  pipeline.submodel(factors.submodel, "again", instance_of="factors")
+  ```
+
+  It is an ordinary Python import: running or importing the pipeline file imports the
+  module, `Pipeline.run()` and `score()` execute each occurrence from the definition it
+  registered, and an editor's go-to-definition and a type checker follow it, while the parser
+  reads the same statements without importing anything. The import names the file
+  (`from modules import factors` is `modules/factors.py`), so a definition has exactly one
+  spelling. A registration by file path, `pipeline.submodel("modules/factors.py", ...)`, is a
+  removed form: the parser refuses it with the import form that replaces it, and nothing
+  migrates it (the [canonical-only policy](../README.md#canonical-only-format-policy)).
 - Renaming an occurrence changes its identity, exactly as renaming an ordinary
   node does: in the editor the node id stays until Save (the alias and every
   consumer binding change at once), codegen emits the name, and the reparse
@@ -192,19 +217,25 @@ rendered boundary-port cards: definitions with no public ports (including a
 group made entirely from disconnected source nodes) must use the same qualified
 preview and trace targets.
 
-Code generation emits each definition file once and one
-`pipeline.submodel(...)` registration per occurrence. Parent connections use
-public ports and never name internal children. Parse -> codegen -> parse must
-preserve definition identity, occurrence names, labels, positions, ports,
+Code generation emits each definition module once, one `from modules import ...`
+statement in the pipeline file naming every definition's module, and one
+`pipeline.submodel(<module>.submodel, "<name>")` registration per occurrence. A
+definition whose file is not a `modules/<name>.py` module cannot be imported by name, so
+codegen refuses it rather than emit a registration nothing could resolve. Parent
+connections use public ports and never name internal children. Parse -> codegen -> parse
+must preserve definition identity, occurrence names, labels, positions, ports,
 and independent bindings. Every generated config-backed node resolves its
 sidecar from the owning pipeline directory. A definition emitted under
 `modules/` must not reinterpret `config/...` relative to the module directory:
-its constructor ends with `pipeline_dir=".."` (one `..` per folder between the
-file and the pipeline), which codegen derives from the registration path and
-the parser rejects when it disagrees with where the file sits, so a node of
-the definition run on its own reads the pipeline's sidecars.
+its constructor ends with `pipeline_dir=".."`, the way from `modules/` back to the
+pipeline, which codegen derives from the definition's file and the parser rejects when it
+disagrees with where the file sits, so a node of the definition run on its own reads the
+pipeline's sidecars. When Save writes a definition module into a `modules/` folder that has
+no `__init__` file, it writes an empty `<pipeline_dir>/modules/__init__.py`, and never
+overwrites one that exists: `modules` is then a regular package, so the pipeline's import
+resolves to the folder beside it and never to another `modules` folder on `sys.path`.
 
-Acceptance requires a single file-backed definition instantiated twice with
+Acceptance requires a single definition module instantiated twice with
 different aliases, positions, and bindings to survive save -> reload ->
 flatten/execute -> save. The definition artifact is emitted once, both
 registrations remain distinct, runtime ids and origins cannot collide, and an
@@ -288,13 +319,16 @@ must resolve the original pipeline-owned sidecars.
   no cross-boundary edges.
 - **No nesting.** A node that is itself a `SUBMODEL` occurrence cannot be
   selected as part of a new group — grouping is capped at one level. A hand-authored submodel
-  file that contains `pipeline.submodel(...)` is rejected by the parser with every nested path
-  named; it is never accepted with the nested graph omitted.
+  file that contains a `pipeline.submodel(...)` registration, whatever its arguments, is
+  rejected by the parser with the line of every nested registration (`nested_lines`); it is
+  never accepted with the nested graph omitted. An import from `modules` in a definition file
+  is ordinary preamble.
 - **GUI creation is selection-based.** There is no submodel entry in the node palette or GUI
   library picker: the create endpoint only extracts an existing selection from the current graph.
   Existing occurrences expose **Create instance**, which creates an unbound
   occurrence of the same definition without copying a file. Source files can
-  also hand-author explicit reusable `pipeline.submodel(...)` registrations.
+  also hand-author explicit reusable registrations: `from modules import <module>`, then one
+  `pipeline.submodel(<module>.submodel, "<name>")` per occurrence.
 - **Windows-reserved names are rejected up front.** A submodel name that would
   produce a module filename matching a Windows reserved device name (`CON`,
   `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, any casing, any extension) is rejected
@@ -353,18 +387,27 @@ must resolve the original pipeline-owned sidecars.
   transaction-local claim only after source and sidecar pass no-clobber. A
   removed definition is deleted only when its marker and a complete reference
   audit authorise it. Uncertainty always retains the file.
+- **A definition is imported, not named by a path.** An ordinary
+  `from modules import <name>` makes the pipeline file plain Python that runs, and that
+  editors and type checkers follow, without Haute's help, and it leaves one spelling per
+  definition, since the import name is the file name. The parser reads the same import
+  statically and derives the file from it, so the parsed graph and the imported module are
+  the same file. The path-string registration this replaced is refused rather than migrated,
+  because Haute keeps only its current canonical source form.
 - **Submodel path resolution deliberately mirrors the parser's own module
   lookup**, rather than inventing a second convention: drill-down parses the
   parent named by `source_file` and resolves the exact project-relative path
-  stored in its submodel metadata. There is no global name-only fallback. The
-  GUI and the actually executed pipeline therefore open the same file.
+  stored in its submodel metadata, the file its import names. There is no global
+  name-only fallback. The GUI and the actually executed pipeline therefore open the
+  same file.
 - **Nesting is disallowed by construction, not by convention.** Rejecting any
   selection that includes a submodel occurrence keeps the occurrence model,
   the `in__`/`out__` handle scheme, and the flatten pass single-level;
   recursive nesting (a submodel containing another submodel) was considered
   as a possible future phase and never implemented. This closes the
   GUI-authored path; the expression parser closes the hand-authored path by
-  raising `ParseError` with the containing file and every nested reference.
+  raising `ParseError` with the containing file and the line of every nested
+  registration.
   A cycle therefore cannot be hidden by truncating the authored hierarchy.
 - **Name-collision detection lives at save time, not in `haute lint`.**
   Extending `haute lint` to warn about (and block on) node-name collisions
@@ -467,3 +510,24 @@ must resolve the original pipeline-owned sidecars.
   authorises deletion.
 - Sanitised node-name collisions discovered by `SavePipelineService` return a
   specific `400` before writes begin.
+- A pipeline file whose submodel imports or registrations are not the canonical form fails
+  to parse with a `ParseError` (on the statement's line, apart from an unused import, which
+  names its modules), so the editor document is degraded and Save is refused until the
+  source is corrected: a registration by file path (positional or `file=`), the removed
+  form, whose remediation is the exact import form; an import from `modules` in any other
+  spelling (relative, dotted, `import modules...`, an alias, `*`) or a module imported
+  twice; a module name that is not a canonical identifier, starts with `__` or would hide a
+  Python built-in; a registration naming a module
+  the file does not import, whose remediation adds the import; and an import no
+  registration uses. The editor reports a malformed import as `submodel_import_invalid` and
+  a refused registration as `submodel_registration_invalid`; a removed path-form
+  registration keeps its occurrence as an unavailable card carrying the parser's message,
+  while one naming a module the file does not import keeps no card, so its connections are
+  unresolved. An unused import has no element of its own and is listed as the pipeline-level
+  `pipeline_parse_invalid` diagnostic. No recovery action rewrites any of them.
+- Save refuses with `400` a graph whose definition file is not a `modules/<name>.py` module,
+  before writing anything.
+- The live `Pipeline.submodel()` raises `TypeError` when given a file path, naming the
+  import form, or anything else that is not a `haute.Submodel`, such as the imported module
+  itself. A definition module that defines no `submodel` fails with Python's own
+  `AttributeError` when the pipeline file is imported.

@@ -1128,13 +1128,29 @@ class TestSubmodel:
 
     def test_submodel_chaining_records_canonical_occurrences(self):
         p = Pipeline("main")
-        result = p.submodel("a.py", "a").submodel("b.py", "b")
+        a, b = _definition("a"), _definition("b")
+        result = p.submodel(a, "a").submodel(b, "b", instance_of=None)
         assert result is p
-        assert p.submodel_files == ["a.py", "b.py"]
-        assert [(item.file, item.name, item.instance_of) for item in p.submodel_registrations] == [
-            ("a.py", "a", None),
-            ("b.py", "b", None),
-        ]
+        assert [
+            (item.definition, item.name, item.instance_of) for item in p.submodel_registrations
+        ] == [(a, "a", None), (b, "b", None)]
+
+    def test_a_file_path_is_refused_naming_the_import_form(self):
+        """Registering by file path was removed: the definition is imported instead."""
+        with pytest.raises(TypeError, match=r"by its file path, which was removed"):
+            Pipeline("main").submodel("modules/scoring.py", "scoring")  # type: ignore[arg-type]
+
+    def test_the_definition_is_positional(self):
+        """One spelling, as codegen writes it and the parser reads it."""
+        with pytest.raises(TypeError, match="positional-only"):
+            Pipeline("main").submodel(definition=_definition("scoring"), name="scoring")  # type: ignore[call-arg]
+
+    def test_a_module_is_refused_naming_its_definition(self):
+        """The registration takes the module's ``submodel``, not the module."""
+        import types
+
+        with pytest.raises(TypeError, match=r"`<module>\.submodel`, not module"):
+            Pipeline("main").submodel(types.ModuleType("scoring"), "scoring")  # type: ignore[arg-type]
 
     def test_reusable_alias_cannot_shadow_node_registered_first(self):
         p = Pipeline("main")
@@ -1144,11 +1160,11 @@ class TestSubmodel:
             return df
 
         with pytest.raises(ValueError, match="conflicts with a registered node name"):
-            p.submodel("modules/scoring.py", "scoring")
+            p.submodel(_definition("scoring"), "scoring")
 
     def test_node_cannot_shadow_reusable_alias_registered_first(self):
         p = Pipeline("main")
-        p.submodel("modules/scoring.py", "scoring")
+        p.submodel(_definition("scoring"), "scoring")
 
         with pytest.raises(ValueError, match="conflicts with a registered submodel identity"):
 
@@ -1479,6 +1495,7 @@ class TestGlobalConstantsRuntimeApi:
         with pytest.raises(AttributeError):
             _ = sentinel.__wrapped__
 
+    @pytest.mark.usefixtures("submodel_imports")
     def test_generated_pipeline_and_submodel_files_with_constants_import(
         self,
         tmp_path,
@@ -1641,8 +1658,29 @@ submodel.connect("aged", "factor")
 """
 
 
-def _submodel_pipeline(tmp_path, main_body: str):
-    """Write a pipeline using ``modules/factors.py``; return its path and live pipeline."""
+def _definition(name: str) -> Submodel:
+    """A submodel definition with no nodes, as a module defines it."""
+    return Submodel(name, definition_id=f"definition_{name}", input_ports=[], output_ports=[])
+
+
+def _write_module(tmp_path, name: str, source: str) -> None:
+    """``modules/<name>.py`` beside the pipeline, in a regular package as Save writes it."""
+    package = tmp_path / "modules"
+    package.mkdir(exist_ok=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / f"{name}.py").write_text(source, encoding="utf-8")
+
+
+def _exec_pipeline(path, source: str) -> dict:
+    """Run pipeline *source* as the file *path*, as ``python main.py`` imports it."""
+    path.write_text(source, encoding="utf-8")
+    namespace: dict = {"__file__": str(path), "__name__": "pipeline_under_test"}
+    exec(compile(source, str(path), "exec"), namespace)
+    return namespace
+
+
+def _submodel_pipeline(tmp_path, main_body: str, factors: str = _FACTORS_MODULE):
+    """Write a pipeline importing ``modules/factors.py``; return its path and live pipeline."""
     from tests.conftest import write_node_config
 
     rows = write_node_config(
@@ -1651,20 +1689,17 @@ def _submodel_pipeline(tmp_path, main_body: str):
         "quotes",
         {"values": [{"name": "year", "value": 2010}]},
     )
-    (tmp_path / "modules").mkdir()
-    (tmp_path / "modules" / "factors.py").write_text(_FACTORS_MODULE, encoding="utf-8")
+    _write_module(tmp_path, "factors", factors)
     source = (
         "import haute\n"
         "import polars as pl\n\n"
+        "from modules import factors\n\n"
         'pipeline = haute.Pipeline("p")\n\n\n'
         f'@pipeline.constant(config="{rows}")\n'
         "def quotes(): ...\n\n\n" + main_body
     )
     path = tmp_path / "main.py"
-    path.write_text(source, encoding="utf-8")
-    namespace: dict = {"__file__": str(path), "__name__": "pipeline_under_test"}
-    exec(compile(source, str(path), "exec"), namespace)
-    return path, namespace["pipeline"]
+    return path, _exec_pipeline(path, source)["pipeline"]
 
 
 def _haute_run_frame(path, node_id: str) -> pl.DataFrame:
@@ -1677,6 +1712,7 @@ def _haute_run_frame(path, node_id: str) -> pl.DataFrame:
     return pl.DataFrame(result.preview)
 
 
+@pytest.mark.usefixtures("submodel_imports")
 class TestStandaloneSubmodels:
     """A standalone run executes a submodel occurrence as ``haute run`` does."""
 
@@ -1686,7 +1722,7 @@ class TestStandaloneSubmodels:
             "@pipeline.polars\n"
             "def premium(factored: pl.LazyFrame) -> pl.LazyFrame:\n"
             "    return factored.with_columns(premium=pl.col('factor') * 100)\n\n\n"
-            'pipeline.submodel("modules/factors.py", "factors")\n'
+            'pipeline.submodel(factors.submodel, "factors")\n'
             'pipeline.connect("quotes", "factors", target_port="rows")\n'
             'pipeline.connect("factors", "premium", source_port="factored")\n',
         )
@@ -1707,7 +1743,7 @@ class TestStandaloneSubmodels:
             "@pipeline.polars\n"
             "def premium(factored: pl.LazyFrame) -> pl.LazyFrame:\n"
             "    return factored.with_columns(premium=pl.col('factor') * 100)\n\n\n"
-            'pipeline.submodel("modules/factors.py", "factors")\n'
+            'pipeline.submodel(factors.submodel, "factors")\n'
             'pipeline.connect("quotes", "factors", target_port="rows")\n'
             'pipeline.connect("factors", "premium", source_port="factored")\n',
         )
@@ -1718,7 +1754,7 @@ class TestStandaloneSubmodels:
     def test_a_submodel_can_be_the_pipelines_output(self, tmp_path) -> None:
         _path, pipeline = _submodel_pipeline(
             tmp_path,
-            'pipeline.submodel("modules/factors.py", "factors")\n'
+            'pipeline.submodel(factors.submodel, "factors")\n'
             'pipeline.connect("quotes", "factors", target_port="rows")\n',
         )
 
@@ -1730,8 +1766,8 @@ class TestStandaloneSubmodels:
             "@pipeline.polars\n"
             "def both(factored: pl.LazyFrame, again: pl.LazyFrame) -> pl.LazyFrame:\n"
             "    return pl.concat([factored, again])\n\n\n"
-            'pipeline.submodel("modules/factors.py", "factors")\n'
-            'pipeline.submodel("modules/factors.py", "again", instance_of="factors")\n'
+            'pipeline.submodel(factors.submodel, "factors")\n'
+            'pipeline.submodel(factors.submodel, "again", instance_of="factors")\n'
             'pipeline.connect("quotes", "factors", target_port="rows")\n'
             'pipeline.connect("quotes", "again", target_port="rows")\n'
             'pipeline.connect("factors", "both", source_port="factored")\n'
@@ -1743,7 +1779,7 @@ class TestStandaloneSubmodels:
     def test_score_seeds_its_frame_through_a_submodel(self, tmp_path) -> None:
         _path, pipeline = _submodel_pipeline(
             tmp_path,
-            'pipeline.submodel("modules/factors.py", "factors")\n'
+            'pipeline.submodel(factors.submodel, "factors")\n'
             'pipeline.connect("quotes", "factors", target_port="rows")\n',
         )
 
@@ -1752,9 +1788,9 @@ class TestStandaloneSubmodels:
         assert scored["factor"].to_list() == [1.0]
 
     def test_a_port_input_takes_its_parameters_place_among_a_nodes_inputs(self, tmp_path) -> None:
-        module = tmp_path / "modules" / "rates.py"
-        module.parent.mkdir()
-        module.write_text(
+        _write_module(
+            tmp_path,
+            "rates",
             "import haute\n"
             "import polars as pl\n\n"
             "submodel = haute.Submodel(\n"
@@ -1771,38 +1807,34 @@ class TestStandaloneSubmodels:
             "def joined(rows: pl.LazyFrame, table: pl.LazyFrame) -> pl.LazyFrame:\n"
             '    return rows.join(table, how="cross")\n\n\n'
             'submodel.connect("table", "joined")\n',
-            encoding="utf-8",
         )
         source = (
             "import haute\n"
             "import polars as pl\n\n"
+            "from modules import rates\n\n"
             'pipeline = haute.Pipeline("p")\n\n\n'
             "@pipeline.polars\n"
             "def quotes() -> pl.LazyFrame:\n"
             '    return pl.LazyFrame({"year": [2010]})\n\n\n'
-            'pipeline.submodel("modules/rates.py", "rates")\n'
+            'pipeline.submodel(rates.submodel, "rates")\n'
             'pipeline.connect("quotes", "rates", target_port="rows")\n'
         )
-        path = tmp_path / "main.py"
-        path.write_text(source, encoding="utf-8")
-        namespace: dict = {"__file__": str(path), "__name__": "pipeline_under_test"}
-        exec(compile(source, str(path), "exec"), namespace)
+        namespace = _exec_pipeline(tmp_path / "main.py", source)
 
         assert namespace["pipeline"].run(source="live").columns == ["year", "rate"]
 
-    def test_a_submodel_module_imports_as_a_module_and_is_released_after_the_run(
+    def test_a_submodel_module_is_an_ordinary_import_and_a_run_imports_nothing(
         self, tmp_path
     ) -> None:
+        """The pipeline file imports the module, as Python imports any other: a string
+        annotation in it resolves, and running the pipeline loads nothing more."""
         import sys
 
         _path, pipeline = _submodel_pipeline(
             tmp_path,
-            'pipeline.submodel("modules/factors.py", "factors")\n'
+            'pipeline.submodel(factors.submodel, "factors")\n'
             'pipeline.connect("quotes", "factors", target_port="rows")\n',
-        )
-        module = tmp_path / "modules" / "factors.py"
-        module.write_text(
-            _FACTORS_MODULE.replace(
+            factors=_FACTORS_MODULE.replace(
                 "import polars as pl\n",
                 "import polars as pl\n"
                 "from dataclasses import dataclass\n\n\n"
@@ -1810,16 +1842,17 @@ class TestStandaloneSubmodels:
                 "class Rate:\n"
                 '    value: "float"\n',
             ),
-            encoding="utf-8",
         )
         modules_before = set(sys.modules)
 
+        assert "modules.factors" in sys.modules
         assert pipeline.run(source="live")["factor"].to_list() == [1.2]
         assert set(sys.modules) == modules_before
 
     def test_a_pipeline_whose_nodes_all_live_in_a_submodel_runs_and_scores(self, tmp_path) -> None:
-        (tmp_path / "modules").mkdir()
-        (tmp_path / "modules" / "whole.py").write_text(
+        _write_module(
+            tmp_path,
+            "whole",
             "import haute\n"
             "import polars as pl\n\n"
             "submodel = haute.Submodel(\n"
@@ -1836,18 +1869,14 @@ class TestStandaloneSubmodels:
             "def doubled(rows: pl.LazyFrame) -> pl.LazyFrame:\n"
             '    return rows.with_columns(y=pl.col("x") * 2)\n\n\n'
             'submodel.connect("rows", "doubled")\n',
-            encoding="utf-8",
         )
         source = (
             "import haute\n\n"
+            "from modules import whole\n\n"
             'pipeline = haute.Pipeline("p")\n'
-            'pipeline.submodel("modules/whole.py", "whole")\n'
+            'pipeline.submodel(whole.submodel, "whole")\n'
         )
-        path = tmp_path / "main.py"
-        path.write_text(source, encoding="utf-8")
-        namespace: dict = {"__file__": str(path), "__name__": "pipeline_under_test"}
-        exec(compile(source, str(path), "exec"), namespace)
-        pipeline = namespace["pipeline"]
+        pipeline = _exec_pipeline(tmp_path / "main.py", source)["pipeline"]
 
         assert pipeline.run(source="live")["y"].to_list() == [2]
         assert pipeline.score(pl.DataFrame({"x": [5]}))["y"].to_list() == [10]
@@ -1895,11 +1924,12 @@ class TestStandaloneSubmodels:
         source = (
             "import haute\n"
             "import polars as pl\n\n"
+            "from modules import rating\n\n"
             'pipeline = haute.Pipeline("p")\n\n\n'
             "@pipeline.polars\n"
             "def quotes() -> pl.LazyFrame:\n"
             '    return pl.LazyFrame({"year": [2010]})\n\n\n'
-            'pipeline.submodel("modules/rating.py", "rating")\n'
+            'pipeline.submodel(rating.submodel, "rating")\n'
             'pipeline.connect("quotes", "rating", target_port="rows")\n'
         )
         path = tmp_path / "main.py"
@@ -1951,11 +1981,12 @@ class TestStandaloneSubmodels:
         source = (
             "import haute\n"
             "import polars as pl\n\n"
+            "from modules import rating\n\n"
             'pipeline = haute.Pipeline("p")\n\n\n'
             "@pipeline.polars\n"
             "def quotes() -> pl.LazyFrame:\n"
             '    return pl.LazyFrame({"year": [2010]})\n\n\n'
-            'pipeline.submodel("modules/rating.py", "rating")\n'
+            'pipeline.submodel(rating.submodel, "rating")\n'
             'pipeline.connect("quotes", "rating", target_port="rows")\n'
         )
         path = tmp_path / "main.py"
@@ -1967,13 +1998,12 @@ class TestStandaloneSubmodels:
 
         assert scored.to_dicts() == [{"year": 2010, "rel": 1.5, "note": "n"}]
 
-    def test_a_file_without_a_submodel_is_refused_naming_it(self, tmp_path) -> None:
-        _path, pipeline = _submodel_pipeline(
-            tmp_path,
-            'pipeline.submodel("modules/empty.py", "factors")\n'
-            'pipeline.connect("quotes", "factors", target_port="rows")\n',
-        )
-        (tmp_path / "modules" / "empty.py").write_text("import haute\n", encoding="utf-8")
-
-        with pytest.raises(ExecutionError, match=r"modules/empty\.py.*defines no haute\.Submodel"):
-            pipeline.run(source="live")
+    def test_a_module_without_a_submodel_fails_the_import_naming_it(self, tmp_path) -> None:
+        """Python itself refuses the registration, when the pipeline file is imported."""
+        with pytest.raises(AttributeError, match=r"factors.*has no attribute 'submodel'"):
+            _submodel_pipeline(
+                tmp_path,
+                'pipeline.submodel(factors.submodel, "factors")\n'
+                'pipeline.connect("quotes", "factors", target_port="rows")\n',
+                factors="import haute\n",
+            )

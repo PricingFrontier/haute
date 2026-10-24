@@ -42,21 +42,29 @@
   the in-memory edge representation `NodeRegistry`/`Pipeline` operate on. Distinct from the
   Pydantic `GraphEdge` (`haute._types`) that `_graph_builders.py` produces for the parsed
   source graph.
-- **`RegisteredSubmodel`** (frozen dataclass, `src/haute/pipeline.py`) — `file`, `name`,
-  `instance_of: str | None`: one canonical file-backed submodel occurrence registered on a
-  pipeline.
+- **`RegisteredSubmodel`** (frozen dataclass, `src/haute/pipeline.py`) — `definition` (the
+  `Submodel` the pipeline file imported), `name`, `instance_of: str | None`, and
+  `registered_in: str | None` (the `__file__` of the module that made the registration): one
+  submodel occurrence registered on a pipeline.
 - **`NodeRegistry`** — base class for `Pipeline` and `Submodel`; holds `_nodes: list[Node]`,
-  `_node_map: dict[str, Node]`, `_edges: list[RegisteredEdge]`, `_submodel_files: list[str]`,
+  `_node_map: dict[str, Node]`, `_edges: list[RegisteredEdge]`,
   `_submodel_registrations: list[RegisteredSubmodel]`.
 - **`Pipeline(NodeRegistry)`** — adds `run()`, `score()`, `to_graph()`, `submodel()`,
-  `submodel_files`, `submodel_registrations`. A live
-  `Pipeline.submodel(file, name, *, instance_of=None)` call validates that `file` and `name` are
-  non-empty unpadded strings, that `name` is a canonical identifier, that `name` does not conflict
-  with a registered node name or duplicate an existing registered submodel name, and that `instance_of`
-  (when provided) is a non-empty unpadded string (keywords `definition_id=`, `instance_id=`, `alias=`,
-  and `label=` fail to parse). It appends `file` to `_submodel_files` and `RegisteredSubmodel(file, name, instance_of)`
-  to `_submodel_registrations`; it does not import the module or register the `Submodel` object's nodes
-  onto the live `Pipeline`. Static parsing resolves those files into the hierarchical/flat graph used
+  `submodel_registrations`. A live
+  `Pipeline.submodel(definition, /, name, *, instance_of=None)` call takes the definition a
+  pipeline file imports, `from modules import <module>` then `<module>.submodel`, positionally
+  (so a `file=` keyword is Python's own `TypeError`). It raises
+  `TypeError` for a string, the removed file-path form, with a message naming the import
+  form, and for anything else that is not a `Submodel`, such as the module itself. It then
+  validates that `name` is a non-empty unpadded string and a canonical identifier, is not a
+  reserved or built-in name (`reserved_or_builtin`), and does not equal, ignoring case, a
+  registered node name or an existing registered submodel name, and that `instance_of` (when
+  provided) is a non-empty unpadded string (the signature has no `definition_id=`,
+  `instance_id=`, `alias=` or `label=`, which the static parser refuses too). It appends
+  `RegisteredSubmodel(definition, name, instance_of, registered_in)` to
+  `_submodel_registrations`; it does not register the `Submodel` object's nodes onto the live
+  `Pipeline`, which `run()` and `score()` expand (below). Static parsing reads the same imports
+  and registrations from the source, importing nothing, into the hierarchical/flat graph used
   by the full executor.
 - **`Submodel(NodeRegistry)`** — no `run`/`score`/`to_graph`. Its constructor requires keyword-only
   arguments `definition_id: str`, `input_ports: list[dict | SubmodelInputPort]`, and
@@ -580,7 +588,9 @@ it on the reading node instead of aborting the walk, and every other run propaga
   reference is the response's step problem.
 - `Pipeline.run` takes a keyword-only `source`, which it requires: without one it raises
   `TypeError` from `Pipeline._missing_source_message`, which names the sources of the
-  `.haute.json` sidecar beside the first node's file (read by
+  `.haute.json` sidecar beside the pipeline's file (`Pipeline._pipeline_file`: the first
+  node's file, or, for a pipeline with no node of its own, the file that made a submodel
+  registration) (read by
   `src/haute/_sidecar.py::read_sidecar_state`; `live` when there is none). It and `Pipeline.score`
   (which uses `live`) set `_scenario_ctx` to that source for the run and build the table with
   `Pipeline._run_constants`, which loads a declared file through
@@ -594,10 +604,10 @@ it on the reading node instead of aborting the walk, and every other run propaga
   `function_constant_reads(fn)`, the reads of the function's source (every constant when its
   source cannot be read). Two runs therefore never share a binding. Calling a node's decorated
   name outside a run binds nothing, so its code reads the sentinel.
-- A pipeline with submodel registrations runs through `Pipeline._with_submodels_expanded`:
-  `_load_submodel_definition` resolves each file with
-  `src/haute/_submodel_paths.py::resolve_submodel_reference` from the pipeline directory and
-  imports it under a fresh module name, requiring exactly one `Submodel` among its globals;
+- A pipeline with submodel registrations runs through `Pipeline._with_submodels_expanded`,
+  which takes each occurrence's definition from its registration
+  (`RegisteredSubmodel.definition`, the `Submodel` the pipeline file's
+  `from modules import <module>` imported) and imports nothing itself;
   each definition node becomes a `dataclasses.replace` copy named `<occurrence>.<node>`;
   boundary edges come from `_submodel_input` / `_submodel_output` (an unknown port is an
   `ExecutionError` listing the ports); and `_in_parameter_order` orders each submodel node's
@@ -605,9 +615,9 @@ it on the reading node instead of aborting the walk, and every other run propaga
   `_graph_utils.executable_input_name`'s, so a Quote Input frame by its frame handle) is a
   positional parameter takes its place, the rest fill the open parameters in
   order, and a node with more inputs than parameters, like the pipeline's own nodes, keeps
-  registration order. A registration records the file that made it
-  (`RegisteredSubmodel.registered_in`), which its path resolves against, and
-  `Pipeline._submodels_expanded` keeps each imported module in `sys.modules` for the run.
+  registration order. A definition module stays in `sys.modules` as any import does (a
+  `dataclass` with string annotations in it resolves through that entry), and expanding the
+  occurrences imports nothing.
 
 ## Edge cases and invariants
 
@@ -737,7 +747,8 @@ it on the reading node instead of aborting the walk, and every other run propaga
   reports the failure on the node, so they stay `ValueError`.
 - **`ValueError`** — empty live pipeline; an unwired non-source node or missing upstream result
   during `Pipeline.run()`/`score()`; unknown source or target node in `connect()`; empty-string
-  port name; submodel identity errors (non-canonical submodel name, name conflicting with a registered
+  port name; submodel identity errors (an empty or padded submodel name or `instance_of`, a
+  non-canonical, reserved or built-in submodel name, name conflicting with a registered
   node name, duplicate submodel name, or a submodel port declaring `portId`/`label`); duplicate key in a sidecar JSON object
   (`reject_duplicate_keys_hook`); non-`dict` sidecar JSON content; a resolved config path
   escaping the `config/` directory (`config_path_for_node`); a node name containing path
@@ -749,7 +760,12 @@ it on the reading node instead of aborting the walk, and every other run propaga
   (a registration bug, not a runtime/user-facing condition); a `NODE_REGISTRY` lookup miss in
   the exec-builder dispatcher.
 - **`TypeError`** — an invalid (non-`str`, non-`None`) `source_port`/`target_port` passed to
-  `connect()`, raised from `_validate_port`.
+  `connect()`, raised from `_validate_port`; `Pipeline.submodel()` given a string, the removed
+  file-path form (the message names `from modules import <module>` and
+  `pipeline.submodel(<module>.submodel, ...)`), or any other definition that is not a
+  `Submodel`, such as the imported module, or given a non-string name or `instance_of`.
+- **`AttributeError`** (Python's own) — importing a pipeline file whose
+  `pipeline.submodel(<module>.submodel, ...)` names a module that defines no `submodel`.
 
 ## Testing
 
@@ -785,6 +801,13 @@ API and real JSON round-trips rather than mocks:
   rejection an `ExecutionError` naming the ports — plus `run()` port-aware frame selection
   for one- and many-frame apiInput sources. `test_run_raises_typed_rating_miss_from_a_lazy_output`
   and `test_lazy_output_is_collected_inside_the_scenario_context` pin lazy-output collection.
+  `Pipeline.submodel()` records the imported definition and refuses a file path and a module
+  with `TypeError`; `TestStandaloneSubmodels` runs pipeline files that import their
+  definition modules from `modules/`: a run and `score()` through an occurrence match
+  `haute run`, two occurrences of one definition each run, a pipeline whose nodes all live in
+  a submodel runs, a port input takes its parameter's place, the module is an ordinary
+  import that a run adds nothing to, and a module without a `submodel` fails the import with
+  Python's `AttributeError`.
 - **`test_standalone_nodes.py`** — the standalone configured-node runtime: a sidecar-typed node without `config=` is
   called as a plain function; every configured type run as a declaration returns what its work produces (a Data Input's loaded rows, a Model
   Score's predictions, an Output's assembled document, a Live Switch's scenario-selected

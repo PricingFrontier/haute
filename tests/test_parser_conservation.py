@@ -337,11 +337,10 @@ class TestSubmodelResolutionRoot:
             """\
             import haute
 
+            from modules import scoring
+
             pipeline = haute.Pipeline("main")
-            pipeline.submodel(
-                "modules/scoring.py",
-                "scoring",
-            )
+            pipeline.submodel(scoring.submodel, "scoring")
             """
         )
 
@@ -390,9 +389,9 @@ class TestGraphStructureConservationGate:
         self,
         tmp_path: Path,
     ) -> None:
-        child = _write(
+        _write(
             tmp_path,
-            "child.py",
+            "modules/child.py",
             """
             import polars as pl
             import haute
@@ -412,6 +411,7 @@ class TestGraphStructureConservationGate:
                         "source": {"nodeId": "transform", "handleId": None},
                     }
                 ],
+                pipeline_dir="..",
             )
 
             @submodel.polars
@@ -422,24 +422,23 @@ class TestGraphStructureConservationGate:
         parent = _write(
             tmp_path,
             "main.py",
-            f"""
+            """
             import polars as pl
             import haute
+
+            from modules import child
 
             pipeline = haute.Pipeline("main")
 
             @pipeline.polars
             def source() -> pl.LazyFrame:
-                return pl.LazyFrame({{"x": [1]}})
+                return pl.LazyFrame({"x": [1]})
 
             @pipeline.polars
             def sink(result: pl.LazyFrame) -> pl.LazyFrame:
                 return result
 
-            pipeline.submodel(
-                {child.name!r},
-                "child",
-            )
+            pipeline.submodel(child.submodel, "child")
             pipeline.connect("source", "child", target_port="source")
             pipeline.connect("child", "sink", source_port="result")
             """,
@@ -468,9 +467,9 @@ class TestGraphStructureConservationGate:
         self,
         tmp_path: Path,
     ) -> None:
-        child = _write(
+        _write(
             tmp_path,
-            "ported_child.py",
+            "modules/ported_child.py",
             """
             import polars as pl
             import haute
@@ -498,6 +497,7 @@ class TestGraphStructureConservationGate:
                         },
                     }
                 ],
+                pipeline_dir="..",
             )
 
             @submodel.polars
@@ -512,24 +512,23 @@ class TestGraphStructureConservationGate:
         parent = _write(
             tmp_path,
             "ported_main.py",
-            f"""
+            """
             import polars as pl
             import haute
+
+            from modules import ported_child
 
             pipeline = haute.Pipeline("ported_main")
 
             @pipeline.polars
             def source() -> pl.LazyFrame:
-                return pl.LazyFrame({{"x": [1]}})
+                return pl.LazyFrame({"x": [1]})
 
             @pipeline.polars
             def sink(quotes: pl.LazyFrame) -> pl.LazyFrame:
                 return quotes
 
-            pipeline.submodel(
-                {child.name!r},
-                "ported_child",
-            )
+            pipeline.submodel(ported_child.submodel, "ported_child")
             pipeline.connect("source", "ported_child", target_port="base")
             pipeline.connect("ported_child", "sink", source_port="quotes")
             """,
@@ -671,9 +670,9 @@ class TestPrivateChildEndpoints:
         self,
         tmp_path: Path,
     ) -> None:
-        child = _write(
+        _write(
             tmp_path,
-            "child.py",
+            "modules/child.py",
             """
             import polars as pl
             import haute
@@ -693,6 +692,7 @@ class TestPrivateChildEndpoints:
                         "source": {"nodeId": "transform", "handleId": None},
                     }
                 ],
+                pipeline_dir="..",
             )
 
             @submodel.polars
@@ -703,24 +703,23 @@ class TestPrivateChildEndpoints:
         parent = _write(
             tmp_path,
             "main.py",
-            f"""
+            """
             import polars as pl
             import haute
+
+            from modules import child
 
             pipeline = haute.Pipeline("main")
 
             @pipeline.polars
             def source() -> pl.LazyFrame:
-                return pl.LazyFrame({{"x": [1]}})
+                return pl.LazyFrame({"x": [1]})
 
             @pipeline.polars
             def sink(transform: pl.LazyFrame) -> pl.LazyFrame:
                 return transform
 
-            pipeline.submodel(
-                {child.name!r},
-                "child",
-            )
+            pipeline.submodel(child.submodel, "child")
             pipeline.connect("source", "transform")
             pipeline.connect("transform", "sink")
             """,
@@ -750,9 +749,9 @@ class TestPrivateChildEndpoints:
         self,
         tmp_path: Path,
     ) -> None:
-        child = _write(
+        _write(
             tmp_path,
-            "child.py",
+            "modules/child.py",
             """
             import polars as pl
             import haute
@@ -772,6 +771,7 @@ class TestPrivateChildEndpoints:
                         "source": {"nodeId": "transform", "handleId": None},
                     }
                 ],
+                pipeline_dir="..",
             )
 
             @submodel.polars
@@ -782,24 +782,23 @@ class TestPrivateChildEndpoints:
         parent = _write(
             tmp_path,
             "main.py",
-            f"""
+            """
             import polars as pl
             import haute
+
+            from modules import child
 
             pipeline = haute.Pipeline("main")
 
             @pipeline.polars
             def source() -> pl.LazyFrame:
-                return pl.LazyFrame({{"x": [1]}})
+                return pl.LazyFrame({"x": [1]})
 
             @pipeline.polars
             def sink(transform: pl.LazyFrame) -> pl.LazyFrame:
                 return transform
 
-            pipeline.submodel(
-                {child.name!r},
-                "child",
-            )
+            pipeline.submodel(child.submodel, "child")
             pipeline.connect("transform", "sink")
             """,
         )
@@ -822,9 +821,9 @@ class TestPrivateChildEndpoints:
         self,
         tmp_path: Path,
     ) -> None:
-        child = _write(
+        _write(
             tmp_path,
-            "child.py",
+            "modules/child.py",
             """
             import polars as pl
             import haute
@@ -844,6 +843,7 @@ class TestPrivateChildEndpoints:
                         "source": {"nodeId": "other", "handleId": None},
                     }
                 ],
+                pipeline_dir="..",
             )
 
             @submodel.polars
@@ -858,24 +858,23 @@ class TestPrivateChildEndpoints:
         parent = _write(
             tmp_path,
             "main.py",
-            f"""
+            """
             import polars as pl
             import haute
+
+            from modules import child
 
             pipeline = haute.Pipeline("main")
 
             @pipeline.polars
             def source() -> pl.LazyFrame:
-                return pl.LazyFrame({{"x": [1]}})
+                return pl.LazyFrame({"x": [1]})
 
             @pipeline.polars
             def sink(other: pl.LazyFrame) -> pl.LazyFrame:
                 return other
 
-            pipeline.submodel(
-                {child.name!r},
-                "child",
-            )
+            pipeline.submodel(child.submodel, "child")
             pipeline.connect("transform", "other")
             """,
         )
@@ -898,9 +897,9 @@ class TestPrivateChildEndpoints:
         self,
         tmp_path: Path,
     ) -> None:
-        child = _write(
+        _write(
             tmp_path,
-            "child.py",
+            "modules/child.py",
             """
             import polars as pl
             import haute
@@ -920,6 +919,7 @@ class TestPrivateChildEndpoints:
                         "source": {"nodeId": "transform", "handleId": None},
                     }
                 ],
+                pipeline_dir="..",
             )
 
             @submodel.polars
@@ -930,15 +930,17 @@ class TestPrivateChildEndpoints:
         parent_valid = _write(
             tmp_path,
             "main_valid.py",
-            f"""
+            """
             import polars as pl
             import haute
+
+            from modules import child
 
             pipeline = haute.Pipeline("main_valid")
 
             @pipeline.polars
             def source() -> pl.LazyFrame:
-                return pl.LazyFrame({{"x": [1]}})
+                return pl.LazyFrame({"x": [1]})
 
             @pipeline.polars
             def sink_a(result: pl.LazyFrame) -> pl.LazyFrame:
@@ -948,15 +950,8 @@ class TestPrivateChildEndpoints:
             def sink_b(result: pl.LazyFrame) -> pl.LazyFrame:
                 return result
 
-            pipeline.submodel(
-                {child.name!r},
-                "a",
-            )
-            pipeline.submodel(
-                {child.name!r},
-                "b",
-                instance_of="a",
-            )
+            pipeline.submodel(child.submodel, "a")
+            pipeline.submodel(child.submodel, "b", instance_of="a")
             pipeline.connect("source", "a", target_port="source")
             pipeline.connect("a", "sink_a", source_port="result")
             pipeline.connect("source", "b", target_port="source")
@@ -985,15 +980,17 @@ class TestPrivateChildEndpoints:
         parent_invalid = _write(
             tmp_path,
             "main_invalid.py",
-            f"""
+            """
             import polars as pl
             import haute
+
+            from modules import child
 
             pipeline = haute.Pipeline("main_invalid")
 
             @pipeline.polars
             def source() -> pl.LazyFrame:
-                return pl.LazyFrame({{"x": [1]}})
+                return pl.LazyFrame({"x": [1]})
 
             @pipeline.polars
             def sink_a(result: pl.LazyFrame) -> pl.LazyFrame:
@@ -1003,15 +1000,8 @@ class TestPrivateChildEndpoints:
             def sink_b(result: pl.LazyFrame) -> pl.LazyFrame:
                 return result
 
-            pipeline.submodel(
-                {child.name!r},
-                "a",
-            )
-            pipeline.submodel(
-                {child.name!r},
-                "b",
-                instance_of="a",
-            )
+            pipeline.submodel(child.submodel, "a")
+            pipeline.submodel(child.submodel, "b", instance_of="a")
             pipeline.connect("source", "a", target_port="source")
             pipeline.connect("a", "sink_a", source_port="result")
             pipeline.connect("source", "b", target_port="source")
@@ -1038,9 +1028,9 @@ class TestPrivateChildEndpoints:
         self,
         tmp_path: Path,
     ) -> None:
-        child = _write(
+        _write(
             tmp_path,
-            "child.py",
+            "modules/child.py",
             """
             import polars as pl
             import haute
@@ -1060,6 +1050,7 @@ class TestPrivateChildEndpoints:
                         "source": {"nodeId": "transform", "handleId": None},
                     }
                 ],
+                pipeline_dir="..",
             )
 
             @submodel.polars
@@ -1070,24 +1061,23 @@ class TestPrivateChildEndpoints:
         parent_path = _write(
             tmp_path,
             "main.py",
-            f"""
+            """
             import polars as pl
             import haute
+
+            from modules import child
 
             pipeline = haute.Pipeline("main")
 
             @pipeline.polars
             def source() -> pl.LazyFrame:
-                return pl.LazyFrame({{"x": [1]}})
+                return pl.LazyFrame({"x": [1]})
 
             @pipeline.polars
             def sink(transform: pl.LazyFrame) -> pl.LazyFrame:
                 return transform
 
-            pipeline.submodel(
-                {child.name!r},
-                "child",
-            )
+            pipeline.submodel(child.submodel, "child")
             pipeline.connect("source", "transform")
             pipeline.connect("transform", "sink")
             """,
@@ -1389,9 +1379,9 @@ class TestPolarsParameterBinding:
         self,
         tmp_path: Path,
     ) -> None:
-        child = _write(
+        _write(
             tmp_path,
-            "child.py",
+            "modules/child.py",
             """
             import polars as pl
             import haute
@@ -1411,6 +1401,7 @@ class TestPolarsParameterBinding:
                         "source": {"nodeId": "transform", "handleId": None},
                     }
                 ],
+                pipeline_dir="..",
             )
 
             @submodel.polars
@@ -1421,24 +1412,23 @@ class TestPolarsParameterBinding:
         parent = _write(
             tmp_path,
             "main.py",
-            f"""
+            """
             import polars as pl
             import haute
+
+            from modules import child
 
             pipeline = haute.Pipeline("main")
 
             @pipeline.polars
             def source() -> pl.LazyFrame:
-                return pl.LazyFrame({{"x": [1]}})
+                return pl.LazyFrame({"x": [1]})
 
             @pipeline.polars
             def sink(result: pl.LazyFrame) -> pl.LazyFrame:
                 return result
 
-            pipeline.submodel(
-                {child.name!r},
-                "a",
-            )
+            pipeline.submodel(child.submodel, "a")
             pipeline.connect("source", "a", target_port="source")
             pipeline.connect("a", "sink", source_port="result")
             """,
@@ -1458,24 +1448,23 @@ class TestPolarsParameterBinding:
         parent_invalid = _write(
             tmp_path,
             "main_invalid.py",
-            f"""
+            """
             import polars as pl
             import haute
+
+            from modules import child
 
             pipeline = haute.Pipeline("main_invalid")
 
             @pipeline.polars
             def source() -> pl.LazyFrame:
-                return pl.LazyFrame({{"x": [1]}})
+                return pl.LazyFrame({"x": [1]})
 
             @pipeline.polars
             def sink(a: pl.LazyFrame) -> pl.LazyFrame:
                 return a
 
-            pipeline.submodel(
-                {child.name!r},
-                "a",
-            )
+            pipeline.submodel(child.submodel, "a")
             pipeline.connect("source", "a", target_port="source")
             pipeline.connect("a", "sink", source_port="result")
             """,
@@ -1561,9 +1550,9 @@ class TestPolarsParameterBinding:
         self,
         tmp_path: Path,
     ) -> None:
-        child_valid = _write(
+        _write(
             tmp_path,
-            "child_valid.py",
+            "modules/child_valid.py",
             """
             import polars as pl
             import haute
@@ -1583,6 +1572,7 @@ class TestPolarsParameterBinding:
                         "source": {"nodeId": "first_step", "handleId": None},
                     }
                 ],
+                pipeline_dir="..",
             )
 
             @submodel.polars
@@ -1593,24 +1583,23 @@ class TestPolarsParameterBinding:
         parent_valid = _write(
             tmp_path,
             "main_valid.py",
-            f"""
+            """
             import polars as pl
             import haute
+
+            from modules import child_valid
 
             pipeline = haute.Pipeline("main_valid")
 
             @pipeline.polars
             def source() -> pl.LazyFrame:
-                return pl.LazyFrame({{"x": [1]}})
+                return pl.LazyFrame({"x": [1]})
 
             @pipeline.polars
             def sink(result: pl.LazyFrame) -> pl.LazyFrame:
                 return result
 
-            pipeline.submodel(
-                {child_valid.name!r},
-                "a",
-            )
+            pipeline.submodel(child_valid.submodel, "a")
             pipeline.connect("source", "a", target_port="source")
             pipeline.connect("a", "sink", source_port="result")
             """,
@@ -1618,9 +1607,9 @@ class TestPolarsParameterBinding:
         graph = parse_pipeline_file(parent_valid)
         assert graph is not None
 
-        child_invalid = _write(
+        _write(
             tmp_path,
-            "child_invalid.py",
+            "modules/child_invalid.py",
             """
             import polars as pl
             import haute
@@ -1640,6 +1629,7 @@ class TestPolarsParameterBinding:
                         "source": {"nodeId": "first_step", "handleId": None},
                     }
                 ],
+                pipeline_dir="..",
             )
 
             @submodel.polars
@@ -1650,24 +1640,23 @@ class TestPolarsParameterBinding:
         parent_invalid = _write(
             tmp_path,
             "main_invalid.py",
-            f"""
+            """
             import polars as pl
             import haute
+
+            from modules import child_invalid
 
             pipeline = haute.Pipeline("main_invalid")
 
             @pipeline.polars
             def source() -> pl.LazyFrame:
-                return pl.LazyFrame({{"x": [1]}})
+                return pl.LazyFrame({"x": [1]})
 
             @pipeline.polars
             def sink(result: pl.LazyFrame) -> pl.LazyFrame:
                 return result
 
-            pipeline.submodel(
-                {child_invalid.name!r},
-                "a",
-            )
+            pipeline.submodel(child_invalid.submodel, "a")
             pipeline.connect("source", "a", target_port="source")
             pipeline.connect("a", "sink", source_port="result")
             """,

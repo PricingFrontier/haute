@@ -50,6 +50,8 @@ import polars as pl
 
 import haute
 
+from modules import {modules}
+
 pipeline = haute.Pipeline("submodel_quote", description="Prices the quote through submodels.")
 
 
@@ -117,12 +119,14 @@ def _project(
     output: dict[str, list[str]],
     files: dict[str, str] | None = None,
 ) -> Path:
-    """A deployable project: the example's quote input, *body*, *modules*, a response
-    mapping each of *output*'s ports' columns to a field, and any other *files*."""
+    """A deployable project: the example's quote input, *body*, *modules* (each
+    ``modules/<name>.py``, imported by the pipeline), a response mapping each of
+    *output*'s ports' columns to a field, and any other *files*."""
     project = tmp_path / "project"
     monkeypatch.chdir(tmp_path)
     shutil.copytree(_EXAMPLE, project)
-    (project / "pipeline.py").write_text(_PIPELINE_HEAD + body, encoding="utf-8")
+    head = _PIPELINE_HEAD.format(modules=", ".join(modules))
+    (project / "pipeline.py").write_text(head + body, encoding="utf-8")
     (project / "modules").mkdir()
     for name, source in modules.items():
         (project / "modules" / f"{name}.py").write_text(source, encoding="utf-8")
@@ -172,7 +176,7 @@ _ONE_SUBMODEL = """\
 def response(factored): ...
 
 
-pipeline.submodel("modules/factors.py", "factors")
+pipeline.submodel(factors.submodel, "factors")
 pipeline.connect("quote", "factors", source_port="quote", target_port="rows")
 pipeline.connect("factors", "response", source_port="factored")
 """
@@ -214,8 +218,8 @@ def test_artifacts_inside_submodels_bundle_under_flat_distinct_files(
 def response(rated): ...
 
 
-pipeline.submodel("modules/rated.py", "first")
-pipeline.submodel("modules/rated.py", "second", instance_of="first")
+pipeline.submodel(rated.submodel, "first")
+pipeline.submodel(rated.submodel, "second", instance_of="first")
 pipeline.connect("quote", "first", source_port="quote", target_port="rows")
 pipeline.connect("first", "second", source_port="rated", target_port="rows")
 pipeline.connect("second", "response", source_port="rated")
@@ -283,7 +287,7 @@ submodel.connect("scaled", "response")
         tmp_path,
         monkeypatch,
         """\
-pipeline.submodel("modules/priced.py", "priced")
+pipeline.submodel(priced.submodel, "priced")
 pipeline.connect("quote", "priced", source_port="quote", target_port="rows")
 """,
         {"priced": priced},

@@ -6,8 +6,7 @@ import dataclasses
 import functools
 import inspect
 import sys
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Self, cast
@@ -281,12 +280,12 @@ class RegisteredEdge:
 
 @dataclass(frozen=True)
 class RegisteredSubmodel:
-    """One canonical file-backed submodel occurrence registered on a pipeline."""
+    """One submodel occurrence registered on a pipeline: the imported definition, named."""
 
-    file: str
+    definition: Submodel
     name: str
     instance_of: str | None = None
-    #: The module file whose code made the registration, which ``file`` is relative to.
+    #: The module file whose code made the registration.
     registered_in: str | None = None
 
 
@@ -310,7 +309,6 @@ class NodeRegistry:
         self._nodes: list[Node] = []
         self._node_map: dict[str, Node] = {}
         self._edges: list[RegisteredEdge] = []
-        self._submodel_files: list[str] = []
         self._submodel_registrations: list[RegisteredSubmodel] = []
         self._pipeline_dir = "."
 
@@ -688,39 +686,20 @@ class Pipeline(NodeRegistry):
             terminals=[n.name for n in leaves],
         )
 
-    @contextmanager
-    def _submodels_expanded(self) -> Iterator[Pipeline]:
-        """This pipeline with its submodels expanded, their modules registered meanwhile.
-
-        Each definition's module stays in ``sys.modules`` while the run uses it,
-        as an imported module would, so ``dataclasses`` and ``get_type_hints``
-        resolve its string annotations; the entries go when the run ends.
-        """
-        module_names: list[str] = []
-        try:
-            yield self._with_submodels_expanded(module_names)
-        finally:
-            for name in module_names:
-                sys.modules.pop(name, None)
-
-    def _with_submodels_expanded(self, module_names: list[str]) -> Pipeline:
+    def _with_submodels_expanded(self) -> Pipeline:
         """A copy of this pipeline with each submodel occurrence replaced by its nodes.
 
-        Each occurrence's definition is imported from its file, and its nodes run
-        as ``<occurrence>.<node>``. An edge into an occurrence's input port feeds
-        every node the port targets, and an edge out of an output port leaves the
-        node the port names, as flattening wires them for ``haute run``. A
-        submodel's node that takes several inputs receives them in its
-        parameters' order; the pipeline's own nodes keep their connection order.
+        Each occurrence runs the definition its module defines, imported by the
+        pipeline file, and its nodes run as ``<occurrence>.<node>``. An edge into an
+        occurrence's input port feeds every node the port targets, and an edge out of
+        an output port leaves the node the port names, as flattening wires them for
+        ``haute run``. A submodel's node that takes several inputs receives them in
+        its parameters' order; the pipeline's own nodes keep their connection order.
         """
-        definitions: dict[str, Submodel] = {}
-        occurrences: dict[str, Submodel] = {}
-        for registration in self._submodel_registrations:
-            if registration.file not in definitions:
-                definitions[registration.file] = _load_submodel_definition(
-                    registration, module_names
-                )
-            occurrences[registration.name] = definitions[registration.file]
+        occurrences: dict[str, Submodel] = {
+            registration.name: registration.definition
+            for registration in self._submodel_registrations
+        }
 
         nodes = list(self._nodes)
         # Each edge carries the name its target's parameter has for it.
@@ -885,8 +864,7 @@ class Pipeline(NodeRegistry):
         if source is None:
             raise TypeError(self._missing_source_message())
         if self._submodel_registrations:
-            with self._submodels_expanded() as expanded:
-                return expanded.run(source=source)
+            return self._with_submodels_expanded().run(source=source)
 
         _token = _scenario_ctx.set(source)
         try:
@@ -923,8 +901,7 @@ class Pipeline(NodeRegistry):
         from haute._model_scorer import _scenario_ctx
 
         if self._submodel_registrations:
-            with self._submodels_expanded() as expanded:
-                return expanded.score(df)
+            return self._with_submodels_expanded().score(df)
         _token = _scenario_ctx.set("live")
         try:
             order = self._topo_order()
@@ -1045,21 +1022,34 @@ class Pipeline(NodeRegistry):
 
     def submodel(
         self,
-        file: str,
+        definition: Submodel,
+        /,
         name: str,
         *,
         instance_of: str | None = None,
     ) -> Pipeline:
-        """Register one occurrence of a file-backed submodel definition."""
-        identities = {
-            "file": file,
-            "name": name,
-        }
-        for field_name, value in identities.items():
-            if not isinstance(value, str):
-                raise TypeError(f"Submodel {field_name} must be a string.")
-            if not value or value != value.strip():
-                raise ValueError(f"Submodel {field_name} must be a non-empty unpadded string.")
+        """Register one occurrence of a submodel *definition*, imported from its module.
+
+        ``from modules import factors`` then ``pipeline.submodel(factors.submodel,
+        "factors")``; a further occurrence of one definition names the first with
+        *instance_of*.
+        """
+        if isinstance(definition, str):
+            raise TypeError(
+                f"pipeline.submodel() registers {name!r} by its file path, which was removed: "
+                "import the submodel's module and register its definition, "
+                "`from modules import <module>` then "
+                f"`pipeline.submodel(<module>.submodel, {name!r})`."
+            )
+        if not isinstance(definition, Submodel):
+            raise TypeError(
+                "pipeline.submodel() takes a submodel module's definition, "
+                f"`<module>.submodel`, not {type(definition).__name__}."
+            )
+        if not isinstance(name, str):
+            raise TypeError("Submodel name must be a string.")
+        if not name or name != name.strip():
+            raise ValueError("Submodel name must be a non-empty unpadded string.")
         sanitized_name = _sanitize_func_name(name)
         if sanitized_name != name:
             raise ValueError(
@@ -1083,22 +1073,15 @@ class Pipeline(NodeRegistry):
         if any(registered.name.casefold() == folded for registered in self._submodel_registrations):
             raise ValueError(f"Duplicate submodel name {name!r}.")
 
-        self._submodel_files.append(file)
         self._submodel_registrations.append(
             RegisteredSubmodel(
-                file=file,
+                definition=definition,
                 name=name,
                 instance_of=instance_of,
-                # ``file`` is relative to the pipeline file making this call.
                 registered_in=sys._getframe(1).f_globals.get("__file__"),
             )
         )
         return self
-
-    @property
-    def submodel_files(self) -> list[str]:
-        """Paths passed to :meth:`submodel`."""
-        return list(self._submodel_files)
 
     @property
     def submodel_registrations(self) -> list[RegisteredSubmodel]:
@@ -1171,53 +1154,6 @@ class Submodel(NodeRegistry):
     def output_ports(self) -> list[SubmodelOutputPort]:
         """Typed public outputs, returned as a defensive copy."""
         return list(self._output_ports)
-
-
-def _load_submodel_definition(
-    registration: RegisteredSubmodel, module_names: list[str]
-) -> Submodel:
-    """Import the definition a ``pipeline.submodel(file, ...)`` registration names.
-
-    The module is entered in ``sys.modules`` under a fresh name, appended to
-    *module_names* for the caller to remove when the run ends.
-    """
-    import importlib.util
-    import uuid
-
-    from haute._submodel_paths import SubmodelPathError, resolve_submodel_reference
-
-    file = registration.file
-    if registration.registered_in is None:
-        raise ExecutionError(
-            f"Submodel {registration.name!r} was registered outside a pipeline file, so its "
-            f"file {file!r} has no directory to resolve against. Run the pipeline from its .py "
-            "file.",
-            submodel=registration.name,
-        )
-    base_dir = Path(registration.registered_in).resolve().parent
-    try:
-        path, _ = resolve_submodel_reference(file, pipeline_dir=base_dir, project_root=base_dir)
-    except SubmodelPathError as exc:
-        raise ExecutionError(str(exc), submodel_file=file) from exc
-    if not path.is_file():
-        raise ExecutionError(
-            f"Submodel file {file!r} does not exist beside the pipeline.", submodel_file=file
-        )
-    spec = importlib.util.spec_from_file_location(f"_haute_submodel_{uuid.uuid4().hex}", path)
-    if spec is None or spec.loader is None:
-        raise ExecutionError(f"Submodel file {file!r} cannot be imported.", submodel_file=file)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    module_names.append(spec.name)
-    spec.loader.exec_module(module)
-    found = [value for value in vars(module).values() if isinstance(value, Submodel)]
-    if len(found) != 1:
-        count = "no haute.Submodel" if not found else f"{len(found)} haute.Submodel objects"
-        raise ExecutionError(
-            f"Submodel file {file!r} defines {count}; it must define exactly one.",
-            submodel_file=file,
-        )
-    return found[0]
 
 
 def _submodel_input(

@@ -141,7 +141,9 @@ reply entirely if the client's document fingerprint already matches (no redundan
 payload). Edits the server itself makes (via
 `/api/pipeline/save`) are tagged as self-writes so they never round-trip back through the watcher
 as a phantom external edit. A change to a `modules/*.py` file re-parses only the pipelines
-that import it; a change to a `config/*.json` file re-parses every discovered pipeline (a
+that import it, `from modules import <name>`, for a registration; a pipeline whose imports or
+registrations the parser refuses is left out of that module-dependency index with a warning,
+rather than breaking it for every pipeline. A change to a `config/*.json` file re-parses every discovered pipeline (a
 config change can affect any pipeline that reads it). Direct pipeline `.py` additions,
 modifications, and deletions invalidate the name→path index; module/config-only batches do
 not. Startup priming, watcher invalidation, and successful save invalidation are the index's
@@ -473,7 +475,11 @@ pipeline's sources.
   output* paths (only the declared main file or `modules/<name>.py`, no traversal, no
   Windows-reserved device names, casefold-collision-checked) because codegen output paths
   come from a different trust boundary (generated strings, not direct user path input) and
-  need a narrower allowlist than general file browsing.
+  need a narrower allowlist than general file browsing. The one file Save adds beside them is
+  an empty `<pipeline_dir>/modules/__init__.py`, written in the folder of an allowlisted
+  module path when it has none and never overwritten, so the pipeline's
+  `from modules import ...` resolves to that regular package rather than to another
+  `modules` folder on `sys.path`.
 
 ## Assistant plan authority
 

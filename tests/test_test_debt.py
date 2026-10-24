@@ -271,6 +271,12 @@ _EXPECTED_DEBT_IDS = {
     # other symlink-guard tests. See tests/test_files_routes.py
     # ::TestBrowseFilesUnresolvedCwd._symlinked_project.
     "e29ebc6050519fc5",
+    # Windows symlink privilege — a submodel module linked out of the project is
+    # refused at parse, but a file symlink needs a privilege Windows withholds by
+    # default (WinError 1314); its folder-junction twin runs everywhere, and Linux
+    # CI runs both. See tests/test_parser_project_layout.py
+    # ::test_pipeline_rejects_submodel_outside_project_root.
+    "0e5d37d3b717fa79",
     # Windows symlink privilege — the SBX-R01 containment matrix proves every
     # former caller refuses a symlink escape, but symlink creation needs a
     # privilege Windows withholds by default (WinError 1314). Only the symlink

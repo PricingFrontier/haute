@@ -696,6 +696,25 @@ def make_source_node(nid: str, path: str = "data.parquet") -> GraphNode:
     )
 
 
+@pytest.fixture
+def submodel_imports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """*tmp_path* first on ``sys.path``, and no ``modules`` package imported before or after.
+
+    A pipeline file imports its submodel modules from its own folder (``from modules
+    import x``), so a test running one from *tmp_path* imports that folder's
+    ``modules``, never the package an earlier test imported.
+    """
+
+    def forget() -> None:
+        for name in [n for n in sys.modules if n == "modules" or n.startswith("modules.")]:
+            del sys.modules[name]
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    forget()
+    yield tmp_path
+    forget()
+
+
 def write_node_config(
     base_dir: Path,
     node_type: NodeType,
