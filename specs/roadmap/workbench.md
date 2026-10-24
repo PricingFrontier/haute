@@ -270,7 +270,13 @@ and is recorded here before the backend's slice. The backend is that engine's dr
 an optional extra, as the Databricks clients are, signing in with the app's managed identity
 where the engine allows it, with the store's tests run against SQLite and that engine alike
 (a service container in CI), and the form copies kept once through that engine's own
-insert-if-absent. The deploy's migrate step runs `haute app migrate` under an identity that
+insert-if-absent. A reference's canonical form is compared byte for byte
+([workbench](../workbench/high-level.md)), so the quote's `reference_key` and its counter's
+take that engine's binary collation (Azure SQL's default ignores case and accents), in the
+metadata and a migration alike, and the unique index on a quote's identity keeps the quotes
+saved alone, their pairs null, apart (Azure SQL does only when the index is filtered to the
+pairs set); the store tests against that engine make `cafe` after `café` and two quotes
+saved alone. The deploy's migrate step runs `haute app migrate` under an identity that
 owns the schema, before the release rolls out, while the app's own identity reads and writes
 data only. A release's migrations keep the previous release's reads and writes working (a
 column or table added, nullable or with a default, no constraint the previous release's

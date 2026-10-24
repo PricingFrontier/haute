@@ -24,11 +24,13 @@ from haute._polars_utils import execution_collect, limited_python_scan
 from haute._workbench_form import QUOTE_DETAILS_ID
 from haute._workbench_tables import (
     IDENTITY_SHAPE,
+    WorkbenchColumn,
     WorkbenchTable,
     carries_identity,
     parse_workbench_tables,
     port_tables,
     quote_schema,
+    request_columns,
 )
 from haute.errors import ExecutionError
 
@@ -112,16 +114,23 @@ def _unconnected(table: WorkbenchTable) -> pl.LazyFrame:
     )
 
 
+def frame_columns(table: WorkbenchTable) -> list[WorkbenchColumn]:
+    """The columns of *table* its frame fills, each where the frame holds it with a type that
+    fits: every one but the quote's identity, which the response gives
+    (:func:`workbench_response`)."""
+    return request_columns(table)
+
+
 def _filled(table: WorkbenchTable, frame: pl.LazyFrame) -> pl.LazyFrame:
     """*table*'s columns from *frame*, each from its column of the same name, cast to its
     declared type; nulls where the frame lacks it or holds it with a type that does not fit,
-    and in the quote's identity, which the response gives (:func:`workbench_response`)."""
+    and in the quote's identity (:func:`frame_columns`)."""
     schema = frame.collect_schema()
-    blank = set(_IDENTITY_NAMES) if carries_identity(table) else set()
+    fillable = {column.name for column in frame_columns(table)}
     columns: list[pl.Expr] = []
     for column in table.columns:
         if (
-            column.name not in blank
+            column.name in fillable
             and column.name in schema
             and column_fits(column.type, schema[column.name])
         ):

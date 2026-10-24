@@ -101,7 +101,7 @@ from haute._trace_enrichment import enrich_steps as _enrich_steps
 from haute._trace_lineage import ColumnRead, JoinInputs, ValueLineage, trace_value_lineage
 from haute._trace_waterfall import build_waterfall_from_steps
 from haute._types import REQUEST_INPUT_NODE_TYPES
-from haute._workbench_output import column_fits, workbench_output_tables
+from haute._workbench_output import column_fits, frame_columns, workbench_output_tables
 from haute.errors import BoundedMemoryUnsupportedError, TraceCorrelationUnsupportedError
 from haute.executor import (
     PREVIEW_CACHE_MAX_BYTES,
@@ -598,12 +598,22 @@ def _workbench_output_trace_target(
             f"Target node {target_node_id!r} is a Workbench Output whose {port_label!r} "
             f"table has no {column!r} column."
         )
+    declared = {c.name: c.type for c in frame_columns(table)}
+    if column is None or column in declared:
+        why = (
+            f"fills {column!r} with nulls, as the frame connected to it lacks the column or "
+            "holds it with a type that does not fit"
+        )
+    else:
+        why = (
+            f"holds the quote's {column!r} blank, as the response gives it from the quote's "
+            "quote_details"
+        )
     fill = _TableFill(
-        declared={c.name: c.type for c in table.columns},
+        declared=declared,
         refusal=(
             f"Target node {target_node_id!r} is a Workbench Output whose {port_label!r} "
-            f"table fills {column!r} with nulls, as the frame connected to it lacks the "
-            "column or holds it with a type that does not fit, so it has no value to trace."
+            f"table {why}, so it has no value to trace."
         ),
     )
     lineage = {edge.source, *upstream_node_ids(edge.source, graph.parents_of)}
@@ -615,8 +625,9 @@ def _workbench_output_trace_target(
 class _TableFill:
     """The columns a Workbench Output's table takes from its frame: each by its name, of a
     type that fits the one it declares, so a column the frame lacks or holds with a type
-    that does not fit is nulls, told once the frame is built. *refusal* is the traced
-    column's refusal when it is one of those."""
+    that does not fit is nulls, told once the frame is built, as is the quote's identity,
+    which *declared* leaves out. *refusal* is the traced column's refusal when it is one of
+    those."""
 
     declared: Mapping[str, str]
     refusal: str

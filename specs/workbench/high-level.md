@@ -1430,8 +1430,8 @@ Out of scope:
     when there are several, the first table first. Clicking a value in them traces it from
     the node connected to its table: the same row of that node's frame, and its column of the
     value's column's name. A value filled with nulls, its column missing from the frame or of
-    a type that does not fit, or its table not connected, has no value to trace, and tracing
-    it says so.
+    a type that does not fit, its table not connected, or the quote's reference and option
+    the table holds blank, has no value to trace, and tracing it says so.
   - **The response.** The tables are what a priced quote's output tables are filled with. Where
     the pipeline answers a request, its tables become the response for one quote: a list of one
     object holding each one-row table as an object under its name and each many-row table as a

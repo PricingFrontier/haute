@@ -203,6 +203,25 @@ describe("NewQuoteWindow", () => {
     await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/q7"))
   })
 
+  it("leaves a page that moved on before its creation was answered where it is, the quote made", async () => {
+    let answering: (value: WorkbenchAppQuoteResponse) => void = () => {}
+    vi.mocked(createAppQuote).mockReturnValue(new Promise((resolve) => (answering = resolve)))
+    shown()
+    act(() => store().openNew())
+    key("Quote reference", "ABC-1")
+    fireEvent.click(create())
+    await vi.waitFor(() => expect(create()).toHaveTextContent("Creating…"))
+
+    await act(async () => {
+      await navigate("/?view=team", { force: true })
+    })
+    await act(async () => answering(made()))
+
+    await vi.waitFor(() => expect(screen.queryByTestId("new-quote-window")).toBeNull())
+    expect(`${window.location.pathname}${window.location.search}`).toBe("/?view=team")
+    expect(readKeptCreation(KEPT)).toBeNull()
+  })
+
   it("refuses a reference in use, naming the quote holding it, with Open it, and takes typing again", async () => {
     vi.mocked(createAppQuote).mockRejectedValue(
       new ApiError("HTTP 409", 409, "taken", {}, { message: "ABC-1 is taken: ABC-1/1 holds it.", error_code: "reference_taken", quote_id: "q1", label: "ABC-1/1" }),

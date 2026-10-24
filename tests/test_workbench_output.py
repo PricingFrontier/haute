@@ -767,6 +767,35 @@ def test_generated_code_answers_under_the_quote_details_frame_it_has(project: Pa
     ]
 
 
+def test_a_workbench_outputs_cell_beside_the_quotes_identity_is_traced_from_its_frame(
+    project: Path,
+) -> None:
+    # The table holds the identity blank, its frame a reference of its own: the row is
+    # matched by the columns the frame fills.
+    row = {"quote_reference": None, "quote_option": None, "item_id": "B"}
+
+    traced = execute_trace(
+        _identified(),
+        row_index=1,
+        target_node_id="response",
+        column="item_id",
+        row_values=row,
+        port_label="item_prices",
+    )
+
+    assert (traced.target_node_id, traced.column, traced.output_value) == (
+        "item_premiums",
+        "item_id",
+        "B",
+    )
+    # The response gives the identity, so the table has none to trace.
+    for blank in ("quote_reference", "quote_option"):
+        with pytest.raises(ValueError, match=f"holds the quote's '{blank}' blank, as the"):
+            execute_trace(
+                _identified(), target_node_id="response", column=blank, port_label="item_prices"
+            )
+
+
 def _no_tables(graph: PipelineGraph) -> None:
     graph.node_map["response"].data.config["tables"] = []
     graph.edges = [edge for edge in graph.edges if edge.target != "response"]
