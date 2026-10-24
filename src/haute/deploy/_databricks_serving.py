@@ -57,6 +57,32 @@ def missing_serving_credentials(environ: Mapping[str, str] | None = None) -> lis
     return [name for name in SERVING_CREDENTIAL_NAMES if not env.get(name, "").strip()]
 
 
+def refusal_reason(exc: BaseException) -> str:
+    """Databricks' message for a refused request, with the gatekeeper's decision if it made one.
+
+    A workspace Databricks has deactivated answers every compute and serving request with
+    "please try again later"; why is only in the response's ``ErrorInfo``, from
+    Databricks' resource gatekeeper (``DENY_NEW_AND_EXISTING_RESOURCES``, with a
+    ``denyReason`` such as ``INACTIVE``), and retrying cannot succeed until it is lifted.
+    """
+    message = str(exc)
+    get_error_info = getattr(exc, "get_error_info", None)
+    for info in get_error_info() if callable(get_error_info) else []:
+        if info.domain != "resource-gatekeeper":
+            continue
+        deny = (info.metadata or {}).get("denyReason")
+        decision = ", ".join(part for part in (info.reason, deny) if part)
+        if deny == "INACTIVE":
+            return (
+                f"{message} Databricks has marked the workspace inactive ({decision}), so it "
+                "refuses every compute and serving request until the workspace is "
+                "reactivated; retrying will not help. Reactivate the workspace (its account "
+                "admin or Databricks support can), then deploy again."
+            )
+        return f"{message} Databricks' resource gatekeeper refused it ({decision})."
+    return message
+
+
 def missing_serving_credentials_message(missing: list[str]) -> str:
     """Why the serving endpoint cannot be reached when *missing* variables are unset."""
     verb = "is" if len(missing) == 1 else "are"
