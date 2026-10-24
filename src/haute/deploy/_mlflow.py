@@ -27,8 +27,20 @@ from haute._polars_dtypes import (
     wide_integer_message,
 )
 from haute._polars_environment import polars_process_environment, polars_spill_root
+from haute._project_python import deployed_python_version
 from haute.deploy._config import ResolvedDeploy
+from haute.deploy._databricks_serving import (
+    ServingEndpointError,
+    endpoint_update_state,
+    missing_serving_credentials,
+    missing_serving_credentials_message,
+    pat_workspace_client,
+    serving_credentials,
+    serving_workspace_client,
+    wait_for_endpoint,
+)
 from haute.deploy._request_rows import copy_verified
+from haute.deploy._served_haute import ServedHaute, served_haute
 from haute.deploy._utils import build_manifest, model_source_line
 from haute.errors import DeployError, SchemaMismatchError
 
@@ -84,7 +96,8 @@ def deploy_to_mlflow(
         1. Build deployment manifest JSON
         2. Log HauteModel as mlflow.pyfunc with artifacts + signature
         3. Register model version in MLflow Model Registry
-        4. Return DeployResult with model URI and endpoint URL
+        4. Create or update the serving endpoint and wait until it serves that version
+        5. Return DeployResult with model URI and endpoint URL
 
     Args:
         resolved: Fully resolved deployment config (from ``resolve_config()``).
@@ -125,6 +138,7 @@ def _deploy_to_mlflow(
     tracking_uri, registry_uri = _resolve_mlflow_databricks()
     _log("Connecting to Databricks MLflow...")
     _check_databricks_connectivity(_log)
+    _check_registry_schema(config, registry_uri)
     client = MlflowClient(tracking_uri=tracking_uri, registry_uri=registry_uri)
 
     # Use Unity Catalog three-level namespace: catalog.schema.model_name
@@ -145,8 +159,10 @@ def _deploy_to_mlflow(
         # Its artefacts are staged under the digests resolution recorded, so MLflow
         # copies the bytes the build checked.
         staging = Path(tempfile.mkdtemp(prefix="haute_mlflow_artifacts_", dir=build_dir))
+        haute = served_haute(staging / "haute-wheel")
+        _log(f"Served model installs {haute.requirement}")
         model_arguments = _pyfunc_model_arguments(
-            resolved, manifest_path, _stage_artifacts(resolved, staging)
+            resolved, manifest_path, _stage_artifacts(resolved, staging), haute
         )
 
         for node_id, source in resolved.model_sources.items():
@@ -194,12 +210,12 @@ def _deploy_to_mlflow(
 
         _log(f"Model URI: {model_uri}")
 
-        # 7. Create or update the serving endpoint
-        _log(f"Creating/updating serving endpoint: {config.effective_endpoint_name}...")
+        # 7. Create or update the serving endpoint, and wait until it serves the version
         endpoint_url = _create_or_update_serving_endpoint(
             config=config,
             uc_model_name=uc_model_name,
             model_version=int(latest_version),
+            progress=_log,
         )
 
         logger.info(
@@ -277,25 +293,35 @@ def _stage_artifacts(resolved: ResolvedDeploy, staging: Path) -> dict[str, Path]
 
 
 def _pyfunc_model_arguments(
-    resolved: ResolvedDeploy, manifest_path: Path, staged_artifacts: Mapping[str, Path]
+    resolved: ResolvedDeploy,
+    manifest_path: Path,
+    staged_artifacts: Mapping[str, Path],
+    haute: ServedHaute,
 ) -> dict[str, Any]:
     """The pyfunc model a deploy logs: code, artefacts, project modules, signature, env.
 
     *staged_artifacts* are the bundled artefacts as ``_stage_artifacts`` copied them.
-    The bundled ``utility`` package is the model's only code path; MLflow copies
-    it under the model's ``code/`` directory and puts that on ``sys.path`` when
-    the model loads, so the served preamble imports the validated files.
+    The model's code paths are the bundled ``utility`` package and, when *haute* ships
+    one, the haute wheel. MLflow copies each under the model's ``code/`` directory and
+    puts that directory on ``sys.path`` when the model loads, so the served preamble
+    imports the validated files, and the environment installs the wheel from there.
     """
     artifacts: dict[str, str] = {"deploy_manifest": str(manifest_path)}
     for artifact_name, artifact_path in staged_artifacts.items():
         artifacts[artifact_name] = str(artifact_path)
     utility = resolved.project_modules.utility
+    code_paths = [str(path) for path in (utility, haute.wheel) if path is not None]
     return {
         "python_model": _MODEL_CODE_PATH,
         "artifacts": artifacts,
-        "code_paths": [str(utility)] if utility is not None else None,
+        "code_paths": code_paths or None,
         "signature": _build_signature(resolved),
-        "conda_env": _conda_env(),
+        "conda_env": _conda_env(
+            deployed_python_version(
+                resolved.config.project_dir or resolved.config.pipeline_file.parent
+            ),
+            haute.requirement,
+        ),
     }
 
 
@@ -356,42 +382,39 @@ def _build_signature(resolved: ResolvedDeploy) -> object:
     return ModelSignature(inputs=input_schema, outputs=output_schema)
 
 
-def _pip_requirements() -> list[str]:
+def _pip_requirements(haute_requirement: str) -> list[str]:
     """Build pip requirements for the deployed model.
 
-    Haute and Polars are pinned to the editor's own versions: a Polars release can
-    change the results a pipeline gives and the memory it takes. The pinned Haute
-    brings its own model engines, so no node adds one.
+    Haute is the one that validated the deploy (``haute.deploy._served_haute``): a
+    release pinned by version, or a wheel the model carries. MLflow and Polars are
+    pinned to the deploying environment's versions: Model Serving needs ``mlflow``
+    itself in the environment to build the model's container, and a Polars release can
+    change the results a pipeline gives and the memory it takes. Haute brings its own
+    model engines, so no node adds one.
     """
+    import mlflow
     import polars
 
-    import haute
-
     return [
-        f"haute=={haute.__version__}",
+        haute_requirement,
+        f"mlflow=={mlflow.__version__}",
         f"polars=={polars.__version__}",
     ]
 
 
-# Databricks Model Serving uses conda to build the container.
-# Pin Python to 3.11 which is widely available on Databricks' internal
-# conda channel, regardless of which Python the CI runner uses.
-_SERVING_PYTHON_VERSION = "3.11.11"
-
-
-def _conda_env() -> dict:
+def _conda_env(python_version: str, haute_requirement: str) -> dict:
     """Build a conda environment dict for Databricks Model Serving.
 
-    Pins Python to a version available on Databricks' internal conda
-    channel instead of letting MLflow auto-detect the host Python
-    (which may be 3.13+ and unavailable on Databricks).
+    Databricks Model Serving builds the container from it. Python is the project's
+    (``haute._project_python.deployed_python_version``), the one CI tested the pipeline
+    on, never MLflow's guess from the host; ``3.13`` takes conda's newest 3.13 release.
     """
     return {
         "channels": ["conda-forge"],
         "dependencies": [
-            f"python={_SERVING_PYTHON_VERSION}",
+            f"python={python_version}",
             "pip",
-            {"pip": _pip_requirements()},
+            {"pip": _pip_requirements(haute_requirement)},
         ],
         "name": "mlflow-env",
     }
@@ -414,11 +437,18 @@ def _create_or_update_serving_endpoint(
     config: DeployConfig,
     uc_model_name: str,
     model_version: int,
+    progress: Callable[[str], None],
 ) -> str | None:
-    """Create or update a Databricks Model Serving endpoint.
+    """Create or update a Databricks Model Serving endpoint, and wait until it serves.
 
-    Uses the Databricks SDK to create an endpoint if it doesn't exist,
-    or update the served model version if it does.
+    Creates the endpoint when it does not exist, or points its served entity at
+    *model_version*, with the serving pair (``haute.deploy._databricks_serving``). An
+    endpoint already being updated is refused rather than overridden, and a request
+    Databricks refuses fails the deploy with the endpoint, the version and its reason.
+    The deploy then waits until the endpoint serves *model_version*: a model whose
+    environment cannot be built, or that fails to start, fails the deploy with what
+    Databricks reports, instead of leaving the endpoint on the previous version behind
+    a green deploy.
 
     Args:
         config: The deployment configuration (provides endpoint_name and
@@ -426,30 +456,31 @@ def _create_or_update_serving_endpoint(
         uc_model_name: The Unity Catalog three-level model name
                        (e.g. ``"workspace.default.haute-test"``).
         model_version: The model version number to serve.
+        progress: Hears the endpoint's progress while the deploy waits.
 
     Returns:
         The endpoint invocation URL, or ``None`` if endpoint_name is not
         configured.
     """
-    import os
-
     endpoint_name = config.effective_endpoint_name
     if not endpoint_name:
         return None
 
-    from databricks.sdk import WorkspaceClient
-    from databricks.sdk.errors import NotFound
+    from databricks.sdk.errors import DatabricksError, NotFound
     from databricks.sdk.service.serving import (
         EndpointCoreConfigInput,
         ServedEntityInput,
     )
 
-    host = os.environ.get("DATABRICKS_RATING_HOST", "").rstrip("/")
+    credentials = serving_credentials()
+    ws = serving_workspace_client(credentials)
 
-    ws = WorkspaceClient(
-        host=os.environ.get("DATABRICKS_RATING_HOST", ""),
-        token=os.environ.get("DATABRICKS_RATING_TOKEN", ""),
-    )
+    def refused(action: str, exc: Exception) -> ServingEndpointError:
+        # The registered version stays registered: the next deploy registers another.
+        return ServingEndpointError(
+            f"Databricks refused to {action} serving endpoint '{endpoint_name}' for "
+            f"{uc_model_name} version {model_version}: {exc}"
+        )
 
     served_entity = ServedEntityInput(
         entity_name=uc_model_name,
@@ -460,23 +491,128 @@ def _create_or_update_serving_endpoint(
     )
 
     try:
-        ws.serving_endpoints.get(endpoint_name)
-        # Endpoint exists - update the served model version
-        ws.serving_endpoints.update_config(
-            name=endpoint_name,
-            served_entities=[served_entity],
-        )
+        endpoint = ws.serving_endpoints.get(endpoint_name)
     except NotFound:
-        # Endpoint doesn't exist - create it
-        ws.serving_endpoints.create(
-            name=endpoint_name,
-            config=EndpointCoreConfigInput(
+        progress(f"Creating serving endpoint {endpoint_name} for version {model_version}...")
+        try:
+            ws.serving_endpoints.create(
+                name=endpoint_name,
+                config=EndpointCoreConfigInput(
+                    name=endpoint_name,
+                    served_entities=[served_entity],
+                ),
+            )
+        except DatabricksError as exc:
+            raise refused("create", exc) from exc
+    except DatabricksError as exc:
+        raise refused("read", exc) from exc
+    else:
+        if endpoint_update_state(endpoint) == "IN_PROGRESS":
+            raise ServingEndpointError(
+                f"Endpoint '{endpoint_name}' is already being updated, by another deploy or "
+                "in the Databricks workspace. Wait for that update to finish, then deploy "
+                "again."
+            )
+        progress(f"Updating serving endpoint {endpoint_name} to version {model_version}...")
+        try:
+            ws.serving_endpoints.update_config(
                 name=endpoint_name,
                 served_entities=[served_entity],
-            ),
+            )
+        except DatabricksError as exc:
+            raise refused("update", exc) from exc
+
+    wait_for_endpoint(ws, endpoint_name, version=str(model_version), progress=progress)
+    progress(f"Endpoint {endpoint_name} serves version {model_version}")
+    return f"{credentials.host}/serving-endpoints/{endpoint_name}/invocations"
+
+
+def check_databricks_credentials() -> None:
+    """Refuse a Databricks deploy before any work when its credentials are not all set.
+
+    Names every gap at once: the MLflow destination (``DATABRICKS_MLFLOW_HOST`` and
+    ``DATABRICKS_MLFLOW_TOKEN``, or a profile ``MLFLOW_TRACKING_URI=databricks://<profile>``
+    selects, read as MLflow reads it, which must give a host and a token) that registers
+    the model, and the serving pair that creates or updates its endpoint. Whether the
+    workspace accepts them is checked when the deploy first reaches it.
+    """
+    from haute.errors import MlflowConfigError
+    from haute.modelling._mlflow_settings import resolve_destination
+
+    problems: list[str] = []
+    try:
+        destination = resolve_destination("databricks")
+    except MlflowConfigError as exc:
+        problems.append(str(exc))
+    else:
+        problem = _profile_problem(destination.tracking_uri)
+        if problem is not None:
+            problems.append(problem)
+    missing = missing_serving_credentials()
+    if missing:
+        problems.append(missing_serving_credentials_message(missing))
+    if problems:
+        raise DeployError(
+            "The Databricks deploy's credentials are not set:\n"
+            + "\n".join(f"  - {problem}" for problem in problems)
         )
 
-    return f"{host}/serving-endpoints/{endpoint_name}/invocations"
+
+def _check_registry_schema(config: DeployConfig, registry_uri: str) -> None:
+    """Refuse a deploy whose Unity Catalog schema does not exist, before the model uploads.
+
+    MLflow registers the model as ``<catalog>.<schema>.<model>`` only after uploading it,
+    and many workspaces have no ``main`` catalog (a newer workspace's is named
+    ``workspace``), so a missing schema is looked up first, with the registry's own
+    credentials, and its error lists the catalogs the token can see.
+    """
+    from databricks.sdk.errors import NotFound
+    from mlflow.utils.databricks_utils import get_databricks_host_creds
+
+    catalog, schema = config.databricks.catalog, config.databricks.schema
+    creds = get_databricks_host_creds(registry_uri)
+    ws = pat_workspace_client(creds.host, creds.token)
+    try:
+        ws.schemas.get(full_name=f"{catalog}.{schema}")
+    except NotFound:
+        catalogs = sorted(c.name for c in ws.catalogs.list() if c.name)
+        raise DeployError(
+            f"Unity Catalog schema {catalog}.{schema} does not exist, so the model cannot be "
+            f"registered there. Create it (CREATE SCHEMA `{catalog}`.`{schema}`), or set "
+            "[deploy.databricks] catalog and schema in haute.toml to a schema that exists. "
+            f"The catalogs this token can see: {', '.join(catalogs) or 'none'}.",
+            catalog=catalog,
+            schema=schema,
+        ) from None
+
+
+def _profile_problem(tracking_uri: str) -> str | None:
+    """Why the profile a ``databricks://<profile>`` URI selects cannot register a model.
+
+    ``None`` for the pair form (``databricks``) and for a profile MLflow reads a host and
+    a token from: the Unity Catalog model upload needs a personal access token.
+    """
+    if not tracking_uri.startswith("databricks://"):
+        return None
+    from mlflow.utils.databricks_utils import get_databricks_host_creds
+
+    profile = tracking_uri.removeprefix("databricks://")
+    try:
+        creds = get_databricks_host_creds(tracking_uri)
+    except Exception as exc:  # noqa: BLE001 - reported by type; see below
+        # The message is left out: a malformed config file's parse error quotes its lines,
+        # whichever profile they belong to, credentials included.
+        return (
+            f"MLFLOW_TRACKING_URI selects the Databricks profile '{profile}', which MLflow "
+            f"cannot read ({type(exc).__name__}): the Databricks config file does not hold it, "
+            "or the file or the profile is incomplete or malformed."
+        )
+    if not creds.host or not creds.token:
+        return (
+            f"MLFLOW_TRACKING_URI selects the Databricks profile '{profile}', which has no "
+            "host and personal access token for registering the model."
+        )
+    return None
 
 
 def _resolve_mlflow_databricks() -> tuple[str, str]:
@@ -506,23 +642,12 @@ def _check_databricks_connectivity(
     Makes a lightweight HTTP GET to DATABRICKS_HOST with a short timeout so CI
     fails fast with a clear error instead of hanging forever.
     """
-    import os
     import urllib.request
 
-    host = os.environ.get("DATABRICKS_RATING_HOST", "")
-    token = os.environ.get("DATABRICKS_RATING_TOKEN", "")
-
-    if not host:
-        raise DeployError(
-            "DATABRICKS_RATING_HOST is not set. Add it to .env or set it as a CI secret."
-        )
-    if not token:
-        raise DeployError(
-            "DATABRICKS_RATING_TOKEN is not set. Add it to .env or set it as a CI secret."
-        )
-
-    url = f"{host.rstrip('/')}/api/2.0/clusters/list-zones"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    credentials = serving_credentials()
+    host = credentials.host
+    url = f"{host}/api/2.0/clusters/list-zones"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {credentials.token}"})
     try:
         urllib.request.urlopen(req, timeout=timeout)  # noqa: S310
         _log("Databricks workspace reachable")

@@ -105,7 +105,7 @@ dir = "tests/quotes"
 | `model_name` | Used as the Docker image name | `"motor-pricing"` |
 | `registry` | Where to push the image. Leave empty for local-only. | `"ghcr.io/myorg"` or `""` |
 | `port` | The [port](../before-you-start.md#quick-glossary) the API server listens on inside the container (like an extension number on a phone system) | `8080` |
-| `base_image` | The base Docker image to build from. It must name an exact patch version (`python:3.11.9-slim`) or a digest (`python@sha256:…`); a floating tag such as `python:3.11-slim` is refused before the build | `"python:3.11.9-slim"` |
+| `base_image` | The base Docker image to build from. It must name an exact patch version (`python:3.11.9-slim`) or a digest (`python@sha256:…`); a floating tag such as `python:3.11-slim` is refused before the build. An official `python` image must run your project's Python (its `.python-version`), so the container runs the Python CI tested; `haute init` writes one that does | `"python:3.11.9-slim"` for a 3.11 project |
 
 The `registry` value is the address your IT team gave you for where Docker images are stored. If you don't know it, ask them: *"What's our container registry URL?"* They'll give you something like `ghcr.io/yourorg` or `myregistry.azurecr.io`. Put that value in `haute.toml`.
 

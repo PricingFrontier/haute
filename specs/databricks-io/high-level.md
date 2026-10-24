@@ -3,14 +3,17 @@
 ## Purpose
 
 Databricks IO lets a canonical Data Input node browse Unity Catalog and build a bounded,
-shared snapshot from a Databricks SQL Warehouse. Pipeline execution reads the published
-snapshot through the provider-neutral IO layer and never connects to Databricks.
+shared snapshot from a Databricks SQL Warehouse, and lets a Data Output node write its
+result to a Unity Catalog table. Pipeline execution reads the published snapshot through
+the provider-neutral IO layer and never connects to Databricks for an input; writing a
+Databricks Data Output is the one step that does.
 
 ## Scope
 
 In scope are workspace browsing, host/token resolution, warehouse HTTP-path use,
 fully-qualified table and projection validation, bounded Arrow fetching, retry-integrity
-checks, and the builder consumed by the source-cache store.
+checks, the builder consumed by the source-cache store, and the Data Output table write
+(staging through a Unity Catalog volume, then one bulk load).
 
 Provider-neutral generation publication, leases, quotas, status, and background build jobs
 belong to the [IO layer](../io-layer/high-level.md) and
@@ -40,6 +43,16 @@ Cache identity canonicalises case/backtick spelling of the table and includes HT
 and projection, but excludes `batch_size` because it is a transport/performance knob.
 Resolved host and credential values never enter identity or metadata.
 
+A Databricks Data Output names a warehouse HTTP path, a fully-qualified table, and a write
+mode: `overwrite` replaces the table, `append` creates it when missing and inserts by
+column name. The result streams to a local Parquet file, is uploaded to a `haute_staging`
+volume in the target schema in bounded parts (so a large output never sits whole in
+memory), and is loaded by the warehouse in one statement; the staged file is deleted
+whether or not the upload or load succeeds. Column types Databricks cannot read from
+Parquet (null-typed, `Time`, nanosecond datetimes) are cast first. Two outputs naming one
+table, however spelled, are refused as duplicate destinations. In the editor an invalid
+table name clears the destination, so Write is never left targeting a previous table.
+
 ## Design rationale
 
 Explicit snapshots isolate pipeline execution from remote availability and make results
@@ -67,3 +80,9 @@ stable `build_failed` response.
 A retry whose consumed-row position disagrees with locally received rows raises
 `FetchIntegrityError`. Zero rows with no schema also raise `FetchIntegrityError`. No failure
 publishes or replaces the previous source-cache generation.
+
+A table write refuses an invalid table name or write mode before connecting
+(`DatabricksConfigError`). A warehouse or storage failure raises `DatabricksWriteError`
+carrying the warehouse's message with credentials redacted (a failed upload's error can
+hold a signed storage URL); a failed staging cleanup is logged, redacted, and never masks
+the write's outcome. A failed `overwrite` load leaves the previous table in place.

@@ -59,7 +59,8 @@ inline input is snapshot-backed. A config still carrying the removed `cacheMode`
 rejected as an inactive field, never migrated. Inline records
 use a bounded snapshot build whose identity contains a digest of the logical records
 rather than their raw values. `dataOutput` configurations select a registered file,
-lakehouse, or database sink. Unknown fields, unsupported arguments, unavailable engines,
+lakehouse, or database sink, or a Databricks table
+([Databricks IO](../databricks-io/high-level.md)). Unknown fields, unsupported arguments, unavailable engines,
 ambiguous locators, and invalid mode/provider combinations fail before provider access.
 
 A file's columns are named by its header, or by the configuration, never by Polars.

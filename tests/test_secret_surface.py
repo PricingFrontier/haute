@@ -132,7 +132,9 @@ _REVIEWED_SECRET_ENV_REFERENCES: set[tuple[str, str]] = {
     ("modelling/_mlflow_settings.py", "DATABRICKS_TOKEN"),
     # MLflow credential binding: read per request into MLflow's own auth config; errors list names.
     ("_mlflow_utils.py", "DATABRICKS_MLFLOW_TOKEN"),
-    ("deploy/_mlflow.py", "DATABRICKS_RATING_TOKEN"),
+    # The serving pair: read per call into the endpoint's workspace client only; the
+    # credentials' repr leaves the token out, and the missing-credentials message lists names.
+    ("deploy/_databricks_serving.py", "DATABRICKS_RATING_TOKEN"),
     ("assistant/_config.py", "ANTHROPIC_API_KEY"),
     ("assistant/_config.py", "OPENAI_API_KEY"),
     # Same provider→env-var-NAME table as the two above; the value is read only

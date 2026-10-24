@@ -17,8 +17,10 @@ from unittest.mock import ANY, MagicMock, patch
 import polars as pl
 import pytest
 
+import haute
 from haute._mlflow_io import _artifact_cache_path
 from haute._mlflow_utils import ResolvedBackend, resolve_backend
+from haute.deploy._served_haute import ServedHaute
 from haute.graph_utils import PipelineGraph
 from haute.parser import parse_pipeline_file
 
@@ -144,8 +146,14 @@ def mock_mlflow_deploy():
         patch("mlflow.pyfunc.log_model") as m_log_model,
         patch("mlflow.tracking.MlflowClient") as m_client,
         patch("haute.deploy._mlflow._check_databricks_connectivity") as m_conn,
+        patch("haute.deploy._mlflow._check_registry_schema"),
         patch("haute.deploy._mlflow._build_signature") as m_sig,
         patch("haute.deploy._mlflow._create_or_update_serving_endpoint") as m_ep,
+        # The tests run on an editable haute, which a served model cannot install.
+        patch(
+            "haute.deploy._mlflow.served_haute",
+            return_value=ServedHaute(f"haute=={haute.__version__}"),
+        ),
     ):
         for name in _AMBIENT_MLFLOW_DATABRICKS_ENV:
             os.environ.pop(name, None)
@@ -1715,6 +1723,7 @@ class TestServingEndpoint:
                 config=config,
                 uc_model_name="ws.default.my-model",
                 model_version=1,
+                progress=ANY,
             )
             assert result.endpoint_url == "https://host/serving-endpoints/my-endpoint/invocations"
 
@@ -1729,7 +1738,10 @@ class TestServingEndpoint:
             endpoint_name=None,
         )
         result = _create_or_update_serving_endpoint(
-            config=config, uc_model_name="main.pricing.my-model", model_version=1
+            config=config,
+            uc_model_name="main.pricing.my-model",
+            model_version=1,
+            progress=lambda _message: None,
         )
         assert result is None
 
@@ -1752,6 +1764,7 @@ class TestServingEndpoint:
 
         with (
             patch("databricks.sdk.WorkspaceClient") as mock_ws_cls,
+            patch("haute.deploy._mlflow.wait_for_endpoint") as wait,
             patch.dict(
                 "os.environ",
                 {
@@ -1769,9 +1782,13 @@ class TestServingEndpoint:
                 config=config,
                 uc_model_name="main.pricing.my-model",
                 model_version=2,
+                progress=lambda _message: None,
             )
 
             mock_ws.serving_endpoints.create.assert_called_once()
+            # The deploy returns only once the endpoint serves the new version.
+            assert wait.call_args.args == (mock_ws, "my-endpoint")
+            assert wait.call_args.kwargs["version"] == "2"
             assert url == "https://myhost/serving-endpoints/my-endpoint/invocations"
             created = mock_ws.serving_endpoints.create.call_args.kwargs["config"]
             assert created.served_entities[0].environment_vars == _served_polars_settings()
@@ -1795,6 +1812,7 @@ class TestServingEndpoint:
 
         with (
             patch("databricks.sdk.WorkspaceClient") as mock_ws_cls,
+            patch("haute.deploy._mlflow.wait_for_endpoint") as wait,
             patch.dict(
                 "os.environ",
                 {
@@ -1810,7 +1828,10 @@ class TestServingEndpoint:
                 config=config,
                 uc_model_name="main.pricing.my-model",
                 model_version=3,
+                progress=lambda _message: None,
             )
+
+            assert wait.call_args.kwargs["version"] == "3"
 
             mock_ws.serving_endpoints.update_config.assert_called_once()
             mock_ws.serving_endpoints.create.assert_not_called()

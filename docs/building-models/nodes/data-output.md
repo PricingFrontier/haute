@@ -1,6 +1,6 @@
 # Data Output
 
-You want to save results  - scoring a full dataset and writing the output to parquet, CSV or a database table for downstream analysis.
+You want to save results  - scoring a full dataset and writing the output to parquet, CSV, a database table or a Databricks table for downstream analysis.
 
 !!! info "When to use"
     Use this for batch scoring  - processing a full dataset and saving the results. For live API responses, use [Quote Response](output.md) instead.
@@ -11,7 +11,7 @@ This node takes a single input and passes it on unchanged: running or previewing
 
 | Field | What it does |
 |---|---|
-| **PROVIDER** | Where the data goes: **File** (the default), **Database** or **Lakehouse**. Changing it keeps only the settings the new provider uses. |
+| **PROVIDER** | Where the data goes: **File** (the default), **Database**, **Lakehouse** or **Databricks**. Changing it keeps only the settings the new provider uses. |
 | **FORMAT** | The format to write, from the formats the provider supports (see the table below). A format whose writer needs a package that is not installed is listed with **needs one of:** and the package, and a format Polars marks as unstable is listed with **(unstable)**. |
 | **MODE** | **sink** (streaming) or **write** (in memory). Shown when the format supports more than one mode, or once a mode is set (a new node starts on **sink**). Each format offers only the modes Polars supports for it. |
 | **FILENAME OR PATH** | File provider: the file to write. Type a name or pick one from the file browser. Paths are resolved from your project folder, not from the pipeline file's folder. A bare file name goes in the project's `outputs/` folder, and the format's extension is added when the name has none: `scored_policies` with Parquet selected writes `outputs/scored_policies.parquet`. A relative path such as `exports/scored.parquet` is taken from the project folder, and an absolute path must stay inside the project. Missing folders are created. |
@@ -19,6 +19,9 @@ This node takes a single input and passes it on unchanged: running or previewing
 | **CONNECTION ENVIRONMENT REFERENCE** | Database provider: the name of an environment variable that holds the database URI. |
 | **CREDENTIAL-FREE URI** | Database provider: a database URI without credentials, used instead of the connection reference. |
 | **TABLE** | Database provider: the table to write. |
+| **SQL WAREHOUSE** | Databricks provider: the SQL warehouse that runs the write. The list loads when the panel opens and marks serverless warehouses; if the workspace has only one, it is chosen for you. **Enter HTTP path manually...** takes an all-purpose cluster's HTTP path instead. |
+| **TABLE** (Databricks) | Databricks provider: choose a **Catalog** and **Schema**, then type a **Table name** or pick one of the schema's tables. A name that does not exist yet is created by the first write. Names may use letters, digits, underscores and hyphens. |
+| **WRITE MODE** | Databricks provider: **Replace table** (the default) replaces the table's rows and columns with the output; **Append rows** adds the output's rows, matched by column name, and creates the table if it is missing. |
 | **ARGUMENTS** | Extra keyword arguments for the Polars writer. **Add argument** adds a row with a **name** (suggested from the arguments the writer accepts) and a JSON value (for example `","` or `true`). Only arguments the writer accepts are allowed; an unknown name or a value that is not valid JSON is flagged. |
 
 The formats each provider offers:
@@ -28,6 +31,7 @@ The formats each provider offers:
 | **File** | **Parquet**, **CSV**, **NDJSON**, **JSON**, **Arrow IPC / Feather**, **Arrow IPC stream**, **Avro**, **Excel** |
 | **Lakehouse** | **Delta Lake**, **Iceberg** |
 | **Database** | **Database (URI)** |
+| **Databricks** | none: the output is always loaded as a table |
 
 Under the fields, the panel says how the format is written (a streaming sink or an eager writer) and how it is published.
 
@@ -36,6 +40,7 @@ Under the fields, the panel says how the format is written (a streaming sink or 
 When the settings are complete, the panel shows the resolved **Destination:** before you write, and warns if the destination's extension does not match the selected format.
 
 - **Write** runs the pipeline up to the node and writes the full dataset to the destination. It is disabled until the settings are complete, and reads **Writing...** while it runs. When it finishes, the panel reports the result with the number of rows and the path.
+- A Databricks write streams the output to a Parquet file, uploads it to a `haute_staging` volume in the target table's schema (the first write creates the volume), loads it into the table on the chosen SQL warehouse, then deletes the uploaded file. It uses the same `DATABRICKS_HOST` and `DATABRICKS_TOKEN` (or service-principal) credentials as a Databricks Data Input. Your token needs permission to create a volume and tables in the schema, or a `haute_staging` volume you have created for it. **WRITE MODE** decides what happens to an existing table, so there is no separate confirmation.
 - If the destination file already exists, the panel asks you to confirm with **Replace existing file** before overwriting it. For a lakehouse or database destination, what happens when the table already exists is the Polars writer's own behaviour, which you can set with **ARGUMENTS** (for example `if_table_exists` for a database table).
 
 ## The COLUMNS tab
@@ -62,18 +67,32 @@ Writing a scored dataset to parquet:
 
     | Setting in the editor | Stored as |
     |---|---|
-    | **PROVIDER** | `outputType`: `"file"`, `"lakehouse"` or `"database"` |
+    | **PROVIDER** | `outputType`: `"file"`, `"lakehouse"`, `"database"` or `"databricks"` |
     | **FORMAT** | `format`: `"parquet"`, `"csv"`, `"ndjson"`, `"json"`, `"ipc"`, `"ipc_stream"`, `"avro"` or `"excel"` for a file; `"delta"` or `"iceberg"` for a lakehouse; `"database"` for a database |
     | **MODE** | `mode`: `"sink"` or `"write"`; absent uses the format's usual mode |
     | **FILENAME OR PATH**, **TABLE LOCATOR** | `path` |
     | **CONNECTION ENVIRONMENT REFERENCE** | `connection` |
     | **CREDENTIAL-FREE URI** | `uri` |
-    | **TABLE** | `table` |
+    | **TABLE** | `table` (`catalog.schema.table` for Databricks) |
+    | **SQL WAREHOUSE** | `http_path` |
+    | **WRITE MODE** | `write_mode`: `"overwrite"` or `"append"`; absent replaces the table |
     | **ARGUMENTS** | `arguments`, a map of argument name to value |
     | **COLUMNS** tab | `selected_columns` |
 
     The column metadata any node may carry, `column_renames` and `categorical_levels`, has no
     editor control on this node.
+
+    A Databricks output has no `format`, `mode` or arguments:
+
+    ```json
+    {
+      "outputType": "databricks",
+      "http_path": "/sql/1.0/warehouses/abc123",
+      "table": "main.pricing.scored_policies",
+      "write_mode": "overwrite",
+      "arguments": {}
+    }
+    ```
 
     The example above is stored as:
 

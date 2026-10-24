@@ -74,7 +74,7 @@ describe("generated response contracts", () => {
 
   it("accept complete Databricks listings and reject a missing or mistyped field", () => {
     const warehouses = expectGeneratedContract("WarehouseListResponse", validateWarehouseListResponse, {
-      warehouses: [{ id: "w1", name: "Shared", http_path: "/sql/1.0/warehouses/w1", state: "RUNNING", size: "" }],
+      warehouses: [{ id: "w1", name: "Shared", http_path: "/sql/1.0/warehouses/w1", state: "RUNNING", size: "", serverless: true }],
     })
     const catalogs = expectGeneratedContract("CatalogListResponse", validateCatalogListResponse, {
       catalogs: [{ name: "main", comment: "" }],
@@ -87,6 +87,7 @@ describe("generated response contracts", () => {
     })
 
     expect(warehouses.warehouses[0]?.http_path).toBe("/sql/1.0/warehouses/w1")
+    expect(warehouses.warehouses[0]?.serverless).toBe(true)
     expect(catalogs.catalogs[0]?.name).toBe("main")
     expect(schemas.schemas[0]?.comment).toBe("quotes")
     expect(tables.tables[0]?.full_name).toBe("main.pricing.quotes")
@@ -97,7 +98,7 @@ describe("generated response contracts", () => {
     ).toThrow("TableListResponse: invalid contract at /tables/0/table_type: required")
     expect(() =>
       expectGeneratedContract("WarehouseListResponse", validateWarehouseListResponse, {
-        warehouses: [{ id: 1, name: "Shared", http_path: "/p", state: "RUNNING", size: "" }],
+        warehouses: [{ id: 1, name: "Shared", http_path: "/p", state: "RUNNING", size: "", serverless: false }],
       }),
     ).toThrow("WarehouseListResponse: invalid contract at /warehouses/0/id: type")
   })

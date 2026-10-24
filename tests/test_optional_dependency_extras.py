@@ -190,6 +190,7 @@ def test_databricks_warehouses_route_succeeds_with_installed_sdk_and_mocked_clie
         name="Pricing Warehouse",
         state=SimpleNamespace(value="RUNNING"),
         cluster_size="2X-Small",
+        enable_serverless_compute=True,
     )
     fake_client = SimpleNamespace(
         warehouses=SimpleNamespace(list=lambda: [fake_warehouse]),
@@ -207,6 +208,7 @@ def test_databricks_warehouses_route_succeeds_with_installed_sdk_and_mocked_clie
                 "http_path": "/sql/1.0/warehouses/wh-123",
                 "state": "RUNNING",
                 "size": "2X-Small",
+                "serverless": True,
             }
         ]
     }

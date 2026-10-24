@@ -166,7 +166,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // least" a number, conditions on a list's rows and a field's own (the editor, the rules and
 // the form's validators for them, all in the lazy workbench chunks, the initial ones as they
 // were) bring it to 1,699.6 KiB; 1,701 KiB restores about 1.4 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1701
+// The Databricks Data Output (its warehouse picker, serverless tagged, and target-table
+// fields in the lazy editor chunks, the initial ones as they were) brings it to
+// 1,701.8 KiB; 1,703 KiB restores about 1.2 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1703
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

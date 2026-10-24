@@ -6,6 +6,7 @@
 |---|---|
 | `src/haute/_databricks_credentials.py` | Single environment-to-credentials boundary: redaction-safe `DatabricksCredentials`, `DatabricksConfigError`, host normalisation, completeness validation, and PAT-over-service-principal precedence. |
 | `src/haute/_databricks_io.py` | SQL-connector adaptation, table/projection validation, canonical table identity, bounded Arrow batch iteration, retries, and integrity checks. It raises `DatabricksConfigError` from `src/haute/_databricks_credentials.py`. |
+| `src/haute/_databricks_output.py` | Data Output writes to a Unity Catalog table: Spark-compatible dtype casts, the staged Parquet upload, the overwrite/append load SQL, staged-file cleanup, and `DatabricksWriteError`. |
 | `src/haute/routes/databricks.py` | `/api/databricks` Unity Catalog browsing endpoints. |
 
 `src/haute/_input_providers.py`, `src/haute/_source_cache.py`, and
@@ -46,6 +47,52 @@
 8. Arrow tables flow directly into `SourceCacheStore`, which owns Parquet writing and
    atomic publication.
 
+### Table write
+
+A Data Output with `outputType: "databricks"` has no `format`;
+`write_polars_output()` dispatches it to `write_databricks_output()` before any
+format lookup.
+
+1. Registry validation requires `http_path` and `table`, allows an optional
+   `write_mode` of `overwrite` (the default) or `append`, and refuses arguments.
+2. The writer re-checks `_TABLE_NAME_RE`, builds the load SQL, and resolves
+   credentials with `_resolve_connection(http_path, node_label="Data Output")`;
+   one `DatabricksCredentials` authenticates both the SQL connection
+   (`_sql_auth_kwargs`) and the Files API client
+   (`_databricks_credentials.databricks_workspace_client`, which the browsing
+   route shares).
+3. `_spark_compatible()` casts `Null` and `Time` columns to strings and
+   nanosecond datetimes to microseconds. The frame then streams through the
+   ordinary Parquet sink into a temporary directory, and the row count comes
+   from that file's metadata. A chunk-write recipe is composed with the same
+   cast (`recipe.then(_spark_compatible)`), so it still describes the frame
+   written and passes `check_recipe_equivalence`.
+4. One SQL connection runs `CREATE VOLUME IF NOT EXISTS` for `haute_staging` in
+   the target schema. The file is uploaded under a fresh UUID name with the
+   Files API's `upload_from`, in parts of `UPLOAD_PART_BYTES` (16 MiB) on at
+   most `UPLOAD_PARALLELISM` (4) threads, which bounds the upload's memory; the
+   connector's `PUT` reads the whole file into memory and is not used. The load
+   follows: `CREATE OR REPLACE TABLE ... AS SELECT` for overwrite, or `CREATE
+   TABLE IF NOT EXISTS ... LIMIT 0` followed by `INSERT INTO ... BY NAME` for
+   append.
+5. The upload and the load share one `finally` that deletes the staged file
+   (`_remove_staged`), so an upload whose response failed after the bytes landed
+   is cleaned up too. `NotFound` (the upload never created the file) is
+   expected; any other cleanup failure is logged and never masks the write's
+   own outcome.
+6. Every warehouse or storage message, in the `DatabricksWriteError` and in the
+   cleanup log, passes `_warehouse_message`: `redact_sensitive_text` with the
+   token and client secret as known secrets, then whitespace collapsed and the
+   text cut to 600 characters, redaction first so a cut never exposes part of a
+   secret. `redact_sensitive_text` also redacts a credential query parameter
+   outside a full URI (the relative signed URL a storage error prints), wherever
+   it sits in the query, which an enclosing `url: ...` assignment would
+   otherwise swallow.
+
+The write is transactional: there is no staging path on disk to publish, and
+`resolve_data_output_path()` returns `(None, table)`. Duplicate-destination
+detection compares `_canonical_table()` spellings.
+
 ### Credentials
 
 `resolve_databricks_credentials()` is the only reader of `DATABRICKS_HOST`,
@@ -62,11 +109,13 @@ MLflow never uses these variables: its Databricks credentials are the dedicated
 ([modelling](../modelling/low-level.md)), so a data token and an MLflow token
 can carry different scopes.
 
-`_connection_settings(http_path)` passes the mandatory node `http_path` as such
-an additional requirement; there is no `DATABRICKS_HTTP_PATH` fallback. It
-adapts the resolved credentials into either `access_token` or the SDK OAuth M2M
-callback built by `_service_principal_credentials()`. The browsing route calls
-the same resolver and adapts the selected form into `WorkspaceClient`. Returned
+`_connection_settings(http_path)` (`_resolve_connection` then
+`_sql_auth_kwargs`) passes the mandatory node `http_path` as such an additional
+requirement; there is no `DATABRICKS_HTTP_PATH` fallback. It adapts the resolved
+credentials into either `access_token` or the SDK OAuth M2M callback built by
+`_service_principal_credentials()`. The browsing route calls the same resolver
+and adapts the selected form into `WorkspaceClient` through
+`databricks_workspace_client`. Returned
 secrets and providers stay in connector-call scope.
 
 ### Browsing
@@ -94,6 +143,10 @@ or publish snapshots.
 `SystemExit`, and programming/type errors are never retried. Other fetch errors are retried
 within the fixed budget and the final provider exception propagates with its message.
 
+A table write wraps any connector failure in `DatabricksWriteError`, whose message
+is the whitespace-collapsed warehouse error (truncated at 600 characters). The
+write-output route maps it to 502 and `DatabricksConfigError` to 400.
+
 The input-cache worker logs `error_type` and a shared credential-scrubbed `error` for
 provider failures; raw error text is not copied to public responses. Browsing endpoints
 preserve deliberate `HTTPException` responses and log unexpected SDK messages before
@@ -107,6 +160,13 @@ returning a generic 500.
 - `tests/test_databricks_io.py` covers SQL credential adaptation, table/projection validation,
   cancellation before execute, batch streaming, retries, empty-schema behaviour, row-loss
   detection, identity-independent batch sizing, and builder-through-store publication.
+- `tests/test_databricks_output.py` covers output config validation, the load SQL,
+  dtype casts, the staged write over a fake connector and Files API (the bounded
+  part size and parallelism, cleanup after a failed load and after an upload that
+  failed once its bytes may have landed, a missing staged file not logged as a
+  cleanup failure), redaction of a signed-URL query and the token in errors and in
+  the cleanup log, a chunk-write recipe carrying the casts, a pipeline write,
+  destination identity, and worker error kinds.
 - `tests/test_databricks_endpoints.py` covers optional dependency/credential failures,
   SDK mapping, and generic error responses for browsing.
 - `tests/test_databricks_routes_auth.py` proves the browsing adapter consumes

@@ -168,7 +168,8 @@ class TestColumnStats:
             ([float("nan"), 100.0], [100.0, 100.0], "staging.*non-finite.*price"),
             ([100.0, 100.0], [float("nan"), 100.0], "production.*non-finite.*price"),
             ([float("inf"), 100.0], [100.0, 100.0], "staging.*non-finite.*price"),
-            ([100.0, 100.0], [None, 100.0], "production.*non-finite.*price"),
+            # A missing value is named as missing, not as a NaN or infinity.
+            ([100.0, 100.0], [None, 100.0], "production.*leave output 'price' empty on 1 row"),
         ],
     )
     def test_non_finite_predictions_fail_loudly(
