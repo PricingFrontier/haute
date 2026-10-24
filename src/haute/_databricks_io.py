@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from haute._databricks_credentials import (
     DatabricksConfigError,
+    DatabricksCredentials,
     resolve_databricks_credentials,
 )
 from haute._logging import get_logger
@@ -39,6 +40,16 @@ _DANGEROUS_SQL_RE = re.compile(
     re.IGNORECASE,
 )
 _FROM_SQL_RE = re.compile(r"\bFROM\b", re.IGNORECASE)
+
+
+def _quoted_table_name(table: str) -> str:
+    """Backtick-quote each part of a ``_TABLE_NAME_RE``-valid table name.
+
+    Unity Catalog names may contain hyphens (``workspace.pricing-dev.claims``),
+    which Databricks SQL rejects unquoted. The regex admits no backtick inside
+    a part, so stripping the optional surrounding ones and re-wrapping is safe.
+    """
+    return ".".join(f"`{part.strip('`')}`" for part in table.split("."))
 
 
 def _validate_select_clause(query: str) -> None:
@@ -101,7 +112,9 @@ def _service_principal_credentials(
     return provider
 
 
-def _connection_settings(http_path: str | None = None) -> tuple[str, dict[str, Any], str]:
+def _connection_settings(
+    http_path: str | None = None, *, node_label: str = "Data Input"
+) -> tuple[str, dict[str, Any], str]:
     """Resolve Databricks connection settings from the environment.
 
     Auth precedence: an explicit ``DATABRICKS_TOKEN`` (PAT) wins;
@@ -111,30 +124,43 @@ def _connection_settings(http_path: str | None = None) -> tuple[str, dict[str, A
 
     Args:
         http_path: SQL Warehouse HTTP path from the node config.
+        node_label: The node kind named when ``http_path`` is missing.
 
     Returns ``(host, auth_kwargs, http_path)`` where ``auth_kwargs`` are
     passed to ``databricks.sql.connect``. The failure message names every
     consulted source without echoing any value.
     """
+    credentials, resolved_http_path = _resolve_connection(http_path, node_label=node_label)
+    return credentials.server_hostname, _sql_auth_kwargs(credentials), resolved_http_path
+
+
+def _resolve_connection(
+    http_path: str | None, *, node_label: str
+) -> tuple[DatabricksCredentials, str]:
+    """The environment's credentials and the stripped *http_path*, both required."""
     resolved_http_path = (http_path or "").strip()
     credentials = resolve_databricks_credentials(
-        additional_missing=("http_path on the Data Input node",) if not resolved_http_path else ()
+        additional_missing=(f"http_path on the {node_label} node",)
+        if not resolved_http_path
+        else ()
     )
+    return credentials, resolved_http_path
 
+
+def _sql_auth_kwargs(credentials: DatabricksCredentials) -> dict[str, Any]:
+    """The ``databricks.sql.connect`` keyword arguments that authenticate *credentials*."""
     if credentials.auth_mode == "pat":
         assert credentials.token is not None
-        auth_kwargs: dict[str, Any] = {"access_token": credentials.token}
-    else:
-        assert credentials.client_id is not None
-        assert credentials.client_secret is not None
-        auth_kwargs = {
-            "credentials_provider": _service_principal_credentials(
-                credentials.server_hostname,
-                credentials.client_id,
-                credentials.client_secret,
-            )
-        }
-    return credentials.server_hostname, auth_kwargs, resolved_http_path
+        return {"access_token": credentials.token}
+    assert credentials.client_id is not None
+    assert credentials.client_secret is not None
+    return {
+        "credentials_provider": _service_principal_credentials(
+            credentials.server_hostname,
+            credentials.client_id,
+            credentials.client_secret,
+        )
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +234,7 @@ def _iter_databricks_batches(
 
     host, auth_kwargs, resolved_http_path = _connection_settings(http_path)
     select_clause = query.strip() if query else "SELECT *"
-    sql_query = f"{select_clause} FROM {table}"  # noqa: S608
+    sql_query = f"{select_clause} FROM {_quoted_table_name(table)}"  # noqa: S608
     row_count = 0
     context.checkpoint()
     with dbsql.connect(

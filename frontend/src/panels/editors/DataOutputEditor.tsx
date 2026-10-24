@@ -14,8 +14,10 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useOutputWriteStore from "../../stores/useOutputWriteStore"
 import { buildGraph, graphForRequestIdentity } from "../../utils/buildGraph"
 import { useGraph } from "../useGraph"
+import { EditorLabel } from "../../components/form"
+import { TargetTablePicker, WarehousePicker } from "./_DatabricksSelector"
 import IoFormatEditor from "./_IoFormatEditor"
-import { ioBranchConfig, ioProviderFieldsReady } from "./_ioProvider"
+import { hasNonEmptyString, ioBranchConfig, ioProviderFieldsReady } from "./_ioProvider"
 import IoProviderPicker from "./_IoProviderPicker"
 import { useIoCapabilities } from "./_ioFormats"
 import type { OnReplaceConfig, OnUpdateConfig } from "./_shared"
@@ -84,6 +86,125 @@ function outputConfigReady(
   )
 }
 
+const DATABRICKS_OUTPUT_KEYS = new Set<string>([
+  ...OUTPUT_COMMON_KEYS,
+  "outputType",
+  "http_path",
+  "table",
+  "write_mode",
+  "arguments",
+])
+const DATABRICKS_TABLE_RE = /^`?[\w-]+`?\.`?[\w-]+`?\.`?[\w-]+`?$/
+
+type DatabricksWriteMode = "overwrite" | "append"
+
+const WRITE_MODES: { value: DatabricksWriteMode; label: string; detail: string }[] = [
+  {
+    value: "overwrite",
+    label: "Replace table",
+    detail: "Replaces the table's rows and columns with this output.",
+  },
+  {
+    value: "append",
+    label: "Append rows",
+    detail: "Adds this output's rows by column name, creating the table if it is missing.",
+  },
+]
+
+function databricksOutputReady(config: Record<string, unknown>): boolean {
+  const writeMode = config.write_mode
+  return (
+    hasNonEmptyString(config.http_path) &&
+    typeof config.table === "string" &&
+    DATABRICKS_TABLE_RE.test(config.table) &&
+    (writeMode === undefined || writeMode === "overwrite" || writeMode === "append") &&
+    (config.arguments === undefined ||
+      (isPlainObject(config.arguments) && Object.keys(config.arguments).length === 0)) &&
+    Object.keys(config).every(
+      (key) => config[key] === undefined || DATABRICKS_OUTPUT_KEYS.has(key),
+    )
+  )
+}
+
+function DatabricksOutputFields({
+  config,
+  onUpdate,
+  accentColor,
+}: {
+  config: Record<string, unknown>
+  onUpdate: OnUpdateConfig
+  accentColor: string
+}) {
+  const writeMode: DatabricksWriteMode =
+    config.write_mode === "append" ? "append" : "overwrite"
+  const unexpected = Object.keys(config).filter(
+    (key) => config[key] !== undefined && !DATABRICKS_OUTPUT_KEYS.has(key),
+  )
+  return (
+    <div className="space-y-3">
+      {unexpected.length > 0 && (
+        <section
+          aria-label="Configuration errors"
+          className="rounded-lg p-2 text-[11px]"
+          style={{
+            background: "var(--danger-soft)",
+            border: "1px solid var(--danger-border)",
+            color: "var(--danger-text)",
+          }}
+        >
+          <EditorLabel as="div" color="var(--danger-text)">
+            Configuration errors
+          </EditorLabel>
+          <p>Unexpected configuration keys: {unexpected.join(", ")}.</p>
+        </section>
+      )}
+      <WarehousePicker
+        purpose="write"
+        httpPath={typeof config.http_path === "string" ? config.http_path : ""}
+        onSelect={(value) => onUpdate("http_path", value)}
+      />
+      <TargetTablePicker
+        table={typeof config.table === "string" ? config.table : ""}
+        onSelect={(value) => onUpdate("table", value)}
+      />
+      <div role="radiogroup" aria-label="Write mode">
+        <div
+          className="text-[11px] font-bold uppercase tracking-[0.08em]"
+          style={{ color: "var(--text-muted)" }}
+        >
+          Write mode
+        </div>
+        <div className="mt-1 grid grid-cols-2 gap-1.5">
+          {WRITE_MODES.map((mode) => {
+            const selected = writeMode === mode.value
+            return (
+              <button
+                key={mode.value}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                onClick={() => onUpdate("write_mode", mode.value)}
+                className="px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                style={{
+                  background: selected ? "var(--accent-soft)" : "var(--bg-input)",
+                  border: `1px solid ${selected ? accentColor : "var(--border)"}`,
+                  color: selected ? "var(--text-primary)" : "var(--text-secondary)",
+                }}
+              >
+                {mode.label}
+              </button>
+            )
+          })}
+        </div>
+        <p className="mt-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
+          {WRITE_MODES.find((mode) => mode.value === writeMode)?.detail} The file is staged
+          in the schema's haute_staging volume, which the first write creates.
+        </p>
+      </div>
+    </div>
+  )
+}
+
 export default function DataOutputEditor({
   config,
   onUpdate,
@@ -114,8 +235,10 @@ export default function DataOutputEditor({
   const format = group?.formats.find(
     (candidate) => candidate.name === config.format,
   )
+  const isDatabricks = group?.name === "databricks"
   const ready =
-    group !== undefined && outputConfigReady(group, format, config)
+    group !== undefined &&
+    (isDatabricks ? databricksOutputReady(config) : outputConfigReady(group, format, config))
   const graph = useMemo(() => {
     // buildGraph reads the preamble from the store; listing it renews this callback.
     void preamble
@@ -245,7 +368,11 @@ export default function DataOutputEditor({
         onSelect={(next) => onReplaceConfig(outputBranchConfig(config, next))}
       />
 
-      {group && (
+      {isDatabricks && (
+        <DatabricksOutputFields config={config} onUpdate={onUpdate} accentColor={accentColor} />
+      )}
+
+      {group && !isDatabricks && (
         <IoFormatEditor
           group={group}
           direction="output"

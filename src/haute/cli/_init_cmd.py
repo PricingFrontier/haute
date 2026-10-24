@@ -474,6 +474,7 @@ def handle_init(config: InitConfig) -> None:
     never overwrites an existing project).
     """
     from haute._project_layout import PIPELINE_FILES_FOLDER, PIPELINE_FILES_SUBFOLDERS
+    from haute._project_python import ProjectPythonError, project_python_version
     from haute._scaffold import (
         azure_devops_yml,
         env_example,
@@ -507,6 +508,12 @@ def handle_init(config: InitConfig) -> None:
         )
         raise SystemExit(1)
 
+    # -- The project's Python, read before anything is written -----------------
+    try:
+        python_version = project_python_version(project_dir)
+    except ProjectPythonError as exc:
+        raise click.ClickException(str(exc)) from exc
+
     # -- Resolve project name --------------------------------------------------
     pyproject_path = project_dir / "pyproject.toml"
     name = project_dir.name.replace("-", "_").replace(" ", "_").lower()
@@ -519,6 +526,11 @@ def handle_init(config: InitConfig) -> None:
 
     # -- pyproject.toml - ensure haute is a dependency -------------------------
     _ensure_haute_dependency(pyproject_path, name)
+
+    # -- .python-version - one Python for local, CI and the deployed model -----
+    python_version_file = project_dir / ".python-version"
+    if not python_version_file.exists():
+        python_version_file.write_text(f"{python_version}\n", encoding="utf-8")
 
     # -- Directories -----------------------------------------------------------
     (project_dir / "data").mkdir(exist_ok=True)
@@ -550,7 +562,7 @@ def handle_init(config: InitConfig) -> None:
 
     # -- haute.toml - project + deploy + safety + CI (+ workbench) config -------
     (project_dir / "haute.toml").write_text(
-        haute_toml(name, target, ci, workbench=config.workbench),
+        haute_toml(name, target, ci, workbench=config.workbench, python_version=python_version),
         encoding="utf-8",
     )
 
@@ -601,14 +613,15 @@ def handle_init(config: InitConfig) -> None:
         workflows_dir = project_dir / ".github" / "workflows"
         workflows_dir.mkdir(parents=True, exist_ok=True)
         (workflows_dir / "ci.yml").write_text(
-            github_ci_yml(workbench=config.workbench), encoding="utf-8"
+            github_ci_yml(workbench=config.workbench, python_version=python_version),
+            encoding="utf-8",
         )
         (workflows_dir / "deploy-staging.yml").write_text(
-            github_deploy_yml(target, workbench=config.workbench),
+            github_deploy_yml(target, workbench=config.workbench, python_version=python_version),
             encoding="utf-8",
         )
         (workflows_dir / "deploy-production.yml").write_text(
-            github_deploy_prod_yml(target),
+            github_deploy_prod_yml(target, python_version=python_version),
             encoding="utf-8",
         )
         ci_files = [
@@ -618,13 +631,13 @@ def handle_init(config: InitConfig) -> None:
         ]
     elif ci == "gitlab":
         (project_dir / ".gitlab-ci.yml").write_text(
-            gitlab_ci_yml(target, workbench=config.workbench),
+            gitlab_ci_yml(target, workbench=config.workbench, python_version=python_version),
             encoding="utf-8",
         )
         ci_files = [".gitlab-ci.yml"]
     elif ci == "azure-devops":
         (project_dir / "azure-pipelines.yml").write_text(
-            azure_devops_yml(target, workbench=config.workbench),
+            azure_devops_yml(target, workbench=config.workbench, python_version=python_version),
             encoding="utf-8",
         )
         ci_files = ["azure-pipelines.yml"]

@@ -85,6 +85,7 @@ my-project/
   .github/workflows/deploy-production.yml
   .github/workflows/deploy-staging.yml
   .gitignore
+  .python-version
   data/
   haute.toml
   pyproject.toml

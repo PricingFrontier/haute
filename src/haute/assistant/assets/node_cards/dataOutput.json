@@ -2,11 +2,14 @@
   "node_type": "dataOutput",
   "authorable": true,
   "fields": {
-    "outputType": "Where the frame is written: \"file\", \"database\" or \"lakehouse\". Each type has its own required keys.",
+    "outputType": "Where the frame is written: \"file\", \"database\", \"lakehouse\" or \"databricks\". Each type has its own required keys.",
     "format": "For a file: \"parquet\", \"csv\", \"json\", \"ndjson\", \"ipc\" or \"avro\".",
     "mode": "\"sink\" streams the lazy frame to the file; \"write\" collects it first.",
     "path": "The destination path relative to the project root. Nothing is written while authoring or previewing; the file is written when the output is run.",
     "arguments": "Options passed to the Polars writer for the format. Leave {} when none are needed.",
+    "http_path": "For Databricks: the SQL warehouse HTTP path, /sql/1.0/warehouses/<id>. A Databricks output has no format, mode or arguments.",
+    "table": "For a database or Databricks: the table to write. Databricks needs catalog.schema.table; a new table is created.",
+    "write_mode": "For Databricks: \"overwrite\" (the default) replaces the table; \"append\" adds rows, creating the table when it is missing.",
     "selected_columns": "Optional list of the columns to write, in order; absent writes every column."
   },
   "inputs": [
