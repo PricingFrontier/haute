@@ -319,9 +319,12 @@ def _azure_devops_trigger_paths(workbench: bool) -> str:
 def _release_tag_script(target: str, indent: str) -> str:
     """Shell lines, indented, that tag the production release in git.
 
-    Databricks tags the registered MLflow model version. A container-based
-    target tags the deployed commit, the identity its image tag carries; a
-    redeploy of a commit that is already tagged leaves the tag as it is.
+    Databricks tags the registered MLflow model version, which ``haute status`` reads
+    from the registry with the MLflow credentials the step is given; a read that fails,
+    or prints anything but a version number, fails the step rather than tagging a
+    made-up version. A container-based target tags the deployed commit, the identity
+    its image tag carries; a redeploy of a commit that is already tagged leaves the tag
+    as it is.
     """
     if target in _CONTAINER_BASED_TARGETS:
         lines = [
@@ -335,11 +338,28 @@ def _release_tag_script(target: str, indent: str) -> str:
         ]
     else:
         lines = [
-            'VERSION=$(uv run haute status --version-only 2>/dev/null || echo "unknown")',
+            'VERSION="$(uv run haute status --version-only)"',
+            'case "$VERSION" in',
+            "  ''|*[!0-9]*)",
+            '    echo "haute status printed no model version: $VERSION" >&2',
+            "    exit 1",
+            "    ;;",
+            "esac",
             'git tag "deploy/v$VERSION"',
             'git push origin "deploy/v$VERSION"',
         ]
     return "\n".join(indent + line for line in lines)
+
+
+def _deploy_timeout_minutes(target: str) -> int:
+    """Minutes a generated deploy job may run.
+
+    A Databricks deploy waits until its endpoint serves the new version
+    (``haute.deploy._databricks_serving.SERVING_READY_TIMEOUT_SECONDS``, 45 minutes), and
+    a first deploy's build can take most of that; a container deploy builds and pushes
+    an image.
+    """
+    return 60 if target == "databricks" else 15
 
 
 def _get_target(target: str) -> _TargetConfig:
@@ -407,7 +427,10 @@ endpoint_name = "{name}"
 dir = "tests/quotes"
 
 [safety]
-impact_dataset = "data/portfolio_sample.parquet"
+# `haute impact` compares staging with production on these quotes. Without a
+# sample it compares the test quotes; commit a Parquet sample of your book (not
+# under data/, which is gitignored) and name it here to compare that instead:
+# impact_dataset = "tests/impact/portfolio_sample.parquet"
 
 [safety.approval]
 min_approvers = {min_approvers}
@@ -459,7 +482,31 @@ def env_example(target: str) -> str:
     return _ENV_EXAMPLE_HEADER.format(label=label) + (f"#\n{notice}" if notice else "") + env_body
 
 
+def env_example_values(target: str) -> dict[str, str]:
+    """The placeholder value ``.env.example`` gives each variable of *target*.
+
+    ``haute ci secrets`` refuses a value still equal to its placeholder, so an unedited
+    copy of the template is never uploaded as a CI secret.
+    """
+    env_body = _get_target(target)["env_body"]
+    assert isinstance(env_body, str)
+    values: dict[str, str] = {}
+    for line in env_body.splitlines():
+        if line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip()
+    return values
+
+
 # ── CI secrets helpers ────────────────────────────────────────────────
+
+
+def ci_secret_names(target: str) -> list[str]:
+    """The CI secrets *target*'s generated deploy, smoke, impact and tag steps read."""
+    secrets = _get_target(target)["secrets"]
+    assert isinstance(secrets, list)
+    return list(secrets)
 
 
 def _format_secrets(target: str, indent: str, fmt: str) -> str:
@@ -704,7 +751,7 @@ jobs:
     name: Deploy → Staging
     needs: validate
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: {_deploy_timeout_minutes(target)}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
@@ -740,6 +787,8 @@ def _github_deploy_prod_yml(target: str) -> str:
     """
     secrets_env = _github_secrets_env(target)
     release_tag = _release_tag_script(target, " " * 10)
+    # A Databricks release tag reads the registered version from MLflow.
+    tag_env = "" if target in _CONTAINER_BASED_TARGETS else f"        env:\n{secrets_env}\n"
 
     return (
         _build_only_notice(target)
@@ -767,7 +816,7 @@ jobs:
   deploy-production:
     name: Deploy → Production
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: {_deploy_timeout_minutes(target)}
     steps:
       - uses: actions/checkout@v4
       - name: Verify commit matches staged SHA
@@ -788,7 +837,7 @@ jobs:
 {secrets_env}
         run: uv run haute deploy
       - name: Tag release
-        run: |
+{tag_env}        run: |
           set -euo pipefail
 {release_tag}
 """
@@ -886,7 +935,7 @@ lint:
 # ── Staging ───────────────────────────────────────────────────
 deploy-staging:
   stage: deploy-staging
-  timeout: 15 minutes
+  timeout: {_deploy_timeout_minutes(target)} minutes
   resource_group: deploy
   variables:
 {secrets_env}
@@ -898,7 +947,7 @@ deploy-staging:
 {verification_jobs}# ── Production (manual approval) ─────────────────────────────
 deploy-production:
   stage: deploy-production
-  timeout: 15 minutes
+  timeout: {_deploy_timeout_minutes(target)} minutes
   resource_group: deploy
   variables:
 {secrets_env}
@@ -940,6 +989,12 @@ def _azure_devops_yml(target: str, *, workbench: bool = False) -> str:
     # its secret keys must sit at 20 — deeper than the 14-space job-level block.
     secrets_env_production = _azure_devops_secrets_env(target, indent=" " * 20)
     release_tag = _release_tag_script(target, " " * 20)
+    # A Databricks release tag reads the registered version from MLflow.
+    tag_env = (
+        ""
+        if target in _CONTAINER_BASED_TARGETS
+        else f"                  env:\n{secrets_env_production}\n"
+    )
     verify = target not in BUILD_AND_PUSH_ONLY_TARGETS
     production_depends_on = "ImpactAnalysis" if verify else "DeployStaging"
     verification_stages = (
@@ -1095,7 +1150,7 @@ stages:
     jobs:
       - job: deploy_staging
         displayName: Deploy to staging
-        timeoutInMinutes: 15
+        timeoutInMinutes: {_deploy_timeout_minutes(target)}
         pool:
           vmImage: ubuntu-latest
         steps:
@@ -1119,7 +1174,7 @@ stages:
     jobs:
       - deployment: deploy_production
         displayName: Deploy to production
-        timeoutInMinutes: 15
+        timeoutInMinutes: {_deploy_timeout_minutes(target)}
         pool:
           vmImage: ubuntu-latest
         environment: production
@@ -1127,7 +1182,9 @@ stages:
           runOnce:
             deploy:
               steps:
+                # The release tag is pushed with the pipeline's token.
                 - checkout: self
+                  persistCredentials: true
                 - task: UsePythonVersion@0
                   inputs:
                     versionSpec: "3.11"
@@ -1141,8 +1198,48 @@ stages:
                     set -euo pipefail
 {release_tag}
                   displayName: Tag release
-"""
+{tag_env}"""
     )
+
+
+# ── Every CI file of a provider ───────────────────────────────────────
+
+
+def ci_files(
+    target: str, ci: str, *, workbench: bool = False, python_version: str = DEFAULT_CI_PYTHON
+) -> dict[str, str]:
+    """The CI files ``haute init`` and ``haute ci update`` write for *ci*: path -> content.
+
+    Paths are relative to the project root, in the order they are reported; ``"none"``
+    has no files. Every job runs *python_version*, the project's Python.
+    """
+    if ci == "github":
+        return {
+            ".github/workflows/ci.yml": github_ci_yml(
+                workbench=workbench, python_version=python_version
+            ),
+            ".github/workflows/deploy-staging.yml": github_deploy_yml(
+                target, workbench=workbench, python_version=python_version
+            ),
+            ".github/workflows/deploy-production.yml": github_deploy_prod_yml(
+                target, python_version=python_version
+            ),
+        }
+    if ci == "gitlab":
+        return {
+            ".gitlab-ci.yml": gitlab_ci_yml(
+                target, workbench=workbench, python_version=python_version
+            )
+        }
+    if ci == "azure-devops":
+        return {
+            "azure-pipelines.yml": azure_devops_yml(
+                target, workbench=workbench, python_version=python_version
+            )
+        }
+    if ci == "none":
+        return {}
+    raise ValueError(f"Unknown CI provider: {ci}")
 
 
 # ── Pre-commit hook ───────────────────────────────────────────────────

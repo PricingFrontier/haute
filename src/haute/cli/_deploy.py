@@ -114,6 +114,19 @@ def handle_deploy(config: DeployCliConfig) -> None:
         click.echo("  Use --dry-run to validate locally without deploying.", err=True)
         raise SystemExit(1)
 
+    # A deploy's credentials are checked before any other work, so a missing secret
+    # fails in seconds and names every gap at once. A dry run reaches no target.
+    if not config.dry_run:
+        from haute.deploy import check_credentials
+        from haute.deploy._config import _load_env
+
+        _load_env(deploy_config.project_dir or Path.cwd())
+        try:
+            check_credentials(deploy_config)
+        except DeployError as exc:
+            click.echo(f"  ✗ {exc}", err=True)
+            raise SystemExit(1) from exc
+
     # Apply CLI overrides on top of the loaded config.
     overrides: dict[str, str | Path | None] = {}
     if config.pipeline_file:

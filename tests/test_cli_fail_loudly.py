@@ -562,6 +562,12 @@ class TestImpactProdExistsFailsLoudly:
       the caller sees the real failure.
     """
 
+    @pytest.fixture(autouse=True)
+    def _serving_pair(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Impact reaches both endpoints with the serving pair, as CI provides it."""
+        monkeypatch.setenv("DATABRICKS_RATING_HOST", "https://rating.example")
+        monkeypatch.setenv("DATABRICKS_RATING_TOKEN", "rating-token")
+
     # ---- databricks branch ----
 
     def test_databricks_404_sets_prod_exists_false(self) -> None:

@@ -11,11 +11,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import click
 
 from haute._project import get_project_root
 from haute.cli._helpers import ENDPOINT_SUFFIX_HELP, resolve_transport
+
+if TYPE_CHECKING:
+    import polars as pl
+
+    from haute.deploy._config import DeployConfig
 
 
 @dataclass
@@ -88,32 +94,13 @@ def handle_impact(config: ImpactConfig) -> None:
     staging_name = base_name + (staging_suffix or "")
     prod_name = base_name
 
-    # Load impact dataset
-    impact_path = deploy_config.safety.impact_dataset
-    if not impact_path:
-        click.echo(
-            "Error: No impact_dataset configured in [safety] section of haute.toml.",
-            err=True,
-        )
-        raise SystemExit(1)
-
-    import polars as pl
-
-    dataset_file = (project_root / impact_path).resolve()
-    if not dataset_file.exists():
-        click.echo(f"Error: Impact dataset not found: {dataset_file}", err=True)
-        raise SystemExit(1)
-
-    df = pl.read_parquet(dataset_file)
-    total_rows = len(df)
-
-    if config.sample > 0 and total_rows > config.sample:
-        df = df.sample(n=config.sample, seed=42)
-
-    records = df.to_dicts()
+    # The quotes to compare: the [safety] portfolio sample, or the test quotes without one.
+    records, input_df, total_rows, dataset_label = _impact_records(
+        deploy_config, project_root, sample=config.sample
+    )
 
     click.echo(f"Impact analysis: {staging_name} vs {prod_name}")
-    click.echo(f"  Dataset: {impact_path} ({len(records):,} rows)")
+    click.echo(f"  Dataset: {dataset_label} ({len(records):,} rows)")
 
     # Score via the appropriate transport
     if transport.kind == "databricks":
@@ -143,7 +130,7 @@ def handle_impact(config: ImpactConfig) -> None:
             pipeline_name=deploy_config.model_name,
             staging_endpoint=staging_name,
             prod_endpoint=prod_name,
-            dataset_path=impact_path,
+            dataset_path=dataset_label,
             total_rows=total_rows,
             sampled_rows=len(records),
             scored_rows=len(staging_preds),
@@ -156,11 +143,11 @@ def handle_impact(config: ImpactConfig) -> None:
         report = build_report(
             staging_preds=staging_preds,
             prod_preds=prod_preds,
-            input_df=df,
+            input_df=input_df,
             pipeline_name=deploy_config.model_name,
             staging_endpoint=staging_name,
             prod_endpoint=prod_name,
-            dataset_path=impact_path,
+            dataset_path=dataset_label,
             total_rows=total_rows,
         )
 
@@ -179,6 +166,72 @@ def handle_impact(config: ImpactConfig) -> None:
         with open(github_summary, "a", encoding="utf-8") as f:
             f.write(md)
         click.echo("  \u2192 Report written to GitHub Step Summary")
+
+
+def _impact_records(
+    deploy_config: DeployConfig, project_root: Path, *, sample: int
+) -> tuple[list[dict[str, Any]], pl.DataFrame, int, str]:
+    """The quotes impact compares: ``(records, input frame, total rows, dataset label)``.
+
+    ``[safety] impact_dataset`` names a Parquet portfolio sample, sampled to *sample*
+    rows. Without one the test quotes are compared, the requests smoke sends, so a new
+    project's impact step runs before anyone has committed a portfolio sample; the
+    report names which it compared. Exits 1 when the named sample is missing, or, with
+    none named, when there are no test quotes to compare.
+    """
+    import polars as pl
+
+    impact_path = deploy_config.safety.impact_dataset
+    if impact_path:
+        dataset_file = (project_root / impact_path).resolve()
+        if not dataset_file.exists():
+            click.echo(f"Error: Impact dataset not found: {dataset_file}", err=True)
+            raise SystemExit(1)
+        df = pl.read_parquet(dataset_file)
+        total_rows = len(df)
+        if sample > 0 and total_rows > sample:
+            df = df.sample(n=sample, seed=42)
+        return df.to_dicts(), df, total_rows, impact_path
+
+    from haute.deploy._validators import test_quote_requests
+
+    tq_dir = deploy_config.test_quotes_dir
+    if tq_dir is None or not tq_dir.is_dir():
+        click.echo(
+            "Error: No impact_dataset is set in [safety] of haute.toml, and there is no test "
+            f"quotes directory to compare instead (resolved: {tq_dir}).",
+            err=True,
+        )
+        raise SystemExit(1)
+    try:
+        records = test_quote_requests(tq_dir, project_root=project_root)
+    except (OSError, ValueError) as exc:
+        click.echo(f"Error: Could not read the test quotes in {tq_dir}: {exc}", err=True)
+        raise SystemExit(1) from exc
+    if not records:
+        click.echo(
+            f"Error: No impact_dataset is set in [safety] of haute.toml, and {tq_dir} has no "
+            "test quotes to compare instead.",
+            err=True,
+        )
+        raise SystemExit(1)
+    click.echo(
+        "  No [safety] impact_dataset is set: comparing the test quotes. Commit a portfolio "
+        "sample and set impact_dataset to compare a representative book."
+    )
+    try:
+        label = tq_dir.resolve().relative_to(project_root.resolve()).as_posix()
+    except ValueError:
+        label = str(tq_dir)
+    # Segments are read from a quote's text fields; its tables are not segmented.
+    input_df = pl.DataFrame(
+        [
+            {key: value for key, value in record.items() if isinstance(value, str)}
+            for record in records
+        ],
+        infer_schema_length=None,
+    )
+    return records, input_df, len(records), f"test quotes ({label})"
 
 
 @click.command()
@@ -268,10 +321,11 @@ def _impact_databricks(
     as "no prod yet".
     """
     from haute.deploy._config import _load_env
+    from haute.deploy._databricks_serving import ServingEndpointError, serving_workspace_client
     from haute.deploy._impact import score_endpoint_batched
 
     try:
-        from databricks.sdk import WorkspaceClient
+        import databricks.sdk  # noqa: F401 - the SDK must be installed
     except ImportError:
         click.echo(
             "Error: databricks-sdk not installed. Install with: uv add 'haute[databricks]'",
@@ -280,7 +334,12 @@ def _impact_databricks(
         raise SystemExit(1)
 
     _load_env(Path.cwd())
-    ws = WorkspaceClient()
+    # Both endpoints are reached with the serving pair, as deploy reaches them.
+    try:
+        ws = serving_workspace_client()
+    except ServingEndpointError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1) from exc
 
     # Check if prod endpoint exists. Only 'does not exist' signals flip
     # prod_exists to False; anything else propagates.

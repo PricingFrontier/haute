@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 import sys
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -465,6 +466,22 @@ def _prune_stale_ci_files(project_dir: Path, keep: str) -> None:
             github.rmdir()
 
 
+def write_generated_files(project_dir: Path, files: Mapping[str, str]) -> list[str]:
+    """Write each generated file (path relative to *project_dir*); return those that changed.
+
+    A file whose content is already the generated content is left untouched.
+    """
+    changed: list[str] = []
+    for rel, content in files.items():
+        path = project_dir / rel
+        if path.is_file() and path.read_text(encoding="utf-8") == content:
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        changed.append(rel)
+    return changed
+
+
 def handle_init(config: InitConfig) -> None:
     """Scaffold a Haute project at :func:`pathlib.Path.cwd`.
 
@@ -476,12 +493,9 @@ def handle_init(config: InitConfig) -> None:
     from haute._project_layout import PIPELINE_FILES_FOLDER, PIPELINE_FILES_SUBFOLDERS
     from haute._project_python import ProjectPythonError, project_python_version
     from haute._scaffold import (
-        azure_devops_yml,
+        ci_files,
+        ci_secret_names,
         env_example,
-        github_ci_yml,
-        github_deploy_prod_yml,
-        github_deploy_yml,
-        gitlab_ci_yml,
         haute_toml,
         pre_commit_hook,
         starter_form,
@@ -608,39 +622,8 @@ def handle_init(config: InitConfig) -> None:
     # stale workflows don't linger.
     if config.force:
         _prune_stale_ci_files(project_dir, keep=ci)
-    ci_files: list[str] = []
-    if ci == "github":
-        workflows_dir = project_dir / ".github" / "workflows"
-        workflows_dir.mkdir(parents=True, exist_ok=True)
-        (workflows_dir / "ci.yml").write_text(
-            github_ci_yml(workbench=config.workbench, python_version=python_version),
-            encoding="utf-8",
-        )
-        (workflows_dir / "deploy-staging.yml").write_text(
-            github_deploy_yml(target, workbench=config.workbench, python_version=python_version),
-            encoding="utf-8",
-        )
-        (workflows_dir / "deploy-production.yml").write_text(
-            github_deploy_prod_yml(target, python_version=python_version),
-            encoding="utf-8",
-        )
-        ci_files = [
-            ".github/workflows/ci.yml",
-            ".github/workflows/deploy-staging.yml",
-            ".github/workflows/deploy-production.yml",
-        ]
-    elif ci == "gitlab":
-        (project_dir / ".gitlab-ci.yml").write_text(
-            gitlab_ci_yml(target, workbench=config.workbench, python_version=python_version),
-            encoding="utf-8",
-        )
-        ci_files = [".gitlab-ci.yml"]
-    elif ci == "azure-devops":
-        (project_dir / "azure-pipelines.yml").write_text(
-            azure_devops_yml(target, workbench=config.workbench, python_version=python_version),
-            encoding="utf-8",
-        )
-        ci_files = ["azure-pipelines.yml"]
+    generated_ci = ci_files(target, ci, workbench=config.workbench, python_version=python_version)
+    write_generated_files(project_dir, generated_ci)
 
     # -- Pre-commit hook -------------------------------------------------------
     hooks_dir = project_dir / ".githooks"
@@ -688,7 +671,7 @@ def handle_init(config: InitConfig) -> None:
     click.echo("  data/                - put your data files here")
     click.echo("  tests/               - starter test + example quote payloads")
     click.echo("  .githooks/pre-commit - auto-format on commit (ruff)")
-    for f in ci_files:
+    for f in generated_ci:
         click.echo(f"  {f}")
     if git_hooks_dir.is_dir():
         click.echo("  .git/hooks/pre-commit  (installed)")
@@ -696,6 +679,13 @@ def handle_init(config: InitConfig) -> None:
     click.echo("  uv sync                # install dependencies")
     click.echo("  cp .env.example .env   # fill in credentials")
     click.echo("  haute serve")
+    secret_names = ci_secret_names(target)
+    if ci != "none" and secret_names:
+        click.echo(f"\nBefore the first deploy, {ci} needs these CI secrets:")
+        for secret_name in secret_names:
+            click.echo(f"  {secret_name}")
+        if ci == "github":
+            click.echo("Set them from .env with: haute ci secrets")
 
 
 @click.command()

@@ -17,6 +17,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import haute
+from haute.deploy._served_haute import ServedHaute
 from tests._deploy_helpers import make_resolved_deploy as _make_resolved
 
 if TYPE_CHECKING:
@@ -79,6 +81,11 @@ def mock_mlflow_deploy():
         patch("haute.deploy._mlflow._check_databricks_connectivity") as m_conn,
         patch("haute.deploy._mlflow._build_signature") as m_sig,
         patch("haute.deploy._mlflow._create_or_update_serving_endpoint") as m_ep,
+        # The tests run on an editable haute, which a served model cannot install.
+        patch(
+            "haute.deploy._mlflow.served_haute",
+            return_value=ServedHaute(f"haute=={haute.__version__}"),
+        ),
     ):
         for name in _AMBIENT_MLFLOW_DATABRICKS_ENV:
             os.environ.pop(name, None)
