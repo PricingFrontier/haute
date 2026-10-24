@@ -1023,7 +1023,13 @@ Out of scope:
   decided with the app's details in place, as the page decides it, save a creation, which makes the quote
   holding what it starts with, unpriced: its reference and option are taken as it is
   written, and its pricing reads them, so a creation given prices is refused (422) and the
-  quote is priced as it opens. A save keeps the quote unpriced, or, given the prices
+  quote is priced as it opens. A creation names the reference the underwriter keyed
+  (`reference`), every creation but an alternative's, which takes its source's and names
+  none (422 otherwise); a reference missing or breaking its rules is refused (422), as is,
+  for a creation made in the window, a column of `quote_details` the underwriter types and
+  the analyst made required left empty (text of spaces alone empty, a tick box never), and a
+  reference another quote holds is refused (409, `reference_taken`) naming that quote, its
+  option 1 else its lowest, by id and label. A save keeps the quote unpriced, or, given the prices
   the page showed, prices it again on the server and keeps that pricing, saying whether
   it moved from what the page showed, so a price kept is always the release's own. Each
   change but a note names the quote's version and is refused (409) with the quote as it is now when
@@ -1038,11 +1044,12 @@ Out of scope:
   (everyone's) and Archived, and the stages of the list showing, Draft, Priced and Final,
   each with its count; a stage picked narrows the list and picked again widens it. Above
   the list are its name, a search box (`/` focuses it) matching every word typed in the
-  reference, quote name, insured or broker (`Q-000123/2` matching that option alone), in
-  Team an assignee to narrow it to, the order (newest saved, newest reference with its
-  options in order, or insured) and New quote (`N`). The list is a table at Haute's
+  reference, quote name, insured or broker (`ABC-1/2` matching that option alone, a
+  reference matched however its letters are cased or composed), in Team an assignee to
+  narrow it to, the order (newest saved, Reference, A to Z with each reference's options in
+  order, or insured) and New quote (`N`), which opens the new quote's window over the list. The list is a table at Haute's
   density, 50 quotes at a time with Load more, read from the quotes' `quote_details`: each
-  quote's reference and option, `Q-000123/2`, its title (its quote name, else its insured,
+  quote's reference and option, `ABC-1/2`, its title (its quote name, else its insured,
   else its reference and option), its insured, broker and inception date under their columns'
   labels on the sheets, the date as a day, its stage, who it is with and when it was saved,
   relative, with the time on hover. A row opens its quote, its reference a link of its
@@ -1083,20 +1090,42 @@ Out of scope:
   assigning,
   archiving, restoring, marking final and reopening each write a revision of the newest
   with those details changed, its values and prices kept, which the sheets take on, what
-  was typed kept. A new quote is made as the underwriter asks for it: `/quotes/new` makes
-  it at once, a draft holding its columns' defaults under the next reference and option 1,
-  and moves to its own address; one made from another quote's revision (Duplicate, Renew,
-  Create alternative) is made from that revision's values carried onto the current sheets,
-  without the reference, option, stage, assignee and archived flag the app set for the
-  source, naming what it was made from and any value that no longer fits: Create
-  alternative under the source's reference as its next option, Duplicate and Renew under
-  a new reference as option 1, a renewal with `is_renewal` ticked, which the underwriter
-  can untick, as one not made by Renew can be ticked by hand. Made, it is clean: left as it
-  opened it keeps no draft and asks nothing on leaving, and one left with nothing typed
-  stays a draft. The page holds the creation's operation key in the tab until the answer
-  comes, so a reload before then asks with it again and the quote is made once, a refusal
-  letting it go; an answer arriving once the page moved on does not move it, and one who
-  may only read quotes makes none. The sheets take no typing and are not priced, and Save is
+  was typed kept. A new quote is keyed in a window before it is made. New quote opens it
+  over the Quotes page, its list as it was; Duplicate and Renew over the quote or the Quotes
+  page they are pressed on; and Save as new, after a save conflict, over the quote, its
+  unsaved values kept. The window holds the quote's reference and the other columns of
+  `quote_details` the underwriter types (`quote_name`, `insured`, `broker`,
+  `inception_date`, `expiry_date` and `is_renewal`) in the table's order, each drawn as a
+  Collection draws its column, every one shown and checked whatever the sheets show or
+  hide: the reference required and fitting its rules, a column the analyst made required
+  filled (text of spaces alone empty, a tick box never), and every value fitting its column;
+  Create waits on them, and Cancel or `Escape` closes a window that has sent nothing,
+  leaving the page behind it as it was. New quote's starts as a new quote's defaults;
+  Duplicate's and Renew's are filled from the source revision carried onto the current
+  sheets, without the details the app set for the source, its reference blank, a renewal
+  with `is_renewal` ticked, which the underwriter can untick, as one not made by Renew can
+  be ticked by hand; Save as new's from the values on the sheets. A reference is trimmed and
+  kept as keyed, 1 to 40 characters, no `/`, which the app puts before the option, and no
+  control character; two are one reference when their canonical forms are, normalized to
+  NFC and case-folded, so `ABC-1` and `abc-1` are one and `cafe` and `café` two. Create
+  makes the quote from what the window holds over a new quote's defaults, the carried
+  values or the sheets' values, under the reference keyed as option 1, and moves to its own
+  address; a reference in use is refused naming the quote holding it, with Open it. The
+  whole creation is kept in the tab before it is sent: while unanswered the window takes no
+  typing; a refusal lets it go and opens the window for typing again; an answer lost, or a
+  failure of the server, offers Try again, which sends the creation as it was, and Close,
+  which keeps it, and a kept creation is offered back with Try again and Discard the next
+  time the app opens in the tab, so a quote is made once and nothing typed is lost.
+  `/quotes/new` is the Quotes page with the window open, `/quotes/new?from=…&revision=…&as=`
+  `duplicate` or `renewal` the Quotes page with the window filled from that revision.
+  Create alternative is made at once from the source's revision carried onto the current
+  sheets under the source's reference as its next option (`as=alternative`), its creation's
+  operation key held in the tab until the answer comes, so a reload before then asks with
+  it again and it is made once. A quote made from another names what it was made from and
+  any value that no longer fits. Made, it is clean: left as it opened it keeps no draft and
+  asks nothing on leaving, and one left with nothing typed stays a draft; an answer
+  arriving once the page moved on does not move it, and one who may only read quotes makes
+  none. The sheets take no typing and are not priced, and Save is
   off, while the quote is final, archived, shown at an earlier revision (at
   `/quotes/{id}/revisions/{n}`, with Open the newest) or saved on earlier sheets (opened
   on those sheets, with Move to current sheets, which carries its values onto the
@@ -1471,11 +1500,16 @@ Out of scope:
   revision, that revision's `quote_details` row in a table of its own, a column each;
   the revision's values hold every other table, so the
   details are kept once. The row holds the details the underwriter typed and those the
-  app sets: a reference, `Q-` and six digits, taken from a counter in the transaction
-  that creates the quote, so two quotes made at once take two and one whose creation
-  fails keeps none, and an option, 1 for a new quote, a duplicate and a renewal, and for
-  an alternative the next under its source's reference, taken from a counter per
-  reference in the same transaction, so two alternatives made at once take two; its
+  app sets: the reference keyed in the window as the quote was made, which no later write
+  changes, and an option, 1 for a new quote, a duplicate and a renewal, and for an
+  alternative the next under its source's reference, taken from a counter per reference in
+  the transaction that creates the quote, so two alternatives made at once take two; a new
+  reference's counter row, written in that transaction, refuses a second quote of it, so
+  two creations of one reference at once, in any case, make one. A reference's canonical
+  form, held on the quote and keying its counter, is compared exactly (byte for byte, never
+  through a case- or accent-insensitive collation) in a column of its own bound, 160, as case
+  folding can lengthen a letter. Quotes made before Haute stopped numbering keep their
+  `Q-000123` references; its
   stage, `draft` or `priced` as the revision was saved, or `final`; who it is assigned
   to, at first who made it; whether it is archived; when the quote was made and by whom,
   from the quote's own time and owner, and when the revision was written and by whom, from
@@ -1519,8 +1553,9 @@ Out of scope:
   restored, each a revision of its own that keeps the pinned final. The app's lists
   are read a page at a time: the quotes assigned to the signed-in underwriter, the
   team's, or the archive, of one stage when asked, matching every word searched for in
-  the reference, quote name, insured or broker (`Q-000123/2` matching that option alone),
-  newest saved first, newest reference first with its options in order, or by insured,
+  the reference, through its canonical form, quote name, insured or broker (`ABC-1/2`
+  matching that option alone), newest saved first, by reference from A to Z by canonical
+  form with its options in order, or by insured,
   with each list's count and each stage's. A difference in the quote's reference and
   option alone is no price that moved. A
   saved quote opens on its own form, and its values are carried onto the current form
@@ -1640,7 +1675,10 @@ Out of scope:
   priced once entered, so what the sheets show is always the pipeline's answer for
   what is entered on them and nothing needs pressing, and an underwriter's Save keeps the price the
   values settle on. A column's rules mark the cells that break them but never stop a
-  pricing: refusing a quote is for validations, to come. Clear is gone: it emptied a quote
+  pricing or a save: refusing a quote is for validations, to come. The one exception is the
+  new quote's window, whose required columns of `quote_details` are an entry requirement
+  of the quote's making alone: an alternative made at once, and every save after, keep a
+  quote its rules mark. Clear is gone: it emptied a quote
   at one press, and Preview's quote is the saved sample, while Undo takes back what was
   typed.
 - **Rows matched as the server typed them.** A Table's output rows are matched through

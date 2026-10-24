@@ -118,7 +118,7 @@ table keyed by peril should line up with the rows.
 A column's **default** is the value a new quote starts with in it, as if the underwriter
 had typed it: ticked or not for a True/false, one of its allowed values when it has some,
 a date for a Date, or typed. Only a one-row input table's columns take one. Build shows a
-new quote with its defaults, and the underwriter app's **New quote** opens with them; the
+new quote with its defaults, and the underwriter app's **New quote** window starts with them; the
 sample you type in Preview, and a quote made from another quote, keep their own values. A
 quote holding nothing but its defaults is not priced, marked or saved until something is
 typed, and a value typed equal to its default counts as the default.
@@ -175,8 +175,9 @@ copies the table.
 
 The app sets **quote_reference**, **quote_option**, **stage**, **assignee**, **archived**,
 **created_date**, **created_by**, **modified_date**, **modified_by** and **haute_version**
-itself: their cells take no typing in the app and take no rules and no default, and the
-pipeline receives them whatever the sheets hide. **created_date** and **created_by** say
+itself: their cells take no typing on the sheets in the app and take no rules and no
+default, and the pipeline receives them whatever the sheets hide. The underwriter keys the
+**quote_reference** once, in the window that makes the quote; it never changes after. **created_date** and **created_by** say
 when the quote was made and by whom; **modified_date** and **modified_by** when its revision
 was saved and by whom, a save or any change below; **haute_version** is the version of
 Haute the app ran then. The two dates are dates in UTC, so near midnight they can differ by
@@ -601,21 +602,33 @@ picks up the release; its unsaved values stay in the browser.
 The app opens on the Quotes page. On the left are **My work** (the quotes with you),
 **Team** and **Archived**, and the stages of the list showing, **Draft** (saved without a
 price), **Priced** and **Final**, each with its count. Each quote shows its reference and
-option (`Q-000123/2`), its quote name (or its insured, or its reference and option), and
+option (`ABC-1/2`), its quote name (or its insured, or its reference and option), and
 its insured, broker and inception date under the labels the sheets give them, read from its
-quote details. Search matches every word you type against the reference, quote name,
-insured and broker, and `Q-000123/2` finds that option alone; in Team you can narrow the
-list to who a quote is with, and order it by when it was saved, its reference (the newest
-first, its options in order) or its insured. The list, the search and the order are in the page's address, so a link or Back
-returns to the same list. A row opens its quote; Duplicate and Archive appear as you hover
-over it, and Archive can be undone from the message it shows. **New quote** (or `N`) makes
-a new quote there and then, holding the columns' defaults, with the next reference and
-option 1, and opens it; one left with nothing typed stays a **Draft** until archived. `/`
-jumps to the search.
+quote details. Search matches every word you type against the reference, however its
+letters are cased, the quote name, insured and broker, and `ABC-1/2` finds that option
+alone; in Team you can narrow the list to who a quote is with, and order it by when it was
+saved, by **Reference** (A to Z, each reference's options in order) or by its insured. The
+list, the search and the order are in the page's address, so a link or Back returns to the
+same list. A row opens its quote; Duplicate and Archive appear as you hover over it, and
+Archive can be undone from the message it shows. `/` jumps to the search.
+
+**New quote** (or `N`) opens a window over the list asking for the quote's reference and
+the quote details your underwriters type: its name, insured, broker, inception and expiry
+dates and whether it is a renewal, labelled and checked as on the sheets, starting with the
+columns' defaults. The reference is up to 40 characters, without `/`, which the app puts
+before the option, and no two quotes share one: `abc-1` is the same reference as `ABC-1`, so
+a reference already in use is refused, naming the quote that holds it, with **Open it**. The
+details the analyst made required must be filled in. **Create** makes the quote, a
+**Draft** holding what you keyed, and opens it; one left with nothing more typed stays a
+**Draft** until archived. **Cancel** or `Escape` closes the window and makes nothing. If the
+answer is lost while the quote is being made, the window offers **Try again**, which sends
+exactly what it sent, and keeps it if you close it: the app offers it back, with **Try
+again** or **Discard**, the next time it opens in that tab, so a quote is never made twice.
+Quotes made before references were keyed keep their `Q-000123` references.
 
 ### A quote
 A quote opens at its own address, under a bar holding its reference and option
-(`Q-000123/2`), its name (its `quote_name`, saved with the next **Save**), its stage, and:
+(`ABC-1/2`), its name (its `quote_name`, saved with the next **Save**), its stage, and:
 
 - **Save**. The quote is priced as you enter it, as Preview prices the sample, with no
   **Price** to press and no **Clear**, and a quote opened that can change is priced again
@@ -626,10 +639,12 @@ A quote opens at its own address, under a bar holding its reference and option
 - **Mark final** pins the newest revision as the final quotation, once it is priced on the
   running release; a final quote cannot be saved over until someone **reopens** it, giving a
   reason. The final stays in its history.
-- **More**: **Duplicate**, **Renew** and **Create alternative** each make a new quote there
-  and then from the revision showing, linked to it, and open it: **Create alternative** under
-  the same reference as its next option (`Q-000123/2` from `Q-000123/1`), **Duplicate** and
-  **Renew** under a new reference as option 1, a renewal with **is_renewal** ticked;
+- **More**: **Duplicate**, **Renew** and **Create alternative** each make a new quote from
+  the revision showing, linked to it, and open it. **Duplicate** and **Renew** open the new
+  quote's window over the quote, filled from it with the reference blank, a renewal with
+  **is_renewal** ticked: key the new reference and **Create**; **Cancel** leaves the quote as
+  it was. **Create alternative** makes the quote at once under the same reference as its
+  next option (`ABC-1/2` from `ABC-1/1`);
   **Archive** takes it out of the lists (it opens read only until restored); **Copy link**.
 - **History**: the handover note, every revision (each opens as it was saved), what was done
   to the quote, by whom and when, and the quotes it came from or that were made from it.
@@ -639,7 +654,8 @@ the quote came from, and who it is with, which you can change. A quote saved on 
 later release changed opens on the sheets it was keyed into, read only; **Move to current
 sheets** brings its values onto today's, naming any that no longer fit. If a colleague saves
 a quote while you have it open, your save is refused naming who did it, with your values
-kept: open the newest, or save yours as a new quote, which opens and prices as a duplicate
-does; **Save** keeps its price. Values you have not saved are kept in
+kept: open the newest, or save yours as a new quote, keying its reference in the window
+filled from your values; it opens and prices as a duplicate does, and **Save** keeps its
+price. Values you have not saved are kept in
 the browser and offered back when you open the quote again, and leaving with them asks
 first. `Ctrl+S` saves.
