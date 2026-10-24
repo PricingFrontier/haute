@@ -25,17 +25,16 @@ from __future__ import annotations
 import functools
 import importlib
 import inspect
-import json
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Literal, TypeAlias
-from urllib.parse import unquote, urlparse
+from typing import Any
 
 from packaging.specifiers import SpecifierSet
 from packaging.version import InvalidVersion, Version
 
+from haute._install_source import InstallKind, install_source
 from haute._logging import get_logger
 
 logger = get_logger(component="price_contour")
@@ -139,9 +138,6 @@ REMEDY = (
 )
 
 
-InstallKind: TypeAlias = Literal["wheel", "editable", "direct_url"]
-
-
 class PriceContourCompatibilityError(RuntimeError):
     """The installed ``price_contour`` cannot be driven by this haute build."""
 
@@ -161,20 +157,6 @@ class PriceContourInstall:
         if self.kind == "direct_url":
             return f"direct URL {self.location}"
         return "wheel"
-
-
-def _install_source(distribution: metadata.Distribution) -> tuple[InstallKind, str | None]:
-    """Classify an installed distribution by its PEP 610 ``direct_url.json``."""
-    raw = distribution.read_text("direct_url.json")
-    if raw is None:
-        return "wheel", None
-    record = json.loads(raw)
-    url = record["url"]
-    parsed = urlparse(url)
-    location = unquote(parsed.path) if parsed.scheme == "file" else url
-    if record.get("dir_info", {}).get("editable") is True:
-        return "editable", location
-    return "direct_url", location
 
 
 _ABSENT = object()
@@ -287,7 +269,7 @@ def _verify() -> tuple[ModuleType, PriceContourInstall]:
     except metadata.PackageNotFoundError:
         problems.append(f"no installed distribution named {DISTRIBUTION!r}")
     else:
-        install = PriceContourInstall(distribution.version, *_install_source(distribution))
+        install = PriceContourInstall(distribution.version, *install_source(distribution))
     installed = install.version if install is not None else None
     source = install.description if install is not None else "<no distribution>"
 

@@ -188,6 +188,7 @@ export interface WarehouseItem {
   http_path: string;
   id: string;
   name: string;
+  serverless: boolean;
   size: string;
   state: string;
 }

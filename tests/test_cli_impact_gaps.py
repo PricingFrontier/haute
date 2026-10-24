@@ -95,9 +95,11 @@ class TestImpactDatabricksImportError:
 
 
 class TestImpactDatabricksProdScoring:
-    def test_prod_exists_scores_production(self) -> None:
+    def test_prod_exists_scores_production(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When the prod endpoint exists, production should also be scored and
         returned (the prod-scoring branch)."""
+        monkeypatch.setenv("DATABRICKS_RATING_HOST", "https://rating.example")
+        monkeypatch.setenv("DATABRICKS_RATING_TOKEN", "rating-token")
         mock_ws = MagicMock()
         # serving_endpoints.get succeeds → prod_exists stays True.
         mock_ws.serving_endpoints.get.return_value = MagicMock()

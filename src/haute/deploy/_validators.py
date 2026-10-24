@@ -236,6 +236,23 @@ def load_test_quote_file(
     ]
 
 
+def test_quote_requests(directory: Path, *, project_root: Path) -> list[dict[str, Any]]:
+    """The request of every test quote in *directory*, file by file, as smoke sends them.
+
+    The workbench's test quotes are rebuilt against the form of the project at
+    *project_root*; a quote with nothing left to send is skipped. Raises ``ValueError``
+    when a file cannot be read as test quotes.
+    """
+    from haute._test_quotes import test_quote_files
+
+    return [
+        case.input
+        for path in test_quote_files(directory)
+        for case in _load_test_quote_cases(path, project_root=project_root)
+        if not case.empty
+    ]
+
+
 def _is_numeric(value: Any) -> bool:
     return isinstance(value, (Decimal, Real)) and not isinstance(value, bool)
 

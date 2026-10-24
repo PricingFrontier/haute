@@ -8,7 +8,12 @@ from unittest.mock import MagicMock, patch
 
 from haute._types import GraphNode, NodeData, PipelineGraph
 from haute.deploy._config import ResolvedDeploy
-from haute.deploy._utils import build_manifest, get_haute_version, get_user
+from haute.deploy._utils import (
+    artifact_file_name,
+    build_manifest,
+    get_haute_version,
+    get_user,
+)
 from tests._deploy_helpers import make_resolved_deploy
 
 # ---------------------------------------------------------------------------
@@ -82,6 +87,23 @@ def _make_resolved(
 # ---------------------------------------------------------------------------
 # get_user()
 # ---------------------------------------------------------------------------
+
+
+class TestArtifactFileName:
+    """A bundle stores each artefact under one flat file name."""
+
+    def test_a_top_level_nodes_key_is_its_own_file_name(self) -> None:
+        assert artifact_file_name("lookup__rates.json") == "lookup__rates.json"
+
+    def test_a_key_inside_a_submodel_is_flat_and_distinct_per_occurrence(self) -> None:
+        first = artifact_file_name("submodel_runtime/first/rates__rates.json")
+        second = artifact_file_name("submodel_runtime/second/rates__rates.json")
+
+        assert "/" not in first and "\\" not in first
+        assert first.endswith("__rates__rates.json")
+        assert first.casefold() != second.casefold()
+        # The same in every build, so a bundle's file names do not churn.
+        assert artifact_file_name("submodel_runtime/first/rates__rates.json") == first
 
 
 class TestGetUser:

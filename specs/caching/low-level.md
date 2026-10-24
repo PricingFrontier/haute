@@ -349,7 +349,8 @@ resulting plan.
   demand, and profile — the one the lazy engine runs. Consumed nodes and an explicit build's
   node outside the target's lineage raise `ValueError`.
 - **Effective edges.** A pass-through node (`PASS_THROUGH_NODE_TYPES` in `_builders.py`: Data
-  Output, modelling, Optimiser, submodel, submodel port) *is* its selected input:
+  Output, modelling, Optimiser) *is* its selected input (a submodel occurrence or port is not
+  one: its builder refuses, so no plan routes around it):
   `pass_through_selected_edge` returns the incoming edge its builder returns — the first, or for
   an Optimiser with `data_input` the edge that input names. It is an edge, not a parent id, so
   two ports of one API input stay distinct. That edge is the node's only effective one; every

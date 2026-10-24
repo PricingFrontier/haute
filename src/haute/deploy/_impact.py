@@ -230,14 +230,36 @@ def _unwrap_prediction_envelopes(preds: list) -> list:
     return rows if unwrapped else preds
 
 
+def _flatten_structs(frame: pl.DataFrame) -> pl.DataFrame:
+    """*frame* with each struct column's fields as columns named ``<column>.<field>``.
+
+    A Workbench response holds a one-row table as an object, which Polars reads as a
+    struct; its fields become columns so its numbers are compared as a flat response's
+    are, nested tables included. A many-row table is a list and stays one column, which
+    impact does not compare row by row.
+    """
+    while True:
+        structs = {
+            name: dtype for name, dtype in frame.schema.items() if isinstance(dtype, pl.Struct)
+        }
+        if not structs:
+            return frame
+        frame = frame.with_columns(
+            pl.col(name).struct.rename_fields([f"{name}.{field.name}" for field in dtype.fields])
+            for name, dtype in structs.items()
+        ).unnest(list(structs))
+
+
 def _preds_to_df(preds: list) -> pl.DataFrame:
-    """Normalise endpoint predictions into a Polars DataFrame."""
+    """Normalise endpoint predictions into a Polars DataFrame, nested objects flattened."""
     preds = _unwrap_prediction_envelopes(preds)
     if not preds:
         return pl.DataFrame()
     first = preds[0]
     if isinstance(first, dict):
-        return pl.DataFrame(preds)
+        # Every response's fields: an output field Haute omits while it is null may first
+        # appear late, and a sample of the first rows would drop it silently.
+        return _flatten_structs(pl.DataFrame(preds, infer_schema_length=None))
     if isinstance(first, (list, tuple)):
         cols = [f"output_{i}" for i in range(len(first))]
         return pl.DataFrame(preds, schema=cols, orient="row")
@@ -257,7 +279,15 @@ def _non_finite_count(series: pl.Series) -> int:
 
 
 def _raise_for_non_finite_predictions(stg: pl.Series, prd: pl.Series, name: str) -> None:
+    """Refuse an output impact cannot compare: a missing value or a NaN or infinity."""
     for label, series in (("staging", stg), ("production", prd)):
+        missing = series.null_count()
+        if missing:
+            row_word = "row" if missing == 1 else "rows"
+            raise ValueError(
+                f"Cannot compute impact: {label} predictions leave output {name!r} empty on "
+                f"{missing} {row_word} (the answer omits the field, or gives null)."
+            )
         count = _non_finite_count(series)
         if count:
             value_word = "value" if count == 1 else "values"

@@ -122,9 +122,15 @@ def current_runtime_project_root() -> Path:
 @contextmanager
 def runtime_project_root_scope(
     source_file: str | Path | None,  # pragma: no mutate
+    *,
+    project_root: str | Path | None = None,
 ) -> Iterator[Path]:
-    """Scope all builder path reads to the selected pipeline's project root."""
-    root = _infer_project_root(project_root=None, source_file=source_file)
+    """Scope all builder path reads to the selected pipeline's project root.
+
+    *project_root* names the root outright (deploy's validated one); otherwise it
+    is inferred from *source_file*.
+    """
+    root = _infer_project_root(project_root=project_root, source_file=source_file)
     token = _RUNTIME_PROJECT_ROOT.set(root)
     try:
         yield root
@@ -231,3 +237,27 @@ def resolve_runtime_file_path(
         return deduped[0]
 
     raise RuntimePathOutsideProjectError(f"Path {raw_path!r} resolves outside the project root")
+
+
+def resolve_graph_source_path(raw_path: str, source_file: str | Path) -> str:
+    """A node config's relative *raw_path*, resolved as deploy bundles it, made absolute.
+
+    The pipeline file's directory is tried first, then the project root (where the
+    editor's file browser writes paths from), with Windows backslashes read as
+    separators, so a project saved on Windows scores the same on Linux. Neither
+    candidate may leave the project root, as in deploy's validation and bundling:
+    the scoped runtime root (deploy's validated one) or else the root inferred
+    from *source_file*. A path found in neither place keeps the first candidate
+    inside the root, and one with none raises
+    :class:`RuntimePathOutsideProjectError`.
+    """
+    return str(
+        resolve_runtime_file_path(
+            raw_path,
+            source_file=source_file,
+            pipeline_dir=Path(source_file).parent,
+            project_root=_RUNTIME_PROJECT_ROOT.get(),
+            prefer="pipeline",
+            enforce_project_root=True,
+        ).resolve()
+    )

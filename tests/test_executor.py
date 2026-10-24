@@ -824,19 +824,32 @@ class TestBuildNodeFn:
                 }
             )
 
-    def test_unhandled_node_type_passthrough(self):
-        """Node type without dedicated handler falls through to passthrough."""
+    @pytest.mark.parametrize(
+        ("node_id", "node_type", "config", "named"),
+        [
+            (
+                "factors",
+                "submodel",
+                {"definitionId": "definition_factors", "alias": "factors"},
+                "Submodel 'factors' reached execution",
+            ),
+            ("port1", "submodelPort", {}, "Submodel port 'port1' reached execution"),
+        ],
+    )
+    def test_a_submodel_placeholder_refuses_to_build(self, node_id, node_type, config, named):
+        """A placeholder names itself rather than passing its input through, which
+        would skip the submodel's nodes (BUG-18)."""
         node = _n(
             {
-                "id": "port1",
-                "data": {"label": "port1", "nodeType": "submodelPort", "config": {}},
+                "id": node_id,
+                "data": {"label": node_id, "nodeType": node_type, "config": config},
             }
         )
-        _, fn, is_source = _build_node_fn(node)
-        assert is_source is False
-        lf = pl.DataFrame({"x": [3]}).lazy()
-        df = fn(lf).collect()
-        assert df["x"].to_list() == [3]
+
+        with pytest.raises(ExecutionError, match=named) as excinfo:
+            _build_node_fn(node)
+
+        assert excinfo.value.context["node_id"] == node_id
 
 
 # ---------------------------------------------------------------------------

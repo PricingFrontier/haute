@@ -50,6 +50,46 @@ def test_browsing_endpoints_return_empty_lists(
     assert response.json()[key] == []
 
 
+def test_warehouses_report_serverless_compute(client: TestClient) -> None:
+    workspace = MagicMock()
+    workspace.warehouses.list.return_value = [
+        SimpleNamespace(
+            id="abc",
+            name="Serverless Starter",
+            state=SimpleNamespace(value="RUNNING"),
+            cluster_size="2X-Small",
+            enable_serverless_compute=True,
+        ),
+        SimpleNamespace(
+            id="def",
+            name="Classic",
+            state=None,
+            cluster_size=None,
+            enable_serverless_compute=None,
+        ),
+    ]
+    with patch("haute.routes.databricks._get_databricks_client", return_value=workspace):
+        response = client.get("/api/databricks/warehouses")
+    assert response.json()["warehouses"] == [
+        {
+            "id": "abc",
+            "name": "Serverless Starter",
+            "http_path": "/sql/1.0/warehouses/abc",
+            "state": "RUNNING",
+            "size": "2X-Small",
+            "serverless": True,
+        },
+        {
+            "id": "def",
+            "name": "Classic",
+            "http_path": "/sql/1.0/warehouses/def",
+            "state": "UNKNOWN",
+            "size": "",
+            "serverless": False,
+        },
+    ]
+
+
 def test_tables_constructs_full_name_when_sdk_omits_it(client: TestClient) -> None:
     workspace = MagicMock()
     workspace.tables.list.return_value = [

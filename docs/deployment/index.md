@@ -85,6 +85,7 @@ my-project/
   .github/workflows/deploy-production.yml
   .github/workflows/deploy-staging.yml
   .gitignore
+  .python-version
   data/
   haute.toml
   pyproject.toml
@@ -142,7 +143,7 @@ serving_scale_to_zero = true
 dir = "tests/quotes"
 
 [safety]
-impact_dataset = "data/portfolio_sample.parquet"
+# impact_dataset = "tests/impact/portfolio_sample.parquet"
 
 [safety.approval]
 min_approvers = 2
@@ -223,7 +224,7 @@ Every deployment answers such a request, in one of two ways. When you deploy, Ha
 | **Group and aggregate**, **Pivot to columns**, a **Fill missing values** strategy that reads other rows, or a formula that does (a total, an average, a rank, a running total, the previous row's value) | One quote's answer would depend on the others |
 | An [Apply Optimisation](../building-models/nodes/optimiser-apply.md) node in online mode, or one that loads its result from MLflow | Online mode answers in quote-id order; an MLflow result can't be checked before it is loaded |
 | A [Quote Response](../building-models/nodes/output.md) that nests a quote's own rows, such as its drivers, under it | Run together, each driver would go under every quote holding its key, so two quotes sharing a key would share drivers |
-| Code the check can't follow, or a [Submodel](../building-models/nodes/submodel.md) | It can't be checked yet |
+| Code the check can't follow | It can't be checked yet |
 
 A join keeps each quote's row when it starts from the quotes, is a left join (or a cross join with a single-row [Constant](../building-models/nodes/constant.md)), and keeps the quotes' order: **left input order** or **left, then right** in a **Join another input** step, **Left** or **Left then right** in an [Edge Join](../building-models/nodes/edge-join.md). The table it joins must also hold each key once:
 
@@ -245,7 +246,7 @@ Haute validates a deployment graph and scores configured test quotes before a no
 | **Dry-run validation** | Parses the pipeline, checks all model files exist, scores test quotes |
 | **Staging deployment** | `--endpoint-suffix` chooses a different name; the target and your infrastructure must provide that endpoint |
 | **Smoke testing** | `haute smoke` scores configured test quotes against an existing Databricks or HTTP endpoint. For HTTP endpoints it reads the address from `[ci.staging] endpoint_url` in `haute.toml` and does not accept `--endpoint-suffix` (see [Docker](targets/docker.md#step-3-give-smoke-and-impact-their-endpoints)) |
-| **Impact analysis** | `haute impact` compares existing staging and production endpoints on the Parquet portfolio sample named by `[safety] impact_dataset`. The sample must be committed to the repository for CI to read it, and `haute init` gitignores `data/`, where the setting points at first. The report is advisory and never fails the run |
+| **Impact analysis** | `haute impact` compares existing staging and production endpoints on the Parquet portfolio sample named by `[safety] impact_dataset`, or on the test quotes when none is named, as `haute init` leaves it. A sample must be committed to the repository for CI to read it, and `haute init` gitignores `data/`. The report is advisory and never fails the run |
 | **Approval gate** | Configure this in GitHub, GitLab, Azure DevOps, or your own release process; `min_approvers` is configuration metadata, not an enforced gate |
 | **Rollback** | Use your target platform's model/image revision and rollback procedure |
 

@@ -285,6 +285,16 @@ def _examples():
             },
         ),
         (
+            NodeType.DATA_OUTPUT,
+            {
+                "outputType": "databricks",
+                "http_path": "/sql/1.0/warehouses/test",
+                "table": "catalog.schema.scored",
+                "write_mode": "append",
+                "arguments": {},
+            },
+        ),
+        (
             NodeType.EDGE_JOIN,
             {
                 "how": "left",

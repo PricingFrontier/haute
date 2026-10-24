@@ -7,6 +7,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
 from haute._types import NodeType, PipelineGraph
 from haute.deploy._config import ResolvedDeploy
@@ -21,6 +22,21 @@ def artifact_basename(raw_path: str) -> str:
     gives the bundler and the deployed scorer one artifact key for it.
     """
     return re.split(r"[\\/]", raw_path)[-1]
+
+
+def artifact_file_name(key: str) -> str:
+    """The flat file name a bundle stores the artefact *key* under.
+
+    A key is ``<node id>__<file>``. A node inside a submodel has a runtime id holding
+    ``/`` (``submodel_runtime/<occurrence>/<node>``), and two occurrences of one
+    definition share their nodes' names, so its key is stored as
+    ``<digest of the key>__<file>``: one flat file, the same in every build, and
+    distinct for each occurrence. Any other key is its own file name.
+    """
+    name = artifact_basename(key)
+    if name == key:
+        return key
+    return f"{content_hash_bytes(key.encode('utf-8'))}__{name}"
 
 
 def get_user() -> str:
