@@ -65,8 +65,9 @@ Out of scope (owned elsewhere):
 **Resolution.** Given a `DeployConfig` (loaded from `haute.toml`, CLI args, or
 constructed programmatically), `resolve_config()` first resolves the pipeline through
 the canonical project resolver and rejects a configured-project pipeline that resolves
-outside that project (including through a symlink). It then parses the pipeline, finds the single
-node marked as output, prunes the graph to that node's ancestors (keeping only the live
+outside that project (including through a symlink). It then parses the pipeline into the graph that runs, each
+submodel occurrence expanded into its own nodes as `haute run` and the editor expand it,
+finds the single node marked as output, prunes the graph to that node's ancestors (keeping only the live
 branch of any `liveSwitch`), identifies the API input node(s), collects supported artefacts
 the pruned path references, and dry-runs the graph once to infer input and output
 schemas. The result is a `ResolvedDeploy` — the single handoff object every backend
@@ -218,8 +219,7 @@ input's rows; a group-by, an expression that reads other rows (an aggregate, a w
 shift, a rank) or an online Optimiser Apply (which answers in quote-id order) makes one
 quote's answer depend on the others, and so can a join with another part of the request;
 and a response nesting rows derived from the request, code the proof cannot follow, an
-Optimiser Apply that loads its result from MLflow when served and a submodel occurrence
-the deployed graph still holds (BUG-18) cannot be proved. A declined quote is a flag column
+Optimiser Apply that loads its result from MLflow when served cannot be proved. A declined quote is a flag column
 on its answer rather than a filtered-out row, so a batch keeps one row per quote. A
 Workbench Input reads one quote per request and its response is the workbench's tables,
 which hold no row per quote, so its deployment answers one quote per request and its reader

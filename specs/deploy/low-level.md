@@ -14,13 +14,13 @@
 | `src/haute/deploy/_scorer.py` | Runtime scoring engine (`score_graph`, `score_graph_lazy`, taking a frame or a `QuoteRequest`, the quotes as their records, which a Workbench Input and a Quote Input with tables read (`reads_records`; `quote_input_reads_tables`, its sample structured), a Quote Input's shredded into a frame per port by `shred_request`, and `request_rows`, the deployment's `RequestRows`, under which `score_graph` answers a multi-quote request as one frame (counting its answer) or quote by quote (`score_quote_by_quote`), or None, the default, for a dry run; every served caller passes the manifest's; `reads_one_quote_per_request`) shared by every deploy target; `NodeBuildHooks` interception for live-input injection and artefact-path remapping; stat-gated model/contract caches; execution admission. |
 | `src/haute/deploy/_project_modules.py` | Project-module resolution for the bundle (`resolve_project_modules`): the project-local `utility` package the preamble resolves, which deploy ships, and every other project-local static import, which validation refuses. |
 | `src/haute/deploy/_validators.py` | Pre-deploy validation (`validate_deploy`): structural checks + exactly one test-quote scoring pass, returning successful per-file results to its caller; golden test-quote parsing and expected-output tolerance comparison, walked into a Workbench Output's tables (`_first_mismatch`); `score_test_quotes`; `_workbench_form_errors`, each Workbench node's copy of its tables against the form in a project whose workbench is enabled; `price_test_quotes_live` (`LiveTestQuotes`), a file's cases priced one request each against a live endpoint by `haute smoke`, each expected output checked by `_response_errors` as `score_test_quotes` checks it; `response_changes` (`ResponseChange`), every place a priced response differs from an accepted one, both first rendered by `pruned_document` as a deployed pipeline renders a response (a request, which holds no null and no empty table, is unchanged by it), walked into objects and lists, a leaf compared by `_expected_value_matches`, which the workbench's test quotes use; `test_quote_files` (from `haute._test_quotes`), read by `_load_test_quote_cases`, which reads the workbench's test-quote file through `_saved_test_quote_cases` against the form `checked_form` reads (the workbench's saved form, each input column's allowed values read again through `with_param_options`, refused when the workbench is off, the form was never saved or a params file cannot give its values) unless the caller gives one (`haute app build` the form it ships): each quote's newest revision's values carried onto that form through `carry_values`, its request rebuilt through `quote_request` and priced, a value with no place on the form, a rebuilt request differing from the one the revision keeps (each place named under `request.` through `response_changes`) and an empty request each a case's `problems`, reported first by `_response_errors`; the accepted response the expected output, a case marked `whole` and labelled by the quote, which `_response_errors` compares through `response_changes` on the answer encoded by `to_json_safe`. |
-| `src/haute/deploy/_utils.py` | Shared helpers: `get_user`, `get_haute_version`, `build_manifest` (the canonical deploy-manifest schema, `resolved.request_rows` and `resolved.artifact_digests` written in), `shipped_graph` (the pruned graph as the bundle carries it, every Workbench Input's `sample` left out, submodels' graphs included). |
+| `src/haute/deploy/_utils.py` | Shared helpers: `get_user`, `get_haute_version`, `build_manifest` (the canonical deploy-manifest schema, `resolved.request_rows` and `resolved.artifact_digests` written in), `artifact_file_name` (the one flat file a bundle stores an artefact under: its key, or for a node inside a submodel, whose runtime id holds `/`, the key's digest and file name, so two occurrences of one definition never share a file), `shipped_graph` (the pruned graph as the bundle carries it, every Workbench Input's `sample` left out, submodels' graphs included). |
 | `src/haute/deploy/_mlflow.py` | Databricks target: `deploy_to_mlflow`, `get_deploy_status`, MLflow signature building (each rendered dtype parsed by `_polars_dtypes.parse_rendered_dtype` and mapped by `rendered_dtype_mlflow_type_name`; a struct a `Map` of `AnyType` and a list an `Array` of its inner type, a table's column not required, since the Workbench Input's reader holds the request to the table's columns and leaves others unread where MLflow's typed object would refuse them), conda-env building (the served haute, `mlflow` and Polars pinned, `_pip_requirements`), Databricks Model Serving endpoint create/update and the wait until it serves the registered version, connectivity pre-check, the up-front check that every Databricks credential is set (`check_databricks_credentials`), and the MLflow destination check (`_resolve_mlflow_databricks`) that binds its logging and registry calls; the artefacts MLflow logs are staged by `copy_verified` into a temporary directory, so the model carries the bytes resolution checked. |
 | `src/haute/deploy/_databricks_serving.py` | The Databricks serving endpoint as deploy, `haute smoke` and `haute impact` reach it: the serving pair (`RATING_HOST_ENV` and `RATING_TOKEN_ENV`, read by `serving_credentials`, every missing one named) and the PAT client built from it alone (`serving_workspace_client`, through `pat_workspace_client`, whose empty profile name stops the SDK reading an ambient profile variable or config file); `wait_for_endpoint`, which polls until the endpoint is ready, not updating and serving the version asked for, and fails a failed or cancelled update with each served entity's state message and the tails of its build and server logs, or a wait past `SERVING_READY_TIMEOUT_SECONDS` with the last state; `workspace_user`, the check `haute ci secrets` makes of a host and token; and `refusal_reason`, a refused request's message with the decision of Databricks' resource gatekeeper when the response carries one (a deactivated workspace says only "please try again later"; the gatekeeper's error info, a deny reason of INACTIVE, is the real one), which deploy's refused endpoint changes and `haute smoke`'s failed endpoint check report. |
 | `src/haute/deploy/_served_haute.py` | The haute a served Databricks model installs (`served_haute`): a release pinned as `haute==<version>`; any other non-editable install repacked from its installed files into a wheel (`repack_installed_wheel`: the files the RECORD lists under the install root, read from the RECORD itself so a missing one is refused, without the installer's records, scripts or compiled files, a new RECORD last, fixed timestamps, the wheel named after the install's `.dist-info` folder) that the model carries as a code path and requires as `code/<wheel>`; an editable install refused. The install's kind is `haute._install_source.install_source`'s. |
 | `src/haute/_install_source.py` | `install_source`: where an installed distribution came from, read from its PEP 610 `direct_url.json` ("wheel" for an index install, "editable" with its path, "direct_url" with its URL or path). The served haute's choice between a pin and a wheel reads it, as the price-contour guard does ([optimiser](../optimiser/low-level.md)). |
 | `src/haute/deploy/_model_code.py` | MLflow models-from-code entry point: `HauteModel` (`mlflow.pyfunc.PythonModel` subclass) wrapping `score_graph` under the manifest's `RequestRows`; `_request` hands a Workbench Input, and a Quote Input with tables, its quotes as the records MLflow passed (`QuoteRequest`, numpy's values made plain by `_plain`), never a frame inferred from them, and any other request input the frame. |
-| `src/haute/deploy/_container.py` | Container build/push orchestration, the bundle a deploy and a workbench release share (`write_bundle`: the manifest with its artifacts at `artifacts/<name>` and the caller's extras, the artifacts, each copied by `copy_verified` under the digest resolution recorded, and the utility package), build-directory preparation (`prepare_build_directory`, the bundle with the container's pinned dependencies, and a Dockerfile copying any extra files the caller writes beside `app.py`, a workbench release's, and installing any extra distributions it needs pinned to the versions installed, the underwriter app's quote store's), generated FastAPI `/health` and `/quote` runtime, stable JSON/NDJSON response handling, pinned Dockerfile generation, Docker subprocess calls, and the platform service-update stub.; `runtime_versions`, the installed versions of the runtime a served pipeline prices on (the scoring runtime, the graph's and the artifacts' own, but `haute`), sorted, which the underwriter app's release id reads for any build, an image or not. |
+| `src/haute/deploy/_container.py` | Container build/push orchestration, the bundle a deploy and a workbench release share (`write_bundle`: the manifest with its artifacts at `artifacts/<file>` (`artifact_file_name`) and the caller's extras, the artifacts, each copied by `copy_verified` under the digest resolution recorded, and the utility package), build-directory preparation (`prepare_build_directory`, the bundle with the container's pinned dependencies, and a Dockerfile copying any extra files the caller writes beside `app.py`, a workbench release's, and installing any extra distributions it needs pinned to the versions installed, the underwriter app's quote store's), generated FastAPI `/health` and `/quote` runtime, stable JSON/NDJSON response handling, pinned Dockerfile generation, Docker subprocess calls, and the platform service-update stub.; `runtime_versions`, the installed versions of the runtime a served pipeline prices on (the scoring runtime, the graph's and the artifacts' own, but `haute`), sorted, which the underwriter app's release id reads for any build, an image or not. |
 | `scripts/container_smoke.py` | Standalone CLI script to verify the container deployment pipeline for an example (copy bundle, resolve deploy config, prepare build directory, and optionally execute a live uvicorn process smoke check). |
 | `src/haute/deploy/_impact.py` | Impact analysis: batched endpoint scoring (Databricks SDK or HTTP `/quote`), quote-envelope normalisation, a response's one-row tables flattened into `<table>.<column>` columns so they are compared (`_flatten_structs`, the schema inferred from every answer so a field first answered late is never dropped), an output left empty refused by name, percent-change statistics, categorical segment breakdown, terminal/Markdown report formatting. |
 | `src/haute/deploy/_request_limits.py` | Deployed-container request-body size limiting: environment resolution, `Content-Length` and streamed-byte enforcement before JSON materialisation, and structured limit/header/parse errors. |
@@ -146,9 +146,12 @@
    the deployed model run one Python. An unreadable `.python-version` or `requires-python`,
    or a pin `requires-python` excludes, raises `ProjectPythonError` before anything else.
    An image whose tag names no Python version is the project's to keep in step.
-3. `parse_pipeline_file(config.pipeline_file)` → `full_graph`; error if empty;
-   `validate_singleton_groups(flatten_graph(full_graph))` refuses a second request input or
-   response node, as save does.
+3. `parse_pipeline_file(config.pipeline_file, flatten=True)` → `full_graph`, the graph that
+   runs: each submodel occurrence expanded into its own nodes, with runtime ids
+   `submodel_runtime/<occurrence>/<node>`, as `haute run` and the editor execute it, so a
+   response, a request input or an artefact inside a submodel is found, bundled and scored
+   like any other node; error if empty; `validate_singleton_groups(full_graph)` refuses a
+   second request input or response node, as save does.
 4. `find_output_node(full_graph)` — exactly one response node (`nodeType` `"output"` or
    `"workbenchOutput"`, `RESPONSE_NODE_TYPES`) or node with `config.output=True`, else
    `ValueError`.
@@ -291,8 +294,9 @@
      inputs by name. A ratebook Optimiser Apply whose artefact is bundled (its `mode` read
      from the bundled file) keeps its `ratebook_input`'s rows; an online one is refused
      (`mixes`: it answers in quote-id order through `key_prefix_python_scan`), and an
-     MLflow-sourced one is refused (`unproven`). Scenario Expander (`repeats`),
-     `submodel`/`submodelPort` (`unproven`, BUG-18) and any other type are refused.
+     MLflow-sourced one is refused (`unproven`). Scenario Expander (`repeats`) and any
+     other type are refused; the deployed graph holds no submodel placeholder, since
+     resolution expands every occurrence.
    - A code box binds its inputs as the executor does (`code_input_bindings`, shared with
      the RAM estimate) and is parsed by `_parse_program(cardinality_only=True)`; a parse
      failure is refused as `unproven` with the parser's reason. Its operations are walked
@@ -413,8 +417,8 @@ configured gate.
 **Container build (`_container.py::build_and_push_image`)** — shared by all
 container-based targets. Creates `.haute_build/` under CWD; on any exception the whole
 directory is removed (`except BaseException: shutil.rmtree(...); raise`). Steps: build
-manifest via `_utils.build_manifest`, remap artefact paths to `artifacts/<name>`
-container-relative paths, write `deploy_manifest.json`, copy every artefact file into
+manifest via `_utils.build_manifest`, remap artefact paths to `artifacts/<file>`
+container-relative paths (`_utils.artifact_file_name`, one flat file per artefact key), write `deploy_manifest.json`, copy every artefact file into
 `artifacts/` through `copy_verified` (the bytes hashed as they are written and compared
 with `artifact_digests`; a mismatch removes the copy and raises `DeployError` naming the
 artefact), remove any `utility/` or `utility.py` an earlier build left in a reused build
@@ -437,7 +441,7 @@ git is not installed or the directory is not a git repository), `docker build`, 
 `docker push` only if a registry is configured.
 
 The manifest paths are resolved by the generated runtime against the image's
-`WORKDIR /app`. `_container.py`'s `artifacts/<name>` remapping and the Dockerfile's
+`WORKDIR /app`. `_container.py`'s `artifacts/<file>` remapping and the Dockerfile's
 `WORKDIR /app` plus `COPY artifacts/ artifacts/` must change together; neither side is
 an independently relocatable contract. A bundled `utility` gets its own `COPY` into
 `/app`, which `uvicorn app:app` puts on `sys.path`, and the preamble compile puts the
@@ -549,7 +553,8 @@ first (see [modelling](../modelling/low-level.md)). The client creates the
 `mlflow_fluent_operation()` with the destination selected and attached to that run by
 `mlflow.start_run(run_id=...)`, the one fluent call logs `HauteModel` as a `pyfunc`
 model-from-code with the manifest + every bundled artefact attached (each staged first by
-`copy_verified` into a temporary directory removed after logging, so a file changed since
+`copy_verified` into a temporary directory removed after logging, under its flat file name,
+`artifact_file_name`, since MLflow copies a model's artefacts into one directory by file name, so a file changed since
 resolution fails the deploy before MLflow copies it), the bundled `utility` package and, when
 the served haute is a wheel, that wheel as its MLflow `code_paths` (MLflow copies each under the
 model's `code/` directory and puts that on `sys.path` when the model loads), a `conda_env` with the project's Python (`_project_python.deployed_python_version`:
@@ -761,7 +766,7 @@ JSON have separate structured payloads. A body exactly at the configured limit i
   copy/load. Every accepted path is absolute, so the manifest never bakes in a
   re-resolution-dependent pointer.
 - **Container manifest artefact paths are image-relative, not pipeline-relative**:
-  every bundled path is rewritten to `artifacts/<name>` and resolves against
+  every bundled path is rewritten to `artifacts/<file>` (`artifact_file_name`) and resolves against
   `WORKDIR /app`; the generated Dockerfile copies the same build-context directory to
   `/app/artifacts`.
 - **Base image pinning is validated twice**: once in `DeployConfig.__post_init__` (catches
@@ -888,6 +893,12 @@ what they cover:
   with the last state, and leaving a missing endpoint to its caller; the endpoint created or
   updated and waited for, one already updating refused; and the deploy refused before parsing
   when its credentials are missing, naming each.
+- **`test_deploy_submodels.py`** — a pipeline whose response sits behind a submodel,
+  deployed and scored from its bundle, answers with the submodel's columns (the pruned graph
+  holding its nodes under runtime ids); the artefacts of two occurrences of one definition
+  bundled and staged for MLflow as flat files, one per key, each holding its source's bytes;
+  a response inside a submodel found; the scorer refusing a graph that still holds an
+  occurrence, naming it.
 - **`test_served_haute.py`** — a released haute pinned, an editable one refused, one installed from
   Git repacked into a wheel with its package and metadata but not the installer's records,
   scripts (one recorded by an absolute path among them) or compiled files, a valid RECORD that

@@ -27,7 +27,7 @@ from haute.deploy._request_limits import (
     DEFAULT_DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES,
 )
 from haute.deploy._request_rows import copy_verified
-from haute.deploy._utils import build_manifest, model_source_line
+from haute.deploy._utils import artifact_file_name, build_manifest, model_source_line
 from haute.errors import DeployError
 
 logger = get_logger(component="deploy.container")
@@ -93,9 +93,10 @@ def write_bundle(
 ) -> Path:
     """Write the pipeline's bundle into *build_dir*, as a deploy and a workbench release hold it.
 
-    The manifest (``build_manifest`` with its artifacts at ``artifacts/<name>`` and
-    *manifest_extras* added), the artifacts copied under ``artifacts/``, and the project's
-    utility package beside them, any earlier build's removed first.
+    The manifest (``build_manifest`` with its artifacts at ``artifacts/<file>``, each
+    key's flat ``artifact_file_name``, and *manifest_extras* added), the artifacts copied
+    under ``artifacts/``, and the project's utility package beside them, any earlier
+    build's removed first.
 
     Returns:
         Path to the written ``deploy_manifest.json``.
@@ -106,7 +107,9 @@ def write_bundle(
     artifacts_dir.mkdir(exist_ok=True)
 
     manifest = build_manifest(resolved)
-    manifest["artifacts"] = {name: f"artifacts/{name}" for name in resolved.artifacts}
+    manifest["artifacts"] = {
+        name: f"artifacts/{artifact_file_name(name)}" for name in resolved.artifacts
+    }
     manifest.update(manifest_extras or {})
     manifest_path = build_dir / "deploy_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -115,7 +118,7 @@ def write_bundle(
     for artifact_name, artifact_path in resolved.artifacts.items():
         copy_verified(
             artifact_path,
-            artifacts_dir / artifact_name,
+            artifacts_dir / artifact_file_name(artifact_name),
             digest=resolved.artifact_digests[artifact_name],
             name=artifact_name,
         )

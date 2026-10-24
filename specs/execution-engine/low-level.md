@@ -2570,6 +2570,11 @@ present a structural or schema result as execution evidence.
 
 ## Error handling
 
+- A submodel occurrence (`submodel`) or port (`submodelPort`) that reaches a builder raises
+  `ExecutionError` naming it (`_builders._build_submodel`, `_build_submodel_port`). Every
+  executor expands the occurrences first (`flatten_graph`); passing a placeholder's input
+  through would answer without the submodel's nodes. Neither type is in
+  `PASS_THROUGH_NODE_TYPES`, so a cache plan never routes around one unbuilt.
 - Every `HauteError` and `HauteValidationError` survives a process boundary: both bases
   pickle through `restore_exception` (`_validation_error.py`), which restores `args` and the
   instance attributes without calling `__init__`, so an error whose `__init__` takes

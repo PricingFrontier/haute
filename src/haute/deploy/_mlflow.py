@@ -42,7 +42,7 @@ from haute.deploy._databricks_serving import (
 )
 from haute.deploy._request_rows import copy_verified
 from haute.deploy._served_haute import ServedHaute, served_haute
-from haute.deploy._utils import build_manifest, model_source_line
+from haute.deploy._utils import artifact_file_name, build_manifest, model_source_line
 from haute.errors import DeployError, SchemaMismatchError
 
 logger = get_logger(component="deploy.mlflow")
@@ -279,10 +279,15 @@ def get_deploy_status(
 
 
 def _stage_artifacts(resolved: ResolvedDeploy, staging: Path) -> dict[str, Path]:
-    """Copy each bundled artefact into *staging* under the digest resolution recorded."""
+    """Copy each bundled artefact into *staging* under the digest resolution recorded.
+
+    Each lands under its flat file name (``artifact_file_name``): MLflow copies a
+    model's artefacts into one folder by file name, so two that shared one would
+    become one.
+    """
     staged: dict[str, Path] = {}
     for artifact_name, artifact_path in resolved.artifacts.items():
-        dest = staging / artifact_name
+        dest = staging / artifact_file_name(artifact_name)
         copy_verified(
             artifact_path,
             dest,

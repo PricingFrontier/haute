@@ -1696,6 +1696,25 @@ class TestStandaloneSubmodels:
         assert standalone.to_dicts() == [{"year": 2010, "age": 15, "factor": 1.2, "premium": 120.0}]
         assert standalone.equals(_haute_run_frame(path, "premium"))
 
+    def test_an_unexpanded_graph_refuses_to_run_naming_the_occurrence(self, tmp_path) -> None:
+        """An executor given the occurrence itself refuses, rather than passing its input
+        through and answering without the submodel (BUG-18)."""
+        from haute.executor import execute_graph
+        from haute.parser import parse_pipeline_file
+
+        path, _pipeline = _submodel_pipeline(
+            tmp_path,
+            "@pipeline.polars\n"
+            "def premium(factored: pl.LazyFrame) -> pl.LazyFrame:\n"
+            "    return factored.with_columns(premium=pl.col('factor') * 100)\n\n\n"
+            'pipeline.submodel("modules/factors.py", "factors")\n'
+            'pipeline.connect("quotes", "factors", target_port="rows")\n'
+            'pipeline.connect("factors", "premium", source_port="factored")\n',
+        )
+
+        with pytest.raises(ExecutionError, match="Submodel 'factors' reached execution"):
+            execute_graph(parse_pipeline_file(path), "premium", source="live")
+
     def test_a_submodel_can_be_the_pipelines_output(self, tmp_path) -> None:
         _path, pipeline = _submodel_pipeline(
             tmp_path,

@@ -1448,8 +1448,10 @@ class TestPolarsParameterBinding:
         assert len(hierarchical.edges) == 2
 
         from haute.executor import execute_graph
+        from haute.graph_utils import flatten_graph
 
-        results = execute_graph(hierarchical, target_node_id="sink")
+        # Run as every executor runs it: the occurrence expanded into its nodes.
+        results = execute_graph(flatten_graph(hierarchical), target_node_id="sink")
         assert results["sink"].status == "ok"
         assert results["sink"].preview == [{"x": 1}]
 
