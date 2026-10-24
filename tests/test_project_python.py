@@ -252,3 +252,23 @@ def test_an_unpinned_projects_base_image_is_its_own(tmp_path: Path) -> None:
     project = _project(tmp_path, requires=">=3.11")
 
     _validate_python_versions(_container_config(project, f"python:{OTHER_MINOR}.9-slim"), project)
+
+
+def test_an_unparseable_pyproject_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project\n", encoding="utf-8")
+
+    with pytest.raises(ProjectPythonError, match="pyproject.toml is not valid TOML"):
+        declared_python_version(tmp_path)
+
+
+def test_deploy_refuses_to_run_on_another_python(tmp_path: Path) -> None:
+    project = _project(tmp_path, pin=OTHER_MINOR)
+
+    with pytest.raises(DeployError, match=f"pins Python {OTHER_MINOR}"):
+        _validate_python_versions(_container_config(project, "python:3.12.8-slim"), project)
+
+
+def test_a_pyproject_without_requires_python_declares_none(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "p"\n', encoding="utf-8")
+
+    assert declared_python_version(tmp_path) is None

@@ -27,7 +27,7 @@ from haute._polars_io_registry import anchor_config_source_path
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.deploy._schema import _resolve_pipeline_path
-from haute.deploy._scorer import _resolve_runtime_graph_paths
+from haute.deploy._scorer import _bundled_input_artifact, _resolve_runtime_graph_paths
 
 
 @pytest.fixture
@@ -195,3 +195,36 @@ def test_serving_resolves_only_the_paths_it_reads(project: Path, tmp_path_factor
         "../data/quotes.json",
         "../data/policies.parquet",
     ]
+
+
+def test_the_bundled_artifact_each_node_kind_reads() -> None:
+    def node(node_id: str, node_type: NodeType, config: dict) -> GraphNode:
+        return GraphNode(
+            id=node_id, data=NodeData(label=node_id, nodeType=node_type, config=config)
+        )
+
+    direct = {"inputType": "file", "format": "parquet", "mode": "scan", "path": r"a\p.parquet"}
+    snapshot = {"inputType": "file", "format": "csv", "mode": "scan", "path": "s.csv"}
+    remap = {
+        "direct__p.parquet": "/b/p.parquet",
+        "load__model.pkl": "/b/model.pkl",
+        "snap__snapshot.part-00001.parquet": "/b/1.parquet",
+        "snap__snapshot.part-00000.parquet": "/b/0.parquet",
+    }
+
+    assert _bundled_input_artifact(node("direct", NodeType.DATA_INPUT, direct), remap) == (
+        "/b/p.parquet"
+    )
+    assert _bundled_input_artifact(node("snap", NodeType.DATA_INPUT, snapshot), remap) == [
+        "/b/0.parquet",
+        "/b/1.parquet",
+    ]
+    assert _bundled_input_artifact(
+        node("load", NodeType.EXTERNAL_FILE, {"path": "m/model.pkl"}), remap
+    ) == ("/b/model.pkl")
+    # No artifact: a snapshot input with no parts, a request input, or no bundle at all.
+    assert _bundled_input_artifact(node("other", NodeType.DATA_INPUT, snapshot), remap) is None
+    assert (
+        _bundled_input_artifact(node("api", NodeType.API_INPUT, {"path": "q.json"}), remap) is None
+    )
+    assert _bundled_input_artifact(node("direct", NodeType.DATA_INPUT, direct), {}) is None

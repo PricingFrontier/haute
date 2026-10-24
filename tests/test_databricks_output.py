@@ -525,3 +525,30 @@ def test_worker_reports_databricks_failures_by_kind(
     )
 
     assert (outcome.failure_kind, outcome.detail) == (expected_kind, str(failure))
+
+
+def test_a_missing_databricks_extra_is_a_config_error(files: _Files) -> None:
+    with (
+        patch(
+            "haute._databricks_output.databricks_workspace_client",
+            side_effect=ImportError("No module named 'databricks.sdk'"),
+        ),
+        pytest.raises(DatabricksConfigError, match=r"haute\[databricks\]"),
+    ):
+        write_databricks_output(pl.LazyFrame({"x": [1]}), _config())
+
+    assert files.calls == []
+
+
+def test_a_config_error_while_connecting_is_not_reported_as_a_write_failure(
+    files: _Files,
+) -> None:
+    # The service-principal provider raises it when the SDK it needs is missing.
+    def connect(**_kwargs: Any) -> _Connection:
+        raise DatabricksConfigError("service-principal auth requires the databricks-sdk")
+
+    with (
+        patch("databricks.sql.connect", connect),
+        pytest.raises(DatabricksConfigError, match="service-principal"),
+    ):
+        write_databricks_output(pl.LazyFrame({"x": [1]}), _config())

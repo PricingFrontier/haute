@@ -2819,6 +2819,8 @@ def _sink_route_graph() -> PipelineGraph:
         ("contract", 422),
         ("bounded", 422),
         ("destination", 409),
+        ("databricks_config", 400),
+        ("databricks_write", 502),
         ("memory", 507),
         ("unknown_envelope", 500),
         ("native_rss", 507),
@@ -2847,13 +2849,22 @@ def test_isolated_sink_failures_map_to_stable_http_contracts(
     from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 
     failure: BaseException
-    if failure_kind in {"contract", "bounded", "destination", "memory"}:
+    if failure_kind in {
+        "contract",
+        "bounded",
+        "destination",
+        "databricks_config",
+        "databricks_write",
+        "memory",
+    }:
         payload = {"error_code": "test"} if failure_kind in {"contract", "memory"} else None
         failure = pipeline_route._OutputWriteWorkerError(
             {
                 "contract": "contract",
                 "bounded": "bounded",
                 "destination": "destination_exists",
+                "databricks_config": "databricks_config",
+                "databricks_write": "databricks_write",
                 "memory": "memory",
             }[failure_kind],
             f"{failure_kind} failure",
@@ -2892,6 +2903,9 @@ def test_isolated_sink_failures_map_to_stable_http_contracts(
     )
 
     assert response.status_code == expected_status
+    if failure_kind.startswith("databricks"):
+        # The warehouse's (already redacted) message is what the user can act on.
+        assert response.json()["detail"] == f"{failure_kind} failure"
     if expected_status == 500:
         assert response.json()["detail"] == _INTERNAL_ERROR_DETAIL
         assert "private" not in response.text
