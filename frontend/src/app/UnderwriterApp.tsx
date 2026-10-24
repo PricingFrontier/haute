@@ -10,12 +10,14 @@ import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStor
 import PageTabs from "../workbench/PageTabs"
 import SheetCanvas from "../workbench/SheetCanvas"
 import AppHeader from "./AppHeader"
+import NewQuoteWindow from "./NewQuoteWindow"
 import { openRelease } from "./openRelease"
 import QuotesPage from "./QuotesPage"
 import QuoteView from "./QuoteView"
-import { followLink, useAppRoute } from "./route"
+import { followLink, quotesQueryOf, useAppRoute, type AppRoute } from "./route"
 import { BUTTON, Notice } from "./ui"
 import useAppStore from "./useAppStore"
+import useNewQuoteStore from "./useNewQuoteStore"
 
 type Loaded = { quotes: boolean } | { error: string }
 
@@ -66,9 +68,51 @@ export default function UnderwriterApp() {
   )
 }
 
-/** The page the address names. */
+/**
+ * The page the address names, and the New quote window over it while one is open. A
+ * creation kept in the tab, its answer lost, is offered back as the app opens.
+ */
 function Routed() {
   const route = useAppRoute()
+  useEffect(() => {
+    useNewQuoteStore.getState().offerKept()
+  }, [])
+  return (
+    <>
+      <RoutedPage route={route} />
+      <NewQuoteWindow />
+    </>
+  )
+}
+
+/**
+ * `/quotes/new`, plain or naming a revision to duplicate or renew: the New quote window
+ * opened over the Quotes page, at its default list.
+ */
+function AskedNewQuote({ quoteId, revision, relation }: { quoteId: string | null; revision: number; relation: "duplicate" | "renewal" }) {
+  useEffect(() => {
+    const store = useNewQuoteStore.getState()
+    if (quoteId === null) store.openNew({ addressed: true })
+    else void store.openDerived({ quoteId, revision, relation }, { addressed: true })
+  }, [quoteId, revision, relation])
+  return null
+}
+
+function RoutedPage({ route }: { route: AppRoute }) {
+  if (route.page === "new" && route.from?.relation !== "alternative") {
+    const { from } = route
+    return (
+      <>
+        <AppHeader label="Quotes toolbar" />
+        <QuotesPage query={quotesQueryOf("")} />
+        <AskedNewQuote
+          quoteId={from?.quoteId ?? null}
+          revision={from?.revision ?? 1}
+          relation={from?.relation === "renewal" ? "renewal" : "duplicate"}
+        />
+      </>
+    )
+  }
   if (route.page === "quotes") {
     return (
       <>

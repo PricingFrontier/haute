@@ -30,6 +30,7 @@ from haute._quote_store import (
     QuoteNotFoundError,
     QuoteRevision,
     QuoteStoreError,
+    ReferenceTakenError,
     Source,
     StaleQuoteError,
     carry_values,
@@ -184,6 +185,8 @@ async def _call(app: QuoteApp, work: Callable[[], T], quote_id: str | None = Non
         raise _refusal(409, exc, quote=current) from None
     except QuoteLockedError as exc:
         raise _refusal(409, exc) from None
+    except ReferenceTakenError as exc:
+        raise _refusal(409, exc, quote_id=exc.quote_id, label=exc.label) from None
     except QuoteStoreError as exc:
         raise _refusal(422, exc) from None
 
@@ -297,6 +300,28 @@ def _without_identity(tables: Any, carrying: set[str]) -> Any:
     }
 
 
+def _required_left(form: FormSpec, values: dict[str, Any]) -> None:
+    """Refuse a new quote made in the window with a column of quote_details the underwriter
+    types, and the analyst made required, left empty: text of spaces alone is empty, and a
+    tick box, ticked or not, never is. An entry requirement of the window alone: a save, and
+    an alternative made at once, keep a quote its rules mark."""
+    details = next(
+        (table for table in form.data_schema.tables if table.id == QUOTE_DETAILS_ID), None
+    )
+    if details is None:
+        return
+    rows = values.get(QUOTE_DETAILS_ID) or []
+    row = rows[0] if rows else {}
+    for column in details.columns:
+        if not column.required or column.id in QUOTE_DETAILS_MANAGED or column.type == "bool":
+            continue
+        cell = row.get(column.id)
+        if cell is None or (isinstance(cell, str) and not cell.strip()):
+            raise QuoteStoreError(
+                f"{column.label or column.name} is required: fill it in to make the quote."
+            )
+
+
 #: The quote_details cells the app sets, by table and column id: no typing.
 _APP_SET_CELLS = frozenset((QUOTE_DETAILS_ID, column_id) for column_id in QUOTE_DETAILS_MANAGED)
 
@@ -390,6 +415,10 @@ def quote_router(app: QuoteApp) -> APIRouter:
         replay = await replayed(body, actor, None)
         if replay is not None:
             return replay
+        # A quote but an alternative is made in the window, keyed there: its reference and
+        # its required details are asked for.
+        if body.source is None or body.source.relation != "alternative":
+            await _call(app, lambda: _required_left(app.form, body.values))
         at = book.now()
         managed = book.managed(None, priced=False, at=at, actor=actor)
         ready = await _prepared(app, body, managed, creating=True)
@@ -409,6 +438,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
                 response=ready.tables,
                 release=None if ready.tables is None else app.release_id,
                 at=at,
+                reference=body.reference,
                 source=source,
             )
             return saved(quote, body.shown)

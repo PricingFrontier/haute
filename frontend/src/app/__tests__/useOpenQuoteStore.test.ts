@@ -2,9 +2,10 @@
  * The quote open in the underwriter app (specs/workbench): opened at its newest revision or
  * another, read only while it may not change; saved priced when the sheets show a price for
  * the values as they are and unpriced otherwise; a save over a quote moved on, a page of
- * another release and a lost answer each read into what they offer; a new quote made as it
- * is asked for, from another's revision or not, once though its answer is lost; values moved
- * onto the current sheets; and values kept in the browser.
+ * another release and a lost answer each read into what they offer; an alternative made as
+ * it is asked for, once though its answer is lost; values moved onto the current sheets; and
+ * values kept in the browser. A quote under a new reference is the New quote window's
+ * (useNewQuoteStore.test.ts).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -33,6 +34,10 @@ import { answer, appQuote, changed, release, TABLES, VALUES } from "./fixtures"
 
 const store = () => useOpenQuoteStore.getState()
 const preview = () => useWorkbenchPreviewStore.getState()
+/** An alternative asked for from the first revision of q1. */
+const ALTERNATIVE = { quoteId: "q1", revision: 1, relation: "alternative" } as const
+/** An alternative made: the next option under its source's reference. */
+const madeAlternative = () => answer({ id: "q3", reference: "Q-000001", option: 2, label: "Q-000001/2", relation: "alternative" })
 const stale = (who = "jo") =>
   new ApiError("HTTP 409", 409, "moved", { detail: {} }, { message: `Q-000001 has changed since you opened it: ${who} saved it.`, error_code: "stale_quote_revision", quote: appQuote({ latest: 2 }) })
 
@@ -176,22 +181,6 @@ describe("useOpenQuoteStore", () => {
     expect(preview().quote.policy[0]["policy.state"]).toBe("CA")
   })
 
-  it("saves the values as a new quote made from the quote as it is now", async () => {
-    vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(saveAppQuote).mockRejectedValue(stale())
-    vi.mocked(createAppQuote).mockResolvedValue(answer({ id: "q2", reference: "Q-000002", relation: "duplicate" }))
-    await store().openQuote("q1", null)
-    await store().save()
-
-    const made = await store().saveAsNew()
-
-    expect(made?.reference).toBe("Q-000002")
-    expect(vi.mocked(createAppQuote).mock.calls[0][1]).toEqual({ quote_id: "q1", revision: 2, relation: "duplicate" })
-    // Made unpriced, though the page showed a price: its reference is taken as it is written.
-    expect(vi.mocked(createAppQuote).mock.calls[0][0].shown).toBeNull()
-    expect(store().conflict).toBeNull()
-  })
-
   it("reads a page drawn for another release as one to reload", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     vi.mocked(saveAppQuote).mockRejectedValue(new ApiError("HTTP 409", 409, "This page was drawn for another release of the app: reload it."))
@@ -225,18 +214,17 @@ describe("useOpenQuoteStore", () => {
     expect(keys[3]).not.toBe(keys[2])
   })
 
-  it("asks again with the same key after a reload before the answer, and with a new key once the quote is made", async () => {
-    vi.mocked(createAppQuote)
-      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
-      .mockResolvedValue(answer({ id: "q7", reference: "Q-000007", label: "Q-000007/1", stage: "draft" as const, priced: false, release: null }, { values: {}, tables: null }))
+  it("asks again with the same key after a reload before the answer, and with a new key once the alternative is made", async () => {
+    vi.mocked(carryAppQuote).mockResolvedValue({ values: VALUES, dropped: [] })
+    vi.mocked(createAppQuote).mockRejectedValueOnce(new TypeError("Failed to fetch")).mockResolvedValue(madeAlternative())
 
-    expect(await store().openNew(null)).toBeNull()
+    expect(await store().openNew(ALTERNATIVE)).toBeNull()
     expect(store()).toMatchObject({ status: "error", loadError: "Failed to fetch" })
     // The page is reloaded before an answer came: asked with the key held, so it is made once.
     store().close()
-    expect((await store().openNew(null))?.id).toBe("q7")
-    // Asked for again once made: another quote, under a key of its own.
-    await store().openNew(null)
+    expect((await store().openNew(ALTERNATIVE))?.id).toBe("q3")
+    // Asked for again once made: another option, under a key of its own.
+    await store().openNew(ALTERNATIVE)
 
     const keys = vi.mocked(createAppQuote).mock.calls.map(([body]) => body.operation)
     expect(keys).toHaveLength(3)
@@ -244,31 +232,28 @@ describe("useOpenQuoteStore", () => {
     expect(keys[2]).not.toBe(keys[1])
   })
 
-  it("lets a refused quote's key go, so the next asked for is asked anew", async () => {
-    vi.mocked(createAppQuote)
-      .mockRejectedValueOnce(new ApiError("HTTP 422", 422, "No"))
-      .mockResolvedValue(answer({ id: "q7", reference: "Q-000007", label: "Q-000007/1", stage: "draft" as const, priced: false, release: null }, { values: {}, tables: null }))
+  it("lets a refused alternative's key go, so the next asked for is asked anew", async () => {
+    vi.mocked(carryAppQuote).mockResolvedValue({ values: VALUES, dropped: [] })
+    vi.mocked(createAppQuote).mockRejectedValueOnce(new ApiError("HTTP 422", 422, "No")).mockResolvedValue(madeAlternative())
 
-    await store().openNew(null)
+    await store().openNew(ALTERNATIVE)
     expect(store().loadError).toBe("No")
-    await store().openNew(null)
+    await store().openNew(ALTERNATIVE)
 
     const [first, second] = vi.mocked(createAppQuote).mock.calls.map(([body]) => body.operation)
     expect(second).not.toBe(first)
   })
 
-  it("holds a duplicate's key apart from an alternative's made from the same revision", async () => {
+  it("holds an alternative's key apart from one of another revision", async () => {
     vi.mocked(carryAppQuote).mockResolvedValue({ values: VALUES, dropped: [] })
-    vi.mocked(createAppQuote)
-      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
-      .mockResolvedValue(answer({ id: "q3", reference: "Q-000001", option: 2, label: "Q-000001/2", relation: "alternative" }))
+    vi.mocked(createAppQuote).mockRejectedValueOnce(new TypeError("Failed to fetch")).mockResolvedValue(madeAlternative())
 
-    await store().openNew({ quoteId: "q1", revision: 1, relation: "duplicate" })
-    await store().openNew({ quoteId: "q1", revision: 1, relation: "alternative" })
+    await store().openNew({ ...ALTERNATIVE, revision: 2 })
+    await store().openNew(ALTERNATIVE)
 
-    const [duplicate, alternative] = vi.mocked(createAppQuote).mock.calls
+    const [other, alternative] = vi.mocked(createAppQuote).mock.calls
     expect(alternative[1]).toEqual({ quote_id: "q1", revision: 1, relation: "alternative" })
-    expect(alternative[0].operation).not.toBe(duplicate[0].operation)
+    expect(alternative[0].operation).not.toBe(other[0].operation)
     expect(store().quote?.label).toBe("Q-000001/2")
   })
 
@@ -293,22 +278,6 @@ describe("useOpenQuoteStore", () => {
     expect(saveAppQuote).toHaveBeenCalledTimes(1)
     changing_(changed({ latest: 3, archived: true }, { number: 3 }))
     await changing
-  })
-
-  it("keeps a save as new's operation key for a retry after a lost answer", async () => {
-    vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(saveAppQuote).mockRejectedValue(stale())
-    vi.mocked(createAppQuote).mockRejectedValueOnce(new TypeError("Failed to fetch")).mockResolvedValue(answer({ id: "q2", reference: "Q-000002" }))
-    await store().openQuote("q1", null)
-    preview().setCell("policy", 0, "policy.state", "CA")
-    await store().save()
-
-    expect(await store().saveAsNew()).toBeNull()
-    expect((await store().saveAsNew())?.reference).toBe("Q-000002")
-
-    const keys = vi.mocked(createAppQuote).mock.calls.map((call) => call[0].operation)
-    expect(keys).toHaveLength(2)
-    expect(keys[1]).toBe(keys[0])
   })
 
   it("keeps what is typed before and during a change that holds the quote read only", async () => {
@@ -382,48 +351,28 @@ describe("useOpenQuoteStore", () => {
     expect(readDraft(draftKey("motor", "ana@example.com", "q1"))?.values).toEqual({ policy: [{ "policy.state": "CA", "policy.year": "2027" }] })
   })
 
-  it("makes a new quote as it is asked for, holding its columns' defaults, and opens it", async () => {
-    form.schema.tables[0].columns[0].default_value = "NY"
-    const values = { policy: [{ "policy.state": "NY" }], quote_details: [{ qd_reference: "Q-000007", qd_option: "1" }] }
-    vi.mocked(createAppQuote).mockResolvedValue(answer({ id: "q7", reference: "Q-000007", label: "Q-000007/1", stage: "draft" as const, priced: false, release: null }, { values, tables: null }))
-
-    const quote = await store().openNew(null)
-
-    expect(quote?.label).toBe("Q-000007/1")
-    const [body, source] = vi.mocked(createAppQuote).mock.calls[0]
-    expect([body.values, body.shown, source]).toEqual([{ policy: [{ "policy.state": "NY" }] }, null, null])
-    expect(store()).toMatchObject({ status: "ready", base: 1, quote: expect.objectContaining({ id: "q7" }) })
-    expect(preview()).toMatchObject({ quote: values, readOnly: false })
-    // Its defaults are not typing: nothing to save, and no draft kept.
-    expect(await store().save()).toBeNull()
-    expect(saveAppQuote).not.toHaveBeenCalled()
-    expect(store().keepDraft()).toBe(true)
-    expect(readDraft(openDraftKey(store()) ?? "")).toBeNull()
-  })
-
-  it("makes a quote from another's revision with its source, a renewal ticked and the others as carried", async () => {
+  it("makes an alternative from another's revision as carried, under its source's reference, and opens it", async () => {
     const details = { qd_insured: "Acme", qd_is_renewal: false }
     vi.mocked(carryAppQuote).mockResolvedValue({ values: { ...VALUES, quote_details: [details] }, dropped: ["policy.gone"] })
-    vi.mocked(createAppQuote).mockResolvedValue(answer({ id: "q2", reference: "Q-000002", label: "Q-000002/1", relation: "renewal" }))
+    vi.mocked(createAppQuote).mockResolvedValue(madeAlternative())
 
-    await store().openNew({ quoteId: "q1", revision: 1, relation: "renewal" })
+    const quote = await store().openNew(ALTERNATIVE)
 
-    const [body, source] = vi.mocked(createAppQuote).mock.calls[0]
-    expect(source).toEqual({ quote_id: "q1", revision: 1, relation: "renewal" })
-    expect(body.values).toEqual({ ...VALUES, quote_details: [{ qd_insured: "Acme", qd_is_renewal: true }] })
-    expect(store()).toMatchObject({ status: "ready", dropped: ["policy.gone"] })
-    for (const relation of ["duplicate", "alternative"] as const) {
-      await store().openNew({ quoteId: "q1", revision: 1, relation })
-      expect(vi.mocked(createAppQuote).mock.calls.at(-1)?.[0].values).toEqual({ ...VALUES, quote_details: [details] })
-    }
+    expect(quote?.label).toBe("Q-000001/2")
+    const [body, source, reference] = vi.mocked(createAppQuote).mock.calls[0]
+    expect(source).toEqual({ quote_id: "q1", revision: 1, relation: "alternative" })
+    // It names no reference of its own: it takes its source's, and the next option under it.
+    expect([body.values, body.shown, reference]).toEqual([{ ...VALUES, quote_details: [details] }, null, null])
     // Carried without the details the app set for the source, which are not the new quote's.
-    expect(vi.mocked(carryAppQuote).mock.calls).toEqual([["q1", 1], ["q1", 1], ["q1", 1]])
+    expect(vi.mocked(carryAppQuote).mock.calls).toEqual([["q1", 1]])
+    expect(store()).toMatchObject({ status: "ready", base: 1, dropped: ["policy.gone"], quote: expect.objectContaining({ id: "q3" }) })
+    expect(preview().readOnly).toBe(false)
   })
 
   it("says why a quote to make one from could not be read", async () => {
     vi.mocked(carryAppQuote).mockRejectedValue(new ApiError("HTTP 404", 404, "No such quote"))
 
-    await store().openNew({ quoteId: "q9", revision: 1, relation: "duplicate" })
+    await store().openNew({ ...ALTERNATIVE, quoteId: "q9" })
 
     expect(store()).toMatchObject({ status: "error", loadError: "No such quote" })
     expect(createAppQuote).not.toHaveBeenCalled()
@@ -683,7 +632,7 @@ describe("useOpenQuoteStore", () => {
     let carried: (value: { values: Record<string, never>; dropped: string[] }) => void = () => {}
     vi.mocked(openAppQuote).mockResolvedValueOnce(answer({ id: "q3" }))
     vi.mocked(carryAppQuote).mockReturnValueOnce(new Promise((resolve) => (carried = resolve)))
-    const making = store().openNew({ quoteId: "q1", revision: 1, relation: "duplicate" })
+    const making = store().openNew(ALTERNATIVE)
     await store().openQuote("q3", null)
     carried({ values: {}, dropped: ["x.y"] })
 
@@ -698,10 +647,9 @@ describe("useOpenQuoteStore", () => {
     await store().moveToCurrentSheets()
     store().restoreDraft()
     await store().loadHistory()
-    expect(await store().saveAsNew()).toBeNull()
     useAppStore.setState({ release: null, form: null })
     expect(openDraftKey(store())).toBeNull()
-    await store().openNew(null)
+    await store().openNew(ALTERNATIVE)
     expect(changeAppQuote).not.toHaveBeenCalled()
     expect(carryAppQuote).not.toHaveBeenCalled()
     expect(createAppQuote).not.toHaveBeenCalled()
@@ -722,16 +670,13 @@ describe("useOpenQuoteStore", () => {
     await vi.waitFor(() => expect(fetchAppQuoteHistory).toHaveBeenCalledTimes(3))
   })
 
-  it("says why values could not be saved as a new quote, or moved onto the current sheets", async () => {
+  it("says why values could not be moved onto the current sheets", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer({}, {}, { form: { ...sheetForm(), name: "older" } }))
     vi.mocked(carryAppQuote).mockRejectedValue(new ApiError("HTTP 500", 500, "carry failed"))
-    vi.mocked(createAppQuote).mockRejectedValue(new ApiError("HTTP 422", 422, "create failed"))
     await store().openQuote("q1", null)
 
     await store().moveToCurrentSheets()
     expect(store().error).toBe("carry failed")
-    expect(await store().saveAsNew()).toBeNull()
-    expect(store().error).toBe("create failed")
   })
 
   it("dismisses each notice", () => {
@@ -752,8 +697,7 @@ describe("useOpenQuoteStore", () => {
     expect(preview().readOnly).toBe(true)
     expect(await store().save()).toBeNull()
     expect(await store().change("archive", {})).toBeNull()
-    expect(await store().saveAsNew()).toBeNull()
-    await store().openNew(null)
+    await store().openNew(ALTERNATIVE)
     expect(preview().readOnly).toBe(true)
     expect(store().loadError).toBe("Making a quote needs the app's edit role.")
     expect(changeAppQuote).not.toHaveBeenCalled()

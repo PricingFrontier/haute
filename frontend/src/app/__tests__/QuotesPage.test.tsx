@@ -1,7 +1,8 @@
 /**
  * The Quotes page (specs/workbench): the lists and stages with their counts, the list as a
  * table of the quote list's columns, the search and filters in the address, a page at a
- * time, each row's actions, and what an empty, loading or failed list says.
+ * time, each row's actions, New quote and a row's Duplicate opening the New quote window
+ * over the list, the order by Reference, and what an empty, loading or failed list says.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
@@ -10,17 +11,21 @@ vi.mock("../../api/app", () => ({
   fetchAppQuotes: vi.fn(),
   changeAppQuote: vi.fn(),
   fetchAppPeople: vi.fn(),
+  carryAppQuote: vi.fn(),
+  createAppQuote: vi.fn(),
 }))
 
-import { changeAppQuote, fetchAppPeople, fetchAppQuotes, type QuotesQuery } from "../../api/app"
+import { carryAppQuote, changeAppQuote, fetchAppPeople, fetchAppQuotes, type QuotesQuery } from "../../api/app"
 import { ApiError } from "../../api/client"
 import type { WorkbenchAppQuote, WorkbenchAppQuotesResponse } from "../../api/types"
 import ToastContainer from "../../components/Toast"
 import useToastStore from "../../stores/useToastStore"
 import { detailsTable, sheetForm } from "../../workbench/__tests__/fixtures"
+import NewQuoteWindow from "../NewQuoteWindow"
 import QuotesPage from "../QuotesPage"
 import { navigate, quotesQueryOf, setLeaveGuard } from "../route"
 import useAppStore from "../useAppStore"
+import useNewQuoteStore from "../useNewQuoteStore"
 import useQuoteListStore from "../useQuoteListStore"
 import { appQuote, release } from "./fixtures"
 
@@ -35,6 +40,7 @@ function show(query: QuotesQuery = MINE) {
   return render(
     <>
       <QuotesPage query={query} />
+      <NewQuoteWindow />
       <ToastContainer />
     </>,
   )
@@ -47,6 +53,7 @@ describe("QuotesPage", () => {
     useAppStore.setState({ release, form, revision: "rev-9", people: [] })
     useQuoteListStore.setState({ query: null, quotes: [], counts: {}, next: null, status: "idle", error: null, loadingMore: false })
     useToastStore.setState({ toasts: [] })
+    useNewQuoteStore.setState({ shown: null })
     vi.mocked(fetchAppPeople).mockResolvedValue({ people: ["ana@example.com", "jo@example.com"] })
     await navigate("/", { force: true })
   })
@@ -55,6 +62,7 @@ describe("QuotesPage", () => {
     cleanup()
     vi.clearAllMocks()
     setLeaveGuard(null)
+    window.sessionStorage.clear()
   })
 
   it("lists the quotes under their details' columns, with the lists' and stages' counts", async () => {
@@ -147,15 +155,36 @@ describe("QuotesPage", () => {
     expect(screen.getByText("2 quotes")).toBeInTheDocument()
   })
 
-  it("opens a quote from its row, and duplicates one as a new quote", async () => {
+  it("opens a quote from its row, and duplicates one in the New quote window over the list", async () => {
     vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote({ latest: 3 })]))
+    vi.mocked(carryAppQuote).mockResolvedValue({ values: { quote_details: [{ qd_insured: "Acme" }] }, dropped: [] })
     show()
 
     fireEvent.click(await screen.findByTestId("quote-row-Q-000001/1"))
     expect(window.location.pathname).toBe("/quotes/q1")
     await navigate("/", { force: true })
     fireEvent.click(screen.getByRole("button", { name: "Duplicate Q-000001/1" }))
-    expect(`${window.location.pathname}${window.location.search}`).toBe("/quotes/new?from=q1&revision=3&as=duplicate")
+
+    const window_ = await screen.findByRole("dialog", { name: "Duplicate Q-000001/1" })
+    await vi.waitFor(() => expect(within(window_).getByRole("textbox", { name: "Insured" })).toHaveValue("Acme"))
+    expect(carryAppQuote).toHaveBeenCalledWith("q1", 3)
+    expect(window.location.pathname).toBe("/")
+    expect(screen.getByTestId("quote-row-Q-000001/1")).toBeInTheDocument()
+  })
+
+  it("starts a new quote in the window over the list from New quote, and orders the list by Reference", async () => {
+    vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote()]))
+    show()
+    await screen.findByTestId("quote-row-Q-000001/1")
+
+    expect(within(screen.getByRole("combobox", { name: "Order" })).getByRole("option", { name: "Reference" })).toHaveValue("reference")
+    fireEvent.click(screen.getByTestId("new-quote"))
+
+    expect(screen.getByRole("dialog", { name: "New quote" })).toBeInTheDocument()
+    expect(window.location.pathname).toBe("/")
+    // A key pressed in the window is the window's, not the page's.
+    fireEvent.keyDown(within(screen.getByTestId("new-quote-window")).getByLabelText("Is renewal"), { key: "/" })
+    expect(screen.getByLabelText("Search quotes")).not.toHaveFocus()
   })
 
   it("archives a quote with Undo, which restores it", async () => {
@@ -184,6 +213,7 @@ describe("QuotesPage", () => {
     view.rerender(
       <>
         <QuotesPage query={team} />
+        <NewQuoteWindow />
         <ToastContainer />
       </>,
     )
@@ -226,7 +256,8 @@ describe("QuotesPage", () => {
     fireEvent.keyDown(screen.getByLabelText("Search quotes"), { key: "n" })
     expect(window.location.pathname).toBe("/")
     fireEvent.keyDown(document.body, { key: "n" })
-    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/new"))
+    expect(screen.getByRole("dialog", { name: "New quote" })).toBeInTheDocument()
+    expect(window.location.pathname).toBe("/")
   })
 
   it("offers one who may only read quotes nothing that changes them", async () => {
@@ -241,6 +272,7 @@ describe("QuotesPage", () => {
     expect(screen.getByRole("button", { name: "Open Q-000001/1" })).toBeInTheDocument()
     fireEvent.keyDown(document.body, { key: "n" })
     expect(window.location.pathname).toBe("/")
+    expect(screen.queryByTestId("new-quote-window")).toBeNull()
 
     view.rerender(<QuotesPage query={quotesQueryOf("?view=team")} />)
     expect(await screen.findByTestId("quotes-empty")).not.toHaveTextContent("New quote")

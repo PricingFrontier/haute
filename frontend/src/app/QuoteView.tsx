@@ -41,7 +41,8 @@ import { basisOf, fullTime, relativeTime, valuesKey } from "./quoteValues"
 import { followLink, navigate, newQuotePath, quotePath, revisionPath, setLeaveGuard, type AppRoute } from "./route"
 import { BUTTON, Menu, Notice, StageChip, type MenuItem } from "./ui"
 import useAppStore from "./useAppStore"
-import useOpenQuoteStore, { busy, canEdit, readOnlyReason } from "./useOpenQuoteStore"
+import useNewQuoteStore from "./useNewQuoteStore"
+import useOpenQuoteStore, { busy, canEdit, readOnlyReason, type QuoteOrigin } from "./useOpenQuoteStore"
 
 type QuoteRoute = Extract<AppRoute, { page: "new" } | { page: "quote" }>
 
@@ -60,10 +61,10 @@ async function saveOpen(): Promise<void> {
 }
 
 /**
- * Make the quote the page asks for, as the underwriter asked for it, and move to its own
- * address once it has one, unless the page has moved on meanwhile.
+ * Make the alternative the page asks for, as the underwriter asked for it, and move to its
+ * own address once it has one, unless the page has moved on meanwhile.
  */
-async function makeAsked(from: Extract<AppRoute, { page: "new" }>["from"]): Promise<void> {
+async function makeAsked(from: QuoteOrigin): Promise<void> {
   const asked = window.location.href
   const made = await useOpenQuoteStore.getState().openNew(from)
   if (made === null || window.location.href !== asked) return
@@ -83,15 +84,6 @@ async function undoArchive(archived: WorkbenchAppQuote): Promise<void> {
   } catch (reason: unknown) {
     useToastStore.getState().addToast("error", `Could not restore ${archived.label}: ${apiErrorMessage(reason)}`)
   }
-}
-
-/** Save the values on the sheets as a new quote and open it. */
-async function saveOpenAsNew(): Promise<void> {
-  const quote = await useOpenQuoteStore.getState().saveAsNew()
-  if (quote === null) return
-  adopted = quote.id
-  await navigate(quotePath(quote.id), { force: true })
-  useToastStore.getState().addToast("success", `Saved as ${quote.label}`)
 }
 
 export default function QuoteView({ route }: { route: QuoteRoute }) {
@@ -114,10 +106,11 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
     useQuestionStore.getState().answer(null)
     const open = useOpenQuoteStore.getState()
     if (route.page === "new") {
-      void makeAsked(route.from)
+      // A quote under a new reference is made in the New quote window, over the Quotes page.
+      if (route.from?.relation === "alternative") void makeAsked(route.from)
       return
     }
-    // Just made, or saved as new: it is on the sheets already.
+    // Just made as an alternative: it is on the sheets already.
     const justSaved = adopted === route.id && route.revision === null && open.quote?.id === route.id
     adopted = null
     if (!justSaved) void open.openQuote(route.id, route.revision)
@@ -316,7 +309,10 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
 
   const derive = (relation: "duplicate" | "renewal" | "alternative") => {
     if (quote === null || revision === null) return
-    void navigate(newQuotePath({ quoteId: quote.id, revision: revision.number, relation }))
+    // An alternative is made at once under this reference; a duplicate or a renewal takes one
+    // keyed in the New quote window, over this quote, which it leaves as it is.
+    if (relation === "alternative") void navigate(newQuotePath({ quoteId: quote.id, revision: revision.number, relation }))
+    else void useNewQuoteStore.getState().openDerived({ quoteId: quote.id, revision: revision.number, relation }, { label: quote.label })
   }
 
   const copyLink = async () => {
@@ -533,7 +529,7 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
               <button type="button" className={BUTTON} onClick={() => void openNewest()}>
                 Open the newest
               </button>
-              <button type="button" className={BUTTON} onClick={() => void saveOpenAsNew()} disabled={working}>
+              <button type="button" className={BUTTON} onClick={() => useNewQuoteStore.getState().openSaveAsNew()} disabled={working}>
                 Save mine as a new quote
               </button>
             </>

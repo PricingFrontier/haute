@@ -1,23 +1,25 @@
 """The quote store's fourth schema: a quote's option, its reference and option held on the
 quote itself, and the details rows as ``quote_details`` holds a quote's administration.
 
-An app quote takes the reference of its newest details row and option 1, and its details
-rows option 1, their columns ``quote_reference`` and ``quote_option`` as ``quote_details``
-names them now; a quote the store saved alone holds neither. The pair is unique among app
-quotes, and the last option taken under each reference is counted, so an alternative takes
-the next. The details rows drop ``valid_until`` and ``currency``, which ``quote_details``
-holds no more, and gain when the quote was made and by whom, from the quote's row, when the
-revision was written and by whom, from the revision's, and the Haute version it was written
-on, which no revision before recorded. A revision's request and response stay as they were
-priced. A Haute at the third schema could not read the forms this one saves with each
-quote: their ``quote_details`` holds ``option`` and their other tables lead with the quote's
-reference and option, which it refuses. So this migration names itself as the oldest
-reader, and a release rolled back past it refuses the database, naming the upgrade; it may
-drop the two columns for that reason.
+An app quote takes the reference of its newest details row, its canonical form and option
+1, and its details rows option 1, their columns ``quote_reference`` and ``quote_option`` as
+``quote_details`` names them now; a quote the store saved alone holds none. The canonical
+form and the option are unique among app quotes, and the last option taken under each
+reference is counted by canonical form, so an alternative takes the next and a second quote
+of a reference, in any case, is refused. The details rows drop ``valid_until`` and
+``currency``, which ``quote_details`` holds no more, and gain when the quote was made and by
+whom, from the quote's row, when the revision was written and by whom, from the revision's,
+and the Haute version it was written on, which no revision before recorded. A revision's
+request and response stay as they were priced. A Haute at the third schema could not read
+the forms this one saves with each quote: their ``quote_details`` holds ``option`` and their
+other tables lead with the quote's reference and option, which it refuses. So this
+migration names itself as the oldest reader, and a release rolled back past it refuses the
+database, naming the upgrade; it may drop the two columns for that reason.
 """
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import date, datetime
 
 import sqlalchemy as sa
@@ -32,6 +34,7 @@ depends_on = None
 def upgrade() -> None:
     op.add_column("haute_quotes", sa.Column("reference", sa.String(40), nullable=True))
     op.add_column("haute_quotes", sa.Column("option", sa.Integer, nullable=True))
+    op.add_column("haute_quotes", sa.Column("reference_key", sa.String(160), nullable=True))
     # The details rows' columns as quote_details names them; every row written before is
     # option 1. SQLite renames a column by copying the table, so its index is made again.
     op.drop_index("ix_haute_quote_details_reference", table_name="haute_quote_details")
@@ -82,26 +85,46 @@ def upgrade() -> None:
     )
     op.execute(quotes.update().values(reference=newest))
     op.execute(quotes.update().where(quotes.c.reference.is_not(None)).values(option=1))
+    keys = _canonical_keys()
     op.create_index(
-        "ux_haute_quotes_identity", "haute_quotes", ["reference", "option"], unique=True
+        "ux_haute_quotes_identity", "haute_quotes", ["reference_key", "option"], unique=True
     )
     options = op.create_table(
         "haute_quote_options",
-        sa.Column("reference", sa.String(40), primary_key=True),
+        sa.Column("reference_key", sa.String(160), primary_key=True),
         sa.Column("last_option", sa.Integer, nullable=False),
     )
-    op.execute(
-        options.insert().from_select(
-            ["reference", "last_option"],
-            sa.select(quotes.c.reference, sa.literal(1)).where(quotes.c.reference.is_not(None)),
-        )
-    )
+    if keys:
+        op.bulk_insert(options, [{"reference_key": key, "last_option": 1} for key in keys])
     compat = sa.table(
         "haute_quote_store_compat",
         sa.column("id", sa.Integer),
         sa.column("oldest_reader", sa.String),
     )
     op.execute(compat.update().where(compat.c.id == 1).values(oldest_reader="0004"))
+
+
+def _canonical_keys() -> list[str]:
+    """Give each app quote its reference's canonical form, as the book makes it
+    (``haute._quote_store._book.canonical_reference``, copied here as a migration stands
+    alone), and answer them. Every reference before this one was numbered by Haute, so none
+    shares a canonical form."""
+    quotes = sa.table(
+        "haute_quotes",
+        sa.column("id", sa.String),
+        sa.column("reference", sa.String),
+        sa.column("reference_key", sa.String),
+    )
+    connection = op.get_bind()
+    rows = connection.execute(
+        sa.select(quotes.c.id, quotes.c.reference).where(quotes.c.reference.is_not(None))
+    ).all()
+    keys: list[str] = []
+    for row in rows:
+        key = unicodedata.normalize("NFC", row.reference).casefold()
+        connection.execute(quotes.update().where(quotes.c.id == row.id).values(reference_key=key))
+        keys.append(key)
+    return keys
 
 
 def _stamp_administration() -> None:

@@ -40,6 +40,9 @@ RELEASE_LENGTH = 200
 FORM_REVISION_LENGTH = 64
 #: Longest reference, stage, event kind, operation key and migration revision.
 REFERENCE_LENGTH = 40
+#: A reference's canonical form, its comparison key: case folding can lengthen a letter to
+#: as many as three, so it has a bound of its own.
+REFERENCE_KEY_LENGTH = 160
 STAGE_LENGTH = 20
 EVENT_KIND_LENGTH = 40
 OPERATION_LENGTH = 64
@@ -74,9 +77,11 @@ QUOTE_FORMS = Table(
 )
 
 #: A quote: who owns it, the number of its newest revision, and, for an app quote, its
-#: reference and option, no two app quotes alike. A quote the store saved alone holds
-#: neither; SQLite and PostgreSQL keep such NULL pairs apart in the unique index, where SQL
-#: Server would need the index filtered to the pairs set.
+#: reference, its canonical form and its option, no two app quotes alike by canonical form
+#: and option. A quote the store saved alone holds none; SQLite and PostgreSQL keep such NULL
+#: pairs apart in the unique index, where SQL Server would need the index filtered to the
+#: pairs set. Canonical forms are compared exactly: SQLite's default collation, and a
+#: binary one on an engine that offers others.
 QUOTES = Table(
     "haute_quotes",
     METADATA,
@@ -87,8 +92,11 @@ QUOTES = Table(
     Column("latest", Integer, nullable=False),
     Column("reference", String(REFERENCE_LENGTH), nullable=True),
     Column("option", Integer, nullable=True),
+    # The reference's canonical form (``haute._quote_store._book.canonical_reference``),
+    # compared exactly: two references are one when their canonical forms are.
+    Column("reference_key", String(REFERENCE_KEY_LENGTH), nullable=True),
     Index("ix_haute_quotes_owner", "owner"),
-    Index("ux_haute_quotes_identity", "reference", "option", unique=True),
+    Index("ux_haute_quotes_identity", "reference_key", "option", unique=True),
 )
 
 #: A quote's revisions, each written whole: the values, the request, the response and the
@@ -166,7 +174,8 @@ QUOTE_EVENTS = Table(
     Index("ix_haute_quote_events_quote", "quote_id", "id"),
 )
 
-#: The last reference number taken, by scope: one row, ``quotes``.
+#: The last reference number taken, by scope: one row, ``quotes``. Written by the Haute
+#: that numbered quotes; the underwriter keys a reference now, and the table is left as it is.
 QUOTE_COUNTER = Table(
     "haute_quote_counter",
     METADATA,
@@ -174,11 +183,13 @@ QUOTE_COUNTER = Table(
     Column("last_number", Integer, nullable=False),
 )
 
-#: The last option taken under each app quote's reference: an alternative takes the next.
+#: The last option taken under each app quote's reference, by its canonical form: an
+#: alternative takes the next, and a new reference's row, written as its quote is made,
+#: refuses a second quote of it.
 QUOTE_OPTIONS = Table(
     "haute_quote_options",
     METADATA,
-    Column("reference", String(REFERENCE_LENGTH), primary_key=True),
+    Column("reference_key", String(REFERENCE_KEY_LENGTH), primary_key=True),
     Column("last_option", Integer, nullable=False),
 )
 

@@ -150,6 +150,8 @@ class Page:
         self.revision = release["form_revision"]
         self.release = release["id"]
         self.operations = iter(range(10**6))
+        # The references underwriters key, in turn, as Haute once numbered them.
+        self.references = iter(range(1, 10**6))
 
     def body(self, **fields: Any) -> dict[str, Any]:
         return {
@@ -162,7 +164,12 @@ class Page:
         }
 
     def create(self, headers: dict[str, str] = ANA, **fields: Any) -> Any:
-        """A new quote, made unpriced as the app makes one."""
+        """A new quote, made unpriced as the app makes one, keyed with the next reference
+        unless it is an alternative or names its own."""
+        source = fields.get("source")
+        alternative = source is not None and source.get("relation") == "alternative"
+        if "reference" not in fields and not alternative:
+            fields["reference"] = f"Q-{next(self.references):06d}"
         body = self.body(**{"shown": None, **fields})
         return self.client.post("/api/app/quotes", json=body, headers=headers)
 
@@ -322,7 +329,7 @@ def test_what_the_app_sets_decides_what_shows_and_is_no_typing(
                     }
                 ],
             },
-        }
+        },
     ]
     shown = _write_release(tmp_path / "shown", spec)
     policy = {"t1": VALUES["t1"]}
@@ -352,6 +359,76 @@ def test_a_detail_the_app_sets_sent_unreadable_is_overruled_not_read(page: Page)
 
     assert saved.status_code == 200, saved.text
     assert (saved.json()["quote"]["option"], saved.json()["quote"]["label"]) == (1, "Q-000001/1")
+
+
+def test_a_new_quote_is_made_under_the_reference_the_underwriter_keyed(page: Page) -> None:
+    made = page.create(reference=" ABC-1 ")
+    assert made.status_code == 200, made.text
+    quote = made.json()["quote"]
+    assert (quote["reference"], quote["label"]) == ("ABC-1", "ABC-1/1")
+
+    # One reference whatever its case: refused naming the quote holding it.
+    taken = page.create(reference="abc-1")
+    assert taken.status_code == 409
+    assert taken.json()["detail"] == {
+        "message": "ABC-1/1 already holds the reference abc-1: open it, or create an "
+        "alternative of it.",
+        "error_code": "reference_taken",
+        "quote_id": quote["id"],
+        "label": "ABC-1/1",
+    }
+    # An alternative takes its source's, and names none.
+    source = {"quote_id": quote["id"], "revision": 1, "relation": "alternative"}
+    assert page.create(source=source).json()["quote"]["label"] == "ABC-1/2"
+    named = page.create(source=source, reference="ABC-9")
+    assert named.status_code == 422
+    assert "takes its source's reference" in named.json()["detail"]["message"]
+
+
+@pytest.mark.parametrize(
+    ("reference", "message"),
+    [
+        (None, "Key the quote's reference"),
+        ("ABC/1", "holds no /"),
+        ("A" * 41, "at most 40 characters"),
+    ],
+)
+def test_a_new_quote_without_a_reference_that_fits_is_refused(
+    page: Page, reference: Any, message: str
+) -> None:
+    refused = page.create(reference=reference)
+
+    assert refused.status_code == 422
+    assert message in refused.json()["detail"]["message"]
+    assert page.client.get("/api/app/quotes?view=team", headers=ANA).json()["quotes"] == []
+
+
+def test_a_new_quote_leaving_a_required_detail_empty_is_refused_but_an_alternative_is_made(
+    release_dir: Path, url: str, tmp_path: Path
+) -> None:
+    # The insured is required, the renewal tick too, which asks nothing.
+    spec = json.loads(json.dumps(FORM))
+    for column in spec["schema"]["tables"][0]["columns"]:
+        if column["name"] in ("insured", "is_renewal"):
+            column["required"] = True
+    required = _write_release(tmp_path / "required", spec)
+
+    with TestClient(create_app(required, store_url=url)) as client:
+        page = Page(client)
+        blank = {**VALUES, "quote_details": [{**DETAILS, "qd_insured": "   "}]}
+        refused = page.create(values=blank)
+        assert refused.status_code == 422
+        assert refused.json()["detail"]["message"] == (
+            "insured is required: fill it in to make the quote."
+        )
+        made = page.create(values=VALUES)
+        assert made.status_code == 200, made.text
+        # Saved without it, the quote is kept: rules mark cells, and stop no save.
+        quote = made.json()["quote"]
+        assert page.save(quote, values=blank).status_code == 200
+        # An alternative is made at once whatever its source holds.
+        source = {"quote_id": quote["id"], "revision": 2, "relation": "alternative"}
+        assert page.create(source=source).status_code == 200
 
 
 def test_a_new_quote_given_a_price_is_refused_as_it_is_made_unpriced(page: Page) -> None:
@@ -710,6 +787,7 @@ def test_with_an_edit_role_only_those_holding_it_change_quotes(tmp_path: Path, u
                 "release": release["id"],
                 "values": VALUES,
                 "shown": None,
+                "reference": "Q-000001",
             }
 
             made = client.post("/api/app/quotes", json=body, headers=editor)

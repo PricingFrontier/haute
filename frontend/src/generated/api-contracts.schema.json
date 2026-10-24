@@ -16270,7 +16270,7 @@
       "type": "object"
     },
     "WorkbenchAppQuoteCreateRequest": {
-      "description": "A new quote, and the quote it is made from when it is. It is made unpriced, ``shown``\nnull, and priced as it opens.",
+      "description": "A new quote, and the quote it is made from when it is. It is made unpriced, ``shown``\nnull, and priced as it opens. ``reference`` is the reference the underwriter keyed,\nwhich every creation but an alternative's names; an alternative takes its source's.",
       "properties": {
         "form_revision": {
           "title": "Form Revision",
@@ -16281,6 +16281,19 @@
           "minLength": 8,
           "title": "Operation",
           "type": "string"
+        },
+        "reference": {
+          "anyOf": [
+            {
+              "maxLength": 400,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference"
         },
         "release": {
           "title": "Release",

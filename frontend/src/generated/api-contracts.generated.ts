@@ -3052,11 +3052,13 @@ export interface WorkbenchAppPriceRequest {
 }
 /**
  * A new quote, and the quote it is made from when it is. It is made unpriced, ``shown``
- * null, and priced as it opens.
+ * null, and priced as it opens. ``reference`` is the reference the underwriter keyed,
+ * which every creation but an alternative's names; an alternative takes its source's.
  */
 export interface WorkbenchAppQuoteCreateRequest {
   form_revision: string;
   operation: string;
+  reference?: string | null;
   release: string;
   shown?: {
     [k: string]: {

@@ -932,6 +932,7 @@ made = client.post(
         "release": release_id,
         "values": json.loads(sys.argv[2]),
         "shown": None,
+        "reference": "Q-000001",
     },
     headers=signed_in,
 ).json()

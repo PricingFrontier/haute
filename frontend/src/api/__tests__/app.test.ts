@@ -56,15 +56,15 @@ describe("the app's quote routes on the wire", () => {
     expect(body).toEqual({ form_revision: "rev-9", release: "rel-1", values: SAVE.values })
   })
 
-  it("creates a quote with its operation key, values, prices shown and source", async () => {
+  it("creates a quote with its operation key, values, prices shown, source and the reference keyed", async () => {
     answering(answer())
 
-    await createAppQuote(SAVE, { quote_id: "q0", revision: 2, relation: "renewal" })
+    await createAppQuote(SAVE, { quote_id: "q0", revision: 2, relation: "renewal" }, "ABC-1")
 
     const { method, url, body } = sent()
     expect([method, url]).toEqual(["POST", "/api/app/quotes"])
     expect(validateWorkbenchAppQuoteCreateRequest(body)).toBe(true)
-    expect(body).toEqual({ ...SAVE, source: { quote_id: "q0", revision: 2, relation: "renewal" } })
+    expect(body).toEqual({ ...SAVE, source: { quote_id: "q0", revision: 2, relation: "renewal" }, reference: "ABC-1" })
   })
 
   it("carries a revision without the app's details for a quote made from it, and with them for the same quote", async () => {

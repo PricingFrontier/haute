@@ -1,8 +1,10 @@
 /**
  * The underwriter app's routes (specs/workbench): its one page reads where it is from the
  * address, so a quote has a link of its own, a reload stays on it and Back returns to the
- * list as it was. `/` is the Quotes page, its list in the query; `/quotes/new` a new quote,
- * made from another's revision when the query names one; `/quotes/{id}` a quote; and
+ * list as it was. `/` is the Quotes page, its list in the query; `/quotes/new` the Quotes
+ * page with the New quote window open, filled from a revision to duplicate or renew when the
+ * query names one, or, for an alternative, the alternative made at once; `/quotes/{id}` a
+ * quote; and
  * `/quotes/{id}/revisions/{n}` one of its revisions. A leave guard, set while a quote has
  * unsaved values, is asked before the page moves, Back included.
  */

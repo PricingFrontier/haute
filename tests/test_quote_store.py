@@ -25,6 +25,8 @@ from haute._quote_store import (
     QuoteStore,
     QuoteStoreError,
     QuoteStoreNotMigratedError,
+    ReferenceTakenError,
+    Source,
     StaleQuoteError,
     carry_values,
     migrate_store,
@@ -253,11 +255,16 @@ def test_a_file_at_the_third_schema_gives_each_app_quote_its_reference_and_optio
                 row[1] for row in connection.execute(text("PRAGMA table_info(haute_quote_details)"))
             }
             assert not {"valid_until", "currency"} & columns
-            # An alternative of Q-000004 would take option 2.
-            counted = connection.execute(
-                text("SELECT reference, last_option FROM haute_quote_options")
+            # Each app quote holds its reference's canonical form, by which its options are
+            # counted: an alternative of Q-000004 would take option 2.
+            keys = connection.execute(
+                text("SELECT id, reference_key FROM haute_quotes ORDER BY id")
             ).all()
-            assert [tuple(row) for row in counted] == [("Q-000004", 1)]
+            assert [tuple(row) for row in keys] == [("q1", "q-000004"), ("q2", None)]
+            counted = connection.execute(
+                text("SELECT reference_key, last_option FROM haute_quote_options")
+            ).all()
+            assert [tuple(row) for row in counted] == [("q-000004", 1)]
             oldest = connection.execute(
                 text("SELECT oldest_reader FROM haute_quote_store_compat")
             ).scalar_one()
@@ -275,6 +282,33 @@ def test_a_file_at_the_third_schema_gives_each_app_quote_its_reference_and_optio
             "9.9.9",
         )
         assert "valid_until" not in assigned.details
+        # An alternative of the quote numbered before takes the next option under it, and a
+        # new quote keying its reference in another case is refused.
+        alternative = book.create(
+            operation="operation-alternative",
+            actor="jo",
+            form=FORM,
+            inputs=VALUES,
+            request=REQUEST,
+            response=None,
+            release=None,
+            at=book.now(),
+            reference=None,
+            source=Source("q1", 3, "alternative"),
+        )
+        assert alternative.label == "Q-000004/2"
+        with pytest.raises(ReferenceTakenError, match="Q-000004/1 already holds"):
+            book.create(
+                operation="operation-same-reference",
+                actor="jo",
+                form=FORM,
+                inputs=VALUES,
+                request=REQUEST,
+                response=None,
+                release=None,
+                at=book.now(),
+                reference="q-000004",
+            )
 
 
 def test_a_haute_at_the_third_schema_refuses_a_database_migrated_to_the_fourth(

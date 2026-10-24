@@ -20,6 +20,7 @@ from haute._quote_store import (
     QuoteLockedError,
     QuoteNotFoundError,
     QuoteStoreError,
+    ReferenceTakenError,
     Source,
     StaleQuoteError,
     details_of,
@@ -113,6 +114,14 @@ def _values(**details: Any) -> dict[str, Any]:
     return with_details(VALUES, {**TYPED, **details})
 
 
+def _next_reference(book: QuoteBook) -> str:
+    """The reference an underwriter keys next in these tests: the quotes' as Haute numbered
+    them, one past the references the book holds."""
+    with sqlite3.connect(book.store._engine.url.database or "") as raw:
+        (held,) = raw.execute("SELECT COUNT(*) FROM haute_quote_options").fetchone()
+    return f"Q-{held + 1:06d}"
+
+
 def _create(book: QuoteBook, **overrides: Any) -> Any:
     fields: dict[str, Any] = {
         "operation": _op(),
@@ -123,6 +132,10 @@ def _create(book: QuoteBook, **overrides: Any) -> Any:
         "response": RESPONSE,
         "release": RELEASE,
     }
+    source = overrides.get("source")
+    if "reference" not in overrides:
+        alternative = source is not None and source.relation == "alternative"
+        fields["reference"] = None if alternative else _next_reference(book)
     return book.create(**{**fields, "at": book.now(), **overrides})
 
 
@@ -221,35 +234,101 @@ def test_a_date_that_is_not_one_is_refused_with_nothing_written(book: QuoteBook)
     assert _create(book).reference == "Q-000001"
 
 
-def test_references_follow_on_and_a_failed_creation_keeps_none(book: QuoteBook) -> None:
-    first = _create(book)
+def test_a_reference_is_keyed_trimmed_and_one_whatever_its_case(book: QuoteBook) -> None:
+    made = _create(book, reference="  ABC-1 ")
+    # A creation that fails keeps no reference.
     with pytest.raises(QuoteStoreError, match="not as the sheets keep them"):
-        _create(book, inputs={"t_policy": [{"c_region": 7}]})
-    second = _create(book)
+        _create(book, reference="DEF-2", inputs={"t_policy": [{"c_region": 7}]})
 
-    assert (first.reference, second.reference) == ("Q-000001", "Q-000002")
+    assert (made.reference, made.label) == ("ABC-1", "ABC-1/1")
+    assert _create(book, reference="DEF-2").label == "DEF-2/1"
+    # One reference, cased or composed otherwise, is refused naming the quote holding it.
+    with pytest.raises(ReferenceTakenError, match="ABC-1/1 already holds") as taken:
+        _create(book, reference="abc-1")
+    assert (taken.value.quote_id, taken.value.label) == (made.id, "ABC-1/1")
+    _create(book, reference="STRASSE")
+    with pytest.raises(ReferenceTakenError):
+        _create(book, reference="straße")
+    # Accents tell two references apart.
+    assert {_create(book, reference=r).reference for r in ("cafe", "café")} == {"cafe", "café"}
+    # Forty characters keyed, though case folding makes its canonical form 41.
+    assert len(_create(book, reference="A" * 39 + "ß").reference) == 40
+    assert _kinds(book, made.id) == ["created"]
 
 
-def test_quotes_created_at_once_take_different_references(url: str) -> None:
+@pytest.mark.parametrize(
+    ("reference", "message"),
+    [
+        (None, "Key the quote's reference"),
+        ("   ", "Key the quote's reference"),
+        ("ABC/1", "holds no /"),
+        ("A" * 41, "at most 40 characters; this one has 41"),
+        ("AB\u0007C", "no control characters"),
+        ("AB\u200bC", "no control characters"),
+    ],
+)
+def test_a_reference_breaking_the_rules_is_refused_with_nothing_written(
+    book: QuoteBook, reference: Any, message: str
+) -> None:
+    with pytest.raises(QuoteStoreError, match=message):
+        _create(book, reference=reference)
+    assert book.page(actor=ANA, view="team").quotes == []
+
+
+def test_an_alternative_names_no_reference(book: QuoteBook) -> None:
+    origin = _create(book)
+
+    with pytest.raises(QuoteStoreError, match="takes its source's reference"):
+        _create(book, reference="XYZ-9", source=Source(origin.id, 1, "alternative"))
+
+
+def test_one_reference_made_at_once_in_two_cases_is_one_quote(url: str) -> None:
+    migrate_store(url)
+    made: list[str] = []
+    refused: list[BaseException] = []
+    barrier = threading.Barrier(6)
+
+    def make(reference: str) -> None:
+        with QuoteBook(open_store(url), haute_version=HAUTE) as own:
+            barrier.wait()
+            try:
+                made.append(_create(own, reference=reference).reference)
+            except ReferenceTakenError as exc:
+                refused.append(exc)
+
+    threads = [
+        threading.Thread(target=make, args=(reference,))
+        for reference in ("GHI-3", "ghi-3", "Ghi-3", "GHI-3", "gHI-3", "ghI-3")
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(made) == 1
+    assert len(refused) == 5
+
+
+def test_quotes_made_at_once_under_their_own_references_are_all_made(url: str) -> None:
     migrate_store(url)
     references: list[str] = []
     errors: list[BaseException] = []
 
-    def make() -> None:
+    def make(reference: str) -> None:
         try:
             with QuoteBook(open_store(url), haute_version=HAUTE) as own:
-                references.append(_create(own).reference)
+                references.append(_create(own, reference=reference).reference)
         except BaseException as exc:  # noqa: BLE001 - reported below
             errors.append(exc)
 
-    threads = [threading.Thread(target=make) for _ in range(6)]
+    threads = [threading.Thread(target=make, args=(f"R-{n}",)) for n in range(6)]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join()
 
     assert errors == []
-    assert sorted(references) == [f"Q-{n:06d}" for n in range(1, 7)]
+    assert sorted(references) == [f"R-{n}" for n in range(6)]
 
 
 def test_a_creation_or_save_repeated_with_its_operation_key_writes_once(book: QuoteBook) -> None:
@@ -483,6 +562,11 @@ def test_a_search_matches_every_word_in_the_reference_name_insured_or_broker(
     assert found("acme") == [acme.reference]
     assert found("TRADING aon") == [harbour.reference]
     assert found("q-000002") == [harbour.reference]
+    # A reference through its canonical form, keyed composed and searched decomposed.
+    accented = _create(
+        book, reference="café-7", inputs=_values(quote_name="", insured="Bistro", broker="")
+    )
+    assert found("CAFE\u0301") == [accented.reference]
     assert found("fleet marsh") == [acme.reference]
     assert found("acme aon") == []
     assert found("100%") == []
@@ -511,20 +595,18 @@ def test_pages_follow_on_without_repeating_or_missing_a_quote_saved_at_the_same_
 @pytest.mark.parametrize(
     ("sort", "expected"),
     [
-        ("saved", ["Q-000003", "Q-000002", "Q-000001"]),
-        ("reference", ["Q-000003", "Q-000002", "Q-000001"]),
+        ("saved", ["Q-000005", "Q-000004", "Q-000003", "Q-000002", "Q-000001"]),
+        ("reference", ["Q-000001", "Q-000002", "Q-000003", "Q-000004", "Q-000005"]),
         ("insured", ["Q-000002", "Q-000003", "Q-000001", "Q-000004", "Q-000005"]),
     ],
 )
-def test_a_list_is_read_newest_saved_newest_reference_or_by_insured(
+def test_a_list_is_read_newest_saved_by_reference_or_by_insured(
     book: QuoteBook, sort: Any, expected: list[str]
 ) -> None:
     # Capitals with accents, which SQLite's lower() leaves as they are: a page's cursor
     # holds the key as the database ordered it, so paging one at a time skips none.
     for insured in ("zeta", "Alpha", "beta", "Ärzt", "Öresund"):
         _create(book, inputs=_values(insured=insured))
-    if sort != "insured":
-        expected = ["Q-000005", "Q-000004", *expected]
 
     seen: list[str] = []
     cursor = None
@@ -819,7 +901,9 @@ def test_a_reference_and_option_are_searched_and_ordered_as_shown(book: QuoteBoo
     assert found("Q-000001/10") == ["Q-000001/10"]
     assert sorted(found("Q-000001")) == sorted(q.label for q in (origin, *made))
 
-    # The newest reference first, its options in order, a page at a time.
+    # By reference, A to Z by canonical form whatever its case, its options in order, a
+    # page at a time, references keyed and numbered alike.
+    keyed = [_create(book, reference=r).label for r in ("abc-2", "ABC-1", "zed")]
     seen: list[str] = []
     cursor = None
     while True:
@@ -828,7 +912,13 @@ def test_a_reference_and_option_are_searched_and_ordered_as_shown(book: QuoteBoo
         if page.next_cursor is None:
             break
         cursor = page.next_cursor
-    assert seen == [other.label, *(f"Q-000001/{n}" for n in range(1, 12))]
+    assert seen == [
+        keyed[1],
+        keyed[0],
+        *(f"Q-000001/{n}" for n in range(1, 12)),
+        other.label,
+        keyed[2],
+    ]
 
 
 def test_a_quote_made_from_one_the_app_does_not_keep_is_refused(book: QuoteBook) -> None:

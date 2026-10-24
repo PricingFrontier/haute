@@ -153,10 +153,8 @@ export const fullTime = (iso: string): string => new Date(iso).toLocaleString(un
 
 // ── Values kept in the browser ───────────────────────────────────────────
 
-/** A write a save sends: a new quote, made from a source or not, or a quote's next revision over `version`. */
-export type QuoteWrite =
-  | { kind: "create"; body: QuoteSave; source: QuoteSource | null }
-  | { kind: "save"; quoteId: string; version: number; body: QuoteSave }
+/** A write a save sends: a quote's next revision over `version`. */
+export type QuoteWrite = { kind: "save"; quoteId: string; version: number; body: QuoteSave }
 
 /**
  * A write sent and not answered, or answered by a server failure, so it may have landed:
@@ -190,7 +188,7 @@ const isPendingWrite = (value: unknown): value is PendingWrite => {
   if (typeof basis !== "string" || typeof write !== "object" || write === null) return false
   const body = (write as { body?: Partial<QuoteSave> }).body
   if (typeof body !== "object" || body === null || typeof body.operation !== "string" || typeof body.values !== "object") return false
-  return write.kind === "create" || (write.kind === "save" && typeof write.quoteId === "string" && typeof write.version === "number")
+  return write.kind === "save" && typeof write.quoteId === "string" && typeof write.version === "number"
 }
 
 const DRAFT_PREFIX = "haute-app-draft"
@@ -270,6 +268,97 @@ export function releaseOperation(key: string): void {
   } catch {
     // Nothing held, nothing to let go.
   }
+}
+
+// ── A new quote keyed in the window ──────────────────────────────────────
+
+/** The most characters a reference holds. */
+export const REFERENCE_MOST = 40
+
+/**
+ * What stops `reference` being a quote's reference, as the server checks it, or null: it
+ * is trimmed and then 1 to 40 characters, holding no `/`, which the app puts before the
+ * option, and no control character.
+ */
+export function referenceProblem(reference: string): string | null {
+  const text = reference.trim()
+  if (text === "") return "Required"
+  if ([...text].length > REFERENCE_MOST) return `At most ${REFERENCE_MOST} characters`
+  if (text.includes("/")) return "No / in a reference"
+  if (/[\p{Cc}\p{Cf}]/u.test(text)) return "No control characters"
+  return null
+}
+
+/**
+ * A creation sent from the window, whole, kept in the tab until its answer comes: what it
+ * sends again, exactly, when tried again.
+ */
+export interface KeptCreation {
+  operation: string
+  form_revision: string
+  release: string
+  reference: string
+  values: Values
+  source: QuoteSource | null
+  /** The window's title, which it is offered back under. */
+  title: string
+}
+
+const KEPT_PREFIX = "haute-app-creation"
+
+/** Where the creation sent from the window is kept in this tab: one per app and person. */
+export const keptCreationKey = (app: string, principal: string): string => `${KEPT_PREFIX}:${app}:${principal}`
+
+const isKeptCreation = (value: unknown): value is KeptCreation => {
+  if (typeof value !== "object" || value === null) return false
+  const kept = value as Partial<KeptCreation>
+  return (
+    typeof kept.operation === "string"
+    && typeof kept.form_revision === "string"
+    && typeof kept.release === "string"
+    && typeof kept.reference === "string"
+    && typeof kept.values === "object"
+    && kept.values !== null
+    && typeof kept.title === "string"
+    && (kept.source === null || typeof kept.source === "object")
+  )
+}
+
+/** The creation kept under `key`, or null: none, or the tab keeps none. */
+export function readKeptCreation(key: string): KeptCreation | null {
+  try {
+    const text = window.sessionStorage.getItem(key)
+    if (text === null) return null
+    const kept: unknown = JSON.parse(text)
+    return isKeptCreation(kept) ? kept : null
+  } catch {
+    return null
+  }
+}
+
+/** Keep `creation` under `key` before it is sent; false when the tab could not. */
+export function keepCreation(key: string, creation: KeptCreation): boolean {
+  try {
+    window.sessionStorage.setItem(key, JSON.stringify(creation))
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Let go of the creation kept under `key`: answered, refused or discarded. */
+export function forgetCreation(key: string): void {
+  try {
+    window.sessionStorage.removeItem(key)
+  } catch {
+    // Nothing kept, nothing to let go.
+  }
+}
+
+/** A renewal's values: those carried from its source, with `is_renewal` ticked in its details. */
+export function asRenewal(values: Values): Values {
+  const [details = {}] = values[QUOTE_DETAILS_ID] ?? []
+  return { ...values, [QUOTE_DETAILS_ID]: [{ ...details, qd_is_renewal: true }] }
 }
 
 /**

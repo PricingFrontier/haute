@@ -1,7 +1,9 @@
 /**
- * A quote in the underwriter app (specs/workbench): its bar and line, a new quote made as it
- * is asked for and taken to its own address, marking final and reopening, the notices of what stands in the way and
- * what each offers, leaving with unsaved values, the keyboard, History, and assigning.
+ * A quote in the underwriter app (specs/workbench): its bar and line, an alternative made as
+ * it is asked for and taken to its own address, Duplicate, Renew and Save as new opening the
+ * New quote window over the quote, marking final and reopening, the notices of what stands in
+ * the way and what each offers, leaving with unsaved values, the keyboard, History, and
+ * assigning.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
@@ -24,8 +26,9 @@ import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { sheetForm, stubLayout } from "../../workbench/__tests__/fixtures"
+import { detailsTable, sheetForm, stubLayout } from "../../workbench/__tests__/fixtures"
 import { APP_SET_COLUMNS } from "../openRelease"
+import NewQuoteWindow from "../NewQuoteWindow"
 import { draftKey, writeDraft } from "../quoteValues"
 import QuoteView from "../QuoteView"
 import { navigate, setLeaveGuard, type AppRoute } from "../route"
@@ -41,6 +44,7 @@ function show(route: QuoteRoute) {
   return render(
     <>
       <QuoteView route={route} />
+      <NewQuoteWindow />
       <QuestionDialog />
       <ToastContainer />
     </>,
@@ -54,12 +58,20 @@ const opened = async (route: QuoteRoute = { page: "quote", id: "q1", revision: n
 }
 
 const type = (value: string) => act(() => useWorkbenchPreviewStore.getState().setCell("policy", 0, "policy.state", value))
+/** Key `value` into the New quote window's field labelled `label`, committed as leaving it commits it. */
+const key = (label: string, value: string) => {
+  const field = within(screen.getByTestId("new-quote-window")).getByRole("textbox", { name: label })
+  fireEvent.change(field, { target: { value } })
+  fireEvent.blur(field)
+}
 const confirmQuestion = (label: string) => fireEvent.click(within(screen.getByTestId("question")).getByRole("button", { name: label }))
 
 describe("QuoteView", () => {
   beforeEach(async () => {
     stubLayout()
-    const form = sheetForm()
+    const sheets = sheetForm()
+    // Haute's quote_details first, as every release's form holds it.
+    const form = { ...sheets, schema: { tables: [detailsTable(), ...sheets.schema.tables] } }
     useAppStore.setState({ release, form, revision: "rev-9", people: [], releaseChanged: false })
     useQuestionStore.setState({ question: null })
     useWorkbenchFormStore.setState({ form, status: "ready" })
@@ -82,63 +94,48 @@ describe("QuoteView", () => {
     window.sessionStorage.clear()
   })
 
-  it("makes a duplicate as it is asked for, from its source's values, and takes it to its own address", async () => {
-    await navigate("/quotes/new?from=q1&revision=1&as=duplicate", { force: true })
+  it("makes an alternative as it is asked for, from its source's values under its reference, and takes it to its own address", async () => {
+    await navigate("/quotes/new?from=q1&revision=1&as=alternative", { force: true })
     const values = { policy: [{ "policy.state": "NY" }] }
     vi.mocked(carryAppQuote).mockResolvedValue({ values, dropped: [] })
-    vi.mocked(createAppQuote).mockResolvedValue(answer({ id: "q2", reference: "Q-000002", relation: "duplicate", source_label: "Q-000001/1", source_quote_id: "q1", source_revision: 1 }, { values, tables: null }))
-    show({ page: "new", from: { quoteId: "q1", revision: 1, relation: "duplicate" } })
+    vi.mocked(createAppQuote).mockResolvedValue(answer({ id: "q2", option: 2, relation: "alternative", source_label: "Q-000001/1", source_quote_id: "q1", source_revision: 1 }, { values, tables: null }))
+    show({ page: "new", from: { quoteId: "q1", revision: 1, relation: "alternative" } })
 
     await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/q2"))
-    const [body, source] = vi.mocked(createAppQuote).mock.calls[0]
-    expect([body.values, body.shown, source]).toEqual([values, null, { quote_id: "q1", revision: 1, relation: "duplicate" }])
+    const [body, source, reference] = vi.mocked(createAppQuote).mock.calls[0]
+    expect([body.values, body.shown, source, reference]).toEqual([values, null, { quote_id: "q1", revision: 1, relation: "alternative" }, null])
     expect(openAppQuote).not.toHaveBeenCalled()
-    expect(screen.getByTestId("quote-reference")).toHaveTextContent("Q-000002/1")
-    expect(screen.getByTestId("quote-line")).toHaveTextContent("Duplicate of Q-000001/1 revision 1")
+    expect(screen.getByTestId("quote-reference")).toHaveTextContent("Q-000001/2")
+    expect(screen.getByTestId("quote-line")).toHaveTextContent("Alternative of Q-000001/1 revision 1")
     expect(screen.queryByTestId("quote-unsaved")).toBeNull()
+    // No window: an alternative takes its source's reference.
+    expect(screen.queryByTestId("new-quote-window")).toBeNull()
   })
 
-  it("makes a new quote, which takes its own address at once, and saves it once something is typed", async () => {
-    await navigate("/quotes/new", { force: true })
-    vi.mocked(createAppQuote).mockResolvedValue(answer({ stage: "draft", priced: false, release: null }, { tables: null, values: {} }))
-    vi.mocked(saveAppQuote).mockResolvedValue(answer({ latest: 2 }, { number: 2 }))
-    show({ page: "new", from: null })
-
-    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/q1"))
-    expect(screen.getByTestId("quote-reference")).toHaveTextContent("Q-000001/1")
-    const save = screen.getByTestId("save-quote")
-    expect(save).toBeDisabled()
-    type("NY")
-    // Priced as it is typed: a save keeps the price the values settle on.
-    expect(save).toHaveAttribute("title", "Save the quote with its price (Ctrl+S)")
-    expect(screen.queryByRole("button", { name: "Price" })).toBeNull()
-    fireEvent.click(save)
-
-    expect(await screen.findByText("Saved Q-000001/1, revision 2")).toBeInTheDocument()
-    expect(openAppQuote).not.toHaveBeenCalled()
-  })
-
-  it("makes a new quote once though its answer is lost and the page is loaded again", async () => {
-    await navigate("/quotes/new", { force: true })
+  it("makes an alternative once though its answer is lost and the page is loaded again", async () => {
+    await navigate("/quotes/new?from=q1&revision=1&as=alternative", { force: true })
+    vi.mocked(carryAppQuote).mockResolvedValue({ values: VALUES, dropped: [] })
     vi.mocked(createAppQuote)
       .mockRejectedValueOnce(new TypeError("Failed to fetch"))
-      .mockResolvedValue(answer({ stage: "draft", priced: false, release: null }, { tables: null, values: {} }))
-    const view = show({ page: "new", from: null })
+      .mockResolvedValue(answer({ id: "q2", option: 2, relation: "alternative" }, { tables: null }))
+    const from = { quoteId: "q1", revision: 1, relation: "alternative" } as const
+    const view = show({ page: "new", from })
     expect(await screen.findByText(/Failed to fetch/)).toBeInTheDocument()
     view.unmount()
 
-    show({ page: "new", from: null })
+    show({ page: "new", from })
 
-    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/q1"))
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/q2"))
     const [first, second] = vi.mocked(createAppQuote).mock.calls.map(([body]) => body.operation)
     expect(second).toBe(first)
   })
 
-  it("stays on the Quotes page when a new quote's answer comes after it was left", async () => {
-    await navigate("/quotes/new", { force: true })
+  it("stays on the Quotes page when an alternative's answer comes after it was left", async () => {
+    await navigate("/quotes/new?from=q1&revision=1&as=alternative", { force: true })
+    vi.mocked(carryAppQuote).mockResolvedValue({ values: VALUES, dropped: [] })
     let creating: (value: WorkbenchAppQuoteResponse) => void = () => {}
     vi.mocked(createAppQuote).mockReturnValue(new Promise((resolve) => (creating = resolve)))
-    const view = show({ page: "new", from: null })
+    const view = show({ page: "new", from: { quoteId: "q1", revision: 1, relation: "alternative" } })
     await vi.waitFor(() => expect(createAppQuote).toHaveBeenCalled())
 
     await navigate("/", { force: true })
@@ -256,19 +253,28 @@ describe("QuoteView", () => {
     expect(screen.getByTestId("quote-line")).toHaveTextContent("Priced on release rel-0")
   })
 
-  it("offers to open the newest or save the values as a new quote when the quote moved on", async () => {
+  it("offers to open the newest or save the values as a new quote, keyed in the window, when the quote moved on", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     vi.mocked(saveAppQuote).mockRejectedValue(new ApiError("HTTP 409", 409, "moved", {}, { message: "Q-000001 has changed since you opened it: jo saved it.", error_code: "stale_quote_revision", quote: appQuote({ latest: 2 }) }))
-    vi.mocked(createAppQuote).mockResolvedValue(answer({ id: "q2", reference: "Q-000002" }))
+    vi.mocked(createAppQuote).mockResolvedValue(answer({ id: "q2", reference: "DEF-2", relation: "duplicate" }, { tables: null }))
     await opened()
     type("CA")
     fireEvent.click(screen.getByTestId("save-quote"))
 
     expect(await screen.findByTestId("notice-conflict")).toHaveTextContent("jo saved it. Your changes are still on the sheets.")
     fireEvent.click(screen.getByRole("button", { name: "Save mine as a new quote" }))
+    // The window over the quote, filled from the sheets, its reference blank.
+    expect(screen.getByRole("dialog", { name: "Save as a new quote" })).toBeInTheDocument()
+    expect(window.location.pathname).toBe("/quotes/q1")
+    key("Quote reference", "DEF-2")
+    fireEvent.click(screen.getByTestId("new-quote-create"))
 
     await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/q2"))
-    expect(vi.mocked(createAppQuote).mock.calls[0][1]).toEqual({ quote_id: "q1", revision: 2, relation: "duplicate" })
+    const [body, source, reference] = vi.mocked(createAppQuote).mock.calls[0]
+    expect([source, reference]).toEqual([{ quote_id: "q1", revision: 2, relation: "duplicate" }, "DEF-2"])
+    // The values on the sheets, unsaved ones and all, made unpriced.
+    expect(body.values.policy).toEqual([{ "policy.state": "CA" }])
+    expect(body.shown).toBeNull()
   })
 
   it("offers a reload when the page was drawn for an earlier release", async () => {
@@ -334,6 +340,7 @@ describe("QuoteView", () => {
     view.rerender(
       <>
         <QuoteView route={{ page: "quote", id: "q2", revision: null }} />
+        <NewQuoteWindow />
         <QuestionDialog />
         <ToastContainer />
       </>,
@@ -377,14 +384,29 @@ describe("QuoteView", () => {
     expect(screen.getByTestId("save-quote")).toBeEnabled()
   })
 
-  it("starts a renewal from the menu at the revision showing", async () => {
+  it("starts a renewal from the menu in the window over the quote, filled from the revision showing, and Cancel leaves the quote as it was", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer({ latest: 2 }, { number: 2 }))
+    vi.mocked(carryAppQuote).mockResolvedValue({ values: { ...VALUES, quote_details: [{ qd_insured: "Acme" }] }, dropped: [] })
     await opened()
+    type("CA")
 
     fireEvent.click(screen.getByTestId("quote-more"))
     fireEvent.click(screen.getByRole("menuitem", { name: "Renew" }))
 
-    await vi.waitFor(() => expect(`${window.location.pathname}${window.location.search}`).toBe("/quotes/new?from=q1&revision=2&as=renewal"))
+    const window_ = await screen.findByRole("dialog", { name: "Renew Q-000001/1" })
+    await vi.waitFor(() => expect(within(window_).getByRole("textbox", { name: "Insured" })).toHaveValue("Acme"))
+    expect(carryAppQuote).toHaveBeenCalledWith("q1", 2)
+    expect(within(window_).getByRole("checkbox", { name: "Is renewal" })).toBeChecked()
+    expect(within(window_).getByRole("textbox", { name: "Quote reference" })).toHaveValue("")
+    // Nothing is installed on the sheets while it is open, and the address stays the quote's.
+    expect(window.location.pathname).toBe("/quotes/q1")
+    expect(useWorkbenchPreviewStore.getState().quote.policy).toEqual([{ "policy.state": "CA" }])
+
+    fireEvent.click(within(window_).getByRole("button", { name: "Cancel" }))
+    expect(screen.queryByTestId("new-quote-window")).toBeNull()
+    expect(createAppQuote).not.toHaveBeenCalled()
+    expect(useWorkbenchPreviewStore.getState().quote.policy).toEqual([{ "policy.state": "CA" }])
+    expect(screen.getByTestId("quote-unsaved")).toBeInTheDocument()
   })
 
   it("copies the quote's link", async () => {

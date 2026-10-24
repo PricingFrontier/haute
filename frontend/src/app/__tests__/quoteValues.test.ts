@@ -1,24 +1,32 @@
 /**
  * What the underwriter app works out of a quote's values (specs/workbench): one quote however
  * its blanks were left, a saved revision's price, the Quotes page's columns and values, how
- * long ago, what an event says, and the values kept in the browser.
+ * long ago, what an event says, the values kept in the browser, a reference's rules, and a
+ * creation kept in the tab until its answer comes.
  */
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { WorkbenchAppQuoteEvent } from "../../api/types"
 import { detailsTable, sheetForm } from "../../workbench/__tests__/fixtures"
 import {
+  asRenewal,
   clearDraft,
   draftKey,
   eventText,
+  forgetCreation,
+  keepCreation,
+  keptCreationKey,
   listColumns,
   listValue,
   normalisedValues,
   operationKey,
   readDraft,
+  readKeptCreation,
+  referenceProblem,
   relativeTime,
   savedPrice,
   valuesKey,
   writeDraft,
+  type KeptCreation,
 } from "../quoteValues"
 
 describe("values", () => {
@@ -160,5 +168,65 @@ describe("operationKey", () => {
     expect(one.length).toBeGreaterThanOrEqual(8)
     expect(one.length).toBeLessThanOrEqual(64)
     expect(one).toMatch(/^[A-Za-z0-9_-]+$/)
+  })
+})
+
+describe("referenceProblem", () => {
+  it("takes a reference trimmed, of 1 to 40 characters, with no / and no control character", () => {
+    expect(referenceProblem("  ABC-1 ")).toBeNull()
+    expect(referenceProblem("Straße 12")).toBeNull()
+    expect(referenceProblem("x".repeat(40))).toBeNull()
+    expect(referenceProblem("   ")).toBe("Required")
+    expect(referenceProblem("x".repeat(41))).toBe("At most 40 characters")
+    // Counted as the server counts them, by character: a letter beyond the basic plane is one.
+    expect(referenceProblem("𝔸".repeat(40))).toBeNull()
+    expect(referenceProblem("ABC/1")).toBe("No / in a reference")
+    expect(referenceProblem("AB\tC")).toBe("No control characters")
+    expect(referenceProblem("AB\u200bC")).toBe("No control characters")
+  })
+})
+
+describe("a kept creation", () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    window.sessionStorage.clear()
+  })
+
+  const creation: KeptCreation = {
+    operation: "save-0001",
+    form_revision: "rev-9",
+    release: "rel-1",
+    reference: "ABC-1",
+    values: { quote_details: [{ qd_insured: "Acme" }] },
+    source: null,
+    title: "New quote",
+  }
+
+  it("is kept in the tab per app and person, read back whole and let go", () => {
+    const key = keptCreationKey("motor", "ana")
+    expect(key).not.toBe(keptCreationKey("motor", "jo"))
+    expect(keepCreation(key, creation)).toBe(true)
+    expect(readKeptCreation(key)).toEqual(creation)
+    forgetCreation(key)
+    expect(readKeptCreation(key)).toBeNull()
+  })
+
+  it("is none when the tab keeps nothing, or holds something that is not one", () => {
+    window.sessionStorage.setItem("k", JSON.stringify({ operation: "x" }))
+    expect(readKeptCreation("k")).toBeNull()
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota")
+    })
+    expect(keepCreation("k2", creation)).toBe(false)
+  })
+})
+
+describe("asRenewal", () => {
+  it("ticks is_renewal in the details carried, the rest as they were", () => {
+    expect(asRenewal({ policy: [{ a: "1" }], quote_details: [{ qd_insured: "Acme" }] })).toEqual({
+      policy: [{ a: "1" }],
+      quote_details: [{ qd_insured: "Acme", qd_is_renewal: true }],
+    })
+    expect(asRenewal({})).toEqual({ quote_details: [{ qd_is_renewal: true }] })
   })
 })

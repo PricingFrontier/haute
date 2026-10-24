@@ -394,9 +394,11 @@ class WorkbenchAppQuoteSaveRequest(BaseModel):
 
 class WorkbenchAppQuoteCreateRequest(WorkbenchAppQuoteSaveRequest):
     """A new quote, and the quote it is made from when it is. It is made unpriced, ``shown``
-    null, and priced as it opens."""
+    null, and priced as it opens. ``reference`` is the reference the underwriter keyed,
+    which every creation but an alternative's names; an alternative takes its source's."""
 
     source: WorkbenchAppQuoteSource | None = None
+    reference: str | None = Field(default=None, max_length=400)
 
 
 class WorkbenchAppQuoteReviseRequest(WorkbenchAppQuoteSaveRequest):

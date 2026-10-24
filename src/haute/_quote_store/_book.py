@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
@@ -56,13 +57,13 @@ from haute._quote_store._tables import (
     NAME_LENGTH,
     OPERATION_LENGTH,
     PRINCIPAL_LENGTH,
-    QUOTE_COUNTER,
     QUOTE_DETAILS,
     QUOTE_EVENTS,
     QUOTE_OPERATIONS,
     QUOTE_OPTIONS,
     QUOTE_REVISIONS,
     QUOTES,
+    REFERENCE_LENGTH,
 )
 from haute._workbench_form import QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_ID, FormSpec
 
@@ -72,7 +73,7 @@ Stage = Literal["draft", "priced", "final"]
 Relation = Literal["duplicate", "renewal", "alternative"]
 #: The lists of the Quotes page: the signed-in underwriter's, everyone's, the archive.
 View = Literal["mine", "team", "archived"]
-#: The orders a list is read in: the newest saved first, the newest reference first, or by
+#: The orders a list is read in: the newest saved first, by reference from A to Z, or by
 #: insured.
 Sort = Literal["saved", "reference", "insured"]
 #: What an event records.
@@ -88,8 +89,6 @@ EventKind = Literal[
     "derived",
 ]
 
-#: A reference is this and the counter's number in six digits, or more past a million.
-REFERENCE_PREFIX = "Q-"
 #: The quotes one page holds, unless asked for fewer; and the most it holds.
 PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
@@ -99,11 +98,22 @@ MAX_PEOPLE = 500
 DETAIL_IDS: dict[str, str] = {name: column_id for column_id, name, _ in QUOTE_DETAILS_COLUMNS}
 _DATES = frozenset(name for _, name, kind in QUOTE_DETAILS_COLUMNS if kind == "date")
 _WHOLE = frozenset(name for _, name, kind in QUOTE_DETAILS_COLUMNS if kind == "int")
-_SEARCHED = ("quote_reference", "quote_name", "insured", "broker")
+_SEARCHED = ("quote_name", "insured", "broker")
 #: A word of a search naming a reference and an option, as a quote is shown: ``Q-000123/2``.
 _REFERENCE_OPTION = re.compile(r"(.+)/(\d+)")
 _OPERATION = re.compile(rf"[A-Za-z0-9_-]{{8,{OPERATION_LENGTH}}}")
-_COUNTER_SCOPE = "quotes"
+
+
+class ReferenceTakenError(QuoteStoreError):
+    """A new quote's reference is one another quote holds, in its canonical form: the quote
+    holding it, its option 1 else its lowest, is named by *quote_id* and *label*."""
+
+    error_code = "reference_taken"
+
+    def __init__(self, message: str, *, quote_id: str, label: str) -> None:
+        super().__init__(message)
+        self.quote_id = quote_id
+        self.label = label
 
 
 class QuoteLockedError(QuoteStoreError):
@@ -282,8 +292,38 @@ def _day(moment: datetime) -> str:
 
 
 def _search_like(term: str) -> str:
-    escaped = term.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return _like(term.lower())
+
+
+def _like(term: str) -> str:
+    """A ``LIKE`` pattern for *term* anywhere, its wildcards escaped."""
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
+
+
+def canonical_reference(reference: str) -> str:
+    """*reference*'s canonical form: normalized to Unicode NFC, then case-folded. Two
+    references are one when their canonical forms are, compared exactly: ``ABC-1`` and
+    ``abc-1``, ``STRASSE`` and ``straße``, but not ``cafe`` and ``café``."""
+    return unicodedata.normalize("NFC", reference).casefold()
+
+
+def check_reference(reference: str | None) -> str:
+    """*reference* as a new quote keeps it, trimmed: 1 to ``REFERENCE_LENGTH`` characters,
+    no ``/``, which a quote's label puts before its option, and no control or format
+    character. Refused otherwise, saying why."""
+    value = (reference or "").strip()
+    if not value:
+        raise QuoteStoreError("Key the quote's reference.")
+    if len(value) > REFERENCE_LENGTH:
+        raise QuoteStoreError(
+            f"A reference is at most {REFERENCE_LENGTH} characters; this one has {len(value)}."
+        )
+    if "/" in value:
+        raise QuoteStoreError("A reference holds no /, which the app puts before its option.")
+    if any(unicodedata.category(character) in ("Cc", "Cf") for character in value):
+        raise QuoteStoreError("A reference holds no control characters.")
+    return value
 
 
 def _check_operation(operation: str) -> None:
@@ -397,19 +437,22 @@ def _view_filter(view: View, actor: str) -> ColumnElement[bool]:
 
 
 def _search_filter(term: str) -> ColumnElement[bool]:
+    """A search word's match: a reference through its canonical form, the word's made by the
+    same function, so letters cased or composed otherwise find it; ``ABC-1/2`` that option
+    alone; a name, an insured and a broker as the database lowers them."""
     named = _REFERENCE_OPTION.fullmatch(term)
     if named is not None:
-        reference = func.lower(QUOTE_DETAILS.c.quote_reference)
         return and_(
-            reference.like(_search_like(named.group(1)), escape="\\"),
+            QUOTES.c.reference_key.like(_like(canonical_reference(named.group(1))), escape="\\"),
             QUOTE_DETAILS.c.quote_option == int(named.group(2)),
         )
     like = _search_like(term)
     return or_(
+        QUOTES.c.reference_key.like(_like(canonical_reference(term)), escape="\\"),
         *(
             func.lower(func.coalesce(QUOTE_DETAILS.c[name], "")).like(like, escape="\\")
             for name in _SEARCHED
-        )
+        ),
     )
 
 
@@ -417,7 +460,7 @@ def _sort_key(sort: Sort) -> Any:
     if sort == "saved":
         return QUOTE_REVISIONS.c.saved_at
     if sort == "reference":
-        return QUOTE_DETAILS.c.quote_reference
+        return QUOTES.c.reference_key
     return func.lower(func.coalesce(QUOTE_DETAILS.c.insured, ""))
 
 
@@ -450,12 +493,12 @@ def _cursor_filter(sort: Sort, cursor: str) -> ColumnElement[bool]:
     if sort == "insured":
         return or_(column > value, and_(column == value, quote > quote_id))
     if sort == "reference":
-        # The newest reference first, and under it its options in order.
+        # A to Z by canonical form, and under a reference its options in order.
         later = or_(
             QUOTE_DETAILS.c.quote_option > option,
-            and_(QUOTE_DETAILS.c.quote_option == option, quote < quote_id),
+            and_(QUOTE_DETAILS.c.quote_option == option, quote > quote_id),
         )
-        return or_(column < value, and_(column == value, later))
+        return or_(column > value, and_(column == value, later))
     return or_(column < value, and_(column == value, quote < quote_id))
 
 
@@ -465,9 +508,9 @@ def _order(sort: Sort) -> list[Any]:
         return [column.asc(), QUOTE_DETAILS.c.quote_id.asc()]
     if sort == "reference":
         return [
-            column.desc(),
+            column.asc(),
             QUOTE_DETAILS.c.quote_option.asc(),
-            QUOTE_DETAILS.c.quote_id.desc(),
+            QUOTE_DETAILS.c.quote_id.asc(),
         ]
     return [column.desc(), QUOTE_DETAILS.c.quote_id.desc()]
 
@@ -797,23 +840,37 @@ class QuoteBook:
         response: dict[str, Any] | None,
         release: str | None,
         at: datetime,
+        reference: str | None,
         source: Source | None = None,
     ) -> AppQuote:
         """A new quote with its first revision, its reference and option, with *actor*, its
         details from *inputs* with the app's set over them, written at *at*; made from
-        *source* when given: an alternative takes its source's reference and the next option
-        under it, any other quote the next reference and option 1.
+        *source* when given. An alternative takes its source's reference and the next option
+        under it, and is given no *reference*; any other quote takes *reference*, keyed by the
+        underwriter (:func:`check_reference`), and option 1, refused
+        (:class:`ReferenceTakenError`) when another quote holds it in its canonical form.
         Repeated with *operation*'s key, it answers the quote as that key made it and writes
         nothing."""
         _check_operation(operation)
         actor = _check_principal(actor, "Who saves a quote")
+        alternative = source is not None and source.relation == "alternative"
+        if alternative and reference is not None:
+            raise QuoteStoreError("An alternative takes its source's reference: name none.")
+        keyed = None if alternative else check_reference(reference)
 
         def write() -> AppQuote:
             return self._create(
-                operation, actor, form, inputs, request, response, release, at, source
+                operation, actor, form, inputs, request, response, release, at, keyed, source
             )
 
-        return self._or_replayed(write, operation, actor, None)
+        try:
+            return self._or_replayed(write, operation, actor, None)
+        except IntegrityError:
+            # Another creation took the reference between this one's look and its write.
+            if keyed is not None:
+                with self._engine.connect() as connection:
+                    self._refuse_taken(connection, keyed)
+            raise
 
     def _create(
         self,
@@ -825,6 +882,7 @@ class QuoteBook:
         response: dict[str, Any] | None,
         release: str | None,
         now: datetime,
+        keyed: str | None,
         source: Source | None,
     ) -> AppQuote:
         with self._engine.begin() as connection:
@@ -836,15 +894,20 @@ class QuoteBook:
                 origin = self._get(connection, source.quote_id)
                 _read_revision(connection, source.quote_id, source.revision)
             _check_name(details_of(inputs))
-            if source is not None and origin is not None and source.relation == "alternative":
+            if keyed is None:
+                if origin is None:
+                    raise QuoteStoreError("An alternative is made from a quote.")
                 reference = origin.reference
-                option = self._next_option(connection, reference)
+                key = canonical_reference(reference)
+                option = self._next_option(connection, key)
             else:
-                reference = self._next_reference(connection)
+                reference = keyed
+                key = canonical_reference(reference)
+                self._refuse_taken(connection, reference)
                 option = 1
-                connection.execute(
-                    insert(QUOTE_OPTIONS).values(reference=reference, last_option=option)
-                )
+                # The reference's own counter row: a creation of it at the same moment fails
+                # its key, so one quote is made.
+                connection.execute(insert(QUOTE_OPTIONS).values(reference_key=key, last_option=1))
             details = {
                 **details_of(inputs),
                 **self.managed(None, priced=response is not None, at=now, actor=actor),
@@ -866,7 +929,7 @@ class QuoteBook:
             connection.execute(
                 update(QUOTES)
                 .where(QUOTES.c.id == revision.quote_id)
-                .values(reference=reference, option=option)
+                .values(reference=reference, option=option, reference_key=key)
             )
             self._write_details(connection, revision.quote_id, 1, details)
             created: dict[str, Any] = {"reference": reference, "option": option}
@@ -1177,39 +1240,39 @@ class QuoteBook:
             raise QuoteStoreError("The quote store did not number an event it wrote.")
         return int(key[0])
 
-    def _next_reference(self, connection: Connection) -> str:
-        """The next reference, taken from the counter in this transaction: two transactions
-        take two, and one rolled back takes none."""
-        moved = connection.execute(
-            update(QUOTE_COUNTER)
-            .where(QUOTE_COUNTER.c.scope == _COUNTER_SCOPE)
-            .values(last_number=QUOTE_COUNTER.c.last_number + 1)
-        )
-        if moved.rowcount != 1:
-            raise QuoteStoreError(
-                "The quote store has no reference counter: it was not migrated by Haute."
+    def _refuse_taken(self, connection: Connection, reference: str) -> None:
+        """Refuse *reference* when a quote holds it in its canonical form, naming that quote:
+        its option 1, else its lowest."""
+        held = connection.execute(
+            select(QUOTES.c.id, QUOTES.c.reference, QUOTES.c.option)
+            .where(QUOTES.c.reference_key == canonical_reference(reference))
+            .order_by(QUOTES.c.option.asc())
+            .limit(1)
+        ).one_or_none()
+        if held is not None:
+            label = identity_label(held.reference, held.option)
+            raise ReferenceTakenError(
+                f"{label} already holds the reference {reference}: open it, or create an "
+                "alternative of it.",
+                quote_id=held.id,
+                label=label,
             )
-        number = connection.execute(
-            select(QUOTE_COUNTER.c.last_number).where(QUOTE_COUNTER.c.scope == _COUNTER_SCOPE)
-        ).scalar_one()
-        return f"{REFERENCE_PREFIX}{number:06d}"
 
-    def _next_option(self, connection: Connection, reference: str) -> int:
-        """The next option under *reference*, taken from its counter in this transaction, as
-        :meth:`_next_reference` takes a reference: two alternatives take two."""
+    def _next_option(self, connection: Connection, key: str) -> int:
+        """The next option under the reference of canonical form *key*, taken from its counter
+        in this transaction: two alternatives take two."""
         moved = connection.execute(
             update(QUOTE_OPTIONS)
-            .where(QUOTE_OPTIONS.c.reference == reference)
+            .where(QUOTE_OPTIONS.c.reference_key == key)
             .values(last_option=QUOTE_OPTIONS.c.last_option + 1)
         )
         if moved.rowcount != 1:
             raise QuoteStoreError(
-                f"The quote store counts no options under {reference}: it was not migrated by "
-                "Haute."
+                f"The quote store counts no options under {key}: it was not migrated by Haute."
             )
         return int(
             connection.execute(
-                select(QUOTE_OPTIONS.c.last_option).where(QUOTE_OPTIONS.c.reference == reference)
+                select(QUOTE_OPTIONS.c.last_option).where(QUOTE_OPTIONS.c.reference_key == key)
             ).scalar_one()
         )
 
