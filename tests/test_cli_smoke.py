@@ -24,8 +24,14 @@ def _setup_smoke_project(
     target: str = "databricks",
     staging_url: str = "",
 ) -> Path:
-    """Set up a project with haute.toml and test quotes."""
+    """Set up a project with haute.toml and test quotes.
+
+    A Databricks project's endpoint is reached with the serving pair, as CI provides it.
+    """
     monkeypatch.chdir(tmp_path)
+    if target == "databricks":
+        monkeypatch.setenv("DATABRICKS_RATING_HOST", "https://rating.example")
+        monkeypatch.setenv("DATABRICKS_RATING_TOKEN", "rating-token")
     container_section = (
         '[deploy.container]\nbase_image = "python:3.11.9-slim"\n'
         if target in {"container", "azure-container-apps", "aws-ecs", "gcp-run"}
@@ -643,3 +649,90 @@ class TestSmokeTestQuoteFile:
             "test_quotes.sqlite: quote 'Northern fleet': pricing.premium changed, accepted 50.0, "
             "answered 61.0"
         ) in result.output
+
+
+class TestSmokeReachesTheEndpointWithTheServingPair:
+    """Smoke reaches the endpoint as deploy does, with the serving pair.
+
+    BUG-22: smoke built ``WorkspaceClient()`` from the SDK's default credentials, which
+    the generated workflows do not set, so it failed in CI before scoring a quote.
+    """
+
+    def test_the_client_is_built_from_the_serving_pair(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup_smoke_project(tmp_path, monkeypatch)
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        mock_ws = MagicMock()
+        mock_ws.serving_endpoints.get.return_value = _ready_endpoint_mock()
+        mock_ws.serving_endpoints.query.return_value = MagicMock(predictions=[{"premium": 1.0}])
+
+        with (
+            patch("databricks.sdk.WorkspaceClient", return_value=mock_ws) as client,
+            patch("time.sleep"),
+        ):
+            result = runner.invoke(cli, ["smoke", "--endpoint-suffix", "-staging"])
+
+        assert result.exit_code == 0, result.output
+        client.assert_called_once_with(
+            host="https://rating.example", token="rating-token", auth_type="pat", profile=""
+        )
+        mock_ws.serving_endpoints.get.assert_called_with("test-ep-staging")
+
+    def test_a_missing_serving_pair_is_named_before_any_request(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup_smoke_project(tmp_path, monkeypatch)
+        monkeypatch.delenv("DATABRICKS_RATING_HOST")
+        monkeypatch.delenv("DATABRICKS_RATING_TOKEN")
+
+        with patch("databricks.sdk.WorkspaceClient") as client, patch("time.sleep"):
+            result = runner.invoke(cli, ["smoke"])
+
+        assert result.exit_code == 1
+        assert "DATABRICKS_RATING_HOST and DATABRICKS_RATING_TOKEN are not set" in result.output
+        client.assert_not_called()
+
+    def test_a_failed_update_fails_at_once_with_its_build_log(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup_smoke_project(tmp_path, monkeypatch)
+        failed = MagicMock()
+        failed.state.ready = "EndpointStateReady.READY"
+        failed.state.config_update = "EndpointStateConfigUpdate.UPDATE_FAILED"
+        entity = MagicMock(entity_version="4")
+        entity.name = "test-ep-4"
+        entity.state.deployment = "DEPLOYMENT_FAILED"
+        entity.state.deployment_state_message = "Container build failed"
+        failed.pending_config.served_entities = [entity]
+        mock_ws = MagicMock()
+        mock_ws.serving_endpoints.get.return_value = failed
+        mock_ws.serving_endpoints.build_logs.return_value = MagicMock(
+            logs="ERROR: Could not find a version that satisfies haute==9.9"
+        )
+
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), patch("time.sleep"):
+            result = runner.invoke(cli, ["smoke"])
+
+        assert result.exit_code == 1
+        assert "its update is UPDATE_FAILED" in result.output
+        assert "satisfies haute==9.9" in result.output
+        assert mock_ws.serving_endpoints.get.call_count == 1
+        mock_ws.serving_endpoints.query.assert_not_called()
+
+    def test_a_missing_endpoint_fails_at_once(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from databricks.sdk.errors import NotFound
+
+        _setup_smoke_project(tmp_path, monkeypatch)
+        mock_ws = MagicMock()
+        mock_ws.serving_endpoints.get.side_effect = NotFound("no such endpoint")
+
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), patch("time.sleep"):
+            result = runner.invoke(cli, ["smoke"])
+
+        assert result.exit_code == 1
+        assert "Endpoint 'test-ep' does not exist" in result.output
+        assert mock_ws.serving_endpoints.get.call_count == 1

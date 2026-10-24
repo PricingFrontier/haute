@@ -59,15 +59,15 @@ Once validation passes and your teammate has reviewed the PR, you [merge](../bef
 
 ### 4. Staging deployment (automatic)
 
-The `DeployStaging` stage runs `haute deploy --endpoint-suffix "-staging"`. Databricks submits an endpoint create/update request but does not wait for readiness; the generic container target does not host an endpoint; platform-container targets push the image and leave the service update to you, so their pipeline has no smoke or impact stage and `DeployProduction` follows `DeployStaging` directly.
+The `DeployStaging` stage runs `haute deploy --endpoint-suffix "-staging"`. On Databricks it waits until the staging endpoint serves the new version, and fails with Databricks' build log if the model cannot be served; the generic container target does not host an endpoint; platform-container targets push the image and leave the service update to you, so their pipeline has no smoke or impact stage and `DeployProduction` follows `DeployStaging` directly.
 
 ### 5. Smoke test (automatic)
 
-If deploy succeeds, the `SmokeTest` stage scores configured test quotes against an existing live staging endpoint. On Databricks it waits for the endpoint to report Ready, within the job's 10-minute timeout, and it needs [extra credentials](../targets/databricks.md#step-3-add-credentials-to-ci). On the generic container target it needs [the service addresses, without the suffix option](../targets/docker.md#step-3-give-smoke-and-impact-their-endpoints).
+If deploy succeeds, the `SmokeTest` stage scores configured test quotes against an existing live staging endpoint. On Databricks the endpoint is already serving when it starts, since the deploy waited for it. On the generic container target it needs [the service addresses, without the suffix option](../targets/docker.md#step-3-give-smoke-and-impact-their-endpoints).
 
 ### 6. Impact analysis (automatic)
 
-If smoke succeeds, the `ImpactAnalysis` stage compares existing staging and production endpoints on the [portfolio sample in the repository](../targets/databricks.md#what-each-setting-means). The report is uploaded as a **pipeline artifact** only when this command runs.
+If smoke succeeds, the `ImpactAnalysis` stage compares existing staging and production endpoints on the [portfolio sample in the repository](../targets/databricks.md#what-each-setting-means), or on your test quotes when no sample is named. The report is uploaded as a **pipeline artifact** only when this command runs.
 
 ### 7. You review and approve
 
@@ -242,7 +242,7 @@ Two more settings, if your code is in **Azure Repos Git**:
     - **Environment approvals** - configure approval checks on the `production` environment if you need manual approval before production deploy
     - **Deployment job** - the production stage uses a `deployment` job type, which gives you deployment history and tracking in Azure DevOps
     - **Artifacts** - the impact report is published as a pipeline artifact you can download from the build summary
-    - **Git tagging** - after production deploy, the pipeline tags the release: `deploy/v<version>` (the registered model version) for Databricks, `deploy/<commit>` for container targets, whose image tag carries the same commit. On Databricks the tag step reads the version with `haute status`, which needs the MLflow credentials: as generated it gets none, so the tag comes out as `deploy/vunknown` and the next production run fails because that tag exists. Give the **Tag release** step the same `env:` block as the **Deploy production** step
+    - **Git tagging** - after production deploy, the pipeline tags the release: `deploy/v<version>` (the registered model version) for Databricks, `deploy/<commit>` for container targets, whose image tag carries the same commit. On Databricks the tag step reads the version with `haute status`, with the same variables as the deploy step, and fails rather than tagging a version it could not read. The production checkout keeps its credentials (`persistCredentials: true`) so the tag can be pushed; the pipeline's build service needs permission to create tags in the repository
 
 ??? info "Stage details"
 

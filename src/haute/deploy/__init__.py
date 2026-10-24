@@ -35,6 +35,7 @@ __all__ = [
     "GcpRunConfig",
     "ResolvedDeploy",
     "SafetyConfig",
+    "check_credentials",
     "deploy",
     "deploy_resolved",
     "deploy_to_mlflow",
@@ -63,6 +64,20 @@ def _validate_target(target: str) -> None:
             f"Supported targets: "
             f"{', '.join(sorted(_SUPPORTED_TARGETS | _CONTAINER_PLATFORM_TARGETS))}."
         )
+
+
+def check_credentials(config: DeployConfig) -> None:
+    """Refuse a deploy whose target's credentials are not all set, before any other work.
+
+    ``haute deploy`` calls it before parsing the pipeline, so a missing secret fails in
+    seconds and names every gap at once. Databricks needs the MLflow destination and
+    the serving pair (``_mlflow.check_databricks_credentials``); the container targets
+    read theirs where they use them.
+    """
+    if config.target == "databricks":
+        from haute.deploy._mlflow import check_databricks_credentials
+
+        check_databricks_credentials()
 
 
 def _dispatch_resolved(resolved: ResolvedDeploy) -> DeployResult:

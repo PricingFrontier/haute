@@ -13,12 +13,14 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass, fields
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
+import haute
 from haute._sandbox import set_project_root
 from haute.deploy._config import DeployConfig
+from haute.deploy._served_haute import ServedHaute
 from haute.errors import DeployError
 from tests._deploy_helpers import make_resolved_deploy
 
@@ -28,6 +30,8 @@ MLFLOW_HOST = "https://mlflow.example.invalid"
 MLFLOW_TOKEN = "mlflow-token-000"
 RATING_HOST = "https://rating.example.invalid"
 RATING_TOKEN = "rating-token-000"
+PROFILE_HOST = "https://profile.example.invalid"
+PROFILE_TOKEN = "profile-token-000"
 
 
 @pytest.fixture(autouse=True)
@@ -88,6 +92,13 @@ def calls() -> Iterator[DeployCalls]:
         patch("mlflow.pyfunc.log_model") as log_model,
         patch("mlflow.tracking.MlflowClient") as mlflow_client,
         patch("databricks.sdk.WorkspaceClient") as workspace_client,
+        # The tests run on an editable haute, which a served model cannot install, and
+        # the endpoint the mocked client returns never becomes ready.
+        patch(
+            "haute.deploy._mlflow.served_haute",
+            return_value=ServedHaute(f"haute=={haute.__version__}"),
+        ),
+        patch("haute.deploy._mlflow.wait_for_endpoint"),
     ):
         registered = MagicMock()
         registered.version = "1"
@@ -172,10 +183,13 @@ def test_mlflow_pair_drives_mlflow_while_rating_pair_drives_serving(
     [connectivity_request] = [call.args[0] for call in calls.urlopen.call_args_list]
     assert connectivity_request.full_url.startswith(f"{RATING_HOST}/")
     assert connectivity_request.get_header("Authorization") == f"Bearer {RATING_TOKEN}"
-    calls.workspace_client.assert_called_once_with(host=RATING_HOST, token=RATING_TOKEN)
-    serving_calls = repr(calls.workspace_client.mock_calls)
-    assert MLFLOW_TOKEN not in serving_calls
-    assert GENERAL_TOKEN not in serving_calls
+    # The registry's schema is looked up with the MLflow pair, the endpoint served with
+    # the rating pair, and the general pair reaches neither.
+    assert calls.workspace_client.call_args_list == [
+        call(host=MLFLOW_HOST, token=MLFLOW_TOKEN, auth_type="pat", profile=""),
+        call(host=RATING_HOST, token=RATING_TOKEN, auth_type="pat", profile=""),
+    ]
+    assert GENERAL_TOKEN not in repr(calls.workspace_client.mock_calls)
     calls.session_request.assert_not_called()
 
 
@@ -183,6 +197,9 @@ def test_profile_tracking_uri_selects_the_profile_for_tracking_and_registry(
     calls: DeployCalls, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+    (tmp_path / "databrickscfg").write_text(
+        f"[team]\nhost = {PROFILE_HOST}\ntoken = {PROFILE_TOKEN}\n", encoding="utf-8"
+    )
 
     _deploy(tmp_path)
 
@@ -191,7 +208,11 @@ def test_profile_tracking_uri_selects_the_profile_for_tracking_and_registry(
     calls.mlflow_client.assert_any_call(
         tracking_uri="databricks://team", registry_uri="databricks-uc://team"
     )
-    calls.workspace_client.assert_called_once_with(host=RATING_HOST, token=RATING_TOKEN)
+    # The registry's schema is looked up with the profile's credentials.
+    assert calls.workspace_client.call_args_list == [
+        call(host=PROFILE_HOST, token=PROFILE_TOKEN, auth_type="pat", profile=""),
+        call(host=RATING_HOST, token=RATING_TOKEN, auth_type="pat", profile=""),
+    ]
 
 
 def test_deploy_status_requires_the_mlflow_pair_before_building_a_client(

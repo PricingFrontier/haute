@@ -16,8 +16,10 @@ from pathlib import Path
 
 import pytest
 
+import haute
 from haute.deploy import DeployConfig, resolve_config, validate_deploy
 from haute.deploy._config import ResolvedDeploy
+from haute.deploy._served_haute import ServedHaute
 from haute.errors import DeployError
 
 _EXAMPLE = (
@@ -188,7 +190,12 @@ def test_pyfunc_model_scores_with_its_own_utility_package(
         manifest_path.write_text(json.dumps(build_manifest(resolved)), encoding="utf-8")
         mlflow.pyfunc.save_model(
             path=str(model_dir),
-            **_pyfunc_model_arguments(resolved, manifest_path, _stage_artifacts(resolved, staging)),
+            **_pyfunc_model_arguments(
+                resolved,
+                manifest_path,
+                _stage_artifacts(resolved, staging),
+                ServedHaute(f"haute=={haute.__version__}"),
+            ),
         )
 
     shutil.rmtree(project / "utility")
@@ -200,6 +207,47 @@ def test_pyfunc_model_scores_with_its_own_utility_package(
         cwd=tmp_path,
     )
     assert json.loads(output) == [{"fixture_value": 30}]
+
+
+def test_a_served_haute_wheel_is_where_the_environment_installs_it_from(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A haute that is no release ships in the model: MLflow logs the wheel under ``code/``,
+    the path the model's environment requires it by (Model Serving's private-library route)."""
+    import mlflow.pyfunc
+    import yaml
+
+    from haute.deploy._mlflow import _pyfunc_model_arguments, _stage_artifacts
+    from haute.deploy._utils import build_manifest
+
+    project = tmp_path / "project"
+    _make_project(project, monkeypatch)
+    wheel = tmp_path / "wheels" / "haute-0.6.0-py3-none-any.whl"
+    wheel.parent.mkdir()
+    wheel.write_bytes(b"a wheel")
+    model_dir = tmp_path / "model"
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    with _resolve(project) as resolved:
+        validate_deploy(resolved)
+        manifest_path = tmp_path / "deploy_manifest.json"
+        manifest_path.write_text(json.dumps(build_manifest(resolved)), encoding="utf-8")
+        mlflow.pyfunc.save_model(
+            path=str(model_dir),
+            **_pyfunc_model_arguments(
+                resolved,
+                manifest_path,
+                _stage_artifacts(resolved, staging),
+                ServedHaute(f"code/{wheel.name}", wheel),
+            ),
+        )
+
+    assert (model_dir / "code" / wheel.name).read_bytes() == b"a wheel"
+    assert (model_dir / "code" / "utility").is_dir()
+    conda = yaml.safe_load((model_dir / "conda.yaml").read_text(encoding="utf-8"))
+    [pip] = [entry["pip"] for entry in conda["dependencies"] if isinstance(entry, dict)]
+    assert pip[0] == f"code/{wheel.name}"
+    assert f"code/{wheel.name}" in (model_dir / "requirements.txt").read_text(encoding="utf-8")
 
 
 def test_a_project_module_outside_utility_is_refused_at_validation(

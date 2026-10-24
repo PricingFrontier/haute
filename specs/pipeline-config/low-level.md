@@ -19,7 +19,7 @@
 | `src/haute/_graph_builders.py` | AST node-skeleton discovery separated from resolution; the strict builder resolves every skeleton fail-loud before producing canonical `GraphNode`/`GraphEdge`, while editor recovery resolves skeletons independently. |
 | `src/haute/_pipeline_recovery.py` | [server-api](../server-api/low-level.md)-owned editor-only recovery orchestration and availability diagnostics, forbidden to canonical parser consumers. |
 | `src/haute/_graph_shape.py` | Topology-only invariants independent of any single node's config (`validate_graph_shape_contracts`, `validate_pipeline_graph_shape_contracts`), including submodel child graphs. |
-| `src/haute/_scaffold.py` | `haute init` template strings: `haute.toml`, `.env.example`, CI YAML for 3 providers × 7 deploy targets, starter pipeline/tests/utilities, pre-commit hook. |
+| `src/haute/_scaffold.py` | `haute init` template strings: `haute.toml`, `.env.example`, CI YAML for 3 providers × 7 deploy targets (`ci_files`, which `haute ci update` also writes), the CI secrets a target needs and their `.env.example` placeholders (`ci_secret_names`, `env_example_placeholders`), starter pipeline/tests/utilities, pre-commit hook. |
 | `src/haute/_project_python.py` | The project's Python, one version for local development, CI and the deployed model: `.python-version`'s pin or the lowest release `requires-python` admits, at minor precision only when it admits the whole minor (`project_python_version`, which `haute init` writes and pins CI and container base images to), the deployed model's Python (`deployed_python_version`), the checks deploy runs on the interpreter and a container's base image (`deploy_python_mismatch`, `admits`, `base_image_python_version`), and `ProjectPythonError` for a declaration it cannot read or that contradicts the other. |
 | `src/haute/_project.py` | Project-root discovery (`get_project_root`, `is_haute_project`) and pipeline-file resolution (`resolve_pipeline_file`, 4-tier fallback). |
 | `src/haute/_project_layout.py` | The project's folder layout: `PIPELINE_FILES_FOLDER` and `PIPELINE_FILES_SUBFOLDERS` (the pipeline folder's `files/` with `data/`, `models/` and `params/`), `LOCAL_FOLDERS` (the root's unversioned `data/` and `outputs/`), `VERSIONED_FILE_LIMIT_BYTES`, `versioned_name` (whether a path names a file the project versions through Haute), `pipeline_folder` (the configured pipeline folder when it lies below the project root), `pipeline_files_folder` and `default_model_folder`. |
@@ -359,7 +359,11 @@ any root `main.py` before writing `rating/main.py`.
 `haute_toml()` assembles `[project]`/`[deploy]`/`[test_quotes]`/`[safety]`/`[safety.approval]`
 (`min_approvers` hardcoded to 2 in the template — solo users lower it by hand)/`[ci]`/
 `[ci.staging]` sections, splicing in `_target_section()`'s
-`[deploy.<target>]` block, and with `workbench` set appends the `[workbench]` table;
+`[deploy.<target>]` block, and with `workbench` set appends the `[workbench]` table. Its
+`[safety]` table names no `impact_dataset`: `haute impact` compares the test quotes until a
+portfolio sample is committed, and a commented example names a Parquet sample under
+tests/impact/, outside the gitignored `data/` (BUG-23: the old
+default named `data/portfolio_sample.parquet`, which CI never sees);
 `starter_form(name)` renders the blank form `haute init --workbench` writes to
 `forms/form.json` ([workbench](../workbench/low-level.md)). `[server].host`, the optional
 closed `[assistant]` plus `[assistant.egress]` tables and the optional `[workbench]` table are
@@ -370,7 +374,17 @@ workbench's by `haute._workbench_config`, so deployment parsing and each reader 
 `github_deploy_prod_yml`, `gitlab_ci_yml`, `azure_devops_yml`) all pull the same `secrets`
 list out of `TARGETS` through provider-specific formatters (`_github_secrets_env`,
 `_gitlab_secrets_env`, `_azure_devops_secrets_env`) so a target's credential list is defined
-once and rendered three ways. The release inputs that start a deploy are listed once
+once and rendered three ways; `ci_secret_names` hands the same list to `haute ci secrets` and
+to `haute init`'s next steps, and `env_example_placeholders` the stand-in values `.env.example` gives (a token
+placeholder, the example workspace; never a usable default such as an AWS region), which
+`haute ci secrets` refuses to upload. A Databricks production workflow's
+**Tag release** step gets the secrets too, as the deploy step does (BUG-25): it tags
+`deploy/v<version>` with the version `haute status --version-only` reads from the registry
+(`_release_tag_script`), and a read that fails, or prints anything but a version number, fails
+the step rather than tagging `deploy/vunknown`; Azure DevOps' production checkout sets
+`persistCredentials: true` so the tag push authenticates. A Databricks deploy job may run 60
+minutes and any other 15 (`_deploy_timeout_minutes`), longer than a Databricks deploy's wait
+for its endpoint. The release inputs that start a deploy are listed once
 too (`_RELEASE_INPUT_DIRS`, the pipeline folder of `PIPELINE_FILE`, the file the
 scaffolded `haute.toml` names, and the test quotes' folder, `_RELEASE_INPUT_FILES`, and
 `DEFAULT_FORM_PATH`'s directory
@@ -394,8 +408,10 @@ and writes `.python-version` with it when the project has none. An unreadable
 `ProjectPythonError`, which `handle_init` reports as a CLI error before writing any file.
 So uv's local environment, every CI job and the deployed model
 (see [deploy](../deploy/low-level.md)) run one Python.
-`handle_init` calls exactly the generator(s) for the chosen
-`ci` value (`"none"` calls none of them); on `--force` it first calls
+`ci_files(target, ci, workbench=..., python_version=...)` returns exactly the files of the
+chosen `ci` value, path to content (`"none"` has none, an unknown provider raises), which
+`handle_init` and `haute ci update` both write through `write_generated_files`; on `--force`
+`handle_init` first calls
 `_prune_stale_ci_files(project_dir, keep=ci)` (defined in `src/haute/cli/_init_cmd.py`),
 which deletes every other provider's known artifact paths (from that module's `_CI_ARTIFACTS` map)
 and removes the resulting empty `.github/workflows/`/`.github` directories, before writing the new provider's files.

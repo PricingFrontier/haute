@@ -50,6 +50,23 @@ def _clear_ci_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(var, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _databricks_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The secrets a generated workflow gives a Databricks deploy, which it checks first.
+
+    ``tests/test_databricks_serving.py`` covers a deploy refused for missing ones.
+    """
+    for name, value in {
+        "DATABRICKS_MLFLOW_HOST": "https://mlflow.example",
+        "DATABRICKS_MLFLOW_TOKEN": "mlflow-token",
+        "DATABRICKS_RATING_HOST": "https://rating.example",
+        "DATABRICKS_RATING_TOKEN": "rating-token",
+    }.items():
+        monkeypatch.setenv(name, value)
+    for name in ("MLFLOW_TRACKING_URI", "DATABRICKS_CONFIG_PROFILE", "MLFLOW_ENABLE_DB_SDK"):
+        monkeypatch.delenv(name, raising=False)
+
+
 class TestDeploy:
     def test_non_ci_non_dry_run_blocked(
         self,

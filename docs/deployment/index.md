@@ -143,7 +143,7 @@ serving_scale_to_zero = true
 dir = "tests/quotes"
 
 [safety]
-impact_dataset = "data/portfolio_sample.parquet"
+# impact_dataset = "tests/impact/portfolio_sample.parquet"
 
 [safety.approval]
 min_approvers = 2
@@ -246,7 +246,7 @@ Haute validates a deployment graph and scores configured test quotes before a no
 | **Dry-run validation** | Parses the pipeline, checks all model files exist, scores test quotes |
 | **Staging deployment** | `--endpoint-suffix` chooses a different name; the target and your infrastructure must provide that endpoint |
 | **Smoke testing** | `haute smoke` scores configured test quotes against an existing Databricks or HTTP endpoint. For HTTP endpoints it reads the address from `[ci.staging] endpoint_url` in `haute.toml` and does not accept `--endpoint-suffix` (see [Docker](targets/docker.md#step-3-give-smoke-and-impact-their-endpoints)) |
-| **Impact analysis** | `haute impact` compares existing staging and production endpoints on the Parquet portfolio sample named by `[safety] impact_dataset`. The sample must be committed to the repository for CI to read it, and `haute init` gitignores `data/`, where the setting points at first. The report is advisory and never fails the run |
+| **Impact analysis** | `haute impact` compares existing staging and production endpoints on the Parquet portfolio sample named by `[safety] impact_dataset`, or on the test quotes when none is named, as `haute init` leaves it. A sample must be committed to the repository for CI to read it, and `haute init` gitignores `data/`. The report is advisory and never fails the run |
 | **Approval gate** | Configure this in GitHub, GitLab, Azure DevOps, or your own release process; `min_approvers` is configuration metadata, not an enforced gate |
 | **Rollback** | Use your target platform's model/image revision and rollback procedure |
 

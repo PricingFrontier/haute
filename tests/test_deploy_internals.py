@@ -5242,27 +5242,31 @@ class TestBuildSignature:
 class TestCondaEnvAndPipRequirements:
     """Tests for _conda_env() and _pip_requirements()."""
 
-    def test_pip_requirements_pin_the_editors_haute_and_polars(self):
+    def test_pip_requirements_pin_the_served_haute_mlflow_and_polars(self):
+        """The haute that validated the deploy, and the editor's MLflow and Polars."""
+        import mlflow
         import polars
 
-        import haute
         from haute.deploy._mlflow import _pip_requirements
 
-        reqs = _pip_requirements()
+        reqs = _pip_requirements("haute==0.6.0")
 
-        assert f"haute=={haute.__version__}" in reqs
-        assert f"polars=={polars.__version__}" in reqs
+        assert reqs == [
+            "haute==0.6.0",
+            f"mlflow=={mlflow.__version__}",
+            f"polars=={polars.__version__}",
+        ]
 
     def test_pip_requirements_add_no_model_engine(self):
         """The pinned Haute brings its own engines; no node adds one."""
         from haute.deploy._mlflow import _pip_requirements
 
-        assert not any("catboost" in r for r in _pip_requirements())
+        assert not any("catboost" in r for r in _pip_requirements("haute==0.6.0"))
 
     def test_conda_env_structure(self):
         from haute.deploy._mlflow import _conda_env
 
-        env = _conda_env("3.13")
+        env = _conda_env("3.13", "haute==0.6.0")
 
         assert env["name"] == "mlflow-env"
         assert "conda-forge" in env["channels"]
@@ -5274,7 +5278,7 @@ class TestCondaEnvAndPipRequirements:
         """The model serves on the Python the project ran on, at the precision it names."""
         from haute.deploy._mlflow import _conda_env
 
-        assert _conda_env(version)["dependencies"][0] == f"python={version}"
+        assert _conda_env(version, "haute==0.6.0")["dependencies"][0] == f"python={version}"
 
 
 class TestCheckDatabricksConnectivity:
@@ -5287,7 +5291,9 @@ class TestCheckDatabricksConnectivity:
         monkeypatch.delenv("DATABRICKS_RATING_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_RATING_TOKEN", raising=False)
 
-        with pytest.raises(DeployError, match="DATABRICKS_RATING_HOST is not set"):
+        with pytest.raises(
+            DeployError, match="DATABRICKS_RATING_HOST and DATABRICKS_RATING_TOKEN are not set"
+        ):
             _check_databricks_connectivity(lambda msg: None)
 
     def test_missing_token_raises(self, monkeypatch):
@@ -5297,7 +5303,7 @@ class TestCheckDatabricksConnectivity:
         monkeypatch.setenv("DATABRICKS_RATING_HOST", "https://host.databricks.com")
         monkeypatch.delenv("DATABRICKS_RATING_TOKEN", raising=False)
 
-        with pytest.raises(DeployError, match="DATABRICKS_RATING_TOKEN is not set"):
+        with pytest.raises(DeployError, match="^DATABRICKS_RATING_TOKEN is not set"):
             _check_databricks_connectivity(lambda msg: None)
 
     def test_success(self, monkeypatch):
