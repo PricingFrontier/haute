@@ -461,8 +461,18 @@ export function TargetTablePicker({
   const tableName = parts[2] || ""
   const [draftName, setDraftName] = useState(tableName)
 
+  // The destination this picker last chose. When it comes back as `table`, the
+  // local state already holds it; re-syncing would wipe an invalid draft name
+  // (whose commit cleared the destination) along with its error.
+  const chosen = useRef<string | null>(null)
+  const choose = (fullName: string) => {
+    chosen.current = fullName
+    onSelect(fullName)
+  }
+
   /* eslint-disable react-hooks/set-state-in-effect -- sync local state from prop */
   useEffect(() => {
+    if (table === chosen.current) return
     const p = table ? table.replace(/`/g, "").split(".") : []
     if (p[0]) setCatalog(p[0])
     if (p[1]) setDbSchema(p[1])
@@ -518,10 +528,12 @@ export function TargetTablePicker({
   const commitName = (value: string) => {
     const name = value.trim()
     setDraftName(name)
-    if (!name) {
-      onSelect("")
-    } else if (TABLE_NAME_RE.test(name) && catalog && dbSchema) {
-      onSelect(`${catalog}.${dbSchema}.${name}`)
+    // An invalid name clears the destination: the previous table must not stay
+    // the one Write replaces while the field shows a different name.
+    if (name && TABLE_NAME_RE.test(name) && catalog && dbSchema) {
+      choose(`${catalog}.${dbSchema}.${name}`)
+    } else {
+      choose("")
     }
   }
 
@@ -540,7 +552,7 @@ export function TargetTablePicker({
             setDbSchema("")
             setSchemas([])
             setTables(null)
-            onSelect("")
+            choose("")
             if (cat) refreshSchemas(cat)
           }}
           className="w-full px-2.5 py-1.5 text-xs rounded-lg focus:outline-none focus:ring-2"
@@ -565,9 +577,9 @@ export function TargetTablePicker({
             setDbSchema(sch)
             setTables(null)
             if (sch && draftName && TABLE_NAME_RE.test(draftName)) {
-              onSelect(`${catalog}.${sch}.${draftName}`)
+              choose(`${catalog}.${sch}.${draftName}`)
             } else {
-              onSelect("")
+              choose("")
             }
           }}
           className="w-full px-2.5 py-1.5 text-xs rounded-lg focus:outline-none focus:ring-2 disabled:opacity-40"

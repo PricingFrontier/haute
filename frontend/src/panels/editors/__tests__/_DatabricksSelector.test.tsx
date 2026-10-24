@@ -649,20 +649,23 @@ describe("TargetTablePicker", () => {
     expect(Array.from(suggestions).map((option) => option.getAttribute("value"))).toEqual(["claims"])
   })
 
-  it("refuses a name Databricks cannot take without quoting", async () => {
+  it("refuses a name Databricks cannot take, clearing the previous destination", async () => {
     const onSelect = vi.fn()
-    render(<TargetTablePicker table="" onSelect={onSelect} />)
-    await chooseSchema()
-    onSelect.mockClear()
+    const { rerender } = render(
+      <TargetTablePicker table="workspace.pricing-dev.scored" onSelect={onSelect} />,
+    )
 
     const name = screen.getByLabelText("Table name")
     fireEvent.change(name, { target: { value: "scored policies" } })
     fireEvent.blur(name)
 
+    // The old table must not stay the one Write replaces.
+    expect(onSelect).toHaveBeenLastCalledWith("")
+    rerender(<TargetTablePicker table="" onSelect={onSelect} />)
+    expect(screen.getByLabelText("Table name")).toHaveValue("scored policies")
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Use only letters, digits, underscores and hyphens.",
     )
-    expect(onSelect).not.toHaveBeenCalled()
   })
 
   it("keeps the name when the schema changes", async () => {
