@@ -668,6 +668,25 @@ describe("TargetTablePicker", () => {
     )
   })
 
+  it("shows the saved table through an edit, undo and redo", async () => {
+    const onSelect = vi.fn()
+    const { rerender } = render(
+      <TargetTablePicker table="workspace.pricing-dev.old" onSelect={onSelect} />,
+    )
+    const name = () => screen.getByLabelText("Table name")
+
+    fireEvent.change(name(), { target: { value: "new" } })
+    fireEvent.blur(name())
+    expect(onSelect).toHaveBeenLastCalledWith("workspace.pricing-dev.new")
+    rerender(<TargetTablePicker table="workspace.pricing-dev.new" onSelect={onSelect} />)
+    expect(name()).toHaveValue("new")
+
+    rerender(<TargetTablePicker table="workspace.pricing-dev.old" onSelect={onSelect} />)
+    expect(name()).toHaveValue("old")
+    rerender(<TargetTablePicker table="workspace.pricing-dev.new" onSelect={onSelect} />)
+    expect(name()).toHaveValue("new")
+  })
+
   it("keeps the name when the schema changes", async () => {
     const onSelect = vi.fn()
     render(<TargetTablePicker table="workspace.pricing-dev.scored" onSelect={onSelect} />)

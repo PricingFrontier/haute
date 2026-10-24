@@ -47,9 +47,12 @@ _URI_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+")
 _ASSIGNMENT_RE = re.compile(
     r"(?P<key>[A-Za-z_][A-Za-z0-9_.-]*)"
     r"(?P<separator>\s*[=:]\s*)"
-    # ``&`` ends a value, so each parameter of a bare query string (the relative
-    # signed URL in a storage error, say) is judged by its own key.
-    r'(?P<value>"[^"]*"|\'[^\']*\'|[^\s,;&]+)'
+    r'(?P<value>"[^"]*"|\'[^\']*\'|[^\s,;]+)'
+)
+# A query parameter outside a full URI: the relative signed URL in a storage
+# error, whose ``?sig=...`` an enclosing ``url: ...`` assignment would swallow.
+_QUERY_PARAMETER_RE = re.compile(
+    r"(?P<lead>[?&])(?P<key>[A-Za-z_][A-Za-z0-9_.-]*)=(?P<value>[^&#\s\"'<>]*)"
 )
 _REDACTED = "<redacted>"
 
@@ -104,6 +107,13 @@ def redact_sensitive_text(text: str, *, known_secrets: Iterable[str] = ()) -> st
     ):
         redacted = redacted.replace(secret, _REDACTED)
     redacted = _URI_RE.sub(lambda match: _redact_uri(match.group(0)), redacted)
+
+    def redact_query_parameter(match: re.Match[str]) -> str:
+        if not is_credential_name(match.group("key")):
+            return match.group(0)
+        return f"{match.group('lead')}{match.group('key')}={_REDACTED}"
+
+    redacted = _QUERY_PARAMETER_RE.sub(redact_query_parameter, redacted)
 
     def redact_assignment(match: re.Match[str]) -> str:
         if not is_credential_name(match.group("key")):

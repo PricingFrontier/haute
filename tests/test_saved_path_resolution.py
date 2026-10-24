@@ -94,7 +94,7 @@ def test_deploy_resolves_a_windows_path_as_bundling_does(project: Path) -> None:
     graph = _graph(project, "data\\policies.parquet")
 
     assert Path(_resolve_pipeline_path(graph, "data\\policies.parquet")) == saved.resolve()
-    [scored] = _resolve_runtime_graph_paths(graph).nodes
+    [scored] = _resolve_runtime_graph_paths(graph, remap={}, request_input_ids=()).nodes
     assert Path(scored.data.config["path"]) == saved.resolve()
     assert resolve_graph_source_path("data\\policies.parquet", graph.source_file or "") == str(
         saved.resolve()
@@ -129,7 +129,7 @@ def test_a_path_never_resolves_outside_the_project(project: Path) -> None:
     graph = _graph(project, "../outside.parquet")
 
     assert Path(_resolve_pipeline_path(graph, "../outside.parquet")) == inside
-    [scored] = _resolve_runtime_graph_paths(graph).nodes
+    [scored] = _resolve_runtime_graph_paths(graph, remap={}, request_input_ids=()).nodes
     assert Path(scored.data.config["path"]) == inside
     assert _anchored("../outside.parquet", project / "rating") == inside
 
@@ -155,3 +155,43 @@ def test_deploy_resolves_inside_the_root_it_validated(project: Path, tmp_path_fa
 
     with runtime_project_root_scope(graph.source_file, project_root=other):
         assert Path(_resolve_pipeline_path(graph, "data/policies.parquet")) == saved.resolve()
+
+
+def test_serving_resolves_only_the_paths_it_reads(project: Path, tmp_path_factory) -> None:
+    # A served bundle keeps the source_file it was deployed from, which is not under the
+    # serving process's project, so its inferred root is the pipeline dir and a ``../``
+    # path would be refused. The request input's sample is replaced by the request and
+    # the Data Input reads its bundled file, so neither path is resolved.
+    deployed_from = tmp_path_factory.mktemp("deployed_from") / "rating" / "main.py"
+    request = GraphNode(
+        id="quotes",
+        data=NodeData(
+            label="quotes", nodeType=NodeType.API_INPUT, config={"path": "../data/quotes.json"}
+        ),
+    )
+    bundled = GraphNode(
+        id="policies",
+        data=NodeData(
+            label="policies",
+            nodeType=NodeType.DATA_INPUT,
+            config={
+                "inputType": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "path": "../data/policies.parquet",
+                "arguments": {},
+            },
+        ),
+    )
+    graph = PipelineGraph(nodes=[request, bundled], edges=[], source_file=str(deployed_from))
+
+    served = _resolve_runtime_graph_paths(
+        graph,
+        remap={"policies__policies.parquet": "/bundle/policies.parquet"},
+        request_input_ids=("quotes",),
+    )
+
+    assert [node.data.config["path"] for node in served.nodes] == [
+        "../data/quotes.json",
+        "../data/policies.parquet",
+    ]

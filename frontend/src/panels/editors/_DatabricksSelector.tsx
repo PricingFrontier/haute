@@ -461,9 +461,10 @@ export function TargetTablePicker({
   const tableName = parts[2] || ""
   const [draftName, setDraftName] = useState(tableName)
 
-  // The destination this picker last chose. When it comes back as `table`, the
-  // local state already holds it; re-syncing would wipe an invalid draft name
-  // (whose commit cleared the destination) along with its error.
+  // The destination this picker just chose, until `table` next changes. When that
+  // change is the choice coming back, the local state already holds it; re-syncing
+  // would wipe an invalid draft name (whose commit cleared the destination) along
+  // with its error. Any later change (undo, redo) re-syncs.
   const chosen = useRef<string | null>(null)
   const choose = (fullName: string) => {
     chosen.current = fullName
@@ -472,7 +473,9 @@ export function TargetTablePicker({
 
   /* eslint-disable react-hooks/set-state-in-effect -- sync local state from prop */
   useEffect(() => {
-    if (table === chosen.current) return
+    const echoed = table === chosen.current
+    chosen.current = null
+    if (echoed) return
     const p = table ? table.replace(/`/g, "").split(".") : []
     if (p[0]) setCatalog(p[0])
     if (p[1]) setDbSchema(p[1])

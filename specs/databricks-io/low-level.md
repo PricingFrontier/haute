@@ -84,8 +84,10 @@ format lookup.
    cleanup log, passes `_warehouse_message`: `redact_sensitive_text` with the
    token and client secret as known secrets, then whitespace collapsed and the
    text cut to 600 characters, redaction first so a cut never exposes part of a
-   secret. `redact_sensitive_text` ends an assignment's value at `&`, so each
-   parameter of a bare signed-URL query string is judged by its own key.
+   secret. `redact_sensitive_text` also redacts a credential query parameter
+   outside a full URI (the relative signed URL a storage error prints), wherever
+   it sits in the query, which an enclosing `url: ...` assignment would
+   otherwise swallow.
 
 The write is transactional: there is no staging path on disk to publish, and
 `resolve_data_output_path()` returns `(None, table)`. Duplicate-destination

@@ -605,7 +605,11 @@ pair. Deploy never uses the general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair.
    the root is the scoped runtime root, else the one inferred from `graph.source_file`.
    `resolve_config` runs schema and policy inference inside
    `runtime_project_root_scope(pipeline_file, project_root=<the validated root>)`, so they
-   read exactly the files its path validation admitted) and attach bundled feature-contract paths to
+   read exactly the files its path validation admitted. Only a path scoring reads is resolved:
+   a request input (its sample is replaced by the live request) and a node served from a
+   bundled artifact (`_bundled_input_artifact`, which the Data Input intercept shares) keep
+   their configured path, so a served bundle, whose original `source_file` need not exist
+   where it is served, never fails on them) and attach bundled feature-contract paths to
    `modelScore` node configs (`_attach_bundled_feature_contracts`). When a remapped
    native model has no bundled feature-contract sidecar, load that local model through
    the shared stat-gated local-model cache (`load_local_model_cached`) and attach its

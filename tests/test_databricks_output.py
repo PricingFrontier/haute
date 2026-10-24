@@ -59,7 +59,11 @@ def _output_node(node_id: str, config: dict[str, Any]) -> GraphNode:
 
 
 _TOKEN = "dapi-review-only-token"
-_SIGNED = "/Volumes/x/y/z.parquet?sv=2024-01-01&se=2026-01-01&sig=signed-url-secret"
+# A relative signed URL as a storage error prints it, its signature last and first.
+_SIGNED = [
+    "/Volumes/x/y/z.parquet?sv=2024-01-01&se=2026-01-01&sig=signed-url-secret",
+    "/Volumes/x/y/z.parquet?sig=signed-url-secret&sv=2024-01-01",
+]
 
 
 class _Cursor:
@@ -309,11 +313,12 @@ def test_a_failed_load_still_removes_the_staged_file_and_reports_the_warehouse_e
     )
 
 
+@pytest.mark.parametrize("signed", _SIGNED)
 def test_a_failed_upload_removes_what_it_staged_and_reports_no_signed_url(
-    files: _Files,
+    files: _Files, signed: str
 ) -> None:
     # The storage accepted the bytes but the response failed: the file may exist.
-    files.upload_error = RuntimeError(f"Max retries exceeded with url: {_SIGNED} (timed out)")
+    files.upload_error = RuntimeError(f"Max retries exceeded with url: {signed} (timed out)")
     connection = _Connection()
 
     with (
@@ -343,8 +348,11 @@ def test_the_token_never_reaches_the_error(files: _Files) -> None:
     assert _TOKEN not in str(excinfo.value)
 
 
-def test_a_failed_cleanup_is_logged_redacted_and_the_write_stands(files: _Files) -> None:
-    files.delete_error = RuntimeError(f"403 deleting https://storage.example{_SIGNED}")
+@pytest.mark.parametrize("signed", _SIGNED)
+def test_a_failed_cleanup_is_logged_redacted_and_the_write_stands(
+    files: _Files, signed: str
+) -> None:
+    files.delete_error = RuntimeError(f"403 deleting url: {signed}")
     connection = _Connection()
 
     with (

@@ -246,8 +246,9 @@ for unknown values. A Databricks Data Output's `TargetTablePicker` commits a tab
 name only when it is valid; an invalid one commits an empty `table`, which leaves
 the output incomplete and Write disabled, so a previous table is never the one
 Write replaces while the field shows another name. The picker keeps the invalid
-draft and its error on screen: it does not re-sync from a `table` prop equal to
-the destination it last chose.
+draft and its error on screen: it skips re-syncing only for the `table` change
+that echoes its own choice, and re-syncs on any later change, so undo and redo
+always show the saved table.
 The input editor renders no cache control. The shared `dataInputIsDirect`
 predicate (`frontend/src/utils/dataInputMode.ts`) mirrors the backend's
 `data_input_is_direct` for snapshot preparation: a file-backed Parquet scan
