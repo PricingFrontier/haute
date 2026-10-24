@@ -890,7 +890,8 @@ what they cover:
   when its credentials are missing, naming each.
 - **`test_served_haute.py`** — a released haute pinned, an editable one refused, one installed from
   Git repacked into a wheel with its package and metadata but not the installer's records,
-  scripts or compiled files, a valid RECORD, the same bytes every time, a recorded file missing
+  scripts (one recorded by an absolute path among them) or compiled files, a valid RECORD that
+  keeps a path it has to quote whole, the same bytes every time, a recorded file missing
   refused, as are an install without a RECORD, a RECORD without METADATA and a WHEEL file naming
   no tag; several tags compressed into the wheel's name; the served environment's pins (that
   haute, `mlflow`, Polars).

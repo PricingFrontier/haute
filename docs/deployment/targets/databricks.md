@@ -400,6 +400,12 @@ With `serving_scale_to_zero = true`, the endpoint shuts down when it's idle. The
 
 A package that cannot be installed usually means the workspace cannot reach PyPI, or a Python version that Model Serving cannot provide: the build log names which.
 
+### "Databricks refused to create serving endpoint"
+
+The deploy registered the model version, but Databricks would not create or update the endpoint. The message ends with Databricks' reason. "Cannot create or update model serving endpoints, please try again later" comes from the workspace, not from your pipeline. Databricks refuses the change before it builds anything.
+
+On [Databricks Free Edition](https://docs.databricks.com/aws/en/getting-started/free-edition-limitations), the number of active endpoints is limited. A workspace that exceeds its usage quota also has its compute shut down for the rest of the day. Wait, or delete an endpoint you no longer need on the **Serving** page, then deploy again. The registered version stays registered, and the next deploy registers and serves a new one.
+
 ---
 
 ## Keeping the CI files up to date

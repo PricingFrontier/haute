@@ -16,10 +16,11 @@ from __future__ import annotations
 import base64
 import csv
 import hashlib
+import io
 import zipfile
 from dataclasses import dataclass
 from importlib import metadata
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from haute._install_source import install_source
 from haute.errors import DeployError
@@ -110,6 +111,12 @@ def _recorded_paths(distribution: metadata.Distribution) -> list[PurePosixPath]:
     return [PurePosixPath(row[0]) for row in csv.reader(record.splitlines()) if row and row[0]]
 
 
+def _outside_install_root(path: PurePosixPath) -> bool:
+    """Whether the install put *path* outside its root: a console script, recorded
+    relative to it (``../../bin/haute``), or absolute when on another drive."""
+    return ".." in path.parts or bool(PureWindowsPath(path.as_posix()).anchor)
+
+
 def _dist_info(paths: list[PurePosixPath]) -> str:
     """The ``.dist-info`` folder the record lists the install's METADATA in."""
     for path in paths:
@@ -126,8 +133,9 @@ def repack_installed_wheel(distribution: metadata.Distribution, directory: Path)
 
     The installed RECORD lists every file: those under the install root become the
     wheel, with the ``.dist-info`` metadata but not the installer's records, a new
-    RECORD written last; scripts installed outside it (``../bin/haute``) are left out,
-    since an install regenerates them from ``entry_points.txt``; and compiled
+    RECORD written last; scripts installed outside it (``../bin/haute``, or an absolute
+    path) are left out, since an install regenerates them from ``entry_points.txt``; and
+    compiled
     ``__pycache__`` files are left out. The wheel is named after the ``.dist-info``
     folder, as the wheel haute was installed from was, so its name and its metadata
     agree. A missing record, a record without METADATA, or a listed file that is not on
@@ -137,7 +145,7 @@ def repack_installed_wheel(distribution: metadata.Distribution, directory: Path)
     info_dir = _dist_info(paths)
     entries: list[tuple[str, Path]] = []
     for path in paths:
-        if ".." in path.parts or "__pycache__" in path.parts or path.suffix == ".pyc":
+        if _outside_install_root(path) or "__pycache__" in path.parts or path.suffix == ".pyc":
             continue
         if path.parent == PurePosixPath(info_dir) and path.name in _INSTALLER_FILES:
             continue
@@ -152,12 +160,13 @@ def repack_installed_wheel(distribution: metadata.Distribution, directory: Path)
     directory.mkdir(parents=True, exist_ok=True)
     stem = info_dir.removesuffix(".dist-info")
     wheel = directory / f"{stem}-{_wheel_tag(distribution)}.whl"
-    record: list[str] = []
+    record = io.StringIO()
+    rows = csv.writer(record, lineterminator="\n")
     with zipfile.ZipFile(wheel, "w") as archive:
         for arcname, source in sorted(entries):
             data = source.read_bytes()
             archive.writestr(_entry(arcname), data)
-            record.append(f"{arcname},{_record_digest(data)},{len(data)}")
-        record.append(f"{info_dir}/RECORD,,")
-        archive.writestr(_entry(f"{info_dir}/RECORD"), "\n".join(record) + "\n")
+            rows.writerow([arcname, _record_digest(data), len(data)])
+        rows.writerow([f"{info_dir}/RECORD", "", ""])
+        archive.writestr(_entry(f"{info_dir}/RECORD"), record.getvalue())
     return wheel

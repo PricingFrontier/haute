@@ -9,6 +9,7 @@ installed files, because the index's release of the same version number is other
 from __future__ import annotations
 
 import base64
+import csv
 import hashlib
 import json
 import zipfile
@@ -30,7 +31,8 @@ _GIT = {
 
 def _record_line(path: str, data: bytes) -> str:
     digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
-    return f"{path},sha256={digest},{len(data)}"
+    quoted = f'"{path}"' if "," in path else path
+    return f"{quoted},sha256={digest},{len(data)}"
 
 
 def _install(site: Path, *, direct_url: dict | None, missing: str | None = None) -> Path:
@@ -39,6 +41,7 @@ def _install(site: Path, *, direct_url: dict | None, missing: str | None = None)
         "haute/__init__.py": b"__version__ = '0.6.0'\n",
         "haute/deploy/_model_code.py": b"MODEL = True\n",
         "haute/static/index.html": b"<html></html>\n",
+        "haute/static/a,b.txt": b"comma\n",
         "haute/__pycache__/__init__.cpython-313.pyc": b"\x00compiled",
         f"{_INFO}/METADATA": b"Metadata-Version: 2.4\nName: haute\nVersion: 0.6.0\n",
         f"{_INFO}/WHEEL": b"Wheel-Version: 1.0\nGenerator: hatchling\nTag: py3-none-any\n",
@@ -55,6 +58,11 @@ def _install(site: Path, *, direct_url: dict | None, missing: str | None = None)
         path.write_bytes(data)
     record = [_record_line(rel, data) for rel, data in files.items()]
     record.append(_record_line("../../bin/haute", b"#!python\n"))
+    # On another drive the installer records a script by its absolute path.
+    script = site.parent / "Scripts" / "haute.exe"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_bytes(b"MZ")
+    record.append(_record_line(script.as_posix(), b"MZ"))
     record.append(f"{_INFO}/RECORD,,")
     (site / _INFO / "RECORD").write_text("\n".join(record) + "\n", encoding="utf-8")
     if missing is not None:
@@ -105,17 +113,18 @@ def test_a_haute_installed_from_git_ships_as_its_own_wheel(tmp_path: Path) -> No
             "haute-0.6.0.dist-info/entry_points.txt",
             "haute/__init__.py",
             "haute/deploy/_model_code.py",
+            "haute/static/a,b.txt",
             "haute/static/index.html",
             "haute-0.6.0.dist-info/RECORD",
         ]
         assert wheel.read("haute/static/index.html") == b"<html></html>\n"
-        record = wheel.read("haute-0.6.0.dist-info/RECORD").decode().splitlines()
-        for line in record[:-1]:
-            path, digest, size = line.split(",")
+        record = wheel.read("haute-0.6.0.dist-info/RECORD").decode()
+        rows = list(csv.reader(record.splitlines()))
+        for line, (path, _digest, size) in zip(record.splitlines()[:-1], rows[:-1], strict=True):
             data = wheel.read(path)
             assert line == _record_line(path, data)
             assert int(size) == len(data)
-        assert record[-1] == "haute-0.6.0.dist-info/RECORD,,"
+        assert rows[-1] == ["haute-0.6.0.dist-info/RECORD", "", ""]
 
 
 def test_a_repack_is_byte_identical_every_time(tmp_path: Path) -> None:
