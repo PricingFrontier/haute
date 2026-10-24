@@ -23,7 +23,7 @@ from haute.deploy._pruner import (
     prune_for_deploy,
 )
 from haute.errors import DeployError
-from haute.graph_utils import NodeType, PipelineGraph, flatten_graph
+from haute.graph_utils import NodeType, PipelineGraph
 
 if TYPE_CHECKING:
     from haute.deploy._request_rows import RequestRows
@@ -669,13 +669,16 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
     _load_env(project_root)
     _validate_python_versions(config, project_root)
 
-    # Parse the pipeline
-    full_graph = parse_pipeline_file(config.pipeline_file)
+    # Parse the pipeline as it runs, as `haute run` and the editor do: each submodel
+    # occurrence expanded into its own nodes (``submodel_runtime/<occurrence>/<node>``),
+    # so the response, the request input and the artefacts inside a submodel are
+    # found, bundled and scored, and the submodel's nodes run in its place.
+    full_graph = parse_pipeline_file(config.pipeline_file, flatten=True)
     if not full_graph.nodes:
         raise ValueError(f"No nodes found in {config.pipeline_file}")
     # One request input and one response, counting those inside submodels, as
     # save requires: a pipeline file written by hand can hold more.
-    validate_singleton_groups(flatten_graph(full_graph))
+    validate_singleton_groups(full_graph)
 
     # Find output node
     output_node_id = find_output_node(full_graph)

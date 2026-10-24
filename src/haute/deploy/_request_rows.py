@@ -407,9 +407,6 @@ class _Walk:
                 if request_in
                 else _lost_like(inputs)
             )
-        if node_type in {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}:
-            # A placeholder the deployed graph still holds (BUG-18).
-            return self.refuse(node, "submodel", "unproven") if request_in else _lost_like(inputs)
         return (
             self.refuse(node, str(node_type.value), "unproven")
             if request_in

@@ -430,6 +430,24 @@ def test_pass_through_selection_matches_builders(
     assert edge.source == _built_pass_through_returns(graph, node_id)
 
 
+@pytest.mark.parametrize("node_type", [NodeType.SUBMODEL, NodeType.SUBMODEL_PORT])
+def test_a_submodel_placeholder_is_never_planned_as_a_pass_through(node_type: NodeType) -> None:
+    """A placeholder refuses to build, so no plan may route its input around it: a
+    planned pass-through is never built, and the graph would run without the submodel."""
+    from haute._builders import pass_through_selected_edge
+
+    placeholder = GraphNode(
+        id="factors", data=NodeData(label="factors", nodeType=node_type, config={})
+    )
+    source = GraphNode(id="src", data=NodeData(label="src", nodeType=NodeType.POLARS, config={}))
+    edge = GraphEdge(id="e0", source="src", target="factors")
+
+    assert (
+        pass_through_selected_edge(placeholder, [edge], {"src": source, "factors": placeholder})
+        is None
+    )
+
+
 def test_two_input_pass_through_is_not_a_join(project: Path, store: NodeSnapshotStore) -> None:
     decision = resolve_seed_plan(_request(_two_input_modelling(project)), store=store)
     assert decision.captures == {}

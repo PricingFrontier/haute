@@ -106,7 +106,7 @@ from haute._types import (
 )
 from haute._user_exec import _exec_user_code
 from haute._workbench_output import WorkbenchOutputTables
-from haute.errors import ConfigError, RatingFactorDtypeContractError
+from haute.errors import ConfigError, ExecutionError, RatingFactorDtypeContractError
 
 logger = get_logger(component="executor")
 
@@ -381,8 +381,6 @@ PASS_THROUGH_NODE_TYPES: frozenset[NodeType] = frozenset(
         NodeType.DATA_OUTPUT,
         MODELLING_NODE_SEMANTICS.node_type,
         NodeType.OPTIMISER,
-        NodeType.SUBMODEL,
-        NodeType.SUBMODEL_PORT,
     }
 )
 
@@ -1546,22 +1544,32 @@ def _build_edge_join(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, edge_join_fn, False
 
 
-# SUBMODEL and SUBMODEL_PORT are placeholder/port node types used by the
-# submodel boundary machinery.  For execution they pass through because
-# ``_flatten.flatten_graph`` removes the placeholder before the executor
-# runs — but that's a defensive passthrough: if an unflatted graph ever
-# reaches the executor, returning an empty LazyFrame beats a cryptic
-# KeyError.  Codegen takes the strict stance (see
-# ``_codegen_builders._gen_submodel``): by the time codegen dispatches, the
-# submodel must have been split into its own file via ``graph_to_code_multi``.
+# SUBMODEL and SUBMODEL_PORT exist only in an unexpanded graph: the canvas's view of
+# a submodel occurrence and of a submodel's ports. Every executor expands the
+# occurrences first (``_flatten.flatten_graph``), so the submodel's own nodes run in
+# their place. A placeholder that reaches a builder refuses, naming itself: passing
+# its input through would skip the submodel's nodes and answer without them, with no
+# error. Codegen is as strict (``_codegen_builders._gen_submodel``). Their column
+# rules stay, for the views that read an unexpanded graph's columns.
 @_register(NodeType.SUBMODEL, recompute_cost="cheap", columns=_passthrough_columns)
 def _build_submodel(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
-    return ctx.func_name, _passthrough_fn, False
+    config = ctx.node.data.config
+    raise ExecutionError(
+        f"Submodel {config.get('alias') or ctx.node.data.label!r} reached execution "
+        "without being expanded into its nodes, so they would not run. Expand the "
+        "graph's submodels first (flatten_graph, or parse_pipeline_file(flatten=True)).",
+        node_id=ctx.node.id,
+        definition_id=config.get("definitionId"),
+    )
 
 
 @_register(NodeType.SUBMODEL_PORT, recompute_cost="cheap", columns=_passthrough_columns)
 def _build_submodel_port(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
-    return ctx.func_name, _passthrough_fn, False
+    raise ExecutionError(
+        f"Submodel port {ctx.node.data.label!r} reached execution: a port exists only in "
+        "the editor's view of a submodel, and expanding the graph's submodels removes it.",
+        node_id=ctx.node.id,
+    )
 
 
 # ---------------------------------------------------------------------------

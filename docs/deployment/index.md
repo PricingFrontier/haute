@@ -224,7 +224,7 @@ Every deployment answers such a request, in one of two ways. When you deploy, Ha
 | **Group and aggregate**, **Pivot to columns**, a **Fill missing values** strategy that reads other rows, or a formula that does (a total, an average, a rank, a running total, the previous row's value) | One quote's answer would depend on the others |
 | An [Apply Optimisation](../building-models/nodes/optimiser-apply.md) node in online mode, or one that loads its result from MLflow | Online mode answers in quote-id order; an MLflow result can't be checked before it is loaded |
 | A [Quote Response](../building-models/nodes/output.md) that nests a quote's own rows, such as its drivers, under it | Run together, each driver would go under every quote holding its key, so two quotes sharing a key would share drivers |
-| Code the check can't follow, or a [Submodel](../building-models/nodes/submodel.md) | It can't be checked yet |
+| Code the check can't follow | It can't be checked yet |
 
 A join keeps each quote's row when it starts from the quotes, is a left join (or a cross join with a single-row [Constant](../building-models/nodes/constant.md)), and keeps the quotes' order: **left input order** or **left, then right** in a **Join another input** step, **Left** or **Left then right** in an [Edge Join](../building-models/nodes/edge-join.md). The table it joins must also hold each key once:
 

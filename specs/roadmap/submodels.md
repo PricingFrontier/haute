@@ -160,10 +160,11 @@ specifications, then:
    Make sure the import resolves when the executor compiles the preamble and
    node code (`src/haute/executor.py::_compile_preamble` already puts the
    pipeline directory on `sys.path` for `utility` imports).
-6. Deploy: bundle `modules/` as an importable package beside the pipeline, as
-   `utility` is bundled (`src/haute/deploy/_project_modules.py`,
-   `src/haute/deploy/_bundler.py`). Coordinate with `BUG-18`, which makes
-   deploy flatten submodels at all.
+6. Deploy: resolution already expands every occurrence (`BUG-18`, fixed), so a
+   submodel's nodes are bundled and scored. If the import line stays in the preamble
+   the deployed model executes, bundle `modules/` as an importable package beside
+   the pipeline, as `utility` is bundled (`src/haute/deploy/_project_modules.py`,
+   `src/haute/deploy/_bundler.py`).
 7. Editor: Create Submodel, Dissolve, rename and delete keep the import line
    and the registration in step (the save path in
    `src/haute/routes/_save_pipeline.py`, `_derive_definition_file_lifecycle`);
@@ -182,8 +183,8 @@ a path-string registration is refused naming the import form and Recover
 rewrites it; codegen round-trips the import form byte-for-byte.
 
 **Dependencies:** The standalone expansion from commit `732cfcc2` (branch
-`bug-fixes`) is what this keeps. `BUG-18` makes deploy flatten submodels; step 6 builds
-on it.
+`bug-fixes`) is what this keeps. Deploy expands submodels when it resolves the
+pipeline (`BUG-18`, fixed); step 6 builds on it.
 
 **Evidence:** `src/haute/pipeline.py::Pipeline.submodel`,
 `src/haute/pipeline.py::RegisteredSubmodel`,
