@@ -528,7 +528,10 @@ deploy's dry run and an empty sample use, and in an app without a quote store, w
 whatever its page sends for them and prices with the stand-in identity alone
 (`with_stand_in`, which keeps them today). Preview prices the sample as the analyst types it,
 so a sample may hold values for them, typed to try a rule that reads them, as it may hold a
-`stage` today. A rule reading `modified_date` or `haute_version` prices the same values
+`stage` today. The view's `quotedSchema` keeps the columns the app sets whatever the sheets
+hide, as `sample_quote` does, so a Preview sample holding only a hidden `stage` counts as
+typed and is priced, on both sides. The app still does not count the columns it sets as
+typing: they are locked there, and `quoteEligible` leaves locked columns out. A rule reading `modified_date` or `haute_version` prices the same values
 differently on another day or release, and a pipeline that outputs them shows a save's
 price as moved from the page's. The docs say so.
 
@@ -607,14 +610,20 @@ The frontend's `QUOTE_DETAILS_COLUMNS` and `QUOTE_DETAILS_MANAGED`
     its request, its `saved_at`, its event and its details row.
   - An unpriced save is stamped as a priced one is. A save repeated with its key is not
     stamped again.
-  - Assign, archive, restore, mark final and reopen, each made after the app moved to a
-    release of another Haute version, write that version and the change's who and when,
-    while the revision's request, prices and pricing release stay the earlier ones.
+  - Assign, archive, restore and reopen, each made after the app moved to a release of
+    another Haute version, write that version and the change's who and when, while the
+    revision's request, prices and pricing release stay the earlier ones.
+  - Mark final after that move is refused, writing nothing, as a revision priced on
+    another release is today. Once the quote is priced again and saved on the running
+    release, mark final writes its own who, when and version and keeps that save's prices.
   - A note changes neither who nor when.
 - **The app owns the five.** On a sheet in the app, `created_by` is read only. A page sending
   other values for the five is overruled. A Duplicate takes its own.
 - **Outside the app.** A Preview sample holding a `created_by` prices with it, while an empty
-  sample and the deploy's dry run hold the five blank. An app without a quote store, sent
+  sample and the deploy's dry run hold the five blank. A sample holding only a `stage` its
+  sheets hide is priced, by the view's eligibility and the server's request alike, a case in
+  the shared visibility fixture; in the app, a quote holding only the columns the app sets
+  is still not typed. An app without a quote store, sent
   values for them, prices with them blank. A deploy request sending them is priced with
   them, and one leaving them out with them blank.
 - **The store.** A database at the third schema holding quotes of several revisions migrates
@@ -641,7 +650,10 @@ The frontend's `QUOTE_DETAILS_COLUMNS` and `QUOTE_DETAILS_MANAGED`
   identity alone kept) and `src/haute/_workbench_input.py::with_stand_in` (the page's details
   kept beside the stand-in).
 - `frontend/src/workbench/sheet/fieldCells.ts::drawnFields` (a field whose column is gone
-  drawn).
+  drawn) and `frontend/src/utils/sheetVisibility.ts::quotedSchema` (every column the sheets
+  hide left out, which `quoteEligible` reads).
+- `src/haute/_quote_store/_book.py::QuoteBook.finalise` (a revision priced on another
+  release refused).
 - `frontend/src/utils/workbenchForm.ts::QUOTE_DETAILS_COLUMNS` and `::QUOTE_DETAILS_MANAGED`,
   and `frontend/src/workbench/schema/TableBlock.tsx` (the note naming the app's columns).
 - `specs/workbench/high-level.md` (the `quote_details` paragraph; a migration drops nothing)
