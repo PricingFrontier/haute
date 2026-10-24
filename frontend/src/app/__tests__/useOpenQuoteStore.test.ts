@@ -187,6 +187,8 @@ describe("useOpenQuoteStore", () => {
 
     expect(made?.reference).toBe("Q-000002")
     expect(vi.mocked(createAppQuote).mock.calls[0][1]).toEqual({ quote_id: "q1", revision: 2, relation: "duplicate" })
+    // Made unpriced, though the page showed a price: its reference is taken as it is written.
+    expect(vi.mocked(createAppQuote).mock.calls[0][0].shown).toBeNull()
     expect(store().conflict).toBeNull()
   })
 

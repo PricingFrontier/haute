@@ -323,11 +323,11 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
 
   /**
    * The values on the sheets as a save sends them, saved as `to` says, or null when there is
-   * nothing to save. Its operation key is the held write's when that saves the same, its
-   * `basis`: the values, what they are saved as, and priced or not (the server prices them
-   * again), so a retry writes once.
+   * nothing to save; unpriced when not `priced`, as a new quote is made. Its operation key is
+   * the held write's when that saves the same, its `basis`: the values, what they are saved
+   * as, and priced or not (the server prices them again), so a retry writes once.
    */
-  const prepare = (to: string, write: (body: QuoteWrite["body"]) => QuoteWrite): PendingWrite | null => {
+  const prepare = (to: string, write: (body: QuoteWrite["body"]) => QuoteWrite, priced = true): PendingWrite | null => {
     const { form, revision, release } = useAppStore.getState()
     if (form === null || release === null) return null
     const preview = useWorkbenchPreviewStore.getState()
@@ -335,7 +335,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     // As the server counts typing: what the sheets show, the details the app sets and the defaults aside.
     if (!quoteEligible(form, values, preview.locked)) return null
     const price = preview.price
-    const shown = price !== null && price.basis === basisOf(form, values) ? (price.tables as QuoteWrite["body"]["shown"]) : null
+    const shown = priced && price !== null && price.basis === basisOf(form, values) ? (price.tables as QuoteWrite["body"]["shown"]) : null
     const basis = `${valuesKey(values)}|${to}|${shown === null ? "draft" : "priced"}`
     const pending = heldWrite()
     const operation = pending !== null && pending.basis === basis ? pending.write.body.operation : operationKey()
@@ -560,7 +560,8 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
         const origin = conflict?.latest ?? quote
         if (origin === null) return null
         const from = { quote_id: origin.id, revision: origin.latest, relation: "duplicate" as const }
-        return prepare(`new-from:${origin.id}:${origin.latest}`, (body) => ({ kind: "create", body, source: from }))
+        // Made unpriced, as a duplicate is: its reference is taken as it is written, and it is priced as it opens.
+        return prepare(`new-from:${origin.id}:${origin.latest}`, (body) => ({ kind: "create", body, source: from }), false)
       })
     },
 

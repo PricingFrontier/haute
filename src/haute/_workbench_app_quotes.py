@@ -380,10 +380,14 @@ def quote_router(app: QuoteApp) -> APIRouter:
     async def create_quote(http: Request) -> WorkbenchAppQuoteResponse:
         actor = _editor(http)
         body = await _body(http, WorkbenchAppQuoteCreateRequest)
+        # A quote's reference and option are taken as it is written, and its pricing reads
+        # them: it is made unpriced, and priced as it opens.
+        if body.shown is not None:
+            raise HTTPException(422, "A new quote is made unpriced: it is priced as it opens.")
         replay = await replayed(body, actor, None)
         if replay is not None:
             return replay
-        managed = {**QuoteBook.managed(None, priced=body.shown is not None), "assignee": actor}
+        managed = {**QuoteBook.managed(None, priced=False), "assignee": actor}
         ready = await _prepared(app, body, managed, creating=True)
         source = (
             None

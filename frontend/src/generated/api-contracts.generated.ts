@@ -3051,7 +3051,8 @@ export interface WorkbenchAppPriceRequest {
   };
 }
 /**
- * A new quote, and the quote it is made from when it is.
+ * A new quote, and the quote it is made from when it is. It is made unpriced, ``shown``
+ * null, and priced as it opens.
  */
 export interface WorkbenchAppQuoteCreateRequest {
   form_revision: string;

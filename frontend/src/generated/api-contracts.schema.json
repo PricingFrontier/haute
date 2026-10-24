@@ -16270,7 +16270,7 @@
       "type": "object"
     },
     "WorkbenchAppQuoteCreateRequest": {
-      "description": "A new quote, and the quote it is made from when it is.",
+      "description": "A new quote, and the quote it is made from when it is. It is made unpriced, ``shown``\nnull, and priced as it opens.",
       "properties": {
         "form_revision": {
           "title": "Form Revision",

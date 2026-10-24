@@ -621,6 +621,7 @@ the quote came from, and who it is with, which you can change. A quote saved on 
 later release changed opens on the sheets it was keyed into, read only; **Move to current
 sheets** brings its values onto today's, naming any that no longer fit. If a colleague saves
 a quote while you have it open, your save is refused naming who did it, with your values
-kept: open the newest, or save yours as a new quote. Values you have not saved are kept in
+kept: open the newest, or save yours as a new quote, which opens and prices as a duplicate
+does; **Save** keeps its price. Values you have not saved are kept in
 the browser and offered back when you open the quote again, and leaving with them asks
 first. `Ctrl+S` saves.

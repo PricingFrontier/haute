@@ -23,6 +23,7 @@ from haute._quote_store import (
     store_url,
 )
 from haute._sandbox import _get_project_root, set_project_root
+from haute._types import PipelineGraph
 from haute._workbench_app import (
     EASY_AUTH_NAME,
     EASY_AUTH_PRINCIPAL,
@@ -31,7 +32,8 @@ from haute._workbench_app import (
     easy_auth_roles,
     write_release,
 )
-from haute._workbench_form import FormSpec, with_quote_details
+from haute._workbench_form import QUOTE_DETAILS_ID, FormSpec, with_quote_details
+from haute._workbench_tables import input_tables
 from haute.deploy._utils import shipped_graph
 from tests.test_workbench_app import _graph
 from tests.test_workbench_routes import POLICY, PRICING, form
@@ -55,6 +57,21 @@ FORM = with_quote_details(FormSpec.model_validate(form(POLICY, PRICING))).model_
 )
 
 
+def _priced_graph(spec: dict[str, Any]) -> PipelineGraph:
+    """The policy priced as `_graph` prices it, its Workbench Input reading the quote's
+    details too, as every project's does: a request names the quote's reference and
+    option."""
+    graph = _graph()
+    details = next(
+        table
+        for table in input_tables(FormSpec.model_validate(spec))
+        if table.name == QUOTE_DETAILS_ID
+    )
+    request = graph.nodes[0].data.config
+    request["tables"] = [details.model_dump(mode="json"), *request["tables"]]
+    return graph
+
+
 def _write_release(
     directory: Path, spec: dict[str, Any] = FORM, edit_role: str | None = None
 ) -> Path:
@@ -68,7 +85,7 @@ def _write_release(
         "output_node_id": "response",
         "output_fields": None,
         "artifacts": {},
-        "pruned_graph": shipped_graph(_graph()),
+        "pruned_graph": shipped_graph(_priced_graph(spec)),
     }
     (directory / "deploy_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     write_release(
@@ -119,7 +136,17 @@ class Page:
         }
 
     def create(self, headers: dict[str, str] = ANA, **fields: Any) -> Any:
-        return self.client.post("/api/app/quotes", json=self.body(**fields), headers=headers)
+        """A new quote, made unpriced as the app makes one."""
+        body = self.body(**{"shown": None, **fields})
+        return self.client.post("/api/app/quotes", json=body, headers=headers)
+
+    def priced(self, headers: dict[str, str] = ANA, **fields: Any) -> dict[str, Any]:
+        """A new quote of Ana's, saved priced: its second revision."""
+        made = self.create().json()["quote"]
+        saved = self.save(made, headers=headers, **fields)
+        assert saved.status_code == 200, saved.text
+        quote: dict[str, Any] = saved.json()["quote"]
+        return quote
 
     def save(self, quote: dict[str, Any], headers: dict[str, str] = ANA, **fields: Any) -> Any:
         body = self.body(version=quote["latest"], **fields)
@@ -153,10 +180,11 @@ def test_the_release_says_the_app_keeps_quotes(client: TestClient, release_dir: 
 
 def test_a_priced_save_is_priced_again_on_the_server_and_kept(page: Page) -> None:
     sent = {**VALUES, "quote_details": [{**DETAILS, "qd_assignee": "jo", "qd_stage": "final"}]}
-    created = page.create(values=sent)
+    made = page.create(values=sent).json()["quote"]
+    saved = page.save(made, values=sent)
 
-    assert created.status_code == 200, created.text
-    answered = created.json()
+    assert saved.status_code == 200, saved.text
+    answered = saved.json()
     quote = answered["quote"]
     assert (quote["reference"], quote["stage"], quote["assignee"]) == (
         "Q-000001",
@@ -177,6 +205,9 @@ def test_a_priced_save_is_priced_again_on_the_server_and_kept(page: Page) -> Non
     # The values read back hold the details, the app's set over what the page sent.
     assert answered["revision"]["values"]["quote_details"][0]["qd_stage"] == "priced"
     assert answered["revision"]["tables"] == PRICED
+    # Priced under the quote's own identity, which the pipeline's request names.
+    request = answered["revision"]["request"]["quote_details"]
+    assert (request["quote_reference"], request["quote_option"]) == ("Q-000001", 1)
     assert answered["revision"]["release"] == page.release
     assert answered["moved"] is False
     assert answered["form"] is None
@@ -185,16 +216,26 @@ def test_a_priced_save_is_priced_again_on_the_server_and_kept(page: Page) -> Non
 def test_a_save_whose_prices_moved_on_the_server_keeps_the_servers_and_says_so(
     page: Page,
 ) -> None:
-    created = page.create(shown={"pricing_output": [{"premium": 1.0}]}).json()
+    made = page.create().json()["quote"]
+    saved = page.save(made, shown={"pricing_output": [{"premium": 1.0}]}).json()
 
-    assert created["moved"] is True
-    assert created["revision"]["tables"] == PRICED
+    assert saved["moved"] is True
+    assert saved["revision"]["tables"] == PRICED
+
+
+def test_a_new_quote_given_a_price_is_refused_as_it_is_made_unpriced(page: Page) -> None:
+    # Its reference and option are taken as it is written, and its pricing reads them.
+    refused = page.create(shown=PRICED)
+
+    assert refused.status_code == 422
+    assert refused.json()["detail"] == "A new quote is made unpriced: it is priced as it opens."
+    assert page.client.get("/api/app/quotes?view=team", headers=ANA).json()["quotes"] == []
 
 
 def test_a_quote_is_made_untyped_as_a_draft_and_an_empty_save_is_refused(page: Page) -> None:
-    draft = page.create(shown=None).json()
+    draft = page.create().json()
     # Made when the underwriter asks for it, holding nothing typed yet, with its identity.
-    untyped = page.create(shown=None, values={})
+    untyped = page.create(values={})
 
     assert (draft["quote"]["stage"], draft["revision"]["tables"]) == ("draft", None)
     assert untyped.status_code == 200, untyped.text
@@ -228,7 +269,7 @@ def test_a_save_from_a_page_of_another_release_is_refused(page: Page) -> None:
 
 
 def test_a_quote_opens_with_its_newest_revision_and_each_revision_by_number(page: Page) -> None:
-    quote = page.create(shown=None).json()["quote"]
+    quote = page.create().json()["quote"]
     page.save(quote, headers=JO)
 
     opened = page.client.get(f"/api/app/quotes/{quote['id']}", headers=ANA).json()
@@ -302,7 +343,6 @@ def test_the_lists_page_search_and_count_through_the_route(page: Page) -> None:
             "t1": [{"c_state": "CA", "c_exposure": "5"}],
             "quote_details": [{"qd_insured": "Cal"}],
         },
-        shown=None,
     )
 
     listed = page.client.get("/api/app/quotes", headers=ANA).json()
@@ -326,7 +366,6 @@ def test_the_history_lists_revisions_events_and_related_quotes(page: Page) -> No
     quote = page.create().json()["quote"]
     renewal = page.create(
         headers=JO,
-        shown=None,
         source={"quote_id": quote["id"], "revision": 1, "relation": "renewal"},
     ).json()["quote"]
 
@@ -345,7 +384,7 @@ def test_the_history_lists_revisions_events_and_related_quotes(page: Page) -> No
 def test_an_alternative_is_the_next_option_of_its_sources_reference(page: Page) -> None:
     quote = page.create().json()["quote"]
     alternative = page.create(
-        shown=None, source={"quote_id": quote["id"], "revision": 1, "relation": "alternative"}
+        source={"quote_id": quote["id"], "revision": 1, "relation": "alternative"}
     ).json()["quote"]
 
     assert (alternative["reference"], alternative["option"], alternative["label"]) == (
@@ -381,8 +420,8 @@ def test_a_price_differing_only_in_the_quotes_identity_has_not_moved() -> None:
 
 
 def test_a_revision_is_carried_onto_the_releases_sheets(page: Page) -> None:
-    quote = page.create().json()["quote"]
-    url = f"/api/app/quotes/{quote['id']}/revisions/1/carry"
+    quote = page.priced()
+    url = f"/api/app/quotes/{quote['id']}/revisions/{quote['latest']}/carry"
 
     # The same quote onto newer sheets keeps the details the app set for it.
     same = page.client.get(url, params={"details": "true"}, headers=ANA).json()
@@ -429,16 +468,16 @@ def test_changes_through_the_routes_name_the_revision_they_were_made_on(page: Pa
 
 
 def test_final_archive_restore_and_reopen_through_the_routes(page: Page) -> None:
-    quote = page.create().json()["quote"]
+    quote = page.priced()
 
-    final = page.change(quote, "final", revision=1).json()["quote"]
+    final = page.change(quote, "final", revision=quote["latest"]).json()["quote"]
     locked = page.save(final)
     archived = page.change(final, "archive").json()["quote"]
     restored = page.change(archived, "restore").json()["quote"]
     unreasoned = page.change(restored, "reopen", reason="")
     reopened = page.change(restored, "reopen", reason="Broker asked").json()["quote"]
 
-    assert (final["stage"], final["final_revision"]) == ("final", 2)
+    assert (final["stage"], final["final_revision"]) == ("final", 3)
     assert locked.status_code == 409
     assert locked.json()["detail"]["error_code"] == "quote_locked"
     assert archived["archived"] and archived["archived_at"] is not None
@@ -449,7 +488,7 @@ def test_final_archive_restore_and_reopen_through_the_routes(page: Page) -> None
 
 
 def test_a_draft_cannot_be_marked_final(page: Page) -> None:
-    quote = page.create(shown=None).json()["quote"]
+    quote = page.create().json()["quote"]
 
     refused = page.change(quote, "final", revision=1)
 
@@ -557,9 +596,11 @@ def test_with_an_edit_role_only_those_holding_it_change_quotes(tmp_path: Path, u
                 client.post(f"/api/app/quotes/{quote['id']}/{path}", json=json, headers=reader)
                 for path, json in writes.items()
             ]
+            # A reader prices the quote as it is shown, under its reference and option.
+            shown = {k: body[k] for k in ("form_revision", "release")}
             priced = client.post(
                 "/api/app/price",
-                json={k: body[k] for k in ("form_revision", "release", "values")},
+                json={**shown, "values": made.json()["revision"]["values"]},
                 headers=reader,
             )
 

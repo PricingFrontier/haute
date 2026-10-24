@@ -1011,7 +1011,9 @@ Out of scope:
   another, and an operation key; the details the app sets, `quote_reference`, `quote_option`,
   `stage`, `assignee` and `archived`, are set over whatever the page sent, and with
   nothing else typed there is nothing to save (422), save a creation, which makes the quote
-  holding what it starts with. It saves the quote unpriced, or, given the prices
+  holding what it starts with, unpriced: its reference and option are taken as it is
+  written, and its pricing reads them, so a creation given prices is refused (422) and the
+  quote is priced as it opens. A save keeps the quote unpriced, or, given the prices
   the page showed, prices it again on the server and keeps that pricing, saying whether
   it moved from what the page showed, so a price kept is always the release's own. Each
   change but a note names the quote's version and is refused (409) with the quote as it is now when
@@ -1092,7 +1094,7 @@ Out of scope:
   priced differently from the sheets says so and shows the server's price. A save or
   change over a quote moved on since it was opened names who moved it, keeps the
   underwriter's values, and offers to open the newest or to save the values as a new
-  quote; a page drawn for an earlier release says so and offers to reload. Values not
+  quote, made unpriced from the newest, as Duplicate makes one, and priced as it opens; a page drawn for an earlier release says so and offers to reload. Values not
   yet saved are kept in the browser as they are typed, at once as the quote is left, and
   again after a save for what was typed during it, and offered back when the quote is
   opened again, or restored or reopened, as not saved to the server, until they are saved
