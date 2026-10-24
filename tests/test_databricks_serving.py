@@ -493,3 +493,44 @@ def test_a_malformed_profile_file_is_named_without_its_contents(
 
     assert "selects the Databricks profile 'team'" in str(excinfo.value)
     assert "dapi-leaked-secret" not in str(excinfo.value)
+
+
+@pytest.mark.usefixtures("serving_pair")
+@pytest.mark.parametrize("exists", [False, True])
+def test_an_endpoint_change_databricks_refuses_fails_with_its_reason(exists: bool) -> None:
+    """A workspace that will not take the change fails the deploy with Databricks' reason,
+    naming the endpoint and the version, rather than with the SDK's traceback."""
+    from databricks.sdk.errors import BadRequest
+
+    from haute.deploy import _mlflow
+
+    ws = MagicMock()
+    refusal = BadRequest("Cannot create or update model serving endpoints, please try again later.")
+    if exists:
+        ws.serving_endpoints.get.return_value = _endpoint(
+            EndpointStateReady.READY, EndpointStateConfigUpdate.NOT_UPDATING, serving=("2",)
+        )
+        ws.serving_endpoints.update_config.side_effect = refusal
+    else:
+        ws.serving_endpoints.get.side_effect = NotFound("no endpoint")
+        ws.serving_endpoints.create.side_effect = refusal
+
+    with (
+        patch.object(_mlflow, "serving_workspace_client", return_value=ws),
+        patch.object(_mlflow, "wait_for_endpoint") as wait,
+        pytest.raises(ServingEndpointError) as excinfo,
+    ):
+        _mlflow._create_or_update_serving_endpoint(
+            config=_deploy_config(),
+            uc_model_name="main.pricing.pricing-staging",
+            model_version=3,
+            progress=lambda _message: None,
+        )
+
+    action = "update" if exists else "create"
+    assert str(excinfo.value) == (
+        f"Databricks refused to {action} serving endpoint 'pricing-staging' for "
+        "main.pricing.pricing-staging version 3: Cannot create or update model serving "
+        "endpoints, please try again later."
+    )
+    wait.assert_not_called()

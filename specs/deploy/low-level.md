@@ -569,7 +569,10 @@ three-level name. The client marks the run `FINISHED`, or `FAILED` when logging
 raised. Fetches the newly registered version through the client, then creates or updates the
 Databricks Model Serving endpoint (`_create_or_update_serving_endpoint`) if
 `effective_endpoint_name` is set: created when it does not exist, otherwise refused while
-another update is in progress and then pointed at the new version, and in either case waited
+another update is in progress and then pointed at the new version (a request Databricks
+refuses, such as a workspace that takes no endpoint changes for now, fails with
+`ServingEndpointError` naming the endpoint, the registered version and Databricks' reason,
+never the SDK's traceback), and in either case waited
 for (`_databricks_serving.wait_for_endpoint`) until it serves that version, so the deploy
 reports Databricks' reason (state message, build and server log tails) for a model that
 cannot be served instead of succeeding while the endpoint stays on the previous version. The

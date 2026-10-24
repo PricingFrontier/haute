@@ -443,10 +443,12 @@ def _create_or_update_serving_endpoint(
 
     Creates the endpoint when it does not exist, or points its served entity at
     *model_version*, with the serving pair (``haute.deploy._databricks_serving``). An
-    endpoint already being updated is refused rather than overridden. The deploy then
-    waits until the endpoint serves *model_version*: a model whose environment cannot
-    be built, or that fails to start, fails the deploy with what Databricks reports,
-    instead of leaving the endpoint on the previous version behind a green deploy.
+    endpoint already being updated is refused rather than overridden, and a request
+    Databricks refuses fails the deploy with the endpoint, the version and its reason.
+    The deploy then waits until the endpoint serves *model_version*: a model whose
+    environment cannot be built, or that fails to start, fails the deploy with what
+    Databricks reports, instead of leaving the endpoint on the previous version behind
+    a green deploy.
 
     Args:
         config: The deployment configuration (provides endpoint_name and
@@ -464,7 +466,7 @@ def _create_or_update_serving_endpoint(
     if not endpoint_name:
         return None
 
-    from databricks.sdk.errors import NotFound
+    from databricks.sdk.errors import DatabricksError, NotFound
     from databricks.sdk.service.serving import (
         EndpointCoreConfigInput,
         ServedEntityInput,
@@ -472,6 +474,13 @@ def _create_or_update_serving_endpoint(
 
     credentials = serving_credentials()
     ws = serving_workspace_client(credentials)
+
+    def refused(action: str, exc: Exception) -> ServingEndpointError:
+        # The registered version stays registered: the next deploy registers another.
+        return ServingEndpointError(
+            f"Databricks refused to {action} serving endpoint '{endpoint_name}' for "
+            f"{uc_model_name} version {model_version}: {exc}"
+        )
 
     served_entity = ServedEntityInput(
         entity_name=uc_model_name,
@@ -485,13 +494,18 @@ def _create_or_update_serving_endpoint(
         endpoint = ws.serving_endpoints.get(endpoint_name)
     except NotFound:
         progress(f"Creating serving endpoint {endpoint_name} for version {model_version}...")
-        ws.serving_endpoints.create(
-            name=endpoint_name,
-            config=EndpointCoreConfigInput(
+        try:
+            ws.serving_endpoints.create(
                 name=endpoint_name,
-                served_entities=[served_entity],
-            ),
-        )
+                config=EndpointCoreConfigInput(
+                    name=endpoint_name,
+                    served_entities=[served_entity],
+                ),
+            )
+        except DatabricksError as exc:
+            raise refused("create", exc) from exc
+    except DatabricksError as exc:
+        raise refused("read", exc) from exc
     else:
         if endpoint_update_state(endpoint) == "IN_PROGRESS":
             raise ServingEndpointError(
@@ -500,10 +514,13 @@ def _create_or_update_serving_endpoint(
                 "again."
             )
         progress(f"Updating serving endpoint {endpoint_name} to version {model_version}...")
-        ws.serving_endpoints.update_config(
-            name=endpoint_name,
-            served_entities=[served_entity],
-        )
+        try:
+            ws.serving_endpoints.update_config(
+                name=endpoint_name,
+                served_entities=[served_entity],
+            )
+        except DatabricksError as exc:
+            raise refused("update", exc) from exc
 
     wait_for_endpoint(ws, endpoint_name, version=str(model_version), progress=progress)
     progress(f"Endpoint {endpoint_name} serves version {model_version}")
