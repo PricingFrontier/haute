@@ -864,7 +864,8 @@ def _is_generated_call(statement: ast.stmt, receiver: str) -> bool:
         expr = expr.func.value
     if not isinstance(expr, ast.Name) or expr.id != receiver or not methods:
         return False
-    if receiver == "pipeline" and methods == ["submodel"]:
+    if receiver == "pipeline" and all(method == "submodel" for method in methods):
+        # Registrations, chained or not: codegen writes each one, a statement apiece.
         return True
     return all(method == "connect" for method in methods)
 

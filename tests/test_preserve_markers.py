@@ -464,6 +464,19 @@ class TestUnkeptModuleStatements:
 
         assert exc_info.value.context["line"] == 4
 
+    def test_a_chained_registration_is_generated_code(self):
+        """Codegen writes every registration of a chain, one statement apiece, so a save
+        rewrites the chain rather than dropping it."""
+        source = (
+            "import haute\n\nfrom modules import rating\n\n"
+            'pipeline = haute.Pipeline("p")\n'
+            'pipeline.submodel(rating.submodel, "first").submodel(\n'
+            '    rating.submodel, "second", instance_of="first"\n'
+            ")\n"
+        )
+
+        assert unkept_module_statements(source) == []
+
     def test_a_submodel_import_after_the_constructor_is_generated_code_too(self):
         """Codegen rewrites the import in its place among the imports, so a save keeps
         it wherever it was written, after the constructor too."""

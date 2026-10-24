@@ -2646,8 +2646,7 @@ def test_removing_an_occurrence_keeps_the_import_a_registration_chain_still_uses
 
     payload = _remove_occurrence(client, pipeline_file, tmp_path, "broken")
 
-    # (A chained registration is still reported as a statement a save would rewrite:
-    # codegen writes one registration per statement.)
+    assert payload["document"]["load_status"] == "ready"
     authored = {node["authored_id"] for node in payload["document"]["nodes"]}
     assert {"first", "second"} <= authored
     assert "from modules import pricing" in pipeline_file.read_text(encoding="utf-8").splitlines()
