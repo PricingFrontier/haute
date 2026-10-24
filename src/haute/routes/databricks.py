@@ -6,7 +6,11 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from haute._databricks_credentials import DatabricksConfigError, resolve_databricks_credentials
+from haute._databricks_credentials import (
+    DatabricksConfigError,
+    databricks_workspace_client,
+    resolve_databricks_credentials,
+)
 from haute._logging import get_logger
 from haute.schemas import (
     CatalogItem,
@@ -27,7 +31,7 @@ router = APIRouter(prefix="/api/databricks", tags=["databricks"])
 def _get_databricks_client() -> Any:
     """Return a Databricks WorkspaceClient using credentials from .env."""
     try:
-        from databricks.sdk import WorkspaceClient
+        from databricks.sdk import WorkspaceClient  # noqa: F401
     except ImportError:
         raise HTTPException(
             status_code=503,
@@ -39,17 +43,7 @@ def _get_databricks_client() -> Any:
     except DatabricksConfigError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    if credentials.auth_mode == "pat":
-        assert credentials.token is not None
-        return WorkspaceClient(host=credentials.workspace_host, token=credentials.token)
-
-    assert credentials.client_id is not None
-    assert credentials.client_secret is not None
-    return WorkspaceClient(
-        host=credentials.workspace_host,
-        client_id=credentials.client_id,
-        client_secret=credentials.client_secret,
-    )
+    return databricks_workspace_client(credentials)
 
 
 @router.get("/warehouses", response_model=WarehouseListResponse)
@@ -63,6 +57,7 @@ def list_databricks_warehouses() -> WarehouseListResponse:
             http_path=f"/sql/1.0/warehouses/{wh.id}",
             state=wh.state.value if wh.state else "UNKNOWN",
             size=wh.cluster_size or "",
+            serverless=bool(wh.enable_serverless_compute),
         )
         for wh in w.warehouses.list()
         if wh.id and wh.name

@@ -27,6 +27,7 @@ from haute._polars_dtypes import (
     wide_integer_message,
 )
 from haute._polars_environment import polars_process_environment, polars_spill_root
+from haute._project_python import deployed_python_version
 from haute.deploy._config import ResolvedDeploy
 from haute.deploy._request_rows import copy_verified
 from haute.deploy._utils import build_manifest, model_source_line
@@ -295,7 +296,11 @@ def _pyfunc_model_arguments(
         "artifacts": artifacts,
         "code_paths": [str(utility)] if utility is not None else None,
         "signature": _build_signature(resolved),
-        "conda_env": _conda_env(),
+        "conda_env": _conda_env(
+            deployed_python_version(
+                resolved.config.project_dir or resolved.config.pipeline_file.parent
+            )
+        ),
     }
 
 
@@ -373,23 +378,17 @@ def _pip_requirements() -> list[str]:
     ]
 
 
-# Databricks Model Serving uses conda to build the container.
-# Pin Python to 3.11 which is widely available on Databricks' internal
-# conda channel, regardless of which Python the CI runner uses.
-_SERVING_PYTHON_VERSION = "3.11.11"
-
-
-def _conda_env() -> dict:
+def _conda_env(python_version: str) -> dict:
     """Build a conda environment dict for Databricks Model Serving.
 
-    Pins Python to a version available on Databricks' internal conda
-    channel instead of letting MLflow auto-detect the host Python
-    (which may be 3.13+ and unavailable on Databricks).
+    Databricks Model Serving builds the container from it. Python is the project's
+    (``haute._project_python.deployed_python_version``), the one CI tested the pipeline
+    on, never MLflow's guess from the host; ``3.13`` takes conda's newest 3.13 release.
     """
     return {
         "channels": ["conda-forge"],
         "dependencies": [
-            f"python={_SERVING_PYTHON_VERSION}",
+            f"python={python_version}",
             "pip",
             {"pip": _pip_requirements()},
         ],

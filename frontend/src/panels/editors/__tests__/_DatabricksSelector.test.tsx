@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup, act, waitFor } from "@testing-library/react"
-import { WarehousePicker, CatalogTablePicker } from "../_DatabricksSelector"
+import { render, screen, fireEvent, cleanup, act, waitFor, within } from "@testing-library/react"
+import { WarehousePicker, CatalogTablePicker, TargetTablePicker } from "../_DatabricksSelector"
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -54,22 +54,119 @@ describe("WarehousePicker", () => {
   afterEach(cleanup)
 
   const warehouses = [
-    { id: "w1", name: "Starter Warehouse", http_path: "/sql/1.0/warehouses/abc", state: "RUNNING", size: "Small" },
-    { id: "w2", name: "Prod Warehouse", http_path: "/sql/1.0/warehouses/def", state: "STOPPED", size: "Large" },
-    { id: "w3", name: "Dev Warehouse", http_path: "/sql/1.0/warehouses/ghi", state: "STARTING", size: "" },
+    { id: "w1", name: "Starter Warehouse", http_path: "/sql/1.0/warehouses/abc", state: "RUNNING", size: "Small", serverless: true },
+    { id: "w2", name: "Prod Warehouse", http_path: "/sql/1.0/warehouses/def", state: "STOPPED", size: "Large", serverless: false },
+    { id: "w3", name: "Dev Warehouse", http_path: "/sql/1.0/warehouses/ghi", state: "STARTING", size: "", serverless: false },
   ]
+  const clusterPath = "/sql/protocolv1/o/123/0101-abc"
 
-  it("renders the input with current httpPath value", () => {
+  const openList = () =>
+    fireEvent.click(screen.getByRole("button", { expanded: false, name: /warehouse|\/sql/i }))
+
+  it("prompts for a warehouse instead of showing a path-like placeholder", async () => {
+    mockGetWarehouses.mockResolvedValue({ warehouses })
+    render(<WarehousePicker httpPath="" onSelect={vi.fn()} />)
+
+    expect(await screen.findByText("Select SQL warehouse...")).toBeInTheDocument()
+    expect(screen.getByText("Required. Haute runs the read on this warehouse.")).toBeInTheDocument()
+    expect(screen.queryByPlaceholderText(/warehouses\/abc123/)).not.toBeInTheDocument()
+  })
+
+  it("fetches warehouses on mount and lists them when opened", async () => {
+    mockGetWarehouses.mockResolvedValue({ warehouses })
+    render(<WarehousePicker httpPath="" onSelect={vi.fn()} />)
+
+    await screen.findByText("Select SQL warehouse...")
+    openList()
+
+    const list = screen.getByRole("listbox", { name: "SQL warehouses" })
+    expect(within(list).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      expect.stringContaining("Starter Warehouse"),
+      expect.stringContaining("Prod Warehouse"),
+      expect.stringContaining("Dev Warehouse"),
+    ])
+    expect(mockGetWarehouses).toHaveBeenCalledTimes(1)
+  })
+
+  it("tags serverless warehouses", async () => {
+    mockGetWarehouses.mockResolvedValue({ warehouses })
+    render(<WarehousePicker httpPath="" onSelect={vi.fn()} />)
+
+    await screen.findByText("Select SQL warehouse...")
+    openList()
+
+    expect(within(screen.getByRole("option", { name: /Starter Warehouse/ })).getByText("Serverless")).toBeInTheDocument()
+    expect(within(screen.getByRole("option", { name: /Prod Warehouse/ })).queryByText("Serverless")).not.toBeInTheDocument()
+  })
+
+  it("selects a warehouse's http_path and closes the list", async () => {
+    mockGetWarehouses.mockResolvedValue({ warehouses })
+    const onSelect = vi.fn()
+    render(<WarehousePicker httpPath="" onSelect={onSelect} />)
+
+    await screen.findByText("Select SQL warehouse...")
+    openList()
+    fireEvent.click(screen.getByRole("option", { name: /Prod Warehouse/ }))
+
+    expect(onSelect).toHaveBeenCalledWith("/sql/1.0/warehouses/def")
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
+  })
+
+  it("shows the saved warehouse by name and marks it selected", async () => {
+    mockGetWarehouses.mockResolvedValue({ warehouses })
     render(<WarehousePicker httpPath="/sql/1.0/warehouses/abc" onSelect={vi.fn()} />)
-    const input = screen.getByPlaceholderText("/sql/1.0/warehouses/abc123")
-    expect(input).toHaveValue("/sql/1.0/warehouses/abc")
+
+    const trigger = await screen.findByRole("button", { name: /Starter Warehouse/ })
+    fireEvent.click(trigger)
+
+    expect(screen.getByRole("option", { name: /Starter Warehouse/ })).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByRole("option", { name: /Prod Warehouse/ })).toHaveAttribute("aria-selected", "false")
+  })
+
+  it("auto-selects the only warehouse when none is set", async () => {
+    mockGetWarehouses.mockResolvedValue({ warehouses: [warehouses[0]] })
+    const onSelect = vi.fn()
+    render(<WarehousePicker httpPath="" onSelect={onSelect} />)
+
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith("/sql/1.0/warehouses/abc"))
+    expect(onSelect).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not auto-select when there are several warehouses or one is already set", async () => {
+    mockGetWarehouses.mockResolvedValue({ warehouses })
+    const onSelect = vi.fn()
+    render(<WarehousePicker httpPath="" onSelect={onSelect} />)
+    await screen.findByText("Select SQL warehouse...")
+    cleanup()
+
+    mockGetWarehouses.mockResolvedValue({ warehouses: [warehouses[0]] })
+    render(<WarehousePicker httpPath="/sql/1.0/warehouses/def" onSelect={onSelect} />)
+    await waitFor(() => expect(mockGetWarehouses).toHaveBeenCalledTimes(2))
+    await screen.findByText(/not in the workspace's list/)
+
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it("warns when the saved warehouse is not in the workspace's list", async () => {
+    mockGetWarehouses.mockResolvedValue({ warehouses })
+    render(<WarehousePicker httpPath="/sql/1.0/warehouses/gone" onSelect={vi.fn()} />)
+
+    expect(await screen.findByText(/not in the workspace's list/)).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /\/sql\/1.0\/warehouses\/gone/ })).toBeInTheDocument()
+  })
+
+  it("opens a cluster path in manual mode without fetching warehouses", () => {
+    render(<WarehousePicker httpPath={clusterPath} onSelect={vi.fn()} />)
+
+    expect(screen.getByLabelText("HTTP path")).toHaveValue(clusterPath)
+    expect(mockGetWarehouses).not.toHaveBeenCalled()
   })
 
   it("commits a typed path once on blur, not per keystroke (undo-atomicity)", () => {
     const onSelect = vi.fn()
-    render(<WarehousePicker httpPath="" onSelect={onSelect} />)
-    const input = screen.getByPlaceholderText("/sql/1.0/warehouses/abc123")
-    fireEvent.change(input, { target: { value: "/sql/custom/path" } })
+    render(<WarehousePicker httpPath={clusterPath} onSelect={onSelect} />)
+    const input = screen.getByLabelText("HTTP path")
+    fireEvent.change(input, { target: { value: " /sql/custom/path " } })
     // Typing buffers locally — nothing committed yet.
     expect(onSelect).not.toHaveBeenCalled()
     fireEvent.blur(input)
@@ -77,75 +174,49 @@ describe("WarehousePicker", () => {
     expect(onSelect).toHaveBeenCalledWith("/sql/custom/path")
   })
 
-  it("fetches warehouses on Browse button click and shows the list", async () => {
+  it("switches to manual entry and back without re-fetching", async () => {
     mockGetWarehouses.mockResolvedValue({ warehouses })
     render(<WarehousePicker httpPath="" onSelect={vi.fn()} />)
 
-    fireEvent.click(screen.getByTitle("Fetch warehouses from Databricks"))
+    await screen.findByText("Select SQL warehouse...")
+    openList()
+    fireEvent.click(screen.getByRole("button", { name: "Enter HTTP path manually..." }))
+    expect(screen.getByLabelText("HTTP path")).toHaveAttribute("placeholder", "Paste an HTTP path")
 
-    await waitFor(() => {
-      expect(screen.getByText("Starter Warehouse")).toBeInTheDocument()
-    })
-    expect(screen.getByText("Prod Warehouse")).toBeInTheDocument()
-    expect(screen.getByText("Dev Warehouse")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Choose from warehouse list" }))
+    expect(screen.getByText("Select SQL warehouse...")).toBeInTheDocument()
     expect(mockGetWarehouses).toHaveBeenCalledTimes(1)
   })
 
-  it("does not re-fetch on second Browse click (fetched.current guard)", async () => {
+  it("fetches the list when leaving manual mode for the first time", async () => {
+    mockGetWarehouses.mockResolvedValue({ warehouses })
+    render(<WarehousePicker httpPath={clusterPath} onSelect={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Choose from warehouse list" }))
+    await waitFor(() => expect(mockGetWarehouses).toHaveBeenCalledTimes(1))
+  })
+
+  it("refreshes the list on demand", async () => {
     mockGetWarehouses.mockResolvedValue({ warehouses })
     render(<WarehousePicker httpPath="" onSelect={vi.fn()} />)
-    const btn = screen.getByTitle("Fetch warehouses from Databricks")
 
-    // First click: fetches
-    fireEvent.click(btn)
-    await waitFor(() => {
-      expect(screen.getByText("Starter Warehouse")).toBeInTheDocument()
-    })
-    expect(mockGetWarehouses).toHaveBeenCalledTimes(1)
-
-    // Close the list by selecting a warehouse, then re-click
-    fireEvent.click(screen.getByText("Starter Warehouse"))
-    // List should close
-    expect(screen.queryByText("Prod Warehouse")).not.toBeInTheDocument()
-
-    // Second click: opens without re-fetching
-    fireEvent.click(btn)
-    await waitFor(() => {
-      expect(screen.getByText("Starter Warehouse")).toBeInTheDocument()
-    })
-    expect(mockGetWarehouses).toHaveBeenCalledTimes(1)
+    await screen.findByText("Select SQL warehouse...")
+    fireEvent.click(screen.getByRole("button", { name: "Refresh warehouses" }))
+    await waitFor(() => expect(mockGetWarehouses).toHaveBeenCalledTimes(2))
   })
 
-  it("calls onSelect with warehouse http_path on warehouse click", async () => {
+  it("closes the list on Escape and outside click", async () => {
     mockGetWarehouses.mockResolvedValue({ warehouses })
-    const onSelect = vi.fn()
-    render(<WarehousePicker httpPath="" onSelect={onSelect} />)
+    render(<WarehousePicker httpPath="" onSelect={vi.fn()} />)
 
-    fireEvent.click(screen.getByTitle("Fetch warehouses from Databricks"))
-    await waitFor(() => {
-      expect(screen.getByText("Prod Warehouse")).toBeInTheDocument()
-    })
+    await screen.findByText("Select SQL warehouse...")
+    openList()
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "Escape" })
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByText("Prod Warehouse"))
-    expect(onSelect).toHaveBeenCalledWith("/sql/1.0/warehouses/def")
-  })
-
-  it("shows checkmark next to the currently selected warehouse", async () => {
-    mockGetWarehouses.mockResolvedValue({ warehouses })
-    render(
-      <WarehousePicker httpPath="/sql/1.0/warehouses/abc" onSelect={vi.fn()} />,
-    )
-
-    fireEvent.click(screen.getByTitle("Fetch warehouses from Databricks"))
-    await waitFor(() => {
-      expect(screen.getByText("Starter Warehouse")).toBeInTheDocument()
-    })
-
-    // The button for the selected warehouse should have accent-soft background
-    // and a Check icon. We verify by looking for the check SVG in that row.
-    const selectedBtn = screen.getByText("Starter Warehouse").closest("button")!
-    // Check icon is rendered as an SVG inside the selected warehouse button
-    expect(selectedBtn.querySelector("svg")).toBeTruthy()
+    openList()
+    fireEvent.mouseDown(document.body)
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
   })
 
   it("displays state indicator colors: green for RUNNING, red for STOPPED, amber for other", async () => {
@@ -154,10 +225,8 @@ describe("WarehousePicker", () => {
       <WarehousePicker httpPath="" onSelect={vi.fn()} />,
     )
 
-    fireEvent.click(screen.getByTitle("Fetch warehouses from Databricks"))
-    await waitFor(() => {
-      expect(screen.getByText("Starter Warehouse")).toBeInTheDocument()
-    })
+    await screen.findByText("Select SQL warehouse...")
+    openList()
 
     const dots = container.querySelectorAll<HTMLSpanElement>('[title]')
     const runningDot = Array.from(dots).find(d => d.getAttribute("title") === "RUNNING")
@@ -178,10 +247,9 @@ describe("WarehousePicker", () => {
     mockGetWarehouses.mockResolvedValue({ warehouses })
     render(<WarehousePicker httpPath="" onSelect={vi.fn()} />)
 
-    fireEvent.click(screen.getByTitle("Fetch warehouses from Databricks"))
-    await waitFor(() => {
-      expect(screen.getByText("Small")).toBeInTheDocument()
-    })
+    await screen.findByText("Select SQL warehouse...")
+    openList()
+    expect(screen.getByText("Small")).toBeInTheDocument()
     expect(screen.getByText("Large")).toBeInTheDocument()
   })
 
@@ -189,46 +257,38 @@ describe("WarehousePicker", () => {
     mockGetWarehouses.mockRejectedValue(makeApiError("HTTP 500", 500, "Server exploded"))
     render(<WarehousePicker httpPath="" onSelect={vi.fn()} />)
 
-    fireEvent.click(screen.getByTitle("Fetch warehouses from Databricks"))
-
-    await waitFor(() => {
-      expect(screen.getByText("Server exploded")).toBeInTheDocument()
-    })
+    expect(await screen.findByText("Server exploded")).toBeInTheDocument()
   })
 
-  it("shows error.message for generic Error (not ApiError)", async () => {
+  it("shows error.message for generic Error (not ApiError) and still offers manual entry", async () => {
     mockGetWarehouses.mockRejectedValue(new Error("Network failure"))
     render(<WarehousePicker httpPath="" onSelect={vi.fn()} />)
 
-    fireEvent.click(screen.getByTitle("Fetch warehouses from Databricks"))
-
-    await waitFor(() => {
-      expect(screen.getByText("Network failure")).toBeInTheDocument()
-    })
+    expect(await screen.findByText("Network failure")).toBeInTheDocument()
+    openList()
+    expect(screen.getByRole("button", { name: "Enter HTTP path manually..." })).toBeInTheDocument()
   })
 
   it("shows 'No SQL Warehouses found' when API returns empty list", async () => {
     mockGetWarehouses.mockResolvedValue({ warehouses: [] })
     render(<WarehousePicker httpPath="" onSelect={vi.fn()} />)
 
-    fireEvent.click(screen.getByTitle("Fetch warehouses from Databricks"))
-
-    await waitFor(() => {
-      expect(screen.getByText("No SQL Warehouses found in this workspace")).toBeInTheDocument()
-    })
+    await screen.findByText("Select SQL warehouse...")
+    openList()
+    expect(screen.getByText("No SQL Warehouses found in this workspace")).toBeInTheDocument()
   })
 
-  it("disables Browse button during loading", async () => {
+  it("shows loading while the list is fetched", async () => {
     let resolve: (v: unknown) => void
     mockGetWarehouses.mockReturnValue(new Promise(r => { resolve = r }))
     render(<WarehousePicker httpPath="" onSelect={vi.fn()} />)
 
-    const btn = screen.getByTitle("Fetch warehouses from Databricks")
-    fireEvent.click(btn)
-    expect(btn).toBeDisabled()
+    expect(screen.getByText("Loading warehouses...")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Refresh warehouses" })).toBeDisabled()
 
     await act(async () => { resolve!({ warehouses: [] }) })
-    expect(btn).not.toBeDisabled()
+    expect(screen.getByText("Select SQL warehouse...")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Refresh warehouses" })).not.toBeDisabled()
   })
 })
 
@@ -537,3 +597,113 @@ describe("CatalogTablePicker", () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TargetTablePicker
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("TargetTablePicker", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetCatalogs.mockResolvedValue({ catalogs: [{ name: "workspace", comment: "" }] })
+    mockGetSchemas.mockResolvedValue({ schemas: [{ name: "pricing-dev", comment: "" }, { name: "other", comment: "" }] })
+    mockGetTables.mockResolvedValue({
+      tables: [{ name: "claims", full_name: "workspace.pricing-dev.claims", table_type: "MANAGED", comment: "" }],
+    })
+  })
+  afterEach(cleanup)
+
+  const chooseSchema = async () => {
+    fireEvent.focus(screen.getByLabelText("Catalog"))
+    await screen.findByRole("option", { name: "workspace" })
+    fireEvent.change(screen.getByLabelText("Catalog"), { target: { value: "workspace" } })
+    await screen.findByRole("option", { name: "pricing-dev" })
+    fireEvent.change(screen.getByLabelText("Schema"), { target: { value: "pricing-dev" } })
+  }
+
+  it("names a new table once catalog, schema and name are set", async () => {
+    const onSelect = vi.fn()
+    const { rerender } = render(<TargetTablePicker table="" onSelect={onSelect} />)
+
+    expect(screen.getByLabelText("Table name")).toBeDisabled()
+    await chooseSchema()
+    const name = screen.getByLabelText("Table name")
+    expect(name).toBeEnabled()
+    expect(name).toHaveAttribute("placeholder", "New or existing table name")
+    fireEvent.change(name, { target: { value: "scored" } })
+    fireEvent.blur(name)
+
+    expect(onSelect).toHaveBeenLastCalledWith("workspace.pricing-dev.scored")
+    rerender(<TargetTablePicker table="workspace.pricing-dev.scored" onSelect={onSelect} />)
+    expect(await screen.findByText(/new table, created on first write/)).toBeInTheDocument()
+  })
+
+  it("recognises an existing table and suggests the schema's tables", async () => {
+    const { container } = render(
+      <TargetTablePicker table="workspace.pricing-dev.claims" onSelect={vi.fn()} />,
+    )
+
+    expect(await screen.findByText(/existing table/)).toBeInTheDocument()
+    expect(mockGetTables).toHaveBeenCalledWith("workspace", "pricing-dev")
+    const suggestions = container.querySelectorAll("datalist option")
+    expect(Array.from(suggestions).map((option) => option.getAttribute("value"))).toEqual(["claims"])
+  })
+
+  it("refuses a name Databricks cannot take, clearing the previous destination", async () => {
+    const onSelect = vi.fn()
+    const { rerender } = render(
+      <TargetTablePicker table="workspace.pricing-dev.scored" onSelect={onSelect} />,
+    )
+
+    const name = screen.getByLabelText("Table name")
+    fireEvent.change(name, { target: { value: "scored policies" } })
+    fireEvent.blur(name)
+
+    // The old table must not stay the one Write replaces.
+    expect(onSelect).toHaveBeenLastCalledWith("")
+    rerender(<TargetTablePicker table="" onSelect={onSelect} />)
+    expect(screen.getByLabelText("Table name")).toHaveValue("scored policies")
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Use only letters, digits, underscores and hyphens.",
+    )
+  })
+
+  it("shows the saved table through an edit, undo and redo", async () => {
+    const onSelect = vi.fn()
+    const { rerender } = render(
+      <TargetTablePicker table="workspace.pricing-dev.old" onSelect={onSelect} />,
+    )
+    const name = () => screen.getByLabelText("Table name")
+
+    fireEvent.change(name(), { target: { value: "new" } })
+    fireEvent.blur(name())
+    expect(onSelect).toHaveBeenLastCalledWith("workspace.pricing-dev.new")
+    rerender(<TargetTablePicker table="workspace.pricing-dev.new" onSelect={onSelect} />)
+    expect(name()).toHaveValue("new")
+
+    rerender(<TargetTablePicker table="workspace.pricing-dev.old" onSelect={onSelect} />)
+    expect(name()).toHaveValue("old")
+    rerender(<TargetTablePicker table="workspace.pricing-dev.new" onSelect={onSelect} />)
+    expect(name()).toHaveValue("new")
+  })
+
+  it("keeps the name when the schema changes", async () => {
+    const onSelect = vi.fn()
+    render(<TargetTablePicker table="workspace.pricing-dev.scored" onSelect={onSelect} />)
+
+    fireEvent.focus(screen.getByLabelText("Schema"))
+    await screen.findByRole("option", { name: "other" })
+    fireEvent.change(screen.getByLabelText("Schema"), { target: { value: "other" } })
+
+    expect(onSelect).toHaveBeenLastCalledWith("workspace.other.scored")
+  })
+
+  it("clears the table when the catalog changes", async () => {
+    const onSelect = vi.fn()
+    render(<TargetTablePicker table="workspace.pricing-dev.scored" onSelect={onSelect} />)
+
+    fireEvent.change(screen.getByLabelText("Catalog"), { target: { value: "" } })
+
+    expect(onSelect).toHaveBeenLastCalledWith("")
+  })
+})

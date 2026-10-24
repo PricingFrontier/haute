@@ -14,14 +14,14 @@ When a request matches one of these summaries, write it as a recipe operation in
 - file: input=yes, output=yes; cache=direct,snapshot; formats=csv,json,ndjson,parquet,ipc,ipc_stream,avro,excel,ods,lines
 - database: input=yes, output=yes; cache=snapshot; formats=database
 - lakehouse: input=yes, output=yes; cache=snapshot; formats=delta,iceberg
-- databricks: input=yes, output=no; cache=snapshot; formats=none
+- databricks: input=yes, output=yes; cache=snapshot; formats=none
 - inline: input=yes, output=no; cache=snapshot; formats=records
 ### Node index
 - `apiInput` (Quote Input): The live quote request, one frame per declared request table.
 - `workbenchInput` (Workbench Input, read-only to you): The live quote request, one frame per table the workbench defines.
 - `workbenchOutput` (Workbench Output, read-only to you): The quote's response: the tables the workbench defines, filled.
 - `dataInput` (Data Input): Read a file, database, lakehouse, Databricks table or inline records.
-- `dataOutput` (Data Output): Write a frame to a file, database or lakehouse when the output is run.
+- `dataOutput` (Data Output): Write a frame to a file, database, lakehouse or Databricks table.
 - `polars` (Transform): Transform one or more frames with Polars steps.
 - `edgeJoin` (Edge Join): Join a base frame with a lookup frame on keys.
 - `modelScore` (Model Scoring): Score rows with a saved model.

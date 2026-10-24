@@ -6,7 +6,7 @@ import os
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from haute.errors import HauteError
 
@@ -81,4 +81,21 @@ def resolve_databricks_credentials(
         token=None,
         client_id=client_id,
         client_secret=client_secret,
+    )
+
+
+def databricks_workspace_client(credentials: DatabricksCredentials) -> Any:
+    """A ``databricks.sdk.WorkspaceClient`` authenticated as *credentials* select.
+
+    Raises :class:`ImportError` when the ``databricks`` extra is not installed;
+    each caller words that for its own surface.
+    """
+    from databricks.sdk import WorkspaceClient
+
+    if credentials.auth_mode == "pat":
+        return WorkspaceClient(host=credentials.workspace_host, token=credentials.token)
+    return WorkspaceClient(
+        host=credentials.workspace_host,
+        client_id=credentials.client_id,
+        client_secret=credentials.client_secret,
     )

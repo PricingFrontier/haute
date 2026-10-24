@@ -20,6 +20,10 @@ vi.mock("../../../api/client", () => ({
     }
   },
   fetchIoCapabilities: vi.fn(),
+  getWarehouses: vi.fn(() => Promise.resolve({ warehouses: [] })),
+  getCatalogs: vi.fn(() => Promise.resolve({ catalogs: [] })),
+  getSchemas: vi.fn(() => Promise.resolve({ schemas: [] })),
+  getTables: vi.fn(() => Promise.resolve({ tables: [] })),
   listFiles: vi.fn(() => Promise.resolve({ items: [] })),
   resolveOutputDestination: vi.fn(),
   writeOutput: vi.fn(),
@@ -163,10 +167,14 @@ const groups: IoCapabilityGroup[] = [
     name: "databricks",
     label: "Databricks",
     input_available: true,
-    output_available: false,
+    output_available: true,
     cache_modes: ["snapshot"],
     input_fields: [],
-    output_fields: [],
+    output_fields: [
+      { name: "http_path", label: "SQL warehouse HTTP path", kind: "text", required: true },
+      { name: "table", label: "Table", kind: "table", required: true },
+      { name: "write_mode", label: "Write mode", kind: "text", required: false },
+    ],
     formats: [],
   },
   {
@@ -253,6 +261,7 @@ describe("DataOutputEditor", () => {
       "File",
       "Database",
       "Lakehouse",
+      "Databricks",
     ])
 
     expect(within(provider).getByRole("radio", { name: "File" })).toBeChecked()
@@ -659,5 +668,106 @@ describe("DataOutputEditor", () => {
     expect(screen.getByText(/Unexpected configuration keys: code/)).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Write" })).toBeDisabled()
     expect(screen.queryByLabelText("Polars code")).not.toBeInTheDocument()
+  })
+})
+
+describe("DataOutputEditor - Databricks", () => {
+  const databricksConfig = {
+    outputType: "databricks",
+    http_path: "/sql/1.0/warehouses/abc",
+    table: "workspace.pricing-dev.scored",
+    arguments: {},
+  }
+
+  it("starts a Databricks branch with only its own fields", async () => {
+    const { onReplaceConfig } = renderEditor({
+      outputType: "file",
+      format: "csv",
+      mode: "sink",
+      path: "out.csv",
+      arguments: {},
+      selected_columns: ["premium"],
+    })
+
+    const provider = await screen.findByRole("radiogroup", { name: "Provider" })
+    fireEvent.click(within(provider).getByRole("radio", { name: "Databricks" }))
+    expect(onReplaceConfig).toHaveBeenCalledWith({
+      selected_columns: ["premium"],
+      outputType: "databricks",
+      arguments: {},
+      http_path: "",
+      table: "",
+    })
+  })
+
+  it("shows the warehouse, table and write mode instead of a format", async () => {
+    renderEditor(databricksConfig)
+
+    expect(await screen.findByText("SQL Warehouse")).toBeInTheDocument()
+    expect(screen.getByLabelText("Catalog")).toHaveValue("workspace")
+    expect(screen.getByLabelText("Schema")).toHaveValue("pricing-dev")
+    expect(screen.getByLabelText("Table name")).toHaveValue("scored")
+    expect(screen.queryByLabelText("Format")).not.toBeInTheDocument()
+    const modes = screen.getByRole("radiogroup", { name: "Write mode" })
+    expect(within(modes).getByRole("radio", { name: "Replace table" })).toBeChecked()
+    expect(within(modes).getByRole("radio", { name: "Append rows" })).not.toBeChecked()
+  })
+
+  it("stores the chosen write mode", async () => {
+    const { onUpdate } = renderEditor(databricksConfig)
+
+    const modes = await screen.findByRole("radiogroup", { name: "Write mode" })
+    fireEvent.click(within(modes).getByRole("radio", { name: "Append rows" }))
+    expect(onUpdate).toHaveBeenCalledWith("write_mode", "append")
+  })
+
+  it("writes a complete config and reports the table", async () => {
+    vi.mocked(resolveOutputDestination).mockResolvedValue({
+      path: "workspace.pricing-dev.scored",
+      format: "databricks",
+      suffix_mismatch: false,
+    })
+    vi.mocked(writeOutput).mockResolvedValue({
+      status: "ok",
+      message: "Wrote 2 rows to workspace.pricing-dev.scored",
+      row_count: 2,
+      path: "workspace.pricing-dev.scored",
+      format: "databricks",
+    })
+    renderEditor({ ...databricksConfig, write_mode: "append" })
+
+    expect(
+      await screen.findByText("Destination: workspace.pricing-dev.scored"),
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Write" }))
+    await waitFor(() =>
+      expect(writeOutput).toHaveBeenCalledWith(
+        expect.objectContaining({ nodeId: "output-node", overwrite: false }),
+      ),
+    )
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Wrote 2 rows to workspace.pricing-dev.scored | 2 rows | workspace.pricing-dev.scored",
+    )
+  })
+
+  it.each([
+    ["no warehouse", { http_path: "" }],
+    ["no table", { table: "" }],
+    ["a table without a schema", { table: "scored" }],
+    ["an unknown write mode", { write_mode: "merge" }],
+    ["writer arguments", { arguments: { batch_size: 10 } }],
+  ])("disables Write with %s", async (_label, overrides) => {
+    renderEditor({ ...databricksConfig, ...overrides })
+
+    expect(await screen.findByRole("button", { name: "Write" })).toBeDisabled()
+    expect(resolveOutputDestination).not.toHaveBeenCalled()
+  })
+
+  it("flags keys a Databricks output does not use", async () => {
+    renderEditor({ ...databricksConfig, format: "parquet" })
+
+    expect(await screen.findByText("Configuration errors")).toBeInTheDocument()
+    expect(screen.getByText("Unexpected configuration keys: format.")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Write" })).toBeDisabled()
   })
 })
