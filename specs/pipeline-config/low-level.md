@@ -20,7 +20,7 @@
 | `src/haute/_pipeline_recovery.py` | [server-api](../server-api/low-level.md)-owned editor-only recovery orchestration and availability diagnostics, forbidden to canonical parser consumers. |
 | `src/haute/_graph_shape.py` | Topology-only invariants independent of any single node's config (`validate_graph_shape_contracts`, `validate_pipeline_graph_shape_contracts`), including submodel child graphs. |
 | `src/haute/_scaffold.py` | `haute init` template strings: `haute.toml`, `.env.example`, CI YAML for 3 providers × 7 deploy targets, starter pipeline/tests/utilities, pre-commit hook. |
-| `src/haute/_project_python.py` | The project's Python, one version for local development, CI and the deployed model: `.python-version`'s pin or the `requires-python` floor (`project_python_version`, which `haute init` writes and pins CI and container base images to), the deployed model's Python (`deployed_python_version`), and the checks deploy runs on the interpreter and a pinned project's base image (`deploy_python_mismatch`, `base_image_python_version`). |
+| `src/haute/_project_python.py` | The project's Python, one version for local development, CI and the deployed model: `.python-version`'s pin or the lowest release `requires-python` admits, at minor precision only when it admits the whole minor (`project_python_version`, which `haute init` writes and pins CI and container base images to), the deployed model's Python (`deployed_python_version`), the checks deploy runs on the interpreter and a container's base image (`deploy_python_mismatch`, `admits`, `base_image_python_version`), and `ProjectPythonError` for a declaration it cannot read or that contradicts the other. |
 | `src/haute/_project.py` | Project-root discovery (`get_project_root`, `is_haute_project`) and pipeline-file resolution (`resolve_pipeline_file`, 4-tier fallback). |
 | `src/haute/_project_layout.py` | The project's folder layout: `PIPELINE_FILES_FOLDER` and `PIPELINE_FILES_SUBFOLDERS` (the pipeline folder's `files/` with `data/`, `models/` and `params/`), `LOCAL_FOLDERS` (the root's unversioned `data/` and `outputs/`), `VERSIONED_FILE_LIMIT_BYTES`, `versioned_name` (whether a path names a file the project versions through Haute), `pipeline_folder` (the configured pipeline folder when it lies below the project root), `pipeline_files_folder` and `default_model_folder`. |
 | `haute.toml` (repo root) | Concrete instance of the schema emitted by `src/haute/_scaffold.py::haute_toml`; `[project].pipeline` is read back by `src/haute/_project.py::_toml_configured_pipeline`, the one reader behind pipeline binding, `src/haute/_builders.py::_configured_pipeline_dir` and `src/haute/routes/_helpers.py::pipeline_dir`. |
@@ -386,8 +386,13 @@ added to Azure DevOps' Validate stage). Every CI generator also takes `python_ve
 `python_version` for a container target's `base_image` (`container_base_image`, a
 patch-pinned `python:<x.y.z>-slim`). `handle_init` passes the project's own Python
 (`project_python_version`: `.python-version` at the precision it is written in, else the
-lowest `3.x` from 3.11 that `requires-python` admits) and writes `.python-version` with it
-when the project has none, so uv's local environment, every CI job and the deployed model
+lowest release from 3.11 that `requires-python` admits, written `3.x` when every release of
+that minor is admitted and `3.x.y` when the range splits it, so `>=3.13.5` pins `3.13.5`)
+and writes `.python-version` with it when the project has none. An unreadable
+`.python-version` (anything but one `3.x` or `3.x.y` from 3.11), an invalid
+`requires-python`, one admitting no Python from 3.11, or a pin it excludes raises
+`ProjectPythonError`, which `handle_init` reports as a CLI error before writing any file.
+So uv's local environment, every CI job and the deployed model
 (see [deploy](../deploy/low-level.md)) run one Python.
 `handle_init` calls exactly the generator(s) for the chosen
 `ci` value (`"none"` calls none of them); on `--force` it first calls

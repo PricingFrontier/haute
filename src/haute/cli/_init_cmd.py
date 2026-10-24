@@ -474,7 +474,7 @@ def handle_init(config: InitConfig) -> None:
     never overwrites an existing project).
     """
     from haute._project_layout import PIPELINE_FILES_FOLDER, PIPELINE_FILES_SUBFOLDERS
-    from haute._project_python import project_python_version
+    from haute._project_python import ProjectPythonError, project_python_version
     from haute._scaffold import (
         azure_devops_yml,
         env_example,
@@ -508,6 +508,12 @@ def handle_init(config: InitConfig) -> None:
         )
         raise SystemExit(1)
 
+    # -- The project's Python, read before anything is written -----------------
+    try:
+        python_version = project_python_version(project_dir)
+    except ProjectPythonError as exc:
+        raise click.ClickException(str(exc)) from exc
+
     # -- Resolve project name --------------------------------------------------
     pyproject_path = project_dir / "pyproject.toml"
     name = project_dir.name.replace("-", "_").replace(" ", "_").lower()
@@ -522,7 +528,6 @@ def handle_init(config: InitConfig) -> None:
     _ensure_haute_dependency(pyproject_path, name)
 
     # -- .python-version - one Python for local, CI and the deployed model -----
-    python_version = project_python_version(project_dir)
     python_version_file = project_dir / ".python-version"
     if not python_version_file.exists():
         python_version_file.write_text(f"{python_version}\n", encoding="utf-8")

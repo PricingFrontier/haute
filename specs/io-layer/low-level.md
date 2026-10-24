@@ -140,8 +140,12 @@ an in-place or non-atomic fallback.
    `cacheMode` field as inactive; nothing is normalised or migrated.
 4. Direct Parquet resolution anchors the configured path (`anchor_config_source_path`,
    through the shared runtime path resolver: the pipeline directory first, then the
-   project root, Windows backslashes read as separators, a path found in neither keeping
-   the pipeline-directory anchoring, as deploy bundles it) and returns the registry's
+   project root, Windows backslashes read as separators, neither candidate leaving the
+   runtime project root, as deploy validates and bundles it; a pipeline directory outside
+   the runtime project is its own root, as `_infer_project_root` treats a pipeline outside
+   the selected project. A path found in neither place keeps the first candidate inside
+   the root, and one with no candidate inside raises `RuntimePathOutsideProjectError`)
+   and returns the registry's
    `scan_parquet` lazy scan without creating or consulting a source snapshot.
 5. Snapshot creation calls `build_input_snapshot()`, selects a provider builder, creates a
    `SourceCacheBuildContext`, and calls `SourceCacheStore.build()`.

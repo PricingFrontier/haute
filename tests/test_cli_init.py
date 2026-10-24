@@ -923,7 +923,11 @@ class TestInitCiRunsTheProjectsPython:
         [
             ({}, "3.11"),
             ({"pyproject.toml": '[project]\nname = "p"\nrequires-python = ">=3.13"\n'}, "3.13"),
-            ({"pyproject.toml": '[project]\nname = "p"\nrequires-python = "~=3.12.1"\n'}, "3.12"),
+            # A range that splits a minor (3.12.0 is out) names its lowest release.
+            (
+                {"pyproject.toml": '[project]\nname = "p"\nrequires-python = "~=3.12.1"\n'},
+                "3.12.1",
+            ),
             # Below Haute's own floor, the lowest Python Haute runs on.
             ({"pyproject.toml": '[project]\nname = "p"\nrequires-python = ">=3.9"\n'}, "3.11"),
             # .python-version decides first, as it does for uv.

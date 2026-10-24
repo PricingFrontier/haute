@@ -6,8 +6,9 @@ The API Input resolved such a path through the shared runtime resolver (project
 root and pipeline dir both tried, backslashes read as separators), but a direct
 Parquet Data Input and deploy's schema inference and scoring joined it onto the
 pipeline dir alone. On Linux CI ``data\\x.parquet`` then named one file with a
-backslash in it, under ``rating/``, and the dry-run deploy failed. Every reader now
-resolves as deploy bundles: pipeline dir first, then the project root.
+backslash in it, under the pipeline dir, and the dry-run deploy failed. Every reader now
+resolves as deploy bundles: pipeline dir first, then the project root, and never
+outside the project root.
 """
 
 from __future__ import annotations
@@ -17,7 +18,11 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from haute._path_resolution import resolve_graph_source_path
+from haute._path_resolution import (
+    RuntimePathOutsideProjectError,
+    resolve_graph_source_path,
+    runtime_project_root_scope,
+)
 from haute._polars_io_registry import anchor_config_source_path
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
@@ -113,3 +118,40 @@ def test_the_file_browser_writes_forward_slashes(project: Path) -> None:
 
     assert listing["dir"] == "data/quotes"
     assert [item["path"] for item in listing["items"]] == ["data/quotes/policies.parquet"]
+
+
+def test_a_path_never_resolves_outside_the_project(project: Path) -> None:
+    # ``../outside.parquet`` from the pipeline dir is inside the project (missing);
+    # from the project root it is outside (present). Deploy's validation admits only
+    # the inside one, so schema inference, scoring and a direct input must read it.
+    _file(project.parent / "outside.parquet")
+    inside = (project / "outside.parquet").resolve()
+    graph = _graph(project, "../outside.parquet")
+
+    assert Path(_resolve_pipeline_path(graph, "../outside.parquet")) == inside
+    [scored] = _resolve_runtime_graph_paths(graph).nodes
+    assert Path(scored.data.config["path"]) == inside
+    assert _anchored("../outside.parquet", project / "rating") == inside
+
+
+def test_a_path_with_no_candidate_inside_the_project_is_refused(project: Path) -> None:
+    graph = _graph(project, "../../elsewhere.parquet")
+
+    with pytest.raises(RuntimePathOutsideProjectError):
+        _resolve_pipeline_path(graph, "../../elsewhere.parquet")
+    with pytest.raises(RuntimePathOutsideProjectError):
+        _anchored("../../elsewhere.parquet", project / "rating")
+
+
+def test_deploy_resolves_inside_the_root_it_validated(project: Path, tmp_path_factory) -> None:
+    # Deploy's project root, not the serving process's, bounds schema inference.
+    other = tmp_path_factory.mktemp("deployed")
+    saved = _file(other / "data" / "policies.parquet")
+    graph = PipelineGraph(
+        nodes=_graph(project, "data/policies.parquet").nodes,
+        edges=[],
+        source_file=str(other / "rating" / "main.py"),
+    )
+
+    with runtime_project_root_scope(graph.source_file, project_root=other):
+        assert Path(_resolve_pipeline_path(graph, "data/policies.parquet")) == saved.resolve()

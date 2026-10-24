@@ -1505,9 +1505,10 @@ def anchor_config_source_path(config: Mapping[str, Any], base_dir: Any = None) -
 
     A relative ``path`` resolves as deploy bundles it: against the pipeline dir
     first, then the project root, where the editor's file browser writes paths
-    from, with Windows backslashes read as separators. A path found in neither
-    place keeps the pipeline-dir anchoring. Non-path source kinds pass through
-    unchanged.
+    from, with Windows backslashes read as separators, and neither may leave the
+    runtime project root (:class:`RuntimePathOutsideProjectError` when both do).
+    A path found in neither place keeps the first candidate inside the root.
+    Non-path source kinds pass through unchanged.
     """
     from pathlib import Path
 
@@ -1521,13 +1522,17 @@ def anchor_config_source_path(config: Mapping[str, Any], base_dir: Any = None) -
     raw = result.get("path")
     if base_dir is not None and isinstance(raw, str) and raw.strip():
         if not Path(_normalise_path_text(raw)).is_absolute():
+            # A pipeline dir outside the runtime project is its own root, as
+            # ``_infer_project_root`` treats a pipeline outside the selected project.
+            pipeline_dir = Path(base_dir).resolve()
+            root = current_runtime_project_root()
             result["path"] = str(
                 resolve_runtime_file_path(
                     raw,
-                    pipeline_dir=base_dir,
-                    project_root=current_runtime_project_root(),
+                    pipeline_dir=pipeline_dir,
+                    project_root=root if pipeline_dir.is_relative_to(root) else pipeline_dir,
                     prefer="pipeline",
-                    enforce_project_root=False,
+                    enforce_project_root=True,
                 )
             )
     return result
