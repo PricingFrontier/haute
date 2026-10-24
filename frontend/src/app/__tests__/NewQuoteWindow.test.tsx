@@ -24,7 +24,7 @@ import NewQuoteWindow from "../NewQuoteWindow"
 import { keptCreationKey, readKeptCreation } from "../quoteValues"
 import { navigate, setLeaveGuard } from "../route"
 import useAppStore from "../useAppStore"
-import useNewQuoteStore from "../useNewQuoteStore"
+import useNewQuoteStore, { windowFields, windowProblems } from "../useNewQuoteStore"
 import { answer, release } from "./fixtures"
 
 const store = () => useNewQuoteStore.getState()
@@ -348,6 +348,85 @@ describe("NewQuoteWindow", () => {
     })
 
     expect(screen.queryByTestId("new-quote-window")).toBeNull()
+  })
+
+  it("opens one window at a time, filled by no revision answered after it closed", async () => {
+    let carrying: (value: Awaited<ReturnType<typeof carryAppQuote>>) => void = () => {}
+    vi.mocked(carryAppQuote).mockReturnValue(new Promise((resolve) => (carrying = resolve)))
+    const origin = { quoteId: "q1", revision: 1, relation: "duplicate" as const }
+    shown()
+    act(() => store().openNew())
+
+    // Over a window already open, neither another window nor Save as new opens.
+    await act(async () => store().openDerived(origin))
+    act(() => store().openSaveAsNew())
+    expect(store().shown?.title).toBe("New quote")
+    expect(carryAppQuote).not.toHaveBeenCalled()
+
+    act(() => store().close())
+    const filling = store().openDerived(origin)
+    act(() => store().close())
+    await act(async () => {
+      carrying({ values: { policy: [{ "policy.state": "CA" }] }, dropped: [] })
+      await filling
+    })
+    expect(store().shown).toBeNull()
+    // A failure answered after it closed says nothing either.
+    vi.mocked(carryAppQuote).mockRejectedValueOnce(new ApiError("HTTP 404", 404, "gone"))
+    const failing = store().openDerived(origin)
+    act(() => store().close())
+    await act(async () => failing)
+    expect(store().shown).toBeNull()
+  })
+
+  it("opens Save as new over a quote open alone, and nothing while the release's form is unread", () => {
+    act(() => store().openSaveAsNew())
+    expect(store().shown).toBeNull()
+
+    useAppStore.setState({ form: null })
+    act(() => store().openNew())
+    expect(store().shown).toBeNull()
+  })
+
+  it("takes no typing, no second Create and no Try again while its creation is being sent", async () => {
+    vi.mocked(createAppQuote).mockReturnValue(new Promise(() => {}))
+    shown()
+    act(() => store().openNew())
+    act(() => store().setReference("ABC-1"))
+    await act(async () => store().tryAgain())
+    expect(createAppQuote).not.toHaveBeenCalled()
+
+    void store().create()
+    await vi.waitFor(() => expect(store().shown?.status).toBe("sending"))
+    act(() => store().setReference("XYZ-9"))
+    await act(async () => store().create())
+
+    expect(store().shown?.reference).toBe("ABC-1")
+    expect(createAppQuote).toHaveBeenCalledOnce()
+  })
+
+  it("names no quote for a reference taken when the refusal does not say which holds it", async () => {
+    vi.mocked(createAppQuote).mockRejectedValue(
+      new ApiError("HTTP 409", 409, "taken", {}, { message: "ABC-1 is taken.", error_code: "reference_taken" }),
+    )
+    shown()
+    act(() => store().openNew())
+    key("Quote reference", "ABC-1")
+
+    fireEvent.click(create())
+
+    await vi.waitFor(() => expect(store().shown?.status).toBe("editing"))
+    expect(store().shown).toMatchObject({ error: "ABC-1 is taken.", taken: null })
+  })
+
+  it("asks for nothing on a form without quote_details, and the reference alone as its table holds it", () => {
+    expect(windowFields(sheetForm())).toEqual([])
+
+    const details = detailsTable()
+    details.columns = details.columns.filter((column) => column.id !== "qd_reference")
+    const fields = windowFields({ ...sheetForm(), schema: { tables: [details] } })
+    expect(fields.map((field) => field.found?.column.id)).not.toContain("qd_reference")
+    expect(windowProblems([{ key: "gone", found: null }, ...fields], "", {})).toEqual({})
   })
 
   it("opens nothing for one who may only read quotes", () => {

@@ -5,7 +5,7 @@
  * another release and a lost answer each read into what they offer; an alternative made as
  * it is asked for, once though its answer is lost; values moved onto the current sheets; and
  * values kept in the browser. A quote under a new reference is the New quote window's
- * (useNewQuoteStore.test.ts).
+ * (NewQuoteWindow.test.tsx).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -212,6 +212,86 @@ describe("useOpenQuoteStore", () => {
     expect(keys[1]).toBe(keys[0])
     expect(keys[2]).toBe(keys[0])
     expect(keys[3]).not.toBe(keys[2])
+  })
+
+  it("repeats a save whose answer was lost before saving what was typed since, each written once", async () => {
+    const typed = (state: string) => ({ policy: [{ "policy.state": state }] })
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    vi.mocked(saveAppQuote)
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce(answer({ latest: 2 }, { number: 2, values: typed("CA") }))
+      .mockResolvedValueOnce(answer({ latest: 3 }, { number: 3, values: typed("TX") }))
+    await store().openQuote("q1", null)
+    preview().setCell("policy", 0, "policy.state", "CA")
+    await store().save()
+    preview().setCell("policy", 0, "policy.state", "TX")
+
+    await store().save()
+
+    const calls = vi.mocked(saveAppQuote).mock.calls
+    // The lost save sent again exactly, then the values typed since over the revision it wrote.
+    expect(calls[1]).toEqual(calls[0])
+    expect([calls[2][1].values, calls[2][2]]).toEqual([typed("TX"), 2])
+    expect(calls[2][1].operation).not.toBe(calls[0][1].operation)
+    expect(store()).toMatchObject({ pending: null, base: 3 })
+    expect(preview().quote).toEqual(typed("TX"))
+  })
+
+  it("lets a lost save go when sent again and refused, and saves what is on the sheets", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    vi.mocked(saveAppQuote)
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new ApiError("HTTP 422", 422, "No"))
+      .mockResolvedValueOnce(answer({ latest: 2 }))
+    await store().openQuote("q1", null)
+    preview().setCell("policy", 0, "policy.state", "CA")
+    await store().save()
+    preview().setCell("policy", 0, "policy.state", "TX")
+
+    await store().save()
+
+    const calls = vi.mocked(saveAppQuote).mock.calls
+    expect(calls).toHaveLength(3)
+    // It never landed, so the values are saved over the version they were edited over.
+    expect([calls[2][1].values, calls[2][2]]).toEqual([{ policy: [{ "policy.state": "TX" }] }, 1])
+    expect(calls[2][1].operation).not.toBe(calls[0][1].operation)
+    expect(store()).toMatchObject({ pending: null, error: null })
+  })
+
+  it("saves nothing while nothing is typed", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer({ priced: false, stage: "draft" }, { values: {}, tables: null }))
+    await store().openQuote("q1", null)
+
+    expect(await store().save()).toBeNull()
+
+    expect(saveAppQuote).not.toHaveBeenCalled()
+  })
+
+  it("leaves the sheets of a quote shown at an earlier revision as they are when a change writes one", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer({ latest: 2 }, { number: 1 }))
+    vi.mocked(changeAppQuote).mockResolvedValue(changed({ latest: 3, archived: true }, { number: 3, values: { policy: [{ "policy.state": "CA" }] } }))
+    await store().openQuote("q1", 1)
+
+    await store().change("archive", {})
+
+    expect(store().quote?.latest).toBe(3)
+    expect([store().base, store().revision?.number]).toEqual([null, 1])
+    expect(preview().quote).toEqual(VALUES)
+  })
+
+  it("lets a save held after a lost answer go once a change writes the next revision", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    vi.mocked(saveAppQuote).mockRejectedValueOnce(new TypeError("Failed to fetch"))
+    vi.mocked(changeAppQuote).mockResolvedValue(changed({ latest: 2 }))
+    await store().openQuote("q1", null)
+    preview().setCell("policy", 0, "policy.state", "CA")
+    await store().save()
+    expect(store().pending).not.toBeNull()
+
+    await store().change("archive", {})
+
+    // It named version 1, which the change moved on from: it never landed, and never will.
+    expect(store().pending).toBeNull()
   })
 
   it("asks again with the same key after a reload before the answer, and with a new key once the alternative is made", async () => {

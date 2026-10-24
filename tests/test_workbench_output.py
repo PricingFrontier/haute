@@ -44,6 +44,7 @@ from haute._workbench_output import (
     WorkbenchOutputTables,
     as_response,
     column_fits,
+    quote_identity,
 )
 from haute.codegen import graph_to_code_multi
 from haute.deploy._config import DeployConfig, resolve_config
@@ -986,6 +987,51 @@ def test_a_workbench_outputs_tables_read_the_same_on_either_engine(engine: Colle
             ],
         }
     ]
+
+
+@pytest.mark.parametrize("engine", ["streaming", "in-memory"])
+def test_the_quotes_identity_and_a_tables_one_row_read_the_same_on_either_engine(
+    engine: CollectEngine,
+) -> None:
+    """The response's identity and a one-row table's check are read inside Python scans too."""
+    identified = [
+        _table("pricing", *_IDENTITY, ("premium", "float")),
+        _table("item_prices", *_IDENTITY, ("item_id", "str"), many=True),
+    ]
+
+    def filled(pricing: pl.LazyFrame) -> WorkbenchOutputTables:
+        return assemble_workbench_output_from_config(
+            pricing,
+            pl.LazyFrame({"item_id": ["A", "B"]}),
+            config={"tables": copy.deepcopy(identified)},
+            ports=["pricing", "item_prices"],
+        )
+
+    def details(**columns: list[Any]) -> pl.LazyFrame | None:
+        return quote_identity({"quote_details": pl.LazyFrame(columns)})
+
+    tables = filled(pl.LazyFrame({"premium": [1.0]}))
+    identity = details(quote_reference=["Q-1"], quote_option=[2], name=["Fleet"])
+
+    response = execution_collect(as_response(tables, identity), engine=engine)
+
+    named = {"quote_reference": "Q-1", "quote_option": 2}
+    assert response.to_dicts() == [
+        {
+            "pricing": {**named, "premium": 1.0},
+            "item_prices": [{**named, "item_id": "A"}, {**named, "item_id": "B"}],
+        }
+    ]
+    # A quote_details without the identity gives none, and one of two rows is refused.
+    assert details(name=["Fleet"]) is None
+    two = details(quote_reference=["Q-1", "Q-2"], quote_option=[1, 1])
+    with pytest.raises(WorkbenchOutputError, match="quote_details has 2 rows"):
+        execution_collect(as_response(tables, two), engine=engine)
+    # A one-row table is read with exactly its one row.
+    for premiums, held in (([1.0, 2.0], "2 rows"), ([], "no rows")):
+        refused = filled(pl.LazyFrame({"premium": premiums}, schema={"premium": pl.Float64}))
+        with pytest.raises(WorkbenchOutputError, match=f"connected to it has {held}"):
+            execution_collect(refused["pricing"], engine=engine)
 
 
 def test_the_editor_holds_the_same_response_nodes() -> None:
