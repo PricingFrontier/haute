@@ -32,6 +32,9 @@ and rules named once and used by many sheets were offered and not taken. Fields 
 columns with conditions of their own, not taken that day, were asked for on 2026-10-22;
 cells shown row by row through "this row" tests were offered again and not taken.
 
+`WB-32` lets the underwriter key a new quote's reference and details in a window as the
+quote is made, in place of the reference Haute numbers.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -46,6 +49,7 @@ cells shown row by row through "this row" tests were offered again and not taken
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-28 | Planned | P3 | A condition tests a field against another field, text within text, and a date against another date give or take a number of days. |
 | WB-29 | Planned | P3 | A component that takes nothing typed, or a section or a sheet holding only such components, shows by conditions on the price, applied after it so the price never decides what is priced. |
+| WB-32 | Planned | P2 | New quote, Duplicate and Renew open a window where the underwriter keys the quote's reference and details before it is made; a reference already in use is refused. |
 
 ## Planned improvements
 
@@ -462,3 +466,103 @@ sides.
 table named as a fault); `src/haute/_workbench_visibility.py::_tested_column` (input tables
 alone); `src/haute/_workbench_tables.py::sample_quote` (the hidden columns the quote leaves
 out).
+
+### WB-32 — A new quote keyed in a window
+**Why:** A quote's reference comes from Haute's own counter: New quote makes the quote at
+once, as `/quotes/new` opens, under the next `Q-000123`, holding its columns' defaults. A
+quote usually already has a reference the business uses, such as a broker's submission
+number or the policy system's quote number, and the underwriter keys the quote's details on
+the sheets only after it is made, so a quote can be made, and listed, with nothing yet to say
+what it is.
+
+Decisions taken 2026-10-24:
+
+- The underwriter keys the reference, and Haute numbers no more quotes.
+- A reference already in use is refused.
+- The window asks for every column of `quote_details` the underwriter types.
+- Duplicate and Renew open the same window, filled from their source, its reference blank.
+- Create alternative is unchanged: the next option under the source's reference, at once.
+
+**Plan:**
+
+- **The window.** New quote (its button, `N` and `/quotes/new`) is the Quotes page with a
+  window open over it. The window holds the reference and the other columns of
+  `quote_details` the underwriter types (`quote_name`, `insured`, `broker`,
+  `inception_date`, `expiry_date` and `is_renewal`) in the table's order. Each is drawn as a
+  Collection draws its column: its label, help, placeholder, allowed values and format, and
+  the control its type calls for. They start as a new quote's do, with the columns'
+  defaults. The reference is always required; any other column the analyst made required is
+  marked so. **Create** stays off until the reference is keyed and fits, and every required
+  column is filled and every value fits its column. **Cancel** and `Escape` close the window
+  with nothing made and go back to where the underwriter was.
+- **A reference.** The reference is trimmed and kept as keyed. It is 1 to 40 characters,
+  holding no `/`, which the app puts before the option (`ABC-1/2`), and no control
+  character. References are compared ignoring case, so `abc-1` is the reference `ABC-1`
+  holds.
+- **Making it.** Create sends the creation with the window's values as the new quote's
+  `quote_details` row. The request names the reference (`reference`), which the creation of
+  a quote other than an alternative must give and an alternative must not. The server
+  refuses (422) a reference missing or breaking the rules above, and a required
+  `quote_details` column left empty, naming it. It refuses (409, `reference_taken`) a
+  reference another quote holds in any case, naming that quote's label and id, and the
+  window offers to open it. Two creations of one reference at once make one quote and refuse
+  the other. A creation's operation key is taken as Create is pressed and kept in the tab
+  with the window's values until the answer comes. Create pressed again, or the window
+  opened again after a reload, sends the same key and values, so one quote is made, and a
+  refusal lets the key go. Made, the quote opens at its own address as today, an unpriced
+  draft holding what the window held, which its sheets show and price.
+- **Duplicate, Renew and Save as new.** Duplicate and Renew, on a quote or a row of the
+  Quotes page, open the window over the page they were pressed on. It is filled from the
+  source revision's `quote_details` carried onto the current sheets, its reference blank, a
+  renewal's `is_renewal` ticked. Create makes the quote from that revision, as today: its
+  other values carried onto the current sheets, any that no longer fit named, and the
+  window's details over the carried ones. Save as new, offered after a save conflict, makes a
+  duplicate of the values on the sheets, so it opens the window too, filled from them.
+  Create alternative is unchanged.
+- **The reference afterwards.** The reference stays a column the app sets: read only on the
+  sheets and never changed by a save, a change or a page. Quotes made before keep their
+  `Q-000123` references, and the list, its search and its order treat both kinds alike.
+  `_next_reference` and its counter retire. The counter's table stays, unwritten, as a
+  migration is not worth it.
+- **Unchanged.** An app without a quote store offers no New quote, as today. Deploy and the
+  pricing API are untouched: a request has always named its quote.
+- **The specifications.** `specs/workbench/high-level.md` changes where it covers the
+  creation, the references, `quote_details`' managed reference and the app's pages, and
+  `specs/workbench/low-level.md` in its module map and Testing scenarios. The docs' Quotes
+  page and quote sections describe the window.
+
+**Acceptance:**
+
+- **New quote.** New quote opens the window, its Create off until the reference and each
+  required column are filled and fit. Keying `ABC-1` with an insured and an inception date
+  makes `ABC-1/1`, which opens with those details on its sheets, a draft. Cancel makes
+  nothing.
+- **A reference in use.** Keying `abc-1` again is refused naming `ABC-1/1`, with **Open
+  it**. Create alternative on `ABC-1/1` makes `ABC-1/2` at once, with no window.
+- **A reference that breaks the rules.** A reference blank, holding `/` or 41 characters
+  long is refused in the window, and refused 422 by the server when sent anyway, as is a
+  creation leaving a required column empty.
+- **Duplicate, Renew and Save as new.** Duplicate on `ABC-1/1` opens the window filled from
+  its details, its reference blank. Keying `DEF-2` makes `DEF-2/1` holding the source's
+  values, the window's details over them. Renew does the same with `is_renewal` ticked. Save
+  as new after a conflict opens the window filled from the sheets.
+- **At once and after a lost answer.** Two creations of `GHI-3` at once make one quote and
+  refuse the other 409. A creation whose answer is lost, Created again or reopened after a
+  reload, makes one quote.
+- **Older quotes.** A store holding `Q-000001/1` and `Q-000001/2` lists, searches and opens
+  them as before, beside `ABC-1/1`.
+
+**Dependencies:** None. It builds on WB-30 and WB-31.
+
+**Evidence:**
+
+- `src/haute/_quote_store/_book.py::QuoteBook._create` and `::QuoteBook._next_reference`
+  (every reference from Haute's counter).
+- `frontend/src/app/useOpenQuoteStore.ts::openNew` (the quote made as `/quotes/new` opens,
+  from the columns' defaults or the source revision's values).
+- `frontend/src/app/route.ts::newQuotePath` (`/quotes/new`, its source in the query).
+- `frontend/src/app/QuoteView.tsx` (Duplicate, Renew and Create alternative go to
+  `/quotes/new`) and `frontend/src/app/QuotesPage.tsx` (New quote, and a row's Duplicate).
+- `src/haute/schemas.py::WorkbenchAppQuoteCreateRequest` (no reference).
+- `src/haute/_workbench_form.py::QUOTE_DETAILS_MANAGED` (the reference the app's).
+- `specs/workbench/high-level.md` (a creation, and references from the counter).
