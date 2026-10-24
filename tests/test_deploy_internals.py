@@ -4733,7 +4733,8 @@ class TestResolveConfigEdgeCases:
             resolved = resolve_config(config)
 
         assert config.pipeline_file == pipeline.resolve()
-        parse.assert_called_once_with(pipeline.resolve())
+        # Parsed as it runs, every submodel occurrence expanded (BUG-18).
+        parse.assert_called_once_with(pipeline.resolve(), flatten=True)
         resolved.close()
 
     def test_resolve_config_rejects_configured_pipeline_escape(self, tmp_path):

@@ -115,9 +115,10 @@ def _project(
     body: str,
     modules: dict[str, str],
     output: dict[str, list[str]],
+    files: dict[str, str] | None = None,
 ) -> Path:
-    """A deployable project: the example's quote input, *body*, *modules* and a response
-    mapping each of *output*'s ports' columns to a field."""
+    """A deployable project: the example's quote input, *body*, *modules*, a response
+    mapping each of *output*'s ports' columns to a field, and any other *files*."""
     project = tmp_path / "project"
     monkeypatch.chdir(tmp_path)
     shutil.copytree(_EXAMPLE, project)
@@ -138,6 +139,10 @@ def _project(
     toml_path.write_text(
         toml_path.read_text(encoding="utf-8") + _CONTAINER_DEPLOY, encoding="utf-8"
     )
+    for relative, text in (files or {}).items():
+        path = project / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
     return project
 
 
@@ -217,11 +222,12 @@ pipeline.connect("second", "response", source_port="rated")
 """,
         {"rated": _RATES},
         {"rated": ["fixture_value"]},
-    )
-    (project / "data" / "rates.json").write_text(json.dumps({"factor": 2}), encoding="utf-8")
-    (project / "config" / "external_file").mkdir()
-    (project / "config" / "external_file" / "rates.json").write_text(
-        json.dumps({"path": "data/rates.json", "fileType": "json"}), encoding="utf-8"
+        files={
+            "data/rates.json": json.dumps({"factor": 2}),
+            "config/external_file/rates.json": json.dumps(
+                {"path": "data/rates.json", "fileType": "json"}
+            ),
+        },
     )
 
     # The Load File reads inside the project, as `haute deploy` run there reads it.
