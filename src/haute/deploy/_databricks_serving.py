@@ -76,9 +76,9 @@ def refusal_reason(exc: BaseException) -> str:
             return (
                 f"{message} Databricks has marked the workspace inactive ({decision}), so it "
                 "refuses every compute and serving request until the workspace is "
-                "reactivated; retrying will not help. Sign in to the workspace in a browser, "
-                "which reactivates one nobody signed in to (requests from CI do not), or "
-                "ask its account admin or Databricks support, then deploy again."
+                "reactivated, so retrying alone will not help. Sign in to the workspace in a "
+                "browser, then deploy again; if it is still inactive, ask its account admin "
+                "or Databricks support."
             )
         return f"{message} Databricks' resource gatekeeper refused it ({decision})."
     return message
