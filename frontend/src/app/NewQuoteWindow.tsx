@@ -100,6 +100,9 @@ function WindowBody({ shown, form }: { shown: Shown; form: FormSpec }) {
       <form
         onSubmit={(event) => {
           event.preventDefault()
+          // The field being typed in commits on blur: committed before every field is checked.
+          const typed = document.activeElement
+          if (typed instanceof HTMLElement && holder.current?.contains(typed)) typed.blur()
           void create()
         }}
       >
@@ -158,6 +161,9 @@ function WindowBody({ shown, form }: { shown: Shown; form: FormSpec }) {
                 style={YES_STYLE}
                 disabled={!editing || (!fits && !typingIn)}
                 title={!editing || fits || typingIn ? undefined : blocked}
+                // Pressed, it keeps the focus where it is: the field's blur would turn Create off
+                // before the press lands. The submit commits that field.
+                onMouseDown={(event) => event.preventDefault()}
                 data-testid="new-quote-create"
               >
                 {shown.status === "sending" ? "Creating…" : "Create"}

@@ -117,6 +117,35 @@ describe("NewQuoteWindow", () => {
     expect(field("Is renewal")).not.toBeChecked()
   })
 
+  it("marks an empty required field when Create is pressed from a field being typed in, then sends what that field holds", async () => {
+    form = formWith({ qd_insured: { required: true } })
+    useAppStore.setState({ form })
+    vi.mocked(createAppQuote).mockResolvedValue(made())
+    shown()
+    act(() => store().openNew())
+    key("Quote reference", "ABC-1")
+
+    act(() => field("Insured").focus())
+    expect(create()).toBeEnabled()
+    expect(field("Insured")).not.toHaveAttribute("aria-invalid")
+    // The press keeps the focus in the field, so its blur cannot turn Create off first.
+    expect(fireEvent.mouseDown(create())).toBe(false)
+    fireEvent.click(create())
+
+    expect(createAppQuote).not.toHaveBeenCalled()
+    expect(field("Insured")).toHaveAttribute("title", "Required")
+    expect(field("Insured")).not.toHaveFocus()
+
+    // Typed and not yet left, the press commits it before checking.
+    act(() => field("Insured").focus())
+    fireEvent.change(field("Insured"), { target: { value: "Acme" } })
+    fireEvent.mouseDown(create())
+    fireEvent.click(create())
+
+    await vi.waitFor(() => expect(createAppQuote).toHaveBeenCalledOnce())
+    expect(vi.mocked(createAppQuote).mock.calls[0][0].values.quote_details).toEqual([{ qd_insured: "Acme" }])
+  })
+
   it("makes the quote with its reference and details over a new quote's defaults, and takes it to its own address", async () => {
     form = formWith({ qd_quote_name: { default_value: "Fleet" } })
     form.schema.tables[1].columns[0].default_value = "NY"

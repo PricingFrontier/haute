@@ -386,6 +386,30 @@ def test_a_save_that_lost_a_race_to_its_own_key_answers_the_first_write(
     assert book.get(quote.id).latest == 2
 
 
+def test_a_creation_that_lost_a_race_to_its_own_key_answers_the_first_not_reference_taken(
+    book: QuoteBook, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    creating = _op()
+    first = _create(book, operation=creating, reference="ABC-1")
+    real = QuoteBook._operation
+    looked: list[str] = []
+
+    def unseen_once(self: QuoteBook, *args: Any) -> Any:
+        # The second request's own look finds nothing, as one made before the first
+        # committed would; its reference is then found taken, by the first, which answers it.
+        looked.append("look")
+        return None if len(looked) == 1 else real(self, *args)
+
+    monkeypatch.setattr(QuoteBook, "_operation", unseen_once)
+    again = _create(book, operation=creating, reference="ABC-1")
+
+    assert (again.id, again.label) == (first.id, "ABC-1/1")
+    assert len(book.page(actor=ANA, view="team").quotes) == 1
+    # Another key's creation of the reference is still refused.
+    with pytest.raises(ReferenceTakenError, match="ABC-1/1 already holds"):
+        _create(book, reference="abc-1")
+
+
 def test_an_operation_key_used_by_someone_else_or_another_quote_is_refused(
     book: QuoteBook,
 ) -> None:

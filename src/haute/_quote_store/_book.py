@@ -1132,10 +1132,11 @@ class QuoteBook:
         quote_id: str | None,
     ) -> AppQuote:
         """*write*, or, when it lost a race to the first write of the same key (refused as
-        stale, or the key already taken, before that write was seen), what that write left."""
+        stale, its reference taken, or the key already taken, before that write was seen),
+        what that write left."""
         try:
             return write()
-        except (StaleQuoteError, IntegrityError):
+        except (StaleQuoteError, ReferenceTakenError, IntegrityError):
             replay = self.replayed(operation, actor, quote_id)
             if replay is None:
                 raise
