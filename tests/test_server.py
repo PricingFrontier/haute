@@ -3598,8 +3598,8 @@ class TestFileWatcherRecoverySidecars:
         )
         owner = tmp_path / "owner.py"
         owner.write_text(
-            'import haute\npipeline = haute.Pipeline("owner")\n'
-            'pipeline.submodel("modules/shared.py", "shared_one")\n',
+            'import haute\nfrom modules import shared\npipeline = haute.Pipeline("owner")\n'
+            'pipeline.submodel(shared.submodel, "shared_one")\n',
             encoding="utf-8",
         )
         unrelated = tmp_path / "unrelated.py"

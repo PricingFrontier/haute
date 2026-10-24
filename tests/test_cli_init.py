@@ -560,6 +560,40 @@ class TestEnsureHauteDependency:
         assert "ignore_missing_imports" in content
         assert "catboost" in content
 
+    def test_the_mypy_block_resolves_what_the_pipeline_imports_from_its_folder(
+        self, tmp_path: Path
+    ):
+        """`uv run mypy .`, as the generated CI runs it, follows rating/main.py's imports of
+        its own utility and submodel modules, as Python does when it runs the file."""
+        import subprocess
+
+        pyproject = tmp_path / "pyproject.toml"
+        _ensure_haute_dependency(pyproject, "foo")
+        for package in ("rating", "rating/modules", "rating/utility"):
+            (tmp_path / package).mkdir(parents=True, exist_ok=True)
+            (tmp_path / package / "__init__.py").write_text("", encoding="utf-8")
+        (tmp_path / "rating" / "modules" / "factors.py").write_text(
+            "FACTOR = 3\n", encoding="utf-8"
+        )
+        (tmp_path / "rating" / "utility" / "features.py").write_text("RATE = 2\n", encoding="utf-8")
+        (tmp_path / "rating" / "main.py").write_text(
+            "from modules import factors\n"
+            "from utility.features import RATE\n\n"
+            "PREMIUM: int = factors.FACTOR * RATE\n",
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-m", "mypy", "--cache-dir", str(tmp_path / ".mypy_cache"), "."],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
     def test_does_not_duplicate_tool_mypy(self, tmp_path: Path):
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(

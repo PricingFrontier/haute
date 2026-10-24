@@ -1,7 +1,8 @@
 """Node and input names cannot collide with support code, nor support code with itself (NAME-03).
 
-Support code is the root and submodel preambles, the preserved blocks and the
-``utility.<module>`` files they star-import, inventoried statically.
+Support code is the root and submodel preambles, the preserved blocks, the
+``utility.<module>`` files they star-import and the pipeline's submodel imports
+(``from modules import ...``), inventoried statically.
 """
 
 from __future__ import annotations
@@ -70,6 +71,21 @@ def _with_submodel_preamble(root_preamble: str, child_preamble: str) -> Pipeline
     occurrence = _node("rates_1", "submodel", definitionId="rates", alias="rates_1")
     return PipelineGraph(
         nodes=[occurrence], edges=[], submodels={"rates": definition}, preamble=root_preamble
+    )
+
+
+def _registering_rates(occurrence: str, *nodes: GraphNode, preamble: str = "") -> PipelineGraph:
+    """A pipeline that imports ``rates`` (``modules/rates.py``) and registers it as *occurrence*."""
+    definition = SubmodelDefinition(
+        definitionId="rates",
+        file="modules/rates.py",
+        graph=PipelineGraph(nodes=[_node("child")], edges=[]),
+        inputPorts=[],
+        outputPorts=[],
+    )
+    registered = _node(occurrence, "submodel", definitionId="rates", alias=occurrence)
+    return PipelineGraph(
+        nodes=[registered, *nodes], edges=[], submodels={"rates": definition}, preamble=preamble
     )
 
 
@@ -199,6 +215,24 @@ _BAND_B = "def band(x):\n    return x * 2\n"
             [("support_unsupported", "")],
             id="star-import-cycle",
         ),
+        pytest.param(
+            _registering_rates("rates_1", _node("rates")),
+            {},
+            [("support_collision", "rates")],
+            id="node-named-like-a-submodel-module",
+        ),
+        pytest.param(
+            _registering_rates("rates"),
+            {},
+            [],
+            id="occurrence-named-like-its-module",
+        ),
+        pytest.param(
+            _registering_rates("rates_1", preamble="rates = 1\n"),
+            {},
+            [("support_conflict", "rates")],
+            id="preamble-rebinding-a-submodel-module",
+        ),
     ],
 )
 def test_the_support_code_rule(
@@ -325,6 +359,64 @@ def test_a_strict_parse_and_the_editor_load_report_a_utility_collision(tmp_path:
     assert document.capabilities.can_save is False
 
 
+def test_a_strict_parse_and_the_editor_load_report_a_submodel_module_collision(
+    tmp_path: Path,
+) -> None:
+    """A node named like an imported submodel module would rebind the name its
+    registration reads the definition from."""
+    (tmp_path / "modules").mkdir()
+    (tmp_path / "modules" / "rates.py").write_text(
+        textwrap.dedent(
+            """\
+            import haute
+            import polars as pl
+
+            submodel = haute.Submodel(
+                "rates",
+                definition_id="rates",
+                input_ports=[],
+                output_ports=[],
+                pipeline_dir="..",
+            )
+
+
+            @submodel.polars
+            def rate_lookup() -> pl.LazyFrame:
+                return pl.LazyFrame({"x": [1]})
+            """
+        ),
+        encoding="utf-8",
+    )
+    main = tmp_path / "main.py"
+    main.write_text(
+        textwrap.dedent(
+            """\
+            import haute
+            import polars as pl
+
+            from modules import rates
+
+            pipeline = haute.Pipeline("main")
+
+
+            @pipeline.polars
+            def rates() -> pl.LazyFrame:
+                return pl.LazyFrame({"x": [1]})
+
+
+            pipeline.submodel(rates.submodel, "rates_1")
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ParseError, match="takes the name `rates`, which the submodel imports"):
+        parse_pipeline_file(main)
+    document = load_pipeline_editor_document(main, project_root=tmp_path)
+    assert [(v.kind, v.name) for v in document.name_violations] == [("support_collision", "rates")]
+    assert document.capabilities.can_save is False
+
+
 def test_save_refuses_a_node_named_like_a_preamble_helper(tmp_path: Path) -> None:
     graph = PipelineGraph(nodes=[_node("rate_lookup")], edges=[], preamble=_RATE_LOOKUP)
 
@@ -393,8 +485,8 @@ def test_saving_a_utility_imported_only_by_a_submodel_is_checked(
         encoding="utf-8",
     )
     (tmp_path / "main.py").write_text(
-        'import haute\n\npipeline = haute.Pipeline("main")\n'
-        'pipeline.submodel("modules/rates.py", "rates_1")\n',
+        'import haute\n\nfrom modules import rates\n\npipeline = haute.Pipeline("main")\n'
+        'pipeline.submodel(rates.submodel, "rates_1")\n',
         encoding="utf-8",
     )
 

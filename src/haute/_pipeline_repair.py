@@ -254,7 +254,12 @@ def _line_byte_range(body: bytes, start_line: int, end_line: int) -> tuple[int, 
     return sum(map(len, lines[: start_line - 1])), sum(map(len, lines[:end_line]))
 
 
-def _apply_byte_ranges(body: bytes, ranges: list[tuple[int, int]]) -> bytes:
+def _apply_byte_ranges(
+    body: bytes,
+    ranges: list[tuple[int, int]],
+    replacements: dict[tuple[int, int], bytes] | None = None,
+) -> bytes:
+    """Remove each byte range of *body*, or put its entry in *replacements* in its place."""
     ordered = sorted(ranges, reverse=True)
     prior_start = len(body) + 1
     updated = body
@@ -264,9 +269,59 @@ def _apply_byte_ranges(body: bytes, ranges: list[tuple[int, int]]) -> bytes:
                 "repair_span_ambiguous",
                 "Repair source spans overlap or are no longer trustworthy.",
             )
-        updated = updated[:start] + updated[end:]
+        replacement = (replacements or {}).get((start, end), b"")
+        updated = updated[:start] + replacement + updated[end:]
         prior_start = start
     return updated
+
+
+def _orphaned_import_edits(
+    tree: ast.Module, body: bytes, removed_line: int
+) -> list[tuple[tuple[int, int], bytes]]:
+    """The edits to the submodel imports that removing the statement at *removed_line* leaves.
+
+    A pipeline imports a submodel module only to register it (an import never
+    registered is refused), so when the statement removes a module's last
+    registration, chained ones included, its name leaves the import: the whole
+    statement, or just that name, the rest rewritten as codegen writes the import.
+    Only a well-formed import is edited (``from modules import a, b``, no alias, on
+    lines of its own); any other is left as it is, for its own refusal to show.
+    """
+    from haute._parser_submodels import registered_modules
+    from haute.codegen import submodel_import_statement
+
+    removed = next((s for s in tree.body if s.lineno == removed_line), None)
+    if removed is None:
+        return []
+    kept = {module for s in tree.body if s is not removed for module in registered_modules(s)}
+    orphaned = set(registered_modules(removed)) - kept
+    edits: list[tuple[tuple[int, int], bytes]] = []
+    for statement in tree.body:
+        if not (
+            isinstance(statement, ast.ImportFrom)
+            and statement.level == 0
+            and statement.module == "modules"
+            and all(alias.asname is None and alias.name != "*" for alias in statement.names)
+            and any(alias.name in orphaned for alias in statement.names)
+        ):
+            continue
+        first, last = statement.lineno, statement.end_lineno or statement.lineno
+        if any(
+            other is not statement
+            and other.lineno <= last
+            and first <= (other.end_lineno or other.lineno)
+            for other in tree.body
+        ):
+            continue
+        span = _line_byte_range(body, first, last)
+        remaining = [alias.name for alias in statement.names if alias.name not in orphaned]
+        if not remaining:
+            edits.append((span, b""))
+            continue
+        newline = b"\r\n" if body[span[0] : span[1]].endswith(b"\r\n") else b"\n"
+        text = submodel_import_statement(remaining).replace("\n", newline.decode())
+        edits.append((span, text.encode("utf-8") + newline))
+    return edits
 
 
 def _extract_skeletons(
@@ -685,7 +740,16 @@ def build_remove_unavailable_node_plan(
             target_authored_id=target.authored_id,
         ),
     ]
-    updated_source = prefix + _apply_byte_ranges(source_body, source_ranges)
+    replacements: dict[tuple[int, int], bytes] = {}
+    import_edits = (
+        _orphaned_import_edits(tree, source_body, span.start_line) if receiver == "pipeline" else []
+    )
+    drops_import = bool(import_edits)
+    for byte_range, replacement in import_edits:
+        source_ranges.append(byte_range)
+        if replacement:
+            replacements[byte_range] = replacement
+    updated_source = prefix + _apply_byte_ranges(source_body, source_ranges, replacements)
     if updated_source == source_bytes:
         raise PipelineRepairError(
             "repair_plan_empty",
@@ -699,7 +763,12 @@ def build_remove_unavailable_node_plan(
             before=source_bytes,
             after=updated_source,
             description=(
-                f"Remove unavailable node {target.authored_id!r} and its explicit connections."
+                f"Remove unavailable node {target.authored_id!r} and its explicit connections"
+                + (
+                    ", and its module's import, which nothing else registers."
+                    if drops_import
+                    else "."
+                )
             ),
         )
     ]

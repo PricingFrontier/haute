@@ -51,7 +51,9 @@ Some problems have nothing in the editor to rebuild, and are fixed in the pipeli
 - A statement outside the pipeline's declarations, such as `rate = 1.5` at the bottom of the
   file, which a save would drop.
 - Two nodes with the same function name.
-- A submodel registered in a form Haute no longer reads, such as one using `definition_id=`.
-  Removing it is the only fix in the editor.
+- A submodel registered in a form Haute no longer reads, such as one using `definition_id=` or
+  naming its file instead of importing its module (`pipeline.submodel("modules/x.py", "x")`
+  rather than `from modules import x` and `pipeline.submodel(x.submodel, "x")`). Correct the
+  registration in the file, as the message shows, or remove it in the editor.
 - A chained `connect()` holding a broken connection. Write one `connect()` per line, then
   remove the broken one.

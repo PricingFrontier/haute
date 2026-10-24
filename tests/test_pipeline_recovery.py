@@ -361,7 +361,7 @@ def test_recovery_submodel_definition_validates_input_port_identities(
     with pytest.raises(ValidationError):
         RecoverySubmodelDefinition(
             definition_id="pricing",
-            file="models/pricing.py",
+            file="modules/pricing.py",
             availability="ready",
             graph=RecoveryGraphSnapshot(),
             input_ports=input_ports,
@@ -899,7 +899,7 @@ def test_canonical_snapshot_rejects_unavailable_nodes_and_submodels() -> None:
 
     unavailable_definition = RecoverySubmodelDefinition(
         definition_id="pricing",
-        file="models/pricing.py",
+        file="modules/pricing.py",
         availability="unavailable",
         graph=RecoveryGraphSnapshot(),
     )
@@ -1035,6 +1035,9 @@ def test_ready_document_revision_authenticates_strictly_parsed_child_bytes(
         tmp_path / "main.py",
         """
         import haute
+
+        from modules import child
+
         pipeline = haute.Pipeline("ready-child-byte-parity")
 
         @pipeline.polars
@@ -1042,7 +1045,7 @@ def test_ready_document_revision_authenticates_strictly_parsed_child_bytes(
             return None
 
         pipeline.submodel(
-            "modules/child.py",
+            child.submodel,
             "child_one",
         )
         """,
@@ -1117,6 +1120,9 @@ def test_ready_document_exposes_submodel_output_port_as_executable_name(
         tmp_path / "main.py",
         """
         import haute
+
+        from modules import child
+
         pipeline = haute.Pipeline("public-label-recovery")
 
         @pipeline.polars
@@ -1128,7 +1134,7 @@ def test_ready_document_exposes_submodel_output_port_as_executable_name(
             return output_1
 
         pipeline.submodel(
-            "modules/child.py",
+            child.submodel,
             "unrelated_alias",
         )
         pipeline.connect("source", "unrelated_alias", target_port="input_1")
@@ -1182,6 +1188,9 @@ def test_recovery_revision_authenticates_child_bytes_the_document_presents(
         tmp_path / "main.py",
         """
         import haute
+
+        from modules import child
+
         pipeline = haute.Pipeline("child-byte-parity")
 
         @pipeline.removed_node
@@ -1189,7 +1198,7 @@ def test_recovery_revision_authenticates_child_bytes_the_document_presents(
             return None
 
         pipeline.submodel(
-            "modules/child.py",
+            child.submodel,
             "child_one",
         )
         """,
@@ -1252,10 +1261,13 @@ def test_submodel_failure_codes_classify_by_exception_type_not_message(
         tmp_path / "main.py",
         """
         import haute
+
+        from modules import child
+
         pipeline = haute.Pipeline("submodel-codes")
 
         pipeline.submodel(
-            "modules/child.py",
+            child.submodel,
             "child_one",
         )
         """,
@@ -1311,10 +1323,13 @@ def test_recovery_revision_tracks_child_config_from_parent_config_base(
         tmp_path / "main.py",
         """
         import haute
+
+        from modules import child
+
         pipeline = haute.Pipeline("child-config-revision")
 
         pipeline.submodel(
-            "modules/child.py",
+            child.submodel,
             "child_one",
         )
         """,
@@ -1538,6 +1553,9 @@ def test_missing_submodel_preserves_occurrence_and_unrelated_root_nodes(
         tmp_path / "main.py",
         """
         import haute
+
+        from modules import missing
+
         pipeline = haute.Pipeline("submodel-recovery")
 
         @pipeline.polars
@@ -1545,7 +1563,7 @@ def test_missing_submodel_preserves_occurrence_and_unrelated_root_nodes(
             return None
 
         pipeline.submodel(
-            "models/missing.py",
+            missing.submodel,
             "pricing_one",
         )
         pipeline.connect("healthy", "pricing_one", target_port="input")
@@ -1559,13 +1577,172 @@ def test_missing_submodel_preserves_occurrence_and_unrelated_root_nodes(
     assert by_id["healthy"].availability == "ready"
     assert by_id["pricing_one"].availability == "unavailable"
     assert document.submodels is not None
-    assert document.submodels["models/missing.py"].availability == "unavailable"
+    assert document.submodels["modules/missing.py"].availability == "unavailable"
     assert any(diagnostic.code == "submodel_file_missing" for diagnostic in document.diagnostics)
     assert document.edges == []
     assert len(document.unresolved_connections) == 1
     assert any(
         diagnostic.code == "submodel_input_port_invalid" for diagnostic in document.diagnostics
     )
+
+
+def test_a_malformed_submodel_import_is_its_own_diagnostic_beside_a_loading_sibling(
+    tmp_path: Path,
+) -> None:
+    """Recovery reads the submodel imports one statement at a time: an aliased import is
+    refused on its own line, and the well-formed import beside it still names its file,
+    so that registration loads."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "modules").mkdir()
+    for name in ("inputs", "pricing"):
+        _write(
+            tmp_path / "modules" / f"{name}.py",
+            "import haute\n\n"
+            f'submodel = haute.Submodel("{name}", definition_id="{name}", input_ports=[], '
+            'output_ports=[], pipeline_dir="..")\n',
+        )
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+
+        from modules import inputs
+        from modules import pricing as rates
+
+        pipeline = haute.Pipeline("imports")
+
+        @pipeline.polars
+        def healthy():
+            return None
+
+        pipeline.submodel(inputs.submodel, "inputs")
+        pipeline.submodel(rates.submodel, "rates")
+        """,
+    )
+    with pytest.raises(ParseError, match="without `as` or `\\*`"):
+        parse_pipeline_file(pipeline_file)
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "degraded"
+    by_id = {node.authored_id: node for node in document.nodes}
+    assert by_id["healthy"].availability == "ready"
+    assert by_id["inputs"].availability == "ready"
+    assert document.submodels is not None
+    assert document.submodels["inputs"].file == "modules/inputs.py"
+    assert document.submodels["inputs"].availability == "ready"
+    (invalid,) = [item for item in document.diagnostics if item.code == "submodel_import_invalid"]
+    assert invalid.source_span is not None
+    lines = pipeline_file.read_text(encoding="utf-8").splitlines()
+    assert lines[invalid.source_span.start_line - 1] == "from modules import pricing as rates"
+    assert "without `as` or `*`" in invalid.message
+    assert invalid.remediation == "Write `from modules import <name>`."
+
+
+def _submodel_modules(project: Path, *names: str) -> None:
+    (project / "modules").mkdir()
+    for name in names:
+        _write(
+            project / "modules" / f"{name}.py",
+            "import haute\n\n"
+            f'submodel = haute.Submodel("{name}", definition_id="{name}", input_ports=[], '
+            'output_ports=[], pipeline_dir="..")\n',
+        )
+
+
+def test_a_registration_of_a_module_never_imported_is_an_unavailable_occurrence(
+    tmp_path: Path,
+) -> None:
+    """The registration names the file its import would read, so the occurrence stays on
+    the canvas, unavailable with the parser's reason, rather than vanishing."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    _submodel_modules(tmp_path, "pricing")
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+
+        pipeline = haute.Pipeline("imports")
+
+        @pipeline.polars
+        def healthy():
+            return None
+
+        pipeline.submodel(pricing.submodel, "pricing")
+        """,
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    by_id = {node.authored_id: node for node in document.nodes}
+    assert by_id["pricing"].availability == "unavailable"
+    (invalid,) = [
+        item for item in document.diagnostics if item.code == "submodel_registration_invalid"
+    ]
+    assert "'pricing' is not imported from modules" in invalid.message
+    assert invalid.remediation == "Add `from modules import pricing` with the imports."
+
+
+def test_an_unused_submodel_import_is_shown_at_its_line_with_the_parsers_fix(
+    tmp_path: Path,
+) -> None:
+    """No element shows the refusal, so the pipeline-level diagnostic carries the parse's
+    own line and remediation."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    _submodel_modules(tmp_path, "pricing")
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+
+        from modules import pricing
+
+        pipeline = haute.Pipeline("imports")
+
+        @pipeline.polars
+        def healthy():
+            return None
+        """,
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    (refusal,) = [item for item in document.diagnostics if item.code == "pipeline_parse_invalid"]
+    assert refusal.source_span is not None
+    lines = pipeline_file.read_text(encoding="utf-8").splitlines()
+    assert lines[refusal.source_span.start_line - 1] == "from modules import pricing"
+    assert refusal.remediation.startswith("Register it with pipeline.submodel(")
+
+
+def test_an_import_of_a_name_python_reserves_says_to_rename_the_module(tmp_path: Path) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    _submodel_modules(tmp_path, "input")
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+
+        from modules import input
+
+        pipeline = haute.Pipeline("imports")
+
+        @pipeline.polars
+        def healthy():
+            return None
+
+        pipeline.submodel(input.submodel, "pricing")
+        """,
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    (invalid,) = [item for item in document.diagnostics if item.code == "submodel_import_invalid"]
+    assert invalid.remediation is not None
+    assert invalid.remediation.startswith("Rename modules/input.py and its import")
 
 
 def test_a_refusal_no_element_shows_is_listed_beside_other_problems(tmp_path: Path) -> None:
@@ -1695,13 +1872,16 @@ def test_a_submodel_whose_ports_break_its_interface_is_unavailable_on_its_own(
         tmp_path / "main.py",
         """
         import haute
+
+        from modules import inputs
+
         pipeline = haute.Pipeline("ports")
 
         @pipeline.polars
         def healthy():
             return None
 
-        pipeline.submodel("modules/inputs.py", "inputs")
+        pipeline.submodel(inputs.submodel, "inputs")
         """,
     )
 
@@ -1746,10 +1926,13 @@ def test_unknown_submodel_decorator_is_rejected_strictly_and_conserved(
         tmp_path / "main.py",
         """
         import haute
+
+        from modules import child
+
         pipeline = haute.Pipeline("unknown-child-node")
 
         pipeline.submodel(
-            "modules/child.py",
+            child.submodel,
             "child_one",
         )
         """,
@@ -1785,21 +1968,24 @@ def test_duplicate_submodel_definition_paths_mark_every_occurrence_unavailable(
             pipeline_dir="..",
         )
     """
-    (tmp_path / "models").mkdir()
-    _write(tmp_path / "models" / "one.py", child_source)
-    _write(tmp_path / "models" / "two.py", child_source)
+    (tmp_path / "modules").mkdir()
+    _write(tmp_path / "modules" / "one.py", child_source)
+    _write(tmp_path / "modules" / "two.py", child_source)
     pipeline_file = _write(
         tmp_path / "main.py",
         """
         import haute
+
+        from modules import one, two
+
         pipeline = haute.Pipeline("duplicate-definition")
 
         pipeline.submodel(
-            "models/one.py",
+            one.submodel,
             "shared_one",
         )
         pipeline.submodel(
-            "models/two.py",
+            two.submodel,
             "shared_two",
         )
         """,
@@ -1826,9 +2012,9 @@ def test_duplicate_submodel_alias_stays_degraded_while_revision_is_computed(
 ) -> None:
     from haute._pipeline_recovery import load_pipeline_editor_document
 
-    (tmp_path / "models").mkdir()
+    (tmp_path / "modules").mkdir()
     _write(
-        tmp_path / "models" / "shared.py",
+        tmp_path / "modules" / "shared.py",
         """
         import haute
         submodel = haute.Submodel(
@@ -1844,14 +2030,17 @@ def test_duplicate_submodel_alias_stays_degraded_while_revision_is_computed(
         tmp_path / "main.py",
         """
         import haute
+
+        from modules import shared
+
         pipeline = haute.Pipeline("duplicate-alias")
 
         pipeline.submodel(
-            "models/shared.py",
+            shared.submodel,
             "same_alias",
         )
         pipeline.submodel(
-            "models/shared.py",
+            shared.submodel,
             "same_alias",
         )
         """,
@@ -2175,9 +2364,9 @@ def test_unexpected_submodel_parser_defect_is_localised_with_incident(
 ) -> None:
     from haute._pipeline_recovery import load_pipeline_editor_document
 
-    (tmp_path / "models").mkdir()
+    (tmp_path / "modules").mkdir()
     _write(
-        tmp_path / "models" / "shared.py",
+        tmp_path / "modules" / "shared.py",
         """
         import haute
         submodel = haute.Submodel(
@@ -2193,6 +2382,9 @@ def test_unexpected_submodel_parser_defect_is_localised_with_incident(
         tmp_path / "main.py",
         """
         import haute
+
+        from modules import shared
+
         pipeline = haute.Pipeline("submodel-incident")
 
         @pipeline.removed_node
@@ -2200,7 +2392,7 @@ def test_unexpected_submodel_parser_defect_is_localised_with_incident(
             return None
 
         pipeline.submodel(
-            "models/shared.py",
+            shared.submodel,
             "shared_one",
         )
         """,
@@ -2218,7 +2410,7 @@ def test_unexpected_submodel_parser_defect_is_localised_with_incident(
 
     assert document.load_status == "degraded"
     assert document.submodels is not None
-    assert document.submodels["models/shared.py"].availability == "unavailable"
+    assert document.submodels["modules/shared.py"].availability == "unavailable"
     internal = [
         diagnostic
         for diagnostic in document.diagnostics
@@ -2329,6 +2521,170 @@ def test_remove_unavailable_node_apply_commits_confirmed_plan_and_returns_docume
     assert parse_pipeline_file(pipeline_file).pipeline_name == "legacy"
 
 
+@pytest.mark.parametrize(
+    ("imports", "kept"),
+    [
+        pytest.param("from modules import missing", None, id="its-own-import"),
+        pytest.param(
+            "from modules import inputs, missing", "from modules import inputs", id="beside-another"
+        ),
+    ],
+)
+def test_removing_a_modules_last_occurrence_removes_its_import(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    imports: str,
+    kept: str | None,
+) -> None:
+    """A module is imported only to register it, so removing its last unavailable
+    occurrence takes its name out of the import, and the pipeline loads ready rather
+    than refused for an import nothing registers."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "modules").mkdir()
+    _write(
+        tmp_path / "modules" / "inputs.py",
+        "import haute\n\n"
+        'submodel = haute.Submodel("inputs", definition_id="inputs", input_ports=[], '
+        'output_ports=[], pipeline_dir="..")\n',
+    )
+    registrations = 'pipeline.submodel(missing.submodel, "missing")\n'
+    if kept is not None:
+        registrations = 'pipeline.submodel(inputs.submodel, "inputs")\n' + registrations
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        "import haute\n\n"
+        f"{imports}\n\n"
+        'pipeline = haute.Pipeline("imports")\n\n\n'
+        "@pipeline.polars\n"
+        "def healthy():\n"
+        "    return None\n\n\n" + registrations,
+    )
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    target = next(node for node in document.nodes if node.authored_id == "missing")
+    assert target.availability == "unavailable"
+
+    response = client.post(
+        "/api/pipeline/repair/remove/apply",
+        json={
+            "source_file": document.source_file,
+            "source_revision": document.source_revision,
+            "target_source_file": target.source_file,
+            "target_recovery_id": target.recovery_id,
+            "delete_config": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["document"]["load_status"] == "ready"
+    repaired = pipeline_file.read_text(encoding="utf-8")
+    assert "missing" not in repaired
+    if kept is None:
+        assert "from modules" not in repaired
+    else:
+        assert kept in repaired.splitlines()
+    parse_pipeline_file(pipeline_file)
+
+
+def _remove_occurrence(
+    client: TestClient, pipeline_file: Path, project: Path, authored_id: str
+) -> dict:
+    """Remove the unavailable occurrence *authored_id* through the API; its response."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=project)
+    target = next(node for node in document.nodes if node.authored_id == authored_id)
+    assert target.availability == "unavailable"
+    response = client.post(
+        "/api/pipeline/repair/remove/apply",
+        json={
+            "source_file": document.source_file,
+            "source_revision": document.source_revision,
+            "target_source_file": target.source_file,
+            "target_recovery_id": target.recovery_id,
+            "delete_config": False,
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _module(project: Path, name: str) -> None:
+    (project / "modules").mkdir(exist_ok=True)
+    _write(
+        project / "modules" / f"{name}.py",
+        "import haute\n\n"
+        f'submodel = haute.Submodel("{name}", definition_id="{name}", input_ports=[], '
+        'output_ports=[], pipeline_dir="..")\n',
+    )
+
+
+def test_removing_an_occurrence_keeps_the_import_a_registration_chain_still_uses(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every link of a chained registration counts: the module stays imported for the
+    owner and copy registered in one chained statement."""
+    _module(tmp_path, "pricing")
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        "import haute\n\n"
+        "from modules import pricing\n\n"
+        'pipeline = haute.Pipeline("imports")\n\n\n'
+        "@pipeline.polars\n"
+        "def healthy():\n"
+        "    return None\n\n\n"
+        'pipeline.submodel(pricing.submodel, "first").submodel(\n'
+        '    pricing.submodel, "second", instance_of="first"\n'
+        ")\n"
+        'pipeline.submodel(pricing.submodel, "broken", label="old")\n',
+    )
+    monkeypatch.chdir(tmp_path)
+
+    payload = _remove_occurrence(client, pipeline_file, tmp_path, "broken")
+
+    assert payload["document"]["load_status"] == "ready"
+    authored = {node["authored_id"] for node in payload["document"]["nodes"]}
+    assert {"first", "second"} <= authored
+    assert "from modules import pricing" in pipeline_file.read_text(encoding="utf-8").splitlines()
+
+
+def test_removing_an_occurrence_leaves_a_malformed_import_as_written(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a well-formed import is rewritten. One the parser refuses stays exactly as
+    written, its own refusal still shown, rather than being corrected in passing."""
+    _module(tmp_path, "inputs")
+    malformed = "from modules import missing, inputs as retained"
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        "import haute\n\n"
+        f"{malformed}\n\n"
+        'pipeline = haute.Pipeline("imports")\n\n\n'
+        "@pipeline.polars\n"
+        "def healthy():\n"
+        "    return None\n\n\n"
+        'pipeline.submodel(missing.submodel, "missing")\n'
+        'pipeline.submodel(retained.submodel, "retained")\n',
+    )
+    monkeypatch.chdir(tmp_path)
+
+    payload = _remove_occurrence(client, pipeline_file, tmp_path, "missing")
+
+    assert malformed in pipeline_file.read_text(encoding="utf-8").splitlines()
+    codes = {item["code"] for item in payload["document"]["diagnostics"]}
+    assert "submodel_import_invalid" in codes
+    retained = next(
+        node for node in payload["document"]["nodes"] if node["authored_id"] == "retained"
+    )
+    assert retained["availability"] == "unavailable"
+
+
 def test_repair_refuses_syntax_broken_source() -> None:
     """Repairs work on valid Python only; a syntax-broken file is fixed in an editor."""
     from haute._pipeline_repair import PipelineRepairError, _extract_skeletons
@@ -2416,10 +2772,13 @@ def test_remove_unavailable_node_repairs_a_child_submodel_source(
         tmp_path / "main.py",
         """
         import haute
+
+        from modules import scoring
+
         pipeline = haute.Pipeline("child-repair")
 
         pipeline.submodel(
-            "modules/scoring.py",
+            scoring.submodel,
             "scoring",
         )
         """,
@@ -2666,13 +3025,16 @@ def test_remove_connection_reaches_a_broken_connection_inside_a_submodel(
         tmp_path / "main.py",
         """
         import haute
+
+        from modules import inputs
+
         pipeline = haute.Pipeline("connections")
 
         @pipeline.polars
         def priced(out):
             return out
 
-        pipeline.submodel("modules/inputs.py", "inputs")
+        pipeline.submodel(inputs.submodel, "inputs")
         pipeline.connect("inputs", "priced", source_port="out")
         """,
     )
@@ -2708,13 +3070,16 @@ def test_remove_connection_mends_a_submodel_with_no_nodes(
         tmp_path / "main.py",
         """
         import haute
+
+        from modules import empty
+
         pipeline = haute.Pipeline("connections")
 
         @pipeline.polars
         def quotes():
             return None
 
-        pipeline.submodel("modules/empty.py", "empty")
+        pipeline.submodel(empty.submodel, "empty")
         """,
     )
     monkeypatch.chdir(tmp_path)
@@ -2750,25 +3115,27 @@ _PRICING = (
         pytest.param('\nsubmodel.connect("ghost", "rates")\n', "", id="in-the-definition"),
     ],
 )
-def test_remove_connection_beside_one_file_registered_under_two_spellings(
+def test_remove_connection_beside_one_file_registered_twice(
     tmp_path: Path,
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
     child_extra: str,
     parent_extra: str,
 ) -> None:
-    """Recovery groups registrations by the file they resolve to and names it by the first."""
+    """Recovery groups both registrations of one imported module as one definition,
+    named by its file."""
     from haute._pipeline_recovery import load_pipeline_editor_document
 
     (tmp_path / "modules").mkdir()
     _write(tmp_path / "modules" / "pricing.py", _PRICING + child_extra)
     pipeline_file = _write(
         tmp_path / "main.py",
-        "import haute\n"
+        "import haute\n\n"
+        "from modules import pricing\n\n"
         'pipeline = haute.Pipeline("connections")\n\n'
         "@pipeline.polars\ndef quotes():\n    return None\n\n"
-        'pipeline.submodel("modules/pricing.py", "pricing")\n'
-        'pipeline.submodel("./modules/pricing.py", "pricing_copy", instance_of="pricing")\n'
+        'pipeline.submodel(pricing.submodel, "pricing")\n'
+        'pipeline.submodel(pricing.submodel, "pricing_copy", instance_of="pricing")\n'
         + parent_extra,
     )
     monkeypatch.chdir(tmp_path)
@@ -2813,8 +3180,8 @@ def test_remove_connection_beside_one_file_registered_under_two_spellings(
             id="parameter-name",
         ),
         pytest.param(
-            _CONNECTED
-            + '    pipeline.submodel("modules/inputs.py", "inputs").connect("ghost", "priced")\n',
+            _CONNECTED.replace("import haute\n", "import haute\n    from modules import inputs\n")
+            + '    pipeline.submodel(inputs.submodel, "inputs").connect("ghost", "priced")\n',
             "connection_endpoint_missing",
             "repair_connection_chain_mixed",
             id="chained-after-a-registration",
@@ -2847,7 +3214,7 @@ def test_remove_connection_refuses_what_is_not_one_connect_line_without_writing(
 
 
 def _submodel_project(root: Path, *, input_ports: str, body: str, parent_extra: str = "") -> Path:
-    """A pipeline registering modules/inputs.py, whose ports and nodes are given."""
+    """A pipeline importing and registering modules/inputs.py, whose ports and nodes are given."""
     (root / "modules").mkdir()
     _write(
         root / "modules" / "inputs.py",
@@ -2859,9 +3226,10 @@ def _submodel_project(root: Path, *, input_ports: str, body: str, parent_extra: 
     )
     return _write(
         root / "main.py",
-        "import haute\n"
+        "import haute\n\n"
+        "from modules import inputs\n\n"
         'pipeline = haute.Pipeline("shapes")\n\n'
-        'pipeline.submodel("modules/inputs.py", "inputs")\n' + parent_extra,
+        'pipeline.submodel(inputs.submodel, "inputs")\n' + parent_extra,
     )
 
 
@@ -2925,7 +3293,7 @@ def test_a_submodel_copy_naming_a_missing_original_is_its_own_to_remove(
         tmp_path,
         input_ports="[]",
         body="",
-        parent_extra='pipeline.submodel("modules/inputs.py", "copy", instance_of="ghost")\n',
+        parent_extra='pipeline.submodel(inputs.submodel, "copy", instance_of="ghost")\n',
     )
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     by_id = {node.authored_id: node for node in document.nodes}

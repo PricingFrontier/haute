@@ -88,7 +88,12 @@ without validating required positional arguments.
 
 **`init`**: `handle_init` checks for an existing `haute.toml` (abort unless `--force`), resolves the
 project name from `pyproject.toml` (creating/patching it via `_ensure_haute_dependency`, which does
-a structural TOML edit rather than string templating so existing content survives), creates the
+a structural TOML edit rather than string templating so existing content survives, and adds a
+`[dependency-groups]` dev group of ruff, mypy and pytest and a `[tool.mypy]` table only when the
+file has none: `mypy_path = "rating"` and `explicit_package_bases = true`, so the generated CI's
+`uv run mypy .` resolves what `rating/main.py` imports from its own folder (`utility`, and
+`modules` for its submodels) as Python does when it runs the file, and an override ignoring
+missing imports for `haute`, `catboost`, `xgboost`, `lightgbm` and `sklearn`), creates the
 `rating/` package tree (including `rating/utility/__init__.py` and
 `rating/utility/features.py`), an empty `rating/config/`, and the empty `rating/files/data/`, `rating/files/models/` and `rating/files/params/` folders where versioned data, model and parameter files go ([pipeline-config](../pipeline-config/high-level.md)), writes `haute.toml` via `haute._scaffold.haute_toml` (with the `[workbench]` table when
 `--workbench` is given, and then `forms/form.json` via `haute._scaffold.starter_form`),
@@ -365,7 +370,9 @@ Key files and what they cover:
   instruction, CI-provider detection, `serve` port-conflict detection, `impact`'s prod-exists
   failing loudly on non-404 errors.
 - `test_cli_init.py` — full scaffold structure, project naming, every `--target`/`--ci` combination,
-  the printed summary, `_ensure_haute_dependency` behaviour and its TOML-safety edge cases, and
+  the printed summary, `_ensure_haute_dependency` behaviour and its TOML-safety edge cases
+  (including a real `mypy .` run under the scaffolded `[tool.mypy]` resolving `rating/main.py`'s
+  imports of its own `utility` and `modules`), and
   `--force` re-init (including stale CI-file pruning), and `--workbench`.
 - `test_cli_no_shadow.py` — regression guard that `haute.cli` imports as a package and is not
   shadowed by a same-named module.

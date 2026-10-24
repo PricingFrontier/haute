@@ -3,6 +3,8 @@
 import haute
 import polars as pl
 
+from modules import vehicle_factors
+
 pipeline = haute.Pipeline(
     "submodel_pricing",
     description="Policies priced with a shared vehicle factors submodel.",
@@ -21,7 +23,7 @@ def premium(factored: pl.LazyFrame) -> pl.LazyFrame:
     return df
 
 
-pipeline.submodel("modules/vehicle_factors.py", "vehicle_factors")
+pipeline.submodel(vehicle_factors.submodel, "vehicle_factors")
 
 # Wire nodes together - edges define data flow
 pipeline.connect("policies", "vehicle_factors", target_port="vehicles")

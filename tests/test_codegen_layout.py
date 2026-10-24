@@ -235,12 +235,15 @@ _ENRICHED_CODE = 'df = df.with_columns(pl.lit(len(obj)).alias("lookup_size"))'
 _EXPLORE_CODE = 'df = df.filter(pl.col("lookup_size") > 0)'
 _TERRITORY_CODE = 'df = records.with_columns(pl.col("postcode").str.slice(0, 2).alias("area"))'
 
+#: Each definition is a module in ``modules/`` beside the pipeline, which imports both
+#: in one statement.
 _TERRITORY_FILE = "modules/territory_rating.py"
-_SHARED_FILE = "modules/shared/territory_rate_tables.py"
+_SHARED_FILE = "modules/territory_rate_tables_by_area.py"
+_SUBMODEL_IMPORT = "from modules import territory_rate_tables_by_area, territory_rating"
 
 
 def _territory_definition() -> dict:
-    """A definition one folder below the pipeline: a transform and two declarations."""
+    """A transform and two declarations, whose first occurrence takes its module's name."""
     return {
         "definitionId": "territory_rating",
         "file": _TERRITORY_FILE,
@@ -259,7 +262,7 @@ def _territory_definition() -> dict:
 
 
 def _shared_definition() -> dict:
-    """A declaration-only definition two folders below the pipeline."""
+    """A declaration-only definition, whose occurrence is named unlike its module."""
     return {
         "definitionId": "shared_rates",
         "file": _SHARED_FILE,
@@ -386,7 +389,9 @@ def _corpus_graph() -> PipelineGraph:
             },
         ),
         _occurrence("occ", "territory_rating", "territory_rating"),
-        _occurrence("occ-copy", "territory_rating_copy", "territory_rating", instanceOf="occ"),
+        _occurrence(
+            "occ-copy", "territory_rating_second_copy", "territory_rating", instanceOf="occ"
+        ),
         _occurrence("occ-shared", "shared_territory_rate_tables", "shared_rates"),
     ]
     edges = [
@@ -773,13 +778,13 @@ BROKEN_CALLS = {
     ),
     "registration, arguments on an indented line": (
         "pipeline.submodel(\n"
-        '    "modules/shared/territory_rate_tables.py", "shared_territory_rate_tables"\n'
+        '    territory_rate_tables_by_area.submodel, "shared_territory_rate_tables"\n'
         ")\n"
     ),
     "registration, one argument per line": (
         "pipeline.submodel(\n"
-        '    "modules/territory_rating.py",\n'
-        '    "territory_rating_copy",\n'
+        "    territory_rating.submodel,\n"
+        '    "territory_rating_second_copy",\n'
         '    instance_of="territory_rating",\n'
         ")\n"
     ),
@@ -916,7 +921,8 @@ def test_definition_files_below_the_pipeline_record_the_way_back_last(corpus: Co
         is_way_back = last is not None and last.arg == "pipeline_dir"
         ways_back[path] = ast.literal_eval(last.value) if is_way_back else None
 
-    assert ways_back == {"main.py": None, _TERRITORY_FILE: "..", _SHARED_FILE: "../.."}
+    # A definition is a module in modules/, one folder below the pipeline.
+    assert ways_back == {"main.py": None, _TERRITORY_FILE: "..", _SHARED_FILE: ".."}
 
 
 # ---------------------------------------------------------------------------
@@ -962,7 +968,12 @@ def test_modules_carry_no_loader_private_import_file_expression_or_empty_docstri
         receiver = "pipeline" if path == "main.py" else "submodel"
 
         assert ast.get_docstring(tree, clean=False) == _MODULE_TITLES[path]
-        assert _imports(tree) in (["import haute"], ["import haute", "import polars as pl"]), path
+        imports = _imports(tree)
+        if path == "main.py":
+            # The pipeline imports nothing of its own but its definitions' modules.
+            assert imports == ["import haute", "import polars as pl", _SUBMODEL_IMPORT]
+        else:
+            assert imports in (["import haute"], ["import haute", "import polars as pl"]), path
         assert not any(
             isinstance(node, ast.Name) and node.id == "__file__" for node in ast.walk(tree)
         )
@@ -972,7 +983,7 @@ def test_modules_carry_no_loader_private_import_file_expression_or_empty_docstri
         # Beyond its docstring and imports, a module constructs its object,
         # defines one function per node, and registers and wires them.
         for stmt in tree.body[1:]:
-            if isinstance(stmt, (ast.Import, ast.FunctionDef)):
+            if isinstance(stmt, (ast.Import, ast.ImportFrom, ast.FunctionDef)):
                 continue
             if isinstance(stmt, ast.Assign):
                 assert [ast.unparse(target) for target in stmt.targets] == [receiver]
@@ -1115,6 +1126,103 @@ def test_a_preamble_that_uses_pl_keeps_the_polars_import() -> None:
 
     assert _imports(ast.parse(code)) == ["import haute", "import polars as pl"]
     assert code.index("import polars as pl") < code.index("THRESHOLD = pl.lit(0.5)")
+
+
+def test_the_pipeline_imports_its_definitions_modules_in_a_block_of_their_own(
+    corpus: Corpus,
+) -> None:
+    """One ``from modules import`` after ``haute`` and ``polars``, as isort places it.
+
+    With ``modules/`` beside the pipeline, ruff counts ``modules`` first-party, a
+    section after the third-party ``haute`` and ``polars``. Each registration names
+    its definition through the module that import binds.
+    """
+    main = corpus.files["main.py"]
+
+    assert f"\nimport haute\nimport polars as pl\n\n{_SUBMODEL_IMPORT}\n\npipeline = " in main
+    assert [
+        ast.unparse(call.args[0])
+        for call in _module_level_calls(ast.parse(main))
+        if _dotted(call.func) == "pipeline.submodel"
+    ] == [
+        "territory_rating.submodel",
+        "territory_rating.submodel",
+        "territory_rate_tables_by_area.submodel",
+    ]
+
+
+#: Definitions' modules in the order a graph registers them, and the one import
+#: codegen writes for them: the names in the order ruff's isort gives a ``from``
+#: import (constants, then classes, then the rest, each in case-insensitive natural
+#: order), on one line up to 88 columns and one name per line past them. The corpus
+#: imports two definitions in one statement.
+SUBMODEL_IMPORTS = {
+    "natural order": (
+        ["x_10", "x_2", "x_1"],
+        "from modules import x_1, x_2, x_10\n",
+    ),
+    "constants, classes, then the rest": (
+        ["rates_Zone", "rates_area", "DriverRates", "AREA_RATES"],
+        "from modules import AREA_RATES, DriverRates, rates_area, rates_Zone\n",
+    ),
+    # A run starting with 0 compares digit by digit, so 02 sorts before 1 (natord).
+    "zero-padded numbers": (
+        ["x_02", "x_2", "x_1", "x_010"],
+        "from modules import x_010, x_02, x_1, x_2\n",
+    ),
+    "88 columns, flat": (
+        ["vehicle_rate", "territory_rate_tables_by_area", "driver_age_factor_bands"],
+        "from modules import driver_age_factor_bands, territory_rate_tables_by_area, "
+        "vehicle_rate\n",
+    ),
+    "89 columns, wrapped": (
+        ["vehicle_rates", "territory_rate_tables_by_area", "driver_age_factor_bands"],
+        "from modules import (\n"
+        "    driver_age_factor_bands,\n"
+        "    territory_rate_tables_by_area,\n"
+        "    vehicle_rates,\n"
+        ")\n",
+    ),
+}
+
+
+def _registering(modules: list[str]) -> PipelineGraph:
+    """One empty definition in ``modules/`` per module, registered under the module's name."""
+    return PipelineGraph(
+        nodes=[_occurrence(f"occ-{module}", module, module) for module in modules],
+        edges=[],
+        submodels={
+            module: {
+                "definitionId": module,
+                "file": f"modules/{module}.py",
+                "inputPorts": [],
+                "outputPorts": [],
+                "graph": {"nodes": [], "edges": []},
+            }
+            for module in modules
+        },
+    )
+
+
+@pytest.mark.parametrize("case", list(SUBMODEL_IMPORTS))
+def test_submodel_imports_are_ordered_and_wrapped_as_ruff_orders_and_wraps_them(
+    case: str, tmp_path: Path
+) -> None:
+    modules, expected = SUBMODEL_IMPORTS[case]
+    files = graph_to_code_multi(_registering(modules), pipeline_name="p", source_file="main.py")
+    for rel_path, text in files.items():
+        target = tmp_path / rel_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(text.encode("utf-8"))
+    paths = sorted(files)
+
+    assert f"\nimport haute\n\n{expected}\npipeline = " in files["main.py"]
+    # ruff's isort finds the same order, the same wrapping and the same blocks.
+    check = _ruff("check", "--select", "I,E,F", "--output-format", "concise", *paths, cwd=tmp_path)
+    assert check.returncode == 0, check.stdout + check.stderr
+    for options in ((), ("--config", "format.skip-magic-trailing-comma = true")):
+        result = _ruff("format", *options, "--diff", *paths, cwd=tmp_path)
+        assert result.returncode == 0, result.stdout + result.stderr
 
 
 # ---------------------------------------------------------------------------

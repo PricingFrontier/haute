@@ -47,7 +47,12 @@ from haute._executable_names import (
     executable_name_violations,
 )
 from haute._io import read_user_text
-from haute._types import PipelineGraph
+from haute._submodel_paths import (
+    SUBMODEL_PACKAGE,
+    MalformedSubmodelPathError,
+    submodel_module_name,
+)
+from haute._types import NodeType, PipelineGraph
 
 #: Reads ``utility/<module>.py`` as the executor would resolve it, or ``None``
 #: when no such file exists. Nothing else is read, and nothing is imported.
@@ -315,10 +320,36 @@ class _Inventory:
         return [last[name] for name in declared if name in last]
 
 
+#: The label the pipeline file's submodel imports are inventoried under.
+_SUBMODEL_IMPORTS = "the submodel imports"
+
+
+def _submodel_modules(graph: PipelineGraph) -> list[str]:
+    """The names the pipeline file's ``from modules import ...`` binds, one per definition.
+
+    A definition file that is not an importable module is refused where it is
+    registered or generated, and binds nothing here.
+    """
+    names: set[str] = set()
+    for definition in (graph.submodels or {}).values():
+        try:
+            names.add(submodel_module_name(definition.file or ""))
+        except MalformedSubmodelPathError:
+            continue
+    return sorted(names)
+
+
 def support_code_inventory(graph: PipelineGraph, read_utility: UtilityReader) -> SupportInventory:
-    """Every binding the support code of *graph* makes, with provenance."""
+    """Every binding the support code of *graph* makes, with provenance.
+
+    The pipeline file's submodel imports bind too: a node, a preamble name or a
+    reserved name equal to a submodel module's name would rebind it.
+    """
     inventory = _Inventory(read_utility)
     sources = [(graph.preamble or "", "the preamble")]
+    modules = _submodel_modules(graph)
+    if modules:
+        sources.append((f"from {SUBMODEL_PACKAGE} import {', '.join(modules)}", _SUBMODEL_IMPORTS))
     sources.extend(
         (definition.graph.preamble or "", f"submodel {definition_id!r}'s preamble")
         for definition_id, definition in (graph.submodels or {}).items()
@@ -386,18 +417,34 @@ def support_code_violations(
             )
 
     helpers = {name: bindings[-1] for name, bindings in by_name.items()}
+    occurrences = {node.id for node in graph.nodes if node.data.nodeType == NodeType.SUBMODEL}
     function_names: set[str] = set()
     for name, party in _named_parties(graph):
         function_names.add(name)
         helper = helpers.get(name)
-        if helper is not None:
-            violations.append(
-                NameViolation(
-                    kind="support_collision", name=name, parties=(party,), origin=helper.where()
-                )
+        if helper is None:
+            continue
+        # An occurrence's name is a string, not a binding, so an occurrence named after
+        # the module that defines it, as one usually is, takes nothing from the import.
+        if (
+            helper.source == _SUBMODEL_IMPORTS
+            and party.module == ROOT_MODULE
+            and party.node_id in occurrences
+        ):
+            continue
+        violations.append(
+            NameViolation(
+                kind="support_collision", name=name, parties=(party,), origin=helper.where()
             )
-    # An input named after a node repeats that node's collision, reported above.
-    unreported = {name: b for name, b in helpers.items() if name not in function_names}
+        )
+    # An input named after a node repeats that node's collision, reported above. A
+    # submodel module is read only by the registrations, never inside a node, so a
+    # node's input of its name hides nothing.
+    unreported = {
+        name: b
+        for name, b in helpers.items()
+        if name not in function_names and b.source != _SUBMODEL_IMPORTS
+    }
     violations.extend(_input_support_collisions(graph, unreported))
     return violations
 

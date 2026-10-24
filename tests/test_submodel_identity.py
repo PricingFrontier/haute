@@ -63,6 +63,8 @@ def test_parsing_owner_and_copy_sets_name_as_id_label_and_alias(tmp_path: Path) 
 import polars as pl
 import haute
 
+from modules import pricing
+
 pipeline = haute.Pipeline("main")
 
 
@@ -71,8 +73,8 @@ def source() -> pl.LazyFrame:
     return pl.LazyFrame({"x": [1, 2, 3]})
 
 
-pipeline.submodel("modules/pricing.py", "pricing")
-pipeline.submodel("modules/pricing.py", "pricing_2", instance_of="pricing")
+pipeline.submodel(pricing.submodel, "pricing")
+pipeline.submodel(pricing.submodel, "pricing_2", instance_of="pricing")
 
 pipeline.connect("source", "pricing", target_port="in_data")
 pipeline.connect("source", "pricing_2", target_port="in_data")
@@ -81,6 +83,8 @@ pipeline.connect("source", "pricing_2", target_port="in_data")
     )
 
     graph = parse_pipeline_file(main_py)
+    # One import, so one definition, whichever occurrence registers it.
+    assert set(graph.submodels or {}) == {"def_pricing_declared"}
 
     owner = graph.node_map["pricing"]
     assert owner.id == "pricing"
@@ -97,22 +101,59 @@ pipeline.connect("source", "pricing_2", target_port="in_data")
     assert copy.data.config["instanceOf"] == "pricing"
 
 
+_NOT_THE_IMPORT_FORM = r"is imported as `from modules import <name>`.*is not that form"
+_NOT_ITS_OWN_NAME = r"imported by its own name, `from modules import <name>`, without `as` or `\*`"
+
+
 @pytest.mark.parametrize(
-    ("owner_path", "copy_path"),
+    ("imports", "definition", "refusal"),
     [
-        ("modules/pricing.py", "modules/./pricing.py"),
-        ("modules/./pricing.py", "modules/pricing.py"),
+        pytest.param(
+            "from modules import pricing as rates",
+            "rates.submodel",
+            _NOT_ITS_OWN_NAME,
+            id="alias",
+        ),
+        pytest.param("from modules import *", "pricing.submodel", _NOT_ITS_OWN_NAME, id="star"),
+        pytest.param(
+            "from .modules import pricing", "pricing.submodel", _NOT_THE_IMPORT_FORM, id="relative"
+        ),
+        pytest.param(
+            "import modules.pricing",
+            "modules.pricing.submodel",
+            _NOT_THE_IMPORT_FORM,
+            id="dotted-module",
+        ),
+        pytest.param(
+            "from modules.pricing import submodel",
+            "submodel",
+            _NOT_THE_IMPORT_FORM,
+            id="definition-imported-itself",
+        ),
+        pytest.param(
+            "from modules import pricing\nfrom modules import pricing",
+            "pricing.submodel",
+            "A submodel module is imported twice",
+            id="imported-twice",
+        ),
     ],
 )
-def test_parsing_owner_and_copy_with_different_path_spellings(
-    tmp_path: Path, owner_path: str, copy_path: str
+def test_parsing_owner_and_copy_with_different_import_spellings(
+    tmp_path: Path, imports: str, definition: str, refusal: str
 ) -> None:
+    """A definition has one spelling, ``from modules import <module>``: any other is refused.
+
+    The owner and its copy name the definition through that one import, so they
+    cannot spell it two ways (the file paths that once could were removed).
+    """
     _setup_project(tmp_path)
     main_py = tmp_path / "main.py"
     main_py.write_text(
         f"""\
 import polars as pl
 import haute
+
+{imports}
 
 pipeline = haute.Pipeline("main")
 
@@ -122,8 +163,8 @@ def source() -> pl.LazyFrame:
     return pl.LazyFrame({{"x": [1, 2, 3]}})
 
 
-pipeline.submodel("{owner_path}", "pricing")
-pipeline.submodel("{copy_path}", "pricing_2", instance_of="pricing")
+pipeline.submodel({definition}, "pricing")
+pipeline.submodel({definition}, "pricing_2", instance_of="pricing")
 
 pipeline.connect("source", "pricing", target_port="in_data")
 pipeline.connect("source", "pricing_2", target_port="in_data")
@@ -131,45 +172,35 @@ pipeline.connect("source", "pricing_2", target_port="in_data")
         encoding="utf-8",
     )
 
-    graph = parse_pipeline_file(main_py)
-    assert set(graph.submodels or {}) == {"def_pricing_declared"}
-    assert len(graph.submodels or {}) == 1
+    with pytest.raises(ParseError, match=refusal) as exc_info:
+        parse_pipeline_file(main_py)
 
-    owner = graph.node_map["pricing"]
-    assert owner.id == "pricing"
-    assert owner.data.label == "pricing"
-    assert owner.data.config["alias"] == "pricing"
-    assert owner.data.config["definitionId"] == "def_pricing_declared"
-    assert "instanceOf" not in owner.data.config
-
-    copy = graph.node_map["pricing_2"]
-    assert copy.id == "pricing_2"
-    assert copy.data.label == "pricing_2"
-    assert copy.data.config["alias"] == "pricing_2"
-    assert copy.data.config["definitionId"] == "def_pricing_declared"
-    assert copy.data.config["instanceOf"] == "pricing"
+    # The refusal points at the import itself.
+    assert exc_info.value.context["line"] == imports.count("\n") + 4
 
 
 @pytest.mark.parametrize("kw", ["definition_id", "instance_id", "alias"])
 def test_rejected_keywords_raise_parse_error(kw: str) -> None:
-    source = f'pipeline.submodel("modules/pricing.py", "pricing", {kw}="foo")'
+    source = (
+        f'from modules import pricing\npipeline.submodel(pricing.submodel, "pricing", {kw}="foo")'
+    )
     tree = ast.parse(source)
 
     with pytest.raises(ParseError) as exc_info:
         extract_submodel_registrations(tree)
 
     assert exc_info.value.message == (
-        f"pipeline.submodel() takes the file and the occurrence name; {kw}= is not accepted."
+        f"pipeline.submodel() takes the definition and the occurrence name; {kw}= is not accepted."
     )
     assert exc_info.value.context["keyword"] == kw
-    assert exc_info.value.context["path"] == "modules/pricing.py"
+    assert exc_info.value.context["line"] == 2
     assert exc_info.value.context["remediation"] == (
-        "Write pipeline.submodel(<path>, <name>) and let the child file declare its definition id."
+        "Write pipeline.submodel(<module>.submodel, <name>) and let the definition declare its id."
     )
 
 
 def test_missing_name_raises_parse_error() -> None:
-    source = 'pipeline.submodel("modules/pricing.py")'
+    source = "from modules import pricing\npipeline.submodel(pricing.submodel)"
     tree = ast.parse(source)
 
     with pytest.raises(ParseError) as exc_info:
@@ -178,11 +209,11 @@ def test_missing_name_raises_parse_error() -> None:
     assert exc_info.value.message == (
         "pipeline.submodel() requires the occurrence name as its second argument."
     )
-    assert exc_info.value.context["path"] == "modules/pricing.py"
+    assert exc_info.value.context["line"] == 2
 
 
 def test_non_canonical_name_raises_parse_error() -> None:
-    source = 'pipeline.submodel("modules/pricing.py", "my pricing!")'
+    source = 'from modules import pricing\npipeline.submodel(pricing.submodel, "my pricing!")'
     tree = ast.parse(source)
 
     with pytest.raises(ParseError) as exc_info:
@@ -201,6 +232,8 @@ import polars as pl
 
 import haute
 
+from modules import pricing
+
 pipeline = haute.Pipeline("main")
 
 
@@ -209,8 +242,8 @@ def source() -> pl.LazyFrame:
     return pl.LazyFrame({"x": [1, 2, 3]})
 
 
-pipeline.submodel("modules/pricing.py", "pricing")
-pipeline.submodel("modules/pricing.py", "pricing_2", instance_of="pricing")
+pipeline.submodel(pricing.submodel, "pricing")
+pipeline.submodel(pricing.submodel, "pricing_2", instance_of="pricing")
 pipeline.connect("source", "pricing", target_port="in_data")
 pipeline.connect("source", "pricing_2", target_port="in_data")
 """
@@ -219,8 +252,11 @@ pipeline.connect("source", "pricing_2", target_port="in_data")
     parsed = parse_pipeline_file(main_py)
     emitted = graph_to_code_multi(parsed, pipeline_name="main", source_file="main.py")
 
-    assert 'pipeline.submodel("modules/pricing.py", "pricing")' in emitted["main.py"]
-    expected_copy = 'pipeline.submodel("modules/pricing.py", "pricing_2", instance_of="pricing")'
+    # The definition is imported once, in a block of its own after haute and polars.
+    imports = "import haute\nimport polars as pl\n\nfrom modules import pricing\n\n"
+    assert imports in emitted["main.py"]
+    assert 'pipeline.submodel(pricing.submodel, "pricing")' in emitted["main.py"]
+    expected_copy = 'pipeline.submodel(pricing.submodel, "pricing_2", instance_of="pricing")'
     assert expected_copy in emitted["main.py"]
 
     main_py.write_text(emitted["main.py"], encoding="utf-8")
@@ -306,8 +342,9 @@ def test_codegen_with_stale_editor_node_id_emits_name_everywhere() -> None:
     main_code = files["main.py"]
 
     assert "old_name" not in main_code
-    assert 'pipeline.submodel("modules/pricing.py", "new_name")' in main_code
-    expected_copy = 'pipeline.submodel("modules/pricing.py", "copy_name", instance_of="new_name")'
+    assert "\nfrom modules import pricing\n" in main_code
+    assert 'pipeline.submodel(pricing.submodel, "new_name")' in main_code
+    expected_copy = 'pipeline.submodel(pricing.submodel, "copy_name", instance_of="new_name")'
     assert expected_copy in main_code
     assert 'pipeline.connect("new_name", "consumer"' in main_code
 
@@ -320,6 +357,8 @@ def test_flattening_qualifies_runtime_ids_with_occurrence_name(tmp_path: Path) -
 import polars as pl
 import haute
 
+from modules import pricing
+
 pipeline = haute.Pipeline("main")
 
 
@@ -328,7 +367,7 @@ def source() -> pl.LazyFrame:
     return pl.LazyFrame({"x": [1, 2, 3]})
 
 
-pipeline.submodel("modules/pricing.py", "pricing")
+pipeline.submodel(pricing.submodel, "pricing")
 pipeline.connect("source", "pricing", target_port="in_data")
 """,
         encoding="utf-8",

@@ -259,6 +259,11 @@ does not carry. `validate_deploy` refuses it, naming the module and the file tha
 it. Imports that resolve from installed packages are for the serving environment to
 provide. The served preamble's names reach every code box, as in the editor: a bundled
 External File's code sees them beside `obj`, and a Model Score's code beside `model`.
+A pipeline's submodel modules are never bundled, and need not be: deploy serves the
+expanded graph, which carries each occurrence's nodes itself, and runs only its preamble,
+which never holds the pipeline file's `from modules import ...` (the parser leaves that
+out as generated code). A `modules` import that reached the served preamble, written in a
+definition file's own preamble, would be refused like any other unbundled project import.
 
 **Packaging and shipping.** Two backends are implemented:
 - **Databricks**: logs the pipeline as an `mlflow.pyfunc.PythonModel` (models-from-code),

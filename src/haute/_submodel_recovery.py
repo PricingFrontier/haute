@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import keyword
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 
@@ -16,11 +17,16 @@ class SubmodelRegistrationEvidence:
     call: ast.Call
 
 
-def submodel_registration_evidence(statement: ast.stmt) -> SubmodelRegistrationEvidence | None:
+def submodel_registration_evidence(
+    statement: ast.stmt, *, imports: Mapping[str, str] | None = None
+) -> SubmodelRegistrationEvidence | None:
     """Identify a standalone literal registration without accepting its old schema.
 
-    Conflicting identities, computed values and chained statements deliberately have
-    no repairable identity. The caller still records their source diagnostic.
+    The definition is ``<module>.submodel`` for a module *imports* maps to its file,
+    or a file path literal, the removed form, whose occurrence is still identified so
+    it shows unavailable with the parser's reason. Conflicting identities, computed
+    values and chained statements deliberately have no repairable identity. The
+    caller still records their source diagnostic.
     """
     if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
         return None
@@ -46,11 +52,20 @@ def submodel_registration_evidence(statement: ast.stmt) -> SubmodelRegistrationE
         if len(call.args) <= index:
             continue
         positional = call.args[index]
+        if field in values:
+            return None
         if (
-            field in values
-            or not isinstance(positional, ast.Constant)
-            or not isinstance(positional.value, str)
+            field == "file"
+            and isinstance(positional, ast.Attribute)
+            and positional.attr == "submodel"
+            and isinstance(positional.value, ast.Name)
         ):
+            module = positional.value.id
+            # The file ``from modules import <module>`` would import: the registration
+            # names it even when the import is missing or refused.
+            values[field] = (imports or {}).get(module, f"modules/{module}.py")
+            continue
+        if not isinstance(positional, ast.Constant) or not isinstance(positional.value, str):
             return None
         values[field] = positional.value
     path = values.get("file")

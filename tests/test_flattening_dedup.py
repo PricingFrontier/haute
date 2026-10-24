@@ -356,13 +356,15 @@ class TestParsePipelineFlattenRegression:
             f"""\
             import haute
 
+            from modules import scoring
+
             pipeline = haute.Pipeline("root")
 
             @pipeline.data_input(config="{source_config}")
             def Source(): ...
 
             pipeline.submodel(
-                "modules/scoring.py",
+                scoring.submodel,
                 "scoring",
             )
 
@@ -422,13 +424,15 @@ class TestParsePipelineFlattenRegression:
             f"""\
             import haute
 
+            from modules import scoring
+
             pipeline = haute.Pipeline("root")
 
             @pipeline.data_input(config="{source_config}")
             def Source(): ...
 
             pipeline.submodel(
-                "modules/scoring.py",
+                scoring.submodel,
                 "scoring",
             )
 

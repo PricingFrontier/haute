@@ -24,8 +24,10 @@ In scope:
   `ast`; whole-file syntax errors raise contextual `ParseError`.
 - Syntax-invalid source → neutral recoverable fragments for the separate editor recovery service;
   those fragments are never accepted by canonical graph consumers.
-- Resolving and merging `pipeline.submodel("path")` references into the parent graph, either
-  hierarchically (collapsed occurrence nodes) or flattened.
+- Reading a pipeline file's submodel imports (`from modules import <name>`, each naming the
+  file `modules/<name>.py`) and its `pipeline.submodel(<name>.submodel, "<occurrence>")`
+  registrations, and resolving and merging the definitions they name into the parent graph,
+  either hierarchically (collapsed occurrence nodes) or flattened.
 - Polars `with_columns()`/`select()` expression AST → human-readable formula text, referenced
   columns, and literal constants.
 - Substituting concrete row values into a parsed formula, and having Polars compute its result on
@@ -55,9 +57,10 @@ Out of scope (owned by neighbouring components, cross-linked below):
 **Structural parsing**
 - `parse_pipeline_file`/`parse_pipeline_source` are strict. A whole-file `SyntaxError` becomes a
   contextual `ParseError`; neither entry point substitutes recovered output.
-- `recover_pipeline_fragments` conservatively discovers editor-recovery metadata, decorated
-  function fragments, declared connections, and submodel registrations. It returns neutral
-  fragment dataclasses rather than `GraphNode`, `GraphEdge`, or `PipelineGraph`.
+- Nothing reconstructs structure from a file that is not valid Python. Editor recovery
+  (`haute._pipeline_recovery.load_pipeline_editor_document`) recovers a valid file statement by
+  statement; a syntax-invalid one is a source-only document carrying the located syntax error,
+  with no canvas.
 - Missing, unreadable, invalid, or schema-invalid config sidecars raise `ConfigError` through the
   strict parser. The editor recovery service resolves recovered node fragments independently and
   represents an attributable failure as an unavailable recovery node plus a diagnostic; it never
@@ -65,17 +68,26 @@ Out of scope (owned by neighbouring components, cross-linked below):
 - A referenced submodel file is parsed atomically. If its module AST is invalid, parsing raises
   `ParseError` naming the child file and syntax location rather than merging an empty warning
   graph that has lost every child node and edge.
-- `pipeline.submodel(...)` references are resolved relative to the project root / pipeline
-  directory. Every authored reference must resolve to a readable file. Missing files raise one
-  `ParseError` that lists every unresolved path instead of returning a graph with those
-  submodels omitted.
-- An in-memory `parse_pipeline_source` call that contains submodel references must supply
+- A registration names its definition through the file's submodel imports: its first argument
+  is `<name>.submodel` for a module the file imports as `from modules import <name>`, which
+  names `modules/<name>.py` beside the pipeline. That file is resolved relative to the pipeline
+  directory within the project root, and every registered definition must resolve to a
+  readable file. Missing files raise one `ParseError` that lists every unresolved path instead
+  of returning a graph with those submodels omitted.
+- The imports and registrations have one canonical form, and the parser refuses every other
+  with a `ParseError`: an import from `modules` in another spelling (relative, dotted,
+  `import modules...`, an alias, `*`), a module imported twice, a module whose name is not a
+  canonical identifier as a node's is (ASCII letters, digits and underscores), starts with `__`
+  or would hide a Python built-in, a registration whose first argument is not `<name>.submodel`
+  for an imported `<name>`, and, reading a whole file, an import no registration uses. A
+  registration by file path (positional or `file=`) is the removed form: its `ParseError`
+  carries the exact import form as its remediation, and nothing migrates it.
+- An in-memory `parse_pipeline_source` call that contains submodel registrations must supply
   `_base_dir` or `_submodel_base_dir`. Without a resolution root the parser raises `ParseError`
-  with every unresolved authored path; returning only the root nodes would violate the same
+  with every unresolved path; returning only the root nodes would violate the same
   conservation contract as a missing file.
-- Multiple registrations may resolve to the same definition file only when
-  they carry the same explicit `definition_id`. The file is parsed once and
-  each unique `instance_id`/`alias` becomes a separate occurrence.
+- Several registrations may name one definition module. The file is parsed once and
+  each registration's name becomes a separate occurrence.
 - One definition id may resolve to only one file, and one file may declare
   only its matching definition id. Conflicts raise `ParseError` before a
   registry entry is constructed.
@@ -88,20 +100,26 @@ Out of scope (owned by neighbouring components, cross-linked below):
 - Every submodel source must declare literal `definition_id`,
   `input_ports`, and `output_ports` on `haute.Submodel(...)`. The deprecated
   `outputs=` shape is rejected rather than inferred or migrated.
-- Nested submodels (a submodel file itself calling `pipeline.submodel(...)`) are capped at one
-  level. Parsing raises `ParseError` naming the containing file and every nested path, because
-  returning the outer graph while omitting the nested references would not conserve authored
-  structure.
+- Nested submodels (a submodel file itself calling `pipeline.submodel(...)`, whatever its
+  arguments) are capped at one level. Parsing raises `ParseError` naming the containing file and
+  the line of every nested registration (`nested_lines`), because returning the outer graph
+  while omitting the nested references would not conserve authored structure.
 - Neutral textual recovery discovers everything it can locate and unambiguously describe. The
   editor recovery orchestrator conserves a malformed or ambiguous authored construct as a
   recovery element or attributed diagnostic rather than silently dropping or guessing it.
 - Preamble boundaries recognise both module aliases (`import haute as ht`) and direct constructor
   aliases (`from haute import Pipeline as BuildPipeline`), including multiline pipeline
   construction. Neutral syntax recovery applies the same alias boundary rules textually.
+- A pipeline file's imports from `modules` are generated code, never preamble: codegen writes
+  them from the registrations, so the preamble leaves out their lines wherever they sit, and
+  the textual extraction of a file that does not parse leaves out its `from modules ... import`
+  lines, a parenthesised import included. In a submodel definition file such an import is
+  ordinary preamble.
 - Before the strict parser returns, a structure-conservation gate checks the authored node ids,
   explicit edge endpoints and handles, implicit parameter edges, and submodel references against
-  the constructed graph. The gate permits a parent edge endpoint to name a loaded submodel child,
-  but rejects every other dangling endpoint with an actionable `ParseError`. Exact duplicate
+  the constructed graph. A parent edge endpoint names a root node or a registered occurrence:
+  a submodel's own nodes are reached only through its occurrence's ports, so an endpoint naming
+  one is dangling like any other unknown name, refused with an actionable `ParseError`. Exact duplicate
   `connect()` identities have their own diagnostic rather than being reported as a generic
   conservation mismatch.
 
@@ -194,7 +212,8 @@ submodel constructor that declares constants are `ParseError`s naming the line.
   construction and canonical node/edge builders. Neutral regex recovery does not construct those
   canonical objects.
 - Depends on and cooperates with [submodels](../submodels/high-level.md): this component decides
-  when a `pipeline.submodel(...)` reference must be resolved and parsed, but the occurrence-node
+  when a registered definition must be resolved and parsed, using that component's
+  `modules/<name>.py` naming of a definition module, but the occurrence-node
   construction, boundary-port classification, and flatten algorithm live there.
 - `PipelineGraph`, the output type, is the canonical structure shared with the executor, codegen,
   and the server API layer — changes here are visible everywhere a pipeline is rendered or run.
@@ -211,9 +230,11 @@ submodel constructor that declares constants are `ParseError`s naming the line.
   syntax-invalid source returns a canonical `PipelineGraph`.
 - Structural parsing also raises `ParseError` for authored content it cannot
   safely reconstruct: an unclosed `connect()`/`submodel()`/decorator argument list, a non-literal
-  decorator keyword argument or (on the healthy path) a non-literal `submodel()` path, an
+  decorator keyword argument, a submodel import or registration not in the canonical form (the
+  removed file-path registration among them, refused with the import form that replaces it)
+  or an import no registration uses, an
   `async def` pipeline node, a missing submodel
-  file, a submodel reference without a resolution root, conflicting
+  file, a submodel registration without a resolution root, conflicting
   definition-to-file registrations, duplicate instance ids or aliases,
   missing canonical identity fields, invalid structured public ports, or a
   nested submodel

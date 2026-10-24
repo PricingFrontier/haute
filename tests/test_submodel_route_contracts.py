@@ -80,20 +80,21 @@ def _write_parent_with_child(
     root: Path,
     *,
     parent_relative: str = "main.py",
-    child_reference: str = "modules/pricing.py",
     node_name: str = "base_rate",
     managed_parent: str | None = None,
 ) -> tuple[Path, Path, Path]:
+    """A pipeline at *parent_relative* importing ``modules/pricing.py`` beside it."""
     parent = root / parent_relative
     parent.parent.mkdir(parents=True, exist_ok=True)
-    child = parent.parent / child_reference
-    folders = Path(child_reference).parent.parts
-    _write_child(child, node_name=node_name, pipeline_dir="/".join([".."] * len(folders)) or ".")
+    child = parent.parent / "modules" / "pricing.py"
+    _write_child(child, node_name=node_name, pipeline_dir="..")
     parent.write_text(
         f"""import haute
 
+from modules import pricing
+
 pipeline = haute.Pipeline({parent.stem!r})
-pipeline.submodel({child_reference!r}, "pricing")
+pipeline.submodel(pricing.submodel, "pricing")
 """,
         encoding="utf-8",
     )
@@ -201,13 +202,11 @@ def test_drill_down_is_scoped_when_two_parents_reuse_name(
     _write_parent_with_child(
         tmp_path,
         parent_relative="one/main.py",
-        child_reference="lib/pricing.py",
         node_name="one_rate",
     )
     _write_parent_with_child(
         tmp_path,
         parent_relative="two/main.py",
-        child_reference="lib/pricing.py",
         node_name="two_rate",
     )
 
@@ -218,7 +217,7 @@ def test_drill_down_is_scoped_when_two_parents_reuse_name(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["submodel_file"] == "lib/pricing.py"
+    assert payload["submodel_file"] == "modules/pricing.py"
     assert {node["id"] for node in payload["graph"]["nodes"]} == {"two_rate"}
 
 
@@ -295,9 +294,11 @@ def test_dissolve_retains_child_referenced_by_another_pipeline(
     (tmp_path / "other.py").write_text(
         """import haute
 
+from modules import pricing
+
 pipeline = haute.Pipeline("other")
 pipeline.submodel(
-    "modules/pricing.py",
+    pricing.submodel,
     "pricing",
 )
 """,
@@ -324,9 +325,11 @@ def test_dissolve_retains_child_when_sibling_audit_is_incomplete(
     (tmp_path / "broken.py").write_text(
         """import haute
 
+from modules import missing
+
 pipeline = haute.Pipeline("broken")
 pipeline.submodel(
-    "modules/missing.py",
+    missing.submodel,
     "missing",
 )
 """,

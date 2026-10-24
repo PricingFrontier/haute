@@ -84,13 +84,19 @@ submodel = haute.Submodel(
             "source": {{"nodeId": "{last_node}", "handleId": None}},
         }}
     ],
+    pipeline_dir="..",
 )
 {nodes_code}
 """
 
 
+def _write_child(case_dir: Path, chain_nodes: list[str]) -> Path:
+    """The child definition, ``modules/child.py`` beside the pipeline that imports it."""
+    return _write(case_dir, "modules/child.py", _build_child_code(chain_nodes))
+
+
 def _build_parent_code(
-    child_filename: str,
+    child_module: str,
     ints: list[int],
     occ_count: int,
     rendered_connects: list[str],
@@ -98,7 +104,7 @@ def _build_parent_code(
     submodel_registrations = [
         f"""
 pipeline.submodel(
-    {child_filename!r},
+    {child_module}.submodel,
     "a",
 )
 """
@@ -124,7 +130,7 @@ def sink_a({sink_a_param}) -> pl.LazyFrame:
     if occ_count == 2:
         submodel_registrations.append(f"""
 pipeline.submodel(
-    {child_filename!r},
+    {child_module}.submodel,
     "b",
     instance_of="a",
 )
@@ -142,6 +148,8 @@ def sink_b({sink_b_param}) -> pl.LazyFrame:
     return f"""\
 import polars as pl
 import haute
+
+from modules import {child_module}
 
 pipeline = haute.Pipeline("main")
 
@@ -320,12 +328,12 @@ def test_private_child_endpoints_are_rejected_with_exactly_the_authored_edges(
             seen_identities.add(info.identity)
             conns.append(info)
 
-    child_path = _write(case_dir, "child.py", _build_child_code(chain_nodes))
+    child_path = _write_child(case_dir, chain_nodes)
     rendered_connects = [info.connect_stmt for info in conns]
     parent_path = _write(
         case_dir,
         "main.py",
-        _build_parent_code(child_path.name, ints, occ_count, rendered_connects),
+        _build_parent_code(child_path.stem, ints, occ_count, rendered_connects),
     )
 
     private_conns = [info for info in conns if info.is_private]
@@ -376,7 +384,7 @@ def test_flatten_conserves_rows_through_public_ports(
     else:
         chain_nodes = [f"{chain_name_prefix}{i}" for i in range(1, chain_len + 1)]
 
-    child_path = _write(case_dir, "child.py", _build_child_code(chain_nodes))
+    child_path = _write_child(case_dir, chain_nodes)
 
     # Wired: source -> occurrence -> sink for every occurrence
     legal_connects = [
@@ -396,7 +404,7 @@ def test_flatten_conserves_rows_through_public_ports(
     parent_path = _write(
         case_dir,
         "main.py",
-        _build_parent_code(child_path.name, ints, occ_count, legal_connects),
+        _build_parent_code(child_path.stem, ints, occ_count, legal_connects),
     )
 
     parsed = parse_pipeline_file(parent_path)
@@ -448,7 +456,7 @@ def test_one_private_mutation_of_a_legal_graph_flips_acceptance(
             chain_nodes = [f"{prefix}{i}" for i in range(1, chain_len + 1)]
 
         mutated_child = chain_nodes[child_choice % len(chain_nodes)]
-        child_path = _write(case_dir, "child.py", _build_child_code(chain_nodes))
+        child_path = _write_child(case_dir, chain_nodes)
 
         legal_connects = [
             'pipeline.connect("source", "a", target_port="source")',
@@ -466,7 +474,7 @@ def test_one_private_mutation_of_a_legal_graph_flips_acceptance(
         legal_parent = _write(
             case_dir,
             "main_legal.py",
-            _build_parent_code(child_path.name, ints, occ_count, legal_connects),
+            _build_parent_code(child_path.stem, ints, occ_count, legal_connects),
         )
         try:
             parsed_legal = parse_pipeline_file(legal_parent)
@@ -518,7 +526,7 @@ def test_one_private_mutation_of_a_legal_graph_flips_acceptance(
         mutated_parent = _write(
             case_dir,
             "main_mutated.py",
-            _build_parent_code(child_path.name, ints, occ_count, mutated_connects),
+            _build_parent_code(child_path.stem, ints, occ_count, mutated_connects),
         )
 
         try:

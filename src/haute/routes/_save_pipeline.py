@@ -44,6 +44,7 @@ from haute._logging import get_logger
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._sandbox import contained_path
 from haute._submodel_paths import (
+    SUBMODEL_PACKAGE,
     MalformedSubmodelPathError,
     SubmodelPathOutsideProjectError,
     resolve_submodel_reference,
@@ -1603,6 +1604,17 @@ class SavePipelineService:
             resolved.append((out_path, code))
         for out_path, code in resolved:
             self._stage_write(out_path, code, touched)
+        # A regular package, so ``from modules import x`` imports the module beside this
+        # pipeline and never a ``modules`` folder found elsewhere on ``sys.path``. One
+        # that exists is the project's, and is left as it is.
+        packages = {
+            out_path.parent
+            for (rel_path, _code), (out_path, _) in zip(files.items(), resolved, strict=True)
+            if rel_path.replace("\\", "/").startswith(f"{SUBMODEL_PACKAGE}/")
+        }
+        for package in sorted(packages):
+            if not (package / "__init__.py").exists():
+                self._stage_write(package / "__init__.py", "", touched)
 
     # ------------------------------------------------------------------
     # JSON apiInput schema validation (no on-disk mutation)

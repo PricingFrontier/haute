@@ -356,7 +356,12 @@
    a bundled package is then looked up the same way, skipping built-in and standard-library
    names and `utility` itself. Each one found is recorded as a message naming the module,
    the importing file (the preamble, or `utility/<path>`) and its line. A bundled file that
-   does not parse raises `DeployError` naming it.
+   does not parse raises `DeployError` naming it. The pipeline's `modules/` folder is never
+   bundled: the pruned graph is expanded, so it holds the submodels' own nodes, and its
+   preamble never holds the pipeline file's `from modules import ...`, which the parser
+   leaves out as generated code. A `modules` import a definition file's preamble carries into
+   the expanded preamble resolves from the pipeline directory and is recorded here like any
+   other unbundled project import.
 11. Assemble and return `ResolvedDeploy`, carrying the policy on `execution_policy`, the
     modules on `project_modules`, the digests on `artifact_digests` and the proof on
     `request_rows`.
@@ -833,8 +838,12 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 - **Local model format boundary.** Registry resolution can discover an MLflow pyfunc
   directory, but deploy's download/bundle path requires a file and local scoring supports
   `.cbm` and `.rsglm`; such pyfunc directories are not deployable through this path.
-- **Project-local preamble imports are not bundled.** The preamble embedded in graph JSON
-  still executes, but the bundler does not walk/copy imported Python modules.
+- **Project-local preamble imports are not bundled, apart from `utility`.** The preamble
+  embedded in graph JSON still executes in the served model, so `validate_deploy` refuses any
+  other project-local import it makes (as `resolve_project_modules` records them) rather than
+  ship a bundle that cannot import it.
+  The pipeline's `modules/` folder is never needed: the expanded graph carries the
+  submodels' nodes, and the pipeline file's `from modules import ...` is not preamble.
 - **Request and response bounds are independent.** The request byte limit controls JSON
   materialisation and defaults to 8 MiB; the ordinary JSON response envelope independently
   returns at most 1,000 rows. NDJSON is the explicit all-rows streaming response.

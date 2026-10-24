@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,23 @@ from tests.conftest import write_data_input_config
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def _link(link: Path, target: Path) -> None:
+    """Make *link* a link to *target*, or skip where the platform cannot.
+
+    A folder is linked by a junction on Windows, which needs no privilege; a file
+    link needs the symlink privilege Windows withholds by default (WinError 1314).
+    """
+    if target.is_dir() and os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+        return
+    try:
+        link.symlink_to(target, target_is_directory=target.is_dir())
+    except OSError:
+        pytest.skip("a file symlink needs a privilege this platform withholds")
 
 
 def test_nested_pipeline_uses_file_relative_configs_and_pipeline_relative_submodels(
@@ -51,6 +69,8 @@ def score() -> pl.LazyFrame:
         f"""\
 import haute
 
+from modules import scoring
+
 pipeline = haute.Pipeline("nested_paths")
 
 
@@ -58,10 +78,7 @@ pipeline = haute.Pipeline("nested_paths")
 def raw_rows(): ...
 
 
-pipeline.submodel(
-    "modules/scoring.py",
-    "scoring",
-)
+pipeline.submodel(scoring.submodel, "scoring")
 """,
     )
 
@@ -131,11 +148,10 @@ def rating_score(): ...
         """\
 import haute
 
+from modules import scoring
+
 pipeline = haute.Pipeline("nested_paths")
-pipeline.submodel(
-    "modules/scoring.py",
-    "rating_scoring",
-)
+pipeline.submodel(scoring.submodel, "rating_scoring")
 """,
     )
 
@@ -148,42 +164,69 @@ pipeline.submodel(
     assert child.data.config["path"] == "rating-data.parquet"
 
 
-def test_pipeline_rejects_submodel_outside_project_root(tmp_path: Path) -> None:
-    (tmp_path / ".git").mkdir()
-    pipeline_file = tmp_path / "main.py"
+@pytest.mark.parametrize("linked", ["module", "modules-folder"])
+def test_pipeline_rejects_submodel_outside_project_root(tmp_path: Path, linked: str) -> None:
+    """A link in ``modules/`` cannot bring a definition in from outside the project.
+
+    An import cannot climb out of the project as a ``..`` path could, so a link is
+    the only way a submodel module can resolve outside it.
+    """
+    project = tmp_path / "project"
+    outside = tmp_path / "outside"
+    (project / ".git").mkdir(parents=True)
+    _write(
+        outside / "outside.py",
+        """\
+import haute
+
+submodel = haute.Submodel(
+    "outside",
+    definition_id="outside",
+    input_ports=[],
+    output_ports=[],
+    pipeline_dir="..",
+)
+""",
+    )
+    if linked == "module":
+        (project / "modules").mkdir()
+        _link(project / "modules" / "outside.py", outside / "outside.py")
+    else:
+        _link(project / "modules", outside)
+    pipeline_file = project / "main.py"
     _write(
         pipeline_file,
         """\
 import haute
 
+from modules import outside
+
 pipeline = haute.Pipeline("main")
-pipeline.submodel(
-    "../outside.py",
-    "outside",
-)
+pipeline.submodel(outside.submodel, "outside")
 """,
     )
 
-    with pytest.raises(ParseError, match="escapes the project directory"):
+    with pytest.raises(ParseError, match="escapes the project directory") as exc_info:
         parse_pipeline_file(pipeline_file)
+
+    assert exc_info.value.context["path"] == "modules/outside.py"
 
 
 def test_pipeline_rejects_conflicting_definition_ids_for_one_file(
     tmp_path: Path,
 ) -> None:
     (tmp_path / ".git").mkdir()
-    _write(tmp_path / "shared.py", "")
+    _write(tmp_path / "modules" / "shared.py", "")
     pipeline_file = tmp_path / "main.py"
     _write(
         pipeline_file,
         """\
 import haute
 
+from modules import shared
+
 pipeline = haute.Pipeline("main")
-pipeline.submodel(
-    "shared.py",
-    definition_id="definition_one",
-)
+pipeline.submodel(shared.submodel, "shared", definition_id="definition_one")
 """,
     )
 
@@ -201,25 +244,22 @@ submodel = haute.Submodel(
     definition_id="shared",
     input_ports=[],
     output_ports=[],
+    pipeline_dir="..",
 )
 """
-    _write(tmp_path / "first.py", submodel_source)
-    _write(tmp_path / "second.py", submodel_source)
+    _write(tmp_path / "modules" / "first.py", submodel_source)
+    _write(tmp_path / "modules" / "second.py", submodel_source)
     pipeline_file = tmp_path / "main.py"
     _write(
         pipeline_file,
         """\
 import haute
 
+from modules import first, second
+
 pipeline = haute.Pipeline("main")
-pipeline.submodel(
-    "first.py",
-    "first",
-)
-pipeline.submodel(
-    "second.py",
-    "second",
-)
+pipeline.submodel(first.submodel, "first")
+pipeline.submodel(second.submodel, "second")
 """,
     )
 

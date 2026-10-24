@@ -47,6 +47,10 @@ dev = [
 _MYPY_BLOCK = """
 [tool.mypy]
 ignore_missing_imports = false
+# The pipeline imports its utility and submodel modules from its own folder, as
+# Python does when it runs rating/main.py.
+mypy_path = "rating"
+explicit_package_bases = true
 
 [[tool.mypy.overrides]]
 module = ["haute.*", "catboost.*", "xgboost.*", "lightgbm.*", "sklearn.*"]

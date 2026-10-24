@@ -119,11 +119,11 @@ implicit inference only fills in what wasn't already covered. Edges are never in
 file that declares no wiring parses as a disconnected graph, keeping deliberately disconnected
 graphs representable and in agreement with `run()`, which fails loudly on unwired transforms.
 
-A static `connect()` whose source or target does not name a root node is retained as unresolved
-until referenced submodels have been loaded, because cross-boundary connections legitimately name
-child node ids. After that merge opportunity, every endpoint must identify either a root node or
-a child of an authored submodel. Any remaining dangling endpoint raises `ParseError` with the
-complete edge and handle identity; it is never omitted from an otherwise healthy-looking graph.
+A static `connect()` endpoint names a root node or a registered submodel occurrence. A
+submodel's own nodes are reached only through its occurrence's ports (`source_port` and
+`target_port`), so an endpoint naming one is dangling like any other unknown name. A dangling
+endpoint raises `ParseError` with the complete edge and handle identity; it is never omitted
+from an otherwise healthy-looking graph.
 The live `Pipeline.connect()` API continues to require both endpoints to be registered
 immediately.
 
@@ -157,18 +157,25 @@ pipelines take a bare frame), or a bare frame against a multi-port source all ra
 multiple ports. Both `run()` and `score()` resolve each edge's frame through the same
 port-aware selection the full executor uses, keeping the
 single-execution-engine invariant.
-A pipeline that registers submodels runs them: `run()` and `score()` import each registered
-file's one `haute.Submodel` (a file that defines none, or several, is refused naming it) and
-execute a copy of the pipeline in which every occurrence is replaced by its definition's nodes,
+A pipeline that registers submodels runs them. The pipeline file imports each definition's
+module from the `modules/` folder beside it, `from modules import <name>`, as Python imports
+any other module, and registers each occurrence of the `haute.Submodel` it defines,
+`pipeline.submodel(<name>.submodel, "<occurrence>")`. `run()` and `score()` import nothing
+more: they execute a copy of the pipeline in which every occurrence is replaced by its
+registered definition's nodes,
 named `<occurrence>.<node>`. An edge into an occurrence's input port feeds every node the port
 targets, an edge out of an output port leaves the node the port names, as flattening wires them
 for `haute run`, and a submodel's node with several inputs receives them in its parameters'
 order: an input named by a parameter (its source's name, or the port's) takes that place, and
 the others fill the remaining parameters in order, as a hook's `df` names no input (the
-pipeline's own nodes keep their connection order, as without submodels). Each definition's
-module is in `sys.modules` while the run uses it, and a pipeline whose nodes all live in
-submodels runs too. Two
+pipeline's own nodes keep their connection order, as without submodels). A definition module
+stays in `sys.modules` as any import does, so its string annotations resolve, and a pipeline
+whose nodes all live in submodels runs too. Two
 occurrences of one definition each run its nodes under their own names.
+`pipeline.submodel()` raises `TypeError` for a file path, naming the import form that
+replaced it, and for anything else that is not a `haute.Submodel`, such as the imported
+module itself, naming `<module>.submodel`; a module that defines no `submodel` fails with
+Python's own `AttributeError` when the pipeline file is imported.
 `@pipeline.instance` registrations are not executable on this live-object surface: the
 decorator records an internal instance marker, and `run()`/`score()` raise `ExecutionError`
 before calling the node regardless of whether `instanceOf` or `inputMapping` is empty. Static

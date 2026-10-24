@@ -2,11 +2,22 @@
 
 ## Recovery loading and retention
 
-Recovery loading remains read-only. Rejected literal submodel registrations retain an
-unavailable submodel card, their authored connections, source span, and saved position.
-Their literal child reference and its artifacts participate in the recovery revision even
-when the current strict parser rejects the old registration. Ambiguous identities are
-diagnosed and cannot be repaired automatically. Downstream nodes remain blocked.
+Recovery loading remains read-only. A rejected submodel registration whose occurrence the
+recovery evidence identifies retains an unavailable submodel card, its authored connections,
+source span, and saved position: one naming `<module>.submodel` for a module the file
+imports, and one in the removed file-path form. Its child reference (the `modules/<name>.py`
+its import names, or the removed form's path literal) and that file's artifacts participate
+in the recovery revision even when the current strict parser rejects the registration. The
+submodel imports are read one statement at a time, so a malformed import is its own
+`submodel_import_invalid` diagnostic while the well-formed ones still name their files. A
+registration naming a module the file does not import names the file that import would read
+(`modules/<name>.py`), so its occurrence keeps an unavailable card. A registration the
+evidence cannot identify (a computed or conflicting identity) is diagnosed without a card,
+its connections unresolved. Removing an unavailable submodel occurrence removes its
+registration and connections and, when no other registration names its module, that
+module's name from the import: the whole statement, or the name, the rest rewritten as
+codegen writes the import (`codegen.submodel_import_statement`).
+Ambiguous identities cannot be repaired automatically. Downstream nodes remain blocked.
 
 ## Loadable incomplete configurations
 
@@ -24,10 +35,12 @@ and reload before a path is chosen, like every other palette default.
 
 The recovery inspector extends removal with two explicitly confirmed actions. There is
 no migration action: a submodel registration or public port written in a removed form
-(`definition_id=`, `instance_id=`, `alias=` or `label=` on `pipeline.submodel()`, or
+(`definition_id=`, `instance_id=`, `alias=` or `label=` on `pipeline.submodel()`, a
+registration by file path such as `pipeline.submodel("modules/rates.py", "rates")`, or
 `portId`/`label` port keys) is rejected at load by the parser with a targeted message
 naming the removed form and the current one, which the unavailable node's diagnostic
-carries as its remediation. The author rewrites it, or removes the node.
+carries as its remediation (for the file path, `from modules import rates`, then
+`pipeline.submodel(rates.submodel, 'rates')`). The author rewrites it, or removes the node.
 
 - **Reset node** supports known ordinary node types with an unambiguous function span
   and resolvable incoming connections. It never requires healthy upstream nodes: a
@@ -193,16 +206,19 @@ Plans are computed on the server under the shared save lock, bound to the entire
 raw-artifact revision and exact before/after bytes. Application rejects a stale revision
 or artifact, stages all
 edits using the existing rollback boundary, and reloads the authoritative document.
-Verification must conserve all node/edge identities except the explicit old-to-current
-registration identity mapping; the target must cease being unavailable. Other invalid
+Verification must conserve all node/edge identities (an action never maps a registration
+to another identity); the target must cease being unavailable. Other invalid
 nodes may keep the document degraded. Any failed verification restores original bytes.
 
 ## Acceptance evidence
 
 Acceptance evidence includes a minimal copy of the demo's legacy registration, output
-port and stale Polars signature: both nodes and the connection remain visible; update
-preserves the child/config and exposes the consumer error; resetting that consumer uses
-its current connected input and returns a ready but deliberately incomplete Polars node.
+port and stale Polars signature: both nodes and the connection remain visible, the
+registration unavailable with the parser's remediation, and a request for an `update`
+action is refused as an unknown action without touching a file; a registration by file
+path opens the same way, its remediation the import form, and Recover refuses it; resetting
+a consumer of a submodel port uses its current connected input and returns a ready but
+deliberately incomplete Polars node.
 Also cover stale child/config revisions, shared/path-escaping artifacts, duplicate
 identities, rollback, strict transport parsing, a banding node whose saved annotation
 promises an output its draft factor no longer creates (recover loads it with a
