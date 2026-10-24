@@ -499,6 +499,40 @@ def test_explicit_save_reloads_and_clears_child_column_metadata(tmp_path: Path) 
     }
 
 
+def test_save_writes_the_modules_package_once_and_never_overwrites_it(tmp_path: Path) -> None:
+    """Writing a definition module makes ``modules/`` a regular package, so the pipeline's
+    ``from modules import child`` imports the folder beside it; a package that exists is
+    the project's, and no later save rewrites it."""
+    service = _service(tmp_path)
+    package = tmp_path / "modules" / "__init__.py"
+
+    def save(graph: PipelineGraph) -> None:
+        service.save_graph_transactionally(
+            graph=graph,
+            name="main",
+            description="",
+            preamble="",
+            source_file="main.py",
+            base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
+        )
+
+    save(_flat_graph())
+    assert not package.parent.exists()
+
+    save(_managed_graph())
+    assert package.read_bytes() == b""
+    assert "from modules import child\n" in (tmp_path / "main.py").read_text(encoding="utf-8")
+
+    authored = b'"""The project\'s own package."""\n'
+    package.write_bytes(authored)
+    child = tmp_path / "modules" / "child.py"
+    child_before = child.read_bytes()
+    # A later save that rewrites the definition module leaves the package as it is.
+    save(_managed_graph(child_config={"selected_columns": ["premium"]}))
+    assert child.read_bytes() != child_before
+    assert package.read_bytes() == authored
+
+
 def test_explicit_save_deletes_a_removed_uniquely_owned_definition(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -530,17 +564,26 @@ def test_explicit_save_retains_removed_definition_referenced_by_another_pipeline
     service.save(_save_request(_managed_graph()))
     child = tmp_path / "modules" / "child.py"
     sidecar = child.with_suffix(".haute.json")
-    (tmp_path / "other.py").write_text(
+    other = tmp_path / "other.py"
+    other.write_text(
         """import haute
+
+from modules import child
 
 pipeline = haute.Pipeline("other")
 pipeline.submodel(
-    "modules/child.py",
+    child.submodel,
     "other_child",
 )
 """,
         encoding="utf-8",
     )
+    # The audit finds the reference, rather than retaining the file because it cannot
+    # read the other pipeline.
+    referencing = parse_pipeline_source(
+        other.read_text(encoding="utf-8"), source_file=str(other), _base_dir=tmp_path
+    )
+    assert set(referencing.submodels or {}) == {"child"}
 
     service.save(_save_request(_flat_graph()))
 
@@ -561,9 +604,11 @@ def test_explicit_save_retains_removed_definition_when_reference_audit_is_incomp
     (tmp_path / "broken.py").write_text(
         """import haute
 
+from modules import missing
+
 pipeline = haute.Pipeline("broken")
 pipeline.submodel(
-    "modules/missing.py",
+    missing.submodel,
     "missing",
 )
 """,

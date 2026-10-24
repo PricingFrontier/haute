@@ -190,7 +190,8 @@ its native extension `price_contour._price_contour` and collects **every** probl
   native module keeps the method once it has used it.
 
 The message names the installed version, the required specifier, the module path, the install
-source (`editable checkout <path>` or `direct URL <url>` from PEP 610 `direct_url.json`, else
+source (`editable checkout <path>` or `direct URL <url>` from PEP 610 `direct_url.json`, read by
+`haute._install_source.install_source`, which the served Databricks haute shares, else
 `wheel`) and the remedy: `uv sync --locked`, or `uv run maturin develop --release` in a
 checkout. A verified install logs one `price_contour_verified` INFO line with version, source
 and path. The test session verifies the real install once before any test patches it.

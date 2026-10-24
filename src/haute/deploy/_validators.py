@@ -138,6 +138,16 @@ def load_test_quote_file(path: Path) -> list[dict]:
     return [case.input for case in _load_test_quote_cases(path)]
 
 
+def test_quote_requests(directory: Path) -> list[dict[str, Any]]:
+    """The request of every test quote in *directory*, file by file, as smoke sends them.
+
+    Raises ``ValueError`` when a file cannot be read as test quotes.
+    """
+    return [
+        case.input for path in test_quote_files(directory) for case in _load_test_quote_cases(path)
+    ]
+
+
 def _is_numeric(value: Any) -> bool:
     return isinstance(value, (Decimal, Real)) and not isinstance(value, bool)
 

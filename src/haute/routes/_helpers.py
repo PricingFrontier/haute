@@ -36,7 +36,7 @@ from haute._sidecar import (
     read_sidecar_state,
 )
 from haute._submodel_paths import resolve_submodel_reference
-from haute.errors import ConfigError
+from haute.errors import ConfigError, ParseError
 from haute.graph_utils import GraphNode, NodeType, PipelineGraph, _sanitize_func_name
 
 # The sidecar read schema lives in the core ``haute._sidecar`` module so editor
@@ -658,10 +658,10 @@ _module_deps_lock = threading.Lock()
 def _module_dep_key(module_stem: str) -> str:
     """Canonical module-dep map key for a module file stem.
 
-    The build side derives stems from ``pipeline.submodel("modules/<name>.py")``
-    source literals; the file-watcher derives them from on-disk filenames.  On
-    a case-insensitive filesystem (macOS/Windows) a literal ``modules/foo.py``
-    resolves against an on-disk ``modules/Foo.py`` — the two spellings name
+    The build side derives stems from the ``from modules import <name>`` a
+    registration names its definition by; the file-watcher derives them from
+    on-disk filenames.  On a case-insensitive filesystem (macOS/Windows) an
+    imported ``foo`` resolves against an on-disk ``modules/Foo.py`` — the two spellings name
     ONE module, so both sides must casefold through this single helper or the
     map key and the watcher's query silently drift and live-sync goes stale.
     """
@@ -671,8 +671,9 @@ def _module_dep_key(module_stem: str) -> str:
 def _ensure_module_deps() -> dict[str, set[Path]]:
     """Build or return the cached module → pipeline dependency map.
 
-    Scans each pipeline source for ``pipeline.submodel("...")`` calls and
-    maps the module file stem to the set of pipeline files that reference it.
+    Scans each pipeline source for its ``pipeline.submodel(<module>.submodel, ...)``
+    registrations and maps each module's file stem to the set of pipeline files
+    that register it; a pipeline whose registrations are refused is skipped.
     A dedicated build lock coalesces concurrent scans without blocking pipeline
     index invalidation. The builder snapshots the index generation and publishes
     only if it is unchanged; otherwise it rescans before returning.
@@ -703,7 +704,13 @@ def _ensure_module_deps() -> dict[str, set[Path]]:
 
                 from haute._parser_submodels import extract_submodel_registrations
 
-                for registration in extract_submodel_registrations(tree):
+                try:
+                    registrations = extract_submodel_registrations(tree)
+                except ParseError as exc:
+                    # One pipeline's refused registrations leave the others' map whole.
+                    logger.warning("module_deps_parse_failed", file=f.name, error=str(exc))
+                    continue
+                for registration in registrations:
                     module_stem = Path(registration.path).stem
                     deps.setdefault(_module_dep_key(module_stem), set()).add(f)
 
@@ -724,7 +731,7 @@ def pipelines_importing_module(module_stem: str) -> list[Path]:
 
     The stem is matched case-insensitively (see :func:`_module_dep_key`): the
     watcher passes the on-disk filename's stem, which may differ in case from
-    the ``pipeline.submodel("...")`` source literal the map was built from.
+    the ``from modules import <name>`` the map was built from.
     """
     deps = _ensure_module_deps()
     return list(deps.get(_module_dep_key(module_stem), []))

@@ -19,7 +19,7 @@ Python code without going through Click.
 
 In scope: the equivalent `haute ...` and `python -m haute ...` invocation forms; the ten
 subcommands (`init`, `run`, `lint`, `train`, `serve`, `deploy`, `smoke`, `status`, `impact`,
-`gpu-setup`); their
+`gpu-setup`), the `ci` group's `secrets` and `update`; their
 argument parsing, user-facing output/error formatting; and the small amount of orchestration logic
 that glues each command to the rest of the codebase.
 
@@ -69,7 +69,14 @@ Out of scope, owned elsewhere:
   browser session works with a bare `haute serve`.
 - `haute deploy [pipeline_file] [--model-name] [--dry-run] [--endpoint-suffix]` validates a pipeline,
   scores its test quotes, and deploys it to the configured target. Non-dry-run deploys are blocked
-  outside a recognised CI environment.
+  outside a recognised CI environment, and one whose target's credentials are not all set stops
+  before any other work, naming every missing one. A Databricks deploy returns once its endpoint
+  serves the new version, or fails with Databricks' reason when it cannot.
+- `haute ci secrets [--check] [--no-verify]` sets the CI secrets the deploy target needs on the
+  project's GitHub repository from `.env`, after checking Databricks accepts them; `--check`
+  reports which are set. On GitLab and Azure DevOps it names the secrets to add by hand.
+- `haute ci update` rewrites the CI files `haute init` generated, and `.env.example`, for the
+  installed Haute, so a project takes up fixed workflows without being initialised again.
 - `haute smoke [--endpoint-suffix]` sends each test quote in `tests/quotes/` to a live
   serving endpoint as a request of its own, as a pipeline reading one quote per request takes it, and
   holds each quote with an `expected` output to it as the deploy check does, walked into a
@@ -100,9 +107,12 @@ Out of scope, owned elsewhere:
   needs it starts; without either it names both and exits non-zero.
 - `haute status [model_name] [--version-only]` looks up a model's latest version/stage in the MLflow
   Model Registry.
-- `haute impact [--sample] [--batch-size] [--endpoint-suffix]` scores a configured safety dataset
+- `haute impact [--sample] [--batch-size] [--endpoint-suffix]` scores a configured safety dataset,
+  or the test quotes when none is configured,
   through both the staging and production endpoints and reports the pricing differences, writing a
-  markdown report and, on GitHub Actions, appending to the job step summary.
+  markdown report and, on GitHub Actions, appending to the job step summary. `smoke` and `impact`
+  reach Databricks endpoints with the serving pair `deploy` uses, the credentials the generated
+  workflows give them.
 
 Invariants that hold across every command:
 - Where `resolve_model_name` is used (`status`), precedence is **CLI value >

@@ -29,4 +29,4 @@ export type {
 } from "./_shared"
 export { FileBrowser, SchemaPreview, InputSourcesBar } from "./_shared"
 export { CodeEditor } from "./CodeEditor"
-export { WarehousePicker, CatalogTablePicker } from "./_DatabricksSelector"
+export { WarehousePicker, CatalogTablePicker, TargetTablePicker } from "./_DatabricksSelector"

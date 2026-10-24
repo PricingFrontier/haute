@@ -9,7 +9,6 @@ Split into:
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -120,7 +119,7 @@ def _smoke_databricks(endpoint_name: str, json_files: list[Path]) -> bool:
     """Run smoke tests against a Databricks Model Serving endpoint."""
 
     try:
-        from databricks.sdk import WorkspaceClient
+        from databricks.sdk import WorkspaceClient  # noqa: F401 - the SDK must be installed
     except ModuleNotFoundError as exc:
         if not (exc.name or "").startswith("databricks"):
             click.echo(
@@ -152,47 +151,39 @@ def _smoke_databricks(endpoint_name: str, json_files: list[Path]) -> bool:
         raise SystemExit(1)
 
     from haute.deploy._config import _load_env
+    from haute.deploy._databricks_serving import (
+        ServingEndpointError,
+        refusal_reason,
+        serving_workspace_client,
+        wait_for_endpoint,
+    )
 
     _load_env(Path.cwd())
 
-    ws = WorkspaceClient()
-
-    # Wait for endpoint to be ready (provisioning can take 10-15 min)
-    max_wait = 30 * 60  # 30 minutes
-    poll_interval = 30  # seconds
+    # The endpoint is reached with the serving pair, as deploy reaches it. A deploy
+    # returns once its endpoint serves, so this wait is short unless another update
+    # is under way; a failed update fails here with Databricks' reason.
     click.echo(f"  \u2026 Waiting for endpoint '{endpoint_name}' to be ready...")
-    waited = 0
-    while waited < max_wait:
-        try:
-            ep = ws.serving_endpoints.get(endpoint_name)
-            state = ep.state
-            ready = getattr(state, "ready", None) if state else None
-            config_update = getattr(state, "config_update", None) if state else None
-            ready_str = str(ready).rsplit(".", 1)[-1] if ready else ""
-            update_str = str(config_update).rsplit(".", 1)[-1] if config_update else ""
-            if ready_str == "READY" and update_str in ("", "NOT_UPDATING"):
-                click.echo(f"  \u2713 Endpoint ready (waited {waited}s)")
-                break
-            status_msg = f"ready={ready}"
-            if config_update and config_update != "NOT_UPDATING":
-                status_msg += f", config_update={config_update}"
-            click.echo(
-                f"  \u2026 Endpoint not ready ({status_msg}), polling in {poll_interval}s..."
-            )
-        except NotFound as exc:
-            click.echo(f"  Endpoint not found ({exc}), retrying in {poll_interval}s...")
-        except Exception as exc:
-            raise click.ClickException(
-                f"Could not check Databricks endpoint '{endpoint_name}': {exc}"
-            ) from exc
-        time.sleep(poll_interval)
-        waited += poll_interval
-    else:
+    try:
+        ws = serving_workspace_client()
+        wait_for_endpoint(
+            ws, endpoint_name, progress=lambda message: click.echo(f"  \u2026 {message}")
+        )
+    except ServingEndpointError as exc:
+        click.echo(f"  \u2717 {exc}", err=True)
+        raise SystemExit(1) from exc
+    except NotFound as exc:
         click.echo(
-            f"  \u2717 Endpoint '{endpoint_name}' not ready after {max_wait // 60} minutes.",
+            f"  \u2717 Endpoint '{endpoint_name}' does not exist ({exc}): `haute deploy` "
+            "creates it.",
             err=True,
         )
-        raise SystemExit(1)
+        raise SystemExit(1) from exc
+    except Exception as exc:
+        raise click.ClickException(
+            f"Could not check Databricks endpoint '{endpoint_name}': {refusal_reason(exc)}"
+        ) from exc
+    click.echo("  \u2713 Endpoint ready")
 
     def price(record: dict[str, Any]) -> list[Any]:
         response = ws.serving_endpoints.query(name=endpoint_name, dataframe_records=[record])

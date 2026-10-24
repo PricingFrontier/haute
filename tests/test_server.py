@@ -797,6 +797,38 @@ class TestExecuteSinkEndpoint:
             "suffix_mismatch": True,
         }
 
+    def test_output_destination_names_a_databricks_table(self, client: TestClient) -> None:
+        config = {
+            "outputType": "databricks",
+            "http_path": "/sql/1.0/warehouses/abc",
+            "table": "workspace.pricing.scored",
+            "write_mode": "overwrite",
+            "arguments": {},
+        }
+        graph = {
+            "nodes": [
+                {
+                    "id": "sink",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {"label": "sink", "nodeType": "dataOutput", "config": config},
+                },
+            ],
+            "edges": [],
+        }
+
+        response = client.post(
+            "/api/pipeline/output-destination",
+            json={"graph": graph, "node_id": "sink"},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "path": "workspace.pricing.scored",
+            "format": "databricks",
+            "suffix_mismatch": False,
+        }
+
     def test_output_destination_uses_selected_project_root_when_cwd_differs(
         self,
         client: TestClient,
@@ -3566,8 +3598,8 @@ class TestFileWatcherRecoverySidecars:
         )
         owner = tmp_path / "owner.py"
         owner.write_text(
-            'import haute\npipeline = haute.Pipeline("owner")\n'
-            'pipeline.submodel("modules/shared.py", "shared_one")\n',
+            'import haute\nfrom modules import shared\npipeline = haute.Pipeline("owner")\n'
+            'pipeline.submodel(shared.submodel, "shared_one")\n',
             encoding="utf-8",
         )
         unrelated = tmp_path / "unrelated.py"

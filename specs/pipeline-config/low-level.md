@@ -19,7 +19,8 @@
 | `src/haute/_graph_builders.py` | AST node-skeleton discovery separated from resolution; the strict builder resolves every skeleton fail-loud before producing canonical `GraphNode`/`GraphEdge`, while editor recovery resolves skeletons independently. |
 | `src/haute/_pipeline_recovery.py` | [server-api](../server-api/low-level.md)-owned editor-only recovery orchestration and availability diagnostics, forbidden to canonical parser consumers. |
 | `src/haute/_graph_shape.py` | Topology-only invariants independent of any single node's config (`validate_graph_shape_contracts`, `validate_pipeline_graph_shape_contracts`), including submodel child graphs. |
-| `src/haute/_scaffold.py` | `haute init` template strings: `haute.toml`, `.env.example`, CI YAML for 3 providers × 7 deploy targets, starter pipeline/tests/utilities, pre-commit hook. |
+| `src/haute/_scaffold.py` | `haute init` template strings: `haute.toml`, `.env.example`, CI YAML for 3 providers × 7 deploy targets (`ci_files`, which `haute ci update` also writes), the CI secrets a target needs and their `.env.example` placeholders (`ci_secret_names`, `env_example_placeholders`), starter pipeline/tests/utilities, pre-commit hook. |
+| `src/haute/_project_python.py` | The project's Python, one version for local development, CI and the deployed model: `.python-version`'s pin or the lowest release `requires-python` admits, at minor precision only when it admits the whole minor (`project_python_version`, which `haute init` writes and pins CI and container base images to), the deployed model's Python (`deployed_python_version`), the checks deploy runs on the interpreter and a container's base image (`deploy_python_mismatch`, `admits`, `base_image_python_version`), and `ProjectPythonError` for a declaration it cannot read or that contradicts the other. |
 | `src/haute/_project.py` | Project-root discovery (`get_project_root`, `is_haute_project`) and pipeline-file resolution (`resolve_pipeline_file`, 4-tier fallback). |
 | `src/haute/_project_layout.py` | The project's folder layout: `PIPELINE_FILES_FOLDER` and `PIPELINE_FILES_SUBFOLDERS` (the pipeline folder's `files/` with `data/`, `models/` and `params/`), `LOCAL_FOLDERS` (the root's unversioned `data/` and `outputs/`), `VERSIONED_FILE_LIMIT_BYTES`, `versioned_name` (whether a path names a file the project versions through Haute), `pipeline_folder` (the configured pipeline folder when it lies below the project root), `pipeline_files_folder` and `default_model_folder`. |
 | `haute.toml` (repo root) | Concrete instance of the schema emitted by `src/haute/_scaffold.py::haute_toml`; `[project].pipeline` is read back by `src/haute/_project.py::_toml_configured_pipeline`, the one reader behind pipeline binding, `src/haute/_builders.py::_configured_pipeline_dir` and `src/haute/routes/_helpers.py::pipeline_dir`. |
@@ -41,21 +42,32 @@
   the in-memory edge representation `NodeRegistry`/`Pipeline` operate on. Distinct from the
   Pydantic `GraphEdge` (`haute._types`) that `_graph_builders.py` produces for the parsed
   source graph.
-- **`RegisteredSubmodel`** (frozen dataclass, `src/haute/pipeline.py`) — `file`, `name`,
-  `instance_of: str | None`: one canonical file-backed submodel occurrence registered on a
-  pipeline.
+- **`RegisteredSubmodel`** (frozen dataclass, `src/haute/pipeline.py`) — `definition` (the
+  `Submodel` the pipeline file imported), `name`, `instance_of: str | None`, and
+  `registered_in: str | None` (the `__file__` of the module that made the registration): one
+  submodel occurrence registered on a pipeline.
 - **`NodeRegistry`** — base class for `Pipeline` and `Submodel`; holds `_nodes: list[Node]`,
-  `_node_map: dict[str, Node]`, `_edges: list[RegisteredEdge]`, `_submodel_files: list[str]`,
+  `_node_map: dict[str, Node]`, `_edges: list[RegisteredEdge]`,
   `_submodel_registrations: list[RegisteredSubmodel]`.
 - **`Pipeline(NodeRegistry)`** — adds `run()`, `score()`, `to_graph()`, `submodel()`,
-  `submodel_files`, `submodel_registrations`. A live
-  `Pipeline.submodel(file, name, *, instance_of=None)` call validates that `file` and `name` are
-  non-empty unpadded strings, that `name` is a canonical identifier, that `name` does not conflict
-  with a registered node name or duplicate an existing registered submodel name, and that `instance_of`
-  (when provided) is a non-empty unpadded string (keywords `definition_id=`, `instance_id=`, `alias=`,
-  and `label=` fail to parse). It appends `file` to `_submodel_files` and `RegisteredSubmodel(file, name, instance_of)`
-  to `_submodel_registrations`; it does not import the module or register the `Submodel` object's nodes
-  onto the live `Pipeline`. Static parsing resolves those files into the hierarchical/flat graph used
+  `submodel_registrations`. A live
+  `Pipeline.submodel(definition, /, name, *, instance_of=None)` call takes the definition a
+  pipeline file imports, `from modules import <module>` then `<module>.submodel`, positionally
+  (so a `file=` keyword is Python's own `TypeError`). It raises
+  `TypeError` for a string, the removed file-path form, with a message naming the import
+  form, and for anything else that is not a `Submodel`, such as the module itself. It then
+  validates that `name` is a non-empty unpadded string and a canonical identifier, is not a
+  reserved or built-in name (`reserved_or_builtin`), comes, when its defining file is in a
+  `modules` folder, from the one beside the registering pipeline (`ImportError` otherwise: a
+  process that imported another project's `modules` first gets that project's module from
+  Python's cache), and does not equal, ignoring case, a
+  registered node name or an existing registered submodel name, and that `instance_of` (when
+  provided) is a non-empty unpadded string (the signature has no `definition_id=`,
+  `instance_id=`, `alias=` or `label=`, which the static parser refuses too). It appends
+  `RegisteredSubmodel(definition, name, instance_of, registered_in)` to
+  `_submodel_registrations`; it does not register the `Submodel` object's nodes onto the live
+  `Pipeline`, which `run()` and `score()` expand (below). Static parsing reads the same imports
+  and registrations from the source, importing nothing, into the hierarchical/flat graph used
   by the full executor.
 - **`Submodel(NodeRegistry)`** — no `run`/`score`/`to_graph`. Its constructor requires keyword-only
   arguments `definition_id: str`, `input_ports: list[dict | SubmodelInputPort]`, and
@@ -358,7 +370,11 @@ any root `main.py` before writing `rating/main.py`.
 `haute_toml()` assembles `[project]`/`[deploy]`/`[test_quotes]`/`[safety]`/`[safety.approval]`
 (`min_approvers` hardcoded to 2 in the template — solo users lower it by hand)/`[ci]`/
 `[ci.staging]` sections, splicing in `_target_section()`'s
-`[deploy.<target>]` block, and with `workbench` set appends the `[workbench]` table;
+`[deploy.<target>]` block, and with `workbench` set appends the `[workbench]` table. Its
+`[safety]` table names no `impact_dataset`: `haute impact` compares the test quotes until a
+portfolio sample is committed, and a commented example names a Parquet sample under
+tests/impact/, outside the gitignored `data/` (BUG-23: the old
+default named `data/portfolio_sample.parquet`, which CI never sees);
 `starter_form(name)` renders the blank form `haute init --workbench` writes to
 `forms/form.json` ([workbench](../workbench/low-level.md)). `[server].host`, the optional
 closed `[assistant]` plus `[assistant.egress]` tables and the optional `[workbench]` table are
@@ -369,15 +385,42 @@ workbench's by `haute._workbench_config`, so deployment parsing and each reader 
 `github_deploy_prod_yml`, `gitlab_ci_yml`, `azure_devops_yml`) all pull the same `secrets`
 list out of `TARGETS` through provider-specific formatters (`_github_secrets_env`,
 `_gitlab_secrets_env`, `_azure_devops_secrets_env`) so a target's credential list is defined
-once and rendered three ways. The release inputs that start a deploy are listed once
+once and rendered three ways; `ci_secret_names` hands the same list to `haute ci secrets` and
+to `haute init`'s next steps, and `env_example_placeholders` the stand-in values `.env.example` gives (a token
+placeholder, the example workspace; never a usable default such as an AWS region), which
+`haute ci secrets` refuses to upload. A Databricks production workflow's
+**Tag release** step gets the secrets too, as the deploy step does (BUG-25): it tags
+`deploy/v<version>` with the version `haute status --version-only` reads from the registry
+(`_release_tag_script`), and a read that fails, or prints anything but a version number, fails
+the step rather than tagging `deploy/vunknown`; Azure DevOps' production checkout sets
+`persistCredentials: true` so the tag push authenticates. A Databricks deploy job may run 60
+minutes and any other 15 (`_deploy_timeout_minutes`), longer than a Databricks deploy's wait
+for its endpoint. The release inputs that start a deploy are listed once
 too (`_RELEASE_INPUT_DIRS`, the pipeline folder of `PIPELINE_FILE`, the file the
 scaffolded `haute.toml` names, and the test quotes' folder, `_RELEASE_INPUT_FILES`, and
 `DEFAULT_FORM_PATH`'s directory
 through `_release_input_dirs` when `workbench` is set) and rendered by
 `_github_trigger_paths` and `_azure_devops_trigger_paths`; `github_deploy_yml` and
 `azure_devops_yml` take `workbench`, which `handle_init` passes from `--workbench`.
-`handle_init` calls exactly the generator(s) for the chosen
-`ci` value (`"none"` calls none of them); on `--force` it first calls
+Every CI generator also takes `python_version`
+(default `DEFAULT_CI_PYTHON`, `haute._project_python.DEFAULT_PYTHON`, 3.11):
+`_pin_ci_python` moves each job's Python pin (setup-uv's `python-version`, Azure's
+`versionSpec`, GitLab's job `image`) to it, and `haute_toml` takes the same
+`python_version` for a container target's `base_image` (`container_base_image`, a
+patch-pinned `python:<x.y.z>-slim`). `handle_init` passes the project's own Python
+(`project_python_version`: `.python-version` at the precision it is written in, else the
+lowest release from 3.11 that `requires-python` admits, written `3.x` when every release of
+that minor is admitted and `3.x.y` when the range splits it, so `>=3.13.5` pins `3.13.5`)
+and writes `.python-version` with it when the project has none. An unreadable
+`.python-version` (anything but one `3.x` or `3.x.y` from 3.11), an invalid
+`requires-python`, one admitting no Python from 3.11, or a pin it excludes raises
+`ProjectPythonError`, which `handle_init` reports as a CLI error before writing any file.
+So uv's local environment, every CI job and the deployed model
+(see [deploy](../deploy/low-level.md)) run one Python.
+`ci_files(target, ci, workbench=..., python_version=...)` returns exactly the files of the
+chosen `ci` value, path to content (`"none"` has none, an unknown provider raises), which
+`handle_init` and `haute ci update` both write through `write_generated_files`; on `--force`
+`handle_init` first calls
 `_prune_stale_ci_files(project_dir, keep=ci)` (defined in `src/haute/cli/_init_cmd.py`),
 which deletes every other provider's known artifact paths (from that module's `_CI_ARTIFACTS` map)
 and removes the resulting empty `.github/workflows/`/`.github` directories, before writing the new provider's files.
@@ -546,7 +589,9 @@ it on the reading node instead of aborting the walk, and every other run propaga
   reference is the response's step problem.
 - `Pipeline.run` takes a keyword-only `source`, which it requires: without one it raises
   `TypeError` from `Pipeline._missing_source_message`, which names the sources of the
-  `.haute.json` sidecar beside the first node's file (read by
+  `.haute.json` sidecar beside the pipeline's file (`Pipeline._pipeline_file`: the first
+  node's file, or, for a pipeline with no node of its own, the file that made a submodel
+  registration) (read by
   `src/haute/_sidecar.py::read_sidecar_state`; `live` when there is none). It and `Pipeline.score`
   (which uses `live`) set `_scenario_ctx` to that source for the run and build the table with
   `Pipeline._run_constants`, which loads a declared file through
@@ -560,10 +605,10 @@ it on the reading node instead of aborting the walk, and every other run propaga
   `function_constant_reads(fn)`, the reads of the function's source (every constant when its
   source cannot be read). Two runs therefore never share a binding. Calling a node's decorated
   name outside a run binds nothing, so its code reads the sentinel.
-- A pipeline with submodel registrations runs through `Pipeline._with_submodels_expanded`:
-  `_load_submodel_definition` resolves each file with
-  `src/haute/_submodel_paths.py::resolve_submodel_reference` from the pipeline directory and
-  imports it under a fresh module name, requiring exactly one `Submodel` among its globals;
+- A pipeline with submodel registrations runs through `Pipeline._with_submodels_expanded`,
+  which takes each occurrence's definition from its registration
+  (`RegisteredSubmodel.definition`, the `Submodel` the pipeline file's
+  `from modules import <module>` imported) and imports nothing itself;
   each definition node becomes a `dataclasses.replace` copy named `<occurrence>.<node>`;
   boundary edges come from `_submodel_input` / `_submodel_output` (an unknown port is an
   `ExecutionError` listing the ports); and `_in_parameter_order` orders each submodel node's
@@ -571,9 +616,9 @@ it on the reading node instead of aborting the walk, and every other run propaga
   `_graph_utils.executable_input_name`'s, so a Quote Input frame by its frame handle) is a
   positional parameter takes its place, the rest fill the open parameters in
   order, and a node with more inputs than parameters, like the pipeline's own nodes, keeps
-  registration order. A registration records the file that made it
-  (`RegisteredSubmodel.registered_in`), which its path resolves against, and
-  `Pipeline._submodels_expanded` keeps each imported module in `sys.modules` for the run.
+  registration order. A definition module stays in `sys.modules` as any import does (a
+  `dataclass` with string annotations in it resolves through that entry), and expanding the
+  occurrences imports nothing.
 
 ## Edge cases and invariants
 
@@ -703,7 +748,8 @@ it on the reading node instead of aborting the walk, and every other run propaga
   reports the failure on the node, so they stay `ValueError`.
 - **`ValueError`** — empty live pipeline; an unwired non-source node or missing upstream result
   during `Pipeline.run()`/`score()`; unknown source or target node in `connect()`; empty-string
-  port name; submodel identity errors (non-canonical submodel name, name conflicting with a registered
+  port name; submodel identity errors (an empty or padded submodel name or `instance_of`, a
+  non-canonical, reserved or built-in submodel name, name conflicting with a registered
   node name, duplicate submodel name, or a submodel port declaring `portId`/`label`); duplicate key in a sidecar JSON object
   (`reject_duplicate_keys_hook`); non-`dict` sidecar JSON content; a resolved config path
   escaping the `config/` directory (`config_path_for_node`); a node name containing path
@@ -715,7 +761,12 @@ it on the reading node instead of aborting the walk, and every other run propaga
   (a registration bug, not a runtime/user-facing condition); a `NODE_REGISTRY` lookup miss in
   the exec-builder dispatcher.
 - **`TypeError`** — an invalid (non-`str`, non-`None`) `source_port`/`target_port` passed to
-  `connect()`, raised from `_validate_port`.
+  `connect()`, raised from `_validate_port`; `Pipeline.submodel()` given a string, the removed
+  file-path form (the message names `from modules import <module>` and
+  `pipeline.submodel(<module>.submodel, ...)`), or any other definition that is not a
+  `Submodel`, such as the imported module, or given a non-string name or `instance_of`.
+- **`AttributeError`** (Python's own) — importing a pipeline file whose
+  `pipeline.submodel(<module>.submodel, ...)` names a module that defines no `submodel`.
 
 ## Testing
 
@@ -751,6 +802,17 @@ API and real JSON round-trips rather than mocks:
   rejection an `ExecutionError` naming the ports — plus `run()` port-aware frame selection
   for one- and many-frame apiInput sources. `test_run_raises_typed_rating_miss_from_a_lazy_output`
   and `test_lazy_output_is_collected_inside_the_scenario_context` pin lazy-output collection.
+  `Pipeline.submodel()` records the imported definition, refuses (`ImportError`) one defined
+  in another project's `modules/` folder (a `Submodel` records its defining file, and one
+  from a `modules` folder must come from the folder beside the registering pipeline: in a
+  process that imported another project's `modules` first, `from modules import` returns
+  that project's module from Python's cache), and refuses a file path and a module
+  with `TypeError`; `TestStandaloneSubmodels` runs pipeline files that import their
+  definition modules from `modules/`: a run and `score()` through an occurrence match
+  `haute run`, two occurrences of one definition each run, a pipeline whose nodes all live in
+  a submodel runs, a port input takes its parameter's place, the module is an ordinary
+  import that a run adds nothing to, and a module without a `submodel` fails the import with
+  Python's `AttributeError`.
 - **`test_standalone_nodes.py`** — the standalone configured-node runtime: a sidecar-typed node without `config=` is
   called as a plain function; every configured type run as a declaration returns what its work produces (a Data Input's loaded rows, a Model
   Score's predictions, an Output's assembled document, a Live Switch's scenario-selected

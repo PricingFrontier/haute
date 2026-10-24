@@ -11,7 +11,7 @@ node types for live scoring:
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -270,11 +270,47 @@ def artifact_identity_fingerprint(artifact_paths: Mapping[str, str] | None) -> s
     return "artifacts=" + content_hash_bytes(canonical_json(dict(payload)).encode())
 
 
-def _resolve_runtime_graph_paths(graph: PipelineGraph) -> PipelineGraph:
-    """Resolve path config values against ``graph.source_file`` for deploy scoring."""
+def _bundled_input_artifact(node: GraphNode, remap: Mapping[str, str]) -> str | list[str] | None:
+    """The bundled artifact scoring reads in place of *node*'s configured path, if any.
+
+    A direct Parquet Data Input or a Load File node ships its file; a snapshot-backed
+    Data Input ships its snapshot's Parquet parts.
+    """
+    if not remap:
+        return None
+    config = node.data.config
+    if node.data.nodeType is NodeType.EXTERNAL_FILE:
+        return _remap_artifact(node.id, config, remap, "path")
+    if node.data.nodeType is not NodeType.DATA_INPUT:
+        return None
+    from haute._polars_io_registry import data_input_is_direct
+
+    if data_input_is_direct(config):
+        return _remap_artifact(node.id, config, remap, "path")
+    prefix = f"{node.id}__snapshot.part-"
+    parts = sorted(key for key in remap if key.startswith(prefix) and key.endswith(".parquet"))
+    return [remap[key] for key in parts] or None
+
+
+def _resolve_runtime_graph_paths(
+    graph: PipelineGraph,
+    *,
+    remap: Mapping[str, str],
+    request_input_ids: Collection[str],
+) -> PipelineGraph:
+    """Resolve the path configs scoring reads from disk, as deploy bundles them.
+
+    A relative path is tried against ``graph.source_file``'s directory, then the project
+    root, its backslashes read as separators, never outside the project root. Only a
+    path scoring actually reads is resolved: a request input's sample is replaced by
+    the live request, and a node with a bundled artifact reads that instead (its
+    configured path only names the artifact). A served bundle carries its original
+    ``source_file``, which need not exist where it is served.
+    """
+    from haute._path_resolution import _normalise_path_text, resolve_graph_source_path
+
     if not graph.source_file:
         return graph
-    base_dir = Path(graph.source_file).parent
     nodes: list[GraphNode] = []
     changed = False
     for node in graph.nodes:
@@ -282,11 +318,13 @@ def _resolve_runtime_graph_paths(graph: PipelineGraph) -> PipelineGraph:
         raw_path = config.get("path")
         if (
             node.data.nodeType in _RUNTIME_PATH_NODE_TYPES
+            and node.id not in request_input_ids
             and isinstance(raw_path, str)
             and raw_path
-            and not Path(raw_path).is_absolute()
+            and not Path(_normalise_path_text(raw_path)).is_absolute()
+            and _bundled_input_artifact(node, remap) is None
         ):
-            resolved = str((base_dir / raw_path).resolve())
+            resolved = resolve_graph_source_path(raw_path, graph.source_file)
             nodes.append(node.with_config({**config, "path": resolved}))
             changed = True
         else:
@@ -451,8 +489,8 @@ def _attach_bundled_optimiser_artifacts(
 
 def _remap_artifact(
     node_id: str,
-    config: dict,
-    remap: dict[str, str],
+    config: Mapping[str, Any],
+    remap: Mapping[str, str],
     key_field: str,
 ) -> str | None:
     """Look up a remapped artifact path for a node.
@@ -815,7 +853,10 @@ def _score_graph_lazy(
 ) -> DeployScorePlan:
     """Construct the lazy score plan using an already-admitted context."""
     remap = artifact_paths or {}
-    graph = _attach_bundled_feature_contracts(_resolve_runtime_graph_paths(graph), remap)
+    graph = _attach_bundled_feature_contracts(
+        _resolve_runtime_graph_paths(graph, remap=remap, request_input_ids=input_node_ids),
+        remap,
+    )
     graph = _attach_bundled_optimiser_artifacts(graph, remap)
     relevant_node_ids = set(upstream_node_ids(output_node_id, graph.parents_of)) | {output_node_id}
     _reject_incomplete_stepped_nodes(graph, relevant_node_ids)
@@ -933,19 +974,9 @@ def _score_graph_lazy(
         # Intercept: retained Data Input snapshot or canonical direct Parquet
         # source. The graph config remains canonical; only this deploy-only
         # execution path reads the matching bundled artifact.
-        bundled_data_source: str | list[str] | None = None
-        if node_type == NodeType.DATA_INPUT and remap:
-            from haute._polars_io_registry import data_input_is_direct
-
-            if data_input_is_direct(config):
-                bundled_data_source = _remap_artifact(nid, config, remap, "path")
-            else:
-                prefix = f"{nid}__snapshot.part-"
-                part_keys = sorted(
-                    k for k in remap.keys() if k.startswith(prefix) and k.endswith(".parquet")
-                )
-                if part_keys:
-                    bundled_data_source = [remap[k] for k in part_keys]
+        bundled_data_source = (
+            _bundled_input_artifact(node, remap) if node_type == NodeType.DATA_INPUT else None
+        )
         if bundled_data_source is not None:
             _bundled_data_source = bundled_data_source
             _code = str(config.get("code") or "").strip()

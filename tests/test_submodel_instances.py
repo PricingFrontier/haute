@@ -1052,11 +1052,13 @@ def test_targeted_flatten_removes_only_one_occurrence_and_keeps_definition() -> 
 def test_registration_parser_preserves_explicit_identity_and_alias() -> None:
     tree = ast.parse(
         """
+from modules import scoring
+
 pipeline.submodel(
-    "modules/scoring.py",
+    scoring.submodel,
     "scoring_a",
 ).submodel(
-    "modules/scoring.py",
+    scoring.submodel,
     "scoring_b",
     instance_of="scoring_a",
 )
@@ -1065,13 +1067,14 @@ pipeline.submodel(
 
     registrations = extract_submodel_registrations(tree)
 
-    assert [(item.path, item.name, item.instance_of) for item in registrations] == [
-        ("modules/scoring.py", "scoring_a", None),
-        ("modules/scoring.py", "scoring_b", "scoring_a"),
+    # Each names the file it imports, and the name the import binds it to.
+    assert [(item.path, item.binding, item.name, item.instance_of) for item in registrations] == [
+        ("modules/scoring.py", "scoring", "scoring_a", None),
+        ("modules/scoring.py", "scoring", "scoring_b", "scoring_a"),
     ]
 
 
-def test_parser_rejects_path_only_submodel_source(tmp_path: Path) -> None:
+def test_parser_rejects_definition_only_submodel_source(tmp_path: Path) -> None:
     modules = tmp_path / "modules"
     modules.mkdir()
     (modules / "scoring.py").write_text(
@@ -1081,8 +1084,9 @@ def test_parser_rejects_path_only_submodel_source(tmp_path: Path) -> None:
 
     with pytest.raises(ParseError, match="requires the occurrence name"):
         parse_pipeline_source(
-            'import haute\npipeline = haute.Pipeline("main")\n'
-            'pipeline.submodel("modules/scoring.py")\n',
+            "import haute\n\nfrom modules import scoring\n\n"
+            'pipeline = haute.Pipeline("main")\n'
+            "pipeline.submodel(scoring.submodel)\n",
             source_file=str(tmp_path / "main.py"),
             _base_dir=tmp_path,
         )
@@ -1109,13 +1113,15 @@ submodel = haute.Submodel(
     parent_source = """
 import haute
 
+from modules import scoring
+
 pipeline = haute.Pipeline("main")
 pipeline.submodel(
-    "modules/scoring.py",
+    scoring.submodel,
     "scoring_a",
 )
 pipeline.submodel(
-    "modules/scoring.py",
+    scoring.submodel,
     "scoring_b",
     instance_of="scoring_a",
 )
@@ -1171,15 +1177,22 @@ def test_codegen_emits_definition_once_and_two_stable_registrations() -> None:
     assert set(files) == {"main.py", "modules/scoring.py"}
     assert list(files).count("modules/scoring.py") == 1
     main = files["main.py"]
-    assert main.count("pipeline.submodel(") == 2
-    assert 'pipeline.submodel("modules/scoring.py", "scoring_a")' in main
-    assert 'pipeline.submodel("modules/scoring.py", "scoring_b", instance_of="scoring_a")' in main
+    # One import of the definition's module, and one registration per occurrence.
+    assert main.count("from modules import scoring\n") == 1
+    assert main.count("pipeline.submodel(scoring.submodel, ") == 2
+    assert 'pipeline.submodel(scoring.submodel, "scoring_a")' in main
+    assert 'pipeline.submodel(scoring.submodel, "scoring_b", instance_of="scoring_a")' in main
 
 
 def test_codegen_records_the_owning_pipeline_directory_by_registration_depth(
     tmp_path: Path,
 ) -> None:
-    """A definition below its pipeline says how to reach it: config= paths resolve there."""
+    """A definition below its pipeline says how to reach it: config= paths resolve there.
+
+    A definition is a module directly in the pipeline's ``modules/`` folder, the one
+    ``from modules import <name>`` imports, so the way back is one level. Codegen
+    refuses a definition file anywhere else: the pipeline could not import it.
+    """
     score_config = {
         "sourceType": "run",
         "run_id": "abc123",
@@ -1191,7 +1204,7 @@ def test_codegen_records_the_owning_pipeline_directory_by_registration_depth(
     config_dir.mkdir(parents=True)
     (config_dir / "score.json").write_text(json.dumps(score_config), encoding="utf-8")
 
-    def emitted_child(file: str) -> str:
+    def emitted_files(file: str) -> dict[str, str]:
         score = _node("score", NodeType.MODEL_SCORE, config=dict(score_config))
         definition = SubmodelDefinition(
             definition_id="definition_scoring",
@@ -1216,29 +1229,35 @@ def test_codegen_records_the_owning_pipeline_directory_by_registration_depth(
             pipeline_name="main",
             submodels={"definition_scoring": definition},
         )
-        files = graph_to_code_multi(graph, pipeline_name="main", source_file="main.py")
-        return files[file]
+        return graph_to_code_multi(graph, pipeline_name="main", source_file="main.py")
 
-    depth_cases = {
-        "scoring.py": None,
-        "modules/scoring.py": "..",
-        "modules/nested/scoring.py": "../..",
+    in_modules = [
+        "modules/scoring.py",
         # Depth counts real path segments, not raw separators: dot and empty
         # segments never add a level.
-        "./modules/scoring.py": "..",
-        "modules//scoring.py": "..",
-        "modules/./scoring.py": "..",
-    }
-    for file, expected in depth_cases.items():
-        child_source = emitted_child(file)
-        if expected is None:
-            assert "pipeline_dir" not in child_source, file
-        else:
-            assert f'    pipeline_dir="{expected}",\n)' in child_source, file
+        "./modules/scoring.py",
+        "modules//scoring.py",
+        "modules/./scoring.py",
+    ]
+    for file in in_modules:
+        files = emitted_files(file)
+        child_source = files[file]
+        assert '    pipeline_dir="..",\n)' in child_source, file
         assert "_HAUTE_CONFIG_BASE" not in child_source, file
+        # Every spelling is the one module the pipeline imports.
+        assert "\nfrom modules import scoring\n" in files["main.py"], file
+        assert 'pipeline.submodel(scoring.submodel, "scoring")' in files["main.py"], file
         # The parser accepts the value only where it leads to the pipeline.
         reparsed = parse_submodel_source(child_source, source_file=file, _base_dir=tmp_path)
         assert "pipeline_dir" not in (reparsed.preamble or ""), file
+
+    # Beside the pipeline, in a folder below modules/, or in another folder.
+    for file in ["scoring.py", "modules/nested/scoring.py", "lib/scoring.py"]:
+        with pytest.raises(
+            ParseError, match="is not a module in the pipeline's modules/ folder"
+        ) as exc_info:
+            emitted_files(file)
+        assert exc_info.value.context["definition_id"] == "definition_scoring", file
 
 
 def test_parse_rejects_a_pipeline_dir_that_misses_the_registering_pipeline(

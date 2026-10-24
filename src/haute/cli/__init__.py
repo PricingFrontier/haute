@@ -10,6 +10,7 @@ import click
 
 from haute._cpu_performance import configure_process_high_qos
 from haute.cli._app import app
+from haute.cli._ci import ci
 from haute.cli._deploy import deploy
 from haute.cli._gpu_setup import gpu_setup
 from haute.cli._impact import impact
@@ -30,6 +31,7 @@ def cli() -> None:
 
 
 cli.add_command(app)
+cli.add_command(ci)
 cli.add_command(deploy)
 cli.add_command(gpu_setup)
 cli.add_command(impact)

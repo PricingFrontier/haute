@@ -59,15 +59,15 @@ Once validation passes and your teammate has reviewed the MR, you [merge](../bef
 
 ### 4. Staging deployment (automatic)
 
-The `deploy-staging` stage runs `haute deploy --endpoint-suffix "-staging"`. Databricks submits an endpoint create/update request but does not wait for readiness; the generic container target does not host it; platform-container targets push the image and leave the service update to you, so their pipeline has no smoke or impact stage and goes straight to the manual `deploy-production` job.
+The `deploy-staging` stage runs `haute deploy --endpoint-suffix "-staging"`. On Databricks it waits until the staging endpoint serves the new version, and fails with Databricks' build log if the model cannot be served; the generic container target does not host it; platform-container targets push the image and leave the service update to you, so their pipeline has no smoke or impact stage and goes straight to the manual `deploy-production` job.
 
 ### 5. Smoke test (automatic)
 
-If deploy succeeds, the `smoke-test` stage runs `haute smoke --endpoint-suffix "-staging"` against an existing live staging endpoint. On Databricks it waits for the endpoint to report Ready, within the job's 10-minute timeout, and it needs [extra credentials](../targets/databricks.md#step-3-add-credentials-to-ci). On the generic container target it needs [the service addresses, without the suffix option](../targets/docker.md#step-3-give-smoke-and-impact-their-endpoints).
+If deploy succeeds, the `smoke-test` stage runs `haute smoke --endpoint-suffix "-staging"` against an existing live staging endpoint. On Databricks the endpoint is already serving when it starts, since the deploy waited for it. On the generic container target it needs [the service addresses, without the suffix option](../targets/docker.md#step-3-give-smoke-and-impact-their-endpoints).
 
 ### 6. Impact analysis (automatic)
 
-If smoke succeeds, the `impact-analysis` stage runs `haute impact --endpoint-suffix "-staging"`, comparing existing staging and production endpoints on the [portfolio sample in the repository](../targets/databricks.md#what-each-setting-means). The report is saved as a **pipeline artifact** only when this command runs.
+If smoke succeeds, the `impact-analysis` stage runs `haute impact --endpoint-suffix "-staging"`, comparing existing staging and production endpoints on the [portfolio sample in the repository](../targets/databricks.md#what-each-setting-means), or on your test quotes when no sample is named. The report is saved as a **pipeline artifact** only when this command runs.
 
 ### 7. You review the impact report
 

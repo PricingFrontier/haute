@@ -15723,6 +15723,11 @@
           "title": "Name",
           "type": "string"
         },
+        "serverless": {
+          "default": false,
+          "title": "Serverless",
+          "type": "boolean"
+        },
         "size": {
           "default": "",
           "title": "Size",
@@ -15738,7 +15743,8 @@
         "name",
         "http_path",
         "state",
-        "size"
+        "size",
+        "serverless"
       ],
       "title": "WarehouseItem",
       "type": "object"

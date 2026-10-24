@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import stat
 import sys
 import tomllib
@@ -559,6 +560,40 @@ class TestEnsureHauteDependency:
         assert "ignore_missing_imports" in content
         assert "catboost" in content
 
+    def test_the_mypy_block_resolves_what_the_pipeline_imports_from_its_folder(
+        self, tmp_path: Path
+    ):
+        """`uv run mypy .`, as the generated CI runs it, follows rating/main.py's imports of
+        its own utility and submodel modules, as Python does when it runs the file."""
+        import subprocess
+
+        pyproject = tmp_path / "pyproject.toml"
+        _ensure_haute_dependency(pyproject, "foo")
+        for package in ("rating", "rating/modules", "rating/utility"):
+            (tmp_path / package).mkdir(parents=True, exist_ok=True)
+            (tmp_path / package / "__init__.py").write_text("", encoding="utf-8")
+        (tmp_path / "rating" / "modules" / "factors.py").write_text(
+            "FACTOR = 3\n", encoding="utf-8"
+        )
+        (tmp_path / "rating" / "utility" / "features.py").write_text("RATE = 2\n", encoding="utf-8")
+        (tmp_path / "rating" / "main.py").write_text(
+            "from modules import factors\n"
+            "from utility.features import RATE\n\n"
+            "PREMIUM: int = factors.FACTOR * RATE\n",
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-m", "mypy", "--cache-dir", str(tmp_path / ".mypy_cache"), "."],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
     def test_does_not_duplicate_tool_mypy(self, tmp_path: Path):
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(
@@ -866,3 +901,60 @@ class TestInitWorkbench:
         with open(tmp_path / "haute.toml", "rb") as fh:
             assert tomllib.load(fh)["workbench"]["enabled"] is True
         assert (tmp_path / "forms" / "form.json").read_text(encoding="utf-8") != "edited"
+
+
+class TestInitCiRunsTheProjectsPython:
+    """The generated CI installs the Python the project runs on, or ``uv sync`` refuses it."""
+
+    @pytest.mark.parametrize(
+        ("files", "expected"),
+        [
+            ({}, "3.11"),
+            ({"pyproject.toml": '[project]\nname = "p"\nrequires-python = ">=3.13"\n'}, "3.13"),
+            # A range that splits a minor (3.12.0 is out) names its lowest release.
+            (
+                {"pyproject.toml": '[project]\nname = "p"\nrequires-python = "~=3.12.1"\n'},
+                "3.12.1",
+            ),
+            # Below Haute's own floor, the lowest Python Haute runs on.
+            ({"pyproject.toml": '[project]\nname = "p"\nrequires-python = ">=3.9"\n'}, "3.11"),
+            # .python-version decides first, as it does for uv.
+            (
+                {
+                    "pyproject.toml": '[project]\nname = "p"\nrequires-python = ">=3.11"\n',
+                    ".python-version": "3.13\n",
+                },
+                "3.13",
+            ),
+        ],
+        ids=["no-pyproject", "floor", "compatible", "below-haute", "python-version-file"],
+    )
+    @pytest.mark.parametrize("ci_option", ["github", "gitlab", "azure-devops"])
+    def test_every_job_pins_the_projects_python(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        files: dict[str, str],
+        expected: str,
+        ci_option: str,
+    ):
+        monkeypatch.chdir(tmp_path)
+        for name, content in files.items():
+            (tmp_path / name).write_text(content, encoding="utf-8")
+
+        result = runner.invoke(cli, ["init", "--ci", ci_option], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        generated = {
+            "github": [".github/workflows/ci.yml", ".github/workflows/deploy-staging.yml"],
+            "gitlab": [".gitlab-ci.yml"],
+            "azure-devops": ["azure-pipelines.yml"],
+        }[ci_option]
+        for relative in generated:
+            text = (tmp_path / relative).read_text(encoding="utf-8")
+            pins = re.findall(
+                r'python-version: "([\d.]+)"|versionSpec: "([\d.]+)"|image: python:([\d.]+)\n', text
+            )
+            assert pins, relative
+            assert {next(v for v in pin if v) for pin in pins} == {expected}, relative

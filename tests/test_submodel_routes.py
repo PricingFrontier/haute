@@ -218,13 +218,16 @@ def {node_name}() -> pl.LazyFrame:
     )
 
 
-def _write_parent_reference(path: Path, child_reference: str) -> None:
+def _write_parent_reference(path: Path, module: str) -> None:
+    """Write a pipeline importing ``modules/<module>.py`` and registering it as ``pricing``."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         f"""import haute
 
+from modules import {module}
+
 pipeline = haute.Pipeline({path.stem!r})
-pipeline.submodel({child_reference!r}, "pricing")
+pipeline.submodel({module}.submodel, "pricing")
 """,
         encoding="utf-8",
     )
@@ -482,7 +485,7 @@ class TestGetSubmodel:
 
     def test_successful_get(self, client: TestClient, tmp_path: Path) -> None:
         _write_submodel(tmp_path / "modules" / "pricing.py")
-        _write_parent_reference(tmp_path / "pipeline.py", "modules/pricing.py")
+        _write_parent_reference(tmp_path / "pipeline.py", "pricing")
         response = client.get(
             f"/api/submodel/{DEFINITION_ID}",
             params={"source_file": "pipeline.py"},
@@ -542,7 +545,7 @@ def source(): ...
 """,
             encoding="utf-8",
         )
-        _write_parent_reference(rating_root / "main.py", "modules/pricing.py")
+        _write_parent_reference(rating_root / "main.py", "pricing")
 
         resp = client.get(
             f"/api/submodel/{DEFINITION_ID}",
@@ -557,11 +560,13 @@ def source(): ...
     def test_get_uses_path_recorded_by_active_pipeline(
         self, client: TestClient, tmp_path: Path
     ) -> None:
+        """The definition is read from the module the active pipeline imports, named
+        neither after the definition id nor after the occurrence."""
         rating_root = tmp_path / "rating"
         _write_nested_project(tmp_path)
-        library = rating_root / "lib"
-        library.mkdir()
-        (library / "pricing.py").write_text(
+        modules_dir = rating_root / "modules"
+        modules_dir.mkdir()
+        (modules_dir / "rates.py").write_text(
             "import polars as pl\n"
             "import haute\n"
             "submodel = haute.Submodel(\n"
@@ -574,19 +579,15 @@ def source(): ...
             "@submodel.polars\ndef rate() -> pl.LazyFrame:\n    return pl.LazyFrame({'x': [1]})\n",
             encoding="utf-8",
         )
-        (rating_root / "main.py").write_text(
-            'import haute\npipeline = haute.Pipeline("main")\n'
-            'pipeline.submodel("lib/pricing.py", "pricing")\n',
-            encoding="utf-8",
-        )
+        _write_parent_reference(rating_root / "main.py", "rates")
         response = client.get(
             f"/api/submodel/{DEFINITION_ID}",
             params={"source_file": "rating/main.py"},
         )
         assert response.status_code == 200
-        assert response.json()["submodel_file"] == "lib/pricing.py"
+        assert response.json()["submodel_file"] == "modules/rates.py"
         source_file = response.json()["graph"]["source_file"].replace("\\", "/")
-        assert source_file.endswith("lib/pricing.py")
+        assert source_file.endswith("rating/modules/rates.py")
 
     def test_get_does_not_scan_broken_sibling_pipeline(
         self,
@@ -609,13 +610,13 @@ def source(): ...
             encoding="utf-8",
         )
         (tmp_path / "a_broken.py").write_text(
-            'import haute\npipeline = haute.Pipeline("broken")\n'
-            'pipeline.submodel("modules/missing.py", "missing")\n',
+            'import haute\nfrom modules import missing\npipeline = haute.Pipeline("broken")\n'
+            'pipeline.submodel(missing.submodel, "missing")\n',
             encoding="utf-8",
         )
         (tmp_path / "z_owner.py").write_text(
-            'import haute\npipeline = haute.Pipeline("owner")\n'
-            'pipeline.submodel("modules/pricing.py", "pricing")\n',
+            'import haute\nfrom modules import pricing\npipeline = haute.Pipeline("owner")\n'
+            'pipeline.submodel(pricing.submodel, "pricing")\n',
             encoding="utf-8",
         )
 

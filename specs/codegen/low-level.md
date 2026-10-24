@@ -42,15 +42,15 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/codegen.py` | Public orchestration API (`graph_to_code`, `graph_to_code_multi`); single-node dispatch (`_node_to_code`, `_generate_node_code`, `_render`); instance-node handling (`_instance_to_code`); the contract decision and value (`_contract_keyword`, `_contract_value`); node emission order (`_emission_order`); module assembly (`_render_module`); the final parse gate (`_assert_emitted_files_parse`). `declares_global_constants` says whether a graph's files name the global constants file (it has constants, or its file failed to load), and `_render_module` then adds the constructor keyword (pipeline files) and the binding of the reserved name after each constructor. |
+| `src/haute/codegen.py` | Public orchestration API (`graph_to_code`, `graph_to_code_multi`); single-node dispatch (`_node_to_code`, `_generate_node_code`, `_render`); instance-node handling (`_instance_to_code`); the contract decision and value (`_contract_keyword`, `_contract_value`); node emission order (`_emission_order`); module assembly (`_render_module`); a pipeline's submodel imports (`submodel_import_statement`, which the planner removing an unavailable occurrence also uses to rewrite an import: one `from modules import ...` naming each definition's module once, in ruff's isort member order (`_isort_member_order`, a comparison sorted through `functools.cmp_to_key`: constants, classes, then the rest, `_isort_member_rank`; then the names lowercased, not casefolded, then exact, each compared by `_natord`, a port of the natord crate ruff uses, whose `_compare_digit_runs` compares a digit run starting with `0` digit by digit from the left (`02` before `1`) and otherwise ranks the longer run higher (`2` before `10`)), wrapped in parentheses one name per line past 88 columns); the final parse gate (`_assert_emitted_files_parse`). `declares_global_constants` says whether a graph's files name the global constants file (it has constants, or its file failed to load), and `_render_module` then adds the constructor keyword (pipeline files) and the binding of the reserved name after each constructor. |
 | `src/haute/_executable_names.py` | The executable-name rule (codegen high-level "One function per node"): `RESERVED_NAMES` with what the generated module binds each to, `BUILTIN_NAMES`, `function_name_violations` (case-folded buckets over every node function name and occurrence alias in the root and each definition graph, submodel ports excepted; reserved and built-in hits), `input_binding_violations` (edge-derived names, `inputMapping` aliases and submodel input ports a body receives), `data_output_violations` over `data_output_destination` (io-layer: two Data Outputs writing one destination, once per submodel occurrence), `executable_name_violations` (all three), the `NameViolation`/`NameParty` result with one `message()` per violation and `format_name_violations` for the whole list; `function_name_problem` (one candidate label, for the assistant), `reserved_or_builtin` (for the standalone pipeline's registration) and `reserved_input_problem` (for user-code execution). Codegen's check raises the parse error. |
-| `src/haute/_support_code_names.py` | The support-code half of the naming rule (codegen high-level "Names cannot collide with support code"): `support_code_inventory` builds the static `SupportBinding` list (name, provenance, source, line) of the root and submodel preambles, the preserved blocks and their `utility.<module>` star imports, resolved through a `UtilityReader`, collecting the statements it cannot read; `support_code_violations` turns it into the five support kinds of violation (a node or input colliding with a helper, two helpers in conflict, a reserved binding, an unreadable statement); `utility_reader` reads `utility/<module>.py` from the first directory holding it; `name_violations` joins them with the executable-name violations. |
+| `src/haute/_support_code_names.py` | The support-code half of the naming rule (codegen high-level "Names cannot collide with support code"): `support_code_inventory` builds the static `SupportBinding` list (name, provenance, source, line) of the root and submodel preambles, the pipeline's submodel imports (`_submodel_modules`: one `from modules import <name>` binding per definition whose file is a `modules/<name>.py` module, labelled `_SUBMODEL_IMPORTS`), the preserved blocks and their `utility.<module>` star imports, resolved through a `UtilityReader`, collecting the statements it cannot read; `support_code_violations` turns it into the five support kinds of violation (a node or input colliding with a helper, two helpers in conflict, a reserved binding, an unreadable statement), apart from a root occurrence named after a submodel module or a node input of that name, which collide with nothing; `utility_reader` reads `utility/<module>.py` from the first directory holding it; `name_violations` joins them with the executable-name violations. |
 | `src/haute/_codegen_builders.py` | One `_gen_*` builder per `NodeType`, registered into `haute._registry.NODE_REGISTRY` via `@_register_codegen`; each returns a `NodeSource` rather than text. Shared helpers build a configured node's declaration or hook (`_configured_node`), the config-backed decorator keywords (`_config_keywords`), parameters (`_params` — the per-edge input names supplied by the orchestrator; duplicates are rejected by `src/haute/codegen.py::_validate_duplicate_node_inputs`) and the transform body (`_transform_body`, which adds the output declaration only when the code binds `df` nowhere). `render_node_source` prints a `NodeSource` through the shared document printer; `_sanitize_description` and `_docstring_lines` prepare docstring text. |
 | `src/haute/_source_layout.py` | The document printer both codegen and the Polars step layout use: the Wadler/Prettier document (`Group`, `Indent`, `Line`, `IfBreak`), `print_doc`, string quoting as ruff writes it (`quote_string`), collections laid out one entry per line when broken (`bracketed`), call and signature arguments laid out as ruff lays them out (`arguments`: flat, then on one indented line, then one per line with a trailing comma; a broken signature's lone parameter also takes the comma, a lone call argument never), and the literal printer (`literal`) for decorator values. |
 | `src/haute/_python_syntax.py` | Formatting-preserving valid-Python boundary: exact method-call discovery, exact expression/function replacement, and one import inserted below another (`insert_import_after`, used by the node-scoped save), with stable structured syntax failures. It never repairs invalid Python syntax or evaluates source. Codegen no longer edits generated source, so it does not use this module. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): codegen registers and reads per-node code builders through the canonical registry. |
 | `src/haute/_code_extraction.py` | Reverse direction of the builders: recovers the user-authored code from a function body. Three kinds (`polars`, `hook`, `external`) share one engine (`extract_user_code`): strip the docstring, recognise a declaration body (`is_declaration_body`: nothing but `...` or `pass`), strip the transform output declaration or the External File `df = <first input>` binding, recognise the incomplete placeholder, strip the trailing `return df`, and finalise with the Polars rules. |
-| `src/haute/_ast_helpers.py` | Stateless AST/source utilities with no node/graph knowledge: literal evaluation (`_eval_ast_literal`), decorator introspection (`_get_decorator_kwargs`, `_is_pipeline_node_decorator`, `_get_decorator_node_type`), docstring/whitespace handling (`_strip_docstring`, `_dedent`), and whole-file extraction helpers (`_extract_function_bodies`, whose bodies keep the comment lines above their first statement, `_extract_connect_calls`, `_extract_meta`, `_extract_preamble`, `_extract_preserved_blocks`) shared with the parser. It also reads the global constants declaration (`_extract_global_constants_declaration`) and refuses module-level bindings of the reserved name (`_reject_reserved_global_constants_bindings`). |
+| `src/haute/_ast_helpers.py` | Stateless AST/source utilities with no node/graph knowledge: literal evaluation (`_eval_ast_literal`), decorator introspection (`_get_decorator_kwargs`, `_is_pipeline_node_decorator`, `_get_decorator_node_type`), docstring/whitespace handling (`_strip_docstring`, `_dedent`), and whole-file extraction helpers (`_extract_function_bodies`, whose bodies keep the comment lines above their first statement, `_extract_connect_calls`, `_extract_meta`, `_extract_preamble`, `_extract_preserved_blocks`) shared with the parser. It also reads the global constants declaration (`_extract_global_constants_declaration`) and refuses module-level bindings of the reserved name (`_reject_reserved_global_constants_bindings`). `is_submodel_import` recognises a statement importing from `modules` in any spelling; in a pipeline file such an import is generated code, so preamble extraction cuts its lines out (`_submodel_import_lines`, and `_textual_submodel_import_lines` for a file that does not parse) and `unkept_module_statements` (the statements a save would drop) does not report one, wherever it sits. |
 
 ## Key types and data structures
 
@@ -111,10 +111,14 @@
    `haute.Submodel(..., definition_id=..., input_ports=...,
    output_ports=...)` file, ending with `pipeline_dir=` when the definition's
    file sits below the pipeline (`_submodel_paths.definition_pipeline_dir` of
-   its registration path: one `..` per folder). Then omit occurrence nodes from the root function
+   its file: one `..` per folder, so `..` for `modules/<name>.py`). Before
+   generating anything, each definition's module name is derived from its file
+   (`_submodel_paths.submodel_module_name`); a file that is not a `modules/<name>.py`
+   module importable by that name raises `ParseError` with the definition id. Then omit occurrence nodes from the root function
    list, translate parent boundary handles only to declared public port names,
    derive child-boundary parameters from sanitised public input port names and downstream names from sanitised public output port names, and emit one explicit
-   `pipeline.submodel(path, name)` registration per occurrence (with `instance_of=owner_name` for copies). Parent `connect` calls refer to aliases
+   `pipeline.submodel(<module>.submodel, name)` registration per occurrence (with `instance_of=owner_name` for copies), with the pipeline's
+   `from modules import ...` (`_submodel_import`) naming every definition's module. Parent `connect` calls refer to aliases
    plus public port names; synthetic `in__`/`out__` handles never enter source.
    Finally `_assert_emitted_files_parse` validates every emitted file.
 
@@ -123,9 +127,10 @@
 Builds the file as a sequence of blocks separated the way `ruff format`
 separates them: the docstring header (name run through `_sanitize_description`
 since it lands between the module docstring's triple quotes), one blank line,
-the imports, one blank line, the optional per-file preamble, the
+the imports, one blank line, for a pipeline with submodels its `submodel_import`
+(`from modules import ...`) and one blank line, the optional per-file preamble, the
 `Pipeline(...)`/`Submodel(...)` construction (an empty `description` is
-omitted), any preserved blocks (`_emit_preserved_blocks`, wrapped in
+omitted), any preserved blocks (`_emit_preserved_block`, wrapped in
 `# haute:preserve-start/-end` markers), then each node function preceded by two
 blank lines (original nodes in emission order, then instance nodes), the
 submodel registration calls, and the `pipeline.connect(...)`/
@@ -419,11 +424,16 @@ empty code.
   aliases for retired generated chains or variable names. Rating-step codegen emits
   only canonical table fields and `combined_outputs`, never retired table labels or
   singular combined-output arguments.
-- **Hierarchical main files are a static-parser artifact, not a live import mechanism** —
-  `pipeline.submodel(path)` only appends the path to the live `Pipeline` object's
-  `_submodel_files`; it does not import child decorators. `_assert_emitted_files_parse` proves the
-  file tree is syntactically valid, while parser round-trip tests prove the static path. Direct
-  execution equivalence is covered only for flat/single-file generated graphs.
+- **Hierarchical main files import their definitions** — the generated main file's
+  `from modules import <name>` is an ordinary import, and its registration
+  `pipeline.submodel(<name>.submodel, ...)` hands the live `Pipeline` the imported
+  `Submodel`, which `run()` and `score()` expand
+  ([pipeline-config](../pipeline-config/low-level.md)); the static parser reads the same
+  statements without importing them. Save makes `modules` a regular package beside the
+  pipeline (server-api), so the import resolves there. `_assert_emitted_files_parse` proves the
+  file tree is syntactically valid, while parser round-trip tests prove the static path;
+  pipeline-config's standalone-submodel tests run hand-written files of the generated form
+  directly and compare them with `haute run`.
 
 ## Error handling
 
@@ -441,6 +451,7 @@ empty code.
 | An `apiInput` edge carrying no `source_port`/`sourceHandle` (only reachable via a hand-edited file — the editor cannot create one) | `ParseError` naming the edge and source node | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
 | `edgeJoin` incoming edges do not carry exactly one `base` and one `join` target handle | `ConfigError` | `codegen._order_edge_join_incoming_edges` |
 | Canonical submodel occurrence, definition, public handle, port id, or internal port endpoint is malformed | `ParseError` | `codegen.graph_to_code_multi` canonical preflight; no source is emitted. |
+| A definition's file is not a `modules/<name>.py` module importable by that name (outside `modules/`, nested below it, or a name that is not a canonical identifier as a node's is, is a keyword, starts with two underscores or is a Python built-in) | `ParseError` with `definition_id` and `submodel_module_name`'s reason | `codegen.graph_to_code_multi` canonical preflight, through `_submodel_paths.submodel_module_name`; no source is emitted. |
 | Parent edge endpoint is neither a root node nor a registered occurrence (e.g. a definition-owned child id used as a parent endpoint) | `ParseError` naming the edge, endpoint side, and node id | `codegen.graph_to_code_multi` canonical preflight; no source is emitted. |
 | `graph_to_code` called on a graph that actually produces >1 file | `ConfigError` | `codegen.graph_to_code` |
 | Any emitted file fails `ast.parse` | `ConfigError` | `codegen._assert_emitted_files_parse` |

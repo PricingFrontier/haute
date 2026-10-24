@@ -273,4 +273,4 @@ def test_unknown_discriminants_fail_loudly() -> None:
     with pytest.raises(PolarsIoConfigError, match="inputType"):
         validate_data_input_config({"inputType": "warehouse"})
     with pytest.raises(PolarsIoConfigError, match="outputType"):
-        validate_data_output_config({"outputType": "databricks"})
+        validate_data_output_config({"outputType": "warehouse"})

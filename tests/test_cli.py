@@ -500,17 +500,19 @@ pipeline.connect("source", "bad")
         # The output preview should show data from the last node
         assert "Output" in result.output or "rows" in result.output
 
+    @pytest.mark.usefixtures("submodel_imports")
     def test_run_executes_a_submodel_in_place_of_its_occurrence(
         self, runner: CliRunner, tmp_path: Path
     ):
         from tests.test_pipeline import _submodel_pipeline
 
+        # The helper runs the pipeline file in-process, importing its modules/ package.
         path, _pipeline = _submodel_pipeline(
             tmp_path,
             "@pipeline.polars\n"
             "def premium(factored: pl.LazyFrame) -> pl.LazyFrame:\n"
             "    return factored.with_columns(premium=pl.col('factor') * 100)\n\n\n"
-            'pipeline.submodel("modules/factors.py", "factors")\n'
+            'pipeline.submodel(factors.submodel, "factors")\n'
             'pipeline.connect("quotes", "factors", target_port="rows")\n'
             'pipeline.connect("factors", "premium", source_port="factored")\n',
         )

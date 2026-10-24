@@ -5,19 +5,20 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/__main__.py` | Package-module entry point; imports and invokes the canonical `haute.cli:cli` group for `python -m haute`. |
-| `src/haute/cli/__init__.py` | Builds the Click command group (`cli`), registers all twelve subcommands, exposes `--version`. Its first import is the Polars startup module below, before anything imports Polars. |
+| `src/haute/cli/__init__.py` | Builds the Click command group (`cli`), registers all thirteen commands and command groups, exposes `--version`. Its first import is the Polars startup module below, before anything imports Polars. |
 | `src/haute/cli/_polars_startup.py` | Applies Haute's Polars settings (spilling off, its folder in the working directory's `.haute_cache/polars-spill`, unknown extension columns as storage; [execution engine](../execution-engine/low-level.md)) and reaps ended processes' spill folders; `SPILL_ROOT` and `POLARS_SETTINGS`, which `haute serve` logs. |
 | `src/haute/cli/_helpers.py` | Cross-command utilities: `resolve_model_name`, `_open_browser`, `_node_env`, `_npm`, `_find_frontend_dir`, the `TransportInfo`/`resolve_transport` transport-dispatch helper, and the shared `ENDPOINT_SUFFIX_HELP` string. |
-| `src/haute/cli/_init_cmd.py` | `haute init` — project scaffolding: `InitConfig`, `handle_init`, TOML-aware `pyproject.toml` dependency injection, CI-provider file generation/pruning, and the `--workbench` table and form ([workbench](../workbench/low-level.md)). |
+| `src/haute/cli/_init_cmd.py` | `haute init` — project scaffolding: `InitConfig`, `handle_init`, TOML-aware `pyproject.toml` dependency injection, CI-provider file generation (`haute._scaffold.ci_files`, written by `write_generated_files`, which `haute ci update` shares) and pruning, the `--workbench` table and form ([workbench](../workbench/low-level.md)), and next steps that name the CI secrets the first deploy needs (`ci_secret_names`), with `haute ci secrets` on GitHub. |
 | `src/haute/cli/_run.py` | `haute run` — `RunConfig`, `handle_run`, parses + executes a pipeline and prints per-node results. |
 | `src/haute/cli/_lint.py` | `haute lint` — `LintConfig`, `handle_lint`, structural validation without execution. |
 | `src/haute/cli/_train.py` | `haute train` — `TrainConfig`, `handle_train`, loads a training script as a module, runs its `job`, prints a live progress bar. |
 | `src/haute/cli/_serve.py` | `haute serve` — `ServeConfig`, `handle_serve`, host-safety checks, working-directory/editable-checkout frontend selection, dev/prod mode dispatch, Vite and uvicorn launch/cleanup. |
 | `src/haute/cli/_deploy.py` | `haute deploy` — `DeployCliConfig`, `handle_deploy`, CI-gate check, resolve → validate-and-score-once → render quote results → deploy pipeline. |
+| `src/haute/cli/_ci.py` | `haute ci` — the `ci` group. `secrets`: `CiSecretsConfig` and `handle_ci_secrets`, which sets the deploy target's `ci_secret_names` on GitHub from `.env`, else the environment (`_secret_values`, which says where each came from), refusing a value unset or still `.env.example`'s placeholder (`env_example_placeholders`), checking each Databricks pair with `haute.deploy._databricks_serving.workspace_user` unless `--no-verify`, and passing each value to `gh secret set NAME` on its standard input; `--check` compares `gh secret list`; another provider is given the names and its guide. `update`: `handle_ci_update`, which rewrites `ci_files` for `[ci] provider` and `[deploy] target`, with the project's workbench and Python, and `.env.example`, through `write_generated_files`, pruning another provider's generated files. |
 | `src/haute/cli/_app.py` | `haute app` — the `app` group and its `build`, `serve` and `migrate` commands: `AppBuildConfig` and `handle_app_build` (the working directory's release through `build_release` into the directory given, `RELEASE_DIR` by default, and with `--image` its image through `build_image`), `AppServeConfig` (with `reader`, `--reader`) and `handle_app_serve` (the release built into `RELEASE_DIR`, the quote store at `QUOTES_FILE` made and migrated through `_local_store`, then `create_app` with the git identity from `get_identity` as its local principal, refused without one, and that store, a reader with `--reader`, served by `uvicorn` on `SERVE_HOST` alone), `handle_app_migrate` (`migrate_store` on the `--url` given, else `quote_store_url`, refused naming `STORE_URL_ENV` without either); any fault Haute or SQLAlchemy names (a release, a project or a store that is not as the command needs it) said as a Click error through `_said`, never a traceback, and a note when `[workbench.app] host` is unset. |
-| `src/haute/cli/_smoke.py` | `haute smoke` — `SmokeConfig`, `handle_smoke`, sends each test quote to a live endpoint (Databricks or HTTP) as a request of its own through `_smoke_files`, which reports each file from `price_test_quotes_live`. |
+| `src/haute/cli/_smoke.py` | `haute smoke` — `SmokeConfig`, `handle_smoke`, waits for a Databricks endpoint through the serving pair's client (`haute.deploy._databricks_serving`), then sends each test quote to a live endpoint (Databricks or HTTP) as a request of its own through `_smoke_files`, which reports each file from `price_test_quotes_live`. |
 | `src/haute/cli/_status.py` | `haute status` — `StatusConfig`, `handle_status`, MLflow Model Registry lookup. |
-| `src/haute/cli/_impact.py` | `haute impact` — `ImpactConfig`, `handle_impact`, staging-vs-production comparison report; `_impact_databricks`/`_impact_http` transport backends. |
+| `src/haute/cli/_impact.py` | `haute impact` — `ImpactConfig`, `handle_impact`, staging-vs-production comparison report on `_impact_records` (the `[safety]` portfolio sample, else the test quotes); `_impact_databricks` (the serving pair's client)/`_impact_http` transport backends. |
 | `src/haute/cli/_gpu_setup.py` | `haute gpu-setup` — `GpuSetupConfig`, `handle_gpu_setup`, swaps `xgboost-cpu` for XGBoost's CUDA build (or back) in the running interpreter and verifies it in a fresh process. |
 
 ## Key types and data structures
@@ -26,6 +27,7 @@ Every command uses a plain mutable `@dataclass` as a configuration value bag con
 `handle_*` function.
 
 - `InitConfig(target, ci, force=False, workbench=False)` — `_init_cmd.py`.
+- `CiSecretsConfig(check_only, verify)` — `_ci.py`.
 - `RunConfig(pipeline_file: Path)` — `_run.py`.
 - `LintConfig(pipeline_file: Path)` — `_lint.py`.
 - `TrainConfig(training_script: Path)` — `_train.py`.
@@ -69,21 +71,30 @@ without validating required positional arguments.
 | `haute lint [PIPELINE_FILE]` | Optional path resolved exactly as `run`. | Missing/ambiguous file, parse failure, empty graph, or any collected structural issue exits 1; a clean graph exits 0. |
 | `haute train TRAINING_SCRIPT` | Required positional path. | Omission is a Click exit-2 usage error. Missing/unsafe/unloadable script, missing `job`, script exception, or `job.run` failure exits 1; successful training exits 0. |
 | `haute serve` | `--host TEXT` (CLI → `[server].host` → `localhost`); `--port INTEGER` (effective default `8000`, not shown by current help); `--no-browser`. Port range is not Click-validated: negative/out-of-range integers reach socket setup and may raise rawly. | Port conflict or missing production static build exits 1; malformed `haute.toml` propagates `ConfigError`. A browser-launch failure prints the manual URL but leaves the running server path intact. |
-| `haute deploy [PIPELINE_FILE]` | Optional path; `--model-name TEXT`; `--dry-run`; `--endpoint-suffix TEXT`. | Non-dry-run outside recognised CI exits 1. Resolution, validation, either validation's quote pass or the separately printed quote pass, missing backend dependency, unimplemented target, and backend failure all exit 1. Dry-run success exits 0 before backend dispatch. |
-| `haute smoke` | `--endpoint-suffix TEXT`. | Missing config/quotes/endpoint, missing Databricks SDK, an installed SDK too old to expose the required `NotFound` error type, unsupported target, readiness timeout, health-request failure, any scoring request failure, an unreadable test-quote file, or an expected output the answer does not match exits 1. Missing and outdated SDKs produce distinct install/upgrade guidance. A quote without an `expected` output passes on any answer. |
+| `haute deploy [PIPELINE_FILE]` | Optional path; `--model-name TEXT`; `--dry-run`; `--endpoint-suffix TEXT`. | Non-dry-run outside recognised CI exits 1. A non-dry-run deploy whose target's credentials are not all set (`haute.deploy.check_credentials`) exits 1 before parsing, naming each. Resolution, validation, either validation's quote pass or the separately printed quote pass, missing backend dependency, unimplemented target, and backend failure all exit 1. Dry-run success exits 0 before backend dispatch. |
+| `haute ci secrets` | `--check` (report, set nothing); `--no-verify` (skip the Databricks check). | GitHub only, through `gh`: another provider exits 1 naming the secrets to add and its guide; no `gh` on `PATH` exits 1 saying where to get it. A secret unset in `.env` and the environment, or still `.env.example`'s placeholder, exits 1 before anything is set, as does a Databricks pair the workspace refuses (its token redacted from the message). A `gh` failure exits 1 with its message. `--check` exits 1 naming each missing secret, 0 when all are set. Values are never printed. |
+| `haute ci update` | None. | Exits 1 without `haute.toml`, for an unreadable Python declaration or `[workbench]` table, or an unknown `[ci] provider`. Otherwise rewrites the generated CI files and `.env.example`, reports each updated or unchanged, and exits 0. |
+| `haute smoke` | `--endpoint-suffix TEXT`. | Missing config/quotes/endpoint, a missing serving pair (named before any request), an endpoint update Databricks reports failed or cancelled (with its state message and build and server log tails), an endpoint that does not exist (at once), missing Databricks SDK, an installed SDK too old to expose the required `NotFound` error type, unsupported target, readiness timeout, health-request failure, any scoring request failure, an unreadable test-quote file, or an expected output the answer does not match exits 1. Missing and outdated SDKs produce distinct install/upgrade guidance. A quote without an `expected` output passes on any answer. |
 | `haute status [MODEL_NAME]` | Optional model name; `--version-only`. | Missing resolvable name or MLflow dependency exits 1. Normal mode prints “not found” and exits 0; `--version-only` prints only a version on success and raises `ClickException` (exit 1, stderr only) when no version exists. |
-| `haute impact` | `--sample INTEGER` (default `10000`; every value `<=0` currently means all, although help documents `0`); `--batch-size INTEGER` (default `500`, minimum `1`); `--endpoint-suffix TEXT`. | Invalid batch size exits 2. Missing config/suffix/dataset or missing Databricks SDK exits 1. Endpoint/scoring/arithmetic/write failures propagate. Unsupported transport returns successfully without a report only after TOML, suffix, and dataset/parquet loading have succeeded; otherwise success writes `impact_report.md` and exits 0. |
+| `haute impact` | `--sample INTEGER` (default `10000`; every value `<=0` currently means all, although help documents `0`); `--batch-size INTEGER` (default `500`, minimum `1`); `--endpoint-suffix TEXT`. | Invalid batch size exits 2. Missing config/suffix, a named `impact_dataset` that does not exist, no test quotes to compare without one, a missing serving pair or missing Databricks SDK exits 1. Endpoint/scoring/arithmetic/write failures propagate. Unsupported transport returns successfully without a report only after TOML, suffix, and dataset/parquet loading have succeeded; otherwise success writes `impact_report.md` and exits 0. |
 | `haute gpu-setup` | `--check` (report only); `--cpu` (switch back to `xgboost-cpu`); `--yes`/`-y` (skip confirmation). | `--check` exits 0. Exactly one of `xgboost-cpu`/`xgboost` must be installed, else exit 1. The target build already installed exits 0 without changes. Any switch on macOS (which installs the standard `xgboost` package and has no CUDA build), or a CUDA request without an `nvidia-smi` GPU, exits 1 before installing. A declined confirmation, a failed uninstall/install step (the message names the command that restores the previous build), an XGBoost that no longer imports, or a fresh-process CUDA check that disagrees with the request exits 1. |
 
 ## Control flow
 
 **`init`**: `handle_init` checks for an existing `haute.toml` (abort unless `--force`), resolves the
 project name from `pyproject.toml` (creating/patching it via `_ensure_haute_dependency`, which does
-a structural TOML edit rather than string templating so existing content survives), creates the
+a structural TOML edit rather than string templating so existing content survives, and adds a
+`[dependency-groups]` dev group of ruff, mypy and pytest and a `[tool.mypy]` table only when the
+file has none: `mypy_path = "rating"` and `explicit_package_bases = true`, so the generated CI's
+`uv run mypy .` resolves what `rating/main.py` imports from its own folder (`utility`, and
+`modules` for its submodels) as Python does when it runs the file, and an override ignoring
+missing imports for `haute`, `catboost`, `xgboost`, `lightgbm` and `sklearn`), creates the
 `rating/` package tree (including `rating/utility/__init__.py` and
 `rating/utility/features.py`), an empty `rating/config/`, and the empty `rating/files/data/`, `rating/files/models/` and `rating/files/params/` folders where versioned data, model and parameter files go ([pipeline-config](../pipeline-config/high-level.md)), writes `haute.toml` via `haute._scaffold.haute_toml` (with the `[workbench]` table when
 `--workbench` is given, and then `forms/form.json` via `haute._scaffold.starter_form`),
-writes `.env.example`, writes starter tests, writes CI workflow files for the chosen provider
+writes `.env.example`, writes starter tests, writes `.python-version` with the project's Python when it has none
+(`haute._project_python.project_python_version`), writes CI workflow files for the chosen
+provider on that Python
 (pruning a *different* provider's stale files first on `--force`), installs a pre-commit hook into
 `.githooks/` and — if inside a git repo — `.git/hooks/`, and appends `.gitignore` guard entries via
 `haute._gitignore_guard.ensure_gitignore_guards`. A pre-existing root `main.py` is deleted and
@@ -145,7 +156,10 @@ mode rather than serving source through an unrelated generated bundle.
 
 **`deploy`**: `handle_deploy` loads `DeployConfig` from `haute.toml` if present, else builds one from
 CLI args via `resolve_pipeline_file` + `DeployConfig.from_cli_args`. Blocks non-dry-run deploys
-outside CI (`_detect_ci_env`). A TOML-configured pipeline path is also normalised through
+outside CI (`_detect_ci_env`). A non-dry-run deploy then loads the project's `.env` and runs
+`haute.deploy.check_credentials` before anything else: a Databricks deploy needs its MLflow
+destination and the serving pair, and every one missing is named at once, in seconds rather than
+after resolution and validation. A TOML-configured pipeline path is also normalised through
 `resolve_pipeline_file`; all command paths therefore share one missing/ambiguous-path contract.
 Applies CLI overrides (`pipeline_file`, `model_name`,
 `endpoint_suffix`) on top of the loaded config via `.override(**overrides)`. Then: `resolve_config`
@@ -162,11 +176,13 @@ traceback.
 **`smoke`**: requires `haute.toml`; loads `DeployConfig`, applies an optional endpoint-suffix
 override, requires a non-empty `tests/quotes/*.json` set, then dispatches on
 `resolve_transport(deploy_config).kind`:
-  - `"databricks"` (`_smoke_databricks`): polls `ws.serving_endpoints.get(name)` every 30s up to 30
-    minutes waiting for `state.ready == "READY"` and `config_update in ("", "NOT_UPDATING")`, then
-    queries the endpoint once per test quote (`dataframe_records=[input]`; `None` predictions are a
-    failure). Only the SDK's explicit not-found exception is retryable; every other endpoint
-    lookup failure stops immediately with its cause.
+  - `"databricks"` (`_smoke_databricks`): reaches the endpoint with the serving pair's client
+    (`serving_workspace_client`, as deploy does: BUG-22's default-credential client failed in CI) and
+    waits with `wait_for_endpoint` until it is ready and not updating, then queries the endpoint once
+    per test quote (`dataframe_records=[input]`; `None` predictions are a failure). A deploy returns
+    once its endpoint serves, so the wait is short. An update Databricks reports failed or cancelled
+    stops at once with its reason and log tails; an endpoint that does not exist stops at once; every
+    other lookup failure stops immediately with its cause.
   - `"http"` (`_smoke_http`): hits `<url>/health` once, then POSTs each test quote alone via
     `score_http_endpoint_batched(url, [input], batch_size=1)`. An explicit suffix is rejected
     because an HTTP deployment must supply its complete `[ci.staging].endpoint_url`.
@@ -184,12 +200,31 @@ override, requires a non-empty `tests/quotes/*.json` set, then dispatches on
 scripting) and raises `click.ClickException` — rather than printing a misleading `0` — when no
 version is registered.
 
+**`ci secrets`**: `handle_ci_secrets` reads the project's `haute.toml`; the deploy target's
+`ci_secret_names` are the secrets its generated deploy, smoke, impact and tag steps read. On
+GitHub it needs `gh`: `--check` lists the repository's secrets (`gh secret list --json name`) and
+marks each name set or missing. Otherwise each value is read from `.env`, else the environment,
+refused unset or equal to `.env.example`'s placeholder, and for Databricks each pair is checked
+against the workspace (`workspace_user`, `current_user.me()` with that host and token) unless
+`--no-verify`; only then is each passed to `gh secret set NAME` on its standard input. The
+module is `gh`'s subprocess chokepoint: `_gh` resolves it with `shutil.which`, and `_run_gh`
+runs it in the project with UTF-8 pinned, a failure raised with `gh`'s own message.
+
+**`ci update`**: `handle_ci_update` regenerates the CI files `haute init` would write for the
+project's `[ci] provider` and `[deploy] target`, with its workbench and Python, plus
+`.env.example`, so a project takes up a newer haute's workflows; another provider's generated files
+are pruned, and nothing else is touched.
+
 **`gpu-setup`**: `installed_xgboost` reads the installed distribution (exactly one of `xgboost-cpu` and `xgboost`, which own the same files); `haute._host_memory.nvidia_gpu_name` asks `nvidia-smi`; this module is the subprocess chokepoint for the installer and the fresh-interpreter check. `--check` prints both plus `xgboost_gpu_status()`. Otherwise the target is `xgboost` (or `xgboost-cpu` with `--cpu`) pinned to the installed version; `installer_commands` uninstalls the current distribution then installs the target into `sys.executable`, through `uv pip --python` when `uv` is on the PATH, else `python -m pip`. `fresh_cuda_build` then imports XGBoost in a new interpreter and checks `build_info()['USE_CUDA']` matches the request. The running server keeps its imported build until restarted, and `uv sync` restores the locked `xgboost-cpu`.
 
-**`impact`**: requires `haute.toml` and `[safety].impact_dataset`; resolves the staging suffix (CLI
+**`impact`**: requires `haute.toml`; resolves the staging suffix (CLI
 flag wins, else `deploy_config.ci.staging_endpoint_suffix`, else loud error on Databricks transport;
-on other transports an empty suffix yields `staging_name == prod_name`); reads and optionally
-samples (`df.sample(n=..., seed=42)`) the impact dataset parquet; dispatches to
+on other transports an empty suffix yields `staging_name == prod_name`); `_impact_records` reads and
+optionally samples (`df.sample(n=..., seed=42)`) the parquet `[safety].impact_dataset` names, or,
+with none named, compares the test quotes' requests (`test_quote_requests`, as smoke sends them)
+one quote per request as smoke sends them (an endpoint a Workbench Input answers takes exactly
+one), with segments from their top-level text fields, and says so (BUG-23: the scaffold's default
+sample sat in the gitignored `data/`); dispatches to
 `_impact_databricks`/`_impact_http` based on `resolve_transport(...).kind`; Databricks probes
 the production endpoint first, while HTTP treats a missing production URL as first deploy and
 otherwise discovers absence only when scoring yields HTTP 404. Both score staging and, when
@@ -291,16 +326,25 @@ Key files and what they cover:
   `_find_frontend_dir` walking-up-parents behaviour.
 - `test_cli_impact.py` / `test_cli_impact_gaps.py` — `impact` end-to-end and edge cases: unsupported
   target, Databricks SDK not installed, "not found" vs. genuine-error classification for the
-  first-deploy check.
+  first-deploy check, and, with no portfolio sample, the test quotes compared (their requests,
+  segmented by their text fields) or, with none, a refusal.
 - `test_cli_status.py` — `status` output formatting and that catalog/schema from `haute.toml` are
   threaded through to `get_deploy_status`.
 - `test_cli_deploy.py` — deploy CI gating, dry-run, resolution/validation/quote failures,
   exact resolved-object dispatch, dependency/unsupported-target errors, and suffix overrides.
-- `test_cli_smoke.py` — Databricks polling loop (including the "not ready" retry path), HTTP smoke
+- `test_cli_smoke.py` — Databricks polling loop (including the "not ready" retry path), the client
+  built from the serving pair alone (BUG-22) and refused before any request without it, a failed
+  update or a missing endpoint failing at once, HTTP smoke
   path, the unsupported-target error, each test quote sent as a request of its own on both
   transports, an expected output checked within tolerance into a Workbench Output's tables
   (and refused for two rows or a non-object answer), a failed request reported by its row
   while the rest are priced, and an unreadable file.
+- `test_cli_ci.py` — `ci secrets`: every secret set from `.env` on `gh`'s standard input and never
+  printed, `.env` winning over the environment that fills its gaps, an unset or placeholder value,
+  a pair Databricks refuses (its token redacted) and a `gh` failure each setting nothing or
+  failing, `--no-verify`, `--check` either way, no `gh`, and another provider given the names;
+  `ci update` rewriting edited and missing generated files and following a change of provider;
+  `init` naming the secrets the first deploy needs.
 - `test_cli_ux.py` — cross-cutting UX contracts: shared `ENDPOINT_SUFFIX_HELP` string reused across
   commands, `init --force`, `train` progress-bar flushing, `status --version-only` exit codes,
   Windows pre-commit chmod skip.
@@ -312,7 +356,9 @@ Key files and what they cover:
   instruction, CI-provider detection, `serve` port-conflict detection, `impact`'s prod-exists
   failing loudly on non-404 errors.
 - `test_cli_init.py` — full scaffold structure, project naming, every `--target`/`--ci` combination,
-  the printed summary, `_ensure_haute_dependency` behaviour and its TOML-safety edge cases, and
+  the printed summary, `_ensure_haute_dependency` behaviour and its TOML-safety edge cases
+  (including a real `mypy .` run under the scaffolded `[tool.mypy]` resolving `rating/main.py`'s
+  imports of its own `utility` and `modules`), and
   `--force` re-init (including stale CI-file pruning), and `--workbench`.
 - `test_cli_no_shadow.py` — regression guard that `haute.cli` imports as a package and is not
   shadowed by a same-named module.

@@ -101,8 +101,19 @@ The four values you need are:
 !!! note "Why separate MLflow and `RATING` credentials?"
     Databricks token scopes can be narrow, so three credential spaces stay separate. The deploy logs and registers the model through MLflow with the `DATABRICKS_MLFLOW_*` pair, then creates or updates the serving endpoint with the `DATABRICKS_RATING_*` pair. The general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair is for data access in the editor and is never used by MLflow or by the deploy. The values can be the same workspace URL and token when one token's scopes cover everything - only the names differ, and the deploy fails with a clear error naming any missing variable before it contacts Databricks.
 
-!!! warning "Smoke and impact need the general pair for now"
-    The generated smoke and impact steps reach the staging and production endpoints through the Databricks SDK's default credentials, `DATABRICKS_HOST` and `DATABRICKS_TOKEN`, which the four secrets above do not provide, so those two steps fail to authenticate as generated. Until they read the `DATABRICKS_RATING_*` pair themselves, add `DATABRICKS_HOST` and `DATABRICKS_TOKEN` (the same values as your `RATING` pair) to the smoke and impact steps in your workflow file: their `env:` block on GitHub Actions and Azure DevOps, their `variables:` block on GitLab.
+The deploy, smoke, impact and release-tag steps all read these four, and `haute deploy` names every one that is missing before it does anything else.
+
+### On GitHub: let Haute set them
+
+On GitHub, one command stores all four. Copy `.env.example` to `.env` and fill in the four values (`.env` is gitignored, so it never reaches the repository), sign in to the [GitHub CLI](https://cli.github.com) once with `gh auth login`, then run this in your project:
+
+```powershell
+haute ci secrets
+```
+
+It checks that Databricks accepts both pairs, then stores the four values as encrypted repository secrets, printing their names and never their values. `haute ci secrets --check` lists which of the four the repository has.
+
+### By hand, or on another CI provider
 
 How to add them depends on your CI provider:
 
@@ -114,7 +125,7 @@ How to add them depends on your CI provider:
     It depends on where your code is hosted. If you access your project on **github.com**, you're using GitHub. If it's **gitlab.com** (or a company GitLab server), you're using GitLab. If it's **dev.azure.com**, you're using Azure DevOps. If you're not sure, ask your IT team or tech lead: *"Where is our code repository hosted?"* They'll tell you GitHub, GitLab, or Azure DevOps.
 
 !!! note "You don't need credentials on your laptop"
-    You never run `haute deploy` locally, so you don't need a `.env` file with passwords on your machine. The CI runner has the credentials; you just merge to main. The `.env.example` file in your project is a reference for whoever sets up the CI secrets.
+    You never run `haute deploy` locally, so you don't need a `.env` file with passwords on your machine. The CI runner has the credentials; you just merge to main. The `.env.example` file in your project is a reference for whoever sets up the CI secrets, and `haute ci secrets` reads the values from a `.env` made from it.
 
 ---
 
@@ -142,6 +153,9 @@ CREATE SCHEMA IF NOT EXISTS main.pricing;
 ```
 
 You can name the schema anything you like - `pricing` is a sensible default.
+
+!!! tip "No `main` catalog?"
+    Newer workspaces often have no `main` catalog: theirs is usually called `workspace`. Use the catalog your workspace has, both in the `CREATE SCHEMA` command and in `haute.toml`. `haute deploy` checks the schema exists before it uploads the model, and if it does not, names the catalogs your token can see.
 
 ### Update `haute.toml`
 
@@ -228,7 +242,7 @@ serving_scale_to_zero = true
 dir = "tests/quotes"
 
 [safety]
-impact_dataset = "data/portfolio_sample.parquet"
+# impact_dataset = "tests/impact/portfolio_sample.parquet"
 
 [safety.approval]
 min_approvers = 2
@@ -253,7 +267,7 @@ endpoint_suffix = "-staging"
 | `serving_workload_size` | How much compute to allocate - `Small`, `Medium`, or `Large` | `"Small"` |
 | `serving_scale_to_zero` | Whether the endpoint shuts down when idle (saves money) | `true` |
 | `dir` (`[test_quotes]`) | Where the [test quotes](../index.md#test-quotes) are | `"tests/quotes"` |
-| `impact_dataset` | The Parquet portfolio sample the impact step scores. CI can read only files in the repository, and `haute init` gitignores `data/`, so commit a sample you are allowed to share somewhere else (for example `tests/impact/portfolio_sample.parquet`) and point this at it | `"tests/impact/portfolio_sample.parquet"` |
+| `impact_dataset` | The Parquet portfolio sample the impact step scores. Left unset, as `haute init` leaves it, the impact step compares your test quotes instead. CI can read only files in the repository, and `haute init` gitignores `data/`, so commit a sample you are allowed to share somewhere else (for example `tests/impact/portfolio_sample.parquet`) and point this at it | `"tests/impact/portfolio_sample.parquet"` |
 | `min_approvers` | A record of how many approvals your team expects; your CI provider's settings enforce it | `2` |
 | `provider` | The CI provider `haute init` generated workflows for | `"github"` |
 | `endpoint_suffix` | Added to the endpoint, model and experiment names for staging deploys | `"-staging"` |
@@ -270,7 +284,7 @@ Once your configuration is set up and CI secrets are in place, you can deploy th
 4. **Review the impact report** - download it from CI if the impact job ran, and check the premium changes make sense
 5. **Promote deliberately** - use the separate production workflow and any CI-provider approval rule your team configured
 
-The first deploy creates the serving endpoint, but `haute deploy` returns after Databricks accepts the create or update request. Provisioning can take **5–10 minutes**. `haute smoke` waits for the endpoint to report **Ready**, but the generated smoke job stops after 10 minutes, so raise that job's timeout or rerun smoke and impact once the endpoint is **Ready**.
+`haute deploy` waits until the endpoint serves the new version before it finishes. A first deploy builds the model's environment and starts its container, which can take **10–20 minutes**; later deploys are usually quicker, and the generated deploy job allows an hour. If Databricks cannot build or start the model, the deploy fails with its reason and the end of the build log, and the endpoint keeps serving the previous version. Smoke and impact then run against a ready endpoint.
 
 !!! success "What does success look like?"
     After Databricks reports the endpoint **Ready** and the corresponding smoke and impact commands have run, you should see:
@@ -377,9 +391,35 @@ Tokens have a lifetime (default 90 days). If your deploy suddenly fails with an 
 
 With `serving_scale_to_zero = true`, the endpoint shuts down when it's idle. The first request after idle can take 30–60 seconds. For production endpoints that need consistent response times, set `serving_scale_to_zero = false` in `haute.toml`.
 
-### Missing dependency error on the endpoint
+### The endpoint fails to build or start
 
-The serving environment installs the exact Haute version CI deployed with (`haute==<version>`, on Python 3.11). If you see `No module named 'haute'` in the endpoint logs, make sure that version is published and can be installed from your Databricks workspace.
+`haute deploy` fails with Databricks' reason and the end of the endpoint's build log. The serving environment installs, on your project's Python (`.python-version`):
+
+- the Haute that ran the deploy: `haute==<version>` from PyPI for a released Haute, or, when your project installs Haute from Git, that Haute itself, packed into the model as a wheel
+- MLflow and Polars at the versions CI used, and the packages they need
+
+A package that cannot be installed usually means the workspace cannot reach PyPI, or a Python version that Model Serving cannot provide: the build log names which.
+
+### "Databricks refused to create serving endpoint"
+
+The deploy registered the model version, but Databricks would not create or update the endpoint. The message ends with Databricks' reason. "Cannot create or update model serving endpoints, please try again later" comes from the workspace, not from your pipeline. Databricks refuses the change before it builds anything, and Haute adds the reason Databricks gives with it:
+
+- **"Databricks has marked the workspace inactive"**: Databricks has deactivated the workspace, so it refuses every compute and serving request, a SQL warehouse start included, and retrying won't help. Sign in to the workspace in a browser, then deploy again: a deactivated Free Edition workspace has come back after a sign-in, while requests from CI did not bring it back. If it's still inactive, ask its account admin or Databricks support.
+- **No further reason**: on [Databricks Free Edition](https://docs.databricks.com/aws/en/getting-started/free-edition-limitations), the number of active endpoints is limited, and a workspace that exceeds its usage quota has its compute shut down for the rest of the day. Wait, or delete an endpoint you no longer need on the **Serving** page, then deploy again.
+
+The registered version stays registered, and the next deploy registers and serves a new one.
+
+---
+
+## Keeping the CI files up to date
+
+The workflow files are generated by the Haute version that ran `haute init`. After upgrading Haute, run:
+
+```powershell
+haute ci update
+```
+
+It rewrites the generated workflow files and `.env.example` for the installed version, and leaves everything else alone. Review the change with `git diff`, then commit it.
 
 ---
 
@@ -389,11 +429,11 @@ Before your first deploy, confirm:
 
 - [ ] You have your Databricks workspace URL
 - [ ] You have a Personal Access Token
-- [ ] All four are added as CI secrets (`DATABRICKS_MLFLOW_HOST`, `DATABRICKS_MLFLOW_TOKEN`, `DATABRICKS_RATING_HOST`, `DATABRICKS_RATING_TOKEN`)
+- [ ] All four are added as CI secrets (`DATABRICKS_MLFLOW_HOST`, `DATABRICKS_MLFLOW_TOKEN`, `DATABRICKS_RATING_HOST`, `DATABRICKS_RATING_TOKEN`): `haute ci secrets --check` confirms it on GitHub
 - [ ] Unity Catalog is enabled with a catalog and schema
 - [ ] `haute.toml` has the correct `experiment_name`, `catalog`, and `schema`
 - [ ] Model Serving is available in your workspace
 - [ ] You have at least one test quote JSON file in `tests/quotes/`, in the [test quote format](../index.md#test-quotes)
-- [ ] `impact_dataset` points at a portfolio sample committed to the repository
+- [ ] `impact_dataset` points at a portfolio sample committed to the repository, or is left unset to compare the test quotes
 - [ ] CI/CD workflows are committed to your repository, with `pyproject.toml` and `uv.lock`
 - [ ] CI validation passes on a pull request

@@ -24,7 +24,7 @@ from haute.deploy._pruner import (
     prune_for_deploy,
 )
 from haute.errors import DeployError
-from haute.graph_utils import NodeType, PipelineGraph, flatten_graph
+from haute.graph_utils import NodeType, PipelineGraph
 
 if TYPE_CHECKING:
     from haute.deploy._request_rows import RequestRows
@@ -580,6 +580,58 @@ def _load_env(project_root: Path) -> None:
     load_dotenv(env_path, override=False)
 
 
+def _validate_python_versions(config: DeployConfig, project_root: Path) -> None:
+    """Refuse a deploy whose Python differs from the project's (haute._project_python).
+
+    The deployed model runs ``deployed_python_version``: the project's
+    ``.python-version`` pin, or else the Python this deploy runs on, which CI tested.
+    So the interpreter running the deploy must be the pinned one, a pinned project's
+    container ``python`` base image must run that same version, and any project's must
+    run one its ``requires-python`` admits (every release a minor-only tag can float
+    to). A project that pins no Python (one ``haute init`` predates) otherwise keeps
+    the base image it chose; an image Haute cannot read a version from (a custom
+    image, a digest pin) is the project's to keep in step.
+    """
+    from haute._project_python import (
+        admits,
+        base_image_python_version,
+        container_base_image,
+        deploy_python_mismatch,
+        pinned_python_version,
+        python_version_matches,
+        required_python,
+    )
+
+    mismatch = deploy_python_mismatch(project_root)
+    if mismatch is not None:
+        raise DeployError(mismatch, project_root=str(project_root))
+    if config.target not in _CONTAINER_BASED_TARGETS:
+        return
+    base_image = config.container.base_image
+    image_python = base_image_python_version(base_image)
+    if image_python is None:
+        return
+    serving = pinned_python_version(project_root)
+    if serving is not None and not python_version_matches(serving, image_python):
+        raise DeployError(
+            f"container.base_image {base_image!r} runs Python {image_python}, but the "
+            f"project runs Python {serving}. Set base_image in haute.toml to "
+            f"{container_base_image(serving)!r} so the container runs the Python the "
+            "pipeline was tested on.",
+            base_image=base_image,
+            python_version=serving,
+        )
+    allowed = required_python(project_root)
+    if allowed is not None and not admits(allowed, image_python):
+        raise DeployError(
+            f"container.base_image {base_image!r} runs Python {image_python}, which the "
+            f"project's requires-python ({allowed}) excludes. Set base_image in haute.toml "
+            "to a python image tagged with a release the project admits.",
+            base_image=base_image,
+            requires_python=str(allowed),
+        )
+
+
 def resolve_config(config: DeployConfig) -> ResolvedDeploy:
     """Parse pipeline, prune graph, detect I/O nodes, collect artifacts, infer schemas.
 
@@ -587,7 +639,11 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
     ``DeployConfig`` into a fully resolved ``ResolvedDeploy`` ready for
     deployment.
     """
-    from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
+    from haute._path_resolution import (
+        RuntimePathError,
+        resolve_runtime_file_path,
+        runtime_project_root_scope,
+    )
     from haute._project import resolve_pipeline_file
     from haute.deploy._bundler import collect_artifacts
     from haute.deploy._request_rows import record_digests, request_rows
@@ -629,14 +685,18 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
         project_root = canonical_pipeline.parent
     config.pipeline_file = canonical_pipeline
     _load_env(project_root)
+    _validate_python_versions(config, project_root)
 
-    # Parse the pipeline
-    full_graph = parse_pipeline_file(config.pipeline_file)
+    # Parse the pipeline as it runs, as `haute run` and the editor do: each submodel
+    # occurrence expanded into its own nodes (``submodel_runtime/<occurrence>/<node>``),
+    # so the response, the request input and the artefacts inside a submodel are
+    # found, bundled and scored, and the submodel's nodes run in its place.
+    full_graph = parse_pipeline_file(config.pipeline_file, flatten=True)
     if not full_graph.nodes:
         raise ValueError(f"No nodes found in {config.pipeline_file}")
     # One request input and one response, counting those inside submodels, as
     # save requires: a pipeline file written by hand can hold more.
-    validate_singleton_groups(flatten_graph(full_graph))
+    validate_singleton_groups(full_graph)
 
     # Find output node
     output_node_id = find_output_node(full_graph)
@@ -721,28 +781,32 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
         # same model bytes (not a live MLflow lookup), and so the schema cache key
         # reflects the served model identity.
         artifact_paths = {name: str(path) for name, path in artifacts.items()}
-        input_schema = infer_input_schema(pruned_graph, deploy_inputs[0])
-        # Plan the served batch strategy first: it needs only the one-row
-        # sample, and a target that scores batches in process must refuse an
-        # unprovable group-by before the schema dry-run tries to run one.
-        # Container targets score batches in a hard-capped worker; the
-        # Databricks pyfunc target scores them in the serving process.
-        batch_runtime: DeployBatchRuntime = (
-            "hard_capped_worker" if config.target in _CONTAINER_BASED_TARGETS else "in_process"
-        )
-        execution_policy = infer_deploy_execution_policy(
-            pruned_graph,
-            output_node_id,
-            deploy_inputs,
-            artifact_paths=artifact_paths,
-            batch_runtime=batch_runtime,
-        )
-        output_schema = infer_output_schema(
-            pruned_graph,
-            output_node_id,
-            deploy_inputs,
-            artifact_paths=artifact_paths,
-        )
+        # Schema inference re-resolves the graph's relative paths; scoping them to
+        # the project root validated above makes it read the files that check
+        # admitted, never one outside the project.
+        with runtime_project_root_scope(config.pipeline_file, project_root=project_root):
+            input_schema = infer_input_schema(pruned_graph, deploy_inputs[0])
+            # Plan the served batch strategy first: it needs only the one-row
+            # sample, and a target that scores batches in process must refuse an
+            # unprovable group-by before the schema dry-run tries to run one.
+            # Container targets score batches in a hard-capped worker; the
+            # Databricks pyfunc target scores them in the serving process.
+            batch_runtime: DeployBatchRuntime = (
+                "hard_capped_worker" if config.target in _CONTAINER_BASED_TARGETS else "in_process"
+            )
+            execution_policy = infer_deploy_execution_policy(
+                pruned_graph,
+                output_node_id,
+                deploy_inputs,
+                artifact_paths=artifact_paths,
+                batch_runtime=batch_runtime,
+            )
+            output_schema = infer_output_schema(
+                pruned_graph,
+                output_node_id,
+                deploy_inputs,
+                artifact_paths=artifact_paths,
+            )
         if config.output_fields is not None:
             fields = config.output_fields
             available = list(output_schema)

@@ -268,13 +268,26 @@ class DataOutputLakehouseConfig(_DataOutputCommon, total=False):
     path: Required[str]
 
 
+class DataOutputDatabricksConfig(TypedDict, total=False):
+    # No ``mode``: it names the polars sink/write call, which a table load has none of.
+    outputType: Required[Literal["databricks"]]
+    http_path: Required[str]
+    table: Required[str]
+    write_mode: Literal["overwrite", "append"]
+    arguments: dict[str, Any]
+
+
 DataOutputConfig: TypeAlias = (
-    DataOutputFileConfig | DataOutputDatabaseConfig | DataOutputLakehouseConfig
+    DataOutputFileConfig
+    | DataOutputDatabaseConfig
+    | DataOutputLakehouseConfig
+    | DataOutputDatabricksConfig
 )
 DATA_OUTPUT_CONFIG_TYPES = (
     DataOutputFileConfig,
     DataOutputDatabaseConfig,
     DataOutputLakehouseConfig,
+    DataOutputDatabricksConfig,
 )
 
 

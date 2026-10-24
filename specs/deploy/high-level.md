@@ -65,8 +65,9 @@ Out of scope (owned elsewhere):
 **Resolution.** Given a `DeployConfig` (loaded from `haute.toml`, CLI args, or
 constructed programmatically), `resolve_config()` first resolves the pipeline through
 the canonical project resolver and rejects a configured-project pipeline that resolves
-outside that project (including through a symlink). It then parses the pipeline, finds the single
-node marked as output, prunes the graph to that node's ancestors (keeping only the live
+outside that project (including through a symlink). It then parses the pipeline into the graph that runs, each
+submodel occurrence expanded into its own nodes as `haute run` and the editor expand it,
+finds the single node marked as output, prunes the graph to that node's ancestors (keeping only the live
 branch of any `liveSwitch`), identifies the API input node(s), collects supported artefacts
 the pruned path references, and dry-runs the graph once to infer input and output
 schemas. The result is a `ResolvedDeploy` — the single handoff object every backend
@@ -207,8 +208,7 @@ input's rows; a group-by, an expression that reads other rows (an aggregate, a w
 shift, a rank) or an online Optimiser Apply (which answers in quote-id order) makes one
 quote's answer depend on the others, and so can a join with another part of the request;
 and a response nesting rows derived from the request, code the proof cannot follow, an
-Optimiser Apply that loads its result from MLflow when served and a submodel occurrence
-the deployed graph still holds (BUG-18) cannot be proved. A declined quote is a flag column
+Optimiser Apply that loads its result from MLflow when served cannot be proved. A declined quote is a flag column
 on its answer rather than a filtered-out row, so a batch keeps one row per quote. A
 Workbench Input reads one quote per request and its response is the workbench's tables,
 which hold no row per quote, so its deployment answers one quote per request and its reader
@@ -248,6 +248,11 @@ does not carry. `validate_deploy` refuses it, naming the module and the file tha
 it. Imports that resolve from installed packages are for the serving environment to
 provide. The served preamble's names reach every code box, as in the editor: a bundled
 External File's code sees them beside `obj`, and a Model Score's code beside `model`.
+A pipeline's submodel modules are never bundled, and need not be: deploy serves the
+expanded graph, which carries each occurrence's nodes itself, and runs only its preamble,
+which never holds the pipeline file's `from modules import ...` (the parser leaves that
+out as generated code). A `modules` import that reached the served preamble, written in a
+definition file's own preamble, would be refused like any other unbundled project import.
 
 **Packaging and shipping.** Two backends are implemented:
 - **Databricks**: logs the pipeline as an `mlflow.pyfunc.PythonModel` (models-from-code),

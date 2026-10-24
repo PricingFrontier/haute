@@ -398,28 +398,16 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
         "os.getenv",
     ),
     (
-        "src/haute/deploy/_mlflow.py",
-        "<module>._check_databricks_connectivity",
+        "src/haute/deploy/_databricks_serving.py",
+        "<module>.serving_credentials",
         "DATABRICKS_RATING_HOST",
-        "os.environ.get",
+        "os.environ[]",
     ),
     (
-        "src/haute/deploy/_mlflow.py",
-        "<module>._check_databricks_connectivity",
+        "src/haute/deploy/_databricks_serving.py",
+        "<module>.serving_credentials",
         "DATABRICKS_RATING_TOKEN",
-        "os.environ.get",
-    ),
-    (
-        "src/haute/deploy/_mlflow.py",
-        "<module>._create_or_update_serving_endpoint",
-        "DATABRICKS_RATING_HOST",
-        "os.environ.get",
-    ),
-    (
-        "src/haute/deploy/_mlflow.py",
-        "<module>._create_or_update_serving_endpoint",
-        "DATABRICKS_RATING_TOKEN",
-        "os.environ.get",
+        "os.environ[]",
     ),
     # Tracking-destination resolution: each read happens per resolve call so
     # the selected backend always reflects the current environment.

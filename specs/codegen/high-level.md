@@ -29,10 +29,12 @@ valid-Python mutation and classification boundary is fixed by the accepted
 
 The generated file tree is the artifact saved to disk and later parsed for preview,
 execution, tracing, and deployment; it is not an intermediate serialization hidden from the
-user. A generated pipeline is also directly executable through `haute.Pipeline.run()`; for a
-hierarchical main file, `run()` imports each `pipeline.submodel(path)` file and runs its
-definition in place of the occurrence. The static parser resolves and flattens the child files
-before the full executor runs them.
+user. A generated pipeline is also directly executable through `haute.Pipeline.run()`; a
+hierarchical main file imports each definition module, `from modules import <name>`, as any
+Python file imports a module, registers `<name>.submodel` for each occurrence, and `run()`
+runs that definition in place of the occurrence. The static parser reads the same imports
+without importing anything, and resolves and flattens the child files before the full executor
+runs them.
 
 ## Scope
 
@@ -129,10 +131,15 @@ Out of scope (owned by neighbouring components):
   then the project root, as the executor imports it) under the same forms, recursively with
   cycle detection; a utility exports its literal `__all__` or, without one, its top-level
   names without a leading underscore. Support code includes each submodel definition's
-  preserved blocks. A preamble block (`if`, `try`, `for`, `with`) contributes whatever its
+  preserved blocks, and the pipeline file's submodel imports: each definition module's name
+  (`from modules import <name>`, derived from the definition's file) is a binding of "the
+  submodel imports". A preamble block (`if`, `try`, `for`, `with`) contributes whatever its
   branches bind, a loop's target and a `with` item's name included. Refused, with the rest of the naming rule's violations:
   - a node function name or input binding equal to a support-code binding (an input named
-    after a node is that node's collision);
+    after a node is that node's collision), with two exceptions for a submodel module's
+    name: a root occurrence named after a module takes nothing from the import, since an
+    occurrence's name is a string rather than a binding, and a node input of that name
+    hides nothing, since only the registrations read the module;
   - one name bound by two support-code sources to different provenance; re-importing one
     object (`import polars as pl` in a utility and the preamble) or writing one definition
     twice is one provenance;
@@ -173,9 +180,14 @@ Out of scope (owned by neighbouring components):
   in place of the first input.
 - **Submodel-aware.** A graph with no submodel occurrences produces exactly
   one file. A hierarchical graph emits each referenced definition file once,
-  in first-occurrence order, plus a main file with one explicit
-  `pipeline.submodel(path, name)` registration per occurrence
-  (with `instance_of=owner_name` for copies). Distinct definitions may not share
+  in first-occurrence order, plus a main file that imports every definition's
+  module in one `from modules import ...` statement and holds one explicit
+  `pipeline.submodel(<module>.submodel, name)` registration per occurrence
+  (with `instance_of=owner_name` for copies). A definition's file must be a module
+  directly in `modules/`, `modules/<name>.py`, imported as `<name>`: any other file, or a
+  name that is not a canonical identifier (ASCII letters, digits and underscores, not
+  starting with a digit), is a keyword, starts with `__` or is a Python built-in, cannot be
+  imported by that name, and codegen refuses it with a `ParseError` naming the definition. Distinct definitions may not share
   a file, unused registry definitions are rejected, and occurrence ids and
   aliases are never inferred. Parent connections name declared public port
   names; `in__<name>`/`out__<name>` exist only in graph JSON and are not
@@ -226,9 +238,9 @@ Out of scope (owned by neighbouring components):
   infrastructure: a decorator resolves its sidecar path against the pipeline's
   directory, the directory of the file that defines the function. A submodel
   definition file below its pipeline instead records the way back as the last
-  keyword of its constructor, `pipeline_dir=".."` (one `..` per folder of its
-  registration path), and the parser checks that value against where the file
-  sits.
+  keyword of its constructor, `pipeline_dir=".."` (one `..` per folder between its
+  file and the pipeline: `..` for `modules/<name>.py`), and the parser checks that
+  value against where the file sits.
 - **Canonical data I/O generation.** `dataInput` emits
   `@pipeline.data_input(config="config/data_input/<name>.json")` on a
   zero-parameter declaration, or on a `df` hook holding the post-load Polars
@@ -289,7 +301,13 @@ Out of scope (owned by neighbouring components):
   connect calls are laid out by `haute._source_layout` the way ruff lays them
   out; strings take double quotes unless single ones need fewer escapes; the
   imports are `import haute` then `import polars as pl`, the latter only when
-  the module refers to `pl`; and blank lines follow ruff's rules. A docstring is
+  the module refers to `pl`, and a pipeline with submodels then has its
+  `from modules import ...` in a block of its own, the module names in the order ruff's
+  isort gives them (constants, then classes, then the rest; within each, lowercased (not
+  casefolded) and then exact, in the natural order of the natord comparison ruff uses, so
+  `area_2` precedes `area_10`, while a digit run starting with `0` compares digit by digit,
+  so `x_02` precedes `x_1`) and, past 88 columns, in parentheses one per line with a
+  trailing comma; and blank lines follow ruff's rules. A docstring is
   emitted only for a non-empty description, except that a body with code whose
   first statement is itself a string keeps an empty docstring so that string
   stays code. Declarations carry no annotations, so a type checker does not
@@ -317,6 +335,15 @@ Out of scope (owned by neighbouring components):
   reports it as an `unkept_module_statement` diagnostic naming its lines and the two fixes (move
   it between the imports and the constructor, or wrap it in preserve markers), which degrades
   the document, so the file is never regenerated without it.
+
+  A pipeline file's imports from `modules` are neither kept nor preamble: codegen writes them
+  from the registrations (`_ast_helpers.is_submodel_import` recognises every spelling,
+  including the relative and aliased ones the parser refuses). Preamble extraction leaves
+  their lines out wherever they sit, and the textual extraction of a file that does not parse
+  leaves out its `from modules ... import` lines, a parenthesised import to its closing line.
+  `unkept_module_statements` does not report one, wherever it sits, since a save rewrites it
+  rather than dropping it. In a submodel definition file, an import from `modules` is
+  ordinary preamble.
 - **Global constants.** When the graph has global constants, or its declared constants file
   failed to load, the pipeline constructor gets `global_constants="config/global_constants.json"`
   after `description`, and every generated file, pipeline and submodel alike, binds
@@ -499,6 +526,10 @@ execution time on a mis-wired pipeline). Concretely:
   occurrence with malformed identity, or a definition port whose internal
   endpoint is invalid) -> `ParseError` with exact definition, instance, port,
   and edge context before any source is accepted.
+- **A definition whose file is not a `modules/<name>.py` module** (outside `modules/`,
+  nested below it, or named by something Python cannot import as that name) → `ParseError`
+  with the definition id and why no import can name the file, before any source is
+  generated; codegen never emits a registration that no import could resolve.
 - **`graph_to_code` called on a graph that actually has submodels** →
   `ConfigError`, because silently returning "the first file" would hand back
   an arbitrary submodel file instead of the main pipeline.

@@ -24,6 +24,7 @@ from haute._ast_helpers import (
     _extract_submodel_meta,
     _is_submodel_authored_decorator,
     _reject_reserved_global_constants_bindings,
+    is_submodel_import,
 )
 from haute._flatten import flatten_graph
 from haute._graph_builders import (
@@ -39,7 +40,13 @@ from haute._parser_bindings import (
 )
 from haute._parser_conservation import assert_parser_structure_conserved
 from haute._submodel_instances import rewrite_submodel_alias_references
-from haute._submodel_paths import is_pipeline_dir
+from haute._submodel_paths import (
+    SUBMODEL_PACKAGE,
+    MalformedSubmodelPathError,
+    is_pipeline_dir,
+    submodel_module_file,
+    submodel_module_name,
+)
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -57,21 +64,6 @@ _Connect4 = tuple[str, str, str | None, str | None]
 _SubmodelPortT = TypeVar("_SubmodelPortT", SubmodelInputPort, SubmodelOutputPort)
 
 
-def _submodel_path_expr(link: ast.Call) -> ast.expr | None:
-    """Return the path argument node of a ``submodel(...)`` link, if any.
-
-    Accepts the positional form ``submodel("path")`` and the keyword form
-    ``submodel(file="path")``. Returns ``None`` when the call carries no
-    path argument at all (e.g. ``pipeline.submodel()``).
-    """
-    if link.args:
-        return link.args[0]
-    for kw in link.keywords:
-        if kw.arg == "file":
-            return kw.value
-    return None
-
-
 @dataclass(frozen=True)
 class SubmodelRegistration:
     """One canonical occurrence registration in a parent source file."""
@@ -80,6 +72,200 @@ class SubmodelRegistration:
     name: str
     instance_of: str | None = None
     line: int | None = None
+    #: The name ``from modules import <binding>`` binds the definition's module to.
+    binding: str | None = None
+
+
+def _import_form(name: str, occurrence: str) -> str:
+    return (
+        f"`from {SUBMODEL_PACKAGE} import {name}`, then "
+        f"`pipeline.submodel({name}.submodel, {occurrence!r})`"
+    )
+
+
+def submodel_imports(tree: ast.Module) -> dict[str, str]:
+    """A pipeline file's submodel imports: each imported name, and the file it imports.
+
+    ``from modules import a, b`` imports ``modules/a.py`` and ``modules/b.py``. Every
+    other spelling of an import from ``modules`` (a relative or a dotted one, ``import
+    modules...``, an alias, ``*``) and a module imported twice are refused.
+    """
+    imports: dict[str, str] = {}
+    spans = [
+        (statement.lineno, statement.end_lineno or statement.lineno) for statement in tree.body
+    ]
+    for statement in tree.body:
+        if not is_submodel_import(statement):
+            continue
+        line = statement.lineno
+        end = statement.end_lineno or line
+        if sum(1 for first, last in spans if first <= end and line <= last) > 1:
+            # Codegen owns the import's lines; code sharing them would go with it.
+            raise ParseError(
+                "A submodel import has its lines to itself: other code on them "
+                "(after a ';') would be lost when the import is rewritten.",
+                line=line,
+                remediation="Put the other statement on a line of its own.",
+            )
+        if not (
+            isinstance(statement, ast.ImportFrom)
+            and statement.level == 0
+            and statement.module == SUBMODEL_PACKAGE
+        ):
+            raise ParseError(
+                f"A submodel module is imported as `from {SUBMODEL_PACKAGE} import <name>`, "
+                f"from the {SUBMODEL_PACKAGE}/ folder beside the pipeline; "
+                f"{ast.unparse(statement)!r} is not that form.",
+                line=line,
+                remediation=f"Write `from {SUBMODEL_PACKAGE} import <name>`.",
+            )
+        for alias in statement.names:
+            if alias.name == "*" or alias.asname is not None:
+                raise ParseError(
+                    f"A submodel module is imported by its own name, "
+                    f"`from {SUBMODEL_PACKAGE} import <name>`, without `as` or `*`.",
+                    line=line,
+                    remediation=f"Write `from {SUBMODEL_PACKAGE} import <name>`.",
+                )
+            file = submodel_module_file(alias.name)
+            try:
+                submodel_module_name(file)
+            except MalformedSubmodelPathError as exc:
+                raise ParseError(
+                    str(exc),
+                    name=alias.name,
+                    line=line,
+                    remediation=(
+                        f"Rename {file} and its import to a name a node could have, "
+                        "then register the renamed module."
+                    ),
+                ) from exc
+            if alias.name in imports:
+                raise ParseError("A submodel module is imported twice.", name=alias.name, line=line)
+            imports[alias.name] = file
+    return imports
+
+
+def _registration_name(link: ast.Call) -> str:
+    """The occurrence name, the registration's second argument (or ``name=``)."""
+    line = getattr(link, "lineno", None)
+    name_expression: ast.expr | None = None
+    if len(link.args) >= 2:
+        name_expression = link.args[1]
+        if any(kw.arg == "name" for kw in link.keywords):
+            raise ParseError(
+                "pipeline.submodel() contains a duplicate keyword.", field="name", line=line
+            )
+    else:
+        name_kws = [kw for kw in link.keywords if kw.arg == "name"]
+        if len(name_kws) > 1:
+            raise ParseError(
+                "pipeline.submodel() contains a duplicate keyword.", field="name", line=line
+            )
+        if name_kws:
+            name_expression = name_kws[0].value
+    if name_expression is None:
+        raise ParseError(
+            "pipeline.submodel() requires the occurrence name as its second argument.",
+            line=line,
+        )
+    if not isinstance(name_expression, ast.Constant) or not isinstance(name_expression.value, str):
+        raise ParseError(
+            "pipeline.submodel() name must be a string literal.",
+            field="name",
+            line=getattr(name_expression, "lineno", None),
+        )
+    if not name_expression.value or name_expression.value != name_expression.value.strip():
+        raise ParseError(
+            "pipeline.submodel() name must be non-empty and unpadded.",
+            field="name",
+            line=getattr(name_expression, "lineno", None),
+        )
+    name = name_expression.value
+    sanitized_name = _sanitize_func_name(name)
+    if sanitized_name != name:
+        raise ParseError(
+            "Submodel instance name must be a canonical identifier.",
+            name=name,
+            expected=sanitized_name,
+            line=line,
+        )
+    return name
+
+
+def _removed_path_form(path: str | None, occurrence: str, line: int | None) -> ParseError:
+    """The refusal of a registration by file path, giving the import form that replaces it."""
+    try:
+        module = submodel_module_name(path) if path is not None else None
+    except MalformedSubmodelPathError:
+        module = None
+    if module is not None:
+        remediation = f"Write {_import_form(module, occurrence)}."
+    else:
+        remediation = (
+            f"Move the definition into {SUBMODEL_PACKAGE}/<name>.py beside the pipeline, "
+            f"then write {_import_form('<name>', occurrence)}."
+        )
+    return ParseError(
+        f"pipeline.submodel() registers {occurrence!r} by its file path, which was removed: "
+        f"a pipeline imports each submodel module and registers its definition. {remediation}",
+        path=path,
+        line=line,
+        remediation=remediation,
+    )
+
+
+def _registration_definition(
+    link: ast.Call, imports: Mapping[str, str], occurrence: str
+) -> tuple[str, str]:
+    """The definition file a registration names, and the imported name it names it by.
+
+    The first argument is ``<module>.submodel`` for a module the file imports from
+    ``modules``; a file path (positional or ``file=``) is the removed form.
+    """
+    line = getattr(link, "lineno", None)
+    candidates = [*link.args[:1], *(kw.value for kw in link.keywords if kw.arg == "file")]
+    literal = next(
+        (
+            expression.value
+            for expression in candidates
+            if isinstance(expression, ast.Constant) and isinstance(expression.value, str)
+        ),
+        None,
+    )
+    if literal is not None or any(kw.arg == "file" for kw in link.keywords):
+        raise _removed_path_form(literal, occurrence, line)
+    if any(kw.arg == "definition" for kw in link.keywords):
+        raise ParseError(
+            "pipeline.submodel() takes the imported definition as its first argument, "
+            "`<module>.submodel`, not as definition=.",
+            line=line,
+            remediation=f"Write {_import_form('<module>', occurrence)}.",
+        )
+    definition = link.args[0] if link.args else None
+    if not (
+        isinstance(definition, ast.Attribute)
+        and definition.attr == "submodel"
+        and isinstance(definition.value, ast.Name)
+    ):
+        shown = "nothing" if definition is None else repr(ast.unparse(definition))
+        raise ParseError(
+            "pipeline.submodel() takes an imported submodel module's definition first, "
+            f"`<module>.submodel`, then the occurrence name; it was given {shown}.",
+            line=line,
+            remediation=f"Write {_import_form('<module>', occurrence)}.",
+        )
+    module = definition.value.id
+    file = imports.get(module)
+    if file is None:
+        raise ParseError(
+            f"pipeline.submodel() registers {module}.submodel, but {module!r} is not imported "
+            f"from {SUBMODEL_PACKAGE}.",
+            name=module,
+            line=line,
+            remediation=f"Add `from {SUBMODEL_PACKAGE} import {module}` with the imports.",
+        )
+    return file, module
 
 
 def _registration_keyword(link: ast.Call, name: str) -> str | None:
@@ -108,127 +294,99 @@ def _registration_keyword(link: ast.Call, name: str) -> str | None:
     return expression.value
 
 
-def extract_submodel_registrations(tree: ast.Module) -> list[SubmodelRegistration]:
-    """Extract occurrence-aware registrations while preserving source order."""
-    registrations: list[SubmodelRegistration] = []
-    for node in ast.iter_child_nodes(tree):
-        if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
-            continue
+def _is_submodel_registration(statement: ast.stmt) -> bool:
+    """Whether *statement* is a ``pipeline.submodel(...)`` call chain, whatever its arguments."""
+    if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+        return False
+    registers = False
+    current: ast.expr = statement.value
+    while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
+        registers = registers or current.func.attr == "submodel"
+        current = current.func.value
+    return registers and isinstance(current, ast.Name) and current.id == "pipeline"
 
+
+def registered_modules(statement: ast.stmt) -> list[str]:
+    """Each module a ``pipeline.submodel(<module>.submodel, ...)`` statement registers.
+
+    Every link of a chain counts (``pipeline.submodel(a.submodel, "a").submodel(...)``);
+    a link whose definition is not ``<module>.submodel`` names none.
+    """
+    if not _is_submodel_registration(statement):
+        return []
+    assert isinstance(statement, ast.Expr)
+    modules: list[str] = []
+    current: ast.expr = statement.value
+    while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
+        definition = current.args[0] if current.args else None
+        if (
+            current.func.attr == "submodel"
+            and isinstance(definition, ast.Attribute)
+            and definition.attr == "submodel"
+            and isinstance(definition.value, ast.Name)
+        ):
+            modules.append(definition.value.id)
+        current = current.func.value
+    return modules[::-1]
+
+
+def extract_submodel_registrations(
+    tree: ast.Module, *, imports: Mapping[str, str] | None = None
+) -> list[SubmodelRegistration]:
+    """Extract occurrence-aware registrations while preserving source order.
+
+    A registration names its definition through the file's submodel imports:
+    ``from modules import x`` then ``pipeline.submodel(x.submodel, "name")``. They are
+    read from *tree*, which then also refuses an import no registration uses, unless
+    *imports* gives them, for a caller extracting one statement at a time.
+    """
+    table = submodel_imports(tree) if imports is None else imports
+    registrations: list[SubmodelRegistration] = []
+    for node in tree.body:
+        if not _is_submodel_registration(node):
+            continue
+        assert isinstance(node, ast.Expr)
         links: list[ast.Call] = []
         current: ast.expr = node.value
         while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
             if current.func.attr == "submodel":
                 links.append(current)
             current = current.func.value
-        if not links or not (isinstance(current, ast.Name) and current.id == "pipeline"):
-            continue
 
         for link in reversed(links):
-            path_expression = _submodel_path_expr(link)
-            if path_expression is None:
-                raise ParseError(
-                    "pipeline.submodel() requires a file path.",
-                    line=getattr(link, "lineno", None),
-                )
-            if not (
-                isinstance(path_expression, ast.Constant) and isinstance(path_expression.value, str)
-            ):
-                raise ParseError(
-                    "pipeline.submodel() path must be a string literal; the "
-                    f"non-literal expression {ast.unparse(path_expression)!r} cannot be "
-                    "resolved at parse time and its submodel would be dropped.",
-                    line=getattr(path_expression, "lineno", None),
-                )
-            path = path_expression.value
-            if not path or path != path.strip():
-                raise ParseError(
-                    "pipeline.submodel() path must be non-empty and unpadded.",
-                    line=getattr(path_expression, "lineno", None),
-                )
+            line = getattr(link, "lineno", None)
+            remediation = (
+                "Write pipeline.submodel(<module>.submodel, <name>) and let the definition "
+                "declare its id."
+            )
             if any(keyword.arg == "label" for keyword in link.keywords):
                 raise ParseError(
                     (
                         "pipeline.submodel() no longer accepts label=; "
                         "an occurrence's name is the second argument."
                     ),
-                    path=path,
-                    line=getattr(link, "lineno", None),
-                    remediation=(
-                        "Write pipeline.submodel(<path>, <name>) and let the child "
-                        "file declare its definition id."
-                    ),
+                    line=line,
+                    remediation=remediation,
                 )
             for keyword in link.keywords:
                 if keyword.arg in {"definition_id", "instance_id", "alias"}:
                     raise ParseError(
-                        f"pipeline.submodel() takes the file and the occurrence name; "
+                        f"pipeline.submodel() takes the definition and the occurrence name; "
                         f"{keyword.arg}= is not accepted.",
-                        path=path,
                         keyword=keyword.arg,
-                        line=getattr(link, "lineno", None),
-                        remediation=(
-                            "Write pipeline.submodel(<path>, <name>) and let the child "
-                            "file declare its definition id."
-                        ),
+                        line=line,
+                        remediation=remediation,
                     )
-
-            name_expression: ast.expr | None = None
-            if len(link.args) >= 2:
-                name_expression = link.args[1]
-                if any(kw.arg == "name" for kw in link.keywords):
-                    raise ParseError(
-                        "pipeline.submodel() contains a duplicate keyword.",
-                        field="name",
-                        line=getattr(link, "lineno", None),
-                    )
-            else:
-                name_kws = [kw for kw in link.keywords if kw.arg == "name"]
-                if len(name_kws) > 1:
-                    raise ParseError(
-                        "pipeline.submodel() contains a duplicate keyword.",
-                        field="name",
-                        line=getattr(link, "lineno", None),
-                    )
-                if name_kws:
-                    name_expression = name_kws[0].value
-
-            if name_expression is None:
-                raise ParseError(
-                    "pipeline.submodel() requires the occurrence name as its second argument.",
-                    path=path,
-                    line=getattr(link, "lineno", None),
-                )
-            if not isinstance(name_expression, ast.Constant) or not isinstance(
-                name_expression.value, str
-            ):
-                raise ParseError(
-                    "pipeline.submodel() name must be a string literal.",
-                    field="name",
-                    line=getattr(name_expression, "lineno", None),
-                )
-            if not name_expression.value or name_expression.value != name_expression.value.strip():
-                raise ParseError(
-                    "pipeline.submodel() name must be non-empty and unpadded.",
-                    field="name",
-                    line=getattr(name_expression, "lineno", None),
-                )
-            name = name_expression.value
-            sanitized_name = _sanitize_func_name(name)
-            if sanitized_name != name:
-                raise ParseError(
-                    "Submodel instance name must be a canonical identifier.",
-                    name=name,
-                    expected=sanitized_name,
-                    line=getattr(link, "lineno", None),
-                )
+            name = _registration_name(link)
+            path, binding = _registration_definition(link, table, name)
             instance_of = _registration_keyword(link, "instance_of")
             registrations.append(
                 SubmodelRegistration(
                     path=path,
                     name=name,
                     instance_of=instance_of,
-                    line=getattr(link, "lineno", None),
+                    line=line,
+                    binding=binding,
                 )
             )
 
@@ -241,6 +399,45 @@ def extract_submodel_registrations(tree: ast.Module) -> list[SubmodelRegistratio
                 lines=[explicit_names[registration.name], registration.line],
             )
         explicit_names[registration.name] = registration.line
+    if imports is None:
+        imported_at = {
+            alias.name: statement.lineno
+            for statement in tree.body
+            if isinstance(statement, ast.ImportFrom) and statement.module == SUBMODEL_PACKAGE
+            for alias in statement.names
+        }
+        for registration in registrations:
+            line = imported_at.get(registration.binding or "")
+            if line is not None and registration.line is not None and line > registration.line:
+                raise ParseError(
+                    f"pipeline.submodel() registers {registration.binding}.submodel before "
+                    f"the file imports {registration.binding!r}: Python runs the file in "
+                    "order, so the registration would fail.",
+                    name=registration.binding,
+                    line=registration.line,
+                    remediation="Move the import above the registrations, with the imports.",
+                )
+        registered = {registration.binding for registration in registrations}
+        unused = [module for module in table if module not in registered]
+        if unused:
+            first = next(
+                statement.lineno
+                for statement in tree.body
+                if isinstance(statement, ast.ImportFrom)
+                and statement.module == SUBMODEL_PACKAGE
+                and any(alias.name == unused[0] for alias in statement.names)
+            )
+            raise ParseError(
+                f"The pipeline imports {', '.join(repr(module) for module in unused)} from "
+                f"{SUBMODEL_PACKAGE} without registering it: a submodel module is imported "
+                "only to register its definition.",
+                names=unused,
+                line=first,
+                remediation=(
+                    "Register it with pipeline.submodel(<module>.submodel, <name>), or "
+                    "remove the import."
+                ),
+            )
     return registrations
 
 
@@ -427,12 +624,14 @@ def parse_submodel_source(
     # Nested submodels are capped at one level. Returning the outer child
     # graph while dropping these authored references would corrupt the source
     # on its next save, so the producer contract is enforced as a typed error.
-    nested_registrations = extract_submodel_registrations(tree)
-    if nested_registrations:
+    nested_lines = [
+        statement.lineno for statement in tree.body if _is_submodel_registration(statement)
+    ]
+    if nested_lines:
         raise ParseError(
             "Nested submodels are not supported.",
             source_file=source_file,
-            nested_paths=[registration.path for registration in nested_registrations],
+            nested_lines=nested_lines,
         )
 
     func_bodies = _extract_function_bodies(source, tree=tree)

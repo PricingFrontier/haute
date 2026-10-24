@@ -48,11 +48,19 @@ Grouping the scoring steps:
 3. The nodes collapse into one `model_scoring` block, wired to the rest of the pipeline through its ports. Its panel shows **FILE** `modules/model_scoring.py` and its **INPUTS** and **OUTPUTS**.
 
 ??? note "In the pipeline file"
-    A submodel has no JSON sidecar. The pipeline's `.py` file registers each occurrence with a call such as `pipeline.submodel("modules/model_scoring.py", "model_scoring")`: the definition's file, then the occurrence's name on the canvas. An instance adds `instance_of="<name of the owning occurrence>"`. The definition file, `modules/<name>.py`, holds the submodel's nodes and a `haute.Submodel(...)` header with its `definition_id` and its `input_ports` and `output_ports`.
+    A submodel has no JSON sidecar. Its definition is a Python module, `modules/<name>.py` beside the pipeline: the submodel's nodes, and a `haute.Submodel(...)` header with its `definition_id` and its `input_ports` and `output_ports`. The pipeline's `.py` file imports the module and registers each occurrence of its definition:
+
+    ```python
+    from modules import model_scoring
+
+    pipeline.submodel(model_scoring.submodel, "model_scoring")
+    ```
+
+    The first argument is the imported definition, the second the occurrence's name on the canvas. An instance adds `instance_of="<name of the owning occurrence>"`. Because it's an ordinary import, your editor's go-to-definition and type checker follow it, and `python main.py` runs the submodel. Haute writes the import and the registrations when it saves; a submodel registered by its file path, `pipeline.submodel("modules/model_scoring.py", ...)`, is no longer read.
 
     | Setting in the editor | Stored as |
     |---|---|
-    | **Submodel name** | the definition file's name, and the occurrence's first name |
+    | **Submodel name** | the definition module's name (`modules/<name>.py`, imported as `from modules import <name>`), and the occurrence's first name |
     | Renaming the node | `alias`: the occurrence's name, which the pipeline file's connections use (a node downstream reads each output under its port name); the second argument of `pipeline.submodel(...)` |
     | **INPUTS**, **OUTPUTS** | the `input_ports` and `output_ports` of the definition file's `haute.Submodel(...)` header |
     | **Create Instance** | `instanceOf`: the owning occurrence's name, written as `instance_of="…"` in the instance's `pipeline.submodel(...)` |

@@ -25,11 +25,12 @@ def _legacy_demo(root: Path) -> Path:
     )
     parent = root / "main.py"
     parent.write_text(
-        'import haute\nimport polars as pl\n\npipeline = haute.Pipeline("demo")\n\n'
+        "import haute\nimport polars as pl\n\nfrom modules import Inputs\n\n"
+        'pipeline = haute.Pipeline("demo")\n\n'
         '@pipeline.polars(contract="opaque")\n'
         "def Polars_3(Inputs__output_1: pl.LazyFrame) -> pl.LazyFrame:\n"
         "    df: pl.LazyFrame\n    df = live_switch\n    return df\n\n"
-        'pipeline.submodel("modules/Inputs.py", definition_id="Inputs", '
+        'pipeline.submodel(Inputs.submodel, definition_id="Inputs", '
         'instance_id="old_instance", alias="Inputs", label="Inputs")\n'
         'pipeline.connect("Inputs", "Polars_3", source_port="output_1")\n',
         encoding="utf-8",
@@ -81,11 +82,12 @@ def _canonical_demo(root: Path, *, legacy_port: bool = False) -> Path:
     )
     parent = root / "main.py"
     parent.write_text(
-        'import haute\nimport polars as pl\n\npipeline = haute.Pipeline("demo")\n\n'
+        "import haute\nimport polars as pl\n\nfrom modules import Inputs\n\n"
+        'pipeline = haute.Pipeline("demo")\n\n'
         '@pipeline.polars(contract="opaque")\n'
         "def Polars_3(Inputs__output_1: pl.LazyFrame) -> pl.LazyFrame:\n"
         "    df: pl.LazyFrame\n    df = live_switch\n    return df\n\n"
-        'pipeline.submodel("modules/Inputs.py", "Inputs")\n'
+        'pipeline.submodel(Inputs.submodel, "Inputs")\n'
         'pipeline.connect("Inputs", "Polars_3", source_port="output_1")\n',
         encoding="utf-8",
     )
@@ -133,12 +135,66 @@ def test_legacy_registration_retains_submodel_position_connection_and_revision(t
         "pipeline.submodel() no longer accepts label=; an occurrence's name is the second argument."
     )
     assert diagnostic.remediation == (
-        "Write pipeline.submodel(<path>, <name>) and let the child file declare its definition id."
+        "Write pipeline.submodel(<module>.submodel, <name>) and let the definition declare its id."
     )
     child = tmp_path / "modules/Inputs.py"
     child.write_text(child.read_text() + "\n# concurrent edit\n")
     changed = load_pipeline_editor_document(parent, project_root=tmp_path)
     assert changed.source_revision != document.source_revision
+    assert parent.read_bytes() == original
+
+
+def test_a_registration_by_file_path_is_unavailable_and_names_the_import_form(tmp_path):
+    """The removed form, ``pipeline.submodel("modules/x.py", ...)``, is refused and never
+    migrated: its occurrence opens unavailable with its position and connection, the
+    diagnostic carries the parser's reason and the import form that replaces it, and
+    Recover offers no rewrite."""
+    from haute._pipeline_repair import PipelineRepairError
+    from haute.errors import ParseError
+    from haute.parser import parse_pipeline_file
+
+    _canonical_demo(tmp_path)  # Its definition, modules/Inputs.py, registered by path below.
+    parent = tmp_path / "main.py"
+    parent.write_text(
+        'import haute\nimport polars as pl\n\npipeline = haute.Pipeline("demo")\n\n'
+        "@pipeline.polars\ndef priced(output_1: pl.LazyFrame) -> pl.LazyFrame:\n"
+        "    df = output_1\n    return df\n\n"
+        'pipeline.submodel("modules/Inputs.py", "Inputs")\n'
+        'pipeline.connect("Inputs", "priced", source_port="output_1")\n',
+        encoding="utf-8",
+    )
+    parent.with_suffix(".haute.json").write_text(
+        '{"positions":{"Inputs":{"x":12,"y":34}},"sources":["live"],"active_source":"live"}\n'
+    )
+    original = parent.read_bytes()
+    with pytest.raises(ParseError, match="by its file path, which was removed") as strict:
+        parse_pipeline_file(parent)
+
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+
+    nodes = {node.authored_id: node for node in document.nodes}
+    assert nodes["Inputs"].node_type == "submodel"
+    assert nodes["Inputs"].availability == "unavailable"
+    assert nodes["Inputs"].display_position == {"x": 12, "y": 34}
+    assert nodes["priced"].availability == "blocked"
+    assert [(edge.source_authored_id, edge.target_authored_id) for edge in document.edges] == [
+        ("Inputs", "priced")
+    ]
+    diagnostic = next(
+        diagnostic for diagnostic in document.diagnostics if diagnostic.element_id == "Inputs"
+    )
+    assert diagnostic.code == "submodel_registration_invalid"
+    assert diagnostic.message.startswith(
+        "pipeline.submodel() registers 'Inputs' by its file path, which was removed"
+    )
+    assert diagnostic.remediation == strict.value.context["remediation"]
+    assert diagnostic.remediation == (
+        "Write `from modules import Inputs`, then `pipeline.submodel(Inputs.submodel, 'Inputs')`."
+    )
+
+    with pytest.raises(PipelineRepairError) as refused:
+        _apply(tmp_path, _request(tmp_path, "Inputs", "recover"))
+    assert refused.value.code == "repair_action_unsupported"
     assert parent.read_bytes() == original
 
 
@@ -776,8 +832,9 @@ def test_recover_reaches_a_join_saved_without_its_order_inside_a_submodel(tmp_pa
     )
     parent = tmp_path / "main.py"
     parent.write_text(
-        'import haute\nimport polars as pl\n\npipeline = haute.Pipeline("demo")\n\n'
-        'pipeline.submodel("modules/Inputs.py", "Inputs")\n',
+        "import haute\nimport polars as pl\n\nfrom modules import Inputs\n\n"
+        'pipeline = haute.Pipeline("demo")\n\n'
+        'pipeline.submodel(Inputs.submodel, "Inputs")\n',
         encoding="utf-8",
     )
     document = load_pipeline_editor_document(parent, project_root=tmp_path)
@@ -935,10 +992,11 @@ def _submodel_with_an_unbound_node(root: Path, *, parent_node: str) -> Path:
     )
     parent = root / "main.py"
     parent.write_text(
-        'import haute\nimport polars as pl\n\npipeline = haute.Pipeline("demo")\n\n'
+        "import haute\nimport polars as pl\n\nfrom modules import Inputs\n\n"
+        'pipeline = haute.Pipeline("demo")\n\n'
         f"@pipeline.polars\ndef {parent_node}(out: pl.LazyFrame) -> pl.LazyFrame:\n"
         "    df = out\n    return df\n\n"
-        'pipeline.submodel("modules/Inputs.py", "Inputs")\n'
+        'pipeline.submodel(Inputs.submodel, "Inputs")\n'
         f'pipeline.connect("Inputs", "{parent_node}", source_port="out")\n',
         encoding="utf-8",
     )
@@ -1138,10 +1196,11 @@ def test_recover_keeps_the_input_a_submodel_port_feeds(tmp_path, kind):
     )
     parent = tmp_path / "main.py"
     parent.write_text(
-        'import haute\nimport polars as pl\n\npipeline = haute.Pipeline("demo")\n\n'
+        "import haute\nimport polars as pl\n\nfrom modules import Inputs\n\n"
+        'pipeline = haute.Pipeline("demo")\n\n'
         "@pipeline.polars\ndef quotes():\n"
         '    df = pl.LazyFrame({"quote_id": [1]})\n    return df\n\n'
-        'pipeline.submodel("modules/Inputs.py", "Inputs")\n'
+        'pipeline.submodel(Inputs.submodel, "Inputs")\n'
         'pipeline.connect("quotes", "Inputs", target_port="records")\n',
         encoding="utf-8",
     )

@@ -2891,6 +2891,7 @@ class WarehouseItem(BaseModel):
     http_path: str
     state: str
     size: str = ""
+    serverless: bool = False
 
 
 class WarehouseListResponse(BaseModel):

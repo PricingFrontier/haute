@@ -4286,14 +4286,17 @@ class TestFormatContractSourceCollision:
 
 
 class TestSubmodelImportSafePath:
-    """F743: the submodel registration's path goes through the literal printer
-    (``quote_string``) so a file path containing a double-quote or backslash is
-    emitted as a properly escaped string literal and the main module still
-    compiles. Pre-fix the path was interpolated raw
-    (``pipeline.submodel("{path}")``), so a quote broke the literal."""
+    """F743: a hostile definition file path never reaches the main module as code.
 
-    def test_quote_and_backslash_in_submodel_path_compiles(self):
-        graph = _g(
+    The registration once carried the path as a string literal, which a double
+    quote broke. The main module now imports the definition's module,
+    ``from modules import <name>``, and registers ``<name>.submodel``, so a file
+    that is not an importable module is refused rather than emitted as Python
+    that cannot run, and a Windows separator still names the module."""
+
+    @staticmethod
+    def _graph(file: str):
+        return _g(
             {
                 "nodes": [
                     {
@@ -4325,9 +4328,7 @@ class TestSubmodelImportSafePath:
                 "submodels": {
                     "sm1": {
                         "definitionId": "sm1",
-                        # Path with a double-quote AND a Windows backslash —
-                        # raw interpolation would emit invalid Python.
-                        "file": 'modules/a"b\\c.py',
+                        "file": file,
                         "inputPorts": [
                             {
                                 "name": "child_a",
@@ -4348,9 +4349,38 @@ class TestSubmodelImportSafePath:
                 },
             }
         )
-        files = graph_to_code_multi(graph, pipeline_name="main")
+
+    @pytest.mark.parametrize(
+        ("file", "refusal"),
+        [
+            # A double quote: no import can name the module.
+            pytest.param(
+                'modules/a"b.py',
+                "cannot be imported by its name",
+                id="quote",
+            ),
+            # A double quote AND a Windows backslash, which is a separator: the
+            # file sits in a folder below modules/, where no import reaches it.
+            pytest.param(
+                'modules/a"b\\c.py',
+                "is not a module in the pipeline's modules/ folder",
+                id="quote-and-backslash",
+            ),
+        ],
+    )
+    def test_quote_and_backslash_in_submodel_path_is_refused(self, file: str, refusal: str):
+        with pytest.raises(ParseError, match=refusal) as exc_info:
+            graph_to_code_multi(self._graph(file), pipeline_name="main")
+
+        assert exc_info.value.context["definition_id"] == "sm1"
+
+    def test_windows_separator_in_submodel_path_imports_the_module(self):
+        files = graph_to_code_multi(self._graph("modules\\sm1.py"), pipeline_name="main")
         main_code = files["main.py"]
-        assert "pipeline.submodel(" in main_code
-        # The emitted module must be valid Python despite the hostile path.
+
+        assert set(files) == {"main.py", "modules/sm1.py"}
+        assert "\nfrom modules import sm1\n" in main_code
+        assert 'pipeline.submodel(sm1.submodel, "sm1")' in main_code
+        # The emitted module is valid Python.
         ast.parse(main_code)
         compile(main_code, "<gen>", "exec")

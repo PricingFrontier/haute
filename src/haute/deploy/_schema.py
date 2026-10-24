@@ -42,11 +42,12 @@ _DEPLOY_SCHEMA_EXECUTION_POLICY = "deploy-output-schema:v1"
 
 
 def _resolve_pipeline_path(graph: PipelineGraph, path: str) -> str:
-    """Resolve a graph config path against the pipeline file directory."""
-    raw = Path(path)
-    if raw.is_absolute() or not graph.source_file:
-        return str(raw)
-    return str((Path(graph.source_file).parent / raw).resolve())
+    """Resolve a graph config path as deploy bundles it: pipeline dir, then project root."""
+    from haute._path_resolution import _normalise_path_text, resolve_graph_source_path
+
+    if Path(_normalise_path_text(path)).is_absolute() or not graph.source_file:
+        return path
+    return resolve_graph_source_path(path, graph.source_file)
 
 
 def _read_input_source(graph: PipelineGraph, node: GraphNode, resolved_path: str) -> pl.LazyFrame:
@@ -248,7 +249,10 @@ def infer_deploy_execution_policy(
 
     sample = _read_sample_row(graph, input_node_ids)
     remap = artifact_paths or {}
-    planned = _attach_bundled_feature_contracts(_resolve_runtime_graph_paths(graph), remap)
+    planned = _attach_bundled_feature_contracts(
+        _resolve_runtime_graph_paths(graph, remap=remap, request_input_ids=input_node_ids),
+        remap,
+    )
     planned = _attach_bundled_optimiser_artifacts(planned, remap)
     relevant_node_ids = set(upstream_node_ids(output_node_id, planned.parents_of)) | {
         output_node_id

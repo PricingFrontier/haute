@@ -40,6 +40,9 @@ def transform():
 _PARENT = """
 import haute
 import polars as pl
+
+from modules import rates
+
 pipeline = haute.Pipeline("violations")
 
 @pipeline.polars
@@ -50,7 +53,7 @@ def transform():
 def pl():
     return None
 
-pipeline.submodel("modules/rates.py", "rates_1")
+pipeline.submodel(rates.submodel, "rates_1")
 """
 
 
@@ -204,23 +207,29 @@ def test_without_a_naming_context_the_response_reports_no_violations(client: Tes
         pytest.param(
             """
             import haute
+
+            from modules import rates
+
             pipeline = haute.Pipeline("occurrences")
 
-            pipeline.submodel("modules/rates.py", "rates_1")
-            pipeline.submodel("modules/rates.py", "rates_1")
+            pipeline.submodel(rates.submodel, "rates_1")
+            pipeline.submodel(rates.submodel, "rates_1")
             """,
             id="two-occurrences-one-name",
         ),
         pytest.param(
             """
             import haute
+
+            from modules import rates
+
             pipeline = haute.Pipeline("occurrence-like-node")
 
             @pipeline.polars
             def rates_1():
                 return None
 
-            pipeline.submodel("modules/rates.py", "rates_1")
+            pipeline.submodel(rates.submodel, "rates_1")
             """,
             id="occurrence-named-like-a-root-node",
         ),
@@ -234,6 +243,10 @@ def test_a_structural_collision_still_loads_into_recovery(tmp_path: Path, source
 
     assert document.load_status == "degraded"
     assert document.name_violations == []
+    # Degraded by the collision itself: every import and registration is well formed.
+    assert {diagnostic.code for diagnostic in document.diagnostics}.isdisjoint(
+        {"submodel_import_invalid", "submodel_registration_invalid"}
+    )
     # Nothing collapsed: both colliding entries are listed, each under its own recovery id.
     colliding = [node for node in document.nodes if node.availability == "unavailable"]
     assert len(colliding) == 2
@@ -246,10 +259,13 @@ def test_a_flattened_parse_checks_names_before_copying_occurrences(tmp_path: Pat
     source = textwrap.dedent(
         """
         import haute
+
+        from modules import rates
+
         pipeline = haute.Pipeline("twice")
 
-        pipeline.submodel("modules/rates.py", "rates_1")
-        pipeline.submodel("modules/rates.py", "rates_2", instance_of="rates_1")
+        pipeline.submodel(rates.submodel, "rates_1")
+        pipeline.submodel(rates.submodel, "rates_2", instance_of="rates_1")
         """
     )
 

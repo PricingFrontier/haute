@@ -4,6 +4,7 @@ import os
 import subprocess
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -13,7 +14,10 @@ from haute._scaffold import (
     TARGETS,
     _release_tag_script,
     azure_devops_yml,
+    ci_files,
+    ci_secret_names,
     env_example,
+    env_example_placeholders,
     github_ci_yml,
     github_deploy_prod_yml,
     github_deploy_yml,
@@ -805,7 +809,10 @@ class TestTomlStructure:
         raw = haute_toml("motor", "databricks", "github")
         doc = tomllib.loads(raw)
         assert "safety" in doc
-        assert "impact_dataset" in doc["safety"]
+        # No portfolio sample until one is committed: impact compares the test quotes.
+        # BUG-23: the old default named a file under the gitignored data/.
+        assert "impact_dataset" not in doc["safety"]
+        assert '# impact_dataset = "tests/impact/portfolio_sample.parquet"' in raw
 
     def test_ci_section_in_parsed_toml(self) -> None:
         raw = haute_toml("motor", "databricks", "github")
@@ -1238,3 +1245,138 @@ class TestOfferedTargets:
         for name in ("deploy.yml", "deploy-production.yml", ".gitlab-ci.yml"):
             assert isinstance(yaml.safe_load(files[name]), dict), name
         assert isinstance(yaml.safe_load(files["azure-pipelines.yml"]), dict)
+
+
+class TestDatabricksReleaseAndDeployJobs:
+    """The generated Databricks workflows: a release tag carrying the deployed version
+    (BUG-25), and deploy jobs that outlast the wait for the endpoint."""
+
+    def _repository(self, tmp_path: Path) -> tuple[Path, Any]:
+        work = tmp_path / "work"
+        work.mkdir()
+
+        def git(*arguments: str) -> str:
+            return subprocess.run(
+                ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", *arguments],
+                cwd=work,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+
+        git("init", "-q", "--bare", str(tmp_path / "remote.git"))
+        git("init", "-q")
+        git("remote", "add", "origin", str(tmp_path / "remote.git"))
+        (work / "release.txt").write_text("release", encoding="utf-8")
+        git("add", "release.txt")
+        git("commit", "-q", "-m", "release")
+        return work, git
+
+    def _tag(self, work: Path, fake_uv: str) -> subprocess.CompletedProcess[str]:
+        # ``uv`` is a shell function standing in for ``uv run haute status --version-only``.
+        script = _release_tag_script("databricks", "")
+        return subprocess.run(
+            [_posix_shell(), "-c", f"set -euo pipefail\nuv() {{ {fake_uv}; }}\n{script}"],
+            cwd=work,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_the_registered_version_is_tagged(self, tmp_path: Path) -> None:
+        work, git = self._repository(tmp_path)
+
+        result = self._tag(work, "printf '%s\n' 7")
+
+        assert result.returncode == 0, result.stderr
+        assert git("ls-remote", "--tags", "origin").strip().endswith("refs/tags/deploy/v7")
+
+    @pytest.mark.parametrize(
+        "fake_uv",
+        [
+            # A version read that fails used to tag deploy/vunknown, and the next
+            # release then failed on the existing tag.
+            "echo 'No version registered for model' >&2; return 1",
+            # Anything but a version number on stdout is not tagged either.
+            "printf '%s\n' '2026-10-24 [info] connected' 7",
+        ],
+    )
+    def test_a_version_read_that_fails_tags_nothing(self, tmp_path: Path, fake_uv: str) -> None:
+        work, git = self._repository(tmp_path)
+
+        result = self._tag(work, fake_uv)
+
+        assert result.returncode != 0
+        assert git("ls-remote", "--tags", "origin").strip() == ""
+
+    def test_the_tag_step_reads_the_registry_with_the_secrets(self) -> None:
+        workflow = yaml.safe_load(github_deploy_prod_yml("databricks"))
+        steps = workflow["jobs"]["deploy-production"]["steps"]
+        [tag] = [step for step in steps if step.get("name") == "Tag release"]
+        assert tag["env"]["DATABRICKS_MLFLOW_HOST"] == "${{ secrets.DATABRICKS_MLFLOW_HOST }}"
+        assert tag["env"]["DATABRICKS_MLFLOW_TOKEN"] == "${{ secrets.DATABRICKS_MLFLOW_TOKEN }}"
+        assert "unknown" not in tag["run"]
+
+        azure = yaml.safe_load(azure_devops_yml("databricks"))
+        [production] = [s for s in azure["stages"] if s["stage"] == "DeployProduction"]
+        steps = production["jobs"][0]["strategy"]["runOnce"]["deploy"]["steps"]
+        assert steps[0] == {"checkout": "self", "persistCredentials": True}
+        [tag] = [step for step in steps if step.get("displayName") == "Tag release"]
+        assert tag["env"]["DATABRICKS_MLFLOW_TOKEN"] == "$(DATABRICKS_MLFLOW_TOKEN)"
+
+    def test_a_container_tag_step_is_given_no_secrets(self) -> None:
+        workflow = yaml.safe_load(github_deploy_prod_yml("container"))
+        steps = workflow["jobs"]["deploy-production"]["steps"]
+        [tag] = [step for step in steps if step.get("name") == "Tag release"]
+        assert "env" not in tag
+
+    @pytest.mark.parametrize(("target", "minutes"), [("databricks", 60), ("container", 15)])
+    def test_a_deploy_job_outlasts_the_wait_for_its_endpoint(
+        self, target: str, minutes: int
+    ) -> None:
+        staging = yaml.safe_load(github_deploy_yml(target))["jobs"]["deploy-staging"]
+        production = yaml.safe_load(github_deploy_prod_yml(target))["jobs"]["deploy-production"]
+        assert staging["timeout-minutes"] == production["timeout-minutes"] == minutes
+        gitlab = yaml.safe_load(gitlab_ci_yml(target))
+        assert gitlab["deploy-staging"]["timeout"] == f"{minutes} minutes"
+        assert gitlab["deploy-production"]["timeout"] == f"{minutes} minutes"
+        azure = yaml.safe_load(azure_devops_yml(target))
+        jobs = {s["stage"]: s["jobs"][0] for s in azure["stages"]}
+        assert jobs["DeployStaging"]["timeoutInMinutes"] == minutes
+        assert jobs["DeployProduction"]["timeoutInMinutes"] == minutes
+
+
+class TestCiFiles:
+    """``ci_files`` is what ``haute init`` and ``haute ci update`` write."""
+
+    @pytest.mark.parametrize("ci", ["github", "gitlab", "azure-devops"])
+    def test_each_provider_writes_the_files_it_prunes(self, ci: str) -> None:
+        from haute.cli._init_cmd import _CI_ARTIFACTS
+
+        files = ci_files("databricks", ci, python_version="3.13")
+
+        assert list(files) == _CI_ARTIFACTS[ci]
+        for content in files.values():
+            assert 'python-version: "3.11"' not in content
+
+    def test_none_has_no_files_and_an_unknown_provider_is_refused(self) -> None:
+        assert ci_files("databricks", "none") == {}
+        with pytest.raises(ValueError, match="Unknown CI provider: jenkins"):
+            ci_files("databricks", "jenkins")
+
+    def test_the_secrets_and_their_placeholders(self) -> None:
+        assert ci_secret_names("databricks") == [
+            "DATABRICKS_MLFLOW_HOST",
+            "DATABRICKS_MLFLOW_TOKEN",
+            "DATABRICKS_RATING_HOST",
+            "DATABRICKS_RATING_TOKEN",
+        ]
+        placeholders = env_example_placeholders("databricks")
+        assert placeholders["DATABRICKS_RATING_TOKEN"] == "your_databricks_token_here"
+        assert set(ci_secret_names("databricks")) <= set(placeholders)
+
+    def test_a_usable_default_is_no_placeholder(self) -> None:
+        # .env.example's AWS region is a value to keep, not one to replace.
+        placeholders = env_example_placeholders("aws-ecs")
+        assert "AWS_DEFAULT_REGION" not in placeholders
+        assert placeholders == {}
