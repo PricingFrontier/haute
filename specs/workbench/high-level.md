@@ -123,19 +123,28 @@ Out of scope:
   pivot's values take one, `number_format` (`general`, `number`, `percent`,
   `currency_gbp`, `currency_usd`, `currency_eur`), `decimal_places` (0 to 10, or null for
   automatic) and `use_grouping`. Every schema holds Haute's own table of a quote's
-  details, `quote_details`, first: one row, an input, its columns `quote_reference`,
-  `quote_name`, `insured`, `broker`, `inception_date`, `expiry_date`, `valid_until`,
-  `currency`, `stage`, `assignee`, `archived`, `is_renewal` and `quote_option`, in that
-  order, the three dates Dates, `archived` and `is_renewal` True/false, `quote_option` an
-  Integer and
-  the rest Text, each with the id `qd_` and its name. A form read or saved without it takes
-  it on, and one holding its columns as an earlier Haute made them (the first eleven, before
-  `is_renewal`, or more of them in order) takes the newer ones on after them, and one naming its reference
-  `reference`, as an earlier Haute did, names it `quote_reference`; one whose
-  `quote_details` is not Haute's (the name on another table, or its role, rows, columns,
-  keys or index changed) is refused, as is a rule or a default on `quote_reference`,
-  `quote_option`,
-  `stage`, `assignee` or `archived`, which the underwriter app sets. Its labels, groups,
+  details, `quote_details`, first: one row, an input, a quote's administration whatever the
+  company or line of business, its columns `quote_reference`, `quote_option`,
+  `quote_name`, `insured`, `broker`, `inception_date`, `expiry_date`, `is_renewal`,
+  `stage`, `assignee`, `archived`, `created_date`, `created_by`, `modified_date`,
+  `modified_by` and `haute_version`, in that order, `inception_date`, `expiry_date`,
+  `created_date` and `modified_date` Dates, `is_renewal` and `archived` True/false,
+  `quote_option` an Integer and the rest Text, each with the id `qd_` and its name. A form
+  read or saved without it takes it on, and one holding it as an earlier Haute made it is
+  brought to today's by id: a column under the name an earlier Haute gave it takes today's
+  (`reference`, `quote_reference`), one Haute makes no more is dropped (`valid_until` and
+  `currency`), those it holds keep what the project gave them, the missing ones are added,
+  and all take today's order, the data it was read from left as it was. That holds wherever
+  a form is read, the project's file, the editor's save, a release's form and the forms the
+  quote store keeps for older revisions, so every revision still opens. A field, a column
+  look or a chart category on a column dropped shows Missing column in the editor and is
+  not drawn in Preview or the app, a condition on it is false, and sample values under its
+  id are ignored. One whose
+  `quote_details` is not Haute's (the name on another table, or its role, rows, keys or
+  index changed, or a column of another id, or one of its own renamed or retyped) is
+  refused, as is a rule or a default on `quote_reference`, `quote_option`, `stage`,
+  `assignee`, `archived`, `created_date`, `created_by`, `modified_date`, `modified_by` or
+  `haute_version`, which the underwriter app sets. Its labels, groups,
   help and placeholders are the project's, as are the rules and defaults of the columns the
   underwriter types; the sheets show its columns, and the pipeline receives it, as any other
   input table's. Every other table leads with the quote's identity: `quote_reference`
@@ -412,9 +421,8 @@ Out of scope:
   allowed values. Haute's `quote_details` table, first, keeps
   its structure and its place: its name, role and rows and its columns' names, types and
   order are fixed, it is neither deleted nor given a column, and no table moves above it; its columns take labels, groups and help, and
-  those the underwriter types their defaults, placeholders and rules, while
-  `quote_reference`, `quote_option`, `stage`, `assignee` and `archived`, which the app sets,
-  take a label, a group and help alone. Every other table's `quote_reference` and
+  those the underwriter types their defaults, placeholders and rules, while the columns
+  the app sets take a label, a group and help alone. Every other table's `quote_reference` and
   `quote_option` lead it, locked: not
   renamed, retyped, moved or removed, and taking no label, group, help, rule, default or
   format; a table added has them at once, and an index goes after them. They are not keys,
@@ -1009,7 +1017,8 @@ Out of scope:
   /api/app/quotes/{id}/history`) and the people quotes are with (`GET /api/app/people`).
   A save names the sheets' revision and the release it was drawn for, refused (409) for
   another, and an operation key; the details the app sets, `quote_reference`, `quote_option`,
-  `stage`, `assignee` and `archived`, are set over whatever the page sent, and with
+  `stage`, `assignee`, `archived` and the quote's administration, are set over whatever the
+  page sent, a save stamped with one instant read before it is priced, and with
   nothing else typed there is nothing to save (422), save a creation, which makes the quote
   holding what it starts with, unpriced: its reference and option are taken as it is
   written, and its pricing reads them, so a creation given prices is refused (422) and the
@@ -1069,8 +1078,8 @@ Out of scope:
   as it was sent, in this browser's draft too, so the next Save repeats it exactly before
   saving anything typed since as the quote's next revision; only a refusal (a status
   below 500) lets it go. While a save or a change is being made, Save and every control
-  that changes the quote are off. The cells of `quote_reference`, `quote_option`,
-  `stage`, `assignee` and `archived` take no typing; assigning,
+  that changes the quote are off. The cells of the columns the app sets take no typing;
+  assigning,
   archiving, restoring, marking final and reopening each write a revision of the newest
   with those details changed, its values and prices kept, which the sheets take on, what
   was typed kept. A new quote is made as the underwriter asks for it: `/quotes/new` makes
@@ -1173,8 +1182,10 @@ Out of scope:
   - **A quote is what the sheets show.** A value typed into an input column that is on
     Tables or Collections, none of which shows it, is left out of the quote, as if it had never
     been typed: a row with nothing typed in it but such values is left out as an empty row
-    is; the index, which nothing is typed into, is never left out; and a column on no Table
-    or Collection is not left out. A Chart takes nothing typed, so the columns it plots
+    is; the index, which nothing is typed into, is never left out; a column on no Table
+    or Collection is not left out; and nor is a column of `quote_details` the app sets,
+    which every request holds, so a sample holding only such a value counts as typed in
+    Preview, though in the app, where they are locked, it does not. A Chart takes nothing typed, so the columns it plots
     count for nothing here: a value only hidden components take is left out however a Chart
     that shows plots it, and a condition on a column only a Chart plots never holds. A
     Heading shows no columns, so it counts for nothing here either, while it hides and
@@ -1270,7 +1281,10 @@ Out of scope:
     quote of an underwriter app without a quote store are priced under the stand-in,
     `PREVIEW` and option 1, which the form never keeps; deploy's request schema holds them
     in `quote_details` alone. The app's own requests hold the quote's, whatever its sheets
-    hide.
+    hide, as they hold every column of `quote_details` the app sets. Those others a request
+    may leave out, null then: a deploy caller's values are priced as sent, the null quote
+    holds them null, the sample holds what the analyst typed, and an app without a quote
+    store drops whatever its page sends for them.
   - **No file; the sample.** A Workbench Input reads no file. Without a request, in editor
     runs and previews and in generated code's `run()`, it reads its sample as it reads a
     request, so the sample prices as the quote it stands for would when deployed: each port
@@ -1462,15 +1476,26 @@ Out of scope:
   an alternative the next under its source's reference, taken from a counter per
   reference in the same transaction, so two alternatives made at once take two; its
   stage, `draft` or `priced` as the revision was saved, or `final`; who it is assigned
-  to, at first who made it; and whether it is archived. The reference and option are held
+  to, at first who made it; whether it is archived; when the quote was made and by whom,
+  from the quote's own time and owner, and when the revision was written and by whom, from
+  the revision's, each date the UTC date of its time, as the store keeps its times, which
+  the app shows in the browser's zone, so near midnight they can differ by a day; and the
+  Haute version of the release the app ran as it wrote the revision. Every save reads the
+  clock once, before it prices, and that instant is the priced request's, the revision's
+  and the event's, so they agree; a save repeated with its operation key answers what it
+  wrote, stamped as it was. The reference and option are held
   on the quote too, unique together among the app's quotes; a quote the store saves
   alone holds neither. `is_renewal`, added after the others by the store's third
   migration, is null in the rows written before it, which reads as unticked; the fourth
-  gave every app quote option 1. The newest revision's row is the quote as the app lists,
+  gave every app quote option 1, took `valid_until` and `currency` out of the rows, and gave
+  each its administration from its quote and its revision, its Haute version left null as
+  none was recorded. A revision's request and response stay as they were priced, holding
+  what was sent then. The newest revision's row is the quote as the app lists,
   searches and orders it.
   Assigning, archiving, restoring, marking final and reopening each write a revision of
-  the newest, its values, request, prices and release kept and its details changed: the
-  pipeline sees the new details, as any other input, the next time the quote is priced.
+  the newest, its values, request, prices and release kept and its details changed, its
+  administration saying who changed it, when and on which Haute: the pipeline sees the new
+  details, as any other input, the next time the quote is priced.
   A quote is made with its reference and option, so its every pricing sees them. A
   handover note is an event alone, written with the quote's row held as a revision holds
   it, so a note never lands on a quote archived before it. A quote's name
@@ -1506,7 +1531,9 @@ Out of scope:
   them; the store refuses to open a database behind the newest, naming what to run, and
   nothing migrates as it opens. A migration keeps the previous release's reads and
   writes working where it can: a column it adds is nullable or has a default, and it
-  drops nothing; and the database records the oldest schema whose Haute can still use
+  drops nothing, save in a migration that names itself the oldest schema, after which the
+  previous release refuses the database already, as the fourth drops `valid_until` and
+  `currency`; and the database records the oldest schema whose Haute can still use
   it, so a Haute behind the database's schema opens it when its own newest is at least
   that, as a release rolled back after a migration does, and refuses it, naming the
   upgrade, when it is not. A migration after which the previous release could not read

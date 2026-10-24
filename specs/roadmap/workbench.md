@@ -32,10 +32,6 @@ and rules named once and used by many sheets were offered and not taken. Fields 
 columns with conditions of their own, not taken that day, were asked for on 2026-10-22;
 cells shown row by row through "this row" tests were offered again and not taken.
 
-`WB-31` makes `quote_details` a quote's administration. It adds when the quote was made and
-by whom, when it was last changed and by whom, and the version of Haute it was saved on, and
-takes out `valid_until` and `currency`, which no project uses.
-
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -50,7 +46,6 @@ takes out `valid_until` and `currency`, which no project uses.
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-28 | Planned | P3 | A condition tests a field against another field, text within text, and a date against another date give or take a number of days. |
 | WB-29 | Planned | P3 | A component that takes nothing typed, or a section or a sheet holding only such components, shows by conditions on the price, applied after it so the price never decides what is priced. |
-| WB-31 | Planned | P2 | `quote_details` holds a quote's administration: its reference and option, name, insured and broker, dates, stage and who it is with, when and by whom it was made and last changed, and the version of Haute it was saved on. |
 
 ## Planned improvements
 
@@ -373,8 +368,8 @@ matched by their keys rather than their places;
 outcomes, recorded on a final quote with who and when and listed apart from the open quotes;
 and archiving and reassigning a selection of quotes at once, each checked against its
 version, a quote moved on since named without undoing the rest. Exports stay WB-11's.
-A quote's validity left with `quote_details.valid_until` (WB-31, decided 2026-10-24); a
-project that needs it keeps a date of its own.
+A quote's validity left with `quote_details.valid_until`, taken out on 2026-10-24 as no
+project used it; a project that needs it keeps a date of its own.
 
 **Acceptance:** Two revisions of a quote are compared with each changed value and price
 named, the rows of a many-row table matched by their keys; an outcome
@@ -467,194 +462,3 @@ sides.
 table named as a fault); `src/haute/_workbench_visibility.py::_tested_column` (input tables
 alone); `src/haute/_workbench_tables.py::sample_quote` (the hidden columns the quote leaves
 out).
-
-### WB-31 — `quote_details` holds a quote's administration
-**Why:** `quote_details` is the one table every quote has, whatever the company or line of
-business. It holds the quote's administration, its reference and option, name, insured and
-broker, inception and expiry, stage, who it is with and whether it is archived, beside two
-columns no project uses, `valid_until` and `currency`. It leaves out what the store knows of
-every quote: when it was made and by whom (`haute_quotes.created_at` and `owner`), and when
-each revision was written and by whom (`haute_quote_revisions.saved_at` and `saved_by`).
-Those reach neither the sheets nor the pipeline. Nothing records the version of Haute a
-revision was written on: a revision names the release that priced it only when it was
-priced, and the store keeps no version.
-
-Decisions taken 2026-10-24: `quote_name`, `insured`, `broker`, `assignee` and `is_renewal`
-stay. The Quotes page lists and searches by insured and broker and orders by insured, so they
-stay until a project can choose the columns it lists from its own tables, which is not
-planned here. `valid_until` and `currency` leave. The five new columns are set by the app
-before pricing and reach the pipeline, as `stage` does. They are dates, not times, as no
-column type holds a time; the full moment stays in the quote's history. A modification is any
-change that writes a revision.
-
-**Plan:** `quote_details` becomes, in order: `quote_reference`, `quote_option`,
-`quote_name`, `insured`, `broker`, `inception_date`, `expiry_date`, `is_renewal`, `stage`,
-`assignee`, `archived`, `created_date` (Date), `created_by` (Text), `modified_date` (Date),
-`modified_by` (Text) and `haute_version` (Text), each new column's id `qd_` and its name.
-The five new ones join the columns the app sets (`QUOTE_DETAILS_MANAGED`). They are read
-only in the app's sheets, take no rules or default, are set over whatever the page sends,
-and are left behind when a quote is made from another's revision.
-
-- `created_date` and `created_by` are the quote's `created_at`, as its date in UTC, and its
-  `owner`, the same on every revision.
-- `modified_date` and `modified_by` are the revision's `saved_at`, as its date in UTC, and
-  its `saved_by`. That is the save, assign, archive, restore, mark final or reopen that
-  wrote it. A note writes no revision and changes neither.
-- `haute_version` is the `haute_version` of the release the app runs (`release.json`), on
-  every revision, priced or not.
-
-The dates are UTC dates, as the store keeps its times in UTC, so a quote made near midnight
-can show a `created_date` a day off the time the app shows in the browser's zone; the docs
-say so.
-
-One instant stamps a write. Every save reads the clock once, in the route, before it prices,
-and passes that instant to the book, which writes it as the revision's `saved_at`, the
-event's time and the details' dates instead of reading the clock again. So the priced
-request, the revision and its details row agree, as the request already holds the stage the
-save gives. A save repeated with its operation key answers what it wrote, stamped as it was.
-A new quote is made unpriced, its details taking the instant it is written. A change that
-writes a revision without pricing (assign, archive, restore, mark final, reopen) reads the
-clock as it writes and takes the `haute_version` of the release the app runs, which the app
-gives the book. It keeps the newest revision's request, prices and pricing release, priced
-under the earlier `modified_date`, `modified_by` and `haute_version`, while its details row
-holds the change's, as it already does for `stage`, `assignee` and `archived`.
-
-The columns the app sets reach the pipeline whatever the sheets hide, as the identity does,
-so the priced request and the details row agree. That holds for `stage`, `assignee` and
-`archived` too, which a request leaves out today when the sheets hide them (`sample_quote`).
-They are listed in the deploy's request schema, optional for a deploy caller, whose values
-are priced as sent. Where there is no quote they are blank: in `null_quote`, which the
-deploy's dry run and an empty sample use, and in an app without a quote store, which drops
-whatever its page sends for them and prices with the stand-in identity alone
-(`with_stand_in`, which keeps them today). Preview prices the sample as the analyst types it,
-so a sample may hold values for them, typed to try a rule that reads them, as it may hold a
-`stage` today. The view's `quotedSchema` keeps the columns the app sets whatever the sheets
-hide, as `sample_quote` does, so a Preview sample holding only a hidden `stage` counts as
-typed and is priced, on both sides. The app still does not count the columns it sets as
-typing: they are locked there, and `quoteEligible` leaves locked columns out. A rule reading `modified_date` or `haute_version` prices the same values
-differently on another day or release, and a pipeline that outputs them shows a save's
-price as moved from the page's. The docs say so.
-
-A form's `quote_details` is brought to today's by id rather than by prefix:
-
-- a column under a name an earlier Haute gave it takes today's (`QUOTE_DETAILS_NAMED_BEFORE`);
-- a column held is kept with the project's label, group, help, placeholder, rules and default;
-- `qd_valid_until` and `qd_currency` are dropped (`QUOTE_DETAILS_RETIRED`);
-- the missing columns are added;
-- the whole is put in today's order.
-
-A column of any other id, or a held one renamed or retyped otherwise, is left for
-`_check_quote_details` to refuse, as today. `QUOTE_DETAILS_FIRST` retires. The upgrade runs
-wherever a form is read: the project's file, the editor's save, a release's `form.json` and
-the forms the store keeps for older revisions. So every revision still opens. What pointed at
-a dropped column is treated as follows:
-
-- A field, a column look or a chart category shows Missing column in the editor. The app
-  and Preview no longer draw a field whose column is gone; today they draw it as Missing
-  column with a dash (`drawnFields`).
-- A condition on it is false. What it gates hides, unless another condition of an "any"
-  group holds.
-- Sample values under its id are ignored.
-
-The Workbench Input's copy of `quote_details` disagrees with the form until the pipeline is
-saved in the editor, which deploy and `haute app build` already require.
-
-The fourth migration, not yet released, is extended rather than a fifth added.
-`haute_quote_details` drops `valid_until` and `currency` and gains the five. Each revision
-already stored takes its `created_date` and `created_by` from its quote, and its
-`modified_date` and `modified_by` from its revision. `haute_version` is left blank, as no
-version was recorded. The two columns' values leave the details rows. The request and
-response each revision keeps stay as they were priced, holding them where they were sent,
-and a change that writes a revision without pricing copies them as it copies the rest. The
-migration may drop columns because it names itself the oldest schema, so the previous release
-refuses the database already. The oldest reader stays the fourth.
-
-The schema editor's note on `quote_details` names the columns the app sets. A sheet may show
-the new columns as it shows any column. The quote's bar keeps "Saved … by …". The docs list
-the table's columns, saying which the app sets and which a project's underwriters type.
-WB-13 loses its validity slice with `valid_until`.
-
-The specifications change with it:
-
-- `specs/workbench/high-level.md`:
-  - the `quote_details` paragraph: its columns, their order, the upgrade by id and the
-    columns the app sets;
-  - the request: the app's columns sent whatever the sheets hide;
-  - the app: who and when on each revision, the instant a save is stamped with, and the
-    storeless app;
-  - the store: the fourth migration's drop, an exception to its rule that a migration drops
-    nothing.
-- `specs/workbench/low-level.md`: its module map, migration and request entries, and its
-  Testing scenarios.
-
-The frontend's `QUOTE_DETAILS_COLUMNS` and `QUOTE_DETAILS_MANAGED`
-(`frontend/src/utils/workbenchForm.ts`) change with the backend's, which
-`tests/test_workbench_form.py` holds them to.
-
-**Acceptance:**
-
-- **Older forms.** A form saved before this opens with `quote_details` in the new order,
-  `valid_until` and `currency` gone and the five present, the labels and rules on the kept
-  columns unchanged.
-  - A field on `valid_until` shows Missing column in the editor and is not drawn in the app.
-  - A revision saved on such a form opens in the app.
-  - A form whose `quote_details` holds a column of another id is still refused.
-  - commercial-pricing's form reads with its four bound fields kept.
-- **New quotes and saves.** On `haute app serve`, New quote makes `Q-000001/1` with
-  `created_date` and `modified_date` the UTC date, the signed-in user as `created_by` and
-  `modified_by`, and the release's `haute_version`.
-  - A priced save by another user changes `modified_by` and keeps `created_by`, and its
-    priced request's `quote_details` holds the values its details row holds, a
-    `modified_date` field on a sheet that hides included.
-  - A save whose pricing crosses midnight UTC, the clock set by the test, holds one date in
-    its request, its `saved_at`, its event and its details row.
-  - An unpriced save is stamped as a priced one is. A save repeated with its key is not
-    stamped again.
-  - Assign, archive, restore and reopen, each made after the app moved to a release of
-    another Haute version, write that version and the change's who and when, while the
-    revision's request, prices and pricing release stay the earlier ones.
-  - Mark final after that move is refused, writing nothing, as a revision priced on
-    another release is today. Once the quote is priced again and saved on the running
-    release, mark final writes its own who, when and version and keeps that save's prices.
-  - A note changes neither who nor when.
-- **The app owns the five.** On a sheet in the app, `created_by` is read only. A page sending
-  other values for the five is overruled. A Duplicate takes its own.
-- **Outside the app.** A Preview sample holding a `created_by` prices with it, while an empty
-  sample and the deploy's dry run hold the five blank. A sample holding only a `stage` its
-  sheets hide is priced, by the view's eligibility and the server's request alike, a case in
-  the shared visibility fixture; in the app, a quote holding only the columns the app sets
-  is still not typed. An app without a quote store, sent
-  values for them, prices with them blank. A deploy request sending them is priced with
-  them, and one leaving them out with them blank.
-- **The store.** A database at the third schema holding quotes of several revisions migrates
-  with each revision's created and modified columns filled from its quote and revision,
-  `haute_version` blank, and `valid_until` and `currency` gone from the details. A revision
-  priced with a `valid_until` keeps it in its stored request, and an assignment after the
-  migration copies it.
-
-**Dependencies:** None. It builds on WB-30. WB-13 no longer reads a quote's validity.
-
-**Evidence:**
-
-- `src/haute/_workbench_form.py::QUOTE_DETAILS_COLUMNS` (`valid_until` and `currency`; no
-  created, modified or version) and `::FormSpec._brings_quote_details_up_to_date` (appends
-  by prefix alone, `_check_quote_details` refusing any other shape).
-- `src/haute/_quote_store/_tables.py::QUOTES` (`owner`, `created_at`), `::QUOTE_REVISIONS`
-  (`saved_by`, `saved_at`, `release` only when priced) and `::QUOTE_DETAILS`.
-- `src/haute/_quote_store/_book.py::QuoteBook.managed` (the details the app sets: the
-  identity, assignee, archived and stage), `::QuoteBook._save` (the clock read in the write,
-  after pricing) and `::QuoteBook._revise` (no release or version given).
-- `src/haute/_workbench_app_quotes.py::_prepared` (the app's details set before pricing).
-- `src/haute/_workbench_app.py::Release` (`haute_version`, kept with no quote).
-- `src/haute/_workbench_tables.py::sample_quote` (the columns the sheets hide left out, the
-  identity alone kept) and `src/haute/_workbench_input.py::with_stand_in` (the page's details
-  kept beside the stand-in).
-- `frontend/src/workbench/sheet/fieldCells.ts::drawnFields` (a field whose column is gone
-  drawn) and `frontend/src/utils/sheetVisibility.ts::quotedSchema` (every column the sheets
-  hide left out, which `quoteEligible` reads).
-- `src/haute/_quote_store/_book.py::QuoteBook.finalise` (a revision priced on another
-  release refused).
-- `frontend/src/utils/workbenchForm.ts::QUOTE_DETAILS_COLUMNS` and `::QUOTE_DETAILS_MANAGED`,
-  and `frontend/src/workbench/schema/TableBlock.tsx` (the note naming the app's columns).
-- `specs/workbench/high-level.md` (the `quote_details` paragraph; a migration drops nothing)
-  and `docs/building-models/workbench.md` (the table's columns).

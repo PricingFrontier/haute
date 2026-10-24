@@ -154,22 +154,39 @@ typed, and a value typed equal to its default counts as the default.
 ### Quote details
 
 Every workbench has Haute's own table, `quote_details`, first in the schema, where
-it stays: one row of a quote's details, which the underwriter app keeps with each saved quote and lists
-on its Quotes page. Its columns are fixed: **quote_reference**, **quote_name**, **insured**,
-**broker**, **inception_date**, **expiry_date**, **valid_until**, **currency**, **stage**,
-**assignee**, **archived**, **is_renewal** and **quote_option**. Put them on the sheets as any other columns, and give them
-labels, groups, help, placeholders, defaults and rules; the pipeline receives the table as
-it receives any other input, so a rule can read a quote's inception date or its stage.
+it stays: one row of a quote's administration, the same for every company and line of
+business, which the underwriter app keeps with each saved quote and lists on its Quotes
+page. Its columns are fixed, in this order: **quote_reference**, **quote_option**,
+**quote_name**, **insured**, **broker**, **inception_date**, **expiry_date**,
+**is_renewal**, **stage**, **assignee**, **archived**, **created_date**, **created_by**,
+**modified_date**, **modified_by** and **haute_version**. Put them on the sheets as any
+other columns, and give them labels, groups, help and placeholders, and the ones your
+underwriters type defaults and rules; the pipeline receives the table as it receives any
+other input, so a rule can read a quote's inception date or its stage. Anything else about
+a quote, its currency or how long the offer stands, goes in a table of your own.
 **is_renewal** is a tick box: a quote made with the app's **Renew** opens with it ticked,
-and an underwriter ticks it for a renewal started any other way. A project saved before
-**is_renewal** or **quote_option** existed takes them on when it is opened, and its
-**reference** is named **quote_reference**; save once so the Workbench Input copies them.
+and an underwriter ticks it for a renewal started any other way. A project saved by an
+earlier Haute takes today's columns when it is opened: its **reference** is named
+**quote_reference**, **valid_until** and **currency** are taken out, and the newer columns
+are added, the labels and rules you gave the others kept. A field on a column taken out
+shows **Missing column** on the sheets while you build, for you to remove or move to a
+column of your own, and is not shown in Preview or the app. Save once so the Workbench Input
+copies the table.
 
-The app sets **quote_reference**, **quote_option**, **stage**, **assignee** and **archived** itself:
-their cells take no typing in the app and take no rules and no default. Assigning,
-archiving, restoring, marking final and reopening a quote each save a new revision with
-those details changed and its values and price kept, so the history shows when a quote
-moved; the pipeline sees the new details the next time the quote is priced. A quote takes
+The app sets **quote_reference**, **quote_option**, **stage**, **assignee**, **archived**,
+**created_date**, **created_by**, **modified_date**, **modified_by** and **haute_version**
+itself: their cells take no typing in the app and take no rules and no default, and the
+pipeline receives them whatever the sheets hide. **created_date** and **created_by** say
+when the quote was made and by whom; **modified_date** and **modified_by** when its revision
+was saved and by whom, a save or any change below; **haute_version** is the version of
+Haute the app ran then. The two dates are dates in UTC, so near midnight they can differ by
+a day from the time the app shows you. A rule that reads **modified_date** or
+**haute_version** prices the same quote differently on another day or release, so keep
+prices to what the underwriter typed. In Preview these columns hold what you type into the
+sample, to try a rule that reads them; an app without a quote store leaves them blank.
+Assigning, archiving, restoring, marking final and reopening a quote each save a new
+revision with those details changed and its values and price kept, so the history shows
+when a quote moved; the pipeline sees the new details the next time the quote is priced. A quote takes
 its reference and option when it is made (see [The Quotes page](#the-quotes-page)), so its
 every price has them. Preview prices the sample as `PREVIEW`, option 1, as the app prices
 the one quote it holds without a quote store: a quote's reference and option are never
@@ -573,7 +590,8 @@ builder on screen. With a quote store it is where they manage their quotes too.
   so, and prices its one quote as `PREVIEW`, option 1. The app does not start on a database it has not been migrated to:
   run `haute app migrate` (with `HAUTE_QUOTE_STORE_URL` set, or `--url`) before a release
   that needs it starts. Back the database up first: after some migrations, such as those
-  that add **is_renewal** and **quote_option**, an earlier release no longer starts on the
+  that add **is_renewal** and **quote_option** and that take out **valid_until** and
+  **currency**, an earlier release no longer starts on the
   database, so rolling back means restoring that backup.
 
 A page opened before a new release is refused when it prices or saves, and reloading it
