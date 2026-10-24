@@ -57,9 +57,10 @@ Out of scope (owned by neighbouring components, cross-linked below):
 **Structural parsing**
 - `parse_pipeline_file`/`parse_pipeline_source` are strict. A whole-file `SyntaxError` becomes a
   contextual `ParseError`; neither entry point substitutes recovered output.
-- `recover_pipeline_fragments` conservatively discovers editor-recovery metadata, decorated
-  function fragments, declared connections, and submodel registrations. It returns neutral
-  fragment dataclasses rather than `GraphNode`, `GraphEdge`, or `PipelineGraph`.
+- Nothing reconstructs structure from a file that is not valid Python. Editor recovery
+  (`haute._pipeline_recovery.load_pipeline_editor_document`) recovers a valid file statement by
+  statement; a syntax-invalid one is a source-only document carrying the located syntax error,
+  with no canvas.
 - Missing, unreadable, invalid, or schema-invalid config sidecars raise `ConfigError` through the
   strict parser. The editor recovery service resolves recovered node fragments independently and
   represents an attributable failure as an unavailable recovery node plus a diagnostic; it never
@@ -116,8 +117,9 @@ Out of scope (owned by neighbouring components, cross-linked below):
   ordinary preamble.
 - Before the strict parser returns, a structure-conservation gate checks the authored node ids,
   explicit edge endpoints and handles, implicit parameter edges, and submodel references against
-  the constructed graph. The gate permits a parent edge endpoint to name a loaded submodel child,
-  but rejects every other dangling endpoint with an actionable `ParseError`. Exact duplicate
+  the constructed graph. A parent edge endpoint names a root node or a registered occurrence:
+  a submodel's own nodes are reached only through its occurrence's ports, so an endpoint naming
+  one is dangling like any other unknown name, refused with an actionable `ParseError`. Exact duplicate
   `connect()` identities have their own diagnostic rather than being reported as a generic
   conservation mismatch.
 

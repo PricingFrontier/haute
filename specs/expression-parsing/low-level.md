@@ -189,16 +189,10 @@ no alias or migration shim; direct test callers use the same current contract.
 - **BOM handling**: `parse_expression`, `parse_expression_chain`, and
   `_locate_defining_expression` all strip a leading `﻿` before parsing (`evaluate_expression`
   inherits this only transitively, by calling into `parse_expression`/`_locate_defining_expression`).
-- **Neutral-recovery string/comment-aware scanning**: `_skip_string_literal` deliberately avoids
-  `tokenize` (the file is syntactically broken by definition) and, when a triple-quoted string
-  never closes, skips to EOF — conservative, because everything after an unclosed triple-quote is
-  part of the broken string from Python's perspective. `_position_is_code` /
-  `_iter_top_level_anchor_matches` use the same scanner so decorator/connect/submodel anchors
-  inside comments or string literals are never mistaken for real code.
-- **Statement-wrapper detection**: `_parenthesized_wrapper_depth_before` distinguishes a pure
-  `(\npipeline.connect(...)\n)` parenthesised statement (still top-level, should behave like the
-  healthy AST parser) from an assignment/list/dict continuation like
-  `disabled = [\npipeline.connect(...)\n]` (must stay rejected — it is not a top-level call).
+- **No text recovery of syntax-invalid source**: a file that is not valid Python is never
+  scanned for fragments. The strict parser turns its `SyntaxError` into a contextual
+  `ParseError`, and editor recovery presents it as a source-only document carrying the located
+  syntax error, with no canvas.
 - **Preamble boundaries are alias-aware**: a valid module uses AST statement line spans to stop
   before an aliased or multiline `Pipeline(...)` construction; neutral syntax recovery parses
   recoverable import lines independently, including comma-separated names and trailing comments,
@@ -275,10 +269,8 @@ no alias or migration shim; direct test callers use the same current contract.
   locator values are a completeness concern, not a `ConfigError`: the builder validates those
   configs with `require_complete=False`, so an empty or absent path/locator parses cleanly and
   is reported as field-level completeness by the editor document loader instead.
-- **`ParseError`** (raised, not caught, by this component) for: an unclosed
-  `pipeline.connect()`/`pipeline.submodel()`/`Pipeline(...)`/decorator-argument-list scan
-  (`_scan_call_end` exhausts the source without balancing); a decorator/submodel/metadata call
-  with trailing text after its closing paren; a decorator keyword argument that is not a
+- **`ParseError`** (raised, not caught, by this component) for: a whole-file `SyntaxError`
+  (an unclosed call among them), with its location; a decorator keyword argument that is not a
   literal (only
   Python literals and the sanctioned `Contract(...)` constructor are resolvable at parse time);
   `**kwargs` expansion in a decorator; an import from `modules` other than
@@ -346,7 +338,7 @@ Tests live under `tests/`, split by concern:
   regeneration path) conserves source structure: boilerplate, docstrings, parameter buckets, node
   function shape, alias awareness, implicit-edge dedup, exact node/edge/handle/submodel identity,
   aggregated missing/unrecoverable submodel diagnostics, duplicate submodel-name rejection, and
-  parity between neutral fragment discovery/editor recovery and strict authored-structure rules.
+  parity between editor recovery and strict authored-structure rules.
 - **`TestPolarsParameterBinding`** (`tests/test_parser_conservation.py`) -- tests
   the strict parameter binding acceptance gate for Polars nodes: rejects unbound
   positional parameters and unconsumed incoming edges with exact diagnostic

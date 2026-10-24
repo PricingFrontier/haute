@@ -119,11 +119,11 @@ implicit inference only fills in what wasn't already covered. Edges are never in
 file that declares no wiring parses as a disconnected graph, keeping deliberately disconnected
 graphs representable and in agreement with `run()`, which fails loudly on unwired transforms.
 
-A static `connect()` whose source or target does not name a root node is retained as unresolved
-until referenced submodels have been loaded, because cross-boundary connections legitimately name
-child node ids. After that merge opportunity, every endpoint must identify either a root node or
-a child of an authored submodel. Any remaining dangling endpoint raises `ParseError` with the
-complete edge and handle identity; it is never omitted from an otherwise healthy-looking graph.
+A static `connect()` endpoint names a root node or a registered submodel occurrence. A
+submodel's own nodes are reached only through its occurrence's ports (`source_port` and
+`target_port`), so an endpoint naming one is dangling like any other unknown name. A dangling
+endpoint raises `ParseError` with the complete edge and handle identity; it is never omitted
+from an otherwise healthy-looking graph.
 The live `Pipeline.connect()` API continues to require both endpoints to be registered
 immediately.
 
