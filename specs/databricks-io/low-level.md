@@ -56,18 +56,36 @@ format lookup.
 1. Registry validation requires `http_path` and `table`, allows an optional
    `write_mode` of `overwrite` (the default) or `append`, and refuses arguments.
 2. The writer re-checks `_TABLE_NAME_RE`, builds the load SQL, and resolves
-   credentials with `_connection_settings(http_path, node_label="Data Output")`.
+   credentials with `_resolve_connection(http_path, node_label="Data Output")`;
+   one `DatabricksCredentials` authenticates both the SQL connection
+   (`_sql_auth_kwargs`) and the Files API client
+   (`_databricks_credentials.databricks_workspace_client`, which the browsing
+   route shares).
 3. `_spark_compatible()` casts `Null` and `Time` columns to strings and
    nanosecond datetimes to microseconds. The frame then streams through the
    ordinary Parquet sink into a temporary directory, and the row count comes
-   from that file's metadata.
-4. One connection, with `staging_allowed_local_path` set to the temporary
-   directory, runs `CREATE VOLUME IF NOT EXISTS` for `haute_staging` in the
-   target schema, then `PUT` of the file under a fresh UUID name, then the load:
-   `CREATE OR REPLACE TABLE ... AS SELECT` for overwrite, or `CREATE TABLE IF NOT
-   EXISTS ... LIMIT 0` followed by `INSERT INTO ... BY NAME` for append.
-5. `REMOVE` of the staged file runs in a `finally`. A cleanup failure is logged
-   and never masks the load's own outcome.
+   from that file's metadata. A chunk-write recipe is composed with the same
+   cast (`recipe.then(_spark_compatible)`), so it still describes the frame
+   written and passes `check_recipe_equivalence`.
+4. One SQL connection runs `CREATE VOLUME IF NOT EXISTS` for `haute_staging` in
+   the target schema. The file is uploaded under a fresh UUID name with the
+   Files API's `upload_from`, in parts of `UPLOAD_PART_BYTES` (16 MiB) on at
+   most `UPLOAD_PARALLELISM` (4) threads, which bounds the upload's memory; the
+   connector's `PUT` reads the whole file into memory and is not used. The load
+   follows: `CREATE OR REPLACE TABLE ... AS SELECT` for overwrite, or `CREATE
+   TABLE IF NOT EXISTS ... LIMIT 0` followed by `INSERT INTO ... BY NAME` for
+   append.
+5. The upload and the load share one `finally` that deletes the staged file
+   (`_remove_staged`), so an upload whose response failed after the bytes landed
+   is cleaned up too. `NotFound` (the upload never created the file) is
+   expected; any other cleanup failure is logged and never masks the write's
+   own outcome.
+6. Every warehouse or storage message, in the `DatabricksWriteError` and in the
+   cleanup log, passes `_warehouse_message`: `redact_sensitive_text` with the
+   token and client secret as known secrets, then whitespace collapsed and the
+   text cut to 600 characters, redaction first so a cut never exposes part of a
+   secret. `redact_sensitive_text` ends an assignment's value at `&`, so each
+   parameter of a bare signed-URL query string is judged by its own key.
 
 The write is transactional: there is no staging path on disk to publish, and
 `resolve_data_output_path()` returns `(None, table)`. Duplicate-destination
@@ -89,11 +107,13 @@ MLflow never uses these variables: its Databricks credentials are the dedicated
 ([modelling](../modelling/low-level.md)), so a data token and an MLflow token
 can carry different scopes.
 
-`_connection_settings(http_path)` passes the mandatory node `http_path` as such
-an additional requirement; there is no `DATABRICKS_HTTP_PATH` fallback. It
-adapts the resolved credentials into either `access_token` or the SDK OAuth M2M
-callback built by `_service_principal_credentials()`. The browsing route calls
-the same resolver and adapts the selected form into `WorkspaceClient`. Returned
+`_connection_settings(http_path)` (`_resolve_connection` then
+`_sql_auth_kwargs`) passes the mandatory node `http_path` as such an additional
+requirement; there is no `DATABRICKS_HTTP_PATH` fallback. It adapts the resolved
+credentials into either `access_token` or the SDK OAuth M2M callback built by
+`_service_principal_credentials()`. The browsing route calls the same resolver
+and adapts the selected form into `WorkspaceClient` through
+`databricks_workspace_client`. Returned
 secrets and providers stay in connector-call scope.
 
 ### Browsing
@@ -139,8 +159,12 @@ returning a generic 500.
   cancellation before execute, batch streaming, retries, empty-schema behaviour, row-loss
   detection, identity-independent batch sizing, and builder-through-store publication.
 - `tests/test_databricks_output.py` covers output config validation, the load SQL,
-  dtype casts, the staged write over a fake connector (including cleanup after a
-  failed load), a pipeline write, destination identity, and worker error kinds.
+  dtype casts, the staged write over a fake connector and Files API (the bounded
+  part size and parallelism, cleanup after a failed load and after an upload that
+  failed once its bytes may have landed, a missing staged file not logged as a
+  cleanup failure), redaction of a signed-URL query and the token in errors and in
+  the cleanup log, a chunk-write recipe carrying the casts, a pipeline write,
+  destination identity, and worker error kinds.
 - `tests/test_databricks_endpoints.py` covers optional dependency/credential failures,
   SDK mapping, and generic error responses for browsing.
 - `tests/test_databricks_routes_auth.py` proves the browsing adapter consumes

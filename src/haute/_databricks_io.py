@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from haute._databricks_credentials import (
     DatabricksConfigError,
+    DatabricksCredentials,
     resolve_databricks_credentials,
 )
 from haute._logging import get_logger
@@ -129,27 +130,37 @@ def _connection_settings(
     passed to ``databricks.sql.connect``. The failure message names every
     consulted source without echoing any value.
     """
+    credentials, resolved_http_path = _resolve_connection(http_path, node_label=node_label)
+    return credentials.server_hostname, _sql_auth_kwargs(credentials), resolved_http_path
+
+
+def _resolve_connection(
+    http_path: str | None, *, node_label: str
+) -> tuple[DatabricksCredentials, str]:
+    """The environment's credentials and the stripped *http_path*, both required."""
     resolved_http_path = (http_path or "").strip()
     credentials = resolve_databricks_credentials(
         additional_missing=(f"http_path on the {node_label} node",)
         if not resolved_http_path
         else ()
     )
+    return credentials, resolved_http_path
 
+
+def _sql_auth_kwargs(credentials: DatabricksCredentials) -> dict[str, Any]:
+    """The ``databricks.sql.connect`` keyword arguments that authenticate *credentials*."""
     if credentials.auth_mode == "pat":
         assert credentials.token is not None
-        auth_kwargs: dict[str, Any] = {"access_token": credentials.token}
-    else:
-        assert credentials.client_id is not None
-        assert credentials.client_secret is not None
-        auth_kwargs = {
-            "credentials_provider": _service_principal_credentials(
-                credentials.server_hostname,
-                credentials.client_id,
-                credentials.client_secret,
-            )
-        }
-    return credentials.server_hostname, auth_kwargs, resolved_http_path
+        return {"access_token": credentials.token}
+    assert credentials.client_id is not None
+    assert credentials.client_secret is not None
+    return {
+        "credentials_provider": _service_principal_credentials(
+            credentials.server_hostname,
+            credentials.client_id,
+            credentials.client_secret,
+        )
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -47,7 +47,9 @@ _URI_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+")
 _ASSIGNMENT_RE = re.compile(
     r"(?P<key>[A-Za-z_][A-Za-z0-9_.-]*)"
     r"(?P<separator>\s*[=:]\s*)"
-    r'(?P<value>"[^"]*"|\'[^\']*\'|[^\s,;]+)'
+    # ``&`` ends a value, so each parameter of a bare query string (the relative
+    # signed URL in a storage error, say) is judged by its own key.
+    r'(?P<value>"[^"]*"|\'[^\']*\'|[^\s,;&]+)'
 )
 _REDACTED = "<redacted>"
 

@@ -1,18 +1,22 @@
 """Write a Data Output to a Unity Catalog table through a SQL warehouse.
 
-The result streams to a local Parquet file, which one warehouse connection
-then stages and loads:
+The result streams to a local Parquet file, which is staged and loaded:
 
 1. ``CREATE VOLUME IF NOT EXISTS`` the staging volume in the target schema.
-2. ``PUT`` the file into it (the SQL connector's staging operation).
+2. Upload the file into it through the Files API in parts of a fixed size, so
+   the upload holds a bounded number of parts in memory however large the
+   output is. (The SQL connector's ``PUT`` reads the whole file into memory.)
 3. Load it into the table in one statement: ``CREATE OR REPLACE TABLE`` for
    ``overwrite``, ``INSERT INTO ... BY NAME`` for ``append`` (creating the
    table first when it does not exist).
-4. ``REMOVE`` the staged file, whether or not the load succeeded.
+4. Delete the staged file, whether or not the upload or the load succeeded.
 
 One bulk load lets the warehouse map Parquet types to table types, rather
 than inserting rows through the connector. Authentication is the Data
-Input's (:func:`haute._databricks_io._connection_settings`).
+Input's (:func:`haute._databricks_io._resolve_connection`), for both the SQL
+connection and the Files API client. Warehouse and storage errors reach the
+user and the log only after credential redaction: a failed upload's error can
+carry a signed storage URL.
 """
 
 from __future__ import annotations
@@ -25,8 +29,18 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
-from haute._databricks_credentials import DatabricksConfigError
-from haute._databricks_io import _TABLE_NAME_RE, _connection_settings, _quoted_table_name
+from haute._credential_security import redact_sensitive_text
+from haute._databricks_credentials import (
+    DatabricksConfigError,
+    DatabricksCredentials,
+    databricks_workspace_client,
+)
+from haute._databricks_io import (
+    _TABLE_NAME_RE,
+    _quoted_table_name,
+    _resolve_connection,
+    _sql_auth_kwargs,
+)
 from haute._logging import get_logger
 from haute._polars_utils import streaming_collect
 from haute.errors import HauteError
@@ -42,6 +56,10 @@ DEFAULT_WRITE_MODE = "overwrite"
 #: The volume, in the target table's schema, a write stages its file in.
 STAGING_VOLUME = "haute_staging"
 _MAX_ERROR_CHARS = 600
+# The upload's memory bound is their product: the Files API buffers one part per
+# thread. (A file under its 50 MiB multipart threshold goes up in one request.)
+UPLOAD_PART_BYTES = 16 * 1024 * 1024
+UPLOAD_PARALLELISM = 4
 
 
 class DatabricksWriteError(HauteError):
@@ -85,9 +103,27 @@ def load_statements(table: str, staged_path: str, write_mode: str) -> list[str]:
     )
 
 
-def _warehouse_message(exc: Exception) -> str:
-    text = " ".join(str(exc).split())
+def _warehouse_message(exc: BaseException, credentials: DatabricksCredentials) -> str:
+    """*exc*'s text on one line, credentials redacted before it is shortened."""
+    secrets = (credentials.token or "", credentials.client_secret or "")
+    text = " ".join(redact_sensitive_text(str(exc), known_secrets=secrets).split())
     return text if len(text) <= _MAX_ERROR_CHARS else f"{text[:_MAX_ERROR_CHARS]}..."
+
+
+def _remove_staged(files: Any, staged_path: str, credentials: DatabricksCredentials) -> None:
+    """Delete the staged file; a failure is logged, never raised over the write's outcome."""
+    from databricks.sdk.errors import NotFound
+
+    try:
+        files.delete(staged_path)
+    except NotFound:
+        pass  # The upload failed before the file existed.
+    except Exception as exc:  # noqa: BLE001 - cleanup must not mask the write
+        logger.warning(
+            "databricks_staging_cleanup_failed",
+            path=staged_path,
+            error=_warehouse_message(exc, credentials),
+        )
 
 
 def write_databricks_output(
@@ -111,24 +147,21 @@ def write_databricks_output(
     catalog, schema, _name = _table_parts(table)
     staged_path = f"/Volumes/{catalog}/{schema}/{STAGING_VOLUME}/{uuid.uuid4().hex}.parquet"
     statements = load_statements(table, staged_path, write_mode)
-    host, auth_kwargs, http_path = _connection_settings(
+    credentials, http_path = _resolve_connection(
         str(config.get("http_path") or ""), node_label="Data Output"
     )
     try:
         from databricks import sql as dbsql
+
+        files = databricks_workspace_client(credentials).files
     except ImportError as exc:
         raise DatabricksConfigError(
-            "Writing to Databricks requires the databricks-sql-connector package. "
-            "Install the databricks extra: haute[databricks]."
+            "Writing to Databricks requires the databricks-sql-connector and databricks-sdk "
+            "packages. Install the databricks extra: haute[databricks]."
         ) from exc
 
     with tempfile.TemporaryDirectory(prefix="haute-databricks-") as staging_dir:
         local = Path(staging_dir) / "output.parquet"
-        if "'" in local.as_posix():
-            raise DatabricksConfigError(
-                "The temporary directory path contains a quote, which a Databricks PUT "
-                "cannot name. Point TMPDIR at a path without one."
-            )
         write_polars_output(
             _spark_compatible(lf),
             {
@@ -139,7 +172,8 @@ def write_databricks_output(
                 "arguments": {},
             },
             resolved_path=local,
-            recipe=recipe,
+            # The recipe must describe the frame written, casts included.
+            recipe=recipe.then(_spark_compatible) if recipe is not None else None,
             execution_context=execution_context,
             node_id=node_id,
         )
@@ -153,10 +187,9 @@ def write_databricks_output(
         try:
             with (
                 dbsql.connect(
-                    server_hostname=host,
+                    server_hostname=credentials.server_hostname,
                     http_path=http_path,
-                    staging_allowed_local_path=staging_dir,
-                    **auth_kwargs,
+                    **_sql_auth_kwargs(credentials),
                 ) as connection,
                 connection.cursor() as cursor,
             ):
@@ -164,24 +197,23 @@ def write_databricks_output(
                     f"CREATE VOLUME IF NOT EXISTS `{catalog}`.`{schema}`.`{STAGING_VOLUME}` "
                     "COMMENT 'Staging for Haute Data Output writes'"
                 )
-                cursor.execute(f"PUT '{local.as_posix()}' INTO '{staged_path}' OVERWRITE")
                 try:
+                    files.upload_from(
+                        staged_path,
+                        str(local),
+                        overwrite=True,
+                        part_size=UPLOAD_PART_BYTES,
+                        parallelism=UPLOAD_PARALLELISM,
+                    )
                     for statement in statements:
                         cursor.execute(statement)
                 finally:
-                    try:
-                        cursor.execute(f"REMOVE '{staged_path}'")
-                    except Exception as exc:  # noqa: BLE001 - cleanup must not mask the load
-                        logger.warning(
-                            "databricks_staging_cleanup_failed",
-                            path=staged_path,
-                            error=_warehouse_message(exc),
-                        )
+                    _remove_staged(files, staged_path, credentials)
         except DatabricksConfigError:
             raise
         except Exception as exc:
             raise DatabricksWriteError(
-                f"Databricks could not write {table}: {_warehouse_message(exc)}"
+                f"Databricks could not write {table}: {_warehouse_message(exc, credentials)}"
             ) from exc
 
     logger.info("databricks_output_written", table=table, write_mode=write_mode, rows=rows)
