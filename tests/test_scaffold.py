@@ -17,7 +17,7 @@ from haute._scaffold import (
     ci_files,
     ci_secret_names,
     env_example,
-    env_example_values,
+    env_example_placeholders,
     github_ci_yml,
     github_deploy_prod_yml,
     github_deploy_yml,
@@ -1412,6 +1412,12 @@ class TestCiFiles:
             "DATABRICKS_RATING_HOST",
             "DATABRICKS_RATING_TOKEN",
         ]
-        placeholders = env_example_values("databricks")
+        placeholders = env_example_placeholders("databricks")
         assert placeholders["DATABRICKS_RATING_TOKEN"] == "your_databricks_token_here"
         assert set(ci_secret_names("databricks")) <= set(placeholders)
+
+    def test_a_usable_default_is_no_placeholder(self) -> None:
+        # .env.example's AWS region is a value to keep, not one to replace.
+        placeholders = env_example_placeholders("aws-ecs")
+        assert "AWS_DEFAULT_REGION" not in placeholders
+        assert placeholders == {}

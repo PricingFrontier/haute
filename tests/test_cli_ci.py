@@ -288,3 +288,28 @@ def test_init_names_the_secrets_the_first_deploy_needs(
     for name in _VALUES:
         assert name in result.output
     assert ("haute ci secrets" in result.output) is command
+
+
+def test_a_usable_default_from_env_example_is_set_like_any_value(
+    runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # .env.example's AWS region is a real default, not a placeholder to replace.
+    values = {
+        "DOCKER_USERNAME": "registry-user",
+        "DOCKER_PASSWORD": "registry-password",
+        "AWS_ACCESS_KEY_ID": "AKIAEXAMPLE",
+        "AWS_SECRET_ACCESS_KEY": "aws-secret",
+        "AWS_DEFAULT_REGION": "eu-west-1",
+    }
+    monkeypatch.chdir(tmp_path)
+    for name in values:
+        monkeypatch.delenv(name, raising=False)
+    assert runner.invoke(cli, ["init", "--target", "aws-ecs", "--ci", "github"]).exit_code == 0
+    _env_file(tmp_path, values)
+    gh = _Gh()
+
+    result, checked = _invoke(runner, ["secrets"], gh)
+
+    assert result.exit_code == 0, result.output
+    assert gh.secrets == values
+    checked.assert_not_called()  # only a Databricks target's pairs are checked

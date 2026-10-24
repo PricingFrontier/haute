@@ -142,7 +142,7 @@ def handle_ci_secrets(config: CiSecretsConfig) -> None:
     (``ClickException``) on any failure, and, with ``check_only``, when a secret is
     missing.
     """
-    from haute._scaffold import ci_secret_names, env_example_values
+    from haute._scaffold import ci_secret_names, env_example_placeholders
 
     project_dir, deploy_config = _project()
     target = deploy_config.target
@@ -181,7 +181,7 @@ def handle_ci_secrets(config: CiSecretsConfig) -> None:
             f"Not set in .env or the environment: {', '.join(unset)}. Copy .env.example to "
             ".env, fill in every value, and run this again."
         )
-    placeholders = env_example_values(target)
+    placeholders = env_example_placeholders(target)
     unedited = [name for name in names if values[name] == placeholders.get(name)]
     if unedited:
         raise click.ClickException(

@@ -101,6 +101,9 @@ def handle_impact(config: ImpactConfig) -> None:
 
     click.echo(f"Impact analysis: {staging_name} vs {prod_name}")
     click.echo(f"  Dataset: {dataset_label} ({len(records):,} rows)")
+    # Test quotes go one per request, as smoke sends them: an endpoint a Workbench
+    # Input answers takes exactly one quote per request.
+    batch_size = config.batch_size if deploy_config.safety.impact_dataset else 1
 
     # Score via the appropriate transport
     if transport.kind == "databricks":
@@ -108,14 +111,14 @@ def handle_impact(config: ImpactConfig) -> None:
             staging_name,
             prod_name,
             records,
-            config.batch_size,
+            batch_size,
         )
     elif transport.kind == "http":
         staging_preds, prod_preds, prod_exists = _impact_http(
             transport.staging_url,
             transport.prod_url,
             records,
-            config.batch_size,
+            batch_size,
         )
     else:
         click.echo(

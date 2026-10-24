@@ -676,7 +676,7 @@ class TestSmokeReachesTheEndpointWithTheServingPair:
 
         assert result.exit_code == 0, result.output
         client.assert_called_once_with(
-            host="https://rating.example", token="rating-token", auth_type="pat"
+            host="https://rating.example", token="rating-token", auth_type="pat", profile=""
         )
         mock_ws.serving_endpoints.get.assert_called_with("test-ep-staging")
 

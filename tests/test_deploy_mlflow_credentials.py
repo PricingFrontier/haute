@@ -182,7 +182,7 @@ def test_mlflow_pair_drives_mlflow_while_rating_pair_drives_serving(
     assert connectivity_request.full_url.startswith(f"{RATING_HOST}/")
     assert connectivity_request.get_header("Authorization") == f"Bearer {RATING_TOKEN}"
     calls.workspace_client.assert_called_once_with(
-        host=RATING_HOST, token=RATING_TOKEN, auth_type="pat"
+        host=RATING_HOST, token=RATING_TOKEN, auth_type="pat", profile=""
     )
     serving_calls = repr(calls.workspace_client.mock_calls)
     assert MLFLOW_TOKEN not in serving_calls
@@ -203,7 +203,7 @@ def test_profile_tracking_uri_selects_the_profile_for_tracking_and_registry(
         tracking_uri="databricks://team", registry_uri="databricks-uc://team"
     )
     calls.workspace_client.assert_called_once_with(
-        host=RATING_HOST, token=RATING_TOKEN, auth_type="pat"
+        host=RATING_HOST, token=RATING_TOKEN, auth_type="pat", profile=""
     )
 
 

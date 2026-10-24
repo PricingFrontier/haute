@@ -400,3 +400,62 @@ class TestImpactWithoutAPortfolioSample:
         assert result.exit_code == 1
         assert "has no test quotes to compare instead" in result.output
         mock_db.assert_not_called()
+
+
+class TestImpactSendsTestQuotesAsSmokeDoes:
+    """An endpoint a Workbench Input answers takes exactly one quote per request, so the
+    test quotes impact compares go one per request, as smoke sends them, through the real
+    transport; and a response's one-row tables are compared field by field."""
+
+    def test_each_test_quote_is_a_request_of_its_own(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        TestImpactWithoutAPortfolioSample()._project(
+            tmp_path,
+            monkeypatch,
+            [{"input": {"Area": area}} for area in ("A", "B", "C")],
+        )
+        premiums = {"A": 100.0, "B": 200.0, "C": 300.0}
+
+        def query(*, name: str, dataframe_records: list[dict]) -> MagicMock:
+            # As a Workbench endpoint answers: one quote, or a refusal.
+            if len(dataframe_records) != 1:
+                raise RuntimeError("WorkbenchInputError: one quote per request")
+            [record] = dataframe_records
+            uplift = 1.1 if name == "test-ep-staging" else 1.0
+            return MagicMock(
+                predictions=[{"pricing": {"premium": premiums[record["Area"]] * uplift}}]
+            )
+
+        ws = MagicMock()
+        ws.serving_endpoints.query.side_effect = query
+        with (
+            patch("haute.deploy._databricks_serving.serving_workspace_client", return_value=ws),
+            patch("haute.deploy._config._load_env"),
+        ):
+            result = runner.invoke(cli, ["impact", "--endpoint-suffix", "-staging"])
+
+        assert result.exit_code == 0, result.output
+        assert ws.serving_endpoints.query.call_count == 6  # three quotes, two endpoints
+        report = (tmp_path / "impact_report.md").read_text()
+        assert "pricing.premium" in report
+        assert "+10.0%" in report
+
+
+def test_a_one_row_tables_numbers_are_compared() -> None:
+    from haute.deploy._impact import build_report
+
+    report = build_report(
+        staging_preds=[{"pricing": {"premium": 200.0, "band": "A"}, "id": "q1"}],
+        prod_preds=[{"pricing": {"premium": 100.0, "band": "A"}, "id": "q1"}],
+        input_df=pl.DataFrame([{}]),
+        pipeline_name="p",
+        staging_endpoint="s",
+        prod_endpoint="p",
+        dataset_path="test quotes (tests/quotes)",
+        total_rows=1,
+    )
+
+    [stats] = report.column_stats
+    assert stats.name == "pricing.premium"
+    assert stats.mean_change_pct == pytest.approx(100.0)

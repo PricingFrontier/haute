@@ -512,8 +512,9 @@ def check_databricks_credentials() -> None:
     """Refuse a Databricks deploy before any work when its credentials are not all set.
 
     Names every gap at once: the MLflow destination (``DATABRICKS_MLFLOW_HOST`` and
-    ``DATABRICKS_MLFLOW_TOKEN``, or a selected profile) that registers the model, and
-    the serving pair that creates or updates its endpoint. Presence only: whether the
+    ``DATABRICKS_MLFLOW_TOKEN``, or a profile ``MLFLOW_TRACKING_URI=databricks://<profile>``
+    selects, read as MLflow reads it, which must give a host and a token) that registers
+    the model, and the serving pair that creates or updates its endpoint. Whether the
     workspace accepts them is checked when the deploy first reaches it.
     """
     from haute.errors import MlflowConfigError
@@ -521,9 +522,13 @@ def check_databricks_credentials() -> None:
 
     problems: list[str] = []
     try:
-        resolve_destination("databricks")
+        destination = resolve_destination("databricks")
     except MlflowConfigError as exc:
         problems.append(str(exc))
+    else:
+        problem = _profile_problem(destination.tracking_uri)
+        if problem is not None:
+            problems.append(problem)
     missing = missing_serving_credentials()
     if missing:
         problems.append(missing_serving_credentials_message(missing))
@@ -532,6 +537,32 @@ def check_databricks_credentials() -> None:
             "The Databricks deploy's credentials are not set:\n"
             + "\n".join(f"  - {problem}" for problem in problems)
         )
+
+
+def _profile_problem(tracking_uri: str) -> str | None:
+    """Why the profile a ``databricks://<profile>`` URI selects cannot register a model.
+
+    ``None`` for the pair form (``databricks``) and for a profile MLflow reads a host and
+    a token from: the Unity Catalog model upload needs a personal access token.
+    """
+    if not tracking_uri.startswith("databricks://"):
+        return None
+    from mlflow.utils.databricks_utils import get_databricks_host_creds
+
+    profile = tracking_uri.removeprefix("databricks://")
+    try:
+        creds = get_databricks_host_creds(tracking_uri)
+    except Exception as exc:  # noqa: BLE001 - MLflow's reason is reported, not hidden
+        return (
+            f"MLFLOW_TRACKING_URI selects the Databricks profile '{profile}', which MLflow "
+            f"cannot read: {exc}"
+        )
+    if not creds.host or not creds.token:
+        return (
+            f"MLFLOW_TRACKING_URI selects the Databricks profile '{profile}', which has no "
+            "host and personal access token for registering the model."
+        )
+    return None
 
 
 def _resolve_mlflow_databricks() -> tuple[str, str]:

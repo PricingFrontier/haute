@@ -482,21 +482,29 @@ def env_example(target: str) -> str:
     return _ENV_EXAMPLE_HEADER.format(label=label) + (f"#\n{notice}" if notice else "") + env_body
 
 
-def env_example_values(target: str) -> dict[str, str]:
-    """The placeholder value ``.env.example`` gives each variable of *target*.
+# What marks a value in ``.env.example`` as a stand-in for the real one: the token
+# placeholders and the example workspace's number. Other values there are usable
+# defaults (``AWS_DEFAULT_REGION=eu-west-1``).
+_PLACEHOLDER_MARKERS = ("your_", "1234567890123456")
+
+
+def env_example_placeholders(target: str) -> dict[str, str]:
+    """The stand-in values ``.env.example`` gives *target*'s variables, by name.
 
     ``haute ci secrets`` refuses a value still equal to its placeholder, so an unedited
-    copy of the template is never uploaded as a CI secret.
+    copy of the template is never uploaded as a CI secret. A usable default, such as an
+    AWS region, is no placeholder.
     """
     env_body = _get_target(target)["env_body"]
     assert isinstance(env_body, str)
-    values: dict[str, str] = {}
+    placeholders: dict[str, str] = {}
     for line in env_body.splitlines():
         if line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        values[key.strip()] = value.strip()
-    return values
+        if any(marker in value for marker in _PLACEHOLDER_MARKERS):
+            placeholders[key.strip()] = value.strip()
+    return placeholders
 
 
 # ── CI secrets helpers ────────────────────────────────────────────────

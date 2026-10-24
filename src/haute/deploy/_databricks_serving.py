@@ -78,12 +78,23 @@ def serving_credentials() -> ServingCredentials:
     )
 
 
-def serving_workspace_client(credentials: ServingCredentials | None = None) -> Any:
-    """A ``WorkspaceClient`` authenticated with the serving pair and nothing else."""
+def pat_workspace_client(host: str, token: str) -> Any:
+    """A ``WorkspaceClient`` for *host* that authenticates with *token* and nothing else.
+
+    ``auth_type="pat"`` picks the token over any other credential the environment sets
+    (a service principal's ``DATABRICKS_CLIENT_ID``, say), and the empty profile name
+    stops the SDK reading ``DATABRICKS_CONFIG_PROFILE`` and a config file: an ambient
+    profile, or one the file does not hold, would otherwise change the client or fail it.
+    """
     from databricks.sdk import WorkspaceClient
 
+    return WorkspaceClient(host=host, token=token, auth_type="pat", profile="")
+
+
+def serving_workspace_client(credentials: ServingCredentials | None = None) -> Any:
+    """A ``WorkspaceClient`` authenticated with the serving pair and nothing else."""
     resolved = credentials if credentials is not None else serving_credentials()
-    return WorkspaceClient(host=resolved.host, token=resolved.token, auth_type="pat")
+    return pat_workspace_client(resolved.host, resolved.token)
 
 
 def enum_value(value: object) -> str:
@@ -222,7 +233,5 @@ def workspace_user(host: str, token: str) -> str:
 
     Raises whatever the workspace answers for a host or token it refuses.
     """
-    from databricks.sdk import WorkspaceClient
-
-    me = WorkspaceClient(host=host, token=token, auth_type="pat").current_user.me()
+    me = pat_workspace_client(host, token).current_user.me()
     return str(me.user_name or me.display_name or me.id or "")

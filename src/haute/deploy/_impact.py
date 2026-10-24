@@ -230,14 +230,34 @@ def _unwrap_prediction_envelopes(preds: list) -> list:
     return rows if unwrapped else preds
 
 
+def _flatten_structs(frame: pl.DataFrame) -> pl.DataFrame:
+    """*frame* with each struct column's fields as columns named ``<column>.<field>``.
+
+    A Workbench response holds a one-row table as an object, which Polars reads as a
+    struct; its fields become columns so its numbers are compared as a flat response's
+    are, nested tables included. A many-row table is a list and stays one column, which
+    impact does not compare row by row.
+    """
+    while True:
+        structs = {
+            name: dtype for name, dtype in frame.schema.items() if isinstance(dtype, pl.Struct)
+        }
+        if not structs:
+            return frame
+        frame = frame.with_columns(
+            pl.col(name).struct.rename_fields([f"{name}.{field.name}" for field in dtype.fields])
+            for name, dtype in structs.items()
+        ).unnest(list(structs))
+
+
 def _preds_to_df(preds: list) -> pl.DataFrame:
-    """Normalise endpoint predictions into a Polars DataFrame."""
+    """Normalise endpoint predictions into a Polars DataFrame, nested objects flattened."""
     preds = _unwrap_prediction_envelopes(preds)
     if not preds:
         return pl.DataFrame()
     first = preds[0]
     if isinstance(first, dict):
-        return pl.DataFrame(preds)
+        return _flatten_structs(pl.DataFrame(preds))
     if isinstance(first, (list, tuple)):
         cols = [f"output_{i}" for i in range(len(first))]
         return pl.DataFrame(preds, schema=cols, orient="row")

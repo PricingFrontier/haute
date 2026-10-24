@@ -115,7 +115,7 @@ def test_the_client_uses_the_serving_pair_and_nothing_else(
     with patch("databricks.sdk.WorkspaceClient") as client:
         serving_workspace_client()
 
-    client.assert_called_once_with(host=_HOST, token=_TOKEN, auth_type="pat")
+    client.assert_called_once_with(host=_HOST, token=_TOKEN, auth_type="pat", profile="")
 
 
 # ---------------------------------------------------------------------------
@@ -363,3 +363,60 @@ def test_haute_deploy_refuses_missing_credentials_before_parsing(
     assert "credentials are not set" in result.output
     assert RATING_TOKEN_ENV in result.output
     resolve.assert_not_called()
+
+
+def test_the_serving_client_ignores_ambient_profiles_and_service_principals(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real SDK constructor: an ambient profile the config file does not hold used to
+    fail the client, and an ambient service principal would compete with the token."""
+    from haute.deploy._databricks_serving import ServingCredentials
+
+    config_file = tmp_path / "databrickscfg"
+    config_file.write_text("[other]\nhost = https://other.example\ntoken = other\n")
+    monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config_file))
+    monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "missing")
+    monkeypatch.setenv("DATABRICKS_CLIENT_ID", "service-principal")
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "service-principal-secret")
+
+    client = serving_workspace_client(ServingCredentials(host=_HOST, token=_TOKEN))
+
+    assert client.config.host == _HOST
+    assert client.config.authenticate()["Authorization"] == f"Bearer {_TOKEN}"
+
+
+@pytest.fixture
+def profiles(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_file = tmp_path / "databrickscfg"
+    config_file.write_text(
+        "[team]\nhost = https://adb-7.azuredatabricks.net\ntoken = dapi-team\n\n"
+        "[notoken]\nhost = https://adb-8.azuredatabricks.net\n"
+    )
+    monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config_file))
+    monkeypatch.setenv(RATING_HOST_ENV, _HOST)
+    monkeypatch.setenv(RATING_TOKEN_ENV, _TOKEN)
+
+
+@pytest.mark.usefixtures("no_databricks_credentials", "profiles")
+@pytest.mark.parametrize("profile", ["missing", "notoken"])
+def test_a_profile_mlflow_cannot_use_is_refused_before_any_work(
+    monkeypatch: pytest.MonkeyPatch, profile: str
+) -> None:
+    from haute.deploy._mlflow import check_databricks_credentials
+    from haute.errors import DeployError
+
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", f"databricks://{profile}")
+
+    with pytest.raises(DeployError) as excinfo:
+        check_databricks_credentials()
+
+    assert f"selects the Databricks profile '{profile}'" in str(excinfo.value)
+
+
+@pytest.mark.usefixtures("no_databricks_credentials", "profiles")
+def test_a_profile_with_a_host_and_token_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    from haute.deploy._mlflow import check_databricks_credentials
+
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+
+    check_databricks_credentials()
