@@ -518,13 +518,17 @@ must resolve the original pipeline-owned sidecars.
   spelling (relative, dotted, `import modules...`, an alias, `*`) or a module imported
   twice; a module name that is not a canonical identifier, starts with `__` or would hide a
   Python built-in; a registration naming a module
-  the file does not import, whose remediation adds the import; and an import no
-  registration uses. The editor reports a malformed import as `submodel_import_invalid` and
-  a refused registration as `submodel_registration_invalid`; a removed path-form
-  registration keeps its occurrence as an unavailable card carrying the parser's message,
-  while one naming a module the file does not import keeps no card, so its connections are
-  unresolved. An unused import has no element of its own and is listed as the pipeline-level
-  `pipeline_parse_invalid` diagnostic. No recovery action rewrites any of them.
+  the file does not import, whose remediation adds the import; a registration before the
+  import it names, which Python could not run; an import no registration uses; and an import
+  sharing its lines with other code (after a `;`) or inside a preserved block, which a save,
+  rewriting the import, would lose or write twice. The editor reports a malformed import as
+  `submodel_import_invalid` and a refused registration as `submodel_registration_invalid`; a
+  removed path-form registration, and one naming a module the file does not import, keep
+  their occurrence as an unavailable card carrying the parser's message (the card names the
+  file the import would read). An unused import has no element of its own and is listed as
+  the pipeline-level `pipeline_parse_invalid` diagnostic at the import's line, with the
+  parser's remediation. Removing an unavailable occurrence also takes its module's name out
+  of the import when no other registration uses it. No recovery action rewrites any of them.
 - Save refuses with `400` a graph whose definition file is not a `modules/<name>.py` module,
   before writing anything.
 - The live `Pipeline.submodel()` raises `TypeError` when given a file path, naming the

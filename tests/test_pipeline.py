@@ -1998,6 +1998,29 @@ class TestStandaloneSubmodels:
 
         assert scored.to_dicts() == [{"year": 2010, "rel": 1.5, "note": "n"}]
 
+    def test_a_definition_from_another_projects_modules_is_refused(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """``from modules import factors`` reads Python's module cache: in a process that
+        imported another project's ``modules`` first, it returns that project's
+        definition, which the registration refuses rather than running."""
+        first, second = tmp_path / "first", tmp_path / "second"
+        for project, factor in ((first, "1.2"), (second, "9.9")):
+            project.mkdir()
+            _write_module(project, "factors", _FACTORS_MODULE.replace("1.2", factor))
+        source = (
+            "import haute\n\n"
+            "from modules import factors\n\n"
+            'pipeline = haute.Pipeline("p")\n'
+            'pipeline.submodel(factors.submodel, "factors")\n'
+        )
+        monkeypatch.syspath_prepend(str(first))
+        _exec_pipeline(first / "main.py", source)
+        monkeypatch.syspath_prepend(str(second))
+
+        with pytest.raises(ImportError, match="imported another project's `modules` package"):
+            _exec_pipeline(second / "main.py", source)
+
     def test_a_module_without_a_submodel_fails_the_import_naming_it(self, tmp_path) -> None:
         """Python itself refuses the registration, when the pipeline file is imported."""
         with pytest.raises(AttributeError, match=r"factors.*has no attribute 'submodel'"):

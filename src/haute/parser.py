@@ -22,7 +22,9 @@ from haute._ast_helpers import (
     _extract_preamble,
     _extract_preserved_blocks,
     _is_pipeline_authored_decorator,
+    _module_preserve_spans,
     _reject_reserved_global_constants_bindings,
+    is_submodel_import,
 )
 from haute._config_io import parse_global_constants
 from haute._executable_names import (
@@ -299,6 +301,17 @@ def parse_pipeline_source_with_name_violations(
     rf_nodes = _build_rf_nodes(raw_nodes)
     preamble = _extract_preamble(source, tree=tree)
     preserved_blocks = _extract_preserved_blocks(source)
+    preserved = _module_preserve_spans(source.splitlines())
+    for statement in tree.body:
+        if is_submodel_import(statement) and any(
+            first <= statement.lineno - 1 <= last for first, last in preserved
+        ):
+            raise ParseError(
+                "A submodel import is generated code, rewritten from the registrations on "
+                "every save: inside a preserved block, a save would write it twice.",
+                line=statement.lineno,
+                remediation="Move the import out of the preserved block, with the imports.",
+            )
 
     # Surface config load errors as a graph-level warning for the GUI.
     load_error_labels = [n.data.label for n in rf_nodes if n.data.config.get("_load_error")]

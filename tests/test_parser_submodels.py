@@ -11,6 +11,7 @@ from haute._parser_submodels import (
     extract_submodel_registrations,
     merge_submodels,
     parse_submodel_source,
+    submodel_imports,
 )
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import ParseError
@@ -194,6 +195,31 @@ class TestExtractSubmodelRegistrations:
 
         with pytest.raises(ParseError, match="duplicated"):
             extract_submodel_registrations(ast.parse(source))
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            pytest.param("from modules import pricing; RATE = 2", id="import-first"),
+            pytest.param("RATE = 2; from modules import pricing", id="import-second"),
+        ],
+    )
+    def test_refuses_an_import_sharing_its_line_with_other_code(self, line: str) -> None:
+        """A save rewrites the import's lines, so code sharing them would go with it."""
+        source = f'{line}\npipeline.submodel(pricing.submodel, "pricing")\n'
+
+        with pytest.raises(ParseError, match="has its lines to itself") as exc_info:
+            submodel_imports(ast.parse(source))
+
+        assert exc_info.value.context["line"] == 1
+
+    def test_refuses_a_registration_before_its_import(self) -> None:
+        """Python runs the file in order, so the registration would fail with a NameError."""
+        source = 'pipeline.submodel(pricing.submodel, "pricing")\nfrom modules import pricing\n'
+
+        with pytest.raises(ParseError, match="before the file imports 'pricing'") as exc_info:
+            extract_submodel_registrations(ast.parse(source))
+
+        assert exc_info.value.context["line"] == 1
 
     def test_refuses_the_definition_as_a_keyword(self) -> None:
         """One spelling: the definition is the first argument, as codegen writes it and

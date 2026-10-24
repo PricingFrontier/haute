@@ -254,7 +254,12 @@ def _line_byte_range(body: bytes, start_line: int, end_line: int) -> tuple[int, 
     return sum(map(len, lines[: start_line - 1])), sum(map(len, lines[:end_line]))
 
 
-def _apply_byte_ranges(body: bytes, ranges: list[tuple[int, int]]) -> bytes:
+def _apply_byte_ranges(
+    body: bytes,
+    ranges: list[tuple[int, int]],
+    replacements: dict[tuple[int, int], bytes] | None = None,
+) -> bytes:
+    """Remove each byte range of *body*, or put its entry in *replacements* in its place."""
     ordered = sorted(ranges, reverse=True)
     prior_start = len(body) + 1
     updated = body
@@ -264,9 +269,57 @@ def _apply_byte_ranges(body: bytes, ranges: list[tuple[int, int]]) -> bytes:
                 "repair_span_ambiguous",
                 "Repair source spans overlap or are no longer trustworthy.",
             )
-        updated = updated[:start] + updated[end:]
+        replacement = (replacements or {}).get((start, end), b"")
+        updated = updated[:start] + replacement + updated[end:]
         prior_start = start
     return updated
+
+
+def _orphaned_import_edit(
+    tree: ast.Module, body: bytes, removed_line: int
+) -> tuple[tuple[int, int], bytes] | None:
+    """The edit to the submodel import that removing the registration at *removed_line* leaves.
+
+    A pipeline imports a submodel module only to register it (an import never
+    registered is refused), so when the module's last registration goes, its name
+    leaves the import: the whole statement, or just that name, the rest rewritten as
+    codegen writes the import. An import sharing its lines with other code is left
+    for its own refusal to show.
+    """
+    from haute._parser_submodels import registered_module
+    from haute.codegen import submodel_import_statement
+
+    removed = next((s for s in tree.body if s.lineno == removed_line), None)
+    module = registered_module(removed) if removed is not None else None
+    if module is None or any(
+        registered_module(statement) == module
+        for statement in tree.body
+        if statement is not removed
+    ):
+        return None
+    for statement in tree.body:
+        if not (
+            isinstance(statement, ast.ImportFrom)
+            and statement.module == "modules"
+            and any(alias.name == module and alias.asname is None for alias in statement.names)
+        ):
+            continue
+        first, last = statement.lineno, statement.end_lineno or statement.lineno
+        if any(
+            other is not statement
+            and other.lineno <= last
+            and first <= (other.end_lineno or other.lineno)
+            for other in tree.body
+        ):
+            return None
+        span = _line_byte_range(body, first, last)
+        remaining = [alias.name for alias in statement.names if alias.name != module]
+        if not remaining:
+            return span, b""
+        newline = b"\r\n" if body[span[0] : span[1]].endswith(b"\r\n") else b"\n"
+        text = submodel_import_statement(remaining).replace("\n", newline.decode())
+        return span, text.encode("utf-8") + newline
+    return None
 
 
 def _extract_skeletons(
@@ -685,7 +738,16 @@ def build_remove_unavailable_node_plan(
             target_authored_id=target.authored_id,
         ),
     ]
-    updated_source = prefix + _apply_byte_ranges(source_body, source_ranges)
+    replacements: dict[tuple[int, int], bytes] = {}
+    drops_import = False
+    if receiver == "pipeline":
+        orphaned = _orphaned_import_edit(tree, source_body, span.start_line)
+        if orphaned is not None:
+            drops_import = True
+            source_ranges.append(orphaned[0])
+            if orphaned[1]:
+                replacements[orphaned[0]] = orphaned[1]
+    updated_source = prefix + _apply_byte_ranges(source_body, source_ranges, replacements)
     if updated_source == source_bytes:
         raise PipelineRepairError(
             "repair_plan_empty",
@@ -699,7 +761,12 @@ def build_remove_unavailable_node_plan(
             before=source_bytes,
             after=updated_source,
             description=(
-                f"Remove unavailable node {target.authored_id!r} and its explicit connections."
+                f"Remove unavailable node {target.authored_id!r} and its explicit connections"
+                + (
+                    ", and its module's import, which nothing else registers."
+                    if drops_import
+                    else "."
+                )
             ),
         )
     ]

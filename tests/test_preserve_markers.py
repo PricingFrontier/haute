@@ -446,6 +446,24 @@ class TestUnkeptModuleStatements:
         assert unkept_module_statements(source) == []
         assert _extract_preamble(source) == "RATE = 1.05"
 
+    def test_a_submodel_import_inside_a_preserved_block_is_refused(self):
+        """A save writes the import from the registrations and keeps a preserved block as
+        it is, so an import inside one would be written twice."""
+        from haute._ast_helpers import _PRESERVE_END, _PRESERVE_START
+        from haute.errors import ParseError
+
+        source = (
+            f"import haute\n\n{_PRESERVE_START}\nfrom modules import rating\n"
+            f"{_PRESERVE_END}\n\n"
+            'pipeline = haute.Pipeline("p")\n'
+            'pipeline.submodel(rating.submodel, "rating")\n'
+        )
+
+        with pytest.raises(ParseError, match="inside a preserved block") as exc_info:
+            parse_pipeline_source(source)
+
+        assert exc_info.value.context["line"] == 4
+
     def test_a_submodel_import_after_the_constructor_is_generated_code_too(self):
         """Codegen rewrites the import in its place among the imports, so a save keeps
         it wherever it was written, after the constructor too."""

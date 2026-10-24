@@ -91,10 +91,22 @@ def submodel_imports(tree: ast.Module) -> dict[str, str]:
     modules...``, an alias, ``*``) and a module imported twice are refused.
     """
     imports: dict[str, str] = {}
+    spans = [
+        (statement.lineno, statement.end_lineno or statement.lineno) for statement in tree.body
+    ]
     for statement in tree.body:
         if not is_submodel_import(statement):
             continue
         line = statement.lineno
+        end = statement.end_lineno or line
+        if sum(1 for first, last in spans if first <= end and line <= last) > 1:
+            # Codegen owns the import's lines; code sharing them would go with it.
+            raise ParseError(
+                "A submodel import has its lines to itself: other code on them "
+                "(after a ';') would be lost when the import is rewritten.",
+                line=line,
+                remediation="Put the other statement on a line of its own.",
+            )
         if not (
             isinstance(statement, ast.ImportFrom)
             and statement.level == 0
@@ -294,6 +306,29 @@ def _is_submodel_registration(statement: ast.stmt) -> bool:
     return registers and isinstance(current, ast.Name) and current.id == "pipeline"
 
 
+def registered_module(statement: ast.stmt) -> str | None:
+    """The module ``pipeline.submodel(<module>.submodel, ...)`` registers, if *statement* is one."""
+    if not (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)):
+        return None
+    call = statement.value
+    if not (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "submodel"
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "pipeline"
+        and call.args
+    ):
+        return None
+    definition = call.args[0]
+    if (
+        isinstance(definition, ast.Attribute)
+        and definition.attr == "submodel"
+        and isinstance(definition.value, ast.Name)
+    ):
+        return definition.value.id
+    return None
+
+
 def extract_submodel_registrations(
     tree: ast.Module, *, imports: Mapping[str, str] | None = None
 ) -> list[SubmodelRegistration]:
@@ -364,6 +399,23 @@ def extract_submodel_registrations(
             )
         explicit_names[registration.name] = registration.line
     if imports is None:
+        imported_at = {
+            alias.name: statement.lineno
+            for statement in tree.body
+            if isinstance(statement, ast.ImportFrom) and statement.module == SUBMODEL_PACKAGE
+            for alias in statement.names
+        }
+        for registration in registrations:
+            line = imported_at.get(registration.binding or "")
+            if line is not None and registration.line is not None and line > registration.line:
+                raise ParseError(
+                    f"pipeline.submodel() registers {registration.binding}.submodel before "
+                    f"the file imports {registration.binding!r}: Python runs the file in "
+                    "order, so the registration would fail.",
+                    name=registration.binding,
+                    line=registration.line,
+                    remediation="Move the import above the registrations, with the imports.",
+                )
         registered = {registration.binding for registration in registrations}
         unused = [module for module in table if module not in registered]
         if unused:

@@ -10,8 +10,13 @@ its import names, or the removed form's path literal) and that file's artifacts 
 in the recovery revision even when the current strict parser rejects the registration. The
 submodel imports are read one statement at a time, so a malformed import is its own
 `submodel_import_invalid` diagnostic while the well-formed ones still name their files. A
-registration the evidence cannot identify (one naming a module the file does not import, a
-computed or conflicting identity) is diagnosed without a card, its connections unresolved.
+registration naming a module the file does not import names the file that import would read
+(`modules/<name>.py`), so its occurrence keeps an unavailable card. A registration the
+evidence cannot identify (a computed or conflicting identity) is diagnosed without a card,
+its connections unresolved. Removing an unavailable submodel occurrence removes its
+registration and connections and, when no other registration names its module, that
+module's name from the import: the whole statement, or the name, the rest rewritten as
+codegen writes the import (`codegen.submodel_import_statement`).
 Ambiguous identities cannot be repaired automatically. Downstream nodes remain blocked.
 
 ## Loadable incomplete configurations

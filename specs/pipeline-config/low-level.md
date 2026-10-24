@@ -57,7 +57,10 @@
   `TypeError` for a string, the removed file-path form, with a message naming the import
   form, and for anything else that is not a `Submodel`, such as the module itself. It then
   validates that `name` is a non-empty unpadded string and a canonical identifier, is not a
-  reserved or built-in name (`reserved_or_builtin`), and does not equal, ignoring case, a
+  reserved or built-in name (`reserved_or_builtin`), comes, when its defining file is in a
+  `modules` folder, from the one beside the registering pipeline (`ImportError` otherwise: a
+  process that imported another project's `modules` first gets that project's module from
+  Python's cache), and does not equal, ignoring case, a
   registered node name or an existing registered submodel name, and that `instance_of` (when
   provided) is a non-empty unpadded string (the signature has no `definition_id=`,
   `instance_id=`, `alias=` or `label=`, which the static parser refuses too). It appends
@@ -801,7 +804,11 @@ API and real JSON round-trips rather than mocks:
   rejection an `ExecutionError` naming the ports — plus `run()` port-aware frame selection
   for one- and many-frame apiInput sources. `test_run_raises_typed_rating_miss_from_a_lazy_output`
   and `test_lazy_output_is_collected_inside_the_scenario_context` pin lazy-output collection.
-  `Pipeline.submodel()` records the imported definition and refuses a file path and a module
+  `Pipeline.submodel()` records the imported definition, refuses (`ImportError`) one defined
+  in another project's `modules/` folder (a `Submodel` records its defining file, and one
+  from a `modules` folder must come from the folder beside the registering pipeline: in a
+  process that imported another project's `modules` first, `from modules import` returns
+  that project's module from Python's cache), and refuses a file path and a module
   with `TypeError`; `TestStandaloneSubmodels` runs pipeline files that import their
   definition modules from `modules/`: a run and `score()` through an occurrence match
   `haute run`, two occurrences of one definition each run, a pipeline whose nodes all live in

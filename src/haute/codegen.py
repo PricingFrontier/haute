@@ -756,7 +756,7 @@ def _isort_member_order(a: str, b: str) -> int:
     return _natord(a.lower(), b.lower()) or _natord(a, b)
 
 
-def _submodel_import(modules: list[str]) -> str:
+def submodel_import_statement(modules: list[str]) -> str:
     """``from modules import <each>``, in ruff's order, wrapped as ruff wraps it."""
     names = sorted(dict.fromkeys(modules), key=functools.cmp_to_key(_isort_member_order))
     flat = f"from {SUBMODEL_PACKAGE} import {', '.join(names)}"
@@ -1274,7 +1274,7 @@ def _graph_to_code_multi_instances(
             preserved_blocks if preserved_blocks is not None else graph.preserved_blocks or None
         ),
         registrations=registrations,
-        submodel_import=_submodel_import(list(module_names.values())),
+        submodel_import=submodel_import_statement(list(module_names.values())),
         dedup_connects=True,
         declares_global_constants=declares_global_constants(graph),
     )

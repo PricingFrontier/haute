@@ -2521,6 +2521,73 @@ def test_remove_unavailable_node_apply_commits_confirmed_plan_and_returns_docume
     assert parse_pipeline_file(pipeline_file).pipeline_name == "legacy"
 
 
+@pytest.mark.parametrize(
+    ("imports", "kept"),
+    [
+        pytest.param("from modules import missing", None, id="its-own-import"),
+        pytest.param(
+            "from modules import inputs, missing", "from modules import inputs", id="beside-another"
+        ),
+    ],
+)
+def test_removing_a_modules_last_occurrence_removes_its_import(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    imports: str,
+    kept: str | None,
+) -> None:
+    """A module is imported only to register it, so removing its last unavailable
+    occurrence takes its name out of the import, and the pipeline loads ready rather
+    than refused for an import nothing registers."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "modules").mkdir()
+    _write(
+        tmp_path / "modules" / "inputs.py",
+        "import haute\n\n"
+        'submodel = haute.Submodel("inputs", definition_id="inputs", input_ports=[], '
+        'output_ports=[], pipeline_dir="..")\n',
+    )
+    registrations = 'pipeline.submodel(missing.submodel, "missing")\n'
+    if kept is not None:
+        registrations = 'pipeline.submodel(inputs.submodel, "inputs")\n' + registrations
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        "import haute\n\n"
+        f"{imports}\n\n"
+        'pipeline = haute.Pipeline("imports")\n\n\n'
+        "@pipeline.polars\n"
+        "def healthy():\n"
+        "    return None\n\n\n" + registrations,
+    )
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    target = next(node for node in document.nodes if node.authored_id == "missing")
+    assert target.availability == "unavailable"
+
+    response = client.post(
+        "/api/pipeline/repair/remove/apply",
+        json={
+            "source_file": document.source_file,
+            "source_revision": document.source_revision,
+            "target_source_file": target.source_file,
+            "target_recovery_id": target.recovery_id,
+            "delete_config": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["document"]["load_status"] == "ready"
+    repaired = pipeline_file.read_text(encoding="utf-8")
+    assert "missing" not in repaired
+    if kept is None:
+        assert "from modules" not in repaired
+    else:
+        assert kept in repaired.splitlines()
+    parse_pipeline_file(pipeline_file)
+
+
 def test_repair_refuses_syntax_broken_source() -> None:
     """Repairs work on valid Python only; a syntax-broken file is fixed in an editor."""
     from haute._pipeline_repair import PipelineRepairError, _extract_skeletons

@@ -1066,6 +1066,8 @@ class Pipeline(NodeRegistry):
         if kind is not None:
             party = NameParty(node_id=name, label=name, module=ROOT_MODULE)
             raise ValueError(NameViolation(kind=kind, name=name, parties=(party,)).message())
+        registered_in = sys._getframe(1).f_globals.get("__file__")
+        _check_definition_provenance(definition, name, registered_in)
         folded = name.casefold()
         if any(node_name.casefold() == folded for node_name in self._node_map):
             raise ValueError(f"Submodel name {name!r} conflicts with a registered node name.")
@@ -1078,7 +1080,7 @@ class Pipeline(NodeRegistry):
                 definition=definition,
                 name=name,
                 instance_of=instance_of,
-                registered_in=sys._getframe(1).f_globals.get("__file__"),
+                registered_in=registered_in,
             )
         )
         return self
@@ -1122,6 +1124,8 @@ class Submodel(NodeRegistry):
         super().__init__(name, description)
         self._pipeline_dir = pipeline_dir
         self._definition_id = definition_id
+        #: The module file that defines this submodel (``modules/<name>.py``).
+        self._file: str | None = sys._getframe(1).f_globals.get("__file__")
         for port_field, ports in (("input_ports", input_ports), ("output_ports", output_ports)):
             for port in ports:
                 if isinstance(port, Mapping):
@@ -1154,6 +1158,32 @@ class Submodel(NodeRegistry):
     def output_ports(self) -> list[SubmodelOutputPort]:
         """Typed public outputs, returned as a defensive copy."""
         return list(self._output_ports)
+
+
+def _check_definition_provenance(
+    definition: Submodel, name: str, registered_in: str | None
+) -> None:
+    """Refuse a definition from another project's ``modules`` package.
+
+    ``from modules import x`` reads Python's module cache, so in a process that has
+    imported another project's ``modules`` (two pipelines in one notebook, say), it
+    returns that project's definition. A definition from a ``modules`` folder must
+    come from the one beside the pipeline registering it.
+    """
+    if definition._file is None or registered_in is None:
+        return
+    defined = Path(definition._file).resolve()
+    if defined.parent.name != "modules":
+        return  # not from a submodel package: a definition built in place
+    expected = Path(registered_in).resolve().parent / "modules"
+    if defined.parent != expected:
+        raise ImportError(
+            f"pipeline.submodel() registers {name!r} with the definition in {defined}, not "
+            f"the pipeline's own {expected}: this process imported another project's "
+            "`modules` package first, and `from modules import ...` returned it. Run each "
+            "project's pipeline in its own process, or remove the `modules` entries from "
+            "sys.modules before importing this one."
+        )
 
 
 def _submodel_input(
