@@ -153,6 +153,7 @@ def _smoke_databricks(endpoint_name: str, json_files: list[Path]) -> bool:
     from haute.deploy._config import _load_env
     from haute.deploy._databricks_serving import (
         ServingEndpointError,
+        refusal_reason,
         serving_workspace_client,
         wait_for_endpoint,
     )
@@ -180,7 +181,7 @@ def _smoke_databricks(endpoint_name: str, json_files: list[Path]) -> bool:
         raise SystemExit(1) from exc
     except Exception as exc:
         raise click.ClickException(
-            f"Could not check Databricks endpoint '{endpoint_name}': {exc}"
+            f"Could not check Databricks endpoint '{endpoint_name}': {refusal_reason(exc)}"
         ) from exc
     click.echo("  \u2713 Endpoint ready")
 

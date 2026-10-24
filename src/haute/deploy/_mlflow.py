@@ -35,6 +35,7 @@ from haute.deploy._databricks_serving import (
     missing_serving_credentials,
     missing_serving_credentials_message,
     pat_workspace_client,
+    refusal_reason,
     serving_credentials,
     serving_workspace_client,
     wait_for_endpoint,
@@ -479,7 +480,7 @@ def _create_or_update_serving_endpoint(
         # The registered version stays registered: the next deploy registers another.
         return ServingEndpointError(
             f"Databricks refused to {action} serving endpoint '{endpoint_name}' for "
-            f"{uc_model_name} version {model_version}: {exc}"
+            f"{uc_model_name} version {model_version}: {refusal_reason(exc)}"
         )
 
     served_entity = ServedEntityInput(
