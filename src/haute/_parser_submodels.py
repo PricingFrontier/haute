@@ -306,27 +306,28 @@ def _is_submodel_registration(statement: ast.stmt) -> bool:
     return registers and isinstance(current, ast.Name) and current.id == "pipeline"
 
 
-def registered_module(statement: ast.stmt) -> str | None:
-    """The module ``pipeline.submodel(<module>.submodel, ...)`` registers, if *statement* is one."""
-    if not (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)):
-        return None
-    call = statement.value
-    if not (
-        isinstance(call.func, ast.Attribute)
-        and call.func.attr == "submodel"
-        and isinstance(call.func.value, ast.Name)
-        and call.func.value.id == "pipeline"
-        and call.args
-    ):
-        return None
-    definition = call.args[0]
-    if (
-        isinstance(definition, ast.Attribute)
-        and definition.attr == "submodel"
-        and isinstance(definition.value, ast.Name)
-    ):
-        return definition.value.id
-    return None
+def registered_modules(statement: ast.stmt) -> list[str]:
+    """Each module a ``pipeline.submodel(<module>.submodel, ...)`` statement registers.
+
+    Every link of a chain counts (``pipeline.submodel(a.submodel, "a").submodel(...)``);
+    a link whose definition is not ``<module>.submodel`` names none.
+    """
+    if not _is_submodel_registration(statement):
+        return []
+    assert isinstance(statement, ast.Expr)
+    modules: list[str] = []
+    current: ast.expr = statement.value
+    while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
+        definition = current.args[0] if current.args else None
+        if (
+            current.func.attr == "submodel"
+            and isinstance(definition, ast.Attribute)
+            and definition.attr == "submodel"
+            and isinstance(definition.value, ast.Name)
+        ):
+            modules.append(definition.value.id)
+        current = current.func.value
+    return modules[::-1]
 
 
 def extract_submodel_registrations(

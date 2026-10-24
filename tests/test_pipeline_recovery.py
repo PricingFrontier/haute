@@ -2588,6 +2588,104 @@ def test_removing_a_modules_last_occurrence_removes_its_import(
     parse_pipeline_file(pipeline_file)
 
 
+def _remove_occurrence(
+    client: TestClient, pipeline_file: Path, project: Path, authored_id: str
+) -> dict:
+    """Remove the unavailable occurrence *authored_id* through the API; its response."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=project)
+    target = next(node for node in document.nodes if node.authored_id == authored_id)
+    assert target.availability == "unavailable"
+    response = client.post(
+        "/api/pipeline/repair/remove/apply",
+        json={
+            "source_file": document.source_file,
+            "source_revision": document.source_revision,
+            "target_source_file": target.source_file,
+            "target_recovery_id": target.recovery_id,
+            "delete_config": False,
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _module(project: Path, name: str) -> None:
+    (project / "modules").mkdir(exist_ok=True)
+    _write(
+        project / "modules" / f"{name}.py",
+        "import haute\n\n"
+        f'submodel = haute.Submodel("{name}", definition_id="{name}", input_ports=[], '
+        'output_ports=[], pipeline_dir="..")\n',
+    )
+
+
+def test_removing_an_occurrence_keeps_the_import_a_registration_chain_still_uses(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every link of a chained registration counts: the module stays imported for the
+    owner and copy registered in one chained statement."""
+    _module(tmp_path, "pricing")
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        "import haute\n\n"
+        "from modules import pricing\n\n"
+        'pipeline = haute.Pipeline("imports")\n\n\n'
+        "@pipeline.polars\n"
+        "def healthy():\n"
+        "    return None\n\n\n"
+        'pipeline.submodel(pricing.submodel, "first").submodel(\n'
+        '    pricing.submodel, "second", instance_of="first"\n'
+        ")\n"
+        'pipeline.submodel(pricing.submodel, "broken", label="old")\n',
+    )
+    monkeypatch.chdir(tmp_path)
+
+    payload = _remove_occurrence(client, pipeline_file, tmp_path, "broken")
+
+    # (A chained registration is still reported as a statement a save would rewrite:
+    # codegen writes one registration per statement.)
+    authored = {node["authored_id"] for node in payload["document"]["nodes"]}
+    assert {"first", "second"} <= authored
+    assert "from modules import pricing" in pipeline_file.read_text(encoding="utf-8").splitlines()
+
+
+def test_removing_an_occurrence_leaves_a_malformed_import_as_written(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a well-formed import is rewritten. One the parser refuses stays exactly as
+    written, its own refusal still shown, rather than being corrected in passing."""
+    _module(tmp_path, "inputs")
+    malformed = "from modules import missing, inputs as retained"
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        "import haute\n\n"
+        f"{malformed}\n\n"
+        'pipeline = haute.Pipeline("imports")\n\n\n'
+        "@pipeline.polars\n"
+        "def healthy():\n"
+        "    return None\n\n\n"
+        'pipeline.submodel(missing.submodel, "missing")\n'
+        'pipeline.submodel(retained.submodel, "retained")\n',
+    )
+    monkeypatch.chdir(tmp_path)
+
+    payload = _remove_occurrence(client, pipeline_file, tmp_path, "missing")
+
+    assert malformed in pipeline_file.read_text(encoding="utf-8").splitlines()
+    codes = {item["code"] for item in payload["document"]["diagnostics"]}
+    assert "submodel_import_invalid" in codes
+    retained = next(
+        node for node in payload["document"]["nodes"] if node["authored_id"] == "retained"
+    )
+    assert retained["availability"] == "unavailable"
+
+
 def test_repair_refuses_syntax_broken_source() -> None:
     """Repairs work on valid Python only; a syntax-broken file is fixed in an editor."""
     from haute._pipeline_repair import PipelineRepairError, _extract_skeletons
