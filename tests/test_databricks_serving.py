@@ -534,3 +534,86 @@ def test_an_endpoint_change_databricks_refuses_fails_with_its_reason(exists: boo
         "endpoints, please try again later."
     )
     wait.assert_not_called()
+
+
+def _gatekeeper_refusal(deny_reason: str | None):
+    """The refusal a workspace's resource gatekeeper gives, as Databricks returns it."""
+    from databricks.sdk.errors import BadRequest
+
+    metadata = {"scope": "WorkspaceId(7)"}
+    if deny_reason is not None:
+        metadata["denyReason"] = deny_reason
+    return BadRequest(
+        "Cannot create or update model serving endpoints, please try again later.",
+        details=[
+            {
+                "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                "reason": "DENY_NEW_AND_EXISTING_RESOURCES",
+                "domain": "resource-gatekeeper",
+                "metadata": metadata,
+            },
+            {"@type": "type.googleapis.com/google.rpc.RequestInfo"},
+        ],
+    )
+
+
+def test_a_deactivated_workspace_is_named_as_the_reason_retrying_will_not_help() -> None:
+    """Databricks says only "please try again later"; its gatekeeper's decision says the
+    workspace is inactive, which no retry gets past."""
+    from haute.deploy._databricks_serving import refusal_reason
+
+    reason = refusal_reason(_gatekeeper_refusal("INACTIVE"))
+
+    assert reason.startswith("Cannot create or update model serving endpoints, please try")
+    assert "marked the workspace inactive (DENY_NEW_AND_EXISTING_RESOURCES, INACTIVE)" in reason
+    assert "retrying will not help" in reason
+
+
+@pytest.mark.parametrize(
+    ("deny_reason", "decision"),
+    [
+        ("OVER_QUOTA", "(DENY_NEW_AND_EXISTING_RESOURCES, OVER_QUOTA)"),
+        (None, "(DENY_NEW_AND_EXISTING_RESOURCES)"),
+    ],
+)
+def test_another_gatekeeper_decision_is_reported_as_given(
+    deny_reason: str | None, decision: str
+) -> None:
+    from haute.deploy._databricks_serving import refusal_reason
+
+    reason = refusal_reason(_gatekeeper_refusal(deny_reason))
+
+    assert reason.endswith(f"Databricks' resource gatekeeper refused it {decision}.")
+    assert "inactive" not in reason
+
+
+def test_a_refusal_without_a_gatekeeper_decision_is_its_own_message() -> None:
+    from databricks.sdk.errors import BadRequest
+
+    from haute.deploy._databricks_serving import refusal_reason
+
+    assert refusal_reason(BadRequest("bad config")) == "bad config"
+    assert refusal_reason(ValueError("not from Databricks")) == "not from Databricks"
+
+
+@pytest.mark.usefixtures("serving_pair")
+def test_a_deploy_refused_by_a_deactivated_workspace_says_so() -> None:
+    from haute.deploy import _mlflow
+
+    ws = MagicMock()
+    ws.serving_endpoints.get.side_effect = NotFound("no endpoint")
+    ws.serving_endpoints.create.side_effect = _gatekeeper_refusal("INACTIVE")
+
+    with (
+        patch.object(_mlflow, "serving_workspace_client", return_value=ws),
+        patch.object(_mlflow, "wait_for_endpoint") as wait,
+        pytest.raises(ServingEndpointError, match="marked the workspace inactive"),
+    ):
+        _mlflow._create_or_update_serving_endpoint(
+            config=_deploy_config(),
+            uc_model_name="main.pricing.pricing-staging",
+            model_version=3,
+            progress=lambda _message: None,
+        )
+
+    wait.assert_not_called()
