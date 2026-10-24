@@ -485,84 +485,144 @@ Decisions taken 2026-10-24:
 
 **Plan:**
 
-- **The window.** New quote (its button, `N` and `/quotes/new`) is the Quotes page with a
-  window open over it. The window holds the reference and the other columns of
-  `quote_details` the underwriter types (`quote_name`, `insured`, `broker`,
-  `inception_date`, `expiry_date` and `is_renewal`) in the table's order. Each is drawn as a
-  Collection draws its column: its label, help, placeholder, allowed values and format, and
-  the control its type calls for. They start as a new quote's do, with the columns'
-  defaults. The reference is always required; any other column the analyst made required is
-  marked so. **Create** stays off until the reference is keyed and fits, and every required
-  column is filled and every value fits its column. **Cancel** and `Escape` close the window
-  with nothing made and go back to where the underwriter was.
+- **The window.** It holds the reference and the other columns of `quote_details` the
+  underwriter types (`quote_name`, `insured`, `broker`, `inception_date`, `expiry_date`
+  and `is_renewal`) in the table's order. Each is drawn as a Collection draws its column:
+  its label, help, placeholder, allowed values and format, and the control its type calls
+  for. Every one is shown and checked whatever the sheets show or hide, and whether or not
+  anything else is typed. The reference is always required; a column the analyst made
+  required is marked so and must be filled, text holding only spaces counting as empty. A
+  tick box is never empty, unticked or ticked, so `is_renewal` made required asks nothing
+  more, as on the sheets. **Create** stays off until the reference fits and every value fits
+  its column (`cellProblem`). **Cancel** and `Escape` close a window that has sent nothing.
+- **Where it opens.** The window opens over the page it is asked for from, and leaves that
+  page as it was: New quote (its button and `N`) over the Quotes page, its list as it is;
+  Duplicate and Renew over the quote, or the Quotes page whose row they are on; and Save as
+  new over the quote whose save was refused, its unsaved values kept on its sheets.
+  Cancel leaves that page untouched, unsaved values and all. The window reads what it is
+  filled from without installing anything on the sheets. `/quotes/new` is the Quotes page,
+  its default list, with the window open; `/quotes/new?from=…&revision=…&as=duplicate` or
+  `as=renewal` the Quotes page with the window filled from that revision; Cancel there
+  replaces the address with `/`. `as=alternative` makes the alternative at once, as today,
+  its operation key held as WB-30 holds it. Back and Forward close a window that has sent
+  nothing, and reloading one loses what was typed into it unless a creation was sent.
 - **A reference.** The reference is trimmed and kept as keyed. It is 1 to 40 characters,
   holding no `/`, which the app puts before the option (`ABC-1/2`), and no control
-  character. References are compared ignoring case, so `abc-1` is the reference `ABC-1`
-  holds.
-- **Making it.** Create sends the creation with the window's values as the new quote's
-  `quote_details` row. The request names the reference (`reference`), which the creation of
-  a quote other than an alternative must give and an alternative must not. The server
-  refuses (422) a reference missing or breaking the rules above, and a required
-  `quote_details` column left empty, naming it. It refuses (409, `reference_taken`) a
-  reference another quote holds in any case, naming that quote's label and id, and the
-  window offers to open it. Two creations of one reference at once make one quote and refuse
-  the other. A creation's operation key is taken as Create is pressed and kept in the tab
-  with the window's values until the answer comes. Create pressed again, or the window
-  opened again after a reload, sends the same key and values, so one quote is made, and a
-  refusal lets the key go. Made, the quote opens at its own address as today, an unpriced
-  draft holding what the window held, which its sheets show and price.
-- **Duplicate, Renew and Save as new.** Duplicate and Renew, on a quote or a row of the
-  Quotes page, open the window over the page they were pressed on. It is filled from the
-  source revision's `quote_details` carried onto the current sheets, its reference blank, a
-  renewal's `is_renewal` ticked. Create makes the quote from that revision, as today: its
-  other values carried onto the current sheets, any that no longer fit named, and the
-  window's details over the carried ones. Save as new, offered after a save conflict, makes a
-  duplicate of the values on the sheets, so it opens the window too, filled from them.
-  Create alternative is unchanged.
-- **The reference afterwards.** The reference stays a column the app sets: read only on the
-  sheets and never changed by a save, a change or a page. Quotes made before keep their
-  `Q-000123` references, and the list, its search and its order treat both kinds alike.
-  `_next_reference` and its counter retire. The counter's table stays, unwritten, as a
-  migration is not worth it.
+  character. Two references are the same when their canonical forms are: the reference
+  normalized to Unicode NFC and case-folded (`str.casefold`), computed in Python, so it is
+  the same on every engine and for every letter. Each app quote holds its reference's
+  canonical form (`haute_quotes.reference_key`), unique with the option. The options
+  counter (`haute_quote_options`) is kept by canonical form. A creation other than an
+  alternative inserts its reference's counter row in its own transaction, so two creations
+  of one reference in any case, at once, on any engine, make one quote: the second fails
+  the primary key and is refused (409, `reference_taken`), unless it is the first's own key
+  repeated, which `_or_replayed` answers with the quote that key made. An alternative finds
+  its counter by its source's canonical form and takes the next option, as today. The
+  fourth migration, not released, gives each app quote and each counter row the canonical
+  form of the reference it holds. `_next_reference` and the quotes' counter retire, the
+  counter's table left unwritten.
+- **Making it.** The creation names the reference (`reference`), which every creation but
+  an alternative's must give and an alternative's must not, and carries the window's
+  values as the new quote's `quote_details` row. The server refuses (422) a reference
+  missing or breaking the rules above, and, for a creation the window makes, a required
+  column of `quote_details` left empty, naming it. It refuses (409, `reference_taken`) a
+  reference another quote holds, naming that quote's label and id: the reference's option
+  1, else its lowest. Required columns are an entry requirement of the window alone: an
+  alternative is made at once whatever its source holds, and a save, as now, keeps a quote
+  its rules mark, as rules mark cells and never stop a pricing or a save.
+- **A creation sent.** As Create is pressed, the whole creation is made once and kept in
+  the tab before it is sent: its operation key, form revision, release, reference, values
+  (the window's details over the carried values, or over the sheets' values for Save as
+  new) and source. While it is unanswered the window takes no typing and does not close.
+  Answered, the quote opens at its own address as today, an unpriced draft holding what the
+  creation held, and the kept creation is let go. Refused (a status below 500) it is let go
+  and the window opens again for typing, saying why: a reference in use with **Open it**, a
+  release moved on with a reload. Unanswered, or answered 500 or more, the window says the
+  quote may have been made and offers **Try again**, which sends the kept creation exactly
+  as it was, and **Close**, which keeps it. A kept creation is offered back the next time
+  the app opens in the tab, a reload included, with Try again and **Discard**, before
+  anything else is made; Discard lets it go, the quote it may have made then found in the
+  lists. Where the tab keeps nothing, the creation is sent all the same, and a reload before
+  its answer asks afresh.
+- **Duplicate, Renew and Save as new.** Duplicate and Renew fill the window from the source
+  revision carried onto the current sheets (`carry`, which leaves out the details the app
+  set), its reference blank, a renewal's `is_renewal` ticked. Create makes the quote from
+  that revision, as today: its other values carried, any that no longer fit named, the
+  window's details over the carried ones. Save as new fills it from the values on the
+  sheets, unsaved ones included, and makes the quote from them, not from a new carry.
+- **The reference afterwards.** The reference stays a column the app sets: keyed in the
+  window once, read only on the sheets afterwards, never changed by a save, a change or a
+  page. Quotes made before keep their `Q-000123` references.
+- **Search and order.** A search word is matched against references through their
+  canonical form (a word case-folded in Python, against `reference_key`), so it finds a
+  reference however its letters are cased; `ABC-1/2` finds that option alone, as today.
+  Names, insured and broker are searched as now. The order the Quotes page calls Newest
+  reference becomes **Reference**, A to Z by canonical form, then option, then id, its
+  cursor comparing the same, since a keyed reference says nothing of when it was made.
+  `Q-000123` references sort among the others as text.
 - **Unchanged.** An app without a quote store offers no New quote, as today. Deploy and the
   pricing API are untouched: a request has always named its quote.
-- **The specifications.** `specs/workbench/high-level.md` changes where it covers the
-  creation, the references, `quote_details`' managed reference and the app's pages, and
-  `specs/workbench/low-level.md` in its module map and Testing scenarios. The docs' Quotes
-  page and quote sections describe the window.
+- **The specifications.** `specs/workbench/high-level.md`: the creation, the references
+  and their comparison, the window and its pages, the order and search, `quote_details`'
+  reference keyed once, and the rules rationale (an entry requirement in the window alone).
+  `specs/workbench/low-level.md`: the module map; the create request's `reference` and the
+  `reference_taken` refusal with the quote holding it; error handling for the new 409 and
+  the creation's 422s; the migration; and Testing scenarios. The docs: the Quotes page and
+  quote sections describe the window, the order and the search, and Quote details says the
+  reference is keyed in the window, its cells read only afterwards.
 
 **Acceptance:**
 
-- **New quote.** New quote opens the window, its Create off until the reference and each
-  required column are filled and fit. Keying `ABC-1` with an insured and an inception date
-  makes `ABC-1/1`, which opens with those details on its sheets, a draft. Cancel makes
-  nothing.
-- **A reference in use.** Keying `abc-1` again is refused naming `ABC-1/1`, with **Open
-  it**. Create alternative on `ABC-1/1` makes `ABC-1/2` at once, with no window.
+- **New quote.** New quote opens the window over the list as it was, its Create off until
+  the reference fits and each required column is filled: text of spaces alone counts as
+  empty, a required tick box asks nothing, and a required column on no sheet is asked for
+  all the same. Keying `ABC-1` with an insured and an inception date makes `ABC-1/1`, which
+  opens with those details on its sheets, a draft. Cancel makes nothing.
+- **A reference in use.** Keying `abc-1` again is refused naming `ABC-1/1`, with Open it.
+  Create alternative on `ABC-1/1` makes `ABC-1/2` at once, with no window, even while a
+  required column of its source is empty.
 - **A reference that breaks the rules.** A reference blank, holding `/` or 41 characters
   long is refused in the window, and refused 422 by the server when sent anyway, as is a
-  creation leaving a required column empty.
-- **Duplicate, Renew and Save as new.** Duplicate on `ABC-1/1` opens the window filled from
-  its details, its reference blank. Keying `DEF-2` makes `DEF-2/1` holding the source's
-  values, the window's details over them. Renew does the same with `is_renewal` ticked. Save
-  as new after a conflict opens the window filled from the sheets.
-- **At once and after a lost answer.** Two creations of `GHI-3` at once make one quote and
-  refuse the other 409. A creation whose answer is lost, Created again or reopened after a
-  reload, makes one quote.
-- **Older quotes.** A store holding `Q-000001/1` and `Q-000001/2` lists, searches and opens
-  them as before, beside `ABC-1/1`.
+  creation from the window leaving a required column empty.
+- **Duplicate, Renew and Save as new.** Duplicate on `ABC-1/1` opens the window over the
+  quote, filled from its details, its reference blank, and Cancel leaves the quote and its
+  unsaved values as they were. Keying `DEF-2` makes `DEF-2/1` holding the source's values,
+  the window's details over them. Renew does the same with `is_renewal` ticked. Save as new
+  after a conflict opens the window filled from the sheets, and its quote holds their
+  unsaved values. `/quotes/new?from=…&as=duplicate`, reloaded, opens the window filled from
+  that revision.
+- **At once and after a lost answer.** Two creations of `GHI-3` and `ghi-3` at once, under
+  different keys, make one quote and refuse the other 409. One creation sent twice under its
+  key makes one quote and answers both with it. A creation whose answer is lost, tried again
+  after a reload, sends what it first sent, the window's later typing and the sheets'
+  unsaved values as they were then, and makes one quote.
+- **Search and order.** A store holding `Q-000001/1`, `Q-000001/2`, `ABC-1/1` and `abc-2/1`
+  lists them by Reference across pages, options in order, without repeating or missing
+  one, and a search for `ABC` finds both keyed references.
+- **The migration.** A database at the third schema migrates with each app quote's and
+  each counter row's canonical reference, and an alternative of `Q-000001` then takes
+  option 2.
 
 **Dependencies:** None. It builds on WB-30 and WB-31.
 
 **Evidence:**
 
 - `src/haute/_quote_store/_book.py::QuoteBook._create` and `::QuoteBook._next_reference`
-  (every reference from Haute's counter).
+  (each quote but an alternative a reference from Haute's counter), `::QuoteBook._or_replayed`
+  (an `IntegrityError` not its own key's repeated) and `::_search_filter`, `::_order`
+  (references searched through the database's `lower()`, ordered newest first as text).
+- `src/haute/_quote_store/_tables.py::QUOTES` and `::QUOTE_OPTIONS` (the reference compared
+  as stored, its case included).
 - `frontend/src/app/useOpenQuoteStore.ts::openNew` (the quote made as `/quotes/new` opens,
-  from the columns' defaults or the source revision's values).
-- `frontend/src/app/route.ts::newQuotePath` (`/quotes/new`, its source in the query).
+  the sheets installed first) and `frontend/src/app/quoteValues.ts::heldOperation` (a key
+  kept, its creation built again on each attempt).
+- `frontend/src/app/route.ts::routeOf` (`/quotes/new`, its source in the query) and
+  `frontend/src/app/UnderwriterApp.tsx` (the list or a quote, as the route says).
 - `frontend/src/app/QuoteView.tsx` (Duplicate, Renew and Create alternative go to
-  `/quotes/new`) and `frontend/src/app/QuotesPage.tsx` (New quote, and a row's Duplicate).
+  `/quotes/new`) and `frontend/src/app/QuotesPage.tsx` (New quote, a row's Duplicate, and
+  Newest reference).
+- `frontend/src/utils/sheetValues.ts::cellProblem` (a tick box never empty).
 - `src/haute/schemas.py::WorkbenchAppQuoteCreateRequest` (no reference).
 - `src/haute/_workbench_form.py::QUOTE_DETAILS_MANAGED` (the reference the app's).
-- `specs/workbench/high-level.md` (a creation, and references from the counter).
+- `specs/workbench/high-level.md` (a creation, references from the counter, and rules that
+  never stop a pricing).
