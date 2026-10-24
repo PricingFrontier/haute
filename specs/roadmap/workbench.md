@@ -489,8 +489,9 @@ Decisions taken 2026-10-24:
   underwriter types (`quote_name`, `insured`, `broker`, `inception_date`, `expiry_date`
   and `is_renewal`) in the table's order. Each is drawn as a Collection draws its column:
   its label, help, placeholder, allowed values and format, and the control its type calls
-  for. Every one is shown and checked whatever the sheets show or hide, and whether or not
-  anything else is typed. The reference is always required; a column the analyst made
+  for. For New quote they start as a new quote's do, with their columns' defaults
+  (`newQuoteValues`). Every one is shown and checked whatever the sheets show or hide, and
+  whether or not anything else is typed. The reference is always required; a column the analyst made
   required is marked so and must be filled, text holding only spaces counting as empty. A
   tick box is never empty, unticked or ticked, so `is_renewal` made required asks nothing
   more, as on the sheets. **Create** stays off until the reference fits and every value fits
@@ -509,10 +510,16 @@ Decisions taken 2026-10-24:
 - **A reference.** The reference is trimmed and kept as keyed. It is 1 to 40 characters,
   holding no `/`, which the app puts before the option (`ABC-1/2`), and no control
   character. Two references are the same when their canonical forms are: the reference
-  normalized to Unicode NFC and case-folded (`str.casefold`), computed in Python, so it is
-  the same on every engine and for every letter. Each app quote holds its reference's
-  canonical form (`haute_quotes.reference_key`), unique with the option. The options
-  counter (`haute_quote_options`) is kept by canonical form. A creation other than an
+  normalized to Unicode NFC and then case-folded (`str.casefold`), computed in Python by one
+  function, so it is the same on every engine and for every letter: `ABC-1` and `abc-1`,
+  `STRASSE` and `straße` are one reference, `cafe` and `café` two. The database compares
+  canonical forms exactly, byte for byte, never through an engine's case- or
+  accent-insensitive collation: SQLite's default, and a binary collation on an engine that
+  offers others. Case folding can lengthen a letter to as many as three, so a canonical form
+  is held in a column of its own bound, 160, while the keyed reference keeps 40. Each app
+  quote holds its reference's canonical form (`haute_quotes.reference_key`), unique with the
+  option in place of the index on the keyed reference and option, which is dropped. The
+  options counter (`haute_quote_options`) is kept by canonical form. A creation other than an
   alternative inserts its reference's counter row in its own transaction, so two creations
   of one reference in any case, at once, on any engine, make one quote: the second fails
   the primary key and is refused (409, `reference_taken`), unless it is the first's own key
@@ -532,8 +539,8 @@ Decisions taken 2026-10-24:
   its rules mark, as rules mark cells and never stop a pricing or a save.
 - **A creation sent.** As Create is pressed, the whole creation is made once and kept in
   the tab before it is sent: its operation key, form revision, release, reference, values
-  (the window's details over the carried values, or over the sheets' values for Save as
-  new) and source. While it is unanswered the window takes no typing and does not close.
+  (the window's details over a new quote's defaults for New quote, over the carried values
+  for Duplicate and Renew, or over the sheets' values for Save as new) and source. While it is unanswered the window takes no typing and does not close.
   Answered, the quote opens at its own address as today, an unpriced draft holding what the
   creation held, and the kept creation is let go. Refused (a status below 500) it is let go
   and the window opens again for typing, saying why: a reference in use with **Open it**, a
@@ -554,8 +561,9 @@ Decisions taken 2026-10-24:
   window once, read only on the sheets afterwards, never changed by a save, a change or a
   page. Quotes made before keep their `Q-000123` references.
 - **Search and order.** A search word is matched against references through their
-  canonical form (a word case-folded in Python, against `reference_key`), so it finds a
-  reference however its letters are cased; `ABC-1/2` finds that option alone, as today.
+  canonical form: the word made canonical by the same function, the reference part of
+  `ABC-1/2` included, against `reference_key`, so it finds a reference however its letters
+  are cased or composed; `ABC-1/2` finds that option alone, as today.
   Names, insured and broker are searched as now. The order the Quotes page calls Newest
   reference becomes **Reference**, A to Z by canonical form, then option, then id, its
   cursor comparing the same, since a keyed reference says nothing of when it was made.
@@ -576,9 +584,13 @@ Decisions taken 2026-10-24:
 - **New quote.** New quote opens the window over the list as it was, its Create off until
   the reference fits and each required column is filled: text of spaces alone counts as
   empty, a required tick box asks nothing, and a required column on no sheet is asked for
-  all the same. Keying `ABC-1` with an insured and an inception date makes `ABC-1/1`, which
-  opens with those details on its sheets, a draft. Cancel makes nothing.
-- **A reference in use.** Keying `abc-1` again is refused naming `ABC-1/1`, with Open it.
+  all the same. A `quote_details` column with a default starts the window holding it.
+  Keying `ABC-1` with an insured and an inception date makes `ABC-1/1`, which opens with
+  those details on its sheets, a draft, the default of a column in another one-row input
+  table held as a new quote holds it. Cancel makes nothing.
+- **A reference in use.** Keying `abc-1` again is refused naming `ABC-1/1`, with Open it,
+  as `straße` is once `STRASSE` is made, while `café` and `cafe` are both made. A reference
+  of 39 letters and a `ß`, 40 characters, is made though its canonical form is 41.
   Create alternative on `ABC-1/1` makes `ABC-1/2` at once, with no window, even while a
   required column of its source is empty.
 - **A reference that breaks the rules.** A reference blank, holding `/` or 41 characters
@@ -598,7 +610,8 @@ Decisions taken 2026-10-24:
   unsaved values as they were then, and makes one quote.
 - **Search and order.** A store holding `Q-000001/1`, `Q-000001/2`, `ABC-1/1` and `abc-2/1`
   lists them by Reference across pages, options in order, without repeating or missing
-  one, and a search for `ABC` finds both keyed references.
+  one, and a search for `ABC` finds both keyed references; `café` keyed composed is found
+  by a search for it decomposed.
 - **The migration.** A database at the third schema migrates with each app quote's and
   each counter row's canonical reference, and an alternative of `Q-000001` then takes
   option 2.
