@@ -1018,8 +1018,9 @@ Out of scope:
   A save names the sheets' revision and the release it was drawn for, refused (409) for
   another, and an operation key; the details the app sets, `quote_reference`, `quote_option`,
   `stage`, `assignee`, `archived` and the quote's administration, are set over whatever the
-  page sent, a save stamped with one instant read before it is priced, and with
-  nothing else typed there is nothing to save (422), save a creation, which makes the quote
+  page sent, which is not read, a save stamped with one instant read before it is priced,
+  and with nothing else typed there is nothing to save (422), what the sheets show
+  decided with the app's details in place, as the page decides it, save a creation, which makes the quote
   holding what it starts with, unpriced: its reference and option are taken as it is
   written, and its pricing reads them, so a creation given prices is refused (422) and the
   quote is priced as it opens. A save keeps the quote unpriced, or, given the prices

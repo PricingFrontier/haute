@@ -248,15 +248,13 @@ async def _prepared(
             409,
             "This page was drawn for another release of the app: reload it to save on this one.",
         )
-    # The details the app sets are its own, whatever the page sent; and nothing the
-    # underwriter typed is nothing to save.
-    details = {
-        name: value for name, value in details_of(body.values).items() if name not in managed
-    }
-    typed = with_details(body.values, details)
-    if not creating and not quote_request(app.form, typed):
+    # The details the app sets are its own, whatever the page sent, which is not read; the
+    # sheets show what they show by the app's as by any value, but those are not typing, and
+    # nothing the underwriter typed is nothing to save.
+    page = _without_app_details(body.values)
+    values = with_details(page, {**details_of(page), **managed})
+    if not creating and not quote_request(app.form, values, untyped=_APP_SET_CELLS):
         raise HTTPException(422, "Type the quote first")
-    values = with_details(typed, {**details, **managed})
     if body.shown is None:
         return _Prepared(values, quote_request(app.form, values), None)
     tables, request = await app.price(values)
@@ -297,6 +295,10 @@ def _without_identity(tables: Any, carrying: set[str]) -> Any:
         else rows
         for name, rows in tables.items()
     }
+
+
+#: The quote_details cells the app sets, by table and column id: no typing.
+_APP_SET_CELLS = frozenset((QUOTE_DETAILS_ID, column_id) for column_id in QUOTE_DETAILS_MANAGED)
 
 
 def _without_app_details(values: dict[str, Any]) -> dict[str, Any]:

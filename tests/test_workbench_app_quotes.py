@@ -286,6 +286,74 @@ def test_one_instant_stamps_a_save_its_request_its_revision_and_its_details(
     assert history["events"][-1]["at"] == instant.isoformat()
 
 
+def test_what_the_app_sets_decides_what_shows_and_is_no_typing(
+    release_dir: Path, url: str, tmp_path: Path
+) -> None:
+    # The policy shows on quotes Ana made, by a condition on the detail the app sets, which
+    # its own Collection shows.
+    spec = json.loads(json.dumps(FORM))
+    spec["pages"][0]["sections"][0]["height"] = 240
+    spec["pages"][0]["sections"][0]["widgets"] = [
+        {
+            "id": "w_made",
+            "type": "collection",
+            "x": 0,
+            "y": 120,
+            "w": 400,
+            "h": 100,
+            "fields": [{"table": "quote_details", "column": "qd_created_by"}],
+        },
+        {
+            "id": "w_policy",
+            "type": "collection",
+            "x": 0,
+            "y": 0,
+            "w": 400,
+            "h": 100,
+            "fields": [{"table": "t1", "column": column} for column in ("c_state", "c_exposure")],
+            "show_when": {
+                "match": "all",
+                "conditions": [
+                    {
+                        "table": "quote_details",
+                        "column": "qd_created_by",
+                        "op": "equals",
+                        "values": ["ana@example.com"],
+                    }
+                ],
+            },
+        }
+    ]
+    shown = _write_release(tmp_path / "shown", spec)
+    policy = {"t1": VALUES["t1"]}
+
+    with TestClient(create_app(shown, store_url=url)) as client:
+        page = Page(client)
+        anas = page.create(values={}).json()["quote"]
+        jos = page.create(headers=JO, values={}).json()["quote"]
+
+        # Ana's quote shows the policy, so what she typed into it is saved.
+        saved = page.save(anas, values=policy)
+        assert saved.status_code == 200, saved.text
+        # Jo's does not, whatever his page says of who made it: there is nothing to save.
+        claimed = {**policy, "quote_details": [{"qd_created_by": "ana@example.com"}]}
+        refused = page.save(jos, headers=JO, values=claimed)
+        assert refused.status_code == 422
+        assert refused.json()["detail"] == "Type the quote first"
+
+
+def test_a_detail_the_app_sets_sent_unreadable_is_overruled_not_read(page: Page) -> None:
+    # An option no number, sent by a page, is the app's to set, never read.
+    sent = {**VALUES, "quote_details": [{**DETAILS, "qd_option": "invalid"}]}
+
+    made = page.create(values=sent)
+    assert made.status_code == 200, made.text
+    saved = page.save(made.json()["quote"], values=sent)
+
+    assert saved.status_code == 200, saved.text
+    assert (saved.json()["quote"]["option"], saved.json()["quote"]["label"]) == (1, "Q-000001/1")
+
+
 def test_a_new_quote_given_a_price_is_refused_as_it_is_made_unpriced(page: Page) -> None:
     # Its reference and option are taken as it is written, and its pricing reads them.
     refused = page.create(shown=PRICED)

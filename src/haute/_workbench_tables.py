@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -294,7 +294,9 @@ def _table(table: SchemaTable) -> WorkbenchTable:
     )
 
 
-def sample_quote(spec: FormSpec) -> dict[str, Any]:
+def sample_quote(
+    spec: FormSpec, *, untyped: Collection[tuple[str, str]] = frozenset()
+) -> dict[str, Any]:
     """The sample quote typed while building, as a request holds it, for the Workbench Input.
 
     An input table with values is an object under its name when it has one row per quote, and
@@ -307,7 +309,9 @@ def sample_quote(spec: FormSpec) -> dict[str, Any]:
     (``QUOTE_DETAILS_MANAGED``), which every request holds whatever the sheets hide. Values
     take their column's type: a number typed with a currency sign or separators becomes a
     number, and an unticked box in a filled row is false. A value that isn't of its column's
-    type stays as typed, for the Workbench Input to report.
+    type stays as typed, for the Workbench Input to report. A cell of *untyped*, by table and
+    column id, is no typing either: the underwriter app's own details, which decide what the
+    sheets show as any value does, but are not the underwriter's.
     """
     # Imported here: the visibility rules read cells as this module types them.
     from haute._workbench_visibility import visibility
@@ -332,7 +336,7 @@ def sample_quote(spec: FormSpec) -> dict[str, Any]:
             _filled(row.get(column.id)) and not _starting(table, column, row.get(column.id))
             for row in rows
             for column in columns
-            if not column.index and column is not given
+            if not column.index and column is not given and (table.id, column.id) not in untyped
         )
         # Numbered as the rows stand, from 1, so deleting a row renumbers those after it.
         records = [
@@ -345,11 +349,16 @@ def sample_quote(spec: FormSpec) -> dict[str, Any]:
     return sample if typed else {}
 
 
-def quote_request(spec: FormSpec, values: Mapping[str, Any]) -> dict[str, Any]:
+def quote_request(
+    spec: FormSpec,
+    values: Mapping[str, Any],
+    *,
+    untyped: Collection[tuple[str, str]] = frozenset(),
+) -> dict[str, Any]:
     """The request a pricing builds from *values* typed into *spec*'s sheets: each input
     table's filled rows by name, read as :func:`sample_quote` reads the sample, the cells the
-    sheets hide left out."""
-    return sample_quote(spec.model_copy(update={"sample": dict(values)}))
+    sheets hide left out, and empty when nothing but the cells of *untyped* is typed."""
+    return sample_quote(spec.model_copy(update={"sample": dict(values)}), untyped=untyped)
 
 
 def preset_column(table: SchemaTable) -> SchemaColumn | None:

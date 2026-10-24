@@ -464,16 +464,12 @@ TYPED_QUOTES: dict[str, Any] = json.loads(
 )
 def test_a_quote_is_typed_by_the_rule_the_view_applies(case: dict[str, Any]) -> None:
     spec = FormSpec.model_validate(TYPED_QUOTES["form"])
-    # The details the app sets are left out first, as its routes leave them out.
-    locked = {tuple(place) for place in case["locked"]}
-    values = {
-        table: [
-            {key: value for key, value in row.items() if (table, key) not in locked} for row in rows
-        ]
-        for table, rows in case["values"].items()
-    }
+    # The details the app sets decide what the sheets show, but are no typing, as its routes
+    # count them.
+    locked = {(table, column) for table, column in case["locked"]}
+    sample = spec.model_copy(update={"sample": case["values"]})
 
-    assert (sample_quote(spec.model_copy(update={"sample": values})) != {}) is case["typed"]
+    assert (sample_quote(sample, untyped=locked) != {}) is case["typed"]
 
 
 def test_a_whole_number_past_a_double_is_kept_exactly() -> None:
