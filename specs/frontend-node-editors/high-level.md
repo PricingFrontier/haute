@@ -110,6 +110,17 @@ backend API modules own validation and persistence.
   starts from the data's first and last dates in steps of one month. A band's last day is the
   last calendar day it reaches under the factor's closure (for a date and time, the day it falls
   on, or the day before at midnight).
+  A Categorical factor with no rules shows a "No rules yet" prompt in place of its rules table,
+  offering Import from params or Add manually (one empty rule); with rules, its Rules heading
+  has Import beside Add. Import opens where it was pressed, in place of the prompt or under the
+  heading and above the table: a choice of the CSV files in the pipeline folder's
+  `files/params/` (a folder with none says so), then of the chosen file's columns, as the Workbench's allowed values are
+  chosen (specs/workbench). Choosing the column reads its distinct values (trimmed, blanks left
+  out, in the file's order) and adds a rule mapping each to itself, as a value chip does, for
+  every value no rule already has, then closes; the values are copied in, not linked to the file.
+  A column whose values all have rules leaves the rules as they are and says so. Why the folder
+  cannot be listed (with Retry), or why a file or column cannot give values, shows under the
+  choices in the server's words.
   Rating supports one- and two-way factor tables, value-level matching, statistics,
   paste/copy and downloadable table data.
 - Banding and Rating say whose rows their numbers describe; neither has a cache control of its

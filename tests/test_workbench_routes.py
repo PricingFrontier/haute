@@ -566,18 +566,17 @@ def test_the_form_routes_answer_404_while_the_workbench_is_not_enabled(project: 
     served = client().get("/api/workbench/form")
     saved = client().put("/api/workbench/form", json={"form": form(), "base_revision": None})
     tables = client().post("/api/workbench/tables", json={"form": form()})
-    params = client().get("/api/workbench/params", params={"file": "states.csv"})
 
     assert (served.status_code, served.json()["detail"]) == (404, message)
     assert (saved.status_code, saved.json()["detail"]) == (404, message)
     assert (tables.status_code, tables.json()["detail"]) == (404, message)
-    assert (params.status_code, params.json()["detail"]) == (404, message)
     assert not (project / "forms").exists()
 
 
 def test_a_params_file_s_header_and_a_column_s_values_are_served(project: Path) -> None:
+    # Served while the workbench is not enabled: Banding's Import from params reads them too.
     (project / "haute.toml").write_text(
-        '[project]\nname = "x"\npipeline = "rating/main.py"\n\n[workbench]\nenabled = true\n',
+        '[project]\nname = "x"\npipeline = "rating/main.py"\n\n[workbench]\nenabled = false\n',
         encoding="utf-8",
     )
     params = project / "rating" / "files" / "params"

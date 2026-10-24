@@ -60,7 +60,12 @@ After that, **BREAKPOINTS (N)** lists them, with **Generate** to replace them wi
 
 A **Categorical** factor shows the column's **Available values** as chips - every value in the data, with its row count, once the data is counted, or the values in the preview until then ("Connect data to see values" when there are none). With more than ten values, **Filter values...** narrows the chips. Click a chip to add a rule for that value; values already used are greyed.
 
-**RULES (N)** lists the rules, with **Add** to add an empty one:
+A **Categorical** factor with no rules offers two ways to start:
+
+- **Import from params** reads a list of values from a CSV file in the pipeline's `files/params/` folder: choose the file, then its column. Each value in that column (trimmed, blanks left out, in the file's order) becomes a rule that maps it to itself, as clicking its chip would; edit **Maps To** afterwards to group them. The values are copied in: changing the file later does not change the rules. A file or column that cannot give values says why under the choices, such as "rating/files/params/regions.csv has no column region".
+- **Add manually** adds one empty rule.
+
+After that, **RULES (N)** lists the rules, with **Import** to add a rule for each value of a params column that no rule has yet, and **Add** to add an empty one:
 
 | Column | What it does |
 |---|---|

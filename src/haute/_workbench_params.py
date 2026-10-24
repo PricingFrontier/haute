@@ -1,5 +1,6 @@
 """The params files a schema column's allowed values can come from (specs/workbench): the
 CSVs in the pipeline folder's ``files/params/``, as the Pipeline files panel lists them.
+Banding's Import from params reads a column's values from them too.
 
 A file's header names the columns the schema editor offers; a column's distinct values,
 trimmed, blanks left out, in the order the file first gives them, are the allowed values a

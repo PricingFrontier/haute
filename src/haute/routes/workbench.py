@@ -181,7 +181,8 @@ async def put_workbench_form(body: WorkbenchFormSaveRequest) -> WorkbenchFormSav
 async def get_param_file(file: str, column: str | None = None) -> WorkbenchParamFileResponse:
     """A params file's header, with the distinct values of *column* when one is named: what
     a column's allowed values are read from. A file or column that cannot give them answers
-    409 with why (``ParamFileError``)."""
-    config = await _enabled_config()
-    read = await run_in_threadpool(read_param_file, config.project_root, file, column)
+    409 with why (``ParamFileError``). Served whether or not the workbench is enabled, since
+    Banding's Import from params reads its categorical values here too."""
+    # The project is the working directory, as it is for the rest of the server.
+    read = await run_in_threadpool(read_param_file, Path.cwd(), file, column)
     return WorkbenchParamFileResponse(columns=read.columns, values=read.values)

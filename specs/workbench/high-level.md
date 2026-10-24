@@ -42,7 +42,7 @@ In scope:
 - `GET /api/workbench/form`, the form with its file's revision, and
   `PUT /api/workbench/form`, which writes the form unless the file changed since it was read.
 - `GET /api/workbench/params`, a params file's header and a column's distinct values,
-  which a column's allowed values are read from.
+  which a column's allowed values are read from (and Banding's categorical rules imported).
 - The Workbench view: how it is shown beside the pipeline editor and what the pipeline
   editor does meanwhile, its toolbar and keyboard shortcuts, its schema editor, its sheets
   (the canvas and its sections, the Table, the Collection, the Chart and the Heading, their
@@ -1982,7 +1982,8 @@ Out of scope:
   waiting on identity resolution is dropped with the commit controller's usual message. A
   read of the form that fails is shown in the view in place of the sheets, with a way to
   try again.
-- `GET /api/workbench/params` answers 404 while the workbench is not enabled, and 409
+- `GET /api/workbench/params` answers whether or not the workbench is enabled, since
+  Banding's Import from params reads it too, and 409
   with why a file or a column cannot give values: the project has no pipeline folder,
   the name is not a CSV directly in `files/params/`, the file does not exist, is empty,
   is neither UTF-8 nor Windows-1252 or cannot be read as a CSV, or the column is not in its header, holds no
