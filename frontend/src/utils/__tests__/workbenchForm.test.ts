@@ -89,12 +89,12 @@ import {
   widgetName,
   widgetProblems,
   withCell,
-  withSample,
   withSampleCell,
   withSampleRows,
   type Widget,
 } from "../workbenchForm"
-import { columnKey, sheetVisibility } from "../sheetVisibility"
+import { identityCount } from "../quoteIdentity"
+import { columnKey, sheetVisibility, testableColumns } from "../sheetVisibility"
 
 /** A section `height` tall holding `widgets`, always shown unless `showWhen` says otherwise. */
 const section = (id: string, title: string, height: number, widgets: Widget[] = [], showWhen: ShowWhen = { match: "all", conditions: [] }): Section => ({
@@ -172,7 +172,7 @@ describe("names", () => {
     expect(readableName("sum_insured")).toBe("Sum insured")
   })
 
-  it("names new tables and columns uniquely, and an empty table is no problem", () => {
+  it("names new tables and columns uniquely, each table leading with the quote's identity, and is no problem", () => {
     let spec = blank()
     const first = createSchemaTable(spec)
     spec = addSchemaTable(spec, first)
@@ -181,25 +181,30 @@ describe("names", () => {
     spec = addSchemaColumn(spec, first.id, createSchemaColumn(spec, first.id))
 
     expect(spec.schema.tables.map((t) => t.name)).toEqual(["table", "table_2"])
-    expect(spec.schema.tables[0].columns.map((c) => [c.name, c.type, c.index, c.group, c.default_value])).toEqual([
-      ["column", "str", false, "", ""],
-      ["column_2", "str", false, "", ""],
+    expect(spec.schema.tables[0].columns.map((c) => [c.id, c.name, c.type, c.index, c.group, c.default_value])).toEqual([
+      ["quote_reference", "quote_reference", "str", false, "", ""],
+      ["quote_option", "quote_option", "int", false, "", ""],
+      [expect.any(String), "column", "str", false, "", ""],
+      [expect.any(String), "column_2", "str", false, "", ""],
     ])
+    expect(spec.schema.tables[1].columns.map((c) => c.id)).toEqual(["quote_reference", "quote_option"])
     expect(messages(spec)).toEqual([])
   })
 
-  it("gives a new column the type of the column above it, Text first in its table or under its index", () => {
+  it("gives a new column the type of the column above it, Text first, under the quote's identity or under the index", () => {
     let spec = addSchemaTable(blank(), { ...createSchemaTable(blank()), id: "t", rows: "many" })
+    // Under the quote's option, an Integer, it is Text.
     expect(createSchemaColumn(spec, "t").type).toBe("str")
-    spec = addSchemaColumn(spec, "t", createIndexColumn(spec, "t"), 0)
+    expect(createSchemaColumn(spec, "t", 0).type).toBe("str")
+    spec = addSchemaColumn(spec, "t", createIndexColumn(spec, "t"), 2)
     expect(createSchemaColumn(spec, "t").type).toBe("str")
 
     spec = addSchemaColumn(spec, "t", { ...createSchemaColumn(spec, "t"), id: "a", type: "float", min: 0, number_format: "percent" })
     spec = addSchemaColumn(spec, "t", { ...createSchemaColumn(spec, "t"), id: "b", type: "date" })
     // At the end by default, or under the column at the place before the one given; the type alone, none of its rules or format.
     expect(createSchemaColumn(spec, "t")).toMatchObject({ type: "date" })
-    expect(createSchemaColumn(spec, "t", 2)).toMatchObject({ type: "float", min: null, number_format: "general" })
-    expect(createSchemaColumn(spec, "t", 1).type).toBe("str")
+    expect(createSchemaColumn(spec, "t", 4)).toMatchObject({ type: "float", min: null, number_format: "general" })
+    expect(createSchemaColumn(spec, "t", 3).type).toBe("str")
   })
 })
 
@@ -226,6 +231,24 @@ describe("problems", () => {
       'Column "value" in Table "t" repeats the name value',
       'Column "class" in Table "t" cannot be named with a Python keyword',
     ])
+  })
+
+  it("names a table's own column taking the quote's quote_reference or quote_option as the server does, never a missing identity", () => {
+    // A column of its own named reference or option is no clash.
+    const spec = withTable(column("a", "quote_reference"), column("b", "quote_option", { type: "int" }), column("c", "limit"), column("e", "option"))
+
+    expect(messages(spec)).toEqual(
+      ["quote_reference", "quote_option"].map(
+        (name) =>
+          `t.${name} has a name Haute keeps for the quote's identity in every table: rename it, and the table takes quote_reference and quote_option at the next save`,
+      ),
+    )
+    // A table leading with the identity: a second column of either name repeats it.
+    let held = addSchemaTable(blank(), { ...createSchemaTable(blank()), id: "u", name: "u" })
+    held = addSchemaColumn(held, "u", column("d", "quote_option"))
+    expect(messages(held)).toEqual(['Column "quote_option" in Table "u" repeats the name quote_option'])
+    // A table without it and without such a column is no problem.
+    expect(messages(withTable(column("e", "limit")))).toEqual([])
   })
 
   it("flags allowed values on a tick box or a date, which cannot have them", () => {
@@ -400,6 +423,29 @@ describe("columns", () => {
     expect(names()).toEqual(["row_number", "b", "x", "c", "a"])
   })
 
+  it("keeps the quote's identity first and locked, the index after it", () => {
+    let spec = addSchemaTable(blank(), { ...createSchemaTable(blank()), id: "t", rows: "many" })
+    spec = addSchemaColumn(spec, "t", column("a", "a"))
+    spec = addSchemaColumn(spec, "t", column("b", "b"))
+    const ids = () => spec.schema.tables[0].columns.map((c) => c.id)
+
+    // Nothing moves, retypes, renames, marks or removes it, and nothing goes above it.
+    expect(moveSchemaColumn(spec, "t", "quote_option", 3)).toBe(spec)
+    expect(moveSchemaColumn(spec, "t", "a", 0)).toBe(spec)
+    expect(moveSchemaColumn(spec, "t", "b", 1)).toBe(spec)
+    expect(changeSchemaColumnType(spec, "t", "quote_option", "float")).toBe(spec)
+    expect(updateSchemaColumn(spec, "t", "quote_reference", { name: "ref", label: "Ref", key: true })).toBe(spec)
+    expect(removeSchemaColumn(spec, "t", "quote_reference")).toBe(spec)
+    // The index goes after it, and stays there.
+    const index = createIndexColumn(spec, "t")
+    spec = addSchemaColumn(spec, "t", index, identityCount(spec.schema.tables[0]))
+    expect(ids()).toEqual(["quote_reference", "quote_option", index.id, "a", "b"])
+    expect(moveSchemaColumn(spec, "t", "b", 2)).toBe(spec)
+    expect(moveSchemaColumn(spec, "t", index.id, 4)).toBe(spec)
+    spec = moveSchemaColumn(spec, "t", "b", 3)
+    expect(ids()).toEqual(["quote_reference", "quote_option", index.id, "b", "a"])
+  })
+
   it("moves a table, Haute's quote_details table staying first", () => {
     let spec = addSchemaTable(addSchemaTable(addSchemaTable(blank(), table("a", "a")), table("b", "b")), table("c", "c"))
     const names = () => spec.schema.tables.map((t) => t.name)
@@ -504,6 +550,15 @@ describe("what the sheets show", () => {
   }
   const fields = (spec: FormSpec, widgetId: string) =>
     widgetsOf(spec).filter(showsFields).find((widget) => widget.id === widgetId)?.fields.map((field) => field.column)
+
+  it("never offers the quote's identity to the sheets: no condition tests it and no Chart plots it", () => {
+    let spec = addSchemaTable(blank(), { ...createSchemaTable(blank()), id: "t", rows: "many" })
+    spec = addSchemaColumn(spec, "t", column("a", "value", { type: "float" }))
+    const [t] = spec.schema.tables
+
+    expect(testableColumns(t).map((c) => c.id)).toEqual(["a"])
+    expect(t.columns.filter(plottable).map((c) => c.id)).toEqual(["a"])
+  })
 
   it("finds the widgets showing a table or a column, and the column a field names", () => {
     const spec = sheet()
@@ -645,6 +700,7 @@ describe("what the sheets show", () => {
       "header_orientation",
       "header_color",
       "header_font_color",
+      "header_align",
       "grid_color",
       "grid_weight",
       "grid_style",
@@ -729,7 +785,6 @@ describe("what the sheets show", () => {
     expect(() => updateWidget(spec, grid.id, { labels: "beside" })).toThrow("Only a Collection has labels")
     expect(() => updateWidget(spec, grid.id, { label_width: 60 })).toThrow("Only a Collection has label_width")
     expect(() => updateWidget(spec, grid.id, { box_style: "dashed" })).toThrow("Only a Collection has box_style")
-    expect(() => updateWidget(spec, grid.id, { header_align: "left" })).toThrow("Only a Collection has header_align")
     expect(() => updateWidget(spec, grid.id, { box_align: "center" })).toThrow("Only a Collection has box_align")
     expect(() => updateWidget(spec, "missing", { title: "x" })).toThrow("No sheet has a component missing")
 
@@ -979,15 +1034,6 @@ describe("what the sheets show", () => {
     expect(coloured.theme).toEqual({ ...BLANK_THEME, border_color: "#2563EB" })
     expect(spec.theme).toEqual(BLANK_THEME)
     expect(setThemeColour(coloured, "border_color", null).theme).toEqual(BLANK_THEME)
-  })
-
-  it("replaces the sample whole, as a test quote opened does, leaving the values given untouched", () => {
-    const values = { equipment: [{ "equipment.item": "Z" }] }
-    const spec = withSample(sheet(), values)
-    expect(spec.sample).toEqual({ equipment: [{ "equipment.item": "Z" }] })
-    expect(spec.sample).not.toBe(values)
-    spec.sample.equipment[0]["equipment.item"] = "Y"
-    expect(values.equipment[0]["equipment.item"]).toBe("Z")
   })
 
   it("sets a sample cell, adding empty rows up to it, and replaces several tables' rows as one edit", () => {

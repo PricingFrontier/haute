@@ -1,6 +1,6 @@
 /**
  * The workbench end to end (specs/workbench): switched on for the project, its schema read
- * into the Schema section, a Collection dragged onto a sheet and given its fields, drawn
+ * into the schema's pane, a Collection dragged onto a sheet and given its fields, drawn
  * while building as a new quote, the sample typed in Preview and priced live on the
  * pipeline open in the editor, with no Price or Clear, a column added to the schema, and
  * the project saved in one Save: the sheets and the sample to forms/form.json and the
@@ -190,15 +190,17 @@ test.describe("workbench", () => {
     await page.reload()
     await expect(page.getByRole("button", { name: /Workbench Input node: quote/i })).toBeVisible()
 
-    // The view, with the schema the sheets work with.
+    // The view, with the schema the sheets work with in its pane over the sheet.
     await page.getByTestId("view-switcher-workbench").click()
     await expect(page.getByRole("toolbar", { name: "Workbench toolbar" })).toBeVisible()
     await page.getByRole("button", { name: "Schema" }).click()
+    await expect(page.getByTestId("schema-pane")).toBeVisible()
     // Haute's quote_details table first, as every form holds it, then the project's.
     await expect(page.getByLabel("Table name").nth(0)).toHaveValue("quote_details")
     await expect(page.getByLabel("Table name").nth(1)).toHaveValue("policy")
     await expect(page.getByLabel("Table name").nth(2)).toHaveValue("pricing")
-    await page.getByRole("button", { name: "Sheets" }).click()
+    await page.getByRole("button", { name: "Schema" }).click()
+    await expect(page.getByTestId("schema-pane")).toHaveCount(0)
 
     // A Collection dragged out of the palette onto the sheet, then given its fields.
     const item = await centre(page.getByTestId("palette-item-collection"))
@@ -238,7 +240,8 @@ test.describe("workbench", () => {
     await page.getByRole("button", { name: "Schema" }).click()
     const policy = page.getByRole("region", { name: "Table policy" })
     await policy.getByRole("button", { name: "Add column" }).click()
-    const added = policy.getByLabel("Column name").nth(2)
+    // After the quote's reference and option, which lead every table, and the policy's two.
+    const added = policy.getByLabel("Column name").nth(4)
     await expect(added).toBeFocused()
     await added.fill("excess")
     await added.press("Tab")
@@ -250,13 +253,19 @@ test.describe("workbench", () => {
     await expect(page.getByTestId("toast-notification").filter({ hasText: /Saved → rating[\\/]main\.py/ })).toBeVisible()
     const saved = JSON.parse(readFileSync(resolve(e2eProjectRoot, "forms", "form.json"), "utf8"))
     expect(saved.schema.tables.map((table: { name: string }) => table.name)).toEqual(["quote_details", "policy", "pricing"])
-    expect(saved.schema.tables[1].columns.map((column: { name: string }) => column.name)).toEqual(["limit", "region", "excess"])
+    expect(saved.schema.tables[1].columns.map((column: { name: string }) => column.name)).toEqual(["quote_reference", "quote_option", "limit", "region", "excess"])
     const copy = JSON.parse(readFileSync(resolve(e2eProjectRoot, "rating", "config", "workbench_input", "quote.json"), "utf8"))
     expect(copy.tables.map((table: { name: string }) => table.name)).toEqual(["quote_details", "policy"])
     expect(copy.tables[1]).toEqual({
       name: "policy",
       rows: "one",
-      columns: [{ name: "limit", type: "int" }, { name: "region", type: "str" }, { name: "excess", type: "str" }],
+      columns: [
+        { name: "quote_reference", type: "str" },
+        { name: "quote_option", type: "int" },
+        { name: "limit", type: "int" },
+        { name: "region", type: "str" },
+        { name: "excess", type: "str" },
+      ],
     })
     expect(saved.pages[0].sections[0].widgets).toHaveLength(1)
     expect(saved.pages[0].sections[0].widgets[0]).toMatchObject({

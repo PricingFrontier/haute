@@ -78,7 +78,7 @@ export function WidthRow({
 }
 
 /**
- * Its labels' case, size, fill, font, weight and wrapping, a Table's header's or a
+ * Its labels' case, size, place, fill, font, weight and wrapping, a Table's header's or a
  * Collection's labels', `children` after the size; `name` says whose they are in each
  * colour's label.
  */
@@ -94,6 +94,7 @@ export function HeaderRows({ widget, name, children }: { widget: LookWidget; nam
         onChange={(size) => set({ header_font_size: size === "auto" ? null : (Number(size) as SharedLook["font_size"]) })}
       />
       {children}
+      <SelectRow label="Align" value={widget.header_align} choices={ALIGNS} onChange={(header_align) => set({ header_align })} />
       <ColourRow beside label="Fill" name={`${name} fill`} value={widget.header_color} update={colour("header_color")} />
       <ColourRow beside label="Font" name={`${name} font`} value={widget.header_font_color} update={colour("header_font_color")} />
       <LabelledRow>

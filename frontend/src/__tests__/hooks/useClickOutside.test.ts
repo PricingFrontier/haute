@@ -24,21 +24,34 @@ describe("useClickOutside", () => {
   it("calls onClose when clicking outside and active=true", () => {
     const onClose = vi.fn()
     render(createElement(TestComponent, { onClose, active: true }))
-    fireEvent.mouseDown(screen.getByTestId("outside"))
+    fireEvent.pointerDown(screen.getByTestId("outside"))
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
   it("does NOT call onClose when clicking inside and active=true", () => {
     const onClose = vi.fn()
     render(createElement(TestComponent, { onClose, active: true }))
-    fireEvent.mouseDown(screen.getByTestId("inside"))
+    fireEvent.pointerDown(screen.getByTestId("inside"))
     expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it("closes on a press outside whose own handler cancels the mouse events after it and stops it, as a sheet component's does", () => {
+    const onClose = vi.fn()
+    render(createElement(TestComponent, { onClose, active: true }))
+    const outside = screen.getByTestId("outside")
+    // The press is all there is: no mousedown follows a pointerdown whose default is prevented.
+    outside.addEventListener("pointerdown", (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+    })
+    fireEvent.pointerDown(outside)
+    expect(onClose).toHaveBeenCalledTimes(1)
   })
 
   it("does NOT call onClose when clicking outside and active=false", () => {
     const onClose = vi.fn()
     render(createElement(TestComponent, { onClose, active: false }))
-    fireEvent.mouseDown(screen.getByTestId("outside"))
+    fireEvent.pointerDown(screen.getByTestId("outside"))
     expect(onClose).not.toHaveBeenCalled()
   })
 })

@@ -30,6 +30,7 @@ from haute._quote_store import (
     QuoteNotFoundError,
     QuoteRevision,
     QuoteStoreError,
+    ReferenceTakenError,
     Source,
     StaleQuoteError,
     carry_values,
@@ -37,9 +38,14 @@ from haute._quote_store import (
     open_store,
     with_details,
 )
-from haute._quote_store._book import MAX_PAGE_SIZE, PAGE_SIZE
-from haute._test_quotes import ACCEPTED_TOLERANCE, quote_request
+from haute._quote_store._book import MAX_PAGE_SIZE, PAGE_SIZE, identity_label
 from haute._workbench_form import QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, FormSpec
+from haute._workbench_tables import (
+    IDENTITY_SHAPE,
+    carries_identity,
+    output_tables,
+    quote_request,
+)
 from haute.deploy._request_limits import (
     RequestBodyHeaderError,
     RequestBodyLimitError,
@@ -75,6 +81,10 @@ from haute.schemas import (
 T = TypeVar("T")
 M = TypeVar("M", bound=BaseModel)
 
+#: A kept price and the one the page showed are matched within one part in a billion, so
+#: a pricing that differs only in a float's last bits has not moved.
+PRICE_TOLERANCE = 1e-9
+
 #: Prices a quote's values through the release's pipeline: its output tables by name and
 #: the request priced, or an HTTP error saying why not.
 Pricer = Callable[[WorkbenchValues], Awaitable[tuple[WorkbenchPricedTables, dict[str, Any]]]]
@@ -92,9 +102,10 @@ class QuoteApp:
     price: Pricer
 
 
-def open_book(url: str) -> QuoteBook:
-    """The book of the store at *url*, which must be migrated."""
-    return QuoteBook(open_store(url))
+def open_book(url: str, *, haute_version: str) -> QuoteBook:
+    """The book of the store at *url*, which must be migrated, written by an app running
+    Haute *haute_version*."""
+    return QuoteBook(open_store(url), haute_version=haute_version)
 
 
 def _iso(moment: Any) -> str | None:
@@ -106,6 +117,8 @@ def quote_model(quote: AppQuote) -> WorkbenchAppQuote:
     return WorkbenchAppQuote(
         id=quote.id,
         reference=quote.reference,
+        option=quote.option,
+        label=quote.label,
         title=quote.title,
         details=quote.details,
         stage=quote.stage,
@@ -129,6 +142,12 @@ def quote_model(quote: AppQuote) -> WorkbenchAppQuote:
         note_at=_iso(quote.note_at),
         source_quote_id=quote.source_quote_id,
         source_reference=quote.source_reference,
+        source_option=quote.source_option,
+        source_label=(
+            None
+            if quote.source_reference is None or quote.source_option is None
+            else identity_label(quote.source_reference, quote.source_option)
+        ),
         source_revision=quote.source_revision,
         relation=quote.relation,
     )
@@ -166,6 +185,8 @@ async def _call(app: QuoteApp, work: Callable[[], T], quote_id: str | None = Non
         raise _refusal(409, exc, quote=current) from None
     except QuoteLockedError as exc:
         raise _refusal(409, exc) from None
+    except ReferenceTakenError as exc:
+        raise _refusal(409, exc, quote_id=exc.quote_id, label=exc.label) from None
     except QuoteStoreError as exc:
         raise _refusal(422, exc) from None
 
@@ -215,37 +236,94 @@ class _Prepared:
 
 
 async def _prepared(
-    app: QuoteApp, body: WorkbenchAppQuoteSaveRequest, managed: dict[str, Any]
+    app: QuoteApp,
+    body: WorkbenchAppQuoteSaveRequest,
+    managed: dict[str, Any],
+    *,
+    creating: bool = False,
 ) -> _Prepared:
     """*body*'s save made ready: refused (409) for another sheets' revision or release; its
-    details' app columns set to *managed*; refused (422) with nothing typed; unpriced, or
-    priced again here."""
+    details' app columns set to *managed*; refused (422) with nothing typed, unless
+    *creating*, as the app makes a quote, holding its starting values, when the underwriter
+    asks for it; unpriced, or priced again here."""
     if body.form_revision != app.form_revision or body.release != app.release_id:
         raise HTTPException(
             409,
             "This page was drawn for another release of the app: reload it to save on this one.",
         )
-    # The details the app sets are its own, whatever the page sent; and nothing the
-    # underwriter typed is nothing to save.
-    details = {
-        name: value for name, value in details_of(body.values).items() if name not in managed
-    }
-    typed = with_details(body.values, details)
-    if not quote_request(app.form, typed):
+    # The details the app sets are its own, whatever the page sent, which is not read; the
+    # sheets show what they show by the app's as by any value, but those are not typing, and
+    # nothing the underwriter typed is nothing to save.
+    page = _without_app_details(body.values)
+    values = with_details(page, {**details_of(page), **managed})
+    if not creating and not quote_request(app.form, values, untyped=_APP_SET_CELLS):
         raise HTTPException(422, "Type the quote first")
-    values = with_details(typed, {**details, **managed})
     if body.shown is None:
         return _Prepared(values, quote_request(app.form, values), None)
     tables, request = await app.price(values)
     return _Prepared(values, request, tables)
 
 
-def _moved(revision: QuoteRevision, shown: WorkbenchPricedTables | None) -> bool:
+def _moved(form: FormSpec, revision: QuoteRevision, shown: WorkbenchPricedTables | None) -> bool:
     """Whether the prices *revision* keeps moved from those the page *shown*: a save's, or,
-    for a save repeated with its key, those its first write kept."""
+    for a save repeated with its key, those its first write kept. The quote's reference and
+    option are no price: a page priced under another quote's, saved as a new quote, has not
+    moved."""
     if shown is None or revision.response is None:
         return False
-    return bool(response_changes(revision.response, shown, ACCEPTED_TOLERANCE))
+    carrying = {table.name for table in output_tables(form) if carries_identity(table)}
+    return bool(
+        response_changes(
+            _without_identity(revision.response, carrying),
+            _without_identity(shown, carrying),
+            PRICE_TOLERANCE,
+        )
+    )
+
+
+def _without_identity(tables: Any, carrying: set[str]) -> Any:
+    """*tables* by name, the rows of those in *carrying* without the quote's identity."""
+    if not isinstance(tables, dict):
+        return tables
+    names = {name for name, _ in IDENTITY_SHAPE}
+
+    def bare(row: Any) -> Any:
+        if not isinstance(row, dict):
+            return row
+        return {column: value for column, value in row.items() if column not in names}
+
+    return {
+        name: ([bare(row) for row in rows] if isinstance(rows, list) else bare(rows))
+        if name in carrying
+        else rows
+        for name, rows in tables.items()
+    }
+
+
+def _required_left(form: FormSpec, values: dict[str, Any]) -> None:
+    """Refuse a new quote made in the window with a column of quote_details the underwriter
+    types, and the analyst made required, left empty: text of spaces alone is empty, and a
+    tick box, ticked or not, never is. An entry requirement of the window alone: a save, and
+    an alternative made at once, keep a quote its rules mark."""
+    details = next(
+        (table for table in form.data_schema.tables if table.id == QUOTE_DETAILS_ID), None
+    )
+    if details is None:
+        return
+    rows = values.get(QUOTE_DETAILS_ID) or []
+    row = rows[0] if rows else {}
+    for column in details.columns:
+        if not column.required or column.id in QUOTE_DETAILS_MANAGED or column.type == "bool":
+            continue
+        cell = row.get(column.id)
+        if cell is None or (isinstance(cell, str) and not cell.strip()):
+            raise QuoteStoreError(
+                f"{column.label or column.name} is required: fill it in to make the quote."
+            )
+
+
+#: The quote_details cells the app sets, by table and column id: no typing.
+_APP_SET_CELLS = frozenset((QUOTE_DETAILS_ID, column_id) for column_id in QUOTE_DETAILS_MANAGED)
 
 
 def _without_app_details(values: dict[str, Any]) -> dict[str, Any]:
@@ -312,7 +390,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
         """A save's answer: *quote* as the save left it, with the revision it wrote, read by
         its number, and whether its prices moved from those the page *shown*."""
         revision = book.revision(quote.id, quote.latest)
-        return answer(quote, revision, moved=_moved(revision, shown))
+        return answer(quote, revision, moved=_moved(app.form, revision, shown))
 
     async def replayed(
         body: WorkbenchAppQuoteSaveRequest, actor: str, quote_id: str | None
@@ -330,11 +408,20 @@ def quote_router(app: QuoteApp) -> APIRouter:
     async def create_quote(http: Request) -> WorkbenchAppQuoteResponse:
         actor = _editor(http)
         body = await _body(http, WorkbenchAppQuoteCreateRequest)
+        # A quote's reference and option are taken as it is written, and its pricing reads
+        # them: it is made unpriced, and priced as it opens.
+        if body.shown is not None:
+            raise HTTPException(422, "A new quote is made unpriced: it is priced as it opens.")
         replay = await replayed(body, actor, None)
         if replay is not None:
             return replay
-        managed = {**QuoteBook.managed(None, priced=body.shown is not None), "assignee": actor}
-        ready = await _prepared(app, body, managed)
+        # A quote but an alternative is made in the window, keyed there: its reference and
+        # its required details are asked for.
+        if body.source is None or body.source.relation != "alternative":
+            await _call(app, lambda: _required_left(app.form, body.values))
+        at = book.now()
+        managed = book.managed(None, priced=False, at=at, actor=actor)
+        ready = await _prepared(app, body, managed, creating=True)
         source = (
             None
             if body.source is None
@@ -350,6 +437,8 @@ def quote_router(app: QuoteApp) -> APIRouter:
                 request=ready.request,
                 response=ready.tables,
                 release=None if ready.tables is None else app.release_id,
+                at=at,
+                reference=body.reference,
                 source=source,
             )
             return saved(quote, body.shown)
@@ -396,9 +485,10 @@ def quote_router(app: QuoteApp) -> APIRouter:
         if replay is not None:
             return replay
         current = await _call(app, lambda: book.get(quote_id))
-        ready = await _prepared(
-            app, body, QuoteBook.managed(current, priced=body.shown is not None)
-        )
+        # One instant stamps the save: the request priced, the revision and its details.
+        at = book.now()
+        managed = book.managed(current, priced=body.shown is not None, at=at, actor=actor)
+        ready = await _prepared(app, body, managed)
 
         def save() -> WorkbenchAppQuoteResponse:
             quote = book.save(
@@ -411,6 +501,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
                 request=ready.request,
                 response=ready.tables,
                 release=None if ready.tables is None else app.release_id,
+                at=at,
             )
             return saved(quote, body.shown)
 
@@ -483,7 +574,12 @@ def quote_router(app: QuoteApp) -> APIRouter:
 
         def related(each: Any) -> WorkbenchAppRelatedQuote:
             return WorkbenchAppRelatedQuote(
-                id=each.id, reference=each.reference, relation=each.relation, revision=each.revision
+                id=each.id,
+                reference=each.reference,
+                option=each.option,
+                label=identity_label(each.reference, each.option),
+                relation=each.relation,
+                revision=each.revision,
             )
 
         return WorkbenchAppQuoteHistoryResponse(

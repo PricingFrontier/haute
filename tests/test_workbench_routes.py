@@ -147,7 +147,12 @@ def test_the_tables_are_served_from_the_form_as_it_is_now(project: Path) -> None
         {
             "name": "policy_details",
             "rows": "one",
-            "columns": [{"name": "state", "type": "str"}, {"name": "exposure", "type": "float"}],
+            "columns": [
+                {"name": "quote_reference", "type": "str"},
+                {"name": "quote_option", "type": "int"},
+                {"name": "state", "type": "str"},
+                {"name": "exposure", "type": "float"},
+            ],
         },
     ]
     assert body["sample"] == {"policy_details": {"state": "NY", "exposure": 1000.0}}
@@ -194,7 +199,7 @@ def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path
     # Every field is served, defaults included, as the file is written; Haute's quote_details
     # table first, which the file written before it takes on at its save.
     assert body["form"]["schema"]["tables"][0]["name"] == "quote_details"
-    assert body["form"]["schema"]["tables"][1]["columns"][1] == {
+    assert body["form"]["schema"]["tables"][1]["columns"][3] == {
         "id": "c_exposure",
         "name": "exposure",
         "type": "float",
@@ -561,18 +566,17 @@ def test_the_form_routes_answer_404_while_the_workbench_is_not_enabled(project: 
     served = client().get("/api/workbench/form")
     saved = client().put("/api/workbench/form", json={"form": form(), "base_revision": None})
     tables = client().post("/api/workbench/tables", json={"form": form()})
-    params = client().get("/api/workbench/params", params={"file": "states.csv"})
 
     assert (served.status_code, served.json()["detail"]) == (404, message)
     assert (saved.status_code, saved.json()["detail"]) == (404, message)
     assert (tables.status_code, tables.json()["detail"]) == (404, message)
-    assert (params.status_code, params.json()["detail"]) == (404, message)
     assert not (project / "forms").exists()
 
 
 def test_a_params_file_s_header_and_a_column_s_values_are_served(project: Path) -> None:
+    # Served while the workbench is not enabled: Banding's Import from params reads them too.
     (project / "haute.toml").write_text(
-        '[project]\nname = "x"\npipeline = "rating/main.py"\n\n[workbench]\nenabled = true\n',
+        '[project]\nname = "x"\npipeline = "rating/main.py"\n\n[workbench]\nenabled = false\n',
         encoding="utf-8",
     )
     params = project / "rating" / "files" / "params"

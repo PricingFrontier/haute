@@ -101,20 +101,20 @@ describe("reportSaveCapture", () => {
   })
 
   it("keeps what a capture still skips, and everything when the request fails", async () => {
-    reportSaveCapture({ uncaptured: ["forms/form.json", "tests/quotes/test_quotes.sqlite"] })
+    reportSaveCapture({ uncaptured: ["forms/form.json", "rating/pipeline.py"] })
     vi.mocked(captureFiles).mockResolvedValueOnce({
       git_sha: null,
       warnings: ["Changes saved; version capture failed: busy"],
       identity_required: false,
-      uncaptured: ["forms/form.json", "tests/quotes/test_quotes.sqlite"],
+      uncaptured: ["forms/form.json", "rating/pipeline.py"],
     })
     await captureUncaptured()
-    expect(useGitStore.getState().uncaptured).toEqual(["forms/form.json", "tests/quotes/test_quotes.sqlite"])
+    expect(useGitStore.getState().uncaptured).toEqual(["forms/form.json", "rating/pipeline.py"])
 
     vi.mocked(captureFiles).mockRejectedValueOnce(new ApiError("HTTP 500", 500, "the server stopped", null, null))
     await captureUncaptured()
 
-    expect(useGitStore.getState().uncaptured).toEqual(["forms/form.json", "tests/quotes/test_quotes.sqlite"])
+    expect(useGitStore.getState().uncaptured).toEqual(["forms/form.json", "rating/pipeline.py"])
     expect(toasts()).toEqual([
       ["warning", "Changes saved; version capture failed: busy"],
       ["error", "Version capture failed: the server stopped"],

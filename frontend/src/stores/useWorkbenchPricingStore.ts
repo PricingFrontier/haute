@@ -5,7 +5,6 @@
  * whatever its cells hold, a sample with nothing typed in the cells the sheets show priced
  * not at all; what the last pricing gave, with the basis it was priced for (its values and
  * the context), and why it last failed.
- * `priceForm`, the pricing itself, is the test quotes' too.
  */
 import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
@@ -27,8 +26,7 @@ import useWorkbenchFormStore from "./useWorkbenchFormStore"
  * adopted (`executionGeneration`, moved by a branch switched or the document read again),
  * the pipeline's structure with its submodels' definitions (which the root's structure
  * leaves out; an edit, the Assistant's too, moves it), the data source, and the data's epoch
- * (`useDataEpochStore`). Preview's price is stamped with it and goes stale when it moves;
- * a test quotes' run is judged by it too.
+ * (`useDataEpochStore`). Preview's price is stamped with it and goes stale when it moves.
  */
 export interface PricingContext {
   document: number
@@ -46,7 +44,7 @@ function submodelsText(submodels: Record<string, unknown>): string {
 }
 
 /** The editor's pricing context as it is now. */
-export function pricingContext(): PricingContext {
+function pricingContext(): PricingContext {
   const graph = useGraphStore.getState()
   return {
     document: useDocumentStatusStore.getState().executionGeneration,
@@ -57,7 +55,7 @@ export function pricingContext(): PricingContext {
 }
 
 /** A context as one string to compare. */
-export const contextKey = (context: PricingContext): string =>
+const contextKey = (context: PricingContext): string =>
   JSON.stringify([context.document, context.pipeline, context.source, context.data])
 
 /**
@@ -79,12 +77,6 @@ export function usePricingContext(): string {
 
 /** Prices a sample, given the tables, sample and response tables Haute takes from the form. */
 export type Pricer = (workbench: WorkbenchTablesResponse) => Promise<PricedSample>
-
-/**
- * Gives a pricer fixed on the pipeline and the data source as they are when it is called,
- * which answers each table in full or refuses one Preview cut short: a test quote's.
- */
-export type Snapshot = () => Pricer
 
 /** What pricing a form's values gave, with those values as the server typed them. */
 export interface PricedValues extends PricedSample {
@@ -111,7 +103,7 @@ export interface SamplePrice extends PricedValues {
  * Price a form's values on the pipeline: the tables, sample and response tables the
  * server takes from the form (`POST /api/workbench/tables`), then the pricer on them.
  */
-export async function priceForm(form: FormSpec, pricer: Pricer): Promise<PricedValues> {
+async function priceForm(form: FormSpec, pricer: Pricer): Promise<PricedValues> {
   const workbench = await fetchWorkbenchFormTables(form)
   const { tables } = await pricer(workbench)
   return { tables, sample: workbench.sample }
@@ -123,9 +115,6 @@ export const PRICING_DELAY_MS = 300
 interface WorkbenchPricingState {
   /** The view host's pricer while the view shows; null otherwise, when nothing is priced. */
   pricer: Pricer | null
-  /** The view host's fixed pricers while the view shows, for test quotes; null otherwise. */
-  snapshot: Snapshot | null
-  setSnapshot: (snapshot: Snapshot | null) => void
   /** The quote pricer the underwriter app set, which its quote is priced through; null in the builder. */
   quotePricer: QuotePricer | null
   setQuotePricer: (quotePricer: QuotePricer | null) => void
@@ -181,8 +170,6 @@ const useWorkbenchPricingStore = create<WorkbenchPricingState>()((set, get) => {
 
   return {
     pricer: null,
-    snapshot: null,
-    setSnapshot: (snapshot) => set({ snapshot }),
     quotePricer: null,
     setQuotePricer: (quotePricer) => set({ quotePricer }),
     price: null,

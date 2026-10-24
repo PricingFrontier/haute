@@ -15,11 +15,13 @@ is never overwritten.
 
 Every form holds Haute's own input table, ``quote_details``, first: the details of a quote
 (its reference, name, insured, broker, dates and currency, its stage, who it is with and
-whether it is archived, which the underwriter app sets itself, and whether it is a renewal).
-Its structure is Haute's and a form that changes it is refused; a form read or saved without
-it has it added, and one holding its columns as an earlier Haute wrote them has the newer
-ones added after them, the one exception to nothing migrating, so a project written before
-either takes them on.
+whether it is archived, which the underwriter app sets itself, whether it is a renewal, and
+its option, which the app sets too). Its structure is Haute's and a form that changes it is
+refused; a form read or saved without it has it added, and one holding its columns as an
+earlier Haute wrote them has the newer ones added after them, the one exception to nothing
+migrating, so a project written before either takes them on. Every other table leads with
+the quote's identity, its reference and option, locked, added the same way to a table
+without it unless a column of the table's own holds either name.
 """
 
 from __future__ import annotations
@@ -297,10 +299,11 @@ class ColumnLook(_Strict):
     """How one of a Table's columns, or one of a Collection's fields, looks and when it shows,
     its field by table and column id: each colour the component's own while None, its values
     placed as its type puts them, or as the Collection places its boxes', while ``align`` is
-    ``auto``, its label over a Table's column as its values sit, or as the Collection places
-    its labels, while ``header_align`` is, while ``width`` is None, a Table's column as wide as
-    the grid makes it and a Collection's box as wide as the Collection makes it, and shown
-    with its component while ``show_when`` has no conditions."""
+    ``auto``, its label as its component places its labels while ``header_align`` is, and
+    over a Table's column as its values sit while the Table's is too, while ``width`` is
+    None, a Table's column as wide as the grid makes it and a Collection's box as wide as the
+    Collection makes it, and shown with its component while ``show_when`` has no
+    conditions."""
 
     table: str
     column: str
@@ -370,8 +373,8 @@ class TableInputWidget(_Placed):
     groups: bool = False
     # Its text, its header, its lines and its frame, as a spreadsheet's are set: by default
     # 12px text, its header's the same size, or a pixel smaller in capitals, bold, level and
-    # unwrapped, filled and coloured as the sheets' theme says, thin solid gridlines and a
-    # thin frame, coloured as the theme says.
+    # unwrapped, filled and coloured as the sheets' theme says, each label placed as its
+    # column's look says, thin solid gridlines and a thin frame, coloured as the theme says.
     font_size: FontSize = 12
     header_font_size: FontSize | None = None
     header_bold: bool = True
@@ -379,6 +382,7 @@ class TableInputWidget(_Placed):
     header_orientation: HeaderOrientation = "horizontal"
     header_color: Colour | None = None
     header_font_color: Colour | None = None
+    header_align: ColumnAlign = "auto"
     grid_color: Colour | None = None
     grid_weight: LineWeight = "thin"
     grid_style: LineStyle = "solid"
@@ -639,8 +643,12 @@ class FormSpec(_Strict):
     @classmethod
     def _brings_quote_details_up_to_date(cls, data: Any) -> Any:
         """A form saved by an earlier Haute holds ``quote_details`` with the columns it had
-        then: the first ones (``QUOTE_DETAILS_FIRST``), or more of them in order. The newer
-        ones are added after them as Haute makes them, the caller's data left as it was."""
+        then, which are brought to today's by id: a column under the name it had then
+        (``QUOTE_DETAILS_NAMED_BEFORE``) takes today's, one Haute makes no more
+        (``QUOTE_DETAILS_RETIRED``) is dropped, those it holds keep what the project gave
+        them, the missing ones are added, and all of them take today's order. A column of
+        another id, or one renamed or retyped otherwise, stays for the form's check to
+        refuse. The caller's data is left as it was."""
         schema = data.get("schema") if isinstance(data, dict) else None
         if not isinstance(schema, dict) or not isinstance(schema.get("tables"), list):
             return data
@@ -649,26 +657,71 @@ class FormSpec(_Strict):
             if not isinstance(table, dict) or table.get("id") != QUOTE_DETAILS_ID:
                 continue
             columns = table.get("columns")
-            if not isinstance(columns, list):
+            if not isinstance(columns, list) or not all(
+                isinstance(column, dict) for column in columns
+            ):
                 return data
-            count = len(columns)
-            if not len(QUOTE_DETAILS_FIRST) <= count < len(QUOTE_DETAILS_COLUMNS):
-                return data
-            if _column_shapes(columns) != list(QUOTE_DETAILS_COLUMNS[:count]):
-                return data
-            newer = [
-                {"id": column_id, "name": name, "type": column_type}
-                for column_id, name, column_type in QUOTE_DETAILS_COLUMNS[count:]
+            renamed = [
+                _named_today(column)
+                for column in columns
+                if column.get("id") not in QUOTE_DETAILS_RETIRED
             ]
-            held = [*tables[:index], {**table, "columns": [*columns, *newer]}, *tables[index + 1 :]]
-            return {**data, "schema": {**schema, "tables": held}}
+            ids = [column.get("id") for column in renamed]
+            if len(set(ids)) != len(ids):
+                # Two columns under one id are the form's check to refuse.
+                return data
+            held = {column.get("id"): column for column in renamed}
+            known = [
+                held.get(column_id, {"id": column_id, "name": name, "type": column_type})
+                for column_id, name, column_type in QUOTE_DETAILS_COLUMNS
+            ]
+            others = [column for column in renamed if column.get("id") not in QUOTE_DETAILS_IDS]
+            upgraded = {**table, "columns": [*known, *others]}
+            return {
+                **data,
+                "schema": {**schema, "tables": [*tables[:index], upgraded, *tables[index + 1 :]]},
+            }
         return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _gives_every_table_the_quote_identity(cls, data: Any) -> Any:
+        """Every table but ``quote_details`` leads with the quote's identity
+        (``IDENTITY_COLUMNS``), added at its head when it has none, the caller's data left as
+        it was. A table with a column of its own under either name is left without it: the
+        clash is the project's to resolve (:func:`identity_clashes`)."""
+        schema = data.get("schema") if isinstance(data, dict) else None
+        if not isinstance(schema, dict) or not isinstance(schema.get("tables"), list):
+            return data
+        held: list[Any] = []
+        for table in schema["tables"]:
+            columns = table.get("columns", []) if isinstance(table, dict) else None
+            if (
+                not isinstance(columns, list)
+                or table.get("id") == QUOTE_DETAILS_ID
+                or table.get("name") == QUOTE_DETAILS_ID
+                or any(
+                    isinstance(column, dict)
+                    and (column.get("id") in IDENTITY_IDS or column.get("name") in IDENTITY_NAMES)
+                    for column in columns
+                )
+            ):
+                held.append(table)
+                continue
+            identity = [
+                {"id": column_id, "name": name, "type": column_type}
+                for column_id, name, column_type in IDENTITY_COLUMNS
+            ]
+            held.append({**table, "columns": [*identity, *columns]})
+        return {**data, "schema": {**schema, "tables": held}}
 
     @model_validator(mode="after")
     def _keeps_quote_details_as_hautes(self) -> FormSpec:
         for table in self.data_schema.tables:
             if table.id == QUOTE_DETAILS_ID or table.name == QUOTE_DETAILS_ID:
                 _check_quote_details(table)
+            else:
+                _check_identity(table)
         return self
 
     @model_validator(mode="after")
@@ -701,40 +754,69 @@ QUOTE_DETAILS_ID = "quote_details"
 QUOTE_DETAILS_REFUSAL = (
     f"{QUOTE_DETAILS_ID} is Haute's own table of a quote's details: name yours otherwise"
 )
-#: Its columns, in order: each one's id, name and type.
+#: Its columns, in order: each one's id, name and type. They are a quote's administration,
+#: whatever the company or line of business.
 QUOTE_DETAILS_COLUMNS: tuple[tuple[str, str, ColumnType], ...] = (
-    ("qd_reference", "reference", "str"),
+    ("qd_reference", "quote_reference", "str"),
+    ("qd_option", "quote_option", "int"),
     ("qd_quote_name", "quote_name", "str"),
     ("qd_insured", "insured", "str"),
     ("qd_broker", "broker", "str"),
     ("qd_inception_date", "inception_date", "date"),
     ("qd_expiry_date", "expiry_date", "date"),
-    ("qd_valid_until", "valid_until", "date"),
-    ("qd_currency", "currency", "str"),
+    ("qd_is_renewal", "is_renewal", "bool"),
     ("qd_stage", "stage", "str"),
     ("qd_assignee", "assignee", "str"),
     ("qd_archived", "archived", "bool"),
-    ("qd_is_renewal", "is_renewal", "bool"),
+    ("qd_created_date", "created_date", "date"),
+    ("qd_created_by", "created_by", "str"),
+    ("qd_modified_date", "modified_date", "date"),
+    ("qd_modified_by", "modified_by", "str"),
+    ("qd_haute_version", "haute_version", "str"),
 )
-#: The columns it had first, before ``is_renewal``: a form holding these, or more of its
-#: columns after them in order, takes on the rest.
-QUOTE_DETAILS_FIRST = QUOTE_DETAILS_COLUMNS[:11]
+QUOTE_DETAILS_IDS: frozenset[str] = frozenset(
+    column_id for column_id, _, _ in QUOTE_DETAILS_COLUMNS
+)
+#: The names an earlier Haute gave its columns, by id: a form holding one takes today's.
+QUOTE_DETAILS_NAMED_BEFORE: dict[str, str] = {"qd_reference": "reference"}
+#: The columns an earlier Haute made that it makes no more: a form holding one drops it.
+QUOTE_DETAILS_RETIRED: frozenset[str] = frozenset({"qd_valid_until", "qd_currency"})
 #: The columns the underwriter app sets itself, whatever a page sends: read only on its
-#: sheets, and taking no rules.
+#: sheets, taking no rules, and in every request whatever the sheets hide.
 QUOTE_DETAILS_MANAGED: frozenset[str] = frozenset(
-    {"qd_reference", "qd_stage", "qd_assignee", "qd_archived"}
+    {
+        "qd_reference",
+        "qd_option",
+        "qd_stage",
+        "qd_assignee",
+        "qd_archived",
+        "qd_created_date",
+        "qd_created_by",
+        "qd_modified_date",
+        "qd_modified_by",
+        "qd_haute_version",
+    }
 )
+#: The quote's identity at the head of every other table, each one's id, name and type: the
+#: same ids in every table, as a column's id is its table's own.
+IDENTITY_COLUMNS: tuple[tuple[str, str, ColumnType], ...] = (
+    ("quote_reference", "quote_reference", "str"),
+    ("quote_option", "quote_option", "int"),
+)
+IDENTITY_IDS: frozenset[str] = frozenset(column_id for column_id, _, _ in IDENTITY_COLUMNS)
+IDENTITY_NAMES: frozenset[str] = frozenset(name for _, name, _ in IDENTITY_COLUMNS)
 
 
-def _column_shapes(columns: list[Any]) -> list[tuple[Any, Any, Any]]:
-    """Each column's id, name and type as a form's raw data holds them, its type ``str`` when
-    left out, as a column's is."""
-    return [
-        (column.get("id"), column.get("name"), column.get("type", "str"))
-        if isinstance(column, dict)
-        else (None, None, None)
-        for column in columns
-    ]
+def _named_today(column: Any) -> Any:
+    """*column* of ``quote_details`` under today's name, when it holds the one an earlier Haute
+    gave it."""
+    if not isinstance(column, dict):
+        return column
+    before = QUOTE_DETAILS_NAMED_BEFORE.get(column.get("id", ""))
+    if before is None or column.get("name") != before:
+        return column
+    today = next(name for column_id, name, _ in QUOTE_DETAILS_COLUMNS if column_id == column["id"])
+    return {**column, "name": today}
 
 
 def quote_details_table() -> SchemaTable:
@@ -782,6 +864,40 @@ def _check_quote_details(table: SchemaTable) -> None:
                 f"{QUOTE_DETAILS_ID}.{column.name} is set by the underwriter app and takes no "
                 "rules or default"
             )
+
+
+def _check_identity(table: SchemaTable) -> None:
+    """Refuse a table whose identity columns are not Haute's: when it holds them, they are
+    its first two, as ``IDENTITY_COLUMNS`` has them, with nothing of their own set."""
+    held = [column for column in table.columns if column.id in IDENTITY_IDS]
+    if not held:
+        return
+    expected = [
+        SchemaColumn(id=column_id, name=name, type=column_type)
+        for column_id, name, column_type in IDENTITY_COLUMNS
+    ]
+    if table.columns[: len(expected)] != expected or len(held) != len(expected):
+        raise ValueError(
+            f"{table.name} leads with the quote's quote_reference and quote_option, which "
+            "Haute keeps first in every table as it makes them: their place, names, types and "
+            "details are not changed"
+        )
+
+
+def identity_clashes(spec: FormSpec) -> list[str]:
+    """The tables a column of the project's own keeps from the quote's identity: each such
+    column, said with what resolves it. Building the app and deploying refuse while any
+    stands; the editor names them among the schema's problems."""
+    return [
+        f"{table.name}.{column.name} has a name Haute keeps for the quote's identity in every "
+        "table: rename it, and the table takes quote_reference and quote_option at the next "
+        "save"
+        for table in spec.data_schema.tables
+        if table.id != QUOTE_DETAILS_ID
+        and not any(column.id in IDENTITY_IDS for column in table.columns)
+        for column in table.columns
+        if column.name in IDENTITY_NAMES
+    ]
 
 
 def with_quote_details(spec: FormSpec) -> FormSpec:

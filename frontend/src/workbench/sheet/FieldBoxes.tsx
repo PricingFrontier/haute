@@ -2,7 +2,7 @@
 import { type CSSProperties, Fragment } from "react"
 import { cellKey } from "../../utils/sheetValues"
 import { columnKey } from "../../utils/sheetVisibility"
-import { type CollectionOptions, type ColumnLookOptions, type ShownField } from "../../utils/workbenchForm"
+import { COLUMN_WIDTH_MIN, type CollectionOptions, type ColumnLookOptions, type ShownField } from "../../utils/workbenchForm"
 import { ShowWhenMark } from "../ShowWhenEditor"
 import { useSheetValues } from "../useSheetValues"
 import { Cell, FieldLabel } from "./Cell"
@@ -26,6 +26,9 @@ import { type SheetColours } from "./sheetColours"
 
 /** How much of its field a label beside its box takes, while neither sets a width. */
 const LABEL_SHARE = "40%"
+
+/** The most of its field a label beside its box takes: all but the gap between them (`gap-2`) and the narrowest box a width can set. */
+const LABEL_MOST = `calc(100% - ${8 + COLUMN_WIDTH_MIN}px)`
 
 /** A label or a box beside the other taking what the other leaves of its field. */
 const TAKES_THE_REST: CSSProperties = { flexGrow: 1, flexBasis: 0, minWidth: 0 }
@@ -114,13 +117,14 @@ export function FieldBoxes({
         // Its box's width: its field's, else the Collection's, else what its label leaves.
         const width = look.width ?? options.box_width
         // Beside its box, a label takes the share of its field the Collection sets, else two
-        // fifths of it while its box has no width, else what the box leaves.
+        // fifths of it while its box has no width, either leaving the box the narrowest a
+        // width can set; else what the box leaves.
         const labelPlace: CSSProperties = !beside
           ? {}
           : options.label_width !== null
-            ? { width: `${options.label_width}%`, flexShrink: 0 }
+            ? { width: `${options.label_width}%`, maxWidth: LABEL_MOST, flexShrink: 0 }
             : width === null
-              ? { width: LABEL_SHARE, flexShrink: 0 }
+              ? { width: LABEL_SHARE, maxWidth: LABEL_MOST, flexShrink: 0 }
               : TAKES_THE_REST
         // A box of a set width is exactly that wide, but never wider than its field.
         const boxPlace: CSSProperties =

@@ -11,7 +11,7 @@ A pipeline can have several Source Switches, for example one for policies and on
 
 ## Choosing the active source
 
-The active source is chosen for the whole pipeline in the toolbar's **Source:** dropdown, not in the node. Only `live` exists at first:
+The active source is chosen for the whole pipeline in the toolbar's source dropdown (the first button in the toolbar), not in the node. Only `live` exists at first:
 
 - **Add source**, at the foot of the dropdown, asks for a name (such as `batch`); press **Enter** to create it and make it active. A name that clashes with an existing source is refused with "Matches existing source" and that source's name.
 - **Remove "batch"** (named after the active source) deletes the active source. The `live` source cannot be removed.
@@ -32,7 +32,7 @@ The **COLUMNS** tab chooses which columns the node passes on (see [Working with 
 ## Example
 
 1. Connect your Quote Input's `quotes` table and a Data Input called `batch_data` to a Source Switch.
-2. In the toolbar's **Source:** dropdown, click **Add source** and create `batch`.
+2. In the toolbar's source dropdown, click **Add source** and create `batch`.
 3. In the Source Switch's **INPUT → SOURCE MAPPING**, set `quotes` to `live` and `batch_data` to `batch`.
 
 When the active source is `live`, the node outputs data from the `quotes` input. When you switch the toolbar to `batch`, it outputs data from the `batch_data` input.

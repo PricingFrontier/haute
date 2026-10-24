@@ -7,14 +7,17 @@ many, and its typed columns, ``{"name": "equipment", "rows": "many", "columns": 
 "value", "type": "float"}]}``. The form's rules, labels and keys stay in the form. In a
 quote, and in a priced quote, a one-row table is an object under its name and a many-row
 table a list of objects, ``{"policy_details": {...}, "equipment": [{...}, ...]}``. A table
-with no columns yet is not a port: there is nothing to read into or to fill.
+with no columns yet is not a port: there is nothing to read into or to fill. Every table but
+``quote_details`` leads with the quote's identity, its ``reference`` and ``option``: a
+request gives them in ``quote_details`` alone (:func:`request_columns`), and the frames and
+the response carry them on every row.
 """
 
 from __future__ import annotations
 
 import math
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -22,7 +25,12 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from haute._graph_utils import is_frame_label
-from haute._workbench_form import ColumnType
+from haute._workbench_form import (
+    IDENTITY_COLUMNS,
+    QUOTE_DETAILS_ID,
+    QUOTE_DETAILS_MANAGED,
+    ColumnType,
+)
 from haute.errors import HauteError
 
 if TYPE_CHECKING:
@@ -154,6 +162,36 @@ def port_tables(tables: Iterable[WorkbenchTable]) -> tuple[WorkbenchTable, ...]:
     return tuple(table for table in tables if table.columns)
 
 
+#: The quote's identity at the head of a table, as a node's copy holds it: each column's
+#: name and type.
+IDENTITY_SHAPE: tuple[tuple[str, ColumnType], ...] = tuple(
+    (name, column_type) for _, name, column_type in IDENTITY_COLUMNS
+)
+
+
+def carries_identity(table: WorkbenchTable) -> bool:
+    """Whether *table* leads with the quote's identity, its reference and option: every
+    table the form makes but ``quote_details``, which holds the identity itself. A node's
+    copy has no ids, so the columns are known by their place, names and types."""
+    held = tuple((column.name, column.type) for column in table.columns[: len(IDENTITY_SHAPE)])
+    return table.name != QUOTE_DETAILS_ID and held == IDENTITY_SHAPE
+
+
+def request_columns(table: WorkbenchTable) -> list[WorkbenchColumn]:
+    """The columns a request gives *table*: its own, the identity left to ``quote_details``."""
+    return table.columns[len(IDENTITY_SHAPE) :] if carries_identity(table) else table.columns
+
+
+def request_schema(tables: Iterable[WorkbenchTable]) -> pl.Schema:
+    """The schema of one request holding *tables*: each under its name, of the columns a
+    request gives it (:func:`request_columns`), as a quote holds it."""
+    schema: dict[str, pl.DataType] = {}
+    for table in tables:
+        struct = pl.Struct({column.name: column.dtype for column in request_columns(table)})
+        schema[table.name] = struct if table.one_row else pl.List(struct)
+    return pl.Schema(schema)
+
+
 def table_disagreements(
     defined: Sequence[WorkbenchTable], copied: Sequence[WorkbenchTable]
 ) -> list[str]:
@@ -209,7 +247,9 @@ def table_disagreements(
 
 
 def quote_schema(tables: Iterable[WorkbenchTable]) -> pl.Schema:
-    """The schema of one quote holding *tables*: each under its name, as a quote holds it."""
+    """The schema of one quote holding *tables* with every column, each under its name, as
+    a quote holds it: a response's, whose tables carry the quote's identity themselves. A
+    request's is :func:`request_schema`."""
     return pl.Schema({table.name: table.quote_dtype for table in tables})
 
 
@@ -254,7 +294,9 @@ def _table(table: SchemaTable) -> WorkbenchTable:
     )
 
 
-def sample_quote(spec: FormSpec) -> dict[str, Any]:
+def sample_quote(
+    spec: FormSpec, *, untyped: Collection[tuple[str, str]] = frozenset()
+) -> dict[str, Any]:
     """The sample quote typed while building, as a request holds it, for the Workbench Input.
 
     An input table with values is an object under its name when it has one row per quote, and
@@ -263,9 +305,13 @@ def sample_quote(spec: FormSpec) -> dict[str, Any]:
     each filled by its value; but those values are not typing, so a quote holding nothing else
     is empty, as a blank one is, and so are the defaults a new quote starts with, which are
     not typing either. A value in a column the sheets hide is left out, as if it had
-    never been typed. Values take their column's type: a number typed with a currency sign or
-    separators becomes a number, and an unticked box in a filled row is false. A value that
-    isn't of its column's type stays as typed, for the Workbench Input to report.
+    never been typed, save the columns of ``quote_details`` the app sets
+    (``QUOTE_DETAILS_MANAGED``), which every request holds whatever the sheets hide. Values
+    take their column's type: a number typed with a currency sign or separators becomes a
+    number, and an unticked box in a filled row is false. A value that isn't of its column's
+    type stays as typed, for the Workbench Input to report. A cell of *untyped*, by table and
+    column id, is no typing either: the underwriter app's own details, which decide what the
+    sheets show as any value does, but are not the underwriter's.
     """
     # Imported here: the visibility rules read cells as this module types them.
     from haute._workbench_visibility import visibility
@@ -279,13 +325,18 @@ def sample_quote(spec: FormSpec) -> dict[str, Any]:
         rows = preset_rows(table, spec.sample.get(table.id, []))
         if table.rows == "one":
             rows = rows[:1]
-        columns = [column for column in table.columns if (table.id, column.id) not in hidden]
+        columns = [
+            column
+            for column in table.columns
+            if (table.id, column.id) not in hidden
+            or (table.id == QUOTE_DETAILS_ID and column.id in QUOTE_DETAILS_MANAGED)
+        ]
         given = preset_column(table)
         typed = typed or any(
             _filled(row.get(column.id)) and not _starting(table, column, row.get(column.id))
             for row in rows
             for column in columns
-            if not column.index and column is not given
+            if not column.index and column is not given and (table.id, column.id) not in untyped
         )
         # Numbered as the rows stand, from 1, so deleting a row renumbers those after it.
         records = [
@@ -296,6 +347,18 @@ def sample_quote(spec: FormSpec) -> dict[str, Any]:
         if records:
             sample[table.name] = records if table.rows == "many" else records[0]
     return sample if typed else {}
+
+
+def quote_request(
+    spec: FormSpec,
+    values: Mapping[str, Any],
+    *,
+    untyped: Collection[tuple[str, str]] = frozenset(),
+) -> dict[str, Any]:
+    """The request a pricing builds from *values* typed into *spec*'s sheets: each input
+    table's filled rows by name, read as :func:`sample_quote` reads the sample, the cells the
+    sheets hide left out, and empty when nothing but the cells of *untyped* is typed."""
+    return sample_quote(spec.model_copy(update={"sample": dict(values)}), untyped=untyped)
 
 
 def preset_column(table: SchemaTable) -> SchemaColumn | None:
@@ -403,7 +466,8 @@ def _typed(column_type: str, text: str) -> Any:
     if _NUMBER.fullmatch(cleaned) is None:
         return text
     if column_type == "int" and _WHOLE.fullmatch(cleaned):
-        # Digits alone are a whole number, read exactly however large: not through a float.
+        # Digits alone are a whole number, read exactly however large: not through a float
+        # (``parseTypedWhole`` in the view, for a Show when's tests).
         return int(cleaned)
     number = float(cleaned)
     if not math.isfinite(number):

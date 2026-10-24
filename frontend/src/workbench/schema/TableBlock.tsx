@@ -7,12 +7,17 @@ import useListReorder, { type RowDrag } from "../../hooks/useListReorder"
 import useRefocusAfterMove, { altArrowMove, type RefocusAfterMove } from "../../hooks/useRefocusAfterMove"
 import { confirmed } from "../../stores/useQuestionStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
-import { addSchemaColumn, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
+import { isIdentityColumn } from "../../utils/quoteIdentity"
+import { addSchemaColumn, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_MANAGED, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
 import { ColumnRow } from "./ColumnRow"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
 import { IndexControl } from "./IndexControl"
 import { CHIP_CLASS, DETAILS_TITLE, type Fresh, HOVER_ONLY, currentForm, selectAll, usedBy } from "./schemaText"
+
+/** The quote_details columns the app sets, by name, in order: "a, b and c". */
+const appSetNames = QUOTE_DETAILS_COLUMNS.filter(([id]) => QUOTE_DETAILS_MANAGED.has(id)).map(([, name]) => name)
+const APP_SET = `${appSetNames.slice(0, -1).join(", ")} and ${appSetNames[appSetNames.length - 1]}`
 
 const ROLES: ReadonlyArray<{ value: SchemaTable["role"]; label: string; title: string }> = [
   { value: "input", label: "Input", title: "Sent to the pricing engine" },
@@ -31,8 +36,15 @@ interface TableBlockProps {
   index: number
   /** The tables' name fields, one focused again after Alt+arrows moves its table. */
   refocus: RefocusAfterMove<HTMLInputElement>
-  /** Its part in dragging the tables into a new order; none for quote_details, which stays first. */
+  /** Its part in dragging the tables into a new order; none for quote_details, which stays first, or in Preview. */
   drag: RowDrag | undefined
+  /** In Preview: the table shows as it is, nothing in it changed. */
+  readOnly: boolean
+  /**
+   * While the schema is searched, its columns the search matches, the only ones shown, the
+   * table open and nothing in it added or moved; null while it is not.
+   */
+  matched: ReadonlySet<string> | null
   added: string | null
   setAdded: (id: string | null) => void
   details: string | null
@@ -42,7 +54,7 @@ interface TableBlockProps {
   problems: string[]
 }
 
-export function TableBlock({ form, table, index, refocus: refocusTable, drag, added, setAdded, details, setDetails, collapsed, onToggleCollapsed, problems }: TableBlockProps) {
+export function TableBlock({ form, table, index, refocus: refocusTable, drag, readOnly, matched, added, setAdded, details, setDetails, collapsed, onToggleCollapsed, problems }: TableBlockProps) {
   const change = useWorkbenchFormStore((s) => s.change)
   const block = useRef<HTMLElement>(null)
   const shown = fieldUses(form, table.id).length
@@ -62,8 +74,10 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, ad
     onBlur: () => setAdded(null),
   })
   const count = table.columns.length
-  // Haute's quote_details table keeps its structure.
+  // Haute's quote_details table keeps its structure, and in Preview every table keeps it.
   const locked = isQuoteDetails(table)
+  const fixed = locked || readOnly
+  const filtering = matched !== null
 
   const insertAt = (at: number) => {
     const column = createSchemaColumn(currentForm(), table.id, at)
@@ -73,7 +87,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, ad
 
   // Alt+Up and Alt+Down in its name move the table; its name field takes the focus again in its new place.
   const onNameKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (locked) return
+    if (fixed || filtering) return
     const to = altArrowMove(e, "vertical", index, form.schema.tables.length)
     if (to === null) return
     refocusTable.moved(table.id)
@@ -102,6 +116,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, ad
           icon={collapsed ? ChevronRight : ChevronDown}
           size={14}
           onClick={onToggleCollapsed}
+          disabled={filtering}
           aria-expanded={!collapsed}
           aria-label={`${collapsed ? "Expand" : "Collapse"} ${table.name}`}
           title={collapsed ? "Show columns" : "Hide columns"}
@@ -110,12 +125,12 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, ad
         <CommittedTextField
           ref={refocusTable.register(table.id)}
           aria-label="Table name"
-          aria-keyshortcuts={locked ? undefined : "Alt+ArrowUp Alt+ArrowDown"}
+          aria-keyshortcuts={fixed || filtering ? undefined : "Alt+ArrowUp Alt+ArrowDown"}
           value={table.name}
           onCommit={(name) => change((f) => updateSchemaTable(f, table.id, { name }))}
           {...fresh(table.id)}
           onKeyDown={onNameKeyDown}
-          readOnly={locked}
+          readOnly={fixed}
           title={locked ? DETAILS_TITLE : undefined}
           className="focus-ring min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1.5 py-0.5 font-mono font-semibold"
           style={{ color: "var(--text-primary)" }}
@@ -123,7 +138,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, ad
         {locked && <Lock size={11} aria-label="Haute's table" className="shrink-0" style={{ color: "var(--text-muted)" }} />}
         <select
           aria-label={`Role of ${table.name}`}
-          disabled={locked}
+          disabled={fixed}
           value={table.role}
           onChange={(e) => change((f) => updateSchemaTable(f, table.id, { role: e.target.value as SchemaTable["role"] }))}
           title={ROLES.find((role) => role.value === table.role)?.title}
@@ -138,7 +153,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, ad
         </select>
         <select
           aria-label={`Rows of ${table.name}`}
-          disabled={locked}
+          disabled={fixed}
           value={table.rows}
           onChange={(e) => change((f) => setSchemaTableRows(f, table.id, e.target.value as SchemaTable["rows"]))}
           title={ROWS.find((rows) => rows.value === table.rows)?.title}
@@ -159,7 +174,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, ad
           {count} {count === 1 ? "col" : "cols"}
           {problems.length > 0 && `, ${problems.length} ${problems.length === 1 ? "problem" : "problems"}`}
         </span>
-        {!locked && (
+        {!fixed && (
           <IconButton
             icon={Trash2}
             onClick={() => void remove()}
@@ -171,7 +186,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, ad
       </div>
       {!collapsed && (
         <div className="flex flex-col gap-1 px-1.5 py-1.5" style={{ borderTop: "1px solid var(--border)" }}>
-          {table.columns.map((column, at) => (
+          {table.columns.map((column, at) => matched !== null && !matched.has(column.id) ? null : (
             <ColumnRow
               key={column.id}
               form={form}
@@ -184,14 +199,16 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, ad
               onToggleDetails={() => setDetails(details === column.id ? null : column.id)}
               onInsertAfter={() => insertAt(at + 1)}
               locked={locked}
-              drag={locked || column.index ? undefined : dragColumn(at)}
+              readOnly={readOnly}
+              filtering={filtering}
+              drag={fixed || filtering || column.index || isIdentityColumn(column) ? undefined : dragColumn(at)}
             />
           ))}
           {locked ? (
             <p className="px-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
-              Kept with each quote and listed on the Quotes page; the app sets reference, stage, assignee and archived.
+              Kept with each quote and listed on the Quotes page; the app sets {APP_SET}.
             </p>
-          ) : (
+          ) : readOnly || filtering ? null : (
             <div className="flex items-center gap-3">
               <QuietAction onClick={() => insertAt(count)} className="justify-self-start">Add column</QuietAction>
               {table.rows === "many" && <IndexControl form={form} table={table} onAdded={setAdded} />}

@@ -40,7 +40,7 @@ function graph(): GraphPayload {
     nodes: [
       node("quote", "workbenchInput", { tables: [policy], sample: { policy_details: { exposure: 1 } } }),
       node("priced", "polars", { code: "df" }),
-      node("response", "workbenchOutput", { tables: [pricing], mapping: { pricing_output: { premium: "loaded" } } }),
+      node("response", "workbenchOutput", { tables: [pricing] }),
     ],
     edges: [],
     submodels: { rating: { graph: { nodes: [node("inner", "workbenchInput", { tables: [], sample: {} })], edges: [] } } },
@@ -78,8 +78,7 @@ describe("priceSample", () => {
     expect(source).toBe("live")
     const config = (id: string) => sent.nodes.find((n) => n.id === id)?.data.config
     expect(config("quote")).toEqual({ tables: [policy], sample: typed })
-    // The new tables, the mapping kept for the table and column they still have.
-    expect(config("response")).toEqual({ tables: [pricing, layers], mapping: { pricing_output: { premium: "loaded" } } })
+    expect(config("response")).toEqual({ tables: [pricing, layers] })
     expect(config("priced")).toEqual({ code: "df" })
     // A Workbench Input inside a submodel keeps its copy.
     expect(sent.submodels).toEqual(before.submodels)
@@ -137,14 +136,10 @@ describe("priceSample", () => {
     await expect(priceSample(graph(), workbench([pricing]), "live")).rejects.toThrow(reason)
   })
 
-  it("refuses, when the complete response is asked for, a table Preview cut short", async () => {
+  it("shows the rows it has of a table Preview cut short", async () => {
     preview.mockResolvedValue(ok({ layer_premiums: [{ layer: 1 }] }, { layer_premiums: 12000 }))
 
-    // Preview itself shows the rows it has; a test quote keeps the whole response.
     await expect(priceSample(graph(), workbench([layers]), "live")).resolves.toEqual({ tables: { layer_premiums: [{ layer: 1 }] } })
-    await expect(priceSample(graph(), workbench([layers]), "live", { complete: true })).rejects.toThrow(
-      "The 'layer_premiums' table has 12000 rows, more than Preview returns",
-    )
   })
 
   it("resolves to no tables for a Workbench Output without any", async () => {

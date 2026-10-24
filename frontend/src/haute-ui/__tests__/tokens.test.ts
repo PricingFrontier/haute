@@ -63,6 +63,9 @@ describe("haute-ui's stylesheets", () => {
     ["palette.css", ".palette-item-icon", "width", "24px"],
     ["side-panel.css", ".panel-drag-handle", "width", "4px"],
     ["side-panel.css", ".side-panel-header", "padding", "10px 12px"],
+    // Every side panel's Close: a white X on solid red.
+    ["side-panel.css", ".side-panel-close", "background", "var(--danger-solid)"],
+    ["side-panel.css", ".side-panel-close", "color", "var(--text-on-accent)"],
   ] as const)("%s: %s keeps %s: %s", (file, selector, property, value) => {
     expect(declarations(ruleBody(STYLESHEETS[file], selector)).get(property)).toBe(value)
   })

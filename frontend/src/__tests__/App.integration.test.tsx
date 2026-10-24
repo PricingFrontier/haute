@@ -1558,10 +1558,10 @@ describe("App integration - server status", () => {
     const latestSocket = () => MockWebSocket.instances[MockWebSocket.instances.length - 1]
     const pipeline = screen.getByTestId("toolbar-pipeline-settings")
     // Still connecting: not evidence of anything, so no "Offline" flash.
-    expect(pipeline).toHaveTextContent(/^Calculating$/)
+    expect(pipeline).toHaveTextContent(/^Pipeline$/)
 
     act(() => latestSocket().onopen?.())
-    expect(pipeline).toHaveTextContent(/^Calculating$/)
+    expect(pipeline).toHaveTextContent(/^Pipeline$/)
 
     act(() => (latestSocket().onclose as unknown as (event: CloseEvent) => void)({ code: 1006 } as CloseEvent))
     expect(pipeline).toHaveTextContent(/^Offline$/)
@@ -3122,7 +3122,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     const input = makeNode("wb_in", "Workbench Input", "workbenchInput")
     input.data.config = { tables: [], sample: {} }
     const output = makeNode("wb_out", "Workbench Output", "workbenchOutput")
-    output.data.config = { tables: [], mapping: {} }
+    output.data.config = { tables: [] }
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({ nodes: [input, output], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))
     render(<App />)
     await waitForAppReady()
@@ -3145,7 +3145,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     // copy as it was before the form changed.
     act(() => {
       useGraphStore.getState().setNodesRaw((nodes) => nodes.map((node) => (
-        node.id === "wb_out" ? { ...node, data: { ...node.data, config: { tables: [], mapping: {} } } } : node
+        node.id === "wb_out" ? { ...node, data: { ...node.data, config: { tables: [] } } } : node
       )))
     })
     expect(outputTables()).toEqual(responseTables)

@@ -20,7 +20,7 @@ from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
 from haute._types import REQUEST_INPUT_NODE_TYPES
 from haute._workbench_input import null_quote, workbench_input_tables
-from haute._workbench_tables import WorkbenchTable, WorkbenchTablesError, quote_schema
+from haute._workbench_tables import WorkbenchTable, WorkbenchTablesError, request_schema
 from haute._worker_isolation import IsolatedWorkerError, run_isolated_worker
 from haute.errors import ConfigError
 from haute.execution import dataframe_graph_input_fingerprint
@@ -90,7 +90,7 @@ def infer_input_schema(graph: PipelineGraph, input_node_id: str) -> dict[str, st
     node = _find_node(graph, input_node_id)
     config = node.data.config
     if node.data.nodeType is NodeType.WORKBENCH_INPUT:
-        return {col: str(dtype) for col, dtype in quote_schema(_workbench_tables(node)).items()}
+        return {col: str(dtype) for col, dtype in request_schema(_workbench_tables(node)).items()}
     path = config.get("path", "")
 
     if not path and node.data.nodeType != NodeType.DATA_INPUT:
@@ -157,7 +157,8 @@ def _read_sample_row(graph: PipelineGraph, input_node_ids: list[str]) -> DeployI
     """Read the one-quote sample both the schema dry-run and policy planning use.
 
     A Workbench Input reads no file, so its sample is one quote with nothing filled in,
-    one row of nulls per table, in the schema its tables give (specs/workbench). A Quote
+    one row of nulls per table under the stand-in identity, in the schema its request takes
+    (specs/workbench). A Quote
     Input with tables reads its sample file's first quote as the record it is, which the
     scorer shreds into its tables as it shreds a served request.
     """
@@ -168,7 +169,7 @@ def _read_sample_row(graph: PipelineGraph, input_node_ids: list[str]) -> DeployI
     node = _find_node(graph, input_node_ids[0])
     if node.data.nodeType is NodeType.WORKBENCH_INPUT:
         tables = _workbench_tables(node)
-        return pl.DataFrame([null_quote(tables)], schema=quote_schema(tables))
+        return pl.DataFrame([null_quote(tables)], schema=request_schema(tables))
     config = node.data.config
     path = config.get("path", "")
 

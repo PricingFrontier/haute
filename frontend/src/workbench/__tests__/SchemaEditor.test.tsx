@@ -11,6 +11,7 @@ import type { FormSpec, ProjectFolderResponse, SchemaColumn, SchemaTable } from 
 import { fetchParamFile } from "../../api/workbench"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { answerQuestion, asked } from "../../test-utils/question"
 import { BLANK_THEME, COLLECTION_OPTIONS, TABLE_OPTIONS, updateSchemaColumn } from "../../utils/workbenchForm"
 import SchemaEditor from "../SchemaEditor"
@@ -149,6 +150,7 @@ describe("SchemaEditor", () => {
   afterEach(() => {
     cleanup()
     useWorkbenchFormStore.setState({ form: null, status: "idle", undoStack: [], redoStack: [] })
+    useWorkbenchViewStore.setState({ schemaCollapsed: new Set(), schemaDetails: null, schemaScroll: 0, schemaSearch: "" })
     useDocumentStatusStore.setState({ capabilities: null })
     vi.mocked(fetchParamFile).mockReset()
   })
@@ -662,6 +664,30 @@ describe("SchemaEditor", () => {
     expect(columnNames("layers")).toEqual(["layer", "limit"])
   })
 
+  it("adds a table leading with the quote's reference and option, locked, its index after them", () => {
+    render(<SchemaEditor />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Add table" }))
+    fireEvent.change(screen.getByRole("combobox", { name: "Rows of table" }), { target: { value: "many" } })
+
+    expect(columnNames("table")).toEqual(["quote_reference", "quote_option"])
+    for (const [id, name] of [["quote_reference", "quote_reference"], ["quote_option", "quote_option"]]) {
+      const row = screen.getByTestId(`schema-column-${id}`)
+      // Not moved, retyped, renamed, keyed, given details or removed.
+      expect(columnGrip(id)).toBeNull()
+      expect(within(row).queryByRole("combobox", { name: `Type of ${name}` })).toBeNull()
+      expect(within(row).getByRole("textbox", { name: "Column name" })).toHaveAttribute("readonly")
+      expect(within(row).queryByRole("button", { name: `Key: ${name}` })).toBeNull()
+      expect(within(row).queryByRole("button", { name: `Label and rules of ${name}` })).toBeNull()
+      expect(within(row).queryByRole("button", { name: `Remove column ${name}` })).toBeNull()
+      expect(within(row).getByLabelText("Haute's column")).toBeInTheDocument()
+    }
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Add index to table" }))
+    fireEvent.click(within(tableNamed("table")).getByRole("button", { name: "Add column" }))
+    expect(columnNames("table")).toEqual(["quote_reference", "quote_option", "row_number", "column"])
+  })
+
   it("asks before removing an index a sheet shows", async () => {
     const indexed = form(POLICY, { ...LAYERS, columns: [column("c_row", "row_number", { type: "int", index: true }), ...LAYERS.columns] })
     indexed.pages[0].sections[0].widgets = [
@@ -700,7 +726,8 @@ describe("SchemaEditor", () => {
     for (const name of ["exposure", "state", "limit"]) {
       fireEvent.click(screen.getByRole("button", { name: `Label and rules of ${name}` }))
       expect(screen.getByRole("textbox", { name: `Label of ${name}` })).toBeInTheDocument()
-      expect(document.querySelectorAll("[placeholder]")).toHaveLength(0)
+      // The tables' boxes; the search over them is named by its placeholder.
+      expect(screen.getByTestId("schema-tables").querySelectorAll("[placeholder]")).toHaveLength(0)
     }
   })
 
@@ -770,5 +797,157 @@ describe("SchemaEditor", () => {
     expect(columnNames("layers")).toEqual(["layer", "limit"])
     fireEvent.click(screen.getByRole("button", { name: "Expand policy_details" }))
     expect(columnNames("policy_details")).toEqual(["state", "exposure"])
+  })
+
+  it("sums a column up under its name: its range and default in its format, and a number's format in any table", () => {
+    load(
+      form(
+        table("t_cover", "cover", {
+          columns: [
+            column("c_sum", "sum_insured", { type: "float", required: true, min: 0, max: 1000000, default_value: "250000", number_format: "currency_gbp", decimal_places: 2 }),
+            column("c_rate", "loss_ratio", { type: "float", min: 0, max: 1, number_format: "percent", decimal_places: 1, use_grouping: false }),
+            column("c_count", "claims", { type: "int", default_value: "3" }),
+            column("c_flood", "flood", { type: "bool", default_value: true }),
+            column("c_region", "region", { default_value: "north" }),
+            column("c_note", "note"),
+          ],
+        }),
+        table("t_pricing", "pricing", { role: "output", columns: [column("c_premium", "premium", { type: "float", number_format: "number", decimal_places: 2 })] }),
+        table("t_items", "items", {
+          rows: "many",
+          columns: [column("c_row", "row_number", { type: "int", index: true, number_format: "number" }), column("c_value", "value", { type: "float", default_value: "5" })],
+        }),
+      ),
+    )
+    render(<SchemaEditor />)
+    const summary = (id: string) => screen.queryByTestId(`schema-column-${id}-summary`)
+
+    expect(summary("c_sum")).toHaveTextContent("required · £0.00 to £1,000,000.00 · default £250,000.00 · £ GBP, 2 decimals")
+    // A percent is the value times 100.
+    expect(summary("c_rate")).toHaveTextContent("0.0% to 100.0% · Percentage, 1 decimal, no separators")
+    // General with automatic decimals shows numbers as typed, and says nothing of its format.
+    expect(summary("c_count")).toHaveTextContent(/^default 3$/)
+    expect(summary("c_flood")).toHaveTextContent(/^default ticked$/)
+    expect(summary("c_region")).toHaveTextContent(/^default north$/)
+    expect(summary("c_note")).toBeNull()
+    // An output column has no rules, but its format.
+    expect(summary("c_premium")).toHaveTextContent(/^Number, 2 decimals$/)
+    // Neither the index's format nor a default in a many-row table, which takes none.
+    expect(summary("c_row")).toBeNull()
+    expect(summary("c_value")).toBeNull()
+
+    // On its own line under the name, not beside it.
+    const row = screen.getByTestId("schema-column-c_sum")
+    expect(within(summary("c_sum")!).queryByRole("textbox")).toBeNull()
+    expect(summary("c_sum")!.previousElementSibling).toContainElement(within(row).getByRole("textbox", { name: "Column name" }))
+  })
+
+  it("opens again as it was left: its tables collapsed, a column's label and rules open, and scrolled where it was", () => {
+    const { unmount } = render(<SchemaEditor />)
+    fireEvent.click(screen.getByRole("button", { name: "Collapse policy_details" }))
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of limit" }))
+    const tables = screen.getByTestId("schema-tables")
+    tables.scrollTop = 120
+    fireEvent.scroll(tables)
+    unmount()
+
+    render(<SchemaEditor />)
+    expect(within(tableNamed("policy_details")).queryAllByRole("textbox", { name: "Column name" })).toEqual([])
+    expect(screen.getByRole("textbox", { name: "Label of limit" })).toBeInTheDocument()
+    expect(screen.getByTestId("schema-tables").scrollTop).toBe(120)
+  })
+
+  it("searches the fields: the columns whose name or label holds the text, whatever its case, in the tables holding one, open", () => {
+    load(form(POLICY, { ...LAYERS, columns: [...LAYERS.columns, column("c_excess", "excess", { label: "Policy Excess" })] }))
+    const { unmount } = render(<SchemaEditor />)
+    fireEvent.click(screen.getByRole("button", { name: "Collapse policy_details" }))
+    const search = screen.getByRole("textbox", { name: "Search fields" })
+
+    fireEvent.change(search, { target: { value: "POLICY" } })
+    // A label matches; a table name alone does not.
+    expect(screen.queryByRole("region", { name: "Table policy_details" })).toBeNull()
+    expect(columnNames("layers")).toEqual(["excess"])
+
+    fireEvent.change(search, { target: { value: "t" } })
+    // Open though collapsed, its toggle off while the search filters.
+    expect(columnNames("policy_details")).toEqual(["state"])
+    expect(screen.getByRole("button", { name: "Collapse policy_details" })).toBeDisabled()
+    expect(columnNames("layers")).toEqual(["limit"])
+
+    fireEvent.change(search, { target: { value: "premium" } })
+    expect(screen.queryAllByRole("region", { name: /^Table / })).toEqual([])
+    expect(screen.getByText("No fields match")).toBeInTheDocument()
+
+    // Kept as the pane closes and opens again, and emptied by Clear.
+    fireEvent.change(search, { target: { value: "lim" } })
+    unmount()
+    render(<SchemaEditor />)
+    expect(screen.getByRole("textbox", { name: "Search fields" })).toHaveValue("lim")
+    expect(columnNames("layers")).toEqual(["limit"])
+    fireEvent.click(screen.getByRole("button", { name: "Clear search fields" }))
+    expect(screen.getByRole("textbox", { name: "Search fields" })).toHaveValue("")
+    fireEvent.change(screen.getByRole("textbox", { name: "Search fields" }), { target: { value: "premium" } })
+    const searchAgain = screen.getByRole("textbox", { name: "Search fields" })
+
+    // Escape empties it, and the whole schema shows as it was.
+    fireEvent.keyDown(searchAgain, { key: "Escape" })
+    expect(searchAgain).toHaveValue("")
+    expect(within(tableNamed("policy_details")).queryAllByRole("textbox", { name: "Column name" })).toEqual([])
+    expect(columnNames("layers")).toEqual(["layer", "limit", "excess"])
+  })
+
+  it("adds and moves nothing while the search filters, but edits and removes the columns it shows", () => {
+    render(<SchemaEditor />)
+    fireEvent.change(screen.getByRole("textbox", { name: "Search fields" }), { target: { value: "l" } })
+    const layers = tableNamed("layers")
+
+    expect(screen.queryByRole("button", { name: "Add table" })).toBeNull()
+    expect(within(layers).queryByRole("button", { name: "Add column" })).toBeNull()
+    expect(within(layers).queryByLabelText("Add index to layers")).toBeNull()
+    expect(tableGrip("layers")).toBeNull()
+    expect(columnGrip("c_limit")).toBeNull()
+    const last = within(layers).getAllByRole("textbox", { name: "Column name" })[1]
+    fireEvent.keyDown(last, { key: "Enter" })
+    fireEvent.keyDown(last, { key: "ArrowUp", altKey: true })
+    fireEvent.keyDown(tableNameField("layers"), { key: "ArrowUp", altKey: true })
+    expect(current().schema.tables.map((table) => table.columns.map((each) => each.name))).toEqual([["state", "exposure"], ["layer", "limit"]])
+
+    commit(last, "limit_gbp")
+    expect(current().schema.tables[1].columns[1].name).toBe("limit_gbp")
+  })
+
+
+  it("shows the schema read only, as Preview does: a table collapses and a column's details open, but nothing in it changes", () => {
+    render(<SchemaEditor readOnly />)
+    const layers = tableNamed("layers")
+
+    expect(tableNameField("layers")).toHaveAttribute("readonly")
+    expect(within(layers).getByRole("combobox", { name: "Role of layers" })).toBeDisabled()
+    expect(within(layers).getByRole("combobox", { name: "Rows of layers" })).toBeDisabled()
+    expect(within(layers).queryByRole("combobox", { name: /^Type of/ })).toBeNull()
+    for (const name of within(layers).getAllByRole("textbox", { name: "Column name" })) expect(name).toHaveAttribute("readonly")
+    expect(within(layers).getByRole("button", { name: "Key: layer" })).toBeDisabled()
+    expect(within(layers).queryByRole("button", { name: "Delete table layers" })).toBeNull()
+    expect(within(layers).queryByRole("button", { name: /^Remove column/ })).toBeNull()
+    expect(within(layers).queryByRole("button", { name: "Add column" })).toBeNull()
+    expect(within(layers).queryByLabelText("Add index to layers")).toBeNull()
+    expect(screen.queryByRole("button", { name: "Add table" })).toBeNull()
+    expect(tableGrip("layers")).toBeNull()
+    expect(columnGrip("c_limit")).toBeNull()
+
+    // Enter in the last column's name adds none, and Alt+Up moves neither a column nor a table.
+    const last = within(layers).getAllByRole("textbox", { name: "Column name" })[1]
+    fireEvent.keyDown(last, { key: "Enter" })
+    fireEvent.keyDown(last, { key: "ArrowUp", altKey: true })
+    fireEvent.keyDown(tableNameField("layers"), { key: "ArrowUp", altKey: true })
+    expect(columnNames("layers")).toEqual(["layer", "limit"])
+    expect(tableNames()).toEqual(["policy_details", "layers"])
+
+    // A column's label and rules open, each field in them disabled.
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of limit" }))
+    expect(screen.getByRole("textbox", { name: "Label of limit" })).toBeDisabled()
+    fireEvent.click(screen.getByRole("button", { name: "Collapse policy_details" }))
+    expect(within(tableNamed("policy_details")).queryAllByRole("textbox", { name: "Column name" })).toEqual([])
+    expect(useWorkbenchFormStore.getState().undoStack).toEqual([])
   })
 })

@@ -26,6 +26,7 @@ from haute._workbench_app import (
     write_release,
 )
 from haute._workbench_form import (
+    IDENTITY_COLUMNS,
     QUOTE_DETAILS_COLUMNS,
     FormSpec,
     OptionsSource,
@@ -562,16 +563,25 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 def with_details_copy(graph: PipelineGraph) -> PipelineGraph:
-    """*graph* with Haute's ``quote_details`` table first in its Workbench Input's copy of the
-    tables, as the editor copies it from a form, which always holds it."""
-    from tests.test_workbench_output import _table
+    """*graph* with its Workbench nodes' copies of the tables as the editor copies them from
+    a form: Haute's ``quote_details`` table first in the Workbench Input's, and every other
+    table leading with the quote's reference and option."""
+    from tests.test_workbench_output import _column, _table
 
+    identity = [_column(name, type_) for _, name, type_ in IDENTITY_COLUMNS]
     for node in graph.nodes:
+        if node.data.nodeType not in (NodeType.WORKBENCH_INPUT, NodeType.WORKBENCH_OUTPUT):
+            continue
+        tables = [
+            {**table, "columns": [*identity, *table["columns"]]}
+            for table in node.data.config["tables"]
+        ]
         if node.data.nodeType == NodeType.WORKBENCH_INPUT:
             details = _table(
                 "quote_details", *((name, type_) for _, name, type_ in QUOTE_DETAILS_COLUMNS)
             )
-            node.data.config["tables"] = [details, *node.data.config["tables"]]
+            tables = [details, *tables]
+        node.data.config["tables"] = tables
     return graph
 
 
@@ -588,10 +598,21 @@ def test_a_project_builds_a_release_that_prices_as_its_pipeline(project: Path) -
     client = _client(project / "build" / "app", local_principal="analyst@example.com")
     priced = _price(client, PROJECT_VALUES)
     assert priced.status_code == 200, priced.text
+    # Without a quote store, the one quote is priced under the stand-in identity.
+    stand_in = {"quote_reference": "PREVIEW", "quote_option": 1}
     assert priced.json()["tables"] == {
-        "pricing": [{"premium": 100.0, "limit": 1000.0, "referral": "none"}],
-        "item_prices": [{"item_id": "A", "premium": 20.0}, {"item_id": "B", "premium": 60.0}],
+        "pricing": [{**stand_in, "premium": 100.0, "limit": 1000.0, "referral": "none"}],
+        "item_prices": [
+            {**stand_in, "item_id": "A", "premium": 20.0},
+            {**stand_in, "item_id": "B", "premium": 60.0},
+        ],
     }
+
+    # Nor does it hold the details the app sets for a quote it keeps, whatever the page sends.
+    claimed = {"qd_stage": "final", "qd_created_by": "mallory", "qd_haute_version": "0.0.1"}
+    sent = _price(client, {**PROJECT_VALUES, "quote_details": [claimed]})
+    # The row filled, its typed tick reads unticked.
+    assert sent.json()["request"]["quote_details"] == {**stand_in, "is_renewal": False}
 
     # Built again, into the same directory or another, it is the same release.
     assert build_release(project, project / "build" / "app").id == built.id
@@ -688,7 +709,15 @@ def test_the_app_prices_on_the_utility_code_the_release_carries(project: Path) -
 
     assert completed.returncode == 0, completed.stderr[-4000:]
     priced = json.loads(completed.stdout.strip().splitlines()[-1])
-    assert priced["tables"]["pricing"] == [{"premium": 100.0, "limit": 1000.0, "referral": "none"}]
+    assert priced["tables"]["pricing"] == [
+        {
+            "quote_reference": "PREVIEW",
+            "quote_option": 1,
+            "premium": 100.0,
+            "limit": 1000.0,
+            "referral": "none",
+        }
+    ]
 
 
 def test_a_release_allows_what_its_params_files_hold_when_it_is_built(
@@ -715,7 +744,7 @@ def test_a_release_allows_what_its_params_files_hold_when_it_is_built(
 
     build_release(project, project / "build" / "app")
 
-    shipped = read_release(project / "build" / "app")[1].data_schema.tables[1].columns[0]
+    shipped = read_release(project / "build" / "app")[1].data_schema.tables[1].columns[2]
     assert shipped.options == ["NY", "CA", "TX"]
     assert shipped.options_source == OptionsSource(file="states.csv", column="state")
 
@@ -727,7 +756,7 @@ def test_a_release_allows_what_its_params_files_hold_when_it_is_built(
         "forms/form.json: The allowed values of policy.state could not be read again: "
         "rating/files/params/states.csv doesn't exist."
     )
-    assert read_release(project / "build" / "app")[1].data_schema.tables[1].columns[0] == shipped
+    assert read_release(project / "build" / "app")[1].data_schema.tables[1].columns[2] == shipped
 
 
 def test_a_release_is_refused_for_what_the_project_cannot_ship(project: Path) -> None:
@@ -894,16 +923,30 @@ client = TestClient(app.app)
 signed_in = {"x-ms-client-principal-name": "uw@example.com"}
 revision = client.get("/api/app/form", headers=signed_in).json()["revision"]
 release_id = client.get("/api/app/release", headers=signed_in).json()["id"]
-values = json.loads(sys.argv[2])
+# The quote is made, with its reference and option, before it is priced and saved.
+made = client.post(
+    "/api/app/quotes",
+    json={
+        "operation": "operation-0001",
+        "form_revision": revision,
+        "release": release_id,
+        "values": json.loads(sys.argv[2]),
+        "shown": None,
+        "reference": "Q-000001",
+    },
+    headers=signed_in,
+).json()
+values = made["revision"]["values"]
 response = client.post(
     "/api/app/price",
     json={"form_revision": revision, "release": release_id, "values": values},
     headers=signed_in,
 )
 saved = client.post(
-    "/api/app/quotes",
+    f"/api/app/quotes/{made['quote']['id']}/revisions",
     json={
-        "operation": "operation-0001",
+        "operation": "operation-0002",
+        "version": made["quote"]["latest"],
         "form_revision": revision,
         "release": release_id,
         "values": values,
@@ -1031,10 +1074,16 @@ def test_the_release_prices_and_keeps_quotes_with_only_the_images_runtime_instal
     result = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result["status"] == 200, result
     assert result["body"]["tables"]["pricing"] == [
-        {"premium": 100.0, "limit": 1000.0, "referral": "none"}
+        {
+            "quote_reference": "Q-000001",
+            "quote_option": 1,
+            "premium": 100.0,
+            "limit": 1000.0,
+            "referral": "none",
+        }
     ]
     assert result["saved"] == 200, result
-    assert result["quote"]["quote"]["reference"] == "Q-000001"
+    assert result["quote"]["quote"]["label"] == "Q-000001/1"
 
 
 def test_a_release_without_a_quote_store_prices_without_its_packages(release: Any) -> None:

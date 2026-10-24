@@ -578,7 +578,7 @@ describe("UtilityPanel dropdown close-on-outside-click", () => {
     await waitFor(() => expect(screen.getByText("utils")).toBeInTheDocument())
 
     // Click outside the dropdown (on the document body)
-    fireEvent.mouseDown(document.body)
+    fireEvent.pointerDown(document.body)
 
     // Dropdown items should disappear
     await waitFor(() => {

@@ -2,7 +2,7 @@
  * The properties panel (specs/workbench): the selected component's title, Show when and
  * layout, a Table's fixed rows and look, a Collection's look, a Chart's chart, the order of its fields, and the
  * fields ticked from the schema tables of its kind (a Chart's from every table, the columns
- * it cannot plot disabled), with tables whose rows do not line up greyed out; a Heading's
+ * it cannot plot disabled), with tables whose rows do not line up greyed out, and searched; a Heading's
  * text, description, size, alignment and Show when; the showing sheet's own panel, its
  * title, its Show when, its width and its deletion, asked first in the editor's own dialog;
  * and a section's panel, its title, its Show when, its
@@ -334,7 +334,7 @@ describe("PropertiesPanel", () => {
     expect(size).toHaveValue("12")
     fireEvent.change(size, { target: { value: "14" } })
 
-    // The header's size is its text's until one is chosen; its labels turn three ways.
+    // The header's size is its text's until one is chosen; its labels turn three ways and sit where chosen.
     const header = region("Header")
     const headerSize = within(header).getByRole("combobox", { name: "Size" })
     expect(headerSize).toHaveValue("auto")
@@ -347,6 +347,7 @@ describe("PropertiesPanel", () => {
       ["stacked", "Stacked"],
     ])
     fireEvent.change(direction, { target: { value: "up" } })
+    fireEvent.change(within(header).getByRole("combobox", { name: "Align" }), { target: { value: "center" } })
     fireEvent.click(within(header).getByRole("button", { name: "Colour #4B5563 for the header's fill" }))
     fireEvent.click(within(header).getByRole("button", { name: "Colour #FFFFFF for the header's font" }))
     fireEvent.click(within(header).getByRole("checkbox", { name: "Bold" }))
@@ -370,6 +371,7 @@ describe("PropertiesPanel", () => {
       font_size: 14,
       header_font_size: 16,
       header_orientation: "up",
+      header_align: "center",
       header_color: "#4B5563",
       header_font_color: "#FFFFFF",
       header_bold: false,
@@ -380,7 +382,7 @@ describe("PropertiesPanel", () => {
       frame_weight: "thick",
       frame_color: "#000000",
     })
-    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(12)
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(13)
 
     fireEvent.change(headerSize, { target: { value: "auto" } })
     expect(grid()).toMatchObject({ header_font_size: null })
@@ -632,6 +634,23 @@ describe("PropertiesPanel", () => {
     expect(screen.getByText("2 shown")).toBeInTheDocument()
   })
 
+  it("never offers the quote's reference and option among a component's fields", () => {
+    const form = sheetForm()
+    const [equipment] = form.schema.tables.filter((candidate) => candidate.id === "equipment")
+    equipment.columns.unshift(column("quote_reference", "reference"), column("quote_option", "option", { type: "int" }))
+    loadForm(form)
+    select("w_grid")
+    render(<PropertiesPanel />)
+    const fields = screen.getByRole("region", { name: "Fields" })
+
+    expect(within(fields).queryByRole("checkbox", { name: "Show equipment reference" })).toBeNull()
+    expect(within(fields).queryByRole("checkbox", { name: "Show equipment option" })).toBeNull()
+    // Counted out of what can be shown, and not found by a search.
+    expect(within(screen.getByTestId("fields-table-equipment")).getByText("2/2")).toBeInTheDocument()
+    fireEvent.change(within(fields).getByRole("textbox", { name: "Search fields" }), { target: { value: "option" } })
+    expect(within(fields).getByText("No fields match")).toBeInTheDocument()
+  })
+
   it("greys out a table whose rows do not line up with the fields already chosen", () => {
     const form = sheetForm()
     form.schema.tables.push(table("claims", "claims", { rows: "many", columns: [column("claims.id", "id", { key: true })] }))
@@ -644,6 +663,50 @@ describe("PropertiesPanel", () => {
     expect(claims).toHaveAttribute("title", "Its rows don't line up with the fields already chosen")
     expect(within(claims).getByRole("checkbox", { name: "Show claims id" })).toBeDisabled()
     expect(screen.getByTestId("fields-table-premiums")).toHaveStyle({ opacity: "1" })
+  })
+
+  it("searches the fields as the schema is searched: only the columns matching, by name, label or readable name, each table open, kept as the panes change", () => {
+    const form = sheetForm()
+    form.schema.tables[1].columns.push(column("equipment.sum_insured", "sum_insured", { type: "float", label: "" }))
+    form.schema.tables[2].columns[1].label = "Annual cost"
+    loadForm(form)
+    select("w_grid")
+    render(<PropertiesPanel />)
+    const fields = screen.getByRole("region", { name: "Fields" })
+    const search = within(fields).getByRole("textbox", { name: "Search fields" })
+    const checkboxes = () => within(fields).queryAllByRole("checkbox").map((box) => box.getAttribute("aria-label"))
+    fireEvent.click(within(fields).getByRole("button", { name: "Collapse equipment" }))
+    expect(within(fields).queryByRole("checkbox", { name: "Show equipment item" })).not.toBeInTheDocument()
+
+    // A name, whatever its case: both tables hold an item, the collapsed one shown open.
+    fireEvent.change(search, { target: { value: "ITEM" } })
+    expect(checkboxes()).toEqual(["Show equipment item", "Show premiums item"])
+    const toggle = within(screen.getByTestId("fields-table-equipment")).getByRole("button", { name: "Collapse equipment" })
+    expect(toggle).toBeDisabled()
+    expect(toggle).toHaveAttribute("aria-expanded", "true")
+    // A label, and a name made readable as a column with no label is listed.
+    fireEvent.change(search, { target: { value: "annual" } })
+    expect(checkboxes()).toEqual(["Show premiums premium"])
+    expect(within(fields).queryByTestId("fields-table-equipment")).not.toBeInTheDocument()
+    fireEvent.change(search, { target: { value: "sum insured" } })
+    expect(checkboxes()).toEqual(["Show equipment sum_insured"])
+    fireEvent.click(within(fields).getByRole("checkbox", { name: "Show equipment sum_insured" }))
+    expect(grid().fields.map((field) => field.column)).toEqual(["equipment.item", "equipment.value", "equipment.sum_insured"])
+    fireEvent.change(search, { target: { value: "zzz" } })
+    expect(within(fields).getByText("No fields match")).toBeInTheDocument()
+    expect(checkboxes()).toEqual([])
+
+    // The panel's own search outlasts a turn to Display and back; Escape empties it, the table collapsed again.
+    fireEvent.change(search, { target: { value: "value" } })
+    showPane("Display")
+    showPane("Config")
+    const again = within(screen.getByRole("region", { name: "Fields" })).getByRole("textbox", { name: "Search fields" })
+    expect(again).toHaveValue("value")
+    expect(within(screen.getByRole("region", { name: "Fields" })).queryAllByRole("checkbox").map((box) => box.getAttribute("aria-label"))).toEqual(["Show equipment value"])
+    fireEvent.keyDown(again, { key: "Escape" })
+    expect(again).toHaveValue("")
+    expect(within(screen.getByRole("region", { name: "Fields" })).getByRole("button", { name: "Expand equipment" })).toBeEnabled()
+    expect(within(screen.getByRole("region", { name: "Fields" })).queryAllByRole("checkbox").map((box) => box.getAttribute("aria-label"))).toEqual(["Show premiums item", "Show premiums premium"])
   })
 
   it("orders the fields: Alt+Down moves one, and a cross stops showing it", () => {
@@ -710,7 +773,7 @@ describe("PropertiesPanel", () => {
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(6)
   })
 
-  it("points at the schema when it has no tables of the component's kind", () => {
+  it("points at the schema when it has no tables of the component's kind, opening its pane with the component still selected", () => {
     const form = sheetForm()
     form.schema.tables = form.schema.tables.filter((candidate) => candidate.rows !== "one")
     loadForm(form)
@@ -719,7 +782,7 @@ describe("PropertiesPanel", () => {
 
     expect(screen.getByText(/The schema has no one-row tables yet/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Open the schema" }))
-    expect(useWorkbenchViewStore.getState().section).toBe("schema")
+    expect(useWorkbenchViewStore.getState()).toMatchObject({ schemaOpen: true, selectedId: "w_boxes" })
   })
 
   it("sets when a component shows, each change one undo step", () => {

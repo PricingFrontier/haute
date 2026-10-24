@@ -154,8 +154,8 @@ class SessionStatusResponse(BaseModel):
 
 class SaveCapture(BaseModel):
     """A write's capture on the clone's save ledger, answered the same way by every route
-    that writes project files: the pipeline's save, the form's save, a test-quote write, a
-    project file written or deleted, and ``POST /api/git/capture``.
+    that writes project files: the pipeline's save, the form's save, a project file written
+    or deleted, and ``POST /api/git/capture``.
 
     ``warnings`` are non-fatal, since the write has landed: a capture that failed among
     them, and anything else left to see to (a transform with no code); an empty list means
@@ -249,127 +249,6 @@ WorkbenchValues = dict[str, list[dict[str, Cell]]]
 WorkbenchPricedTables = dict[str, list[dict[str, Any]]]
 
 
-class WorkbenchTestQuoteSummary(BaseModel):
-    """A test quote as the list shows it: its newest revision's number, saver and time."""
-
-    id: str
-    name: str
-    number: int
-    saved_by: str
-    #: When the newest revision was saved: ISO 8601, in UTC.
-    saved_at: str
-    priced: bool
-
-
-class WorkbenchTestQuotesResponse(BaseModel):
-    """The project's test quotes, the most recently saved first."""
-
-    quotes: list[WorkbenchTestQuoteSummary]
-
-
-class WorkbenchTestQuotesBranchResponse(BaseModel):
-    """The branch the test quotes are on now, which a save names; null outside a
-    repository. Read without opening the test-quote file, so a file an older Haute wrote,
-    which a save brings up to date, does not stop it."""
-
-    branch: str | None = None
-
-
-class WorkbenchTestQuoteSaveRequest(BaseModel):
-    """The quote on the sheets, saved as a new test quote under *name*.
-
-    ``form`` is the form as the view holds it, saved or not; ``values`` the quote as typed;
-    ``tables`` its pricing's output tables, each in full.
-    """
-
-    name: str = Field(min_length=1, max_length=200)
-    form: FormSpec
-    values: WorkbenchValues
-    tables: WorkbenchPricedTables
-    #: The branch the save started on, as the branch route named it: a branch checked out
-    #: since is refused, so a quote priced on one branch is never saved into another.
-    branch: str | None
-
-
-class WorkbenchTestQuoteAcceptRequest(BaseModel):
-    """A test quote's new response, accepted as the revision after ``after``.
-
-    ``revision_digest`` is the digest of revision ``after`` as the run read it: a
-    revision ``after`` saved apart, on another branch, is refused.
-    """
-
-    after: int = Field(ge=1)
-    revision_digest: str = Field(min_length=1)
-    form: FormSpec
-    values: WorkbenchValues
-    tables: WorkbenchPricedTables
-
-
-class WorkbenchTestQuoteWriteResponse(SaveCapture):
-    """A test-quote write and its capture on the save ledger.
-
-    ``quote`` is the test quote as written, null after a delete.
-    """
-
-    quote: WorkbenchTestQuoteSummary | None = None
-
-
-class WorkbenchTestQuoteOpenRequest(BaseModel):
-    """The form as the view holds it, onto which a test quote's values are carried."""
-
-    form: FormSpec
-
-
-class WorkbenchTestQuoteOpenResponse(BaseModel):
-    """A test quote's newest revision, its values carried onto the view's form.
-
-    ``dropped`` names each filled value with no place on that form, ``table.column`` by the
-    names it was saved under; ``response`` is the response the quote was accepted with.
-    """
-
-    id: str
-    name: str
-    number: int
-    #: What the revision is, beyond its number, for an accept to name.
-    revision_digest: str
-    values: WorkbenchValues
-    dropped: list[str]
-    response: dict[str, Any] | None = None
-
-
-class WorkbenchTestQuoteCompareRequest(BaseModel):
-    """A run's priced tables for a test quote, compared with revision ``number``'s response,
-    and the request its ``values`` make on ``form`` with the request that revision keeps.
-
-    ``revision_digest`` is the digest of revision ``number`` as the run opened it: a
-    revision ``number`` saved apart since (another branch's) is refused rather than compared.
-    """
-
-    form: FormSpec
-    values: WorkbenchValues
-    tables: WorkbenchPricedTables
-    number: int = Field(ge=1)
-    revision_digest: str = Field(min_length=1)
-
-
-class WorkbenchTestQuoteChange(BaseModel):
-    """One place the priced response differs from the accepted one."""
-
-    path: str
-    kind: Literal["changed", "added", "removed"]
-    accepted: Any = None
-    priced: Any = None
-
-
-class WorkbenchTestQuoteCompareResponse(BaseModel):
-    """Every place a run's response, or the request it priced, differs from the revision it
-    read, a request's places under ``request.``; none: unchanged."""
-
-    number: int
-    revision_digest: str
-    changes: list[WorkbenchTestQuoteChange]
-
-
 class WorkbenchAppReleaseResponse(BaseModel):
     """The underwriter app's release, and who the host signed in."""
 
@@ -421,7 +300,11 @@ class WorkbenchAppQuote(BaseModel):
 
     id: str
     reference: str
-    #: What the list shows as the quote: its name, else its insured, else its reference.
+    #: Which of the quotes offered under its reference it is, from 1.
+    option: int
+    #: The quote as the app shows it: its reference and option, ``Q-000123/2``.
+    label: str
+    #: What the list shows as the quote: its name, else its insured, else its label.
     title: str
     #: The ``quote_details`` row, by column name: dates as ISO text, blanks left out.
     details: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
@@ -448,6 +331,9 @@ class WorkbenchAppQuote(BaseModel):
     note_at: str | None = None
     source_quote_id: str | None = None
     source_reference: str | None = None
+    source_option: int | None = None
+    #: The source as the app shows it, ``Q-000123/1``.
+    source_label: str | None = None
     source_revision: int | None = None
     relation: WorkbenchAppQuoteRelation | None = None
 
@@ -507,9 +393,12 @@ class WorkbenchAppQuoteSaveRequest(BaseModel):
 
 
 class WorkbenchAppQuoteCreateRequest(WorkbenchAppQuoteSaveRequest):
-    """A new quote, and the quote it is made from when it is."""
+    """A new quote, and the quote it is made from when it is. It is made unpriced, ``shown``
+    null, and priced as it opens. ``reference`` is the reference the underwriter keyed,
+    which every creation but an alternative's names; an alternative takes its source's."""
 
     source: WorkbenchAppQuoteSource | None = None
+    reference: str | None = Field(default=None, max_length=400)
 
 
 class WorkbenchAppQuoteReviseRequest(WorkbenchAppQuoteSaveRequest):
@@ -593,6 +482,9 @@ class WorkbenchAppRelatedQuote(BaseModel):
 
     id: str
     reference: str
+    option: int
+    #: The quote as the app shows it, ``Q-000123/2``.
+    label: str
     relation: WorkbenchAppQuoteRelation
     revision: int
 

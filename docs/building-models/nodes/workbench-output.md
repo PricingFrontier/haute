@@ -9,29 +9,35 @@ A Workbench Output has no outputs. Each table of the workbench's schema that has
 
 ## Filling the tables
 
-Each table is filled from the frame connected to it. Each of the table's columns is filled from the frame's column of the same name, unless you pick another in the panel (see below); the frame's other columns are left out. A column that nothing fills, because the frame has no column of its name and you picked none, is left empty: its values are null, and the panel flags it. Each column takes the type the workbench declares. An integer column can fill a Decimal one, and a categorical column a Text one; a column of another type stops the run with a message naming the table and the column, so convert it upstream or pick another. A pick of a column the frame doesn't have stops the run too.
+Each table is filled from the frame connected to it. Each of the table's columns is filled from the frame's column of exactly the same name, capitals included; the frame's other columns are left out. Each column takes the type the workbench declares: an integer column can fill a Decimal one, and a categorical column a Text one.
+
+A column the frame doesn't have, or has with a type that doesn't fit (a Text column for a Decimal one, say), is left empty: its values are null, and the panel flags it (see below). A table nothing is connected to is left empty too: a table with one row per quote gets one row of nulls, and a table with many rows gets none. None of these stops the run, so the pipeline previews and prices while you are still building it. To fill a column, give the frame a column of its name and type before the Workbench Output, for example in a [Transform](transform.md) node.
+
+A table's **quote_reference** and **quote_option** are left empty in the node's own tables, whatever its frame holds: the response gives every row the quote's (see below), so a pipeline need not carry them through.
 
 A table with one row per quote takes exactly one row from its frame; a table with many rows per quote takes all of its frame's rows, in the order the frame delivers them. A step before it that leaves row order to Polars, such as an [Edge Join](edge-join.md) with **Order** set to **None**, can list them in a different order from one run to the next.
 
-Click the node to preview its tables, filled for the workbench's sample quote: each table is a dataframe, with the table picker at the top of the preview choosing which one shows when there are several. Click a value to trace it back through the pipeline: it is traced from the node connected to its table, through the column that fills it.
+Click the node to preview its tables, filled for the workbench's sample quote: each table is a dataframe, with the table picker at the top of the preview choosing which one shows when there are several. The preview keeps the table you picked when you refresh it, when the pipeline recalculates and when you come back to the node. Click a value to trace it back through the pipeline: it is traced from the node connected to its table, through the frame's column of the same name. A null the Workbench Output filled in, for a column the frame doesn't fill or a table nothing is connected to, has nothing to trace.
 
 In Preview, the workbench prices the sample live and shows the answer in its output columns (see [Preview](../workbench.md#preview)); the node's own preview runs on the sample as last saved.
 
 ## The response
 
-When the pipeline answers a request, through a deployment's `/quote` or `pipeline.run()` and `pipeline.score()` in code, the tables become the response for one quote: each one-row table is an object under its name and each many-row table a list of objects under its name, for example:
+When the pipeline answers a request, through a deployment's `/quote` or `pipeline.run()` and `pipeline.score()` in code, the tables become the response for one quote: each one-row table is an object under its name and each many-row table a list of objects under its name, every row holding the quote's **quote_reference** and **quote_option**, for example:
 
 ```json
 [
   {
-    "pricing_output": { "model_premium": 1250.0, "charged_premium": 1300.0 },
+    "pricing_output": { "quote_reference": "Q-000123", "quote_option": 2, "model_premium": 1250.0, "charged_premium": 1300.0 },
     "layers": [
-      { "layer": 1, "premium": 800.0 },
-      { "layer": 2, "premium": 500.0 }
+      { "quote_reference": "Q-000123", "quote_option": 2, "layer": 1, "premium": 800.0 },
+      { "quote_reference": "Q-000123", "quote_option": 2, "layer": 2, "premium": 500.0 }
     ]
   }
 ]
 ```
+
+The reference and option are the request's, read from its `quote_details`; in code, `run()` answers as quote `PREVIEW`, option 1, and `score()` with the `quote_details` frame it is given, leaving them out without one.
 
 Values that are null, and tables with no rows, are left out of the response, as in a Quote Response's.
 
@@ -39,18 +45,16 @@ A Workbench Output answers one quote per request. A deployed pipeline refuses a 
 
 ## TABLES FROM THE WORKBENCH
 
-The panel lists the workbench's output tables. You can't change the tables here, but you choose what fills each column:
+The panel lists the workbench's output tables and shows how the frames connected to them fill them. Nothing in it can be changed here:
 
 | Shown | What it means |
 |---|---|
 | The table's name | The input's name. |
 | **one per quote** or **many per quote** | Whether a quote has one row of the table or a list of them. |
 | **From** ... or **Not connected** | The node whose frame fills the table, or that nothing does yet. |
-| Each column's name and type, and a column picker | The frame column that fills it. A same-named column fills it until you pick another, shown as **(by name)**. **— none —** leaves it empty, and the picker is highlighted when nothing fills the column or the column you picked is no longer in the frame (**(missing)**). The picker lists the frame's columns once the node it comes from has been previewed, and is greyed out until a frame is connected. |
+| Each column's name and type, in a box | The box's border is **red** when the column is missing: the connected frame has no column of exactly that name, or nothing is connected to the table. It is **orange** when the frame has the column but of a type that doesn't fit; hold the pointer over the box to see the frame's type. Either way the column is left empty when the pipeline runs. The borders follow the frame as the node it comes from was last previewed, so preview that node to bring them up to date. A table's **quote_reference** and **quote_option**, which the response fills, are never red or orange. |
 | A warning under the name | The name can't be an input: it isn't an identifier, or another table has it. Rename the table in the workbench. |
 | **No columns yet, so no port.** | The table has no columns, so there is nothing to fill. Add its columns in the workbench. |
-
-Changing a pick is an edit to the pipeline, saved and undone like any other.
 
 The tables are the workbench's schema, edited in the Workbench view: **Edit in Workbench** in this section opens it, and the switcher at the bottom of the node palette brings you back to **Pricing**. When you save (**Save**, or Ctrl+S, from either view), the editor fetches the tables again, the node's tables and inputs follow, and the pipeline is saved with them in the same save. Connections follow table names: a connection to a table that keeps its name stays, and one to a table that was renamed or removed is removed, with a message. Changes not yet saved in the Workbench are priced on the Workbench's own sheets but don't reach the pipeline until saved.
 
@@ -62,9 +66,8 @@ While the workbench is not enabled, the section says "The workbench is not enabl
     | Setting in the editor | Stored as |
     |---|---|
     | The tables | `tables`: the workbench's output tables, in the Workbench Input's format: each its `name`, its `rows` per quote and its typed `columns` |
-    | Your picks | `mapping`: by table name, then column name, the frame column that fills it, or `null` for none. A column without an entry is filled by name, so a new node has no `mapping` |
 
-    For example, `"mapping": {"pricing_output": {"model_premium": "premium"}}` fills `pricing_output`'s `model_premium` from the frame's `premium` column. When the workbench drops a table or column, the editor drops its entries from `mapping` as it updates the tables. The pipeline fills the tables from `tables` and `mapping` alone, so it runs, tests and deploys without the workbench enabled.
+    The pipeline fills the tables from `tables` alone, so it runs, tests and deploys without the workbench enabled.
 
 **See also:**
 

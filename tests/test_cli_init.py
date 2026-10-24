@@ -871,51 +871,6 @@ class TestInitWorkbench:
         runner.invoke(cli, ["init", "--force", "--ci", ci], catch_exceptions=False)
         assert entry not in (tmp_path / workflow).read_text(encoding="utf-8")
 
-    def test_the_pull_request_checks_report_the_test_quotes(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        monkeypatch.chdir(tmp_path)
-        runner.invoke(cli, ["init", "--workbench"], catch_exceptions=False)
-        checks = (tmp_path / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        assert "haute test-quotes report" in checks
-
-    def test_writes_the_test_quote_file_empty_at_the_newest_schema(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        from haute._quote_store import open_store, store_url
-
-        monkeypatch.chdir(tmp_path)
-        runner.invoke(cli, ["init", "--workbench"], catch_exceptions=False)
-
-        path = tmp_path / "tests" / "quotes" / "test_quotes.sqlite"
-        with open_store(store_url(path)) as store:
-            assert store.quotes() == []
-        # Outside a repository there are no git drivers to register.
-        assert not (tmp_path / ".gitattributes").exists()
-
-    def test_registers_the_test_quotes_git_drivers_inside_a_repository(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        import subprocess
-
-        subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, check=True, capture_output=True)
-        monkeypatch.chdir(tmp_path)
-        result = runner.invoke(cli, ["init", "--workbench"], catch_exceptions=False)
-        assert result.exit_code == 0, result.output
-
-        attributes = (tmp_path / ".gitattributes").read_text(encoding="utf-8")
-        assert attributes == (
-            "tests/quotes/test_quotes.sqlite diff=haute-test-quotes merge=haute-test-quotes\n"
-        )
-        driver = subprocess.run(
-            ["git", "config", "--local", "merge.haute-test-quotes.driver"],
-            cwd=tmp_path,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
-        assert "-m haute._test_quote_driver merge %O %A %B" in driver
-
     def test_a_plain_init_writes_neither(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
@@ -927,7 +882,6 @@ class TestInitWorkbench:
             assert "workbench" not in tomllib.load(fh)
         assert not (tmp_path / "forms").exists()
         assert "forms/form.json" not in result.output
-        assert not (tmp_path / "tests" / "quotes" / "test_quotes.sqlite").exists()
 
     def test_force_reinit_keeps_the_table_only_when_asked_again(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

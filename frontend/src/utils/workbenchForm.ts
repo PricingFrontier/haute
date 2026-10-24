@@ -20,6 +20,7 @@ import {
   type Rect,
   type Size,
 } from "./sheetGeometry"
+import { IDENTITY_COLUMNS, IDENTITY_NAMES, identityCount, isIdentityColumn, QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, sheetColumns } from "./quoteIdentity"
 import { cellProblem, filled, isDay, parseTypedNumber, presetColumn, pricedRows, valuesBasis, type PricedRows, type RowsByTable } from "./sheetValues"
 import {
   ALWAYS,
@@ -79,6 +80,7 @@ export type TableOptions = Pick<
   | "header_orientation"
   | "header_color"
   | "header_font_color"
+  | "header_align"
   | "grid_color"
   | "grid_weight"
   | "grid_style"
@@ -205,25 +207,33 @@ function schemaColumnOf(table: SchemaTable, id: string): SchemaColumn {
   return column
 }
 
+/** A new table, leading with the quote's reference and option, as every table but quote_details does. */
 export const createSchemaTable = (spec: FormSpec): SchemaTable => ({
   id: newId("t"),
   name: uniqueName("table", spec.schema.tables.map((table) => table.name)),
   role: "input",
   rows: "one",
-  columns: [],
+  columns: IDENTITY_COLUMNS.map(([id, name, type]) => blankColumn(id, name, type)),
 })
 
 /**
  * A new column for a table, to go at `at` among its columns (the end by default): of the
- * type of the column above it, or Text first in the table or under its index.
+ * type of the column above it, or Text first in the table or under the quote's identity or
+ * its index.
  */
 export const createSchemaColumn = (spec: FormSpec, tableId: string, at?: number): SchemaColumn => {
   const { columns } = schemaTableOf(spec, tableId)
   const above = columns[(at ?? columns.length) - 1]
+  const type = above === undefined || above.index || isIdentityColumn(above) ? "str" : above.type
+  return blankColumn(newId("c"), uniqueName("column", columns.map((column) => column.name)), type)
+}
+
+/** A column of `type` with nothing of its own set. */
+function blankColumn(id: string, name: string, type: SchemaColumn["type"]): SchemaColumn {
   return {
-    id: newId("c"),
-    name: uniqueName("column", columns.map((column) => column.name)),
-    type: above === undefined || above.index ? "str" : above.type,
+    id,
+    name,
+    type,
     label: "",
     group: "",
     key: false,
@@ -392,11 +402,16 @@ export const addSchemaColumn = (spec: FormSpec, tableId: string, column: SchemaC
     columns.splice(index ?? columns.length, 0, column)
   })
 
-/** Move a column to `to`; the index, first in its table, stays first, and nothing goes above it. */
+/**
+ * Move a column to `to`. The quote's identity, first in its table, and the index after it
+ * stay where they are, and nothing goes above them.
+ */
 export const moveSchemaColumn = (spec: FormSpec, tableId: string, columnId: string, to: number): FormSpec => {
-  const { columns } = schemaTableOf(spec, tableId)
+  const table = schemaTableOf(spec, tableId)
+  const { columns } = table
   const from = columns.findIndex((column) => column.id === columnId)
-  if (from === to || columns[from].index || (to === 0 && columns[0].index)) return spec
+  const head = identityCount(table) + (columns[identityCount(table)]?.index ? 1 : 0)
+  if (from === to || columns[from].index || from < head || to < head) return spec
   return edit(spec, (draft) => {
     const moved = schemaTableOf(draft, tableId).columns
     const [column] = moved.splice(from, 1)
@@ -404,15 +419,18 @@ export const moveSchemaColumn = (spec: FormSpec, tableId: string, columnId: stri
   })
 }
 
+/** Change a column; the quote's identity is Haute's, and nothing of it changes. */
 export const updateSchemaColumn = (
   spec: FormSpec,
   tableId: string,
   columnId: string,
   patch: Partial<SchemaColumn>,
 ): FormSpec =>
-  edit(spec, (draft) => {
-    Object.assign(schemaColumnOf(schemaTableOf(draft, tableId), columnId), patch)
-  })
+  isIdentityColumn({ id: columnId })
+    ? spec
+    : edit(spec, (draft) => {
+        Object.assign(schemaColumnOf(schemaTableOf(draft, tableId), columnId), patch)
+      })
 
 /** Whether a column of `type` can have allowed values: any but a tick box or a date. */
 export const takesOptions = (type: SchemaColumn["type"]): boolean => type !== "bool" && type !== "date"
@@ -423,7 +441,8 @@ export const takesOptions = (type: SchemaColumn["type"]): boolean => type !== "b
  * box or a date, with the params file they came from and a row for each, which would
  * otherwise still rule its cells; and the default of one that
  * becomes or stops being a tick box, a tick or text no longer its kind of value, or that
- * becomes a date while its default is not a day, which a date's box cannot show.
+ * becomes a date while its default is not a day, which a date's box cannot show. The quote's
+ * identity keeps its types.
  */
 export const changeSchemaColumnType = (
   spec: FormSpec,
@@ -431,38 +450,43 @@ export const changeSchemaColumnType = (
   columnId: string,
   type: SchemaColumn["type"],
 ): FormSpec =>
-  edit(spec, (draft) => {
-    const column = schemaColumnOf(schemaTableOf(draft, tableId), columnId)
-    const { default_value: value } = column
-    if ((type === "bool") !== (column.type === "bool")) column.default_value = ""
-    else if (type === "date" && typeof value === "string" && !isDay(value.trim())) column.default_value = ""
-    column.type = type
-    if (type !== "int" && type !== "float") {
-      column.min = null
-      column.max = null
-      column.number_format = "general"
-      column.decimal_places = null
-      column.use_grouping = true
-    }
-    if (!takesOptions(type)) {
-      column.options = []
-      column.options_source = null
-      column.row_per_value = false
-    }
-  })
+  isIdentityColumn({ id: columnId })
+    ? spec
+    : edit(spec, (draft) => {
+        const column = schemaColumnOf(schemaTableOf(draft, tableId), columnId)
+        const { default_value: value } = column
+        if ((type === "bool") !== (column.type === "bool")) column.default_value = ""
+        else if (type === "date" && typeof value === "string" && !isDay(value.trim())) column.default_value = ""
+        column.type = type
+        if (type !== "int" && type !== "float") {
+          column.min = null
+          column.max = null
+          column.number_format = "general"
+          column.decimal_places = null
+          column.use_grouping = true
+        }
+        if (!takesOptions(type)) {
+          column.options = []
+          column.options_source = null
+          column.row_per_value = false
+        }
+      })
 
 /**
  * Removing a column removes it from the widgets that show it, or label a Chart's rows,
- * and what the conditions test of it (`withoutColumn`), and its sample values.
+ * and what the conditions test of it (`withoutColumn`), and its sample values. The quote's
+ * identity stays.
  */
 export const removeSchemaColumn = (spec: FormSpec, tableId: string, columnId: string): FormSpec =>
-  edit(spec, (draft) => {
-    const table = schemaTableOf(draft, tableId)
-    table.columns = table.columns.filter((column) => column.id !== columnId)
-    dropFields(draft, (field) => field.table === tableId && field.column === columnId)
-    dropConditions(draft, (condition) => withoutColumn(condition, tableId, columnId))
-    for (const row of draft.sample[tableId] ?? []) delete row[columnId]
-  })
+  isIdentityColumn({ id: columnId })
+    ? spec
+    : edit(spec, (draft) => {
+        const table = schemaTableOf(draft, tableId)
+        table.columns = table.columns.filter((column) => column.id !== columnId)
+        dropFields(draft, (field) => field.table === tableId && field.column === columnId)
+        dropConditions(draft, (condition) => withoutColumn(condition, tableId, columnId))
+        for (const row of draft.sample[tableId] ?? []) delete row[columnId]
+      })
 
 /** The widgets showing a schema table's columns, or just one of them, a Chart labelling its rows by one included. */
 export const fieldUses = (spec: FormSpec, tableId: string, columnId?: string): Widget[] =>
@@ -502,7 +526,9 @@ export const shownFields = (schema: FormSchema, widget: Widget): ShownField[] =>
 export const gridInputTables = (fields: readonly ShownField[]): SchemaTable[] => [
   ...new Map(
     fields.flatMap(({ found }) =>
-      found !== null && found.table.role === "input" && found.table.rows === "many" && !found.column.index ? [[found.table.id, found.table] as const] : [],
+      found !== null && found.table.role === "input" && found.table.rows === "many" && !found.column.index && !isIdentityColumn(found.column)
+        ? [[found.table.id, found.table] as const]
+        : [],
     ),
   ).values(),
 ]
@@ -730,8 +756,9 @@ function fieldsWidgetOf(spec: FormSpec, id: string): FieldsWidget {
 /**
  * A new Table's options: numbered, compact, lined between rows, striped, not fixed, its
  * header as written, framed, not transposed and without groups; 12px text, its header's
- * the same size, bold, level, unwrapped and in the theme's colours, thin solid gridlines and
- * a thin frame in the theme's colours, and no column with a look of its own.
+ * the same size, bold, level, unwrapped, placed as each column's look says and in the
+ * theme's colours, thin solid gridlines and a thin frame in the theme's colours, and no
+ * column with a look of its own.
  */
 export const TABLE_OPTIONS: Readonly<TableOptions> = {
   row_numbers: true,
@@ -750,6 +777,7 @@ export const TABLE_OPTIONS: Readonly<TableOptions> = {
   header_orientation: "horizontal",
   header_color: null,
   header_font_color: null,
+  header_align: "auto",
   grid_color: null,
   grid_weight: "thin",
   grid_style: "solid",
@@ -1154,19 +1182,21 @@ export function chartGrain(schema: FormSchema, widget: ChartWidget): string | nu
   return null
 }
 
-/** Whether a Chart can plot a column: a number column, other than an index, which numbers the rows. */
-export const plottable = (column: SchemaColumn): boolean => (column.type === "int" || column.type === "float") && !column.index
+/** Whether a Chart can plot a column: a number column, other than an index, which numbers the rows, or the quote's option. */
+export const plottable = (column: SchemaColumn): boolean =>
+  (column.type === "int" || column.type === "float") && !column.index && !isIdentityColumn(column)
 
 /**
  * The columns that can label a Chart's rows: those of the many-row tables of its grain,
- * other than an index ("Row number" numbers the rows as an index does), by table.
+ * other than an index ("Row number" numbers the rows as an index does) and the quote's
+ * identity, which the sheets never show, by table.
  */
 export function labelColumns(spec: FormSpec, widget: ChartWidget): { table: SchemaTable; columns: SchemaColumn[] }[] {
   const grain = chartGrain(spec.schema, widget)
   if (grain === null || grain === "one") return []
   return spec.schema.tables
     .filter((table) => table.rows === "many" && tableGrain(table) === grain)
-    .map((table) => ({ table, columns: table.columns.filter((column) => !column.index) }))
+    .map((table) => ({ table, columns: sheetColumns(table).filter((column) => !column.index) }))
     .filter(({ columns }) => columns.length > 0)
 }
 
@@ -1282,12 +1312,6 @@ export const withSampleCell = (spec: FormSpec, tableId: string, row: number, col
 export const withSampleRows = (spec: FormSpec, rowsByTable: Record<string, SampleRow[]>): FormSpec =>
   edit(spec, (draft) => {
     for (const [tableId, rows] of Object.entries(rowsByTable)) draft.sample[tableId] = rows
-  })
-
-/** The sample replaced whole, as a test quote opened puts its values in its place. */
-export const withSample = (spec: FormSpec, sample: Record<string, SampleRow[]>): FormSpec =>
-  edit(spec, (draft) => {
-    draft.sample = structuredClone(sample)
   })
 
 /** `rows` with empty rows added to make `length`. */
@@ -1585,7 +1609,9 @@ function conditionProblems(
       const table = schemaTableOf(spec, waiting.table)
       const tested = listColumns(waiting)
       const missing = tested.find((id) => !entered([columnKey(table.id, id)]))
-      const keys = table.columns.filter((column) => !column.index).map((column) => columnKey(table.id, column.id))
+      const keys = sheetColumns(table)
+        .filter((column) => !column.index)
+        .map((column) => columnKey(table.id, column.id))
       if (missing !== undefined) {
         problems.push(`waits on ${(table.columns.find((column) => column.id === missing) as SchemaColumn).name}, which is on no Table`)
       } else {
@@ -1688,7 +1714,8 @@ const isNumber = (text: string, whole: boolean): boolean => {
  * many-row table needs a key, and one column at most gives it a row for each value; an
  * input column's rules must make sense (a range that is not inverted, allowed values of its
  * type, read from a params file rather than typed in), and a one-row input column's
- * default must be a value they take.
+ * default must be a value they take. A table without the quote's identity whose own column
+ * takes either of its names is named as the server names it (`identity_clashes`).
  */
 export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<string>): SchemaProblem[] {
   const problems: SchemaProblem[] = []
@@ -1709,6 +1736,11 @@ export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<strin
       ),
     )
     if (issue !== null) problems.push({ tableId: table.id, message: `${name}: ${issue}` })
+    if (!isQuoteDetails(table) && !table.columns.some(isIdentityColumn)) {
+      for (const column of table.columns) {
+        if (IDENTITY_NAMES.has(column.name)) problems.push({ tableId: table.id, message: identityClash(table, column) })
+      }
+    }
     if (table.rows === "many" && !table.columns.some((column) => column.key)) {
       problems.push({ tableId: table.id, message: `${name} has many rows, so it needs a key column` })
     }
@@ -1766,33 +1798,33 @@ function defaultProblem(column: SchemaColumn): string | null {
 
 // ── Haute's quote_details table ──────────────────────────────────────────
 
-/**
- * The id and name of Haute's own input table of a quote's details, first in every form
- * (`haute._workbench_form.QUOTE_DETAILS_ID`): the underwriter app keeps its row with each
- * revision, and its Quotes page lists them.
- */
-export const QUOTE_DETAILS_ID = "quote_details"
+export { QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED }
 /** Why another table under its name is refused, in the server's words (`QUOTE_DETAILS_REFUSAL` in `src/haute/_workbench_form.py`). */
 export const QUOTE_DETAILS_REFUSAL = "quote_details is Haute's own table of a quote's details: name yours otherwise"
 
-/** Its columns, in order, as id, name and type (`QUOTE_DETAILS_COLUMNS`); their structure is fixed. */
+/** Its columns, in order, as id, name and type (`QUOTE_DETAILS_COLUMNS`), a quote's administration; their structure is fixed. */
 export const QUOTE_DETAILS_COLUMNS: ReadonlyArray<readonly [id: string, name: string, type: SchemaColumn["type"]]> = [
-  ["qd_reference", "reference", "str"],
+  ["qd_reference", "quote_reference", "str"],
+  ["qd_option", "quote_option", "int"],
   ["qd_quote_name", "quote_name", "str"],
   ["qd_insured", "insured", "str"],
   ["qd_broker", "broker", "str"],
   ["qd_inception_date", "inception_date", "date"],
   ["qd_expiry_date", "expiry_date", "date"],
-  ["qd_valid_until", "valid_until", "date"],
-  ["qd_currency", "currency", "str"],
+  ["qd_is_renewal", "is_renewal", "bool"],
   ["qd_stage", "stage", "str"],
   ["qd_assignee", "assignee", "str"],
   ["qd_archived", "archived", "bool"],
-  ["qd_is_renewal", "is_renewal", "bool"],
+  ["qd_created_date", "created_date", "date"],
+  ["qd_created_by", "created_by", "str"],
+  ["qd_modified_date", "modified_date", "date"],
+  ["qd_modified_by", "modified_by", "str"],
+  ["qd_haute_version", "haute_version", "str"],
 ]
 
-/** The columns the underwriter app sets over whatever is typed, which take no rules (`QUOTE_DETAILS_MANAGED`). */
-export const QUOTE_DETAILS_MANAGED: ReadonlySet<string> = new Set(["qd_reference", "qd_stage", "qd_assignee", "qd_archived"])
+/** Why a table's own column keeps the quote's identity from it, in the server's words (`identity_clashes`). */
+const identityClash = (table: SchemaTable, column: SchemaColumn): string =>
+  `${table.name}.${column.name} has a name Haute keeps for the quote's identity in every table: rename it, and the table takes quote_reference and quote_option at the next save`
 
 /** Whether `table` is Haute's quote_details table, whose structure the editor does not change. */
 export const isQuoteDetails = (table: Pick<SchemaTable, "id">): boolean => table.id === QUOTE_DETAILS_ID

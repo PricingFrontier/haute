@@ -16,7 +16,7 @@ import { PALETTE_KINDS, paletteKind } from "./widgetKinds"
 export default function WorkbenchPalette() {
   const open = useUIStore((s) => s.paletteOpen)
   const setPaletteOpen = useUIStore((s) => s.setPaletteOpen)
-  const previewing = useWorkbenchViewStore((s) => s.section === "preview")
+  const previewing = useWorkbenchViewStore((s) => s.mode === "preview")
   if (!open) {
     return (
       <div className="flex shrink-0 flex-col" style={{ background: "var(--chrome)", borderRight: "1px solid var(--chrome-border)" }}>

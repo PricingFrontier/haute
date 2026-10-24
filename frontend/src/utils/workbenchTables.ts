@@ -3,11 +3,14 @@
  * project's workbench (specs/workbench), and a Workbench Output takes the response's
  * tables from it. Their configs hold a copy, so the pipeline runs without the form; these
  * rules say how a copy is read, which of its tables are ports, when it needs updating and
- * what each starts with from the palette. `useWorkbenchTables` applies them.
+ * what each starts with from the palette. `useWorkbenchTables` applies them. A Workbench
+ * Output's panel also judges, by the same rule as a run, how a frame fills its columns.
  */
 import type { WorkbenchColumn, WorkbenchTable } from "../api/types"
 import { canonicalJson } from "./canonicalJson"
 import { NODE_TYPES } from "./nodeTypes"
+import { castFamily } from "./polarsDtypes"
+import { IDENTITY_COLUMNS } from "./quoteIdentity"
 
 /** The workbench's tables and sample quote from one fetch, numbered so that only the newest counts. */
 export interface WorkbenchTables {
@@ -74,47 +77,82 @@ export function quoteTablesPatch(
   return { tables: structuredClone([...workbench.tables]), sample: structuredClone({ ...workbench.sample }) }
 }
 
-/** A Workbench Output's mapping: by table name, each column's frame column, or null for none. */
-export type WorkbenchOutputMapping = Record<string, Record<string, string | null>>
-
 /** The sample priced on the pipeline: each of the Workbench Output's tables' rows, by the table's name. */
 export interface PricedSample {
   tables: Record<string, Record<string, unknown>[]>
 }
 
-/** The config's mapping, without its entries for tables and columns *tables* lack. */
-function mappingFor(mapping: unknown, tables: readonly WorkbenchTable[]): WorkbenchOutputMapping {
-  const kept: WorkbenchOutputMapping = {}
-  if (mapping === null || typeof mapping !== "object" || Array.isArray(mapping)) return kept
-  for (const table of tables) {
-    const entries = (mapping as Record<string, unknown>)[table.name]
-    if (entries === null || typeof entries !== "object" || Array.isArray(entries)) continue
-    const names = new Set(table.columns.map((column) => column.name))
-    const columns = Object.fromEntries(
-      Object.entries(entries as Record<string, string | null>).filter(([name]) => names.has(name)),
-    )
-    if (Object.keys(columns).length > 0) kept[table.name] = columns
-  }
-  return kept
-}
-
 /**
  * The update a Workbench Output's config needs to match the fetched response tables, or
- * null when none does: the tables, and the mapping without the entries of tables and
- * columns they no longer have.
+ * null when none does.
  */
 export function responseTablesPatch(
   config: Record<string, unknown>,
   workbench: Pick<WorkbenchTables, "responseTables"> | null,
-): { tables: WorkbenchTable[]; mapping?: WorkbenchOutputMapping } | null {
+): { tables: WorkbenchTable[] } | null {
   if (workbench === null) return null
-  const mapping = mappingFor(config.mapping, workbench.responseTables)
-  const mappingChanged = canonicalJson(config.mapping ?? {}) !== canonicalJson(mapping)
-  if (canonicalJson(config.tables) === canonicalJson(workbench.responseTables) && !mappingChanged) return null
-  return {
-    tables: structuredClone([...workbench.responseTables]),
-    ...(mappingChanged ? { mapping } : {}),
+  if (canonicalJson(config.tables) === canonicalJson(workbench.responseTables)) return null
+  return { tables: structuredClone([...workbench.responseTables]) }
+}
+
+/**
+ * Whether a frame's column of *dtype*, as `str(dtype)` renders it, fills a column declared
+ * *declared*: the backend's `column_fits`. A column of nulls fills any.
+ */
+export function dtypeFits(declared: WorkbenchColumn["type"], dtype: string): boolean {
+  const family = castFamily(dtype)
+  if (family === "null") return true
+  switch (declared) {
+    case "int":
+      return family === "integer"
+    case "float":
+      return family === "integer" || family === "float" || family === "decimal"
+    case "str":
+      return family === "text" || family === "category"
+    case "bool":
+      return family === "boolean"
+    case "date":
+      return family === "date"
   }
+}
+
+/**
+ * How a Workbench Output's column is filled from the frame connected to its table, which a
+ * run fills with nulls unless it is `filled`; `unknown` while the frame's columns are; and
+ * `haute` for the quote's reference and option, which the response gives whatever the frame
+ * holds.
+ */
+export type ColumnFill = { kind: "filled" | "missing" | "unknown" | "haute" } | { kind: "mistyped"; dtype: string }
+
+/**
+ * Whether a node's copy of a table leads with the quote's reference and option: every table
+ * but quote_details (`carries_identity` in `src/haute/_workbench_tables.py`). A copy has no
+ * ids, so the columns are known by their place, names and types.
+ */
+export const carriesIdentity = (table: WorkbenchTable): boolean =>
+  table.name !== "quote_details" &&
+  IDENTITY_COLUMNS.every(([, name, type], at) => table.columns[at]?.name === name && table.columns[at]?.type === type)
+
+/**
+ * How *table*'s column at *at* is filled: `haute` for the quote's identity, `missing` while
+ * nothing is connected to its table or the frame has no column of exactly its name,
+ * `mistyped` when the frame's column is of a type that does not fit, else `filled`.
+ * *frameColumns* are the connected frame's columns as its last preview recorded them,
+ * undefined until it has one.
+ */
+export function columnFill(
+  table: WorkbenchTable,
+  at: number,
+  connected: boolean,
+  frameColumns: readonly { name: string; dtype: string }[] | undefined,
+): ColumnFill {
+  const column = table.columns[at]
+  if (at < IDENTITY_COLUMNS.length && carriesIdentity(table)) return { kind: "haute" }
+  if (!connected) return { kind: "missing" }
+  if (frameColumns === undefined) return { kind: "unknown" }
+  const held = frameColumns.find((each) => each.name === column.name)
+  if (held === undefined) return { kind: "missing" }
+  return dtypeFits(column.type, held.dtype) ? { kind: "filled" } : { kind: "mistyped", dtype: held.dtype }
 }
 
 /** The update a workbench node's config needs from a fetch, by its type; others take none. */

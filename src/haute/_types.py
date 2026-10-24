@@ -176,13 +176,10 @@ class WorkbenchOutputConfig(TypedDict, total=False):
     ``tables`` is the copy of the response's tables the project's workbench
     supplies, which the editor keeps current (specs/workbench), in the Workbench
     Input's shape. Each is filled from the frame connected to the port its name
-    names: each column from the frame column ``mapping`` picks (by table name, then
-    column name; ``None`` for none), or else from the frame's column of the same
-    name.
+    names, each column from the frame's column of the same name.
     """
 
     tables: list[dict[str, Any]]
-    mapping: dict[str, dict[str, str | None]]
 
 
 class _DataInputCommon(TypedDict, total=False):

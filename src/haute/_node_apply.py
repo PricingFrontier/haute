@@ -580,7 +580,7 @@ def assemble_workbench_output_from_config(
     base_dir: str | Path | None = None,
     ports: Sequence[str | None] | None = None,
 ) -> WorkbenchOutputTables:
-    """Fill a Workbench Output's tables from its incoming frames, through its mapping.
+    """Fill a Workbench Output's tables from its incoming frames, each column by name.
 
     The single code path for the executor's ``_build_workbench_output`` and a saved
     file's ``@pipeline.workbench_output`` node. *dfs* are the incoming frames in edge
@@ -592,13 +592,11 @@ def assemble_workbench_output_from_config(
     from haute._workbench_output import (
         WorkbenchOutputError,
         fill_workbench_tables,
-        workbench_output_mapping,
         workbench_output_tables,
     )
 
     cfg = _resolve_node_config(config, base_dir)
     tables = workbench_output_tables(cfg)
-    mapping = workbench_output_mapping(cfg, tables)
     labels = [table.name for table in tables]
     if ports is None or len(ports) != len(dfs):
         raise WorkbenchOutputError(
@@ -618,4 +616,4 @@ def assemble_workbench_output_from_config(
                 f"Two connections fill the Workbench Output's {port!r} table; a table takes one."
             )
         frames[port] = frame.lazy()
-    return fill_workbench_tables(frames, tables, mapping)
+    return fill_workbench_tables(frames, tables)

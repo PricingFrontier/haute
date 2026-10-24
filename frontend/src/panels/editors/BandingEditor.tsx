@@ -28,6 +28,7 @@ import useBandingStats from "./banding/useBandingStats"
 import { useGraph } from "../useGraph"
 import { GenerateBandsDialog } from "./banding/GenerateBandsDialog"
 import { CategoricalValuePicker } from "./banding/CategoricalValuePicker"
+import { ImportParamValues } from "./banding/ImportParamValues"
 import { withAlpha } from "../../utils/color"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import SearchableItemList from "./shared/SearchableItemList"
@@ -61,6 +62,7 @@ export default function BandingEditor({
   const safeIdx = Math.max(0, Math.min(activeIdx, factors.length - 1))
   const factor = factors[safeIdx]
   const [showGenerateDialog, setShowGenerateDialog] = useState(false)
+  const [showImport, setShowImport] = useState(false)
 
   const colMap = Object.fromEntries(upstreamColumns.map(c => [c.name, c.dtype]))
 
@@ -301,6 +303,13 @@ export default function BandingEditor({
     updateFactor(safeIdx, { rules: [...(factor.rules || []), newRule] })
   }
 
+  // A rule mapping each imported value to itself, as a value chip adds one.
+  const handleImportValues = (values: string[]) => {
+    const imported: CategoricalRule[] = values.map((value) => ({ value, assignment: value }))
+    updateFactor(safeIdx, { rules: [...(factor.rules || []), ...imported] })
+    setShowImport(false)
+  }
+
   const handleGenerateBands = (breakpoints: { boundary: string; label: string }[]) => {
     updateFactor(safeIdx, { rules: breakpoints as BreakpointRule[] })
     setShowGenerateDialog(false)
@@ -308,6 +317,18 @@ export default function BandingEditor({
 
   // Check if breakpoints are empty (for showing prominent Generate action)
   const breakpointsEmpty = factor.banding === "breakpoints" && (factor.rules || []).length === 0
+  const categoricalEmpty = factor.banding === "categorical" && (factor.rules || []).length === 0
+
+  // Import opens where it was pressed, as Generate does; another factor's starts afresh.
+  // Its key is its own: the rules grid beside it is keyed by the factor's index.
+  const importOptions = (
+    <ImportParamValues
+      key={`import-${safeIdx}`}
+      existingValues={(factor.rules || []).map(r => (r as CategoricalRule).value).filter(Boolean)}
+      onImport={handleImportValues}
+      onClose={() => setShowImport(false)}
+    />
+  )
 
   // Generate's options open where it was pressed: above the breakpoints, or in
   // place of the empty prompt. Regenerating starts from the settings the
@@ -552,20 +573,66 @@ export default function BandingEditor({
             </>
           )}
         </div>
+      ) : categoricalEmpty ? (
+        showImport ? importOptions : (
+        <div
+          className="rounded-lg px-4 py-5 text-center space-y-3"
+          style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
+        >
+          <div className="text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
+            No rules yet.
+          </div>
+          <div className="flex items-center justify-center gap-3">
+            <button
+              onClick={() => setShowImport(true)}
+              className="px-3 py-1.5 rounded-md text-[11px] font-medium transition-colors"
+              style={{
+                background: withAlpha(accentColor, 0.15),
+                border: `1px solid ${withAlpha(accentColor, 0.4)}`,
+                color: accentColor,
+              }}
+            >
+              Import from params
+            </button>
+            <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>or</span>
+            <button
+              onClick={handleAddRule}
+              className="px-3 py-1.5 rounded-md text-[11px] font-medium transition-colors"
+              style={{
+                background: "var(--bg-panel)",
+                border: "1px solid var(--border)",
+                color: "var(--text-secondary)",
+              }}
+            >
+              Add manually
+            </button>
+          </div>
+        </div>
+        )
       ) : (
-        <div>
+        <div className="space-y-2">
           <div className="flex items-center justify-between mb-1.5">
             <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>
               Rules ({(factor.rules || []).length})
             </label>
-            <button
-              onClick={handleAddRule}
-              className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors"
-              style={{ background: withAlpha(accentColor, 0.1), color: accentColor, border: `1px solid ${withAlpha(accentColor, 0.3)}` }}
-            >
-              <Plus size={11} /> Add
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setShowImport(true)}
+                className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors"
+                style={{ background: withAlpha(accentColor, 0.1), color: accentColor, border: `1px solid ${withAlpha(accentColor, 0.3)}` }}
+              >
+                Import
+              </button>
+              <button
+                onClick={handleAddRule}
+                className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors"
+                style={{ background: withAlpha(accentColor, 0.1), color: accentColor, border: `1px solid ${withAlpha(accentColor, 0.3)}` }}
+              >
+                <Plus size={11} /> Add
+              </button>
+            </div>
           </div>
+          {showImport && importOptions}
           <BandingRulesGrid
             key={safeIdx}
             factor={factor}

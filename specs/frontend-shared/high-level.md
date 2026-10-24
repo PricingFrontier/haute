@@ -67,7 +67,8 @@ In scope:
   `ModalShell`, `Tooltip`, `ContextMenu`, `KeyboardShortcuts`, `Toolbar`,
   `GlobalConstantsPanel`, `BackgroundJobPolling`, `NodeSearch`, `BreadcrumbBar`.
   `GlobalConstantsPanel` is the sole global-constants editor.
-- Small generic hooks with no domain knowledge: `useClickOutside`,
+- Small generic hooks with no domain knowledge: `useClickOutside` (a menu or box
+  closes on any press outside it, a workbench sheet component's included),
   `useDragResize`, `useJobPolling` (+ its orchestrator
   `useBackgroundJobs`), `useMlflowBrowser`, `useSchemaFetch`,
   `useStaleConfigEstimate`.
@@ -233,13 +234,13 @@ the right-click node menu with roving-tabindex arrow-key navigation.
 column layout. The brand section displays the lowercase brand heading and
 package-derived browser version, aligned to the node palette
 boundary (x = 181px). Adjacent columns house the source selector stacked above a
-Pipeline control that shares its width and opens the pipeline settings pane
+Pipeline control that shares its width and opens the pipeline settings pane, a column
+the workbench's toolbar has in the same place
 (preview/chunk row limits and the cached-data inventory), integer-ms timing and memory breakdowns, undo/redo with
 text labels, zoom in/out, centre/layout, Submodel/Instance selection actions, Utility above Constants,
 Pipeline files above Local files, assistant and a Help menu (Documentation, Hotkeys, Report a bug), and the working branch indicator stacked above
-equal-width Save and Commit buttons. The Pipeline control reports the pipeline's live state:
-the calculation mode while the server is reachable, and "Offline" once live sync has lost
-the server. The toolbar carries no unsaved-changes indicator. Its frame, brand, Undo/Redo
+equal-width Save and Commit buttons. The Pipeline control reads "Pipeline" while the server is
+reachable, whatever the calculation mode, and "Offline" once live sync has lost the server. The toolbar carries no unsaved-changes indicator. Its frame, brand, Undo/Redo
 and Zoom In/Zoom Out columns and Save/Commit pair are `haute-ui` components, the same ones
 the workbench's toolbar is built from. Its right-hand group, Pipeline files over Local
 files, Assistant over Help, and the branch indicator with Save and Commit, is

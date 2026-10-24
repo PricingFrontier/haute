@@ -13,6 +13,7 @@ import {
   formattedNumber,
   newQuoteValues,
   parseTypedNumber,
+  parseTypedWhole,
   presetColumn,
   presetRows,
   pricedRows,
@@ -196,9 +197,11 @@ describe("formattedNumber", () => {
 })
 
 describe("typed text, as the server reads it", () => {
-  it.each(typedCases.numbers)("reads $name as the server does", ({ text, number }) => {
+  it.each(typedCases.numbers)("reads $name as the server does", ({ text, number, whole, integer }) => {
     expect(parseTypedNumber(text)).toBe(number)
     expect(parseTypedNumber(` ${text} `)).toBe(number)
+    // An Integer column's whole number, exactly however large.
+    expect(parseTypedWhole(text)).toBe(whole && number !== null ? BigInt(integer ?? number) : null)
   })
 
   it.each(typedCases.filled)("counts $name as typed as the server does", ({ value, filled: typed }) => {

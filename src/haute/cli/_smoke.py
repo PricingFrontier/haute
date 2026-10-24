@@ -59,7 +59,7 @@ def handle_smoke(config: SmokeConfig) -> None:
         click.echo(f"Error: No test quotes directory found (resolved: {tq_dir}).", err=True)
         raise SystemExit(1)
 
-    from haute._test_quotes import test_quote_files
+    from haute.deploy._config import test_quote_files
 
     json_files = test_quote_files(tq_dir)
     if not json_files:
@@ -229,9 +229,7 @@ def _smoke_files(json_files: list[Path], price: Callable[[dict[str, Any]], list[
     all_ok = True
     for jf in json_files:
         try:
-            # Smoke runs in the project, as handle_smoke reads its haute.toml: the workbench's
-            # test quotes are rebuilt against its form as deploy rebuilds them.
-            result = price_test_quotes_live(jf, price, project_root=Path.cwd())
+            result = price_test_quotes_live(jf, price)
         except (OSError, ValueError) as exc:
             click.echo(f"  \u2717 {jf.name}: {exc}", err=True)
             all_ok = False

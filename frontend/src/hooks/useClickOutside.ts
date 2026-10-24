@@ -1,8 +1,11 @@
 import { useEffect, type RefObject } from "react"
 
 /**
- * Close a dropdown/popover when the user clicks outside its container.
- * Only attaches a listener when `active` is true.
+ * Close a dropdown/popover when the user presses outside its container.
+ * Only attaches a listener when `active` is true. The press is heard as it
+ * begins, on the document in the capture phase, so a press whose own handler
+ * then cancels the mouse events after it or stops it, as a workbench sheet
+ * component's does, still closes it.
  */
 export default function useClickOutside(
   ref: RefObject<HTMLElement | null>,
@@ -11,12 +14,12 @@ export default function useClickOutside(
 ) {
   useEffect(() => {
     if (!active) return
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as HTMLElement)) {
+    const handler = (e: PointerEvent) => {
+      if (ref.current && e.target instanceof Node && !ref.current.contains(e.target)) {
         onClose()
       }
     }
-    document.addEventListener("mousedown", handler)
-    return () => document.removeEventListener("mousedown", handler)
+    document.addEventListener("pointerdown", handler, true)
+    return () => document.removeEventListener("pointerdown", handler, true)
   }, [active, ref, onClose])
 }

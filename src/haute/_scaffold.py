@@ -10,9 +10,9 @@ from collections.abc import Callable
 from pathlib import PurePosixPath
 
 from haute._project_python import DEFAULT_PYTHON, container_base_image
-from haute._test_quotes import DEFAULT_TEST_QUOTES_DIR
 from haute._workbench_config import DEFAULT_FORM_PATH
 from haute._workbench_form import blank_form, render_form
+from haute.deploy._config import DEFAULT_TEST_QUOTES_DIR
 
 # ── Per-target configuration ─────────────────────────────────────────
 #
@@ -200,85 +200,6 @@ def _release_input_dirs(workbench: bool) -> tuple[str, ...]:
     if not workbench:
         return _RELEASE_INPUT_DIRS
     return (*_RELEASE_INPUT_DIRS, PurePosixPath(DEFAULT_FORM_PATH).parent.as_posix())
-
-
-#: A workbench project's report of what a pull request does to its test quotes: posted on
-#: the pull request (editing the last one posted) and added to the run's summary.
-_GITHUB_TEST_QUOTES_JOB = """
-  test-quotes:
-    name: Test Quotes
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-          python-version: "3.11"
-      - run: uv sync --frozen
-      - name: Report what the change does to the test quotes
-        run: >-
-          uv run haute test-quotes report --base "origin/${{ github.base_ref }}"
-          --output test-quotes-report.md
-      - name: Add the report to the run's summary
-        run: cat test-quotes-report.md >> "$GITHUB_STEP_SUMMARY"
-      # A fork's pull request runs with a token that cannot comment.
-      - name: Post the report on the pull request
-        if: github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-        run: gh pr comment "$PR" --body-file test-quotes-report.md --edit-last --create-if-none
-"""
-
-#: The same on a GitLab merge request, kept with the job as an artifact.
-_GITLAB_TEST_QUOTES_JOB = """
-# ── Test quotes (a merge request's report) ────────────────────
-test-quotes-report:
-  stage: validate
-  timeout: 10 minutes
-  # The whole history, so the report finds where the branch left its target.
-  variables:
-    GIT_DEPTH: "0"
-  script:
-    - git fetch origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
-    - >-
-      uv run haute test-quotes report --base "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
-      --output test-quotes-report.md
-    - cat test-quotes-report.md
-  artifacts:
-    paths:
-      - test-quotes-report.md
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-"""
-
-#: The same on an Azure DevOps pull request, published as an artifact.
-_AZURE_TEST_QUOTES_JOB = """
-      - job: test_quotes
-        displayName: Test Quotes Report
-        timeoutInMinutes: 10
-        condition: eq(variables['Build.Reason'], 'PullRequest')
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - checkout: self
-            fetchDepth: 0
-          - task: UsePythonVersion@0
-            inputs:
-              versionSpec: "3.11"
-          - script: pip install "uv>=0.5,<1" && uv sync --frozen
-            displayName: Install dependencies
-          - script: |
-              base="origin/${SYSTEM_PULLREQUEST_TARGETBRANCH#refs/heads/}"
-              uv run haute test-quotes report --base "$base" --output test-quotes-report.md
-              cat test-quotes-report.md
-            displayName: Report what the change does to the test quotes
-          - publish: test-quotes-report.md
-            artifact: test-quotes-report
-"""
 
 
 #: The Python a generated CI job runs when the project names none (``haute init`` passes
@@ -568,15 +489,14 @@ def _azure_devops_secrets_env(target: str, indent: str = "              ") -> st
 # ── GitHub Actions: ci.yml ────────────────────────────────────────────
 
 
-def github_ci_yml(*, workbench: bool = False, python_version: str = DEFAULT_CI_PYTHON) -> str:
+def github_ci_yml(*, python_version: str = DEFAULT_CI_PYTHON) -> str:
     """:func:`_github_ci_yml` with every job's Python pinned to *python_version*."""
-    return _pin_ci_python(_github_ci_yml(workbench=workbench), python_version)
+    return _pin_ci_python(_github_ci_yml(), python_version)
 
 
-def _github_ci_yml(*, workbench: bool = False) -> str:
-    """PR checks workflow for GitHub Actions; a workbench project's also reports what the
-    change does to its test quotes, on the pull request."""
-    jobs = """\
+def _github_ci_yml() -> str:
+    """PR checks workflow for GitHub Actions."""
+    return """\
 name: CI
 
 on:
@@ -644,7 +564,6 @@ jobs:
       - name: Dry-run deploy (score test quotes)
         run: uv run haute deploy --dry-run
 """
-    return jobs + (_GITHUB_TEST_QUOTES_JOB if workbench else "")
 
 
 def github_deploy_yml(
@@ -855,14 +774,12 @@ jobs:
 # ── GitLab CI ────────────────────────────────────────────────────────
 
 
-def gitlab_ci_yml(
-    target: str, *, workbench: bool = False, python_version: str = DEFAULT_CI_PYTHON
-) -> str:
+def gitlab_ci_yml(target: str, *, python_version: str = DEFAULT_CI_PYTHON) -> str:
     """:func:`_gitlab_ci_yml` with every job's Python pinned to *python_version*."""
-    return _pin_ci_python(_gitlab_ci_yml(target, workbench=workbench), python_version)
+    return _pin_ci_python(_gitlab_ci_yml(target), python_version)
 
 
-def _gitlab_ci_yml(target: str, *, workbench: bool = False) -> str:
+def _gitlab_ci_yml(target: str) -> str:
     """Combined CI + deploy pipeline for GitLab CI/CD.
 
     Uses GitLab stages to enforce ordering.  The ``deploy-production``
@@ -939,7 +856,6 @@ lint:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-{_GITLAB_TEST_QUOTES_JOB if workbench else ""}
 # ── Staging ───────────────────────────────────────────────────
 deploy-staging:
   stage: deploy-staging
@@ -1147,7 +1063,6 @@ stages:
             displayName: Lint pipeline
           - script: uv run haute deploy --dry-run
             displayName: Dry-run deploy
-{_AZURE_TEST_QUOTES_JOB if workbench else ""}
   # ── Deploy to staging (only on push to main) ─────────────────
   - stage: DeployStaging
     displayName: Deploy → Staging
@@ -1223,9 +1138,7 @@ def ci_files(
     """
     if ci == "github":
         return {
-            ".github/workflows/ci.yml": github_ci_yml(
-                workbench=workbench, python_version=python_version
-            ),
+            ".github/workflows/ci.yml": github_ci_yml(python_version=python_version),
             ".github/workflows/deploy-staging.yml": github_deploy_yml(
                 target, workbench=workbench, python_version=python_version
             ),
@@ -1234,11 +1147,7 @@ def ci_files(
             ),
         }
     if ci == "gitlab":
-        return {
-            ".gitlab-ci.yml": gitlab_ci_yml(
-                target, workbench=workbench, python_version=python_version
-            )
-        }
+        return {".gitlab-ci.yml": gitlab_ci_yml(target, python_version=python_version)}
     if ci == "azure-devops":
         return {
             "azure-pipelines.yml": azure_devops_yml(

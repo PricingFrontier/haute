@@ -4,12 +4,16 @@
  * Tests: renders with default config, the factor list, adding/removing factors,
  * type toggle, column selection with auto-type detection, add rule button,
  * no cross-factor summary, breakpoints mode, stash-and-restore, accessibility,
- * match counts, validation warnings, histogram, categorical value picker, and
- * Numeric bands on Date and Datetime columns.
+ * match counts, validation warnings, histogram, categorical value picker,
+ * Numeric bands on Date and Datetime columns, and Categorical's Import from params.
  */
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, within, waitFor } from "@testing-library/react"
 import type { ReactElement } from "react"
+import { ApiError } from "../../api/client"
+import { listProjectFiles } from "../../api/projectFiles"
+import type { ProjectFolderResponse } from "../../api/types"
+import { fetchParamFile } from "../../api/workbench"
 import BandingEditor from "../../panels/editors/BandingEditor"
 import { GraphProvider } from "../../panels/GraphContext"
 
@@ -71,6 +75,12 @@ vi.mock("../../panels/editors/banding/GenerateBandsDialog", () => ({
       <button onClick={props.onClose as () => void}>Cancel</button>
     </div>
   ),
+}))
+
+vi.mock("../../api/projectFiles", () => ({ listProjectFiles: vi.fn() }))
+vi.mock("../../api/workbench", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../api/workbench")>()),
+  fetchParamFile: vi.fn(),
 }))
 
 vi.mock("../../panels/editors/banding/CategoricalValuePicker", () => ({
@@ -324,7 +334,7 @@ describe("BandingEditor", () => {
     ])
   })
 
-  it("add rule button adds appropriate empty rule type for categorical", () => {
+  it("offers a categorical factor without rules Import from params or Add manually, which adds an empty rule", () => {
     const onUpdate = vi.fn()
     const config = {
       factors: [{ banding: "categorical", column: "region", outputColumn: "region_group", rules: [] }],
@@ -332,7 +342,11 @@ describe("BandingEditor", () => {
     renderEditor(
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
     )
-    fireEvent.click(screen.getByText("Add"))
+    expect(screen.getByText("No rules yet.")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Import from params" })).toBeInTheDocument()
+    expect(screen.queryByText("Maps To")).toBeNull()
+    expect(screen.queryByRole("button", { name: /^Add$/ })).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Add manually" }))
     expect(onUpdate).toHaveBeenCalledWith("factors", expect.arrayContaining([
       expect.objectContaining({
         banding: "categorical",
@@ -921,18 +935,23 @@ describe("BandingEditor", () => {
   // ─── Feature 15: onAddRule wiring ─────────────────────────────
 
   it("passes onAddRule to BandingRulesGrid for categorical mode", () => {
+    const onUpdate = vi.fn()
+    const existing = { value: "London", assignment: "South" }
     const config = {
       factors: [{
         banding: "categorical",
         column: "region",
         outputColumn: "region_group",
-        rules: [],
+        rules: [existing],
       }],
     }
     renderEditor(
-      <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
+      <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
     )
-    expect(screen.getByText("No rules yet")).toBeTruthy()
+    fireEvent.keyDown(screen.getByLabelText("Rule 1 group name"), { key: "Enter" })
+    expect(onUpdate).toHaveBeenCalledWith("factors", [
+      expect.objectContaining({ rules: [existing, { value: "", assignment: "" }] }),
+    ])
   })
 
   // ─── Feature 16: Add manually button in breakpoints empty state ──
@@ -1203,5 +1222,122 @@ describe("BandingEditor saved input column", () => {
       />,
     )
     expect(screen.getByDisplayValue("old_age (not in input)")).toBeInTheDocument()
+  })
+})
+
+describe("BandingEditor Import from params", () => {
+  afterEach(() => {
+    cleanup()
+    vi.mocked(listProjectFiles).mockReset()
+    vi.mocked(fetchParamFile).mockReset()
+  })
+
+  /** The params folder as the Pipeline files panel lists it, holding `names`. */
+  const paramsFolder = (...names: string[]): ProjectFolderResponse => ({
+    place: "pipeline",
+    path: "params",
+    root: "rating/files",
+    writable: true,
+    entries: names.map((name) => ({
+      name,
+      path: `params/${name}`,
+      kind: name.includes(".") ? "file" : "folder",
+      modified: null,
+      revision: null,
+      size: null,
+      status: null,
+    })),
+  })
+
+  const categorical = (rules: { value: string; assignment: string }[]) => ({
+    factors: [{ banding: "categorical", column: "region", outputColumn: "region_group", rules }],
+  })
+
+  /** Opens Import, chooses `file` once the folder is listed, then `column` once its header is read. */
+  async function importFrom(open: string, file: string, column: string) {
+    fireEvent.click(screen.getByRole("button", { name: open }))
+    const panel = screen.getByRole("dialog", { name: "Import from params" })
+    const fileChoice = within(panel).getByLabelText("File")
+    await waitFor(() => expect(fileChoice).toBeEnabled())
+    fireEvent.change(fileChoice, { target: { value: file } })
+    const columnChoice = within(panel).getByLabelText("Column")
+    await waitFor(() => expect(columnChoice).toBeEnabled())
+    fireEvent.change(columnChoice, { target: { value: column } })
+    return panel
+  }
+
+  it("adds a rule mapping each value of the chosen column to itself, then closes", async () => {
+    vi.mocked(listProjectFiles).mockResolvedValue(paramsFolder("regions.csv", "notes.txt", "old"))
+    vi.mocked(fetchParamFile).mockImplementation(async (_file, column) => ({
+      columns: ["code", "region"],
+      values: column === "region" ? ["North", "South"] : [],
+    }))
+    const onUpdate = vi.fn()
+    renderEditor(<BandingEditor config={categorical([])} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Import from params" }))
+    const fileChoice = screen.getByLabelText("File")
+    await waitFor(() => expect(fileChoice).toBeEnabled())
+    // Only the folder's CSVs are offered.
+    expect(within(fileChoice).getAllByRole("option").map((option) => option.textContent)).toEqual(["", "regions.csv"])
+    fireEvent.change(fileChoice, { target: { value: "regions.csv" } })
+    const columnChoice = screen.getByLabelText("Column")
+    await waitFor(() => expect(within(columnChoice).getAllByRole("option")).toHaveLength(3))
+    fireEvent.change(columnChoice, { target: { value: "region" } })
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith("factors", [
+      expect.objectContaining({
+        rules: [{ value: "North", assignment: "North" }, { value: "South", assignment: "South" }],
+      }),
+    ]))
+    expect(fetchParamFile).toHaveBeenLastCalledWith("regions.csv", "region")
+    expect(screen.queryByRole("dialog", { name: "Import from params" })).toBeNull()
+  })
+
+  it("leaves out the values the rules already have, and says so when every value has one", async () => {
+    vi.mocked(listProjectFiles).mockResolvedValue(paramsFolder("regions.csv"))
+    vi.mocked(fetchParamFile).mockImplementation(async (_file, column) => ({
+      columns: ["region", "zone"],
+      values: column === "region" ? ["North", "South"] : column === "zone" ? ["South"] : [],
+    }))
+    const south = { value: "South", assignment: "Southern" }
+    const onUpdate = vi.fn()
+    renderEditor(<BandingEditor config={categorical([south])} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />)
+
+    const panel = await importFrom("Import", "regions.csv", "zone")
+    expect(await within(panel).findByText("Every value in zone already has a rule.")).toBeInTheDocument()
+    expect(onUpdate).not.toHaveBeenCalled()
+
+    fireEvent.change(within(panel).getByLabelText("Column"), { target: { value: "region" } })
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith("factors", [
+      expect.objectContaining({ rules: [south, { value: "North", assignment: "North" }] }),
+    ]))
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Import from params" })).toBeNull())
+  })
+
+  it("shows why a column cannot give values, and why the folder could not be listed with Retry", async () => {
+    vi.mocked(listProjectFiles)
+      .mockRejectedValueOnce(new ApiError("HTTP 409", 409, "The pipeline sits at the project root."))
+      .mockResolvedValue(paramsFolder("regions.csv"))
+    const refused = "rating/files/params/regions.csv has no column region."
+    vi.mocked(fetchParamFile).mockImplementation(async (_file, column) => {
+      if (column === undefined) return { columns: ["region"], values: [] }
+      throw new ApiError("HTTP 409", 409, refused)
+    })
+    const onUpdate = vi.fn()
+    renderEditor(<BandingEditor config={categorical([])} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Import from params" }))
+    expect(await screen.findByRole("alert")).toHaveTextContent("The pipeline sits at the project root.")
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+    const fileChoice = screen.getByLabelText("File")
+    await waitFor(() => expect(fileChoice).toBeEnabled())
+    fireEvent.change(fileChoice, { target: { value: "regions.csv" } })
+    const columnChoice = screen.getByLabelText("Column")
+    await waitFor(() => expect(columnChoice).toBeEnabled())
+    fireEvent.change(columnChoice, { target: { value: "region" } })
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(refused)
+    expect(onUpdate).not.toHaveBeenCalled()
   })
 })

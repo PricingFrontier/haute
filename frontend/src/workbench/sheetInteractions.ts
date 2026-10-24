@@ -80,16 +80,22 @@ export interface SectionDrop {
   place: { split: string; at: number } | { index: number }
 }
 
+/** The point is inside the element's box. */
+function within(clientX: number, clientY: number, box: DOMRect): boolean {
+  return clientX >= box.left && clientX <= box.right && clientY >= box.top && clientY <= box.bottom
+}
+
 /**
- * The showing sheet and a pointer's place on it, unzoomed, or null off the viewport or above
- * the sheet; beside the sheet, left or right of it, is on it, a component landing at its edge.
+ * The showing sheet and a pointer's place on it, unzoomed, or null off the viewport, over the
+ * schema's pane covering it or above the sheet; beside the sheet, left or right of it, is on
+ * it, a component landing at its edge.
  */
 function onSheet(clientX: number, clientY: number): { page: Page; px: number; py: number } | null {
-  const { sheet, viewport, zoom, pageId } = useWorkbenchViewStore.getState()
+  const { sheet, viewport, schemaPane, zoom, pageId } = useWorkbenchViewStore.getState()
   const { form } = useWorkbenchFormStore.getState()
   if (sheet === null || viewport === null || form === null) return null
-  const seen = viewport.getBoundingClientRect()
-  if (clientX < seen.left || clientX > seen.right || clientY < seen.top || clientY > seen.bottom) return null
+  if (!within(clientX, clientY, viewport.getBoundingClientRect())) return null
+  if (schemaPane !== null && within(clientX, clientY, schemaPane.getBoundingClientRect())) return null
   const origin = sheet.getBoundingClientRect()
   const px = (clientX - origin.left) / zoom
   const py = (clientY - origin.top) / zoom

@@ -23,7 +23,7 @@ export const APP_SET_COLUMNS: ReadonlySet<string> = new Set([...QUOTE_DETAILS_MA
 export function openRelease(form: FormSpec, revision: string, release: string): void {
   useWorkbenchFormStore.getState().install(form, revision)
   useWorkbenchViewStore.setState({ underwriterApp: true })
-  useWorkbenchViewStore.getState().showSection("preview")
+  useWorkbenchViewStore.getState().showMode("preview")
   useWorkbenchPreviewStore.getState().setLocked(APP_SET_COLUMNS)
   useWorkbenchPricingStore.getState().setQuotePricer(async (_form, quote) => {
     try {

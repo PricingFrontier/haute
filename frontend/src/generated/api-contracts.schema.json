@@ -1066,7 +1066,7 @@
     },
     "ColumnLook": {
       "additionalProperties": false,
-      "description": "How one of a Table's columns, or one of a Collection's fields, looks and when it shows,\nits field by table and column id: each colour the component's own while None, its values\nplaced as its type puts them, or as the Collection places its boxes', while ``align`` is\n``auto``, its label over a Table's column as its values sit, or as the Collection places\nits labels, while ``header_align`` is, while ``width`` is None, a Table's column as wide as\nthe grid makes it and a Collection's box as wide as the Collection makes it, and shown\nwith its component while ``show_when`` has no conditions.",
+      "description": "How one of a Table's columns, or one of a Collection's fields, looks and when it shows,\nits field by table and column id: each colour the component's own while None, its values\nplaced as its type puts them, or as the Collection places its boxes', while ``align`` is\n``auto``, its label as its component places its labels while ``header_align`` is, and\nover a Table's column as its values sit while the Table's is too, while ``width`` is\nNone, a Table's column as wide as the grid makes it and a Collection's box as wide as the\nCollection makes it, and shown with its component while ``show_when`` has no\nconditions.",
       "properties": {
         "align": {
           "default": "auto",
@@ -12928,7 +12928,7 @@
       "type": "object"
     },
     "SaveCapture": {
-      "description": "A write's capture on the clone's save ledger, answered the same way by every route\nthat writes project files: the pipeline's save, the form's save, a test-quote write, a\nproject file written or deleted, and ``POST /api/git/capture``.\n\n``warnings`` are non-fatal, since the write has landed: a capture that failed among\nthem, and anything else left to see to (a transform with no code); an empty list means\nno issues. ``git_sha`` is the ledger commit the write produced when the clone has a\nworking branch, else null. ``identity_required`` is true only when the capture was\nskipped because git has no commit identity (a restored hosted container), for the\neditor to ask for one. ``uncaptured`` names the files, relative to the project in POSIX\nform, that a skipped or failed capture left off the ledger: the editor keeps them and\n``POST /api/git/capture`` takes them later.",
+      "description": "A write's capture on the clone's save ledger, answered the same way by every route\nthat writes project files: the pipeline's save, the form's save, a project file written\nor deleted, and ``POST /api/git/capture``.\n\n``warnings`` are non-fatal, since the write has landed: a capture that failed among\nthem, and anything else left to see to (a transform with no code); an empty list means\nno issues. ``git_sha`` is the ledger commit the write produced when the clone has a\nworking branch, else null. ``identity_required`` is true only when the capture was\nskipped because git has no commit identity (a restored hosted container), for the\neditor to ask for one. ``uncaptured`` names the files, relative to the project in POSIX\nform, that a skipped or failed capture left off the ledger: the editor keeps them and\n``POST /api/git/capture`` takes them later.",
       "properties": {
         "git_sha": {
           "anyOf": [
@@ -13737,6 +13737,17 @@
           "title": "Header",
           "type": "string"
         },
+        "header_align": {
+          "default": "auto",
+          "enum": [
+            "auto",
+            "left",
+            "center",
+            "right"
+          ],
+          "title": "Header Align",
+          "type": "string"
+        },
         "header_bold": {
           "default": true,
           "title": "Header Bold",
@@ -13887,6 +13898,7 @@
         "header_orientation",
         "header_color",
         "header_font_color",
+        "header_align",
         "grid_color",
         "grid_weight",
         "grid_style",
@@ -16000,6 +16012,10 @@
           "title": "Id",
           "type": "string"
         },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
         "last_saved_at": {
           "title": "Last Saved At",
           "type": "string"
@@ -16040,6 +16056,10 @@
           ],
           "default": null,
           "title": "Note By"
+        },
+        "option": {
+          "title": "Option",
+          "type": "integer"
         },
         "owner": {
           "title": "Owner",
@@ -16082,6 +16102,30 @@
           ],
           "default": null,
           "title": "Release"
+        },
+        "source_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Label"
+        },
+        "source_option": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Option"
         },
         "source_quote_id": {
           "anyOf": [
@@ -16136,6 +16180,8 @@
       "required": [
         "id",
         "reference",
+        "option",
+        "label",
         "title",
         "details",
         "stage",
@@ -16159,6 +16205,8 @@
         "note_at",
         "source_quote_id",
         "source_reference",
+        "source_option",
+        "source_label",
         "source_revision",
         "relation"
       ],
@@ -16228,7 +16276,7 @@
       "type": "object"
     },
     "WorkbenchAppQuoteCreateRequest": {
-      "description": "A new quote, and the quote it is made from when it is.",
+      "description": "A new quote, and the quote it is made from when it is. It is made unpriced, ``shown``\nnull, and priced as it opens. ``reference`` is the reference the underwriter keyed,\nwhich every creation but an alternative's names; an alternative takes its source's.",
       "properties": {
         "form_revision": {
           "title": "Form Revision",
@@ -16239,6 +16287,19 @@
           "minLength": 8,
           "title": "Operation",
           "type": "string"
+        },
+        "reference": {
+          "anyOf": [
+            {
+              "maxLength": 400,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference"
         },
         "release": {
           "title": "Release",
@@ -16794,6 +16855,14 @@
           "title": "Id",
           "type": "string"
         },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "option": {
+          "title": "Option",
+          "type": "integer"
+        },
         "reference": {
           "title": "Reference",
           "type": "string"
@@ -16815,6 +16884,8 @@
       "required": [
         "id",
         "reference",
+        "option",
+        "label",
         "relation",
         "revision"
       ],
@@ -17135,273 +17206,6 @@
       ],
       "title": "WorkbenchTablesResponse",
       "type": "object"
-    },
-    "WorkbenchTestQuoteChange": {
-      "description": "One place the priced response differs from the accepted one.",
-      "properties": {
-        "accepted": {
-          "default": null,
-          "title": "Accepted"
-        },
-        "kind": {
-          "enum": [
-            "changed",
-            "added",
-            "removed"
-          ],
-          "title": "Kind",
-          "type": "string"
-        },
-        "path": {
-          "title": "Path",
-          "type": "string"
-        },
-        "priced": {
-          "default": null,
-          "title": "Priced"
-        }
-      },
-      "required": [
-        "path",
-        "kind",
-        "accepted",
-        "priced"
-      ],
-      "title": "WorkbenchTestQuoteChange",
-      "type": "object"
-    },
-    "WorkbenchTestQuoteCompareResponse": {
-      "description": "Every place a run's response, or the request it priced, differs from the revision it\nread, a request's places under ``request.``; none: unchanged.",
-      "properties": {
-        "changes": {
-          "items": {
-            "$ref": "#/$defs/WorkbenchTestQuoteChange"
-          },
-          "title": "Changes",
-          "type": "array"
-        },
-        "number": {
-          "title": "Number",
-          "type": "integer"
-        },
-        "revision_digest": {
-          "title": "Revision Digest",
-          "type": "string"
-        }
-      },
-      "required": [
-        "number",
-        "revision_digest",
-        "changes"
-      ],
-      "title": "WorkbenchTestQuoteCompareResponse",
-      "type": "object"
-    },
-    "WorkbenchTestQuoteOpenResponse": {
-      "description": "A test quote's newest revision, its values carried onto the view's form.\n\n``dropped`` names each filled value with no place on that form, ``table.column`` by the\nnames it was saved under; ``response`` is the response the quote was accepted with.",
-      "properties": {
-        "dropped": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Dropped",
-          "type": "array"
-        },
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
-        "name": {
-          "title": "Name",
-          "type": "string"
-        },
-        "number": {
-          "title": "Number",
-          "type": "integer"
-        },
-        "response": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Response"
-        },
-        "revision_digest": {
-          "title": "Revision Digest",
-          "type": "string"
-        },
-        "values": {
-          "additionalProperties": {
-            "items": {
-              "additionalProperties": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "boolean"
-                  }
-                ]
-              },
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "title": "Values",
-          "type": "object"
-        }
-      },
-      "required": [
-        "id",
-        "name",
-        "number",
-        "revision_digest",
-        "values",
-        "dropped",
-        "response"
-      ],
-      "title": "WorkbenchTestQuoteOpenResponse",
-      "type": "object"
-    },
-    "WorkbenchTestQuoteSummary": {
-      "description": "A test quote as the list shows it: its newest revision's number, saver and time.",
-      "properties": {
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
-        "name": {
-          "title": "Name",
-          "type": "string"
-        },
-        "number": {
-          "title": "Number",
-          "type": "integer"
-        },
-        "priced": {
-          "title": "Priced",
-          "type": "boolean"
-        },
-        "saved_at": {
-          "title": "Saved At",
-          "type": "string"
-        },
-        "saved_by": {
-          "title": "Saved By",
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "name",
-        "number",
-        "saved_by",
-        "saved_at",
-        "priced"
-      ],
-      "title": "WorkbenchTestQuoteSummary",
-      "type": "object"
-    },
-    "WorkbenchTestQuoteWriteResponse": {
-      "description": "A test-quote write and its capture on the save ledger.\n\n``quote`` is the test quote as written, null after a delete.",
-      "properties": {
-        "git_sha": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Git Sha"
-        },
-        "identity_required": {
-          "default": false,
-          "title": "Identity Required",
-          "type": "boolean"
-        },
-        "quote": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/WorkbenchTestQuoteSummary"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "uncaptured": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Uncaptured",
-          "type": "array"
-        },
-        "warnings": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Warnings",
-          "type": "array"
-        }
-      },
-      "required": [
-        "warnings",
-        "git_sha",
-        "identity_required",
-        "uncaptured",
-        "quote"
-      ],
-      "title": "WorkbenchTestQuoteWriteResponse",
-      "type": "object"
-    },
-    "WorkbenchTestQuotesBranchResponse": {
-      "description": "The branch the test quotes are on now, which a save names; null outside a\nrepository. Read without opening the test-quote file, so a file an older Haute wrote,\nwhich a save brings up to date, does not stop it.",
-      "properties": {
-        "branch": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Branch"
-        }
-      },
-      "required": [
-        "branch"
-      ],
-      "title": "WorkbenchTestQuotesBranchResponse",
-      "type": "object"
-    },
-    "WorkbenchTestQuotesResponse": {
-      "description": "The project's test quotes, the most recently saved first.",
-      "properties": {
-        "quotes": {
-          "items": {
-            "$ref": "#/$defs/WorkbenchTestQuoteSummary"
-          },
-          "title": "Quotes",
-          "type": "array"
-        }
-      },
-      "required": [
-        "quotes"
-      ],
-      "title": "WorkbenchTestQuotesResponse",
-      "type": "object"
     }
   },
   "$id": "https://haute.dev/schemas/api-contracts.v1.json",
@@ -17711,21 +17515,6 @@
     "WorkbenchTablesResponse": {
       "$ref": "#/$defs/WorkbenchTablesResponse"
     },
-    "WorkbenchTestQuoteCompareResponse": {
-      "$ref": "#/$defs/WorkbenchTestQuoteCompareResponse"
-    },
-    "WorkbenchTestQuoteOpenResponse": {
-      "$ref": "#/$defs/WorkbenchTestQuoteOpenResponse"
-    },
-    "WorkbenchTestQuoteWriteResponse": {
-      "$ref": "#/$defs/WorkbenchTestQuoteWriteResponse"
-    },
-    "WorkbenchTestQuotesBranchResponse": {
-      "$ref": "#/$defs/WorkbenchTestQuotesBranchResponse"
-    },
-    "WorkbenchTestQuotesResponse": {
-      "$ref": "#/$defs/WorkbenchTestQuotesResponse"
-    },
     "execution_strategy_diagnostic": {
       "$ref": "#/$defs/ExecutionStrategyDiagnosticPayload"
     },
@@ -17806,11 +17595,6 @@
     "WorkbenchFormResponse",
     "WorkbenchFormSaveResponse",
     "WorkbenchParamFileResponse",
-    "WorkbenchTestQuotesResponse",
-    "WorkbenchTestQuotesBranchResponse",
-    "WorkbenchTestQuoteWriteResponse",
-    "WorkbenchTestQuoteOpenResponse",
-    "WorkbenchTestQuoteCompareResponse",
     "WorkbenchAppReleaseResponse",
     "WorkbenchAppFormResponse",
     "WorkbenchAppPriceResponse",
@@ -17966,12 +17750,7 @@
       "WorkbenchTablesResponse",
       "WorkbenchFormResponse",
       "WorkbenchFormSaveResponse",
-      "WorkbenchParamFileResponse",
-      "WorkbenchTestQuotesResponse",
-      "WorkbenchTestQuotesBranchResponse",
-      "WorkbenchTestQuoteWriteResponse",
-      "WorkbenchTestQuoteOpenResponse",
-      "WorkbenchTestQuoteCompareResponse"
+      "WorkbenchParamFileResponse"
     ],
     "workbench-app": [
       "WorkbenchAppReleaseResponse",

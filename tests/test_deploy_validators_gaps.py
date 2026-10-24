@@ -343,20 +343,27 @@ _FORM_TABLES: list[dict[str, Any]] = [
 ]
 
 
+def _identity() -> list[dict[str, str]]:
+    """The quote's reference and option, which every table but quote_details leads with."""
+    return [_column("quote_reference", "str"), _column("quote_option", "int")]
+
+
 def _input_copy() -> list[dict[str, Any]]:
     """The Workbench Input's tables as the editor copies them from ``_FORM_TABLES``."""
     return [
         {
             "name": "policy",
             "rows": "one",
-            "columns": [_column("limit", "float"), _column("region", "str")],
+            "columns": [*_identity(), _column("limit", "float"), _column("region", "str")],
         },
-        {"name": "items", "rows": "many", "columns": [_column("value", "float")]},
+        {"name": "items", "rows": "many", "columns": [*_identity(), _column("value", "float")]},
     ]
 
 
 def _output_copy() -> list[dict[str, Any]]:
-    return [{"name": "pricing", "rows": "one", "columns": [_column("premium", "float")]}]
+    return [
+        {"name": "pricing", "rows": "one", "columns": [*_identity(), _column("premium", "float")]}
+    ]
 
 
 def _workbench_project(root: Path, *, enabled: bool = True, form: bool = True) -> None:
@@ -447,7 +454,7 @@ class TestValidateDeployWorkbenchForm:
             ),
             (
                 "input",
-                lambda tables: tables[0]["columns"][0].update(type="int"),
+                lambda tables: tables[0]["columns"][2].update(type="int"),
                 "column 'policy.limit' is float in the form and int in the copy",
             ),
             (
@@ -477,7 +484,7 @@ class TestValidateDeployWorkbenchForm:
             ),
             (
                 "output",
-                lambda tables: tables[0]["columns"][0].update(type="int"),
+                lambda tables: tables[0]["columns"][2].update(type="int"),
                 "column 'pricing.premium' is float in the form and int in the copy",
             ),
         ],
@@ -510,6 +517,23 @@ class TestValidateDeployWorkbenchForm:
         assert error.startswith(f"{owner} does not match forms/form.json: ")
         assert named in error
         assert "Save the project in Haute's editor" in error
+
+    def test_a_table_whose_own_column_takes_an_identity_name_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        _FORM_TABLES[1]["columns"].append({"id": "c_option", "name": "quote_option", "type": "str"})
+        try:
+            _workbench_project(tmp_path)
+        finally:
+            _FORM_TABLES[1]["columns"].pop()
+        input_copy = _input_copy()
+        input_copy[1]["columns"] = [_column("value", "float"), _column("quote_option", "str")]
+
+        assert _form_check_errors(tmp_path, input_copy, _output_copy()) == [
+            "forms/form.json: items.quote_option has a name Haute keeps for the quote's "
+            "identity in every table: rename it, and the table takes quote_reference and "
+            "quote_option at the next save."
+        ]
 
     def test_a_copy_saved_before_quote_details_existed_asks_for_a_save(
         self, tmp_path: Path

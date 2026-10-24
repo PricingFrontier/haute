@@ -67,6 +67,7 @@ vi.mock("../../utils/makePreviewData", () => ({
     preview: opts.preview ?? [],
     error: opts.error ?? null,
     seed_plan: opts.seed_plan ?? [],
+    selected_frame: opts.selected_frame,
   })),
 }))
 
@@ -131,6 +132,17 @@ function envelope(
 
 function epoch(): number {
   return useNodeDataStore.getState().epoch
+}
+
+const WORKBENCH_TABLES = [
+  { name: "pricing_output", rows: "one", columns: [{ name: "premium", type: "float" }] },
+  { name: "layers", rows: "many", columns: [{ name: "layer", type: "int" }] },
+]
+
+function workbenchOutput(tables = WORKBENCH_TABLES, data: Record<string, unknown> = {}): Node {
+  return makeNode("response", "workbenchOutput", {
+    data: { label: "response", nodeType: "workbenchOutput", config: { tables }, ...data },
+  })
 }
 
 async function renderLoaded(nodes: Node[], edges: Edge[] = []) {
@@ -256,24 +268,67 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
 
   it("previews a Workbench Output's first table", async () => {
     mockPreview.mockResolvedValue(envelope("response"))
-    const response = makeNode("response", "workbenchOutput", {
-      data: {
-        label: "response",
-        nodeType: "workbenchOutput",
-        config: {
-          tables: [
-            { name: "pricing_output", rows: "one", columns: [{ name: "premium", type: "float" }] },
-            { name: "layers", rows: "many", columns: [{ name: "layer", type: "int" }] },
-          ],
-        },
-      },
-    })
+    const response = workbenchOutput()
     const { result } = await renderLoaded([response])
 
     act(() => result.current.fetchPreview(response, { debounceMs: 0 }))
 
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1), { timeout: STEP_TIMEOUT_MS })
     expect(mockPreview.mock.calls[0][0]).toMatchObject({ nodeId: "response", portLabel: "pricing_output" })
+    await settle(result)
+  })
+
+  it("previews the table chosen in a Workbench Output's preview on Refresh and selecting it again", async () => {
+    mockPreview.mockImplementation(async ({ nodeId, portLabel }) =>
+      envelope(nodeId, [], portLabel === "layers" ? "layer" : "premium"),
+    )
+    const other = makeNode("other")
+    const { result } = await renderLoaded([workbenchOutput(), other])
+    // Its flat columns are the first table's, from the preview before the choice.
+    const response = workbenchOutput(WORKBENCH_TABLES, {
+      _columns: [{ name: "premium", dtype: "f64" }],
+      _frameColumns: {
+        pricing_output: [{ name: "premium", dtype: "f64" }],
+        layers: [{ name: "layer", dtype: "i64" }],
+      },
+      _columnsSource: "live",
+      _columnsStructuralVersion: useGraphStore.getState().structuralVersion,
+    })
+
+    act(() => result.current.previewNodeFrame("response", "layers"))
+    await waitFor(() => expect(result.current.previewData?.selected_frame).toBe("layers"))
+    await settle(result)
+
+    act(() => result.current.fetchPreview(other, { debounceMs: 0 }))
+    await waitFor(() => expect(result.current.previewData?.nodeId).toBe("other"))
+    await settle(result)
+    act(() => result.current.fetchPreview(response, { debounceMs: 0 }))
+    expect(result.current.previewData).toMatchObject({ nodeId: "response", selected_frame: "layers" })
+    await settle(result)
+    expect(mockPreview).toHaveBeenCalledTimes(2)
+
+    act(() => result.current.refreshPreview(response))
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(3), { timeout: STEP_TIMEOUT_MS })
+    expect(mockPreview.mock.calls[2][0]).toMatchObject({
+      nodeId: "response",
+      portLabel: "layers",
+      requestedPreviewColumns: ["layer"],
+    })
+    await settle(result)
+    expect(result.current.previewData?.selected_frame).toBe("layers")
+  })
+
+  it("previews a Workbench Output's first table once the table chosen in it is gone", async () => {
+    mockPreview.mockResolvedValue(envelope("response"))
+    const { result } = await renderLoaded([workbenchOutput()])
+
+    act(() => result.current.previewNodeFrame("response", "layers"))
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1), { timeout: STEP_TIMEOUT_MS })
+    await settle(result)
+
+    act(() => result.current.refreshPreview(workbenchOutput(WORKBENCH_TABLES.slice(0, 1))))
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(2), { timeout: STEP_TIMEOUT_MS })
+    expect(mockPreview.mock.calls[1][0]).toMatchObject({ nodeId: "response", portLabel: "pricing_output" })
     await settle(result)
   })
 

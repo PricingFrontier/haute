@@ -812,9 +812,11 @@ describe("NodePanel", () => {
     expect(screen.queryByTestId("DataInputEditor")).not.toBeInTheDocument()
   })
 
-  it("close button calls onClose", () => {
+  it("close button, the side panels' shared red Close, calls onClose", () => {
     const { props } = renderPanel()
     const closeBtn = screen.getByTitle("Close")
+    expect(closeBtn).toHaveClass("side-panel-close")
+    expect(closeBtn).toHaveAttribute("data-testid", "node-panel-close")
     fireEvent.click(closeBtn)
     expect(props.onClose).toHaveBeenCalledOnce()
   })

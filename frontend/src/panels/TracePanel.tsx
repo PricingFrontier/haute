@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { AlertTriangle, Copy, Download, Info, Printer, X, Scan } from "lucide-react"
+import { AlertTriangle, Copy, Download, Info, Printer, Scan } from "lucide-react"
 import type { TraceCorrelationDiagnostic, TraceOmission, TraceResult, TraceStep } from "../types/trace"
 import PanelShell from "./PanelShell"
+import { SidePanelClose } from "../haute-ui"
 import { StepCard } from "../trace/StepCard"
 import { TraceNavigationContext, TraceStepsContext, type TraceNavigation } from "../trace/traceContext"
 import useUIStore from "../stores/useUIStore"
@@ -342,14 +343,7 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
               <Printer size={13} />
             </button>
           </div>
-          <button
-            onClick={onClose}
-            aria-label="Close trace"
-            className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
-            style={{ color: "var(--text-muted)" }}
-          >
-            <X size={14} />
-          </button>
+          <SidePanelClose aria-label="Close trace" onClick={onClose} />
         </div>
 
         <div

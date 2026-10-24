@@ -1173,8 +1173,8 @@ export interface GitMilestoneFork {
 }
 /**
  * A write's capture on the clone's save ledger, answered the same way by every route
- * that writes project files: the pipeline's save, the form's save, a test-quote write, a
- * project file written or deleted, and ``POST /api/git/capture``.
+ * that writes project files: the pipeline's save, the form's save, a project file written
+ * or deleted, and ``POST /api/git/capture``.
  *
  * ``warnings`` are non-fatal, since the write has landed: a capture that failed among
  * them, and anything else left to see to (a transform with no code); an empty list means
@@ -2650,6 +2650,7 @@ export interface TableInputWidget {
   groups: boolean;
   h: number;
   header: 'caps' | 'plain';
+  header_align: 'auto' | 'left' | 'center' | 'right';
   header_bold: boolean;
   header_color: string | null;
   header_font_color: string | null;
@@ -2672,10 +2673,11 @@ export interface TableInputWidget {
  * How one of a Table's columns, or one of a Collection's fields, looks and when it shows,
  * its field by table and column id: each colour the component's own while None, its values
  * placed as its type puts them, or as the Collection places its boxes', while ``align`` is
- * ``auto``, its label over a Table's column as its values sit, or as the Collection places
- * its labels, while ``header_align`` is, while ``width`` is None, a Table's column as wide as
- * the grid makes it and a Collection's box as wide as the Collection makes it, and shown
- * with its component while ``show_when`` has no conditions.
+ * ``auto``, its label as its component places its labels while ``header_align`` is, and
+ * over a Table's column as its values sit while the Table's is too, while ``width`` is
+ * None, a Table's column as wide as the grid makes it and a Collection's box as wide as the
+ * Collection makes it, and shown with its component while ``show_when`` has no
+ * conditions.
  */
 export interface ColumnLook {
   align: 'auto' | 'left' | 'center' | 'right';
@@ -2846,82 +2848,6 @@ export interface WorkbenchParamFileResponse {
   values: string[];
 }
 /**
- * The project's test quotes, the most recently saved first.
- */
-export interface WorkbenchTestQuotesResponse {
-  quotes: WorkbenchTestQuoteSummary[];
-}
-/**
- * A test quote as the list shows it: its newest revision's number, saver and time.
- */
-export interface WorkbenchTestQuoteSummary {
-  id: string;
-  name: string;
-  number: number;
-  priced: boolean;
-  saved_at: string;
-  saved_by: string;
-}
-/**
- * The branch the test quotes are on now, which a save names; null outside a
- * repository. Read without opening the test-quote file, so a file an older Haute wrote,
- * which a save brings up to date, does not stop it.
- */
-export interface WorkbenchTestQuotesBranchResponse {
-  branch: string | null;
-}
-/**
- * A test-quote write and its capture on the save ledger.
- *
- * ``quote`` is the test quote as written, null after a delete.
- */
-export interface WorkbenchTestQuoteWriteResponse {
-  git_sha: string | null;
-  identity_required: boolean;
-  quote: WorkbenchTestQuoteSummary | null;
-  uncaptured: string[];
-  warnings: string[];
-}
-/**
- * A test quote's newest revision, its values carried onto the view's form.
- *
- * ``dropped`` names each filled value with no place on that form, ``table.column`` by the
- * names it was saved under; ``response`` is the response the quote was accepted with.
- */
-export interface WorkbenchTestQuoteOpenResponse {
-  dropped: string[];
-  id: string;
-  name: string;
-  number: number;
-  response: {
-    [k: string]: unknown;
-  } | null;
-  revision_digest: string;
-  values: {
-    [k: string]: {
-      [k: string]: string | boolean;
-    }[];
-  };
-}
-/**
- * Every place a run's response, or the request it priced, differs from the revision it
- * read, a request's places under ``request.``; none: unchanged.
- */
-export interface WorkbenchTestQuoteCompareResponse {
-  changes: WorkbenchTestQuoteChange[];
-  number: number;
-  revision_digest: string;
-}
-/**
- * One place the priced response differs from the accepted one.
- */
-export interface WorkbenchTestQuoteChange {
-  accepted: unknown;
-  kind: 'changed' | 'added' | 'removed';
-  path: string;
-  priced: unknown;
-}
-/**
  * The underwriter app's release, and who the host signed in.
  */
 export interface WorkbenchAppReleaseResponse {
@@ -2985,17 +2911,21 @@ export interface WorkbenchAppQuote {
   final_revision: number | null;
   form_revision: string;
   id: string;
+  label: string;
   last_saved_at: string;
   last_saved_by: string;
   latest: number;
   note: string;
   note_at: string | null;
   note_by: string | null;
+  option: number;
   owner: string;
   priced: boolean;
   reference: string;
   relation: 'duplicate' | 'renewal' | 'alternative' | null;
   release: string | null;
+  source_label: string | null;
+  source_option: number | null;
   source_quote_id: string | null;
   source_reference: string | null;
   source_revision: number | null;
@@ -3058,6 +2988,8 @@ export interface WorkbenchAppQuoteHistoryResponse {
  */
 export interface WorkbenchAppRelatedQuote {
   id: string;
+  label: string;
+  option: number;
   reference: string;
   relation: 'duplicate' | 'renewal' | 'alternative';
   revision: number;
@@ -3120,11 +3052,14 @@ export interface WorkbenchAppPriceRequest {
   };
 }
 /**
- * A new quote, and the quote it is made from when it is.
+ * A new quote, and the quote it is made from when it is. It is made unpriced, ``shown``
+ * null, and priced as it opens. ``reference`` is the reference the underwriter keyed,
+ * which every creation but an alternative's names; an alternative takes its source's.
  */
 export interface WorkbenchAppQuoteCreateRequest {
   form_revision: string;
   operation: string;
+  reference?: string | null;
   release: string;
   shown?: {
     [k: string]: {

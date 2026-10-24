@@ -81,7 +81,7 @@ export interface QuotesQuery {
 export type QuoteRelation = WorkbenchAppQuoteSource["relation"]
 
 /** What a save sends: the values on the sheets drawn from `revision` of `release`, and the prices shown for them or null. */
-export type QuoteSave = Required<Omit<WorkbenchAppQuoteCreateRequest, "source">>
+export type QuoteSave = Required<Omit<WorkbenchAppQuoteCreateRequest, "source" | "reference">>
 
 /** The quote and revision a new quote is made from, and how. */
 export type QuoteSource = WorkbenchAppQuoteSource
@@ -117,9 +117,12 @@ async function quoteResponse(data: unknown): Promise<WorkbenchAppQuoteResponse> 
   return expectGeneratedContract("WorkbenchAppQuoteResponse", (await workbenchValidators()).validateWorkbenchAppQuoteResponse, data)
 }
 
-/** A new quote, made from `source` when given. */
-export async function createAppQuote(save: QuoteSave, source: QuoteSource | null): Promise<WorkbenchAppQuoteResponse> {
-  const body: WorkbenchAppQuoteCreateRequest = { ...save, source }
+/**
+ * A new quote under `reference`, the reference the underwriter keyed, made from `source`
+ * when given; an alternative names none, taking its source's.
+ */
+export async function createAppQuote(save: QuoteSave, source: QuoteSource | null, reference: string | null): Promise<WorkbenchAppQuoteResponse> {
+  const body: WorkbenchAppQuoteCreateRequest = { ...save, source, reference }
   return quoteResponse(await post<unknown>("/api/app/quotes", body, { timeout: PRICE_TIMEOUT_MS }))
 }
 

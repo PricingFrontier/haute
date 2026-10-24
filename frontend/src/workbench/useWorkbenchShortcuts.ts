@@ -20,12 +20,17 @@ function onSheet(target: EventTarget | null, viewport: HTMLElement | null): bool
   return viewport !== null && viewport.contains(target)
 }
 
+/** The keystroke landed inside `element`, such as the schema's pane while it is open. */
+function inside(target: EventTarget | null, element: HTMLElement | null): boolean {
+  return element !== null && target instanceof Node && element.contains(target)
+}
+
 /**
  * The workbench view's keyboard shortcuts, registered while it shows (specs/workbench):
  * Ctrl+S saves the project through the host, as the toolbar's Save does, with a focused
  * field's edit included; building or in Preview, Ctrl+Z and Ctrl+Shift+Z (or Ctrl+Y) undo
- * and redo an edit outside a text field. While the sheets show, building or in Preview,
- * Ctrl+1 fits the sheet to its viewport; while building, Escape closes the sheet's own
+ * and redo an edit outside a text field. Building or in Preview, Ctrl+1 fits the sheet to
+ * its viewport; while building, Escape closes the sheet's own
  * panel or the section's and, with a component selected, Escape deselects it, Delete or
  * Backspace removes it, Ctrl+D duplicates it, Ctrl+C copies it, the arrow keys nudge it
  * by a grid step (Shift: a pixel), kept inside its section, and with Ctrl resize it from
@@ -33,7 +38,7 @@ function onSheet(target: EventTarget | null, viewport: HTMLElement | null): bool
  * growing to hold it, a burst of nudges or resizes being one undo step, those from the sheet or with nothing
  * focused, never from a panel, the toolbar or a tab; selected or not, Ctrl+V pastes the
  * component copied onto the sheet showing; none of that from a control, whose own keys
- * pick an option. A section header's own keys are its own. Keys in a modal dialog are the
+ * pick an option, or from inside the schema's pane, whose keys are its own. A section header's own keys are its own. Keys in a modal dialog are the
  * dialog's, as they are for the pipeline editor's shortcuts.
  */
 export default function useWorkbenchShortcuts(onSave: () => void): void {
@@ -53,7 +58,7 @@ export default function useWorkbenchShortcuts(onSave: () => void): void {
       }
       if (isTypingTarget(e.target)) return
       const view = useWorkbenchViewStore.getState()
-      const previewing = view.section === "preview"
+      const previewing = view.mode === "preview"
       if (mod && key === "z" && !e.shiftKey) {
         e.preventDefault()
         forms.undo()
@@ -64,7 +69,7 @@ export default function useWorkbenchShortcuts(onSave: () => void): void {
         forms.redo()
         return
       }
-      if ((view.section !== "sheets" && !previewing) || forms.form === null || isFormControl(e.target)) return
+      if (forms.form === null || isFormControl(e.target) || inside(e.target, view.schemaPane)) return
       if (mod && key === "1") {
         e.preventDefault()
         view.fitZoom()

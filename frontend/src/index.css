@@ -106,7 +106,7 @@
   --warning-search-outline: rgba(234,179,8,.50);
 
   /* Danger (destructive / remove / error states).  Used by menu-item--danger,
-     icon-danger-btn, node-close-btn.  Soft variant is the low-opacity
+     icon-danger-btn and side panels' Close (side-panel.css).  Soft variant is the low-opacity
      background for hover/focus; hover is the darker shade used when the
      solid background should deepen on interaction. */
   --danger: #ef4444;
@@ -121,6 +121,11 @@
   --danger-soft-strong: rgba(239,68,68,.15);
   --danger-border: rgba(239,68,68,.20);
   --danger-border-strong: rgba(239,68,68,.30);
+
+  /* Caution: orange, between warning and danger, for a value present but of the
+     wrong kind (a Workbench Output column whose frame column has another type),
+     told apart from danger's missing one. */
+  --caution: #f97316;
 
   /* ── Success role tokens ──────────────────────────────────────────
      Functional layer over the success intensity ladder above.  Call
@@ -760,16 +765,6 @@ html, body, #root {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-soft);
-}
-
-/* NodePanel close button — solid danger background with darker
-   hover state (no inline style mutation on hover). */
-.node-close-btn {
-  background: var(--danger-solid);
-}
-.node-close-btn:hover,
-.node-close-btn:focus-visible {
-  background: var(--danger-hover);
 }
 
 /* TracePanel "N pass-through nodes hidden" chip — rest background

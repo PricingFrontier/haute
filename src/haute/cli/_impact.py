@@ -207,7 +207,7 @@ def _impact_records(
         )
         raise SystemExit(1)
     try:
-        records = test_quote_requests(tq_dir, project_root=project_root)
+        records = test_quote_requests(tq_dir)
     except (OSError, ValueError) as exc:
         click.echo(f"Error: Could not read the test quotes in {tq_dir}: {exc}", err=True)
         raise SystemExit(1) from exc

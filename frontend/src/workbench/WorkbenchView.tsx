@@ -6,14 +6,12 @@ import useUIStore from "../stores/useUIStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPricingStore, { usePricingContext } from "../stores/useWorkbenchPricingStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
-import useWorkbenchTestQuotesStore from "../stores/useWorkbenchTestQuotesStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { pricingBasis } from "../utils/workbenchForm"
 import PageTabs from "./PageTabs"
 import { priceSample } from "./priceSample"
 import PropertiesPanel from "./PropertiesPanel"
-import TestQuotesPanel from "./TestQuotesPanel"
-import SchemaEditor from "./SchemaEditor"
+import SchemaPane from "./SchemaPane"
 import SheetCanvas from "./SheetCanvas"
 import { dropAt, sectionDropAt } from "./sheetInteractions"
 import useWorkbenchShortcuts from "./useWorkbenchShortcuts"
@@ -44,12 +42,13 @@ const BANNER_STYLE = {
 
 /**
  * The workbench's view, over the area below the toolbar while it is the active view
- * (specs/workbench): the component palette with the switcher back to the pipeline, then
- * the section the toolbar chose, the sheets (their tabs over the sheet showing, with the
- * selected component's properties panel on the right), the schema editor, or Preview,
- * the sheets as an underwriter sees them with the sample keyed into them, on the form the
- * store reads when the view first shows. A save refused because the file changed on disk
- * is reported in a banner with the way out, a reload. The toolbar's Git, Assistant and
+ * (specs/workbench), laid out alike in both modes: the component palette with the switcher
+ * back to the pipeline, then the sheets, their tabs over the sheet showing, with the schema's
+ * pane over the sheet's left part while the toolbar's Schema has it open, on the form the
+ * store reads when the view first shows. While building the selected component's properties panel opens on
+ * the right; in Preview the sheets are as an underwriter sees them, with the sample keyed
+ * into them. A save refused because the file changed on disk is reported in a banner with
+ * the way out, a reload. The toolbar's Git, Assistant and
  * Files panels open beside the view, in the properties panel's place. While Preview shows, the
  * sample is priced on the pipeline whenever the schema or the sample changes once typing
  * pauses, and when Preview shows, as the pipeline may have changed meanwhile.
@@ -62,9 +61,9 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
   const basis = useWorkbenchFormStore((s) => (s.form === null ? null : pricingBasis(s.form)))
   // The pipeline, its data, its source or the document moved: Preview prices again.
   const context = usePricingContext()
-  const section = useWorkbenchViewStore((s) => s.section)
+  const previewing = useWorkbenchViewStore((s) => s.mode === "preview")
+  const schemaOpen = useWorkbenchViewStore((s) => s.schemaOpen)
   const setPricer = useWorkbenchPricingStore((s) => s.setPricer)
-  const setSnapshot = useWorkbenchPricingStore((s) => s.setSnapshot)
   const schedule = useWorkbenchPricingStore((s) => s.schedule)
   const cancel = useWorkbenchPricingStore((s) => s.cancel)
   const formPath = useWorkbenchStore((s) => s.formPath) ?? "forms/form.json"
@@ -73,7 +72,6 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
   const assistantOpen = useUIStore((s) => s.assistantOpen)
   const filesPlace = useUIStore((s) => s.filesPlace)
   const setFilesPlace = useUIStore((s) => s.setFilesPlace)
-  const testQuotesOpen = useWorkbenchTestQuotesStore((s) => s.open)
 
   useEffect(() => {
     void useWorkbenchFormStore.getState().load()
@@ -82,25 +80,15 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
   // The pricer prices on the document and the source as they are when it is called.
   useEffect(() => {
     setPricer((workbench) => priceSample(resolveGraph(), workbench, useSettingsStore.getState().activeSource))
-    // A test quote's pricer is fixed on the document and the source as they are when it is
-    // asked for, and answers in full.
-    setSnapshot(() => {
-      const graph = resolveGraph()
-      const source = useSettingsStore.getState().activeSource
-      return (workbench) => priceSample(graph, workbench, source, { complete: true })
-    })
-    return () => {
-      setPricer(null)
-      setSnapshot(null)
-    }
-  }, [resolveGraph, setPricer, setSnapshot])
+    return () => setPricer(null)
+  }, [resolveGraph, setPricer])
   // Preview prices the sample; leaving it drops what waits to be priced, so nothing is
   // priced while building.
   useEffect(() => {
-    if (section !== "preview" || basis === null) return
+    if (!previewing || basis === null) return
     schedule()
     return cancel
-  }, [basis, context, section, schedule, cancel])
+  }, [basis, context, previewing, schedule, cancel])
 
   return (
     <div className="absolute inset-0 flex" data-testid="workbench-view" style={{ background: "var(--bg-base)" }}>
@@ -121,16 +109,15 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
           </div>
         )}
         {status === "ready" ? (
-          section === "schema" ? (
-            <SchemaEditor />
-          ) : (
-            <>
-              <div className="px-4 pt-2">
-                <PageTabs readOnly={section === "preview"} />
-              </div>
+          <>
+            <div className="px-4 pt-2">
+              <PageTabs />
+            </div>
+            <div className="relative flex min-h-0 flex-1 flex-col">
               <SheetCanvas />
-            </>
-          )
+              {schemaOpen && <SchemaPane />}
+            </div>
+          </>
         ) : status === "failed" ? (
           <div
             role="alert"
@@ -172,11 +159,7 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
             <FilesPanel key={filesPlace} place={filesPlace} onClose={() => setFilesPlace(null)} />
           </Suspense>
         </aside>
-      ) : status === "ready" && section === "preview" && testQuotesOpen ? (
-        <aside aria-label="Test quotes">
-          <TestQuotesPanel />
-        </aside>
-      ) : status === "ready" && section === "sheets" ? (
+      ) : status === "ready" && !previewing ? (
         <PropertiesPanel />
       ) : null}
       <DragChip />

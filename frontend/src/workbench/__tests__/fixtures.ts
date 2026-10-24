@@ -272,7 +272,8 @@ export function loadForm(form: FormSpec = sheetForm()): void {
     saving: false,
   })
   useWorkbenchViewStore.setState({
-    section: "sheets",
+    mode: "build",
+    schemaOpen: false,
     underwriterApp: false,
     pageId: null,
     selectedId: null,
@@ -286,6 +287,11 @@ export function loadForm(form: FormSpec = sheetForm()): void {
     copied: null,
     sheet: null,
     viewport: null,
+    schemaPane: null,
+    schemaCollapsed: new Set(),
+    schemaDetails: null,
+    schemaScroll: 0,
+    schemaSearch: "",
   })
 }
 

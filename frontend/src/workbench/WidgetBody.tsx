@@ -19,7 +19,7 @@ import { HeadingBody } from "./sheet/HeadingBody"
 import { sheetColours } from "./sheet/sheetColours"
 
 export default function WidgetBody({ widget, drawn }: { widget: Widget; drawn: DrawnFields }) {
-  const previewing = useWorkbenchViewStore((s) => s.section === "preview")
+  const previewing = useWorkbenchViewStore((s) => s.mode === "preview")
   const colours = sheetColours(useWorkbenchFormStore((s) => s.form?.theme ?? BLANK_THEME))
   if (widget.type === "heading") return <HeadingBody widget={widget} colours={colours} />
   // A Table or a Collection without its frame sits on the sheet as its title and fields alone.

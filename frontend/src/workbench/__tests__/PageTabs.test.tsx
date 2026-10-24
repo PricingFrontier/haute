@@ -105,8 +105,8 @@ describe("PageTabs", () => {
   })
 
   it("read only, in Preview, only switches sheets, staying in Preview", () => {
-    useWorkbenchViewStore.setState({ section: "preview" })
-    render(<PageTabs readOnly />)
+    useWorkbenchViewStore.setState({ mode: "preview" })
+    render(<PageTabs />)
 
     expect(screen.queryByRole("button", { name: "Add a sheet" })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /Delete sheet/ })).not.toBeInTheDocument()
@@ -114,10 +114,10 @@ describe("PageTabs", () => {
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 2" }))
-    expect(useWorkbenchViewStore.getState()).toMatchObject({ pageId: "p2", section: "preview" })
+    expect(useWorkbenchViewStore.getState()).toMatchObject({ pageId: "p2", mode: "preview" })
     // The arrow keys go from tab to tab there too.
     fireEvent.keyDown(screen.getByRole("tab", { name: "Sheet 2" }), { key: "ArrowLeft" })
-    expect(useWorkbenchViewStore.getState()).toMatchObject({ pageId: "p1", section: "preview" })
+    expect(useWorkbenchViewStore.getState()).toMatchObject({ pageId: "p1", mode: "preview" })
     fireEvent.keyDown(screen.getByRole("tab", { name: "Sheet 1" }), { key: "F2" })
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
 
@@ -208,8 +208,8 @@ describe("PageTabs", () => {
 
   it("in Preview offers only the sheets the sample shows, the first that does marked in place of a hidden one chosen", () => {
     loadForm(coverForm())
-    useWorkbenchViewStore.setState({ section: "preview", pageId: "p2" })
-    render(<PageTabs readOnly />)
+    useWorkbenchViewStore.setState({ mode: "preview", pageId: "p2" })
+    render(<PageTabs />)
 
     expect(tabs()).toEqual([["Sheet 1", "true"]])
     act(() => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy", 0, "policy.cover", true)))
@@ -219,8 +219,8 @@ describe("PageTabs", () => {
 
   it("in the underwriter app offers the sheets its quote shows, not the sample's", () => {
     loadForm(withSampleCell(coverForm(), "policy", 0, "policy.cover", true))
-    useWorkbenchViewStore.setState({ section: "preview", underwriterApp: true, pageId: "p2" })
-    render(<PageTabs readOnly />)
+    useWorkbenchViewStore.setState({ mode: "preview", underwriterApp: true, pageId: "p2" })
+    render(<PageTabs />)
 
     expect(tabs()).toEqual([["Sheet 1", "true"]])
     act(() => useWorkbenchPreviewStore.setState({ quote: { policy: [{ "policy.cover": true }] } }))

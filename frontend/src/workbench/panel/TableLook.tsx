@@ -13,9 +13,9 @@ const COLUMN_HEADINGS = { label: "Header", values: "Cells" }
 
 /**
  * A Table's Look, Header, Lines, Frame and Columns: its text's size, row numbers, groups and
- * stripes; its header's case, size, direction, fill, font, weight and wrapping; its lines'
- * gridlines, style, weight and colour; whether it is framed, and the frame's weight and
- * colour; and its columns, each opened to its own look, with no width while transposed.
+ * stripes; its header's case, size, direction, place, fill, font, weight and wrapping; its
+ * lines' gridlines, style, weight and colour; whether it is framed, and the frame's weight
+ * and colour; and its columns, each opened to its own look, with no width while transposed.
  */
 export function TableLook({ form, widget }: { form: FormSpec; widget: TableInputWidget }) {
   const change = useWorkbenchFormStore((s) => s.change)

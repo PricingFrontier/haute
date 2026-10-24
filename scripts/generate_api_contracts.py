@@ -126,11 +126,6 @@ from haute.schemas import (
     WorkbenchParamFileResponse,
     WorkbenchStatusResponse,
     WorkbenchTablesResponse,
-    WorkbenchTestQuoteCompareResponse,
-    WorkbenchTestQuoteOpenResponse,
-    WorkbenchTestQuotesBranchResponse,
-    WorkbenchTestQuotesResponse,
-    WorkbenchTestQuoteWriteResponse,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -245,11 +240,6 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         WorkbenchFormResponse,
         WorkbenchFormSaveResponse,
         WorkbenchParamFileResponse,
-        WorkbenchTestQuotesResponse,
-        WorkbenchTestQuotesBranchResponse,
-        WorkbenchTestQuoteWriteResponse,
-        WorkbenchTestQuoteOpenResponse,
-        WorkbenchTestQuoteCompareResponse,
     ),
     # The underwriter app's own page reads these; the builder never does, so its chunks
     # carry none of them.

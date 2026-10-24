@@ -22,15 +22,27 @@ from typing import Any
 
 import polars as pl
 
+from haute._workbench_form import QUOTE_DETAILS_ID
 from haute._workbench_tables import (
+    IDENTITY_SHAPE,
     WorkbenchColumn,
     WorkbenchTable,
     WorkbenchTablesError,
+    carries_identity,
     parse_workbench_tables,
     port_tables,
+    request_columns,
 )
 
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+#: The quote's identity's names, in every table and in quote_details alike.
+_REFERENCE, _OPTION = (name for name, _ in IDENTITY_SHAPE)
+
+#: The identity a quote that is not one of the app's is priced under: the sample in the
+#: editor, Preview and generated code, the quote of nulls deploy's dry run reads, and the
+#: one quote of an app without a quote store. A quote's identity is never blank.
+STAND_IN_REFERENCE = "PREVIEW"
+STAND_IN_OPTION = 1
 
 
 class WorkbenchInputError(WorkbenchTablesError):
@@ -78,10 +90,72 @@ def read_quote(
     table's shape, or a value that is not of its column's type, raises
     :class:`WorkbenchInputError` naming it, with *what* naming the quote itself; a key the
     tables do not name is not read, and a column a row does not hold is null.
+
+    With ``quote_details`` among the tables, the quote names its reference and option there
+    and nowhere else, and every row of every table leading with them takes them
+    (:func:`haute._workbench_tables.carries_identity`).
     """
     if not isinstance(quote, dict):
         raise WorkbenchInputError(f"{what} is {_kind(quote)}, not an object")
-    return {table.name: _frame(table, _rows(table, quote.get(table.name))) for table in tables}
+    identity = _identity(tables, quote, what)
+    frames: dict[str, pl.DataFrame] = {}
+    for table in tables:
+        rows = _rows(table, quote.get(table.name))
+        if carries_identity(table):
+            if identity is None:
+                raise WorkbenchInputError(
+                    f"{table.name} leads with the quote's {_REFERENCE} and {_OPTION}, which a "
+                    f"quote gives in {QUOTE_DETAILS_ID}, and the tables hold no {QUOTE_DETAILS_ID}"
+                )
+            rows = [_identified(table, row, index, identity) for index, row in enumerate(rows)]
+        frames[table.name] = _frame(table, rows)
+    return frames
+
+
+def _identity(
+    tables: Sequence[WorkbenchTable], quote: Mapping[str, Any], what: str
+) -> dict[str, Any] | None:
+    """The quote's reference and option by name, read from its ``quote_details``; None when
+    the tables hold no ``quote_details`` with them. Refused, naming the spot, when either is
+    missing or does not fit: a quote's identity is never blank."""
+    if not _names_identity(tables):
+        return None
+    part = quote.get(QUOTE_DETAILS_ID)
+    held = part if isinstance(part, dict) else {}
+    reference = held.get(_REFERENCE)
+    option = held.get(_OPTION)
+    if not isinstance(reference, str) or not reference.strip():
+        raise WorkbenchInputError(
+            f"{QUOTE_DETAILS_ID}.{_REFERENCE} is {_shown(reference)}: {what} names the quote's "
+            "reference, a text"
+        )
+    if isinstance(option, bool) or not isinstance(option, int) or option < 1:
+        raise WorkbenchInputError(
+            f"{QUOTE_DETAILS_ID}.{_OPTION} is {_shown(option)}: {what} names the quote's "
+            "option, a whole number from 1"
+        )
+    return {_REFERENCE: reference, _OPTION: option}
+
+
+def _names_identity(tables: Sequence[WorkbenchTable]) -> bool:
+    """Whether the tables hold ``quote_details`` with the quote's reference and option."""
+    details = next((table for table in tables if table.name == QUOTE_DETAILS_ID), None)
+    names = {column.name for column in details.columns} if details is not None else set()
+    return {name for name, _ in IDENTITY_SHAPE} <= names
+
+
+def _identified(
+    table: WorkbenchTable, row: Mapping[str, Any], index: int, identity: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    """*row* holding the quote's *identity*; refused when it gives either itself, as a
+    request gives them in ``quote_details`` alone."""
+    for name, _ in IDENTITY_SHAPE:
+        if name in row:
+            spot = f"{table.name}{'' if table.one_row else f'[{index}]'}.{name}"
+            raise WorkbenchInputError(
+                f"{spot} is given, and a quote gives its {name} in {QUOTE_DETAILS_ID} alone"
+            )
+    return {**row, **identity}
 
 
 def _rows(table: WorkbenchTable, part: object) -> list[Mapping[str, Any]]:
@@ -161,19 +235,29 @@ def _shown(value: object) -> str:
 
 
 def null_quote(tables: Sequence[WorkbenchTable]) -> dict[str, Any]:
-    """One quote holding *tables* with nothing filled in: one row of nulls each.
+    """One quote holding *tables* with nothing filled in: one row of nulls each, of the
+    columns a request gives it, and the stand-in identity in ``quote_details``.
 
     What the previews run on while the workbench has supplied no sample, and what deploy's
     dry run reads, so it checks the pipeline on those rows.
     """
-    return {
-        table.name: (
-            {column.name: None for column in table.columns}
-            if table.one_row
-            else [{column.name: None for column in table.columns}]
-        )
-        for table in tables
-    }
+    quote: dict[str, Any] = {}
+    for table in tables:
+        row: dict[str, Any] = {column.name: None for column in request_columns(table)}
+        quote[table.name] = row if table.one_row else [row]
+    return with_stand_in(tables, quote)
+
+
+def with_stand_in(tables: Sequence[WorkbenchTable], quote: Mapping[str, Any]) -> dict[str, Any]:
+    """*quote* with the stand-in identity (:data:`STAND_IN_REFERENCE`, :data:`STAND_IN_OPTION`)
+    in its ``quote_details`` when the tables hold one with the identity, over whatever it
+    held: a quote that is not one of the app's is priced under it."""
+    if not _names_identity(tables):
+        return dict(quote)
+    held = quote.get(QUOTE_DETAILS_ID)
+    row = dict(held) if isinstance(held, dict) else {}
+    row.update({_REFERENCE: STAND_IN_REFERENCE, _OPTION: STAND_IN_OPTION})
+    return {**quote, QUOTE_DETAILS_ID: row}
 
 
 def workbench_table_frames(
@@ -189,16 +273,19 @@ def workbench_table_frames(
     sample (none, or nothing typed in it), every table is one row of nulls, the
     :func:`null_quote`, so the pipeline previews before the workbench supplies values. The
     sample is read whole, every port and every column whatever *port_columns* asks for, and
-    only then cut to it, so every reader finds the same misfit.
+    only then cut to it, so every reader finds the same misfit. The sample is priced under
+    the stand-in identity (:func:`with_stand_in`).
     """
     tables = workbench_input_tables(config)
     sample = config.get("sample")
+    if sample is None or sample == {}:
+        quote: object = null_quote(tables)
+    elif isinstance(sample, dict):
+        quote = with_stand_in(tables, sample)
+    else:
+        quote = sample
     try:
-        read = read_quote(
-            tables,
-            null_quote(tables) if sample is None or sample == {} else sample,
-            what="the sample",
-        )
+        read = read_quote(tables, quote, what="the sample")
     except WorkbenchInputError as exc:
         raise WorkbenchInputError(
             f"The workbench's sample does not fit this Workbench Input's tables: {exc}. "

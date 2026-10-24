@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup } from "@testing-library/react"
-import { SidePanelHeader } from "../SidePanel"
+import { SidePanelClose, SidePanelHeader } from "../SidePanel"
 
 afterEach(cleanup)
 
@@ -15,9 +15,20 @@ describe("SidePanelHeader", () => {
     expect(screen.getByTestId("custom-title")).toBeInTheDocument()
   })
 
-  it("renders close button with Close title", () => {
+  it("renders close button with Close title, the kit's red Close", () => {
     render(<SidePanelHeader title="Test" onClose={vi.fn()} />)
-    expect(screen.getByTitle("Close")).toBeInTheDocument()
+    expect(screen.getByTitle("Close")).toHaveClass("side-panel-close")
+  })
+
+  it("gives a panel drawing its own header the same Close, its test id and label passed through", () => {
+    const onClick = vi.fn()
+    render(<SidePanelClose data-testid="own-close" aria-label="Close trace" onClick={onClick} />)
+    const close = screen.getByRole("button", { name: "Close trace" })
+    expect(close).toHaveAttribute("data-testid", "own-close")
+    expect(close).toHaveAttribute("type", "button")
+    expect(close).toHaveClass("side-panel-close")
+    fireEvent.click(close)
+    expect(onClick).toHaveBeenCalledTimes(1)
   })
 
   it("clicking close button calls onClose", () => {

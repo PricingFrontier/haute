@@ -153,10 +153,8 @@ export const fullTime = (iso: string): string => new Date(iso).toLocaleString(un
 
 // ── Values kept in the browser ───────────────────────────────────────────
 
-/** A write a save sends: a new quote, made from a source or not, or a quote's next revision over `version`. */
-export type QuoteWrite =
-  | { kind: "create"; body: QuoteSave; source: QuoteSource | null }
-  | { kind: "save"; quoteId: string; version: number; body: QuoteSave }
+/** A write a save sends: a quote's next revision over `version`. */
+export type QuoteWrite = { kind: "save"; quoteId: string; version: number; body: QuoteSave }
 
 /**
  * A write sent and not answered, or answered by a server failure, so it may have landed:
@@ -190,7 +188,7 @@ const isPendingWrite = (value: unknown): value is PendingWrite => {
   if (typeof basis !== "string" || typeof write !== "object" || write === null) return false
   const body = (write as { body?: Partial<QuoteSave> }).body
   if (typeof body !== "object" || body === null || typeof body.operation !== "string" || typeof body.values !== "object") return false
-  return write.kind === "create" || (write.kind === "save" && typeof write.quoteId === "string" && typeof write.version === "number")
+  return write.kind === "save" && typeof write.quoteId === "string" && typeof write.version === "number"
 }
 
 const DRAFT_PREFIX = "haute-app-draft"
@@ -236,6 +234,139 @@ export function operationKey(): string {
   return `save-${random}`.slice(0, 64)
 }
 
+// ── A quote asked for ────────────────────────────────────────────────────
+
+const CREATING_PREFIX = "haute-app-creating"
+
+/**
+ * Where the operation key of a quote asked for is held in this tab until its answer comes:
+ * one per app, person and what was asked, a new quote or one made from a quote's revision.
+ */
+export const creationKey = (app: string, principal: string, asked: string): string => `${CREATING_PREFIX}:${app}:${principal}:${asked}`
+
+/**
+ * The operation key held under `key`, or a new one held there: a reload before the answer
+ * came asks again with the same key, so the quote is made once. A tab that keeps nothing
+ * asks with a new key each time.
+ */
+export function heldOperation(key: string): string {
+  try {
+    const held = window.sessionStorage.getItem(key)
+    if (held !== null) return held
+    const operation = operationKey()
+    window.sessionStorage.setItem(key, operation)
+    return operation
+  } catch {
+    return operationKey()
+  }
+}
+
+/** Let go of the key held under `key`: its quote was made, or refused, and the next is asked for anew. */
+export function releaseOperation(key: string): void {
+  try {
+    window.sessionStorage.removeItem(key)
+  } catch {
+    // Nothing held, nothing to let go.
+  }
+}
+
+// ── A new quote keyed in the window ──────────────────────────────────────
+
+/** The most characters a reference holds. */
+export const REFERENCE_MOST = 40
+
+/**
+ * What stops `reference` being a quote's reference, as the server checks it, or null: it
+ * is trimmed and then 1 to 40 characters, holding no `/`, which the app puts before the
+ * option, and no control character.
+ */
+export function referenceProblem(reference: string): string | null {
+  const text = reference.trim()
+  if (text === "") return "Required"
+  if ([...text].length > REFERENCE_MOST) return `At most ${REFERENCE_MOST} characters`
+  if (text.includes("/")) return "No / in a reference"
+  if (/[\p{Cc}\p{Cf}]/u.test(text)) return "No control characters"
+  return null
+}
+
+/**
+ * A creation sent from the window, whole, kept in the tab until its answer comes: what it
+ * sends again, exactly, when tried again.
+ */
+export interface KeptCreation {
+  operation: string
+  form_revision: string
+  release: string
+  reference: string
+  values: Values
+  source: QuoteSource | null
+  /** The window's title, which it is offered back under. */
+  title: string
+}
+
+const KEPT_PREFIX = "haute-app-creation"
+
+/** Where the creation sent from the window is kept in this tab: one per app and person. */
+export const keptCreationKey = (app: string, principal: string): string => `${KEPT_PREFIX}:${app}:${principal}`
+
+const isKeptCreation = (value: unknown): value is KeptCreation => {
+  if (typeof value !== "object" || value === null) return false
+  const kept = value as Partial<KeptCreation>
+  return (
+    typeof kept.operation === "string"
+    && typeof kept.form_revision === "string"
+    && typeof kept.release === "string"
+    && typeof kept.reference === "string"
+    && typeof kept.values === "object"
+    && kept.values !== null
+    && typeof kept.title === "string"
+    && (kept.source === null || typeof kept.source === "object")
+  )
+}
+
+/** The creation kept under `key`, or null: none, or the tab keeps none. */
+export function readKeptCreation(key: string): KeptCreation | null {
+  try {
+    const text = window.sessionStorage.getItem(key)
+    if (text === null) return null
+    const kept: unknown = JSON.parse(text)
+    return isKeptCreation(kept) ? kept : null
+  } catch {
+    return null
+  }
+}
+
+/** Keep `creation` under `key` before it is sent; false when the tab could not. */
+export function keepCreation(key: string, creation: KeptCreation): boolean {
+  try {
+    window.sessionStorage.setItem(key, JSON.stringify(creation))
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Let go of the creation kept under `key`: answered, refused or discarded. */
+export function forgetCreation(key: string): void {
+  try {
+    window.sessionStorage.removeItem(key)
+  } catch {
+    // Nothing kept, nothing to let go.
+  }
+}
+
+/** A renewal's values: those carried from its source, with `is_renewal` ticked in its details. */
+export function asRenewal(values: Values): Values {
+  const [details = {}] = values[QUOTE_DETAILS_ID] ?? []
+  return { ...values, [QUOTE_DETAILS_ID]: [{ ...details, qd_is_renewal: true }] }
+}
+
+/**
+ * A quote's reference and option as the app shows them, `Q-000123/2`, as an event names
+ * them; an event written before options names none, every quote then being option 1.
+ */
+const labelOf = (reference: string, option: unknown): string => `${reference}/${typeof option === "number" ? option : 1}`
+
 // ── History ──────────────────────────────────────────────────────────────
 
 /** How a quote was made from another, in a sentence. */
@@ -247,9 +378,9 @@ export function eventText(event: WorkbenchAppQuoteEvent): string {
   const text = (key: string) => (typeof detail[key] === "string" ? (detail[key] as string) : "")
   switch (event.kind) {
     case "created": {
-      const source = detail.source as { reference?: string; revision?: number; relation?: keyof typeof RELATION_TEXT } | undefined
+      const source = detail.source as { reference?: string; option?: number; revision?: number; relation?: keyof typeof RELATION_TEXT } | undefined
       return source?.reference
-        ? `made it as ${RELATION_TEXT[source.relation ?? "duplicate"]} of ${source.reference} revision ${source.revision ?? "?"}`
+        ? `made it as ${RELATION_TEXT[source.relation ?? "duplicate"]} of ${labelOf(source.reference, source.option)} revision ${source.revision ?? "?"}`
         : "made it"
     }
     case "saved":
@@ -267,6 +398,6 @@ export function eventText(event: WorkbenchAppQuoteEvent): string {
     case "reopened":
       return `reopened final revision ${typeof detail.final_revision === "number" ? detail.final_revision : "?"}: ${text("reason")}`
     case "derived":
-      return `made ${text("reference")} from revision ${event.revision ?? "?"}, as ${RELATION_TEXT[(detail.relation as keyof typeof RELATION_TEXT) ?? "duplicate"]}`
+      return `made ${labelOf(text("reference"), detail.option)} from revision ${event.revision ?? "?"}, as ${RELATION_TEXT[(detail.relation as keyof typeof RELATION_TEXT) ?? "duplicate"]}`
   }
 }

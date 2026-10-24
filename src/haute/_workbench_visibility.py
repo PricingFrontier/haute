@@ -311,14 +311,18 @@ def _total(
     table: SchemaTable, total: RowTotal, rows: Sequence[Mapping[str, str | bool]]
 ) -> float | None:
     """The sum, least, greatest or average of the numbers *total*'s column holds in *rows*,
-    a cell blank or not a number of the column's type left out, to 15 significant digits so
-    that 0.1, 0.2 and 0.3 sum to 0.6: the sum of none is 0, and the others of none are None,
-    which no test passes."""
+    a cell blank, not a number of the column's type or too large for a float left out, to
+    15 significant digits so that 0.1, 0.2 and 0.3 sum to 0.6: the sum of none is 0, and the
+    others of none are None, which no test passes."""
     column_type = next(column.type for column in table.columns if column.id == total.column)
+    # Each read as a float, as the view reads it, a whole number past 2**53 too: read
+    # exactly, its least or greatest would round apart from the view's.
     numbers: list[float] = [
-        _typed(column_type, cell.strip())
+        number
         for row in rows
-        if isinstance(cell := row.get(total.column), str) and _of_type(column_type, cell)
+        if isinstance(cell := row.get(total.column), str)
+        and _of_type(column_type, cell)
+        and isinstance(number := _typed("float", cell.strip()), float)
     ]
     if not numbers and total.total != "sum":
         return None

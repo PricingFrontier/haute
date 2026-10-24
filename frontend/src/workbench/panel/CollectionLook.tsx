@@ -30,9 +30,7 @@ export function CollectionLook({ form, widget }: { form: FormSpec; widget: Colle
       <Section title="Labels">
         <SelectRow label="Position" value={widget.labels} choices={POSITIONS} onChange={(labels) => set({ labels })} />
         {widget.labels === "beside" && <WidthRow share testId="label-width" value={widget.label_width} onCommit={(label_width) => set({ label_width })} />}
-        <HeaderRows widget={widget} name="the labels'">
-          <SelectRow label="Align" value={widget.header_align} choices={ALIGNS} onChange={(header_align) => set({ header_align })} />
-        </HeaderRows>
+        <HeaderRows widget={widget} name="the labels'" />
       </Section>
       <Section title="Boxes">
         <SelectRow label="Style" value={widget.box_style} choices={STYLES} onChange={(box_style) => set({ box_style })} />

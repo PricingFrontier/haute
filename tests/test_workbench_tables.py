@@ -15,8 +15,7 @@ import polars as pl
 import pytest
 
 from haute._json_shred._shred import _POLARS_TYPE_MAP
-from haute._test_quotes import quote_request
-from haute._workbench_form import FormSpec, SchemaTable
+from haute._workbench_form import FormSpec, SchemaTable, with_quote_details
 from haute._workbench_input import workbench_request_frames, workbench_table_frames
 from haute._workbench_tables import (
     COLUMN_DTYPES,
@@ -29,10 +28,16 @@ from haute._workbench_tables import (
     parse_workbench_tables,
     port_tables,
     preset_rows,
+    quote_request,
     quote_schema,
+    request_schema,
     sample_quote,
     workbench_tables,
 )
+
+#: The quote's reference and option, which every table but quote_details leads with.
+IDENTITY = [{"name": "quote_reference", "type": "str"}, {"name": "quote_option", "type": "int"}]
+IDENTITY_DTYPES = {"quote_reference": pl.String, "quote_option": pl.Int64}
 
 
 def form(*tables: dict[str, Any], pages: list[dict[str, Any]] | None = None) -> FormSpec:
@@ -101,21 +106,40 @@ def test_input_tables_become_the_pipelines_tables_in_schema_order() -> None:
         {
             "name": "equipment",
             "rows": "many",
-            "columns": [{"name": "item_id", "type": "str"}, {"name": "value", "type": "float"}],
+            "columns": [
+                *IDENTITY,
+                {"name": "item_id", "type": "str"},
+                {"name": "value", "type": "float"},
+            ],
         },
         {
             "name": "policy_details",
             "rows": "one",
             "columns": [
+                *IDENTITY,
                 {"name": "state", "type": "str"},
                 {"name": "inception_date", "type": "date"},
             ],
         },
     ]
     assert (equipment.one_row, policy.one_row) == (False, True)
-    assert policy.frame_schema == pl.Schema({"state": pl.String, "inception_date": pl.Date})
-    # In a quote, a one-row table is an object under its name and a many-row table a list.
+    assert policy.frame_schema == pl.Schema(
+        {**IDENTITY_DTYPES, "state": pl.String, "inception_date": pl.Date}
+    )
+    # In a priced quote, a one-row table is an object under its name and a many-row table a
+    # list, each leading with the quote's identity.
     assert quote_schema([equipment, policy]) == pl.Schema(
+        {
+            "equipment": pl.List(
+                pl.Struct({**IDENTITY_DTYPES, "item_id": pl.String, "value": pl.Float64})
+            ),
+            "policy_details": pl.Struct(
+                {**IDENTITY_DTYPES, "state": pl.String, "inception_date": pl.Date}
+            ),
+        }
+    )
+    # A request gives each its own columns: the identity is quote_details' alone.
+    assert request_schema([equipment, policy]) == pl.Schema(
         {
             "equipment": pl.List(pl.Struct({"item_id": pl.String, "value": pl.Float64})),
             "policy_details": pl.Struct({"state": pl.String, "inception_date": pl.Date}),
@@ -331,21 +355,23 @@ def test_a_number_is_typed_by_the_rule_the_view_applies() -> None:
 
 
 def test_a_sample_with_an_empty_many_row_table_prices_as_its_quote_would_when_deployed() -> None:
-    spec = form(
-        {
-            "id": "t1",
-            "name": "policy_details",
-            "role": "input",
-            "rows": "one",
-            "columns": [column("state")],
-        },
-        {
-            "id": "t2",
-            "name": "equipment",
-            "role": "input",
-            "rows": "many",
-            "columns": [column("item_id", key=True), column("value", "float")],
-        },
+    spec = with_quote_details(
+        form(
+            {
+                "id": "t1",
+                "name": "policy_details",
+                "role": "input",
+                "rows": "one",
+                "columns": [column("state")],
+            },
+            {
+                "id": "t2",
+                "name": "equipment",
+                "role": "input",
+                "rows": "many",
+                "columns": [column("item_id", key=True), column("value", "float")],
+            },
+        )
     )
     spec.sample = {"t1": [{"c_state": "TX"}], "t2": [{"c_item_id": "", "c_value": " "}]}
     tables = dumped(input_tables(spec))
@@ -355,10 +381,16 @@ def test_a_sample_with_an_empty_many_row_table_prices_as_its_quote_would_when_de
     quote = sample_quote(spec)
     assert quote == {"policy_details": {"state": "TX"}}
     sampled = workbench_table_frames({"tables": tables, "sample": quote})
-    requested = workbench_request_frames({"tables": tables}, [quote])
+    request = {**quote, "quote_details": {"quote_reference": "Q-000001", "quote_option": 2}}
+    requested = workbench_request_frames({"tables": tables}, [request])
     assert sampled["equipment"].collect().to_dicts() == [] == requested["equipment"].to_dicts()
-    assert sampled["policy_details"].collect().to_dicts() == [{"state": "TX"}]
-    assert requested["policy_details"].to_dicts() == [{"state": "TX"}]
+    # The sample is priced under the stand-in identity, a request under its own.
+    assert sampled["policy_details"].collect().to_dicts() == [
+        {"quote_reference": "PREVIEW", "quote_option": 1, "state": "TX"}
+    ]
+    assert requested["policy_details"].to_dicts() == [
+        {"quote_reference": "Q-000001", "quote_option": 2, "state": "TX"}
+    ]
 
 
 def test_a_tables_index_is_an_integer_column_numbering_the_rows_as_they_stand() -> None:
@@ -380,7 +412,7 @@ def test_a_tables_index_is_an_integer_column_numbering_the_rows_as_they_stand() 
     (table,) = input_tables(spec)
 
     # The index is an Integer, whatever type the form holds for it.
-    assert table.columns[0].model_dump() == {"name": "line", "type": "int"}
+    assert table.columns[2].model_dump() == {"name": "line", "type": "int"}
     # Each row's number as the rows stand: the empty second row is not sent.
     assert sample_quote(spec) == {
         "equipment": [{"line": 1, "item_id": "A"}, {"line": 3, "item_id": "B", "value": 5.0}]
@@ -407,7 +439,7 @@ def test_typed_text_is_read_by_the_rule_the_view_applies(case: dict[str, Any]) -
         return
     assert _typed("float", text) == number
     whole = _typed("int", text)
-    assert whole == number
+    assert whole == (int(case["integer"]) if "integer" in case else number)
     assert isinstance(whole, int) is case["whole"]
 
 
@@ -432,16 +464,12 @@ TYPED_QUOTES: dict[str, Any] = json.loads(
 )
 def test_a_quote_is_typed_by_the_rule_the_view_applies(case: dict[str, Any]) -> None:
     spec = FormSpec.model_validate(TYPED_QUOTES["form"])
-    # The details the app sets are left out first, as its routes leave them out.
-    locked = {tuple(place) for place in case["locked"]}
-    values = {
-        table: [
-            {key: value for key, value in row.items() if (table, key) not in locked} for row in rows
-        ]
-        for table, rows in case["values"].items()
-    }
+    # The details the app sets decide what the sheets show, but are no typing, as its routes
+    # count them.
+    locked = {(table, column) for table, column in case["locked"]}
+    sample = spec.model_copy(update={"sample": case["values"]})
 
-    assert (sample_quote(spec.model_copy(update={"sample": values})) != {}) is case["typed"]
+    assert (sample_quote(sample, untyped=locked) != {}) is case["typed"]
 
 
 def test_a_whole_number_past_a_double_is_kept_exactly() -> None:
@@ -585,6 +613,179 @@ def test_a_value_in_a_column_the_sheets_hide_is_left_out_of_the_sample() -> None
     }
 
 
+def test_the_columns_the_app_sets_are_priced_whatever_the_sheets_hide() -> None:
+    spec = with_quote_details(
+        form(
+            {
+                "id": "t1",
+                "name": "policy",
+                "role": "input",
+                "rows": "one",
+                "columns": [column("bi_cover", "bool"), column("assured")],
+            },
+            pages=[
+                {
+                    "id": "p_main",
+                    "title": "Main",
+                    "width": 1280,
+                    "sections": [
+                        section(
+                            "s_main",
+                            widget("w_policy", "collection", "t1.c_bi_cover", "t1.c_assured"),
+                        )
+                    ],
+                },
+                {
+                    "id": "p_quote",
+                    "title": "Quote",
+                    "show_when": {
+                        "conditions": [{"table": "t1", "column": "c_bi_cover", "op": "ticked"}]
+                    },
+                    "width": 1280,
+                    "sections": [
+                        section(
+                            "s_quote",
+                            widget(
+                                "w_quote",
+                                "collection",
+                                "quote_details.qd_reference",
+                                "quote_details.qd_option",
+                                "quote_details.qd_quote_name",
+                                "quote_details.qd_stage",
+                                "quote_details.qd_modified_date",
+                                "quote_details.qd_created_by",
+                            ),
+                        )
+                    ],
+                },
+            ],
+        )
+    )
+    values = {
+        "quote_details": [
+            {
+                "qd_reference": "Q-000007",
+                "qd_option": "2",
+                "qd_quote_name": "Fleet",
+                "qd_stage": "priced",
+                "qd_modified_date": "2026-10-12",
+                "qd_created_by": "ana@example.com",
+            }
+        ],
+        "t1": [{"c_bi_cover": False, "c_assured": "Acme"}],
+    }
+
+    # The second sheet hides: the quote's name goes with it; the columns the app sets stay,
+    # its reference and option, its stage and its administration.
+    assert quote_request(spec, values) == {
+        "quote_details": {
+            "quote_reference": "Q-000007",
+            "quote_option": 2,
+            "is_renewal": False,
+            "stage": "priced",
+            "archived": False,
+            "created_by": "ana@example.com",
+            "modified_date": "2026-10-12",
+        },
+        "policy": {"bi_cover": False, "assured": "Acme"},
+    }
+
+
+def _identity_tables() -> list[dict[str, Any]]:
+    return dumped(
+        input_tables(
+            with_quote_details(
+                form(
+                    {
+                        "id": "t1",
+                        "name": "policy",
+                        "role": "input",
+                        "rows": "one",
+                        "columns": [column("state")],
+                    },
+                    {
+                        "id": "t2",
+                        "name": "equipment",
+                        "role": "input",
+                        "rows": "many",
+                        "columns": [column("item_id", key=True)],
+                    },
+                )
+            )
+        )
+    )
+
+
+def test_a_request_names_the_quote_in_quote_details_and_every_table_takes_it() -> None:
+    request = {
+        "quote_details": {"quote_reference": "Q-000004", "quote_option": 3},
+        "policy": {"state": "TX"},
+        "equipment": [{"item_id": "A"}, {"item_id": "B"}],
+    }
+
+    frames = workbench_request_frames({"tables": _identity_tables()}, [request])
+
+    assert frames["policy"].to_dicts() == [
+        {"quote_reference": "Q-000004", "quote_option": 3, "state": "TX"}
+    ]
+    assert frames["equipment"].to_dicts() == [
+        {"quote_reference": "Q-000004", "quote_option": 3, "item_id": "A"},
+        {"quote_reference": "Q-000004", "quote_option": 3, "item_id": "B"},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("change", "refusal"),
+    [
+        (lambda r: r.pop("quote_details"), "quote_details.quote_reference is None"),
+        (
+            lambda r: r["quote_details"].update(quote_reference=" "),
+            "quote_details.quote_reference is ' '",
+        ),
+        (lambda r: r["quote_details"].pop("quote_option"), "quote_details.quote_option is None"),
+        (lambda r: r["quote_details"].update(quote_option=0), "quote_details.quote_option is 0"),
+        (
+            lambda r: r["quote_details"].update(quote_option=True),
+            "quote_details.quote_option is True",
+        ),
+        (lambda r: r["policy"].update(quote_option=3), "policy.quote_option is given"),
+        (
+            lambda r: r["equipment"][1].update(quote_reference="X"),
+            r"equipment\[1\].quote_reference is given",
+        ),
+    ],
+)
+def test_a_request_without_the_quotes_identity_or_giving_it_twice_is_refused(
+    change: Any, refusal: str
+) -> None:
+    request: dict[str, Any] = {
+        "quote_details": {"quote_reference": "Q-000004", "quote_option": 3},
+        "policy": {"state": "TX"},
+        "equipment": [{"item_id": "A"}, {"item_id": "B"}],
+    }
+    change(request)
+
+    with pytest.raises(WorkbenchTablesError, match=refusal):
+        workbench_request_frames({"tables": _identity_tables()}, [request])
+
+
+def test_the_quote_of_nulls_is_a_request_priced_under_the_stand_in_identity() -> None:
+    tables = _identity_tables()
+
+    frames = workbench_table_frames({"tables": tables, "sample": {}})
+
+    # Each table's own columns null, its identity the stand-in.
+    assert frames["policy"].collect().to_dicts() == [
+        {"quote_reference": "PREVIEW", "quote_option": 1, "state": None}
+    ]
+    assert frames["equipment"].collect().to_dicts() == [
+        {"quote_reference": "PREVIEW", "quote_option": 1, "item_id": None}
+    ]
+    # Tables leading with the identity without quote_details to give it cannot be read.
+    with pytest.raises(WorkbenchTablesError, match="the tables hold no quote_details"):
+        workbench_table_frames({"tables": tables[1:], "sample": {}})
+
+
 def test_a_value_a_chart_that_shows_plots_is_left_out_while_the_collection_taking_it_hides() -> (
     None
 ):
@@ -700,12 +901,16 @@ def test_output_tables_become_the_workbench_outputs_tables_in_schema_order() -> 
         {
             "name": "layer_premiums",
             "rows": "many",
-            "columns": [{"name": "layer", "type": "int"}, {"name": "premium", "type": "float"}],
+            "columns": [
+                *IDENTITY,
+                {"name": "layer", "type": "int"},
+                {"name": "premium", "type": "float"},
+            ],
         },
         {
             "name": "pricing_output",
             "rows": "one",
-            "columns": [{"name": "charged_premium", "type": "float"}],
+            "columns": [*IDENTITY, {"name": "charged_premium", "type": "float"}],
         },
     ]
     assert [table.name for table in input_tables(spec)] == ["policy_details"]

@@ -65,7 +65,7 @@ describe("useClickOutside - gap tests", () => {
     const onClose = vi.fn()
     render(<NullRefComponent onClose={onClose} active={true} />)
 
-    fireEvent.mouseDown(screen.getByTestId("somewhere"))
+    fireEvent.pointerDown(screen.getByTestId("somewhere"))
 
     // With the current code: ref.current is null → `ref.current && ...`
     // short-circuits to false → onClose is NOT called. This is correct:
@@ -79,21 +79,21 @@ describe("useClickOutside - gap tests", () => {
 
   it("stops calling onClose after active transitions from true to false", () => {
     // Catches: if the cleanup function in the useEffect doesn't properly
-    // remove the mousedown listener, clicking outside after deactivation
+    // remove the pointerdown listener, clicking outside after deactivation
     // would still fire onClose — e.g. closing a dropdown that's already
     // closed, or triggering navigation.
     const onClose = vi.fn()
     render(<ToggleComponent onClose={onClose} />)
 
     // First click outside — should trigger onClose
-    fireEvent.mouseDown(screen.getByTestId("outside"))
+    fireEvent.pointerDown(screen.getByTestId("outside"))
     expect(onClose).toHaveBeenCalledTimes(1)
 
     // Toggle active to false
     fireEvent.click(screen.getByTestId("toggle-btn"))
 
     // Second click outside — should NOT trigger onClose
-    fireEvent.mouseDown(screen.getByTestId("outside"))
+    fireEvent.pointerDown(screen.getByTestId("outside"))
     expect(onClose).toHaveBeenCalledTimes(1) // still 1
   })
 
@@ -108,7 +108,7 @@ describe("useClickOutside - gap tests", () => {
     const onClose = vi.fn()
     render(<TestComponent onClose={onClose} active={true} />)
 
-    fireEvent.mouseDown(screen.getByTestId("nested-child"))
+    fireEvent.pointerDown(screen.getByTestId("nested-child"))
 
     expect(onClose).not.toHaveBeenCalled()
   })
@@ -124,7 +124,7 @@ describe("useClickOutside - gap tests", () => {
     const onClose = vi.fn()
     render(<TestComponent onClose={onClose} active={true} />)
 
-    fireEvent.mouseDown(screen.getByTestId("deep-outside"))
+    fireEvent.pointerDown(screen.getByTestId("deep-outside"))
 
     expect(onClose).toHaveBeenCalledTimes(1)
   })
@@ -157,7 +157,7 @@ describe("useClickOutside - gap tests", () => {
     render(<DualComponent />)
 
     // Click inside box1 — box1 should NOT close, box2 SHOULD (it's outside box2)
-    fireEvent.mouseDown(screen.getByTestId("box1"))
+    fireEvent.pointerDown(screen.getByTestId("box1"))
     expect(onClose1).not.toHaveBeenCalled()
     expect(onClose2).toHaveBeenCalledTimes(1)
   })

@@ -1,9 +1,9 @@
 /**
  * The Workbench Output's panel (specs/workbench): the response's tables the project's
- * workbench supplies, each with the node connected to its port and the frame column that
- * fills each of its columns, and notes when nothing updates the tables.
+ * workbench supplies, each with the node connected to its port and each of its columns
+ * bordered by how the connected frame fills it, and notes when nothing updates the tables.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import WorkbenchOutputEditor from "../../panels/editors/WorkbenchOutputEditor"
 import { WORKBENCH_DISABLED_NOTE } from "../../panels/editors/WorkbenchInputEditor"
@@ -28,23 +28,18 @@ const priced: InputSource = {
   columns: [{ name: "premium", dtype: "Float64" }, { name: "base_premium", dtype: "Float64" }],
 }
 
-function renderEditor(
-  props: { insideSubmodel?: boolean; inputSources?: InputSource[]; mapping?: Record<string, unknown> } = {},
-) {
-  const onUpdate = vi.fn(() => ({ ok: true as const }))
+function renderEditor(props: { insideSubmodel?: boolean; inputSources?: InputSource[] } = {}) {
   render(
     <WorkbenchOutputEditor
-      config={props.mapping === undefined ? config : { ...config, mapping: props.mapping }}
-      onUpdate={onUpdate}
+      config={config}
       inputSources={props.inputSources ?? [priced]}
       reservedFrameLabels={new Set(["class"])}
       insideSubmodel={props.insideSubmodel}
     />,
   )
-  return { onUpdate }
 }
-const mapped = (table: string, name: string) =>
-  screen.getByTestId(`workbench-mapping-${table}-${name}`) as HTMLSelectElement
+const border = (table: string, name: string) =>
+  screen.getByTestId(`workbench-column-${table}-${name}`).style.borderColor
 
 describe("WorkbenchOutputEditor", () => {
   beforeEach(() => {
@@ -70,44 +65,74 @@ describe("WorkbenchOutputEditor", () => {
     expect(screen.queryByTestId("workbench-table-connection-bare")).not.toBeInTheDocument()
   })
 
-  it("shows what fills each column: a same-named column by name, or nothing, flagged", () => {
-    renderEditor()
-
-    expect(mapped("pricing_output", "premium").value).toBe("premium")
-    expect(mapped("pricing_output", "premium")).toHaveTextContent("premium (by name)")
-    expect(mapped("pricing_output", "referral").value).toBe("")
-    expect(mapped("pricing_output", "referral")).toHaveAttribute("title", "Nothing fills this column: it is left empty")
-    // A table with nothing connected has nothing to pick from.
-    expect(mapped("layers", "premium")).toBeDisabled()
-  })
-
-  it("shows a pick, and flags one the connected frame lacks", () => {
-    renderEditor({ mapping: { pricing_output: { premium: "base_premium", referral: "reason" } } })
-
-    expect(mapped("pricing_output", "premium").value).toBe("base_premium")
-    expect(mapped("pricing_output", "referral").value).toBe("reason")
-    expect(mapped("pricing_output", "referral")).toHaveTextContent("reason (missing)")
-  })
-
-  it("sends a pick as the new mapping, keeps none as none, and drops a pick of the column's own name", () => {
-    const { onUpdate } = renderEditor({ mapping: { pricing_output: { referral: null, premium: "base_premium" } } })
-
-    fireEvent.change(mapped("pricing_output", "premium"), { target: { value: "base_premium" } })
-    expect(onUpdate).toHaveBeenLastCalledWith("mapping", {
-      pricing_output: { premium: "base_premium", referral: null },
+  it("borders a column red while the frame has no column of exactly its name, or nothing is connected", () => {
+    renderEditor({
+      inputSources: [{ ...priced, columns: [{ name: "premium", dtype: "Float64" }, { name: "Referral", dtype: "String" }] }],
     })
 
-    fireEvent.change(mapped("pricing_output", "premium"), { target: { value: "" } })
-    expect(onUpdate).toHaveBeenLastCalledWith("mapping", { pricing_output: { premium: null, referral: null } })
+    expect(border("pricing_output", "premium")).toBe("var(--border)")
+    expect(border("pricing_output", "referral")).toBe("var(--danger)")
+    expect(screen.getByTestId("workbench-column-pricing_output-referral")).toHaveAttribute("title", "Missing from the frame")
+    // Every column of a table nothing is connected to is missing.
+    expect(border("layers", "layer")).toBe("var(--danger)")
+    expect(border("layers", "premium")).toBe("var(--danger)")
+    // Nothing to pick: the panel edits nothing.
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument()
+  })
 
-    // `referral` has no same-named column today, so none fills it either way; the pick is
-    // kept as null all the same, so a `referral` the frame gains later does not fill it.
-    fireEvent.change(mapped("pricing_output", "referral"), { target: { value: "" } })
-    expect(onUpdate).toHaveBeenLastCalledWith("mapping", { pricing_output: { referral: null, premium: "base_premium" } })
+  it("borders a column orange while the frame's column of its name is of a type that does not fit", () => {
+    const layered: InputSource = {
+      ...priced,
+      sourceNodeId: "layered",
+      sourceLabel: "layered",
+      edgeId: "e_layered",
+      targetHandle: "layers",
+      // A Decimal takes an integer, an Integer no float.
+      columns: [{ name: "layer", dtype: "Float64" }, { name: "premium", dtype: "Int64" }],
+    }
+    renderEditor({
+      inputSources: [{ ...priced, columns: [{ name: "premium", dtype: "String" }, { name: "referral", dtype: "Categorical" }] }, layered],
+    })
 
-    // The column's own name is filling by name: no entry.
-    fireEvent.change(mapped("pricing_output", "premium"), { target: { value: "premium" } })
-    expect(onUpdate).toHaveBeenLastCalledWith("mapping", { pricing_output: { referral: null } })
+    expect(border("pricing_output", "premium")).toBe("var(--caution)")
+    expect(screen.getByTestId("workbench-column-pricing_output-premium")).toHaveAttribute("title", "String in the frame")
+    expect(border("pricing_output", "referral")).toBe("var(--border)")
+    expect(border("layers", "layer")).toBe("var(--caution)")
+    expect(border("layers", "premium")).toBe("var(--border)")
+  })
+
+  it("never borders the quote's reference and option, which the response gives, connected or not", () => {
+    const identity = [column("quote_reference", "str"), column("quote_option", "int")]
+    render(
+      <WorkbenchOutputEditor
+        config={{
+          tables: [
+            { name: "pricing_output", rows: "one", columns: [...identity, column("premium", "float")] },
+            { name: "layers", rows: "many", columns: [...identity, column("layer", "int")] },
+          ],
+        }}
+        // The frame holds a quote_reference of another type, and no quote_option.
+        inputSources={[{ ...priced, columns: [{ name: "premium", dtype: "Float64" }, { name: "quote_reference", dtype: "Int64" }] }]}
+        reservedFrameLabels={new Set()}
+      />,
+    )
+
+    for (const table of ["pricing_output", "layers"]) {
+      for (const name of ["quote_reference", "quote_option"]) {
+        expect(border(table, name)).toBe("var(--border)")
+        expect(screen.getByTestId(`workbench-column-${table}-${name}`)).not.toHaveAttribute("title")
+      }
+    }
+    // Its own columns are still judged: nothing is connected to layers.
+    expect(border("layers", "layer")).toBe("var(--danger)")
+  })
+
+  it("judges no column of a connected frame not previewed yet", () => {
+    renderEditor({ inputSources: [{ ...priced, columns: undefined }] })
+
+    expect(border("pricing_output", "premium")).toBe("var(--border)")
+    expect(border("pricing_output", "referral")).toBe("var(--border)")
+    expect(screen.getByTestId("workbench-column-pricing_output-referral")).not.toHaveAttribute("title")
   })
 
   it("says what stops a table's name being a port", () => {

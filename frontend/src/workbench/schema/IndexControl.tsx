@@ -3,12 +3,13 @@ import type { FormSpec, SchemaTable } from "../../api/types"
 import { ConfigCheckbox } from "../../components/form"
 import { confirmed } from "../../stores/useQuestionStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import { identityCount } from "../../utils/quoteIdentity"
 import { addSchemaColumn, createIndexColumn, fieldUses, removeSchemaColumn } from "../../utils/workbenchForm"
 import { components, currentForm } from "./schemaText"
 
 /**
- * A many-row table's index: ticked, a column first in the table holding each row's
- * number, from 1 (`row_number` until renamed in its row, where it can also be made the
+ * A many-row table's index: ticked, a column first in the table after the quote's reference
+ * and option, holding each row's number, from 1 (`row_number` until renamed in its row, where it can also be made the
  * key). Unticked, it goes, asking first when a widget shows it.
  */
 export function IndexControl({ form, table, onAdded }: { form: FormSpec; table: SchemaTable; onAdded: (id: string) => void }) {
@@ -30,7 +31,7 @@ export function IndexControl({ form, table, onAdded }: { form: FormSpec; table: 
         onChange={(checked) => {
           if (checked) {
             const column = createIndexColumn(currentForm(), table.id)
-            change((f) => addSchemaColumn(f, table.id, column, 0))
+            change((f) => addSchemaColumn(f, table.id, column, identityCount(table)))
             onAdded(column.id)
           } else void remove()
         }}

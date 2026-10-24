@@ -49,12 +49,8 @@ def _examples():
         }
     )
     by_type[NodeType.EXTERNAL_FILE].data.config.update({"fileType": "joblib"})
-    # The workbench's copies: a sample quote read through the input's tables, and the
-    # frame column that fills an output table's column (specs/workbench).
+    # The workbench's copy: a sample quote read through the input's tables (specs/workbench).
     by_type[NodeType.WORKBENCH_INPUT].data.config.update({"sample": {"keyed": {"state": "NY"}}})
-    by_type[NodeType.WORKBENCH_OUTPUT].data.config.update(
-        {"mapping": {"priced": {"premium": "gross_premium"}}}
-    )
     by_type[NodeType.MODELLING].data.config.update(
         {
             "mlflow_destination": "server",

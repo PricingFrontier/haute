@@ -1,10 +1,11 @@
 /**
  * The Quotes page (specs/workbench): where the underwriter app opens. On the left, the
  * lists (My work, Team, Archived) and the stages of the one showing, each with its count;
- * above the list its name, the search, in Team an assignee, the order and New quote; the
- * list itself a table at Haute's density, a page at a time, each row opening its quote and
- * offering Open, Duplicate, and Archive or Restore on hover or focus. The list showing is
- * in the page's address.
+ * above the list its name, the search, in Team an assignee, the order and New quote, which
+ * opens the New quote window over the list as it is; the list itself a table at Haute's
+ * density, a page at a time, each row opening its quote and offering Open, Duplicate (the
+ * window again, filled from the quote), and Archive or Restore on hover or focus. The list
+ * showing is in the page's address.
  */
 import {
   Archive,
@@ -24,16 +25,17 @@ import {
   Users,
   type LucideIcon,
 } from "lucide-react"
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react"
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent } from "react"
 import { changeAppQuote, type QuotesQuery } from "../api/app"
 import { apiErrorMessage } from "../api/errors"
 import type { WorkbenchAppQuote } from "../api/types"
-import { isTypingTarget } from "../hooks/keyboardTargets"
+import { inModalDialog, isTypingTarget } from "../hooks/keyboardTargets"
 import useToastStore from "../stores/useToastStore"
 import { fullTime, listColumns, listValue, relativeTime } from "./quoteValues"
 import { followLink, navigate, newQuotePath, quotePath, quotesPath, quotesQueryOf } from "./route"
 import { BUTTON, FILL_BUTTON, FILL_STYLE, ICON_BUTTON, StageChip } from "./ui"
 import useAppStore from "./useAppStore"
+import useNewQuoteStore from "./useNewQuoteStore"
 import useQuoteListStore from "./useQuoteListStore"
 
 const VIEWS: ReadonlyArray<{ view: QuotesQuery["view"]; label: string; icon: LucideIcon; empty: string }> = [
@@ -48,11 +50,18 @@ const STAGES: ReadonlyArray<{ stage: NonNullable<QuotesQuery["stage"]>; label: s
 ]
 const SORTS: ReadonlyArray<{ sort: QuotesQuery["sort"]; label: string }> = [
   { sort: "saved", label: "Newest saved" },
-  { sort: "reference", label: "Newest reference" },
+  { sort: "reference", label: "Reference" },
   { sort: "insured", label: "Insured" },
 ]
 const SELECT = "focus-ring rounded-md px-1.5 py-1 text-xs"
 const SELECT_STYLE = { border: "1px solid var(--border)", color: "var(--text-primary)" }
+
+/** New quote's link: the window over the list; a press with a modifier opens its address as the browser would. */
+function openNewQuote(event: MouseEvent): void {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  useNewQuoteStore.getState().openNew()
+}
 
 /** A list in the rail: its icon, name and count, picked or not. */
 function RailItem({ icon: Icon, label, count, picked, onPick, testId }: { icon: LucideIcon; label: string; count: number | undefined; picked: boolean; onPick: () => void; testId: string }) {
@@ -145,13 +154,14 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || isTypingTarget(event.target) || event.ctrlKey || event.metaKey || event.altKey) return
+      // A key pressed in a window over the page, New quote's among them, is the window's.
+      if (event.defaultPrevented || inModalDialog(event.target) || isTypingTarget(event.target) || event.ctrlKey || event.metaKey || event.altKey) return
       if (event.key === "/") {
         event.preventDefault()
         searchBox.current?.focus()
       } else if ((event.key === "n" || event.key === "N") && editor) {
         event.preventDefault()
-        void navigate(newQuotePath())
+        useNewQuoteStore.getState().openNew()
       }
     }
     window.addEventListener("keydown", onKey)
@@ -162,17 +172,17 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
     try {
       const { quote: archived } = await changeAppQuote(quote.id, "archive", quote.latest, {})
       void load(query, true)
-      addToast("success", `Archived ${quote.reference}`, {
+      addToast("success", `Archived ${quote.label}`, {
         label: "Undo",
         run: () => {
           // The list shown when Undo is pressed, which may be another than the one archived from.
           void changeAppQuote(archived.id, "restore", archived.latest, {})
             .then(() => useQuoteListStore.getState().reload())
-            .catch((reason: unknown) => addToast("error", `Could not restore ${quote.reference}: ${apiErrorMessage(reason)}`))
+            .catch((reason: unknown) => addToast("error", `Could not restore ${quote.label}: ${apiErrorMessage(reason)}`))
         },
       })
     } catch (reason: unknown) {
-      addToast("error", `Could not archive ${quote.reference}: ${apiErrorMessage(reason)}`)
+      addToast("error", `Could not archive ${quote.label}: ${apiErrorMessage(reason)}`)
     }
   }
 
@@ -180,9 +190,9 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
     try {
       await changeAppQuote(quote.id, "restore", quote.latest, {})
       void load(query, true)
-      addToast("success", `Restored ${quote.reference}`)
+      addToast("success", `Restored ${quote.label}`)
     } catch (reason: unknown) {
-      addToast("error", `Could not restore ${quote.reference}: ${apiErrorMessage(reason)}`)
+      addToast("error", `Could not restore ${quote.label}: ${apiErrorMessage(reason)}`)
     }
   }
 
@@ -270,7 +280,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
               <RotateCw size={12} />
             </button>
             {editor && (
-              <a href={newQuotePath()} onClick={(event) => followLink(event, newQuotePath())} className={FILL_BUTTON} style={FILL_STYLE} title="Start a new quote (N)" data-testid="new-quote">
+              <a href={newQuotePath()} onClick={openNewQuote} className={FILL_BUTTON} style={FILL_STYLE} title="Start a new quote (N)" data-testid="new-quote">
                 <Plus size={13} aria-hidden="true" /> New quote
               </a>
             )}
@@ -329,7 +339,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                       <>
                         {view.empty}{" "}
                         {query.view !== "archived" && editor && (
-                          <a href={newQuotePath()} onClick={(event) => followLink(event, newQuotePath())} className={BUTTON}>
+                          <a href={newQuotePath()} onClick={openNewQuote} className={BUTTON}>
                             <Plus size={12} /> New quote
                           </a>
                         )}
@@ -343,7 +353,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                   <tr
                     key={quote.id}
                     tabIndex={0}
-                    data-testid={`quote-row-${quote.reference}`}
+                    data-testid={`quote-row-${quote.label}`}
                     onClick={() => void navigate(quotePath(quote.id))}
                     onKeyDown={(event) => onRowKey(event, quote)}
                     className="group/row h-7 cursor-pointer transition-colors outline-none hover:bg-[var(--bg-hover)] focus-visible:bg-[var(--bg-hover)]"
@@ -351,7 +361,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                   >
                     <td className="px-3 font-mono text-[11px]">
                       <a href={quotePath(quote.id)} onClick={(event) => { event.stopPropagation(); followLink(event, quotePath(quote.id)) }} style={{ color: "var(--text-accent)" }}>
-                        {quote.reference}
+                        {quote.label}
                       </a>
                     </td>
                     <td className="max-w-[280px] truncate px-2 font-medium" style={{ color: "var(--text-primary)" }} title={quote.title}>
@@ -376,26 +386,26 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                     </td>
                     <td className="px-2" onClick={(event) => event.stopPropagation()}>
                       <span className="flex justify-end gap-0.5 opacity-0 group-focus-within/row:opacity-100 group-hover/row:opacity-100">
-                        <button type="button" className={ICON_BUTTON} onClick={() => void navigate(quotePath(quote.id))} title={`Open ${quote.reference}`} aria-label={`Open ${quote.reference}`}>
+                        <button type="button" className={ICON_BUTTON} onClick={() => void navigate(quotePath(quote.id))} title={`Open ${quote.label}`} aria-label={`Open ${quote.label}`}>
                           <FolderOpen size={12} />
                         </button>
                         {editor && (
                         <button
                           type="button"
                           className={ICON_BUTTON}
-                          onClick={() => void navigate(newQuotePath({ quoteId: quote.id, revision: quote.latest, relation: "duplicate" }))}
-                          title={`Duplicate ${quote.reference} as a new quote`}
-                          aria-label={`Duplicate ${quote.reference}`}
+                          onClick={() => void useNewQuoteStore.getState().openDerived({ quoteId: quote.id, revision: quote.latest, relation: "duplicate" }, { label: quote.label })}
+                          title={`Duplicate ${quote.label} as a new quote`}
+                          aria-label={`Duplicate ${quote.label}`}
                         >
                           <Copy size={12} />
                         </button>
                         )}
                         {!editor ? null : !quote.archived ? (
-                          <button type="button" className={ICON_BUTTON} onClick={() => void archive(quote)} title={`Archive ${quote.reference}`} aria-label={`Archive ${quote.reference}`}>
+                          <button type="button" className={ICON_BUTTON} onClick={() => void archive(quote)} title={`Archive ${quote.label}`} aria-label={`Archive ${quote.label}`}>
                             <Archive size={12} />
                           </button>
                         ) : (
-                          <button type="button" className={ICON_BUTTON} onClick={() => void restore(quote)} title={`Restore ${quote.reference}`} aria-label={`Restore ${quote.reference}`}>
+                          <button type="button" className={ICON_BUTTON} onClick={() => void restore(quote)} title={`Restore ${quote.label}`} aria-label={`Restore ${quote.label}`}>
                             <ArchiveRestore size={12} />
                           </button>
                         )}

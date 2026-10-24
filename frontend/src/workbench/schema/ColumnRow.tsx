@@ -1,5 +1,5 @@
-/** A schema column's row: its type, name and summary, dragged or moved, removed and opened for its details (specs/workbench). */
-import { KeyRound, SlidersHorizontal, X } from "lucide-react"
+/** A schema column's row: its type and name, its summary under them, dragged or moved, removed and opened for its details (specs/workbench). */
+import { KeyRound, Lock, SlidersHorizontal, X } from "lucide-react"
 import { useRef, type KeyboardEvent } from "react"
 import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
 import { COMPACT_FIELD_CLASS, CommittedTextField, IconSelect, INPUT_STYLE } from "../../components/form"
@@ -7,12 +7,13 @@ import type { RowDrag } from "../../hooks/useListReorder"
 import { altArrowMove, type RefocusAfterMove } from "../../hooks/useRefocusAfterMove"
 import { confirmed } from "../../stores/useQuestionStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import { isIdentityColumn } from "../../utils/quoteIdentity"
 import { changeSchemaColumnType, conditionUses, fieldUses, moveSchemaColumn, QUOTE_DETAILS_MANAGED, removeSchemaColumn, updateSchemaColumn } from "../../utils/workbenchForm"
 import { COLUMN_TYPES, COLUMN_TYPE_OPTIONS } from "../columnTypes"
 import { ColumnDetails } from "./ColumnDetails"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
-import { type Fresh, HOVER_ONLY, rulesSummary, usedBy } from "./schemaText"
+import { columnSummary, type Fresh, HOVER_ONLY, usedBy } from "./schemaText"
 
 interface ColumnRowProps {
   form: FormSpec
@@ -27,11 +28,15 @@ interface ColumnRowProps {
   onInsertAfter: () => void
   /** In Haute's quote_details table: the column's name and type are fixed, and it stays. */
   locked: boolean
-  /** Its part in dragging the table's columns into a new order; none for the index or in quote_details, which stay. */
+  /** In Preview: the column shows as it is, its details too, nothing in it changed. */
+  readOnly: boolean
+  /** While the schema is searched: the column is not moved, nor does Enter add the next. */
+  filtering: boolean
+  /** Its part in dragging the table's columns into a new order; none for the quote's identity, the index or in quote_details, which stay. */
   drag: RowDrag | undefined
 }
 
-export function ColumnRow({ form, table, column, index, refocus, fresh, open, onToggleDetails, onInsertAfter, locked, drag }: ColumnRowProps) {
+export function ColumnRow({ form, table, column, index, refocus, fresh, open, onToggleDetails, onInsertAfter, locked, readOnly, filtering, drag }: ColumnRowProps) {
   const change = useWorkbenchFormStore((s) => s.change)
   const row = useRef<HTMLDivElement>(null)
   const shown = fieldUses(form, table.id, column.id).length
@@ -46,13 +51,17 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
   const { label, icon: Icon, color } = COLUMN_TYPES[column.type]
   // A column the underwriter app sets takes no rules.
   const managed = locked && QUOTE_DETAILS_MANAGED.has(column.id)
-  const summary = table.role === "input" ? rulesSummary(table, column) : ""
+  // The quote's reference and option are Haute's: nothing of them changes.
+  const identity = isIdentityColumn(column)
+  // Its name and type stay, and it stays: in quote_details, the quote's identity, and in Preview.
+  const fixed = locked || readOnly || identity
+  const summary = columnSummary(table, column)
   const set = (patch: Partial<SchemaColumn>) => change((f) => updateSchemaColumn(f, table.id, column.id, patch))
 
   // Enter in the last column's name adds the next column, and in any other only commits it;
   // Alt+Up and Alt+Down move this one.
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (locked) return
+    if (fixed || filtering) return
     if (e.key === "Enter") {
       e.preventDefault()
       if (index === table.columns.length - 1) onInsertAfter()
@@ -78,7 +87,7 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
     >
       <div className="group flex items-stretch gap-1 rounded">
         <DragGrip drag={drag} image={row} />
-        {column.index || locked ? (
+        {column.index || fixed ? (
           // The index is always an Integer; Haute's columns keep their types.
           <span
             className={`relative flex w-6 shrink-0 items-center justify-center rounded-md ${color}`}
@@ -102,41 +111,41 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
         <CommittedTextField
           ref={refocus.register(column.id)}
           aria-label="Column name"
-          aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+          aria-keyshortcuts={fixed || filtering ? undefined : "Alt+ArrowUp Alt+ArrowDown"}
           value={column.name}
           onCommit={(name) => set({ name })}
           {...fresh}
-          readOnly={locked}
+          readOnly={fixed}
           onKeyDown={onKeyDown}
           className={`${COMPACT_FIELD_CLASS} flex-1 font-mono`}
           style={INPUT_STYLE}
         />
-        {summary && (
-          <span className="shrink-0 self-center px-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
-            {summary}
-          </span>
-        )}
-        {table.rows === "many" && (
+        {table.rows === "many" && !identity && (
           <IconButton
             icon={KeyRound}
             onClick={() => set({ key: !column.key })}
             aria-pressed={column.key}
+            disabled={readOnly}
             aria-label={`Key: ${column.name}`}
             title={column.key ? "A key: it says which row is which (click to unmark)" : "Make this a key: it says which row is which"}
             className="self-center"
             style={{ color: column.key ? "var(--accent)" : "var(--text-muted)" }}
           />
         )}
-        <IconButton
-          icon={SlidersHorizontal}
-          onClick={onToggleDetails}
-          aria-expanded={open}
-          aria-label={`Label and rules of ${column.name}`}
-          title="Label, help, rules and format"
-          className={`self-center ${open ? "" : HOVER_ONLY}`}
-          style={{ color: open ? "var(--text-primary)" : "var(--text-muted)" }}
-        />
-        {locked ? (
+        {identity ? (
+          <Lock size={11} aria-label="Haute's column" className="shrink-0 self-center" style={{ color: "var(--text-muted)" }} />
+        ) : (
+          <IconButton
+            icon={SlidersHorizontal}
+            onClick={onToggleDetails}
+            aria-expanded={open}
+            aria-label={`Label and rules of ${column.name}`}
+            title="Label, help, rules and format"
+            className={`self-center ${open ? "" : HOVER_ONLY}`}
+            style={{ color: open ? "var(--text-primary)" : "var(--text-muted)" }}
+          />
+        )}
+        {fixed ? (
           <span className="size-5 shrink-0" aria-hidden="true" />
         ) : (
           <IconButton
@@ -148,7 +157,13 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
           />
         )}
       </div>
-      {open && <ColumnDetails table={table} column={column} managed={managed} set={set} />}
+      {summary && (
+        // Under the name, from its text's left edge: past the grip, the type marker and the field's edge.
+        <p className="ml-11 pl-[7px] text-[11px]" style={{ color: "var(--text-muted)" }} data-testid={`schema-column-${column.id}-summary`}>
+          {summary}
+        </p>
+      )}
+      {open && !identity && <ColumnDetails table={table} column={column} managed={managed} readOnly={readOnly} set={set} />}
     </div>
   )
 }

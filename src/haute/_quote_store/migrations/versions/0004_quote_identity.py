@@ -1,0 +1,196 @@
+"""The quote store's fourth schema: a quote's option, its reference and option held on the
+quote itself, and the details rows as ``quote_details`` holds a quote's administration.
+
+An app quote takes the reference of its newest details row, its canonical form and option
+1, and its details rows option 1, their columns ``quote_reference`` and ``quote_option`` as
+``quote_details`` names them now; a quote the store saved alone holds none. The canonical
+form and the option are unique among app quotes, and the last option taken under each
+reference is counted by canonical form, so an alternative takes the next and a second quote
+of a reference, in any case, is refused. The details rows drop ``valid_until`` and
+``currency``, which ``quote_details`` holds no more, and gain when the quote was made and by
+whom, from the quote's row, when the revision was written and by whom, from the revision's,
+and the Haute version it was written on, which no revision before recorded. A revision's
+request and response stay as they were priced. A Haute at the third schema could not read
+the forms this one saves with each quote: their ``quote_details`` holds ``option`` and their
+other tables lead with the quote's reference and option, which it refuses. So this
+migration names itself as the oldest reader, and a release rolled back past it refuses the
+database, naming the upgrade; it may drop the two columns for that reason.
+"""
+
+from __future__ import annotations
+
+import unicodedata
+from datetime import date, datetime
+
+import sqlalchemy as sa
+from alembic import op
+
+revision = "0004"
+down_revision = "0003"
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    op.add_column("haute_quotes", sa.Column("reference", sa.String(40), nullable=True))
+    op.add_column("haute_quotes", sa.Column("option", sa.Integer, nullable=True))
+    op.add_column("haute_quotes", sa.Column("reference_key", sa.String(160), nullable=True))
+    # The details rows' columns as quote_details names them; every row written before is
+    # option 1. SQLite renames a column by copying the table, so its index is made again.
+    op.drop_index("ix_haute_quote_details_reference", table_name="haute_quote_details")
+    with op.batch_alter_table("haute_quote_details") as batch:
+        batch.alter_column(
+            "reference",
+            new_column_name="quote_reference",
+            existing_type=sa.String(40),
+            existing_nullable=False,
+        )
+        batch.add_column(sa.Column("quote_option", sa.Integer, nullable=False, server_default="1"))
+        batch.drop_column("valid_until")
+        batch.drop_column("currency")
+        batch.add_column(sa.Column("created_date", sa.Date, nullable=True))
+        batch.add_column(sa.Column("created_by", sa.String(320), nullable=True))
+        batch.add_column(sa.Column("modified_date", sa.Date, nullable=True))
+        batch.add_column(sa.Column("modified_by", sa.String(320), nullable=True))
+        batch.add_column(sa.Column("haute_version", sa.Text, nullable=True))
+    _stamp_administration()
+    with op.batch_alter_table("haute_quote_details") as batch:
+        for column, kind in (
+            ("created_date", sa.Date),
+            ("created_by", sa.String(320)),
+            ("modified_date", sa.Date),
+            ("modified_by", sa.String(320)),
+        ):
+            batch.alter_column(column, existing_type=kind, nullable=False)
+    op.create_index(
+        "ix_haute_quote_details_quote_reference", "haute_quote_details", ["quote_reference"]
+    )
+    quotes = sa.table(
+        "haute_quotes",
+        sa.column("id", sa.String),
+        sa.column("latest", sa.Integer),
+        sa.column("reference", sa.String),
+        sa.column("option", sa.Integer),
+    )
+    details = sa.table(
+        "haute_quote_details",
+        sa.column("quote_id", sa.String),
+        sa.column("revision", sa.Integer),
+        sa.column("quote_reference", sa.String),
+    )
+    newest = (
+        sa.select(details.c.quote_reference)
+        .where(details.c.quote_id == quotes.c.id, details.c.revision == quotes.c.latest)
+        .scalar_subquery()
+    )
+    op.execute(quotes.update().values(reference=newest))
+    op.execute(quotes.update().where(quotes.c.reference.is_not(None)).values(option=1))
+    keys = _canonical_keys()
+    op.create_index(
+        "ux_haute_quotes_identity", "haute_quotes", ["reference_key", "option"], unique=True
+    )
+    options = op.create_table(
+        "haute_quote_options",
+        sa.Column("reference_key", sa.String(160), primary_key=True),
+        sa.Column("last_option", sa.Integer, nullable=False),
+    )
+    if keys:
+        op.bulk_insert(options, [{"reference_key": key, "last_option": 1} for key in keys])
+    compat = sa.table(
+        "haute_quote_store_compat",
+        sa.column("id", sa.Integer),
+        sa.column("oldest_reader", sa.String),
+    )
+    op.execute(compat.update().where(compat.c.id == 1).values(oldest_reader="0004"))
+
+
+def _canonical_keys() -> list[str]:
+    """Give each app quote its reference's canonical form, as the book makes it
+    (``haute._quote_store._book.canonical_reference``, copied here as a migration stands
+    alone), and answer them. Every reference before this one was numbered by Haute, so none
+    shares a canonical form."""
+    quotes = sa.table(
+        "haute_quotes",
+        sa.column("id", sa.String),
+        sa.column("reference", sa.String),
+        sa.column("reference_key", sa.String),
+    )
+    connection = op.get_bind()
+    rows = connection.execute(
+        sa.select(quotes.c.id, quotes.c.reference).where(quotes.c.reference.is_not(None))
+    ).all()
+    keys: list[str] = []
+    for row in rows:
+        key = unicodedata.normalize("NFC", row.reference).casefold()
+        connection.execute(quotes.update().where(quotes.c.id == row.id).values(reference_key=key))
+        keys.append(key)
+    return keys
+
+
+def _stamp_administration() -> None:
+    """Give each details row when its quote was made and by whom, and when its revision was
+    written and by whom, as dates in UTC, as the store keeps its times. Read and written row
+    by row, so the date is taken alike on every engine."""
+    quotes = sa.table(
+        "haute_quotes",
+        sa.column("id", sa.String),
+        sa.column("owner", sa.String),
+        sa.column("created_at", sa.DateTime),
+    )
+    revisions = sa.table(
+        "haute_quote_revisions",
+        sa.column("quote_id", sa.String),
+        sa.column("number", sa.Integer),
+        sa.column("saved_by", sa.String),
+        sa.column("saved_at", sa.DateTime),
+    )
+    details = sa.table(
+        "haute_quote_details",
+        sa.column("quote_id", sa.String),
+        sa.column("revision", sa.Integer),
+        sa.column("created_date", sa.Date),
+        sa.column("created_by", sa.String),
+        sa.column("modified_date", sa.Date),
+        sa.column("modified_by", sa.String),
+    )
+    connection = op.get_bind()
+    rows = connection.execute(
+        sa.select(
+            details.c.quote_id,
+            details.c.revision,
+            quotes.c.owner,
+            quotes.c.created_at,
+            revisions.c.saved_by,
+            revisions.c.saved_at,
+        )
+        .join(quotes, quotes.c.id == details.c.quote_id)
+        .join(
+            revisions,
+            sa.and_(
+                revisions.c.quote_id == details.c.quote_id,
+                revisions.c.number == details.c.revision,
+            ),
+        )
+    ).all()
+    for row in rows:
+        connection.execute(
+            details.update()
+            .where(details.c.quote_id == row.quote_id, details.c.revision == row.revision)
+            .values(
+                created_date=_day(row.created_at),
+                created_by=row.owner,
+                modified_date=_day(row.saved_at),
+                modified_by=row.saved_by,
+            )
+        )
+
+
+def _day(moment: datetime) -> date:
+    """The date of *moment*, a time the store keeps as UTC without its zone."""
+    return moment.date()
+
+
+def downgrade() -> None:
+    raise NotImplementedError(
+        "The quote store migrates forward only: undoing a change is a new migration."
+    )

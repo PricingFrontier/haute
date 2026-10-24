@@ -193,7 +193,7 @@ Test quotes live in `tests/quotes/` as JSON files, each holding a list of cases:
 ]
 ```
 
-- `input` is the request, as your API receives it.
+- `input` is the request, as your API receives it. For a [Workbench Input](../building-models/nodes/workbench-input.md), that includes the quote's `quote_reference` and `quote_option` in its `quote_details`, as `{"quote_details": {"quote_reference": "TEST-1", "quote_option": 1}, ...}`.
 - `expected` (optional) lists outputs the response must match. A number matches within `tolerance_pct`, a fraction (`0.01` is 1%, at most `1`; the default, `0`, means exactly); any other value must be equal.
 - Keys starting with `_` are notes and are ignored.
 

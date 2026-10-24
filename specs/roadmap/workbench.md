@@ -11,7 +11,7 @@ specification](../deploy/high-level.md). The packages below are what neither cov
 underwriter app, which carries the sheets and the pipeline to the host a project uses; the
 delivery of a workbench project through CI, from a merge to `main` to that app; the store
 the app saves quotes to on the server; how underwriters manage their quotes in the app;
-exports from the app; the test quotes analysts keep and re-price in Preview; and the actions
+exports from the app; test quotes analysts keep and price again; and the actions
 that fill the sheets from databases and APIs.
 
 `WB-25` takes on what is left of the [review of 15 October
@@ -41,8 +41,8 @@ cells shown row by row through "this row" tests were offered again and not taken
 | WB-09 | Decision | P2 | A Button on a sheet, or a lookup beside a key cell, runs an action the project declares against a database or an API and fills input cells with what comes back, through the server with no credential in the browser, while pricing stays as pure as it is. |
 | WB-10 | Planned | P2 | The quote store runs on the SQL instance the project's IT team provides, migrated by the deploy under an identity of its own, with the release before a candidate proved to work on the schema the candidate leaves. |
 | WB-11 | Decision | P2 | An underwriter exports a saved quote from the app in the formats the project needs, naming the release that priced it. |
-| WB-12 | Planned | P3 | A test quote whose response runs past what Preview shows is saved, run and compared in full, as every other test quote is. |
-| WB-13 | Planned | P3 | An underwriter compares a quote's revisions, sees which quotes are about to lapse, records how a final quote ended, and archives or reassigns many quotes at once. |
+| WB-12 | Decision | P3 | Analysts keep test quotes and price them again as the pipeline changes, built again after the first version was taken out. |
+| WB-13 | Planned | P3 | An underwriter compares a quote's revisions, records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-28 | Planned | P3 | A condition tests a field against another field, text within text, and a date against another date give or take a number of days. |
 | WB-29 | Planned | P3 | A component that takes nothing typed, or a section or a sheet holding only such components, shows by conditions on the price, applied after it so the price never decides what is priced. |
@@ -140,10 +140,12 @@ digest, checked the same way, and the release that runs recorded. Rollouts take 
 maintenance window: the old revision stops, the migrations run, the new revision starts, and
 no traffic is split; a new revision that fails to start or fails its check after the
 migrations is replaced by the previous release, started again on the migrated schema, which
-the migrations of WB-10 keep it able to read and write, and the run fails. The host step is
-small, and the project's IT team provides what it deploys onto (the Container App, the
-registry, the identities and the database): it publishes, rolls the environment to the
-release, waits until the release runs and reports it, and creates nothing. Azure Container
+the migrations of WB-10 keep it able to read and write, and the run fails; after a migration
+that names itself the oldest schema the previous release refuses that schema, so the run
+fails with the app stopped, naming the copy of the database WB-10 keeps to restore. The
+host step is small, and the project's IT team provides what it deploys onto (the Container
+App, the registry, the identities and the database): it publishes, rolls the environment to
+the release, waits until the release runs and reports it, and creates nothing. Azure Container
 Apps first; other hosts follow with the same commands.
 
 **Acceptance:** A project initialised by `haute init --workbench` for Azure Container Apps
@@ -156,7 +158,8 @@ nothing; a request to the hosted app without sign-in is refused; impact reports 
 a premium inside a response table; the first release, onto an empty database with no
 production app, reports that there is no baseline and still waits for approval; a candidate
 that fails after the migrations leaves the previous release running on the migrated schema
-and the run failed.
+and the run failed, or, after a migration naming itself the oldest schema, the app stopped,
+the run failed and the copy to restore named.
 
 **Dependencies:** WB-10 (the store and its migrations), WB-11 (the export
 the app's tests make, once its formats are decided) and WB-12 (the test quotes). The Azure
@@ -267,19 +270,31 @@ and is recorded here before the backend's slice. The backend is that engine's dr
 an optional extra, as the Databricks clients are, signing in with the app's managed identity
 where the engine allows it, with the store's tests run against SQLite and that engine alike
 (a service container in CI), and the form copies kept once through that engine's own
-insert-if-absent. The deploy's migrate step runs `haute app migrate` under an identity that
+insert-if-absent. A reference's canonical form is compared byte for byte
+([workbench](../workbench/high-level.md)), so the quote's `reference_key` and its counter's
+take that engine's binary collation (Azure SQL's default ignores case and accents), in the
+metadata and a migration alike, and the unique index on a quote's identity keeps the quotes
+saved alone, their pairs null, apart (Azure SQL does only when the index is filtered to the
+pairs set); the store tests against that engine make `cafe` after `café` and two quotes
+saved alone. The deploy's migrate step runs `haute app migrate` under an identity that
 owns the schema, before the release rolls out, while the app's own identity reads and writes
 data only. A release's migrations keep the previous release's reads and writes working (a
 column or table added, nullable or with a default, no constraint the previous release's
 writes would break, nothing dropped), and each records the oldest Haute that can still use
 the database; that is proved by running the previous release's store tests against the
 schema the migrations leave, so the previous release can be started again after a failed
-rollout; removing a column is a step of its own after the release that stops using it.
+rollout; removing a column is a step of its own after the release that stops using it. A
+migration after which the previous release cannot read what the next saves, as the third
+and the fourth, names itself the oldest schema instead, so the previous release refuses the
+database naming the upgrade; the deploy keeps a copy of the database from before such a
+migration, and rolling back past it is restoring that copy.
 
 **Acceptance:** The same store tests pass against SQLite and the server engine; a deploy
 migrates IT's instance under the schema's identity before the release starts, and the app's
 identity cannot change the schema; the previous release's store tests pass against the
-schema a candidate's migrations leave, and the previous release starts on it; no connection
+schema a candidate's migrations leave, and the previous release starts on it, save after a
+migration naming itself the oldest schema, when it refuses the schema naming the upgrade
+and restoring the copy taken before the migration starts it again; no connection
 value appears in the form file, `haute.toml`, an API response or a log.
 
 **Dependencies:** The SQL instance and its identities, provided by the project's IT team,
@@ -317,35 +332,27 @@ show); `frontend/src/workbench/useSheetValues.ts` (the one path for a sheet's va
 `src/haute/_workbench_tables.py::quote_schema` (a quote's columns as typed).
 
 ### WB-12 — Test quotes in Preview
-**Why:** Analysts keep test quotes in Preview ([workbench](../workbench/high-level.md)):
-saved from the sheets, opened back onto them, run in bulk on a pipeline fixed when the run
-starts, accepted and deleted from a panel, kept in a SQLite file committed with the project
-that git diffs as text and merges quote by quote, and priced again by deploy's check and the
-smoke, with a report of each pull request's changes to them. A test quote keeps its response
-whole only while Preview shows it whole: its pricing goes through the preview route, which
-answers at most 10,000 rows of a table, fewer for a wide one, and a response cut short is
-refused rather than kept cut. A quote whose many-row table runs past that cannot be a test
-quote.
+**Why:** Analysts need quotes they keep and price again as the pipeline changes, so a change
+to the pricing shows on the quotes they know. A first version was taken out on 23 October
+2026, to be built out again later. Its quotes were saved from the sheets in Preview, run in
+bulk, accepted and deleted from a panel there, and kept in a SQLite file committed with the
+project, which git diffed as text and merged quote by quote. Deploy's check and the smoke
+test priced them again, and a pull request's changes to them were reported on it. Its
+commits are `352823c4d`, `d4249d583`, `448aee189`, `42a7309b3` and `5ccc51fff`, and
+`c44884922` took it out. Its
+pricing went through the preview route, which answers at most 10,000 rows of a table, so a
+quote whose many-row table ran past that could not be kept.
 
-**Plan:** A pricing for test quotes that answers the Workbench Output's response whole for
-the editor's graph, apart from the preview route's limits: the patched graph run as the dry
-run runs a deployed pipeline, on the worker pool with its admission limits, answering the
-response document a deployed pipeline gives. The panel's saves and runs use it; Preview
-keeps the preview route for what it shows.
+**Plan:** Decided with the owner before work starts: what a test quote is, where it is
+kept, how it is run and reviewed, and how CI uses it. A pricing that answers the Workbench
+Output's response whole, apart from the preview route's limits, keeps long quotes in full.
 
-**Acceptance:** A test quote whose many-row table holds more rows than Preview shows is
-saved, run and compared in full, a change in a row past Preview's limit listed as any other
-is; a response too large for the worker's limits is refused naming its size; Preview itself
-prices as it does now.
+**Acceptance:** Set with the plan.
 
 **Dependencies:** None.
 
-**Evidence:** `frontend/src/workbench/priceSample.ts::priceSample` (the preview route's row
-limit, and a table cut short refused); `src/haute/executor.py::_preview_row_limit_for_width`
-(Preview's cell limit); `src/haute/_workbench_output.py::workbench_response` (the response
-whole, as a deployed pipeline gives it);
-`src/haute/deploy/_validators.py::score_test_quotes` (the dry run's pricing of each quote
-alone).
+**Evidence:** The commits above; `src/haute/deploy/_validators.py::score_test_quotes` (the
+dry run's pricing of deploy's JSON test quotes, one request each).
 
 ### WB-13 — Managing quotes in the underwriter app
 **Why:** The underwriter app opens on its quotes ([workbench](../workbench/high-level.md)):
@@ -356,24 +363,22 @@ priced again on the server, a handover note, an assignee, a
 final revision reopened with a reason, an archive, and the duplicates, renewals and
 alternatives made from it, with a history of who did what; a reader sees every quote and
 changes none. What underwriters still keep elsewhere is the rest of a quote's commercial
-life: two revisions cannot be compared side by side; nothing reads a quote's validity
-date, so nothing says which offers are about to lapse; nothing records whether a final quote was
+life: two revisions cannot be compared side by side; nothing records whether a final quote was
 bound, declined or not taken up, so the lists cannot tell open work from closed; and
 archiving or reassigning many quotes is done one at a time.
 
 **Plan:** Decisions first, recorded here before each slice: which outcomes a quote can close
-with, and whether a project names its own; and how near the end of a quote's validity, its
-`quote_details.valid_until`, the Quotes page warns. Then, each usable on `haute app serve`:
+with, and whether a project names its own. Then, each usable on `haute app serve`:
 a comparison of two revisions, values and prices side by side, the rows of a many-row table
-matched by their keys rather than their places; a quote's validity, read from its
-`valid_until`, with an Expiring soon list;
+matched by their keys rather than their places;
 outcomes, recorded on a final quote with who and when and listed apart from the open quotes;
 and archiving and reassigning a selection of quotes at once, each checked against its
 version, a quote moved on since named without undoing the rest. Exports stay WB-11's.
+A quote's validity left with `quote_details.valid_until`, taken out on 2026-10-24 as no
+project used it; a project that needs it keeps a date of its own.
 
 **Acceptance:** Two revisions of a quote are compared with each changed value and price
-named, the rows of a many-row table matched by their keys; a quote whose validity ends
-within the warning is listed under Expiring soon, and one past it says so; an outcome
+named, the rows of a many-row table matched by their keys; an outcome
 recorded on a final quote is listed with who recorded it and when, and the quote leaves the
 open lists; a selection of quotes is archived or reassigned at once, a quote moved on since
 refused by name and the rest changed.
@@ -381,7 +386,7 @@ refused by name and the rest changed.
 **Dependencies:** The decisions above.
 
 **Evidence:** `src/haute/_quote_store/_book.py::QuoteBook` (the quotes, their changes and
-lists, without outcomes or validity); `src/haute/deploy/_validators.py::response_changes` (a
+lists, without outcomes); `src/haute/deploy/_validators.py::response_changes` (a
 comparison by place, not by key); `frontend/src/app/QuotesPage.tsx::QuotesPage` (one quote
 changed at a time).
 

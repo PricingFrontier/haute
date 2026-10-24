@@ -1,12 +1,15 @@
 /**
  * Zustand store for the workbench view's own state while it shows (specs/workbench):
- * which of the view's sections shows (the sheets or the schema while building, or
- * Preview), whose values Preview shows (the form's sample, or the underwriter app's
+ * the mode (building or Preview), whether the schema's pane is open over the sheets, whose
+ * values Preview shows (the form's sample, or the underwriter app's
  * quote), which sheet, the selected component, the selected section or the sheet's own
  * panel, the sheet's zoom, a component being dragged out of the palette, a section being
  * moved by its header, the sheet's size as pressed while an edge is dragged, the properties
- * panel's width and the pane it last showed for each component, the component copied, and
- * the sheet and viewport elements that drops are placed on and the zoom fits to. None of it is part of the form, so none is saved or undone.
+ * panel's width and the pane it last showed for each component, the schema's pane's width
+ * and how it was left (its tables collapsed, the column whose details are open, its scroll
+ * and its search),
+ * the component copied, and the sheet and viewport elements that drops are placed on and
+ * the zoom fits to, and the schema's pane, where nothing drops. None of it is part of the form, so none is saved or undone.
  */
 import { create } from "zustand"
 import type { FormSpec, Page, Section } from "../api/types"
@@ -16,8 +19,8 @@ import { findWidget, type PaletteType, type Widget } from "../utils/workbenchFor
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "./useWorkbenchPreviewStore"
 
-/** The sheets and the schema are Build's; Preview shows the sheets as an underwriter sees them. */
-export type WorkbenchSection = "sheets" | "schema" | "preview"
+/** Building lays out the sheets and the schema; Preview uses the sheets as an underwriter would. */
+export type WorkbenchMode = "build" | "preview"
 
 /** A component or a section being dragged out of the palette, and where the pointer is. */
 export interface Creating {
@@ -46,6 +49,11 @@ export const ZOOM_STEP = 0.1
 export const MIN_ZOOM = 0.25
 export const MAX_ZOOM = 2
 const DEFAULT_PANEL_WIDTH = 360
+/**
+ * The schema's pane with its fields at full stretch: the schema editor's 640px beside a
+ * 10px scrollbar and the pane's 4px drag handle. It opens at this width.
+ */
+export const SCHEMA_FULL_WIDTH = 640 + 10 + 4
 
 /** The sheet `pageId` names, or the first when it names none: none chosen yet, or one removed. */
 export function activePage(form: FormSpec, pageId: string | null): Page {
@@ -68,7 +76,9 @@ export const previewSections = (page: Page, visibility: SheetVisibility): Sectio
     .map((section) => ({ ...section, widgets: section.widgets.filter((widget) => visibility.widgets.has(widget.id)) }))
 
 interface WorkbenchViewState {
-  section: WorkbenchSection
+  mode: WorkbenchMode
+  /** The schema's pane is open over the sheets, in either mode: read only in Preview. */
+  schemaOpen: boolean
   /**
    * The sheets are the underwriter app's: Preview shows its quote, the Preview store's,
    * rather than the form's sample. The app sets it as it opens its release.
@@ -95,15 +105,31 @@ interface WorkbenchViewState {
   heldSize: Size | null
   /** The properties panel's width, kept between openings. */
   panelWidth: number
+  /** The schema's pane's width, kept between openings. */
+  schemaWidth: number
+  /**
+   * The schema's pane as it was left, so it opens again as it was closed: the tables shown
+   * collapsed, by id, the column whose label and rules are open, how far it is scrolled and
+   * the text filtering its columns, "" for none.
+   */
+  schemaCollapsed: ReadonlySet<string>
+  schemaDetails: string | null
+  schemaScroll: number
+  schemaSearch: string
   /** The pane each component's properties panel last showed, by component id; Config until another is chosen. */
   widgetPanes: Record<string, WidgetPane>
   /** The component Ctrl/Cmd+C copied, which Ctrl/Cmd+V pastes, or null. */
   copied: Copied | null
-  /** The sheet element and its scrolling viewport, while the sheets section shows. */
+  /** The sheet element and its scrolling viewport, while the sheets show. */
   sheet: HTMLElement | null
   viewport: HTMLElement | null
-  showSection: (section: WorkbenchSection) => void
-  /** Show a sheet, with nothing selected: in Preview as before, else on the sheets section. */
+  /** The schema's pane while it is open, over the viewport's left part. */
+  schemaPane: HTMLElement | null
+  /** Switch to a mode, with nothing selected; the schema's pane stays as it is. */
+  showMode: (mode: WorkbenchMode) => void
+  /** Open or close the schema's pane, the selection kept: the sheet stays under it. */
+  setSchemaOpen: (open: boolean) => void
+  /** Show a sheet, in either mode, with nothing selected. */
   showPage: (pageId: string) => void
   /** Select a component, or nothing; either closes the sheet's panel and the section's. */
   select: (id: string | null) => void
@@ -122,14 +148,21 @@ interface WorkbenchViewState {
   setMovingSection: (moving: MovingSection | null) => void
   setHeldSize: (size: Size | null) => void
   setPanelWidth: (width: number) => void
+  setSchemaWidth: (width: number) => void
+  toggleSchemaCollapsed: (tableId: string) => void
+  setSchemaDetails: (columnId: string | null) => void
+  setSchemaScroll: (top: number) => void
+  setSchemaSearch: (text: string) => void
   setWidgetPane: (id: string, pane: WidgetPane) => void
   setCopied: (copied: Copied | null) => void
   setSheet: (element: HTMLElement | null) => void
   setViewport: (element: HTMLElement | null) => void
+  setSchemaPane: (element: HTMLElement | null) => void
 }
 
 const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
-  section: "sheets",
+  mode: "build",
+  schemaOpen: false,
   underwriterApp: false,
   pageId: null,
   selectedId: null,
@@ -141,13 +174,19 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   movingSection: null,
   heldSize: null,
   panelWidth: DEFAULT_PANEL_WIDTH,
+  schemaWidth: SCHEMA_FULL_WIDTH,
+  schemaCollapsed: new Set(),
+  schemaDetails: null,
+  schemaScroll: 0,
+  schemaSearch: "",
   widgetPanes: {},
   copied: null,
   sheet: null,
   viewport: null,
-  showSection: (section) => set({ section, selectedId: null, sheetSelected: false, sectionId: null }),
-  showPage: (pageId) =>
-    set((s) => ({ section: s.section === "preview" ? "preview" : "sheets", pageId, selectedId: null, sheetSelected: false, sectionId: null })),
+  schemaPane: null,
+  showMode: (mode) => set({ mode, selectedId: null, sheetSelected: false, sectionId: null }),
+  setSchemaOpen: (schemaOpen) => set({ schemaOpen }),
+  showPage: (pageId) => set({ pageId, selectedId: null, sheetSelected: false, sectionId: null }),
   select: (selectedId) => set({ selectedId, sheetSelected: false, sectionId: null }),
   selectSheet: () => set({ selectedId: null, sheetSelected: true, sectionId: null }),
   selectSection: (sectionId) => set({ selectedId: null, sheetSelected: false, sectionId }),
@@ -155,11 +194,11 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   setZoom: (zoom) => set({ zoom: Math.round(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom)) * 100) / 100 }),
   zoomBy: (step) => get().setZoom(get().zoom + step),
   fitZoom: () => {
-    const { viewport, pageId, section, underwriterApp } = get()
+    const { viewport, pageId, mode, underwriterApp } = get()
     const { form } = useWorkbenchFormStore.getState()
     if (viewport === null || form === null) return
     let page: Page | null = activePage(form, pageId)
-    if (section === "preview") {
+    if (mode === "preview") {
       const visibility = sheetVisibility(form, underwriterApp ? useWorkbenchPreviewStore.getState().quote : form.sample)
       page = shownPage(form, pageId, visibility.pages)
     }
@@ -172,10 +211,22 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   setMovingSection: (movingSection) => set({ movingSection }),
   setHeldSize: (heldSize) => set({ heldSize }),
   setPanelWidth: (panelWidth) => set({ panelWidth }),
+  setSchemaWidth: (schemaWidth) => set({ schemaWidth }),
+  toggleSchemaCollapsed: (tableId) =>
+    set((s) => {
+      const schemaCollapsed = new Set(s.schemaCollapsed)
+      if (schemaCollapsed.has(tableId)) schemaCollapsed.delete(tableId)
+      else schemaCollapsed.add(tableId)
+      return { schemaCollapsed }
+    }),
+  setSchemaDetails: (schemaDetails) => set({ schemaDetails }),
+  setSchemaScroll: (schemaScroll) => set({ schemaScroll }),
+  setSchemaSearch: (schemaSearch) => set({ schemaSearch }),
   setWidgetPane: (id, pane) => set((s) => ({ widgetPanes: { ...s.widgetPanes, [id]: pane } })),
   setCopied: (copied) => set({ copied }),
   setSheet: (sheet) => set({ sheet }),
   setViewport: (viewport) => set({ viewport }),
+  setSchemaPane: (schemaPane) => set({ schemaPane }),
 }))
 
 // A form read anew, on the view's first showing or after a branch switch, is fitted when its

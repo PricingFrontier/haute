@@ -3,14 +3,17 @@ revision's ``quote_details`` row held in the store's typed table, and the pages 
 Quotes page lists.
 
 A revision of an app quote keeps its values as the store keeps any, without the
-``quote_details`` table, whose row it keeps in ``haute_quote_details`` alone: its reference,
-name, insured, broker, dates and currency as typed, and its stage, who it is with and
-whether it is archived, which the app sets. Every change to the quote is a revision written
+``quote_details`` table, whose row it keeps in ``haute_quote_details`` alone: its reference
+and option, name, insured, broker, dates and currency as typed, and its stage, who it is with
+and whether it is archived, which the app sets. A quote is made with its reference and
+option: a new quote, a duplicate and a renewal take the next reference and option 1, an
+alternative its source's reference and the next option under it, and the quote is shown as
+both, ``Q-000123/2``. Every change to the quote is a revision written
 whole, in one transaction with its event of who did what: a save writes the values and
 prices; assigning, archiving, restoring, marking final and reopening write a revision of the
 newest's values, request and prices with the details the change sets. Each change names the
 revision it was made on and is refused, with nothing written, when the quote has moved past
-it. The test quotes of the analysts' Preview share the store and have no details.
+it.
 """
 
 from __future__ import annotations
@@ -18,9 +21,10 @@ from __future__ import annotations
 import base64
 import json
 import re
+import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any, Literal
 
 from sqlalchemy import (
@@ -53,12 +57,13 @@ from haute._quote_store._tables import (
     NAME_LENGTH,
     OPERATION_LENGTH,
     PRINCIPAL_LENGTH,
-    QUOTE_COUNTER,
     QUOTE_DETAILS,
     QUOTE_EVENTS,
     QUOTE_OPERATIONS,
+    QUOTE_OPTIONS,
     QUOTE_REVISIONS,
     QUOTES,
+    REFERENCE_LENGTH,
 )
 from haute._workbench_form import QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_ID, FormSpec
 
@@ -68,7 +73,7 @@ Stage = Literal["draft", "priced", "final"]
 Relation = Literal["duplicate", "renewal", "alternative"]
 #: The lists of the Quotes page: the signed-in underwriter's, everyone's, the archive.
 View = Literal["mine", "team", "archived"]
-#: The orders a list is read in: the newest saved first, the newest reference first, or by
+#: The orders a list is read in: the newest saved first, by reference from A to Z, or by
 #: insured.
 Sort = Literal["saved", "reference", "insured"]
 #: What an event records.
@@ -84,8 +89,6 @@ EventKind = Literal[
     "derived",
 ]
 
-#: A reference is this and the counter's number in six digits, or more past a million.
-REFERENCE_PREFIX = "Q-"
 #: The quotes one page holds, unless asked for fewer; and the most it holds.
 PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
@@ -94,9 +97,23 @@ MAX_PEOPLE = 500
 #: The details' column ids by name.
 DETAIL_IDS: dict[str, str] = {name: column_id for column_id, name, _ in QUOTE_DETAILS_COLUMNS}
 _DATES = frozenset(name for _, name, kind in QUOTE_DETAILS_COLUMNS if kind == "date")
-_SEARCHED = ("reference", "quote_name", "insured", "broker")
+_WHOLE = frozenset(name for _, name, kind in QUOTE_DETAILS_COLUMNS if kind == "int")
+_SEARCHED = ("quote_name", "insured", "broker")
+#: A word of a search naming a reference and an option, as a quote is shown: ``Q-000123/2``.
+_REFERENCE_OPTION = re.compile(r"(.+)/(\d+)")
 _OPERATION = re.compile(rf"[A-Za-z0-9_-]{{8,{OPERATION_LENGTH}}}")
-_COUNTER_SCOPE = "quotes"
+
+
+class ReferenceTakenError(QuoteStoreError):
+    """A new quote's reference is one another quote holds, in its canonical form: the quote
+    holding it, its option 1 else its lowest, is named by *quote_id* and *label*."""
+
+    error_code = "reference_taken"
+
+    def __init__(self, message: str, *, quote_id: str, label: str) -> None:
+        super().__init__(message)
+        self.quote_id = quote_id
+        self.label = label
 
 
 class QuoteLockedError(QuoteStoreError):
@@ -122,6 +139,8 @@ class AppQuote:
 
     id: str
     reference: str
+    #: Which of the quotes offered under its reference it is, from 1.
+    option: int
     #: The ``quote_details`` row, by column name: dates as ISO text, blanks left out.
     details: dict[str, Any]
     stage: Stage
@@ -148,17 +167,28 @@ class AppQuote:
     note_at: datetime | None = None
     source_quote_id: str | None = None
     source_reference: str | None = None
+    source_option: int | None = None
     source_revision: int | None = None
     relation: Relation | None = None
 
     @property
+    def label(self) -> str:
+        """The quote as the app shows it: its reference and option, ``Q-000123/2``."""
+        return identity_label(self.reference, self.option)
+
+    @property
     def title(self) -> str:
-        """What a list shows as the quote: its name, else its insured, else its reference."""
+        """What a list shows as the quote: its name, else its insured, else its label."""
         for name in ("quote_name", "insured"):
             value = self.details.get(name)
             if isinstance(value, str) and value.strip():
                 return value.strip()
-        return self.reference
+        return self.label
+
+
+def identity_label(reference: str, option: int) -> str:
+    """A quote's reference and option as the app shows them: ``Q-000123/2``."""
+    return f"{reference}/{option}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +232,7 @@ class RelatedQuote:
 
     id: str
     reference: str
+    option: int
     relation: Relation
     #: The revision of the quote made from that it was made from.
     revision: int
@@ -219,12 +250,13 @@ class QuoteTimeline:
 
 
 def details_of(values: Values) -> dict[str, Any]:
-    """The ``quote_details`` row of *values*, by column name, blanks left out."""
+    """The ``quote_details`` row of *values*, by column name, blanks left out: the option,
+    held as text as a cell is, read back as the whole number it is."""
     rows = values.get(QUOTE_DETAILS_ID) or []
     row = rows[0] if rows else {}
     names = {column_id: name for name, column_id in DETAIL_IDS.items()}
     return {
-        names[key]: value
+        names[key]: int(value) if names[key] in _WHOLE and isinstance(value, str) else value
         for key, value in row.items()
         if key in names and value is not None and value != ""
     }
@@ -234,7 +266,7 @@ def with_details(values: Values, details: Mapping[str, Any]) -> Values:
     """*values* with their ``quote_details`` row set to *details* (by column name), the
     blanks left out and the row with them when none is left; every other table as it was."""
     row = {
-        DETAIL_IDS[name]: value
+        DETAIL_IDS[name]: _cell(value)
         for name, value in details.items()
         if name in DETAIL_IDS and value is not None and value != ""
     }
@@ -244,13 +276,54 @@ def with_details(values: Values, details: Mapping[str, Any]) -> Values:
     return merged
 
 
+def _cell(value: Any) -> Any:
+    """A detail as the values hold a cell: a whole number, the option, as its text, as it
+    would be typed; text and ticks as they are."""
+    return str(value) if isinstance(value, int) and not isinstance(value, bool) else value
+
+
 def _stage_of(priced: bool) -> Stage:
     return "priced" if priced else "draft"
 
 
+def _day(moment: datetime) -> str:
+    """The date of *moment* in UTC, as the store keeps its times, as its ISO text."""
+    return moment.astimezone(UTC).date().isoformat()
+
+
 def _search_like(term: str) -> str:
-    escaped = term.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return _like(term.lower())
+
+
+def _like(term: str) -> str:
+    """A ``LIKE`` pattern for *term* anywhere, its wildcards escaped."""
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
+
+
+def canonical_reference(reference: str) -> str:
+    """*reference*'s canonical form: normalized to Unicode NFC, then case-folded. Two
+    references are one when their canonical forms are, compared exactly: ``ABC-1`` and
+    ``abc-1``, ``STRASSE`` and ``straße``, but not ``cafe`` and ``café``."""
+    return unicodedata.normalize("NFC", reference).casefold()
+
+
+def check_reference(reference: str | None) -> str:
+    """*reference* as a new quote keeps it, trimmed: 1 to ``REFERENCE_LENGTH`` characters,
+    no ``/``, which a quote's label puts before its option, and no control or format
+    character. Refused otherwise, saying why."""
+    value = (reference or "").strip()
+    if not value:
+        raise QuoteStoreError("Key the quote's reference.")
+    if len(value) > REFERENCE_LENGTH:
+        raise QuoteStoreError(
+            f"A reference is at most {REFERENCE_LENGTH} characters; this one has {len(value)}."
+        )
+    if "/" in value:
+        raise QuoteStoreError("A reference holds no /, which the app puts before its option.")
+    if any(unicodedata.category(character) in ("Cc", "Cf") for character in value):
+        raise QuoteStoreError("A reference holds no control characters.")
+    return value
 
 
 def _check_operation(operation: str) -> None:
@@ -294,6 +367,8 @@ def _columns(details: Mapping[str, Any]) -> dict[str, Any]:
     columns: dict[str, Any] = {}
     for _, name, _ in QUOTE_DETAILS_COLUMNS:
         value = details.get(name)
+        if name in _WHOLE and isinstance(value, str):
+            value = int(value)
         if name in _DATES and isinstance(value, str):
             try:
                 value = date.fromisoformat(value)
@@ -308,7 +383,8 @@ def _columns(details: Mapping[str, Any]) -> dict[str, Any]:
 def _quote(row: RowMapping) -> AppQuote:
     return AppQuote(
         id=row["quote_id"],
-        reference=row["reference"],
+        reference=row["quote_reference"],
+        option=row["quote_option"],
         details=_row_details(row),
         stage=row["stage"],
         assignee=row["assignee"],
@@ -325,9 +401,10 @@ def _quote(row: RowMapping) -> AppQuote:
 
 
 def _newest(at: int | None = None) -> Select[Any]:
-    """Each app quote's newest revision with its details: the quotes that have details, which
-    the test quotes do not. Given *at*, revision *at* in its place, as the quote stood when
-    that revision was its newest: what a save repeated with its key answers."""
+    """Each app quote's newest revision with its details: the quotes that have details, a
+    quote the store saved alone having none. Given *at*, revision *at* in its place, as the
+    quote stood when that revision was its newest: what a save repeated with its key
+    answers."""
     revision = QUOTE_DETAILS.c.revision
     newest = QUOTES.c.latest == revision if at is None else revision == at
     latest = QUOTES.c.latest if at is None else literal(at, Integer).label("latest")
@@ -360,12 +437,22 @@ def _view_filter(view: View, actor: str) -> ColumnElement[bool]:
 
 
 def _search_filter(term: str) -> ColumnElement[bool]:
+    """A search word's match: a reference through its canonical form, the word's made by the
+    same function, so letters cased or composed otherwise find it; ``ABC-1/2`` that option
+    alone; a name, an insured and a broker as the database lowers them."""
+    named = _REFERENCE_OPTION.fullmatch(term)
+    if named is not None:
+        return and_(
+            QUOTES.c.reference_key.like(_like(canonical_reference(named.group(1))), escape="\\"),
+            QUOTE_DETAILS.c.quote_option == int(named.group(2)),
+        )
     like = _search_like(term)
     return or_(
+        QUOTES.c.reference_key.like(_like(canonical_reference(term)), escape="\\"),
         *(
             func.lower(func.coalesce(QUOTE_DETAILS.c[name], "")).like(like, escape="\\")
             for name in _SEARCHED
-        )
+        ),
     )
 
 
@@ -373,39 +460,68 @@ def _sort_key(sort: Sort) -> Any:
     if sort == "saved":
         return QUOTE_REVISIONS.c.saved_at
     if sort == "reference":
-        return QUOTE_DETAILS.c.reference
+        return QUOTES.c.reference_key
     return func.lower(func.coalesce(QUOTE_DETAILS.c.insured, ""))
 
 
 def _encode_cursor(sort: Sort, row: RowMapping) -> str:
     """The cursor after *row*: its sort key as the database made it (``sort_key``), so the
-    next page compares like with like whatever the engine's case rules, and its id."""
+    next page compares like with like whatever the engine's case rules, its option, which
+    orders a reference's quotes, and its id."""
     key = row["sort_key"]
     if isinstance(key, datetime):
         key = key.isoformat()
-    raw = json.dumps([sort, key, row["quote_id"]]).encode("utf-8")
+    raw = json.dumps([sort, key, row["quote_option"], row["quote_id"]]).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii")
 
 
 def _cursor_filter(sort: Sort, cursor: str) -> ColumnElement[bool]:
     try:
-        named, key, quote_id = json.loads(base64.urlsafe_b64decode(cursor.encode("ascii")))
-        if named != sort or not isinstance(key, str) or not isinstance(quote_id, str):
+        named, key, option, quote_id = json.loads(base64.urlsafe_b64decode(cursor.encode("ascii")))
+        if (
+            named != sort
+            or not isinstance(key, str)
+            or not isinstance(option, int)
+            or not isinstance(quote_id, str)
+        ):
             raise ValueError(cursor)
         value: Any = datetime.fromisoformat(key) if sort == "saved" else key
     except (ValueError, TypeError) as exc:
         raise QuoteStoreError("The page asked for is not one this list gave.") from exc
     column = _sort_key(sort)
+    quote = QUOTE_DETAILS.c.quote_id
     if sort == "insured":
-        return or_(column > value, and_(column == value, QUOTE_DETAILS.c.quote_id > quote_id))
-    return or_(column < value, and_(column == value, QUOTE_DETAILS.c.quote_id < quote_id))
+        return or_(column > value, and_(column == value, quote > quote_id))
+    if sort == "reference":
+        # A to Z by canonical form, and under a reference its options in order.
+        later = or_(
+            QUOTE_DETAILS.c.quote_option > option,
+            and_(QUOTE_DETAILS.c.quote_option == option, quote > quote_id),
+        )
+        return or_(column > value, and_(column == value, later))
+    return or_(column < value, and_(column == value, quote < quote_id))
 
 
 def _order(sort: Sort) -> list[Any]:
     column = _sort_key(sort)
     if sort == "insured":
         return [column.asc(), QUOTE_DETAILS.c.quote_id.asc()]
+    if sort == "reference":
+        return [
+            column.asc(),
+            QUOTE_DETAILS.c.quote_option.asc(),
+            QUOTE_DETAILS.c.quote_id.asc(),
+        ]
     return [column.desc(), QUOTE_DETAILS.c.quote_id.desc()]
+
+
+def _option_of(detail: Mapping[str, Any]) -> int:
+    """The option an event names a quote by; an event written before the store's fourth
+    schema names none, every quote then being option 1."""
+    option = detail.get("option", 1)
+    if not isinstance(option, int):
+        raise QuoteStoreError(f"An event names a quote's option as {option!r}.")
+    return option
 
 
 _DONE = {
@@ -422,13 +538,20 @@ _DONE = {
 
 
 class QuoteBook:
-    """The underwriter app's quotes on a store :func:`haute._quote_store.open_store` opened;
-    closing the book closes the store."""
+    """The underwriter app's quotes on a store :func:`haute._quote_store.open_store` opened,
+    written by the app running Haute *haute_version*, which every revision records; closing
+    the book closes the store."""
 
-    def __init__(self, store: QuoteStore) -> None:
+    def __init__(self, store: QuoteStore, *, haute_version: str) -> None:
         self.store = store
+        self.haute_version = haute_version or None
         self._engine = store._engine
         self._clock = store._clock
+
+    def now(self) -> datetime:
+        """The store's clock: the instant a save is stamped with, read once before it is
+        priced, so its request, its revision and its details hold the same one."""
+        return self._clock()
 
     def close(self) -> None:
         self.store.close()
@@ -490,6 +613,7 @@ class QuoteBook:
                 extras.update(
                     source_quote_id=source["quote_id"],
                     source_reference=source["reference"],
+                    source_option=_option_of(source),
                     source_revision=source["revision"],
                     relation=source["relation"],
                 )
@@ -621,6 +745,7 @@ class QuoteBook:
                 source = RelatedQuote(
                     id=made["quote_id"],
                     reference=made["reference"],
+                    option=_option_of(made),
                     relation=made["relation"],
                     revision=made["revision"],
                 )
@@ -629,6 +754,7 @@ class QuoteBook:
                     RelatedQuote(
                         id=event.detail["quote_id"],
                         reference=event.detail["reference"],
+                        option=_option_of(event.detail),
                         relation=event.detail["relation"],
                         revision=event.revision,
                     )
@@ -671,16 +797,36 @@ class QuoteBook:
 
     # ── Saving ────────────────────────────────────────────────────────────
 
-    @staticmethod
-    def managed(quote: AppQuote | None, *, priced: bool) -> dict[str, Any]:
-        """The details the app sets on a save of *quote* (None for a new quote) priced or not:
-        its reference, who it is with and whether archived as it has them, and the stage the
-        price gives. A new quote's reference is taken as it is written."""
+    def managed(
+        self, quote: AppQuote | None, *, priced: bool, at: datetime, actor: str
+    ) -> dict[str, Any]:
+        """The details the app sets on a save of *quote* (None for a new quote) by *actor* at
+        *at*, priced or not: its reference and option, who it is with and whether archived as
+        it has them, the stage the price gives, when it was made and by whom, when this
+        revision is written and by whom, and the Haute version the app runs. A new quote's
+        reference and option are taken as it is written; it is made by *actor*, and with
+        them."""
+        made = (
+            {"created_date": _day(at), "created_by": actor}
+            if quote is None
+            else {"created_date": _day(quote.created_at), "created_by": quote.owner}
+        )
         return {
-            "reference": None if quote is None else quote.reference,
-            "assignee": None if quote is None else quote.assignee,
+            "quote_reference": None if quote is None else quote.reference,
+            "quote_option": None if quote is None else quote.option,
+            "assignee": actor if quote is None else quote.assignee,
             "archived": False if quote is None else quote.archived,
             "stage": _stage_of(priced),
+            **made,
+            **self._modified(at, actor),
+        }
+
+    def _modified(self, at: datetime, actor: str) -> dict[str, Any]:
+        """When a revision is written and by whom, and the Haute version it is written on."""
+        return {
+            "modified_date": _day(at),
+            "modified_by": actor,
+            "haute_version": self.haute_version,
         }
 
     def create(
@@ -693,19 +839,38 @@ class QuoteBook:
         request: dict[str, Any],
         response: dict[str, Any] | None,
         release: str | None,
+        at: datetime,
+        reference: str | None,
         source: Source | None = None,
     ) -> AppQuote:
-        """A new quote with its first revision and a reference of its own, with *actor*, its
-        details from *inputs* with the app's set over them; made from *source* when given.
+        """A new quote with its first revision, its reference and option, with *actor*, its
+        details from *inputs* with the app's set over them, written at *at*; made from
+        *source* when given. An alternative takes its source's reference and the next option
+        under it, and is given no *reference*; any other quote takes *reference*, keyed by the
+        underwriter (:func:`check_reference`), and option 1, refused
+        (:class:`ReferenceTakenError`) when another quote holds it in its canonical form.
         Repeated with *operation*'s key, it answers the quote as that key made it and writes
         nothing."""
         _check_operation(operation)
         actor = _check_principal(actor, "Who saves a quote")
+        alternative = source is not None and source.relation == "alternative"
+        if alternative and reference is not None:
+            raise QuoteStoreError("An alternative takes its source's reference: name none.")
+        keyed = None if alternative else check_reference(reference)
 
         def write() -> AppQuote:
-            return self._create(operation, actor, form, inputs, request, response, release, source)
+            return self._create(
+                operation, actor, form, inputs, request, response, release, at, keyed, source
+            )
 
-        return self._or_replayed(write, operation, actor, None)
+        try:
+            return self._or_replayed(write, operation, actor, None)
+        except IntegrityError:
+            # Another creation took the reference between this one's look and its write.
+            if keyed is not None:
+                with self._engine.connect() as connection:
+                    self._refuse_taken(connection, keyed)
+            raise
 
     def _create(
         self,
@@ -716,6 +881,8 @@ class QuoteBook:
         request: dict[str, Any],
         response: dict[str, Any] | None,
         release: str | None,
+        now: datetime,
+        keyed: str | None,
         source: Source | None,
     ) -> AppQuote:
         with self._engine.begin() as connection:
@@ -727,17 +894,29 @@ class QuoteBook:
                 origin = self._get(connection, source.quote_id)
                 _read_revision(connection, source.quote_id, source.revision)
             _check_name(details_of(inputs))
-            reference = self._next_reference(connection)
-            now = self._clock()
+            if keyed is None:
+                if origin is None:
+                    raise QuoteStoreError("An alternative is made from a quote.")
+                reference = origin.reference
+                key = canonical_reference(reference)
+                option = self._next_option(connection, key)
+            else:
+                reference = keyed
+                key = canonical_reference(reference)
+                self._refuse_taken(connection, reference)
+                option = 1
+                # The reference's own counter row: a creation of it at the same moment fails
+                # its key, so one quote is made.
+                connection.execute(insert(QUOTE_OPTIONS).values(reference_key=key, last_option=1))
             details = {
                 **details_of(inputs),
-                **self.managed(None, priced=response is not None),
-                "reference": reference,
-                "assignee": actor,
+                **self.managed(None, priced=response is not None, at=now, actor=actor),
+                "quote_reference": reference,
+                "quote_option": option,
             }
             revision = self.store._create_in(
                 connection,
-                name=str(details.get("quote_name") or reference),
+                name=str(details.get("quote_name") or identity_label(reference, option)),
                 owner=actor,
                 saved_by=actor,
                 saved_at=now,
@@ -747,18 +926,25 @@ class QuoteBook:
                 response=response,
                 release=release,
             )
+            connection.execute(
+                update(QUOTES)
+                .where(QUOTES.c.id == revision.quote_id)
+                .values(reference=reference, option=option, reference_key=key)
+            )
             self._write_details(connection, revision.quote_id, 1, details)
-            created: dict[str, Any] = {"reference": reference}
+            created: dict[str, Any] = {"reference": reference, "option": option}
             if source is not None and origin is not None:
                 created["source"] = {
                     "quote_id": origin.id,
                     "reference": origin.reference,
+                    "option": origin.option,
                     "revision": source.revision,
                     "relation": source.relation,
                 }
                 made = {
                     "quote_id": revision.quote_id,
                     "reference": reference,
+                    "option": option,
                     "relation": source.relation,
                 }
                 self._event(connection, origin.id, actor, "derived", source.revision, made, at=now)
@@ -778,18 +964,19 @@ class QuoteBook:
         request: dict[str, Any],
         response: dict[str, Any] | None,
         release: str | None,
+        at: datetime,
     ) -> AppQuote:
-        """The quote's next revision, saved over revision *version*: its values and details
-        from *inputs*, with the app's set over them (:meth:`managed`). Refused with nothing
-        written when the quote has moved past *version*, is final or is archived; repeated
-        with *operation*'s key, it answers the quote as that key left it and writes nothing
-        more."""
+        """The quote's next revision, saved over revision *version* at *at*: its values and
+        details from *inputs*, with the app's set over them (:meth:`managed`). Refused with
+        nothing written when the quote has moved past *version*, is final or is archived;
+        repeated with *operation*'s key, it answers the quote as that key left it and writes
+        nothing more."""
         _check_operation(operation)
         actor = _check_principal(actor, "Who saves a quote")
 
         def write() -> AppQuote:
             return self._save(
-                quote_id, operation, version, actor, form, inputs, request, response, release
+                quote_id, operation, version, actor, form, inputs, request, response, release, at
             )
 
         return self._or_replayed(write, operation, actor, quote_id)
@@ -805,6 +992,7 @@ class QuoteBook:
         request: dict[str, Any],
         response: dict[str, Any] | None,
         release: str | None,
+        now: datetime,
     ) -> AppQuote:
         with self._engine.begin() as connection:
             done = self._operation(connection, operation, actor, quote_id)
@@ -813,17 +1001,15 @@ class QuoteBook:
             quote = self._current(connection, quote_id, version)
             _check_name(details_of(inputs))
             if quote.archived:
-                raise QuoteLockedError(f"{quote.reference} is archived: restore it to change it.")
+                raise QuoteLockedError(f"{quote.label} is archived: restore it to change it.")
             if quote.stage == "final":
                 raise QuoteLockedError(
-                    f"{quote.reference} is final: reopen it, giving a reason, to change it."
+                    f"{quote.label} is final: reopen it, giving a reason, to change it."
                 )
-            now = self._clock()
             revision = self.store._save_in(
                 connection,
                 quote_id,
                 after=quote.latest,
-                after_digest=None,
                 saved_by=actor,
                 saved_at=now,
                 form=form,
@@ -832,7 +1018,10 @@ class QuoteBook:
                 response=response,
                 release=release,
             )
-            details = {**details_of(inputs), **self.managed(quote, priced=response is not None)}
+            details = {
+                **details_of(inputs),
+                **self.managed(quote, priced=response is not None, at=now, actor=actor),
+            }
             self._write_details(connection, quote_id, revision.number, details)
             event = self._event(
                 connection,
@@ -869,7 +1058,7 @@ class QuoteBook:
 
         def change(quote: AppQuote) -> tuple[dict[str, Any], dict[str, Any]]:
             if not quote.archived:
-                raise QuoteLockedError(f"{quote.reference} is not archived.")
+                raise QuoteLockedError(f"{quote.label} is not archived.")
             return {"archived": False}, {}
 
         return self._revise(quote_id, version, actor, "restored", change, archived_ok=True)
@@ -882,20 +1071,20 @@ class QuoteBook:
 
         def change(quote: AppQuote) -> tuple[dict[str, Any], dict[str, Any]]:
             if quote.stage == "final":
-                raise QuoteLockedError(f"{quote.reference} is final already.")
+                raise QuoteLockedError(f"{quote.label} is final already.")
             if revision != quote.latest:
                 raise StaleQuoteError(
-                    f"{quote.reference} has moved on to revision {quote.latest} since revision "
+                    f"{quote.label} has moved on to revision {quote.latest} since revision "
                     f"{revision} was shown."
                 )
             if not quote.priced:
                 raise QuoteLockedError(
-                    f"{quote.reference}'s revision {revision} is not priced: price it and save "
+                    f"{quote.label}'s revision {revision} is not priced: price it and save "
                     "it before marking it final."
                 )
             if quote.release != release:
                 raise QuoteLockedError(
-                    f"{quote.reference}'s revision {revision} was priced on release "
+                    f"{quote.label}'s revision {revision} was priced on release "
                     f"{quote.release}, not this one, {release}: price it again and save it "
                     "before marking it final."
                 )
@@ -912,7 +1101,7 @@ class QuoteBook:
 
         def change(quote: AppQuote) -> tuple[dict[str, Any], dict[str, Any]]:
             if quote.stage != "final":
-                raise QuoteLockedError(f"{quote.reference} is not final.")
+                raise QuoteLockedError(f"{quote.label} is not final.")
             stage = _stage_of(quote.priced)
             return {"stage": stage}, {"reason": reason, "final_revision": quote.final_revision}
 
@@ -927,7 +1116,7 @@ class QuoteBook:
             self._hold(connection, quote_id)
             quote = self._get(connection, quote_id)
             if quote.archived:
-                raise QuoteLockedError(f"{quote.reference} is archived: restore it to change it.")
+                raise QuoteLockedError(f"{quote.label} is archived: restore it to change it.")
             self._event(
                 connection, quote_id, actor, "noted", None, {"note": note}, at=self._clock()
             )
@@ -943,10 +1132,11 @@ class QuoteBook:
         quote_id: str | None,
     ) -> AppQuote:
         """*write*, or, when it lost a race to the first write of the same key (refused as
-        stale, or the key already taken, before that write was seen), what that write left."""
+        stale, its reference taken, or the key already taken, before that write was seen),
+        what that write left."""
         try:
             return write()
-        except (StaleQuoteError, IntegrityError):
+        except (StaleQuoteError, ReferenceTakenError, IntegrityError):
             replay = self.replayed(operation, actor, quote_id)
             if replay is None:
                 raise
@@ -963,13 +1153,14 @@ class QuoteBook:
         archived_ok: bool = False,
     ) -> AppQuote:
         """A revision of the quote's newest, its values, request and prices kept, its details
-        changed by *change*, with its event of *kind*, in one transaction. An archived quote
-        is refused unless *archived_ok*, which leaves its state to *change* to judge."""
+        changed by *change* and saying who changed it, when and on which Haute, with its
+        event of *kind*, in one transaction. An archived quote is refused unless
+        *archived_ok*, which leaves its state to *change* to judge."""
         actor = _check_principal(actor, "Who changes a quote")
         with self._engine.begin() as connection:
             quote = self._current(connection, quote_id, version)
             if not archived_ok and quote.archived:
-                raise QuoteLockedError(f"{quote.reference} is archived: restore it to change it.")
+                raise QuoteLockedError(f"{quote.label} is archived: restore it to change it.")
             changed, detail = change(quote)
             now = self._clock()
             kept = _read_revision(connection, quote_id, quote.latest)
@@ -981,7 +1172,7 @@ class QuoteBook:
                 saved_at=now,
                 inputs=kept.inputs,
             )
-            details = {**quote.details, **changed}
+            details = {**quote.details, **changed, **self._modified(now, actor)}
             self._write_details(connection, quote_id, revision.number, details)
             self._event(connection, quote_id, actor, kind, revision.number, detail, at=now)
             return self._full(connection, quote_id)
@@ -1011,7 +1202,7 @@ class QuoteBook:
                 .limit(1)
             ).one()
             raise StaleQuoteError(
-                f"{quote.reference} has changed since you opened it: {last.actor} "
+                f"{quote.label} has changed since you opened it: {last.actor} "
                 f"{_DONE[last.kind]} it at {last.at:%H:%M} UTC on {last.at:%d %b %Y}."
             )
         return quote
@@ -1050,22 +1241,41 @@ class QuoteBook:
             raise QuoteStoreError("The quote store did not number an event it wrote.")
         return int(key[0])
 
-    def _next_reference(self, connection: Connection) -> str:
-        """The next reference, taken from the counter in this transaction: two transactions
-        take two, and one rolled back takes none."""
+    def _refuse_taken(self, connection: Connection, reference: str) -> None:
+        """Refuse *reference* when a quote holds it in its canonical form, naming that quote:
+        its option 1, else its lowest."""
+        held = connection.execute(
+            select(QUOTES.c.id, QUOTES.c.reference, QUOTES.c.option)
+            .where(QUOTES.c.reference_key == canonical_reference(reference))
+            .order_by(QUOTES.c.option.asc())
+            .limit(1)
+        ).one_or_none()
+        if held is not None:
+            label = identity_label(held.reference, held.option)
+            raise ReferenceTakenError(
+                f"{label} already holds the reference {reference}: open it, or create an "
+                "alternative of it.",
+                quote_id=held.id,
+                label=label,
+            )
+
+    def _next_option(self, connection: Connection, key: str) -> int:
+        """The next option under the reference of canonical form *key*, taken from its counter
+        in this transaction: two alternatives take two."""
         moved = connection.execute(
-            update(QUOTE_COUNTER)
-            .where(QUOTE_COUNTER.c.scope == _COUNTER_SCOPE)
-            .values(last_number=QUOTE_COUNTER.c.last_number + 1)
+            update(QUOTE_OPTIONS)
+            .where(QUOTE_OPTIONS.c.reference_key == key)
+            .values(last_option=QUOTE_OPTIONS.c.last_option + 1)
         )
         if moved.rowcount != 1:
             raise QuoteStoreError(
-                "The quote store has no reference counter: it was not migrated by Haute."
+                f"The quote store counts no options under {key}: it was not migrated by Haute."
             )
-        number = connection.execute(
-            select(QUOTE_COUNTER.c.last_number).where(QUOTE_COUNTER.c.scope == _COUNTER_SCOPE)
-        ).scalar_one()
-        return f"{REFERENCE_PREFIX}{number:06d}"
+        return int(
+            connection.execute(
+                select(QUOTE_OPTIONS.c.last_option).where(QUOTE_OPTIONS.c.reference_key == key)
+            ).scalar_one()
+        )
 
     def _operation(
         self, connection: Connection, operation: str, actor: str, quote_id: str | None
