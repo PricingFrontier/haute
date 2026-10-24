@@ -14,8 +14,8 @@ deploys run in CI, which installs haute as a package.
 from __future__ import annotations
 
 import base64
+import csv
 import hashlib
-import re
 import zipfile
 from dataclasses import dataclass
 from importlib import metadata
@@ -66,11 +66,6 @@ def served_haute(directory: Path) -> ServedHaute:
     return ServedHaute(f"code/{wheel.name}", wheel)
 
 
-def _escape(component: str) -> str:
-    """A wheel filename component (PEP 427): runs of ``-_.`` become ``_``."""
-    return re.sub(r"[-_.]+", "_", component)
-
-
 def _wheel_tag(distribution: metadata.Distribution) -> str:
     """The wheel tag the installed ``WHEEL`` file records, compressed as a filename takes it."""
     tags = [
@@ -100,6 +95,32 @@ def _record_digest(data: bytes) -> str:
     return f"sha256={digest.decode('ascii')}"
 
 
+def _recorded_paths(distribution: metadata.Distribution) -> list[PurePosixPath]:
+    """Every path the installed RECORD lists, read from the file itself.
+
+    The distribution's own file list leaves out a recorded file missing from disk (from
+    Python 3.12), and a repack must refuse an incomplete install, not ship it.
+    """
+    record = distribution.read_text("RECORD")
+    if not record:
+        raise DeployError(
+            "haute's installation has no RECORD of its files, so it cannot be repacked as "
+            "a wheel for the served model. Reinstall haute and deploy again."
+        )
+    return [PurePosixPath(row[0]) for row in csv.reader(record.splitlines()) if row and row[0]]
+
+
+def _dist_info(paths: list[PurePosixPath]) -> str:
+    """The ``.dist-info`` folder the record lists the install's METADATA in."""
+    for path in paths:
+        if path.name == "METADATA" and len(path.parts) == 2 and path.parent.suffix == ".dist-info":
+            return path.parts[0]
+    raise DeployError(
+        "haute's installation record lists no .dist-info/METADATA, so it cannot be repacked "
+        "as a wheel for the served model. Reinstall haute."
+    )
+
+
 def repack_installed_wheel(distribution: metadata.Distribution, directory: Path) -> Path:
     """Write *distribution*'s installed files into a wheel in *directory*; return its path.
 
@@ -107,39 +128,30 @@ def repack_installed_wheel(distribution: metadata.Distribution, directory: Path)
     wheel, with the ``.dist-info`` metadata but not the installer's records, a new
     RECORD written last; scripts installed outside it (``../bin/haute``) are left out,
     since an install regenerates them from ``entry_points.txt``; and compiled
-    ``__pycache__`` files are left out. A missing record or a listed file that is not on
+    ``__pycache__`` files are left out. The wheel is named after the ``.dist-info``
+    folder, as the wheel haute was installed from was, so its name and its metadata
+    agree. A missing record, a record without METADATA, or a listed file that is not on
     disk raises ``DeployError``.
     """
-    files = distribution.files
-    if not files:
-        raise DeployError(
-            "haute's installation has no RECORD of its files, so it cannot be repacked as "
-            "a wheel for the served model. Reinstall haute and deploy again."
-        )
-    name = distribution.metadata["Name"]
-    info_dir = f"{_escape(name)}-{distribution.version}.dist-info"
+    paths = _recorded_paths(distribution)
+    info_dir = _dist_info(paths)
     entries: list[tuple[str, Path]] = []
-    for path in files:
-        posix = PurePosixPath(path.as_posix())
-        if ".." in posix.parts or "__pycache__" in posix.parts or posix.suffix == ".pyc":
+    for path in paths:
+        if ".." in path.parts or "__pycache__" in path.parts or path.suffix == ".pyc":
             continue
-        if posix.parts[0] == info_dir and posix.name in _INSTALLER_FILES:
+        if path.parent == PurePosixPath(info_dir) and path.name in _INSTALLER_FILES:
             continue
         source = Path(str(distribution.locate_file(path)))
         if not source.is_file():
             raise DeployError(
-                f"haute's installed file {posix} is missing from {source.parent}, so haute "
+                f"haute's installed file {path} is missing from {source.parent}, so haute "
                 "cannot be repacked as a wheel for the served model. Reinstall haute."
             )
-        entries.append((posix.as_posix(), source))
-    if not any(arcname == f"{info_dir}/METADATA" for arcname, _ in entries):
-        raise DeployError(
-            f"haute's installation record lists no {info_dir}/METADATA, so it cannot be "
-            "repacked as a wheel for the served model. Reinstall haute."
-        )
+        entries.append((path.as_posix(), source))
 
     directory.mkdir(parents=True, exist_ok=True)
-    wheel = directory / f"{_escape(name)}-{distribution.version}-{_wheel_tag(distribution)}.whl"
+    stem = info_dir.removesuffix(".dist-info")
+    wheel = directory / f"{stem}-{_wheel_tag(distribution)}.whl"
     record: list[str] = []
     with zipfile.ZipFile(wheel, "w") as archive:
         for arcname, source in sorted(entries):

@@ -153,3 +153,41 @@ def test_the_served_environment_installs_that_haute_and_mlflow() -> None:
             f"polars=={polars.__version__}",
         ]
     }
+
+
+def test_an_install_without_a_record_is_refused(tmp_path: Path) -> None:
+    distribution = _distribution(tmp_path / "site", direct_url=_GIT)
+    (tmp_path / "site" / _INFO / "RECORD").unlink()
+
+    with pytest.raises(DeployError, match="has no RECORD of its files"):
+        repack_installed_wheel(distribution, tmp_path / "wheel")
+
+
+def test_a_record_listing_no_metadata_is_refused(tmp_path: Path) -> None:
+    distribution = _distribution(tmp_path / "site", direct_url=_GIT)
+    record = tmp_path / "site" / _INFO / "RECORD"
+    lines = record.read_text(encoding="utf-8").splitlines()
+    kept = [line for line in lines if not line.startswith(f"{_INFO}/METADATA,")]
+    record.write_text("\n".join(kept) + "\n", encoding="utf-8")
+
+    with pytest.raises(DeployError, match="lists no .dist-info/METADATA"):
+        repack_installed_wheel(distribution, tmp_path / "wheel")
+
+
+def test_an_install_whose_wheel_file_names_no_tag_is_refused(tmp_path: Path) -> None:
+    distribution = _distribution(tmp_path / "site", direct_url=_GIT)
+    (tmp_path / "site" / _INFO / "WHEEL").write_bytes(b"Wheel-Version: 1.0\n")
+
+    with pytest.raises(DeployError, match="WHEEL file names no tag"):
+        repack_installed_wheel(distribution, tmp_path / "wheel")
+
+
+def test_a_wheel_built_for_several_tags_is_named_with_them_compressed(tmp_path: Path) -> None:
+    distribution = _distribution(tmp_path / "site", direct_url=_GIT)
+    (tmp_path / "site" / _INFO / "WHEEL").write_bytes(
+        b"Wheel-Version: 1.0\nTag: py2-none-any\nTag: py3-none-any\n"
+    )
+
+    wheel = repack_installed_wheel(distribution, tmp_path / "wheel")
+
+    assert wheel.name == "haute-0.6.0-py2.py3-none-any.whl"

@@ -206,7 +206,9 @@ GitHub it needs `gh`: `--check` lists the repository's secrets (`gh secret list 
 marks each name set or missing. Otherwise each value is read from `.env`, else the environment,
 refused unset or equal to `.env.example`'s placeholder, and for Databricks each pair is checked
 against the workspace (`workspace_user`, `current_user.me()` with that host and token) unless
-`--no-verify`; only then is each passed to `gh secret set NAME` on its standard input.
+`--no-verify`; only then is each passed to `gh secret set NAME` on its standard input. The
+module is `gh`'s subprocess chokepoint: `_gh` resolves it with `shutil.which`, and `_run_gh`
+runs it in the project with UTF-8 pinned, a failure raised with `gh`'s own message.
 
 **`ci update`**: `handle_ci_update` regenerates the CI files `haute init` would write for the
 project's `[ci] provider` and `[deploy] target`, with its workbench and Python, plus

@@ -72,6 +72,7 @@ def _run_gh(gh: str, project_dir: Path, *args: str, stdin: str | None = None) ->
         input=stdin,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     if result.returncode != 0:
