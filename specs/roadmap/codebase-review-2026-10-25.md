@@ -75,9 +75,8 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 - The assistant-core reviewer read the assistant low-level specification's core
   sections and left the tool and op sections to the tools reviewer; the loop's
   tool-summary wording was not checked against the specification.
-- Areas whose findings are not yet in this report are in review: the trace, git
-  and assistant UI, the workbench UI, the app shell and canvas; the tests,
-  scripts and CI as code.
+- Areas whose findings are not yet in this report are in review: the workbench
+  UI, the app shell and canvas; the tests, scripts and CI as code.
 
 ## Coverage and findings so far
 
@@ -108,8 +107,10 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 
 | Frontend optimiser and Explore panels (the optimiser workspace, the preview frame, pivots, charts, overview, relationships) | reviewer, verified | every owned file in full except `UtilityPanel.tsx` | 0 / 2 / 8 / 2 |
 
-Three hundred and forty-two findings so far: two Critical, forty-three Major, two
-hundred and forty Minor and fifty-seven Suggestions. Both Criticals and every Major are confirmed at source by the
+| Frontend trace, git and assistant UI (the trace panel and its cards, the git panel, branch manager, modals and graph rail, the chat panel) | reviewer, verified | every owned file in full except parts of three modals | 0 / 1 / 13 / 8 |
+
+Three hundred and sixty-four findings so far: two Critical, forty-four Major, two
+hundred and fifty-three Minor and sixty-five Suggestions. Both Criticals and every Major are confirmed at source by the
 main session; the Minors and Suggestions were read at source or accepted on
 quoted evidence as the verification table records.
 
@@ -229,6 +230,10 @@ quoted evidence as the verification table records.
 - **Saving the pipeline cancels an auto-range run in flight, and a percentage
   constraint is shown as "at least 0" and rewritten as an absolute bound on
   edit** (two Majors, `FMOU-R04`).
+- **The trace panel labels an additive waterfall step as a multiplication**
+  (Major, `TRACE-R05`): the backend's `operation` is dropped and every row after
+  the first is prefixed `×`, so a step that added 30 reads `×30`; the totals stay
+  right.
 - **Ctrl+S with the cursor in a code box saves without the last keystrokes**
   (Major, `FSH-R07`): the save helper blurs only text fields, the code editor's
   debounced commit flushes only on blur, and the toolbar shows "Saved" while the
@@ -364,6 +369,10 @@ production:
 | Frontend optimiser | FOX-1, FOX-2, FOX-3 | `FMOU-R04` |
 | Frontend optimiser | FOX-4, FOX-5, FOX-6, FOX-8, FOX-10 (optimiser part) | `FMOU-R05` |
 | Frontend Explore | FOX-7, FOX-9, FOX-10 (Explore part), FOX-11, FOX-12 | `EDA-R03` |
+| Trace UI | FTG-1, FTG-4, FTG-6, FTG-10, FTG-11, FTG-13, FTG-15, FTG-16, FTG-21 | `TRACE-R05` |
+| Git UI | FTG-2, FTG-3, FTG-7, FTG-8, FTG-14, FTG-17, FTG-19, FTG-22 | `GIT-R07` |
+| Git UI | FTG-9, FTG-12 | `GIT-R08` |
+| Assistant UI | FTG-5, FTG-18, FTG-20 | `ASSIST-60` |
 | Sandbox security | PM-42 | `SBX-R04` |
 | Workbench | PM-44 | `WB-33` |
 | Workbench | PM-45 | `WB-34` |
@@ -426,7 +435,10 @@ tuned-refit wording and the t-boost starters (`BUG-28`, `BUG-29`, `BUG-30`), and
 a second fabricated train-failure sentinel (`FSH-R06`); the browser's frontier
 generation fences that only ever see generation 0 (`OPT-R04`), the optimiser
 panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`) and
-`applyFrontierPointSummary`'s null handling (`FSH-R03`).
+`applyFrontierPointSummary`'s null handling (`FSH-R03`); the move dialog not
+naming `outputs/` (`GIT-R01`), typed branch names unvalidated in the UI
+(`GIT-R02`), the delete dialog's confirm flag (`GIT-R03`) and the trace route's
+409 keyed on its code (`API-R06`).
 
 ## Verdicts that changed or stayed open
 

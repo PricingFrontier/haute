@@ -5,9 +5,10 @@
 The row trace: correlating one quote's row through every node, the per-step
 enrichments (formulas, input sources, renames, banding and rating verdicts,
 waterfalls), the value lineage, and the expression parser that reads a node's
-Polars code. Current behaviour is specified in
-[the tracing specification](../tracing/high-level.md) and
-[expression parsing](../expression-parsing/high-level.md). These packages come
+Polars code, and the trace panel that shows the result. Current behaviour is
+specified in [the tracing specification](../tracing/high-level.md),
+[expression parsing](../expression-parsing/high-level.md) and
+[the trace UI](../frontend-trace-ui/high-level.md). These packages come
 from the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
 
 ## Priorities
@@ -18,6 +19,7 @@ from the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
 | TRACE-R02 | Planned | P2 | A step's expression type, description, referenced columns and rename detail come from the located expression's syntax tree, never from regular expressions over the node's whole code. |
 | TRACE-R03 | Planned | P2 | A parent row proven by carried values is matched strictly or omitted, a banding coercion that fails is an error marker, an unnameable edge is reported, and a failed comparison names its real cause. |
 | TRACE-R04 | Planned | P3 | The unreachable partial-trace path, the test-only correlation branch, the dead helper, the stale comments and the three duplicated mechanisms are gone. |
+| TRACE-R05 | Planned | P2 | The trace panel shows an additive waterfall step with its own operator, the clicked column's conditional or opaque card shows its value, export failures say their cause, a power renders as a power, omission notes are chosen by code, and the panel's test-only helpers are gone. |
 
 ## Planned improvements
 
@@ -150,3 +152,39 @@ partial trace.
 `src/haute/_trace_enrichment.py::_wrap_node_code`;
 `src/haute/_expression_parser.py::_wrap_expression_code`;
 `src/haute/trace.py::_prune_to_column_relevance`.
+
+### TRACE-R05 — The trace panel shows what the response says
+**Why:** The backend emits waterfall entries with `operation: "add"` whose value
+is a delta, but `resolveWaterfallProp` drops `operation` and the chart prefixes
+every row after the first with `×`, so a step that added 30 reads `×30` and one
+that subtracted 30 reads `×-30`; the running totals are right and the operator
+shown is wrong, and no frontend test uses an `add` entry. On the clicked column's
+card a conditional or opaque calculation shows no result value, because the
+value is drawn only by the frame the card mounts without. Trace export failures
+are swallowed into one "check browser permissions" sentence whatever the cause.
+The operator-glyph substitution is written seven times and six copies replace
+every `*`, so a power renders as `××`. Omission notes outside the typed set are
+chosen by substring, and `ambiguous` is tested before `source_frame`, so an
+`ambiguous_source_frame` omission gets the wrong sentence. The "default used"
+badge walks every nested object for a `status === "default"`, so a user column
+named `status` can light it. `groupTraceSteps`, `buildFlowChain` and
+`formatResultValue` are test-only or dead.
+
+**Plan:** Carry `operation` into the chart and label an `add` row `+N` or `−N`
+with a test on a backend `add` entry; render the value row in the conditional and
+opaque branches; keep the export error and word the alert by cause; one
+`displayOperators` helper matching operators as tokens; a code-keyed omission
+note table; typed default-used fields; delete the dead helpers and their tests.
+
+**Acceptance:** A trace whose waterfall holds an additive step shows `+30`; the
+clicked card of a conditional column shows its value; `a ** 2` renders as a
+power; the dead symbols are gone.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/trace/WaterfallChart.tsx`;
+`frontend/src/trace/traceHelpers.ts::resolveWaterfallProp`;
+`src/haute/_trace_waterfall.py`; `frontend/src/trace/CalculationHero.tsx`;
+`frontend/src/trace/StepCard.tsx`; `frontend/src/panels/TracePanel.tsx`;
+`frontend/src/trace/traceFormatting.ts`;
+`frontend/src/panels/trace/traceGrouping.ts`.

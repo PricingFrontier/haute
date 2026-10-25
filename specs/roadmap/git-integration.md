@@ -4,8 +4,9 @@
 
 The working-branch model on top of git: saves and milestones, move, archive,
 delete, catch-up, spin-off and push, the unborn-repo seed, the history views and
-the remote handling. Current behaviour is specified in
-[the git-integration specification](../git-integration/high-level.md). These
+the remote handling, and the git panel that drives them. Current behaviour is
+specified in [the git-integration specification](../git-integration/high-level.md)
+and [the git UI](../frontend-git-ui/high-level.md). These
 packages come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md);
 the Databricks IO defects the same review found are `BUG-44` and `BUG-45` in
 [bugs](bugs.md).
@@ -20,6 +21,8 @@ the Databricks IO defects the same review found are `BUG-44` and `BUG-45` in
 | GIT-R04 | Planned | P3 | Commit context and historical extraction pass their SHAs and paths through stdin, so a long branch or a large commit does not fail on Windows' command-line limit. |
 | GIT-R05 | Planned | P3 | The git modules carry no dead symbols, one free-name finder and one compensation helper. |
 | GIT-R06 | Decision | P3 | Automatic ledger saves either skip the project's git hooks or the specification says they run them. |
+| GIT-R07 | Planned | P2 | Every tree-changing action in the git UI passes the dirty-project guard and names what changes, a failed history read shows an error rather than an empty branch, a failed preference save is reported, and the dialogs and specification say what the server does. |
+| GIT-R08 | Planned | P3 | The git panel has one context menu, one dirty-navigation wrapper and one relative-time rule. |
 
 ## Planned improvements
 
@@ -183,3 +186,58 @@ save.
 **Evidence:** `src/haute/_git_transactions.py::commit_save`;
 `src/haute/_git_transactions.py::commit_milestone`;
 `src/haute/_scaffold.py::pre_commit_hook`.
+
+### GIT-R07 — The git UI guards and reports every tree change
+**Why:** Catch up and Spin off a copy update the working tree (and wipe
+`outputs/` while `GIT-R01` stands) from one click with no confirmation and
+without the dirty-project guard every other tree-changing action has, so unsaved
+in-memory canvas and form edits meet the change unannounced (the server refuses
+a dirty tracked tree, so what is exposed is the in-memory state); the toolbar's
+undo and redo of a branch switch check out the other branch with no guard and
+without discarding the form's edits. After a history fetch fails the panel shows
+"No milestones yet" once the toast fades, so a transport failure reads as an
+empty branch. "Don't ask again on this machine" swallows a failed preference
+save, so the prompt returns next time with no explanation. The delete dialog
+says "Permanently delete" for a trash-preserving delete the toolbar can undo; an
+`invalid` readiness state shows only its first error; the git UI specification
+and the guard test speak of six readiness states where the contract has seven.
+
+**Plan:** Route Catch up, Spin off and the undo legs through the dirty-navigation
+guard with a confirm naming what changes, then discard the form's edits on
+success; keep a load error in the history hook and render it with Retry; report
+the preference failure; word the delete as recoverable; list every error; add
+`git-unavailable` to the specification and the test.
+
+**Acceptance:** Catch up with unsaved canvas edits asks first; a history fetch
+failure shows an error with Retry, not the empty state; a failed preference save
+toasts; the guard test iterates seven states.
+
+**Dependencies:** `GIT-R01` decides the `outputs/` wording.
+
+**Evidence:** `frontend/src/components/RemotePushControl.tsx`;
+`frontend/src/utils/vcHistory.ts`; `frontend/src/panels/git/useGitHistory.ts`;
+`frontend/src/components/BranchManager.tsx`;
+`frontend/src/components/WorkingBranchModal.tsx`;
+`specs/frontend-git-ui/low-level.md`.
+
+### GIT-R08 — One menu, one wrapper, one clock
+**Why:** The fixed-backdrop context menu is written five times across the git
+panel and the branch manager, the dirty-navigation wrapper (guard plus the
+confirm dialog's save-then-proceed block) twice verbatim, and relative time five
+times across the git panel, the breadcrumb, the assistant and two utilities with
+three different rules ("400d ago" never stops; the assistant switches to a date
+after seven days; the shared formatter after a day).
+
+**Plan:** A `ContextMenu` primitive, a `useDirtyNavigation(onSave)` hook, and
+one `relativeTime` in `utils/` imported by every site.
+
+**Acceptance:** One copy of each; the same timestamp reads the same in every
+panel.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/panels/GitPanel.tsx`;
+`frontend/src/components/BranchManager.tsx`;
+`frontend/src/components/CommitBreadcrumb.tsx`;
+`frontend/src/panels/assistant/relativeTime.ts`;
+`frontend/src/utils/formatTime.ts`.
