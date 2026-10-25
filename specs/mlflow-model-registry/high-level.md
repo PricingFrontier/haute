@@ -64,7 +64,9 @@ In scope:
 - Preparing an input DataFrame into the shape each flavor's `predict`
   expects (numpy/pandas dtype and categorical handling).
 - Feature-contract validation at score time: presence and categorical
-  dtype, plus enforcing a model's trained-with offset/exposure column. A
+  dtype, plus enforcing a model's trained-with offset/exposure column, and,
+  for a model bound to a feature contract, every feature's dtype against
+  training, the check a deployed bundle runs. A
   categorical value is never checked: the model scores a value its training rows never
   held through its own mechanism.
 - Eager (in-memory) and batched (disk, chunked-parquet) scoring, and an
@@ -207,7 +209,12 @@ Out of scope (owned elsewhere):
 - Before a prediction is attempted, the input schema is checked against
   the model's declared features: every feature must be present, with
   categorical columns presented as non-numeric — and, if the model declares a trained-with
-  offset/exposure column, that column must also be present. Any of these failing raises
+  offset/exposure column, that column must also be present. A model bound to a
+  feature contract is first checked against it exactly as the deploy scorer checks
+  a request: a feature missing or typed differently from training (integer and
+  float widths collapse, String and Categorical are one) or a declared offset
+  column absent is refused with the deploy scorer's message, in the preview, a
+  batch run and the trace alike. Any of these failing raises
   before prediction runs; schema-validation results are memoised for repeated
   model/schema pairs. The order the input's columns arrive in never matters: every
   scoring path selects the model's features by name, in the model's own order, before

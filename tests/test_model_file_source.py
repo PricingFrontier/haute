@@ -504,6 +504,28 @@ def test_a_run_model_without_its_logged_contract_is_refused(project: Path, kind:
         score(source_for(kind, model_path, None), data())
 
 
+@pytest.mark.parametrize("column", ["region", "age"])
+def test_a_feature_whose_dtype_drifted_from_training_is_refused_as_deploy_refuses_it(
+    project: Path, column: str
+) -> None:
+    """The preview compares the bound contract's dtypes with the input, as deploy does.
+
+    ``region`` was trained as String and ``age`` as Float64; an Int64 column in
+    either place would be cast and scored without this check.
+    """
+    from haute.deploy._scorer import _assert_runtime_contract_matches
+
+    model_path = external_catboost(project, offset=True)
+    contract = write_contract(model_path, offset="exposure", link="log")
+    frame = data().with_columns(pl.lit(7, dtype=pl.Int64).alias(column))
+
+    with pytest.raises(FeatureMismatchError, match="contract mismatch: feature_types") as preview:
+        score(FileModelSource(model_path=model_path.name), frame)
+    with pytest.raises(FeatureMismatchError) as deployed:
+        _assert_runtime_contract_matches(frame.lazy(), str(contract), "regression")
+    assert str(preview.value) == str(deployed.value)
+
+
 def test_inspection_reports_the_task_a_contractless_file_was_trained_for(project: Path) -> None:
     from catboost import CatBoostClassifier
 

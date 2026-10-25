@@ -36,10 +36,13 @@ import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from haute._stat_gated_cache import StatGatedCache, artifact_cache_key, resolve_artifact_path
 from haute.errors import FeatureMismatchError
+
+if TYPE_CHECKING:
+    import polars as pl
 
 Task = Literal["classification", "regression"]
 
@@ -484,6 +487,49 @@ def assert_contracts_match(expected: FeatureContract, actual: FeatureContract) -
                 expected=_normalise(exp_val),
                 actual=_normalise(act_val),
             )
+
+
+def assert_schema_matches_contract(schema: pl.Schema, expected: FeatureContract) -> None:
+    """Raise :class:`FeatureMismatchError` if *schema* drifts from the training contract.
+
+    Rebuilds a contract from the live schema, restricted to the features
+    *expected* names and in its own order (scoring selects the features by
+    name, so the order the input's columns arrive in never matters), and diffs
+    it with :func:`assert_contracts_match`: a feature missing (``MISSING``) or
+    typed differently from training, or a declared offset column the input
+    lacks, raises naming the field. The deploy scorer checks every request
+    this way and the preview every scored frame, so both refuse with one
+    message. A categorical value never raises: the model scores a value its
+    training rows never held through its own mechanism.
+    """
+    from haute._polars_dtypes import contract_dtype_name
+
+    feature_types: dict[str, str] = {}
+    for name in expected.features:
+        dtype = schema.get(name)
+        # A missing feature gets a placeholder so the diff names it.
+        feature_types[name] = (
+            "MISSING" if dtype is None else contract_dtype_name(dtype, column=name)
+        )
+    categorical_features = [name for name in expected.features if feature_types[name] == "String"]
+    # The offset column is a required scoring input: the live contract carries
+    # it only when the schema does, so an input without it fails the diff by
+    # name instead of scoring on an offset-absent basis.
+    offset_column = (
+        expected.offset_column
+        if expected.offset_column and schema.get(expected.offset_column) is not None
+        else None
+    )
+    actual = build_contract(
+        features=list(expected.features),
+        feature_types=feature_types,
+        categorical_features=categorical_features,
+        target_name=expected.target_name,
+        target_type=expected.target_type,
+        task=expected.task,
+        offset_column=offset_column,
+    )
+    assert_contracts_match(expected, actual)
 
 
 def _normalise(value: Any) -> Any:

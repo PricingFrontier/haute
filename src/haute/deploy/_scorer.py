@@ -33,7 +33,6 @@ from haute._io import load_external_object
 from haute._logging import get_logger
 from haute._mlflow_io import clear_local_model_cache, load_local_model_cached
 from haute._node_builder import NodeBuildHooks, NodeFnResult, node_fn_name, wrap_builder
-from haute._polars_dtypes import contract_dtype_name
 from haute._polars_utils import streaming_collect
 from haute._types import (
     REQUEST_INPUT_NODE_TYPES,
@@ -558,58 +557,18 @@ def _assert_runtime_contract_matches(
     contract_path: str,
     task: str,
 ) -> None:
-    """Raise FeatureMismatchError if the live schema drifts from the bundled
-    contract.
+    """Raise FeatureMismatchError if the live schema drifts from the bundled contract.
 
-    Rebuilds a :class:`FeatureContract` from the live LazyFrame's schema
-    (restricted to the features the bundled contract cares about) and
-    compares it against the training-time contract via
-    :func:`assert_contracts_match`.  A disagreement on any field —
-    feature set, dtype, categorical membership — raises immediately so
-    deploy operators see the mismatch at load time rather than via
-    cryptic downstream errors. A categorical value never raises: the model
-    scores a value its training rows never held through its own mechanism.
+    The check the preview runs on every scored frame
+    (:func:`~haute.modelling._feature_contract.assert_schema_matches_contract`),
+    so deploy operators see a mismatch at load time, with the preview's
+    message, rather than via cryptic downstream errors.
     """
-    from haute.modelling._feature_contract import assert_contracts_match, build_contract
+    from haute.modelling._feature_contract import assert_schema_matches_contract
 
-    expected = _load_feature_contract_cached(contract_path)
-    schema = lf.collect_schema()
-    feature_types: dict[str, str] = {}
-    # In the contract's own order: scoring selects the features by name, so the
-    # order the request's columns arrive in never matters.
-    runtime_features = list(expected.features)
-    categorical_features: list[str] = []
-    for name in expected.features:
-        dtype = schema.get(name)
-        if dtype is None:
-            # Missing feature at runtime — build a contract with the
-            # placeholder so the diff names the missing column.
-            feature_types[name] = "MISSING"
-            continue
-        canonical = contract_dtype_name(dtype, column=name)
-        feature_types[name] = canonical
-    for name in runtime_features:
-        if feature_types.get(name) == "String":
-            categorical_features.append(name)
-    # The offset column is a required scoring input: rebuild the runtime
-    # contract with it only when the live schema actually carries it, so a
-    # payload without the column fails the contract diff by name instead of
-    # silently scoring on an offset-absent basis.
-    runtime_offset = (
-        expected.offset_column
-        if expected.offset_column and schema.get(expected.offset_column) is not None
-        else None
+    assert_schema_matches_contract(
+        lf.collect_schema(), _load_feature_contract_cached(contract_path)
     )
-    actual = build_contract(
-        features=runtime_features,
-        feature_types=feature_types,
-        categorical_features=categorical_features,
-        target_name=expected.target_name,
-        target_type=expected.target_type,
-        task=expected.task,
-        offset_column=runtime_offset,
-    )
-    assert_contracts_match(expected, actual)
 
 
 def score_graph_lazy(

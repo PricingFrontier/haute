@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     # ``Task`` is the shared classification/regression literal already defined
     # for the feature contract; reuse it so the scorer surface does not invent
     # a second, drift-prone spelling of the task domain.
-    from haute.modelling._feature_contract import Task
+    from haute.modelling._feature_contract import FeatureContract, Task
 
 logger = get_logger(component="model_scorer")
 
@@ -1267,10 +1267,12 @@ def _run_score_pipeline(
     required_output_columns: frozenset[str] | set[str] | None = None,
     temporary_paths: list[str] | None = None,
     preamble_ns: dict[str, Any] | None = None,
+    contract: FeatureContract | None = None,
 ) -> _Frame:
     """Core scoring logic shared by ``ModelScorer.score()`` and deploy scorer.
 
-    1. Intersect model features with available columns.
+    1. Check the input against the bound feature contract, then intersect
+       model features with available columns.
     2. Run eager or batched prediction.
     3. Optionally execute user post-processing code.
 
@@ -1288,6 +1290,10 @@ def _run_score_pipeline(
     preamble_ns
         The preamble's names (the run's global constants among them), which
         the post-processing code sees beside ``model``.
+    contract
+        The feature contract *scoring_model* is bound to, whose dtypes the
+        input must match as a deployed request's do; the deploy scorer checks
+        its requests before loading and passes none.
     source
         ``"live"`` → eager path; anything else → batched path.
     row_limit
@@ -1301,6 +1307,10 @@ def _run_score_pipeline(
     from haute._mlflow_io import _score_eager as score_eager_
 
     schema = lf.collect_schema()
+    if contract is not None:
+        from haute.modelling._feature_contract import assert_schema_matches_contract
+
+        assert_schema_matches_contract(schema, contract)
     features, _missing = _validate_features(scoring_model, schema)
 
     # No catch-all here by design.  ``_validate_features`` above already
@@ -1529,7 +1539,10 @@ class ModelScorer:
         Positional frames follow incoming-edge order; named frames are
         reconstructed in the scorer's declared-source order.
         """
-        scoring_model = self._load_bound_model().scoring_model
+        from haute.modelling._feature_contract import load_contract_cached
+
+        bound = self._load_bound_model()
+        scoring_model = bound.scoring_model
 
         if dfs_by_name:
             # Reconstruct positional tuple in declared-source order.
@@ -1554,6 +1567,11 @@ class ModelScorer:
                 schema_only=self.schema_only,
                 required_output_columns=self.required_output_columns,
                 preamble_ns=self.preamble_ns,
+                contract=(
+                    load_contract_cached(bound.contract_path)
+                    if bound.contract_path is not None
+                    else None
+                ),
             )
         finally:
             _score_input_fanout.reset(fanout_token)

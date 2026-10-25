@@ -43,13 +43,12 @@ file defaults to a family.
 | MSC-05 | Planned | P3 | Model Scoring scores an MLflow pyfunc model saved in the project. |
 | MSC-06 | Planned | P2 | An XGBoost or LightGBM model trained outside Haute scores under a declared contract. |
 | MSC-07 | Deferred | P3 | ONNX models score in Model Scoring. |
-| MSC-08 | Planned | P2 | Every scoring path compares a bound contract's dtypes with the live frame, and a model's explanation is decided from the loaded family, not the configured path. |
 | MSC-09 | Planned | P3 | Loader errors keep their meaning: a Haute refusal is not retried as corruption, a transport failure is not a missing contract, a CatBoost metadata failure is not swallowed, and the EBM offset link comes from the contract. |
 
 ## Planned improvements
 
-`MSC-05` and `MSC-06` each build on the file source on their own. `MSC-08`
-and `MSC-09` come from the
+`MSC-05` and `MSC-06` each build on the file source on their own. `MSC-09`
+comes from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md).
 Each family they add is one registration in the model family registry
 (`src/haute/_model_flavors.py`).
@@ -262,32 +261,6 @@ extra.
 
 **Evidence:** `src/haute/deploy/_container.py` (`_ARTIFACT_EXT_TO_DEPS`);
 `frontend/src/panels/editors/ModelScoreEditor.tsx`.
-
-### MSC-08 — Dtypes checked on every path, explanation decided after loading
-**Why:** Outside deploy, a bound contract's `feature_types` and `target_type`
-are never compared with the scoring frame: the preview, batch and trace paths
-check feature names and "categorical supplied as numeric" only, so an `Int64` feature trained as `String` (or a `Date` arriving
-as `String`) is cast and scored where the deploy scorer's
-`assert_contracts_match` refuses it. The trace decides whether a model has an
-explanation from the configured artifact path before loading: a
-registered-model source, or a run source that leaves `artifact_path` blank for
-auto-discovery, resolves to the directory family and shows no explanation even
-when the discovered artifact is a native file that loads with one.
-
-**Plan:** Compare the contract's `feature_types` with the live schema in
-`_validate_features` when a contract is bound, using the deploy helper's logic;
-decide the explanation after loading (the `family.explanation is None` check
-exists) and drop the pre-load gate.
-
-**Acceptance:** An `Int64` feature trained as `String` is refused in the
-preview with the deploy scorer's message; a registered native model shows its
-explanation in the trace.
-
-**Dependencies:** None; every MLflow-sourced model is bound to the contract its run logged.
-
-**Evidence:** `src/haute/_model_scorer.py::_validate_features_uncached`;
-`src/haute/deploy/_scorer.py`;
-`src/haute/_model_explainability.py::_source_requests_supported_explanation`.
 
 ### MSC-09 — Loader errors keep their meaning
 **Why:** `_load_with_bounded_retry` re-raises only `AttributeError`,

@@ -645,47 +645,101 @@ def test_rustystats_glm_fails_loudly_for_missing_features() -> None:
         explain_rustystats_glm_prediction(scoring_model, {})
 
 
+class _FakeGLM:
+    """A RustyStats GLM ``prediction = x + 2`` with its native contribution API."""
+
+    required_columns = ["x"]
+
+    def predict(self, data: pl.DataFrame) -> np.ndarray:
+        return np.asarray(data["x"], dtype=float) + 2.0
+
+    def predict_contributions(self, data: pl.DataFrame, **_: Any) -> list[dict[str, Any]]:
+        x_value = float(data["x"][0])
+        return [
+            {
+                "family": "gaussian",
+                "link": "identity",
+                "output_space": "response",
+                "prediction_space": "response",
+                "base_value": 2.0,
+                "sum_contributions": x_value,
+                "prediction_from_contributions": x_value + 2.0,
+                "prediction_value": x_value + 2.0,
+                "contributions": [
+                    {
+                        "term": "x",
+                        "term_type": "linear",
+                        "feature": "x",
+                        "feature_value": x_value,
+                        "contribution": x_value,
+                        "rank": 1,
+                    }
+                ],
+            }
+        ]
+
+
+def _load_fake_glm(**_: Any) -> Any:
+    from haute._mlflow_io import ScoringModel
+
+    return ScoringModel(model=_FakeGLM(), feature_names=["x"], flavor="rustystats")
+
+
+# A registered model resolved by alias, its artifact discovered in the run: the
+# configuration names no file, so only the loaded model says what family it is.
+_REGISTERED_GLM = {
+    "sourceType": "registered",
+    "registered_model": "conversion",
+    "alias": "champion",
+    "task": "regression",
+    "output_column": "prediction",
+}
+
+
+def test_a_registered_native_model_shows_its_explanation_in_the_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _model_explainability
+
+    monkeypatch.setattr("haute._mlflow_io.load_mlflow_model", _load_fake_glm)
+
+    explanation = _model_explainability.explain_model_score_from_config(
+        _REGISTERED_GLM,
+        {"x": 3.5},
+        {"prediction": 5.5},
+        prediction_column="prediction",
+        prediction_value=5.5,
+    )
+
+    assert explanation is not None
+    assert explanation["type"] == "rustystats_glm_contributions"
+
+
+def test_an_explanation_failure_is_labelled_with_the_loaded_familys_method(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _model_explainability
+    from haute._trace_enrichment import enrich_model_score
+
+    def broken(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise _model_explainability.ModelExplanationError("broken GLM explanation")
+
+    monkeypatch.setattr("haute._mlflow_io.load_mlflow_model", _load_fake_glm)
+    monkeypatch.setattr(_model_explainability, "explain_rustystats_glm_prediction", broken)
+
+    result = enrich_model_score(_REGISTERED_GLM, {"x": 3.5}, {"x": 3.5, "prediction": 5.5})
+
+    assert result["explanation"]["status"] == "error"
+    assert result["explanation"]["method"] == "rustystats_glm_contributions"
+    assert result["explanation"]["error"] == "broken GLM explanation"
+
+
 def test_rustystats_glm_explanation_selected_from_rsglm_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from haute import _model_explainability
-    from haute._mlflow_io import ScoringModel
 
-    class FakeGLM:
-        required_columns = ["x"]
-
-        def predict(self, data: pl.DataFrame) -> np.ndarray:
-            return np.asarray(data["x"], dtype=float) + 2.0
-
-        def predict_contributions(self, data: pl.DataFrame, **_: Any) -> list[dict[str, Any]]:
-            x_value = float(data["x"][0])
-            return [
-                {
-                    "family": "gaussian",
-                    "link": "identity",
-                    "output_space": "response",
-                    "prediction_space": "response",
-                    "base_value": 2.0,
-                    "sum_contributions": x_value,
-                    "prediction_from_contributions": x_value + 2.0,
-                    "prediction_value": x_value + 2.0,
-                    "contributions": [
-                        {
-                            "term": "x",
-                            "term_type": "linear",
-                            "feature": "x",
-                            "feature_value": x_value,
-                            "contribution": x_value,
-                            "rank": 1,
-                        }
-                    ],
-                }
-            ]
-
-    def fake_load_mlflow_model(**_: Any) -> ScoringModel:
-        return ScoringModel(model=FakeGLM(), feature_names=["x"], flavor="rustystats")
-
-    monkeypatch.setattr("haute._mlflow_io.load_mlflow_model", fake_load_mlflow_model)
+    monkeypatch.setattr("haute._mlflow_io.load_mlflow_model", _load_fake_glm)
 
     explanation = _model_explainability.explain_model_score_from_config(
         {

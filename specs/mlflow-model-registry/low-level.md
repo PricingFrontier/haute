@@ -150,7 +150,10 @@
   `_scoring_model` slot and lock, used only when pinning a model instance
   to the scorer for a reused streaming session).
 - **`ModelExplanationError(RuntimeError)`** (`_model_explainability.py`)
-  — every explanation failure mode raises this.
+  — every explanation failure mode raises this. Its `method` names the
+  explanation that failed (the loaded family's), which
+  `explain_model_score_from_config` sets on every failure it raises; the trace
+  labels a failure with it (`model_explanation` when it is `None`).
 - **Cache key shapes:**
   - Model cache key: `_model_cache_key(...)` →
     `(source_type, run_id, artifact_path, task, artifact_fingerprint,
@@ -318,7 +321,10 @@ load or bind is never cached.
 The builder (`ModelScorer`), the planner (`_model_score_columns`),
 `score_from_config` and `explain_model_score_from_config` all load through
 `load_scoring_model`, so every context loads and binds the same model for the
-same config. The deploy bundler parses the source to decide what to bundle, and
+same config. `explain_model_score_from_config` decides whether a model has an
+explanation after loading it, from the family it loaded as: a registered model
+or a run whose artifact is discovered explains as its native family does, and a
+pyfunc model has none. The deploy bundler parses the source to decide what to bundle, and
 the deploy scorer's passthrough guard parses it to decide whether a node
 without a bundled artifact can be served; a source that does not parse is
 refused there as a `DeployError` chained from the parse failure.
@@ -583,6 +589,17 @@ the uncached validator run. **Errors are never cached** — a
 `FeatureMismatchError` leaves both the last-entry slot and the LRU
 untouched so a later call against the same (fixed) schema re-validates
 rather than replaying a stale exception.
+
+Before it, `_run_score_pipeline` checks the input schema against the feature
+contract the model is bound to, when `ModelScorer` passes one (the bound
+model's `contract_path`, read through `load_contract_cached`), with
+`assert_schema_matches_contract` (`modelling/_feature_contract.py`), the
+helper the deploy scorer's `_assert_runtime_contract_matches` calls. It rebuilds
+the live contract in the bound contract's feature order from
+`contract_dtype_name` of each column (`MISSING` for an absent one), counts the
+String features categorical, keeps the offset column only when the input
+carries it, and diffs it with `assert_contracts_match`, so a preview, batch or
+trace refuses a dtype drift with the deploy scorer's exact message.
 
 ### Explanation — `explain_catboost_prediction` /
 `explain_rustystats_glm_prediction` (`_model_explainability.py`)
@@ -866,7 +883,8 @@ endpoint.
   MLflow dependency floor is 3.11 and no older list-shaped signature adapter
   is retained.
 - **Feature order is never checked.** `_validate_features_uncached` checks
-  presence and categorical dtype and returns the usable features in the model's
+  presence and categorical dtype, and `assert_schema_matches_contract` a bound
+  contract's dtypes, and the usable features come back in the model's
   own order; every scoring path selects that list from the input before
   predicting, so a GLM (whose RustyStats feature list is alphabetical) or any
   other model scores input columns in whatever order they arrive. The deployed
@@ -931,7 +949,7 @@ endpoint.
 | Corrupt/unloadable artifact after bounded retry | `RuntimeError` (chained `from last_err`) | `_load_with_bounded_retry`. |
 | Bug in load dispatch (bad attribute/type/key) | `AttributeError` / `TypeError` / `KeyError` | Re-raised immediately from `_load_with_bounded_retry`, never retried. |
 | Invalid disk-cache run_id/artifact_path | `ValueError` | `_validate_disk_cache_run_id` / `_validate_artifact_path`, called from `_artifact_cache_path` before any I/O. |
-| Feature/order/categorical/offset mismatch | `FeatureMismatchError` | `_validate_features_uncached` / `_require_offset_column`; propagates through `ModelScorer.score()` uncaught (no rewrap of other exception types — see `_run_score_pipeline` docstring). |
+| Feature/categorical/offset mismatch, or a dtype that differs from the bound contract | `FeatureMismatchError` | `assert_schema_matches_contract` (with a bound contract, first) / `_validate_features_uncached` / `_require_offset_column`; propagates through `ModelScorer.score()` uncaught (no rewrap of other exception types — see `_run_score_pipeline` docstring). |
 | Unsupported scoring flavor | `ConfigError` | `score_frame()`, at the top of dispatch. |
 | Unregistered flavor in predict-frame prep or a registry lookup | `ValueError` naming the registered flavors | `_prepare_predict_frame`, `model_family`. |
 | Duplicate family flavor or suffix | `ValueError` | `register_model_family`, at import for the built-ins. |

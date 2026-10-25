@@ -96,7 +96,10 @@ deployed. A run that logged no contract is refused, naming the run.
 Scoring checks the input against the model's features before it runs: a missing feature,
 a missing offset column the model was trained with, or a numeric column where the model
 expects a categorical one fails with an error listing what is wrong, rather than predicting
-from mismatched data. The order the input's columns arrive in does not matter.
+from mismatched data. A model with a feature contract also refuses a column whose type
+differs from training, such as whole numbers where it was trained on decimals, with the
+same error a deployed pipeline gives. The order the input's columns arrive in does not
+matter.
 
 ### Values the model was not trained on
 

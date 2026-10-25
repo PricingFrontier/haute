@@ -705,10 +705,10 @@ def enrich_model_score(
                 prediction_value=prediction_value,
             )
         except _model_explainability.ModelExplanationError as exc:
-            error_metadata = _model_explainability.explanation_error_metadata_for_config(config)
+            method = exc.method or "model_explanation"
             explanation = {
-                "type": error_metadata["type"],
-                "method": error_metadata["method"],
+                "type": method,
+                "method": method,
                 "status": "error",
                 "error": str(exc),
                 "error_type": type(exc).__name__,
