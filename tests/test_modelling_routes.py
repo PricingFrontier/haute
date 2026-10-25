@@ -4519,6 +4519,37 @@ class TestDispersionErrorPaths:
         assert job["status"] == "memory_limited"
         assert job["http_status_code"] == 507
 
+    def test_a_failure_before_admission_is_curated_and_frees_the_job(self, nb_training_data):
+        from haute.schemas import DispersionEstimateRequest
+
+        graph = _make_negbinomial_graph(nb_training_data)
+        store, service = self._service()
+        body = DispersionEstimateRequest.model_validate(
+            {"graph": graph, "node_id": "train", "param": "theta"}
+        )
+        from haute.routes import _training_lifecycle
+
+        admitted: list[str] = []
+        admit = _training_lifecycle.create_admitted_execution_context
+
+        def recording(**kwargs: Any) -> Any:
+            admitted.append(kwargs["operation"])
+            return admit(**kwargs)
+
+        with (
+            patch.object(service, "_estimate_ram", side_effect=RuntimeError("probe exploded")),
+            patch.object(_training_lifecycle, "create_admitted_execution_context", recording),
+        ):
+            response = service.start_dispersion_estimate(body)
+            service._join_preparation(response.job_id)
+
+        job = store.require_job(response.job_id)
+        assert job["status"] == "error"
+        assert job["message"].startswith("Dispersion estimation of ")
+        assert "probe exploded" in job["error"]
+        assert "dispersion_estimate" not in admitted
+        assert service._training_jobs.cancel(response.job_id) is False
+
     def test_start_returns_the_job_before_preparation_and_cancel_reaches_it(self, nb_training_data):
         """The id comes back at once; cancelling stops preparation and frees its slot."""
         import threading
