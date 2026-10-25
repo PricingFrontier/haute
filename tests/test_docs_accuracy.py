@@ -157,6 +157,7 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "engineering-quality",
     "execution-engine",
     "explore-eda",
+    "frontend-graph-canvas",
     "frontend-modelling-optimiser-ui",
     "frontend-node-editors",
     "frontend-shared",

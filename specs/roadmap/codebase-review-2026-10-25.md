@@ -75,8 +75,8 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 - The assistant-core reviewer read the assistant low-level specification's core
   sections and left the tool and op sections to the tools reviewer; the loop's
   tool-summary wording was not checked against the specification.
-- Areas whose findings are not yet in this report are in review: the workbench
-  UI, the app shell and canvas; the tests, scripts and CI as code.
+- Areas whose findings are not yet in this report are in review: the tests,
+  scripts and CI as code.
 
 ## Coverage and findings so far
 
@@ -101,16 +101,15 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 | Frontend API client, wire types and guards, stores, generated contracts | reviewer, verified | every owned file in full; a client-path against server-route probe | 0 / 1 / 7 / 4 |
 | Frontend node editors, top-level files (45 files) | reviewer, verified | every owned file in full except `CodeMirrorEditor.tsx` lines 1-235 (grep) | 0 / 0 / 16 / 1 |
 | Frontend hooks and utilities (36 hooks, 78 utilities; the sheet-visibility mirror compared rule by rule with the server) | reviewer, verified | every owned file in full | 0 / 1 / 13 / 4 |
-
 | Frontend node editors, subdirectories (banding, rating, Polars steps, Explore pivots, shared; 43 files) | reviewer, verified; the validator-versus-writer probe rerun | every owned file in full | 0 / 1 / 11 / 3 |
 | Frontend modelling panels (training configuration, results workspace, export) | reviewer, verified | every owned file in full except the stylesheet | 0 / 3 / 8 / 4 |
-
 | Frontend optimiser and Explore panels (the optimiser workspace, the preview frame, pivots, charts, overview, relationships) | reviewer, verified | every owned file in full except `UtilityPanel.tsx` | 0 / 2 / 8 / 2 |
-
 | Frontend trace, git and assistant UI (the trace panel and its cards, the git panel, branch manager, modals and graph rail, the chat panel) | reviewer, verified | every owned file in full except parts of three modals | 0 / 1 / 13 / 8 |
+| Workbench UI (the Workbench view, its sheets, schema editor, panels and Show when editor; the underwriter app's pages and stores) | reviewer, verified | every owned file in full; the tests by name, four bodies read | 0 / 0 / 6 / 3 |
+| App shell, graph canvas and shared components (`App.tsx`, the node renderers, menus, dialogs, toolbar, settings, the form kit, the inspector shell and preview frame) | reviewer, verified; the renderers' flag reads re-read | every owned file in full except the stylesheet | 0 / 0 / 9 / 6 |
 
-Three hundred and sixty-four findings so far: two Critical, forty-four Major, two
-hundred and fifty-three Minor and sixty-five Suggestions. Both Criticals and every Major are confirmed at source by the
+Three hundred and eighty-eight findings so far: two Critical, forty-four Major, two
+hundred and sixty-eight Minor and seventy-four Suggestions. Both Criticals and every Major are confirmed at source by the
 main session; the Minors and Suggestions were read at source or accepted on
 quoted evidence as the verification table records.
 
@@ -384,6 +383,14 @@ production:
 | Engineering quality | PM-48 | `ENGQ-R06` |
 | Engineering quality | PM-50 | `ENGQ-R01` (evidence added) |
 | Engineering quality | the campaign-named test modules recounted | `ENGQ-R05` (evidence added) |
+| Workbench UI | FWB-1, FWB-6, FWB-8, FWB-9 | `WB-35` |
+| Workbench UI | FWB-2, FWB-3 | `WB-36` |
+| Workbench UI | FWB-4, FWB-5; app shell FAP-14 | `WB-37` |
+| Workbench UI | FWB-7 | `WB-38` (Decision) |
+| App shell and canvas | FAP-2, FAP-3, FAP-5 | `FGC-R01` |
+| App shell and canvas | FAP-1, FAP-11 | `FGC-R02` |
+| App shell and canvas | FAP-9 | `FGC-R03` |
+| App shell and canvas | FAP-4, FAP-6, FAP-7, FAP-8, FAP-10, FAP-12, FAP-13, FAP-15 | `FGC-R04` |
 
 Already tracked before this review and not repeated: the `cwd`-captured sandbox
 root used by the deploy modules, the underwriter app and the server
@@ -438,7 +445,14 @@ panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`) and
 `applyFrontierPointSummary`'s null handling (`FSH-R03`); the move dialog not
 naming `outputs/` (`GIT-R01`), typed branch names unvalidated in the UI
 (`GIT-R02`), the delete dialog's confirm flag (`GIT-R03`) and the trace route's
-409 keyed on its code (`API-R06`).
+409 keyed on its code (`API-R06`); in the workbench UI and the app shell, the
+chart theme observer written twice (`EDA-R03`), the params-folder listing in the
+Allowed field (`FNED-R05`), knip's export-only symbols (`ENGQ-R01`), the fault on
+an output-table condition (`WB-29`), the browser's 90 s pricing timeout past the
+server's 60 s (`WB-33`), browser-locale dates (`FSH-R08`), the bootstrap without
+a deadline (`FSH-R05`), Ctrl+S inside a code box (`FSH-R07`), editor state inside
+node data (`PCFG-R08`), the recovery banner's re-minted id (`PCFG-R19`) and the
+modelling pane badges (`FMOU-R03`).
 
 ## Verdicts that changed or stayed open
 
