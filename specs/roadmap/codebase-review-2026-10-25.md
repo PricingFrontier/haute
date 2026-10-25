@@ -68,8 +68,11 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 - The pipeline-config reviewer left `_polars_steps.py` (about 1,500 lines),
   `_pipeline_recovery.py` (about 1,100 lines) and parts of six smaller modules
   unread; a follow-up reviewer covers them.
-- Areas whose findings are not yet in this report are in review: modelling, the
-  MLflow registry and training; tracing and expression parsing;
+- The modelling reviewer scanned `_charts.py` mechanically and did not read
+  the modelling test modules systematically, so "a test that would pass
+  against a wrong coefficient" is answered only for the GLM level check.
+- Areas whose findings are not yet in this report are in review: tracing and
+  expression parsing;
   git integration and Databricks IO; the assistant; the JSON shredder's
   remaining modules; submodels and Explore; the frontend; the tests, scripts
   and CI as code.
@@ -86,9 +89,10 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 | Server routes and the save service (pipeline, save, helpers, node data, project files, utility, banding and rating, submodel, error handlers, supersession) | reviewer, verified; two probes | every owned file in full; `schemas.py` the models those routes use | 0 / 4 / 10 / 3 |
 | Pipeline config, codegen, parsing and recovery | reviewer, verified; two probes rerun | core files in full; `_polars_steps.py` and `_pipeline_recovery.py` in part (follow-up pending) | 0 / 3 / 10 / 2 |
 | Optimiser (routes, service, solver, session, frontier, auto-range, estimate, outcomes, artifacts, explainability, the price-contour guard, the Optimiser Apply runtime) | reviewer, verified; two probes | every owned file in full; the price-contour library read where haute's schemas depend on it | 0 / 1 / 9 / 2 |
+| Modelling, the MLflow model registry and the training routes (every family, contracts, evaluation, tuning, export, MLflow IO, the scorer, explainability, the training lifecycle) | reviewer, verified; the GLM probe rerun | every owned file in full except `_charts.py` (mechanical) | 0 / 2 / 21 / 2 |
 
-One hundred and forty-two findings so far: one Critical, twenty-four Major,
-ninety-six Minor and twenty-one Suggestions. The Critical and every Major is confirmed at source by the
+One hundred and sixty-seven findings so far: one Critical, twenty-six Major,
+one hundred and seventeen Minor and twenty-three Suggestions. The Critical and every Major is confirmed at source by the
 main session; the Minors and Suggestions were read at source or accepted on
 quoted evidence as the verification table records.
 
@@ -155,6 +159,14 @@ quoted evidence as the verification table records.
 - **The optimiser's MLflow log writes the complete result artifact without the
   finiteness gate the save applies** (Major, `OPT-R01`): a missing defence layer
   on a pricing artifact, since the status poll corrects the UI path.
+- **A GLM prices an unseen or null categorical level as the reference level**
+  (Major, `MOD-R01`; reproduced): the GLM contract records no fitted levels and
+  the scorer knows no GLM categoricals, so a new region code or a typo at
+  scoring time is a silently base-level price. The package is P1.
+- **Cancelling a dispersion estimate during preparation cancels nothing**
+  (Major, `MOD-R02`): the token is registered after preparation, so the job
+  reads `cancelled` and frees the running slot while the preparation child
+  keeps running under the job's budget.
 
 ## Findings mapped to packages
 
@@ -214,6 +226,14 @@ quoted evidence as the verification table records.
 | Optimiser | OPR-4, OPR-5, OPR-6, OPR-7 | `OPT-R03` |
 | Optimiser | OPR-2 | `OPT-R04` (Decision) |
 | Optimiser | OPR-9, OPR-10, OPR-11 | `OPT-R05` |
+| Modelling | MDL-1 | `MOD-R01` |
+| Modelling | MDL-14, MDL-15, MDL-19 | `MOD-R02` |
+| Modelling | MDL-24 | `MOD-R03` |
+| Modelling | MDL-4, MDL-5, MDL-6, MDL-17, MDL-25 | `MOD-R04` |
+| Modelling | MDL-3, MDL-9, MDL-11, MDL-16, MDL-20, MDL-21 | `MOD-R05` |
+| Modelling | MDL-2, MDL-18, MDL-22 | `MOD-R06` |
+| Model scoring | MDL-12, MDL-23 | `MSC-08` |
+| Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
 | Sandbox security | PM-42 | `SBX-R04` |
 | Workbench | PM-44 | `WB-33` |
 | Workbench | PM-45 | `WB-34` |
@@ -240,7 +260,12 @@ validators and branches (`PCFG-R07`, `PCFG-R09`); name-violation reporting
 files (`BUG-19`); the test-only config helpers and event-bus hooks (`ENGQ-R01`);
 the optimiser's unshown solve-memory forecast (`OPT-W02`) and its frontier
 points without convergence traces (`OPT-PC04`); the optimiser's job registries
-not cancelled at shutdown (`ROAD-WORKER-06`).
+not cancelled at shutdown (`ROAD-WORKER-06`); MLflow-sourced models scored
+without their training contract in the preview, batch and trace paths as well
+as in deploy (`DEP-R07`, whose plan already names the editor); the test-only
+`_compute_schema_hash` and the training facade (`ENGQ-R01`); the cost of the
+training test modules (`ENGQ-CI03`); fits that exceed their budget
+(`MOD-M01`, `MOD-M02`).
 
 ## Verdicts that changed or stayed open
 
@@ -257,6 +282,11 @@ not cancelled at shutdown (`ROAD-WORKER-06`).
 - **PCF-1 rated Major in the ledger, P1 as a package.** The lenient decode needs
   a non-UTF-8 file Haute never writes, but when it meets one the save corrupts
   authored bytes silently, which is the Critical definition.
+- **MDL-1 rated Major in the ledger, P1 as a package.** The reviewer rated it
+  Major because it needs a value absent from training and the low-level
+  specification deliberately keeps declared domains apart from observed values;
+  the package is P1 because the result is a silently wrong price for a routine
+  production event.
 - **EXE-11 kept Minor, reachability unconfirmed.** The positional binding after
   a dropped name is real; whether the canvas or codegen can emit a request-input
   edge with a null handle was not shown.
@@ -284,6 +314,9 @@ All probes live outside the repository and wrote nothing into it.
 | dropped comments | Five comment kinds (a section, decorator-to-`def`, trailing, between functions, on `connect`) are absent after parse → `graph_to_code`; `unkept_module_statements` reports none. |
 | inline keywords | `@pipeline.constant(config=..., values=[...], colour="red")` parses to the sidecar's values with no warning; the regenerated decorator keeps only `config=`. |
 | corrupt parquet scan | `pl.scan_parquet` on a corrupt file returns a lazy frame; `collect_schema()` raises `ComputeError` (Polars 2.0.0). |
+| GLM unseen level | A Poisson GLM on levels A, B, C (RustyStats 0.9) predicts A, B, C, D, Z as 1.133071, 2.475292, 0.634106, 1.133071, 1.133071 and a null as 1.133071. |
+| Tweedie power | XGBoost trains `reg:tweedie` with `tweedie_variance_power=None` at 1.5; LightGBM trains with the `None` kept and its default applied. |
+| evaluation plan size | 2,000,000 rows, five folds: a 71 MB plan; the parent's reload takes 13.3 s with a 0.65 GB peak. |
 | price-contour column order | `solve`, `apply_from_grid` and the quote-results schema emit `optimal_<c>` in config order; `ApplyOptimiser.apply` in sorted order, so both haute schemas match their own library path (no finding). |
 
 ## Mechanical metrics

@@ -28,10 +28,10 @@ or maintenance issue; `P3` opportunistic work.
 | [Explore and EDA](explore-eda.md) | Advanced pivot and PivotChart parity | — |
 | [Frontend shared](frontend-shared.md) | Results store | `FSH-R03` |
 | [IO layer](io-layer.md) | Glob and folder inputs signed, missing against corrupt generations, one path-anchoring rule, lock holds and usage cost, clear and settle rules, one supervised build | `IO-R03` |
-| [Model scoring](model-scoring.md) | Models trained outside Haute | `MSC-06` |
-| [Modelling](modelling.md) | Adaptive low-memory fitting: exact chunked GLM, a low-memory boosted-tree mode (both awaiting a decision) | `MOD-M01` |
+| [Model scoring](model-scoring.md) | Models trained outside Haute; dtypes checked on every scoring path, loader errors that keep their meaning | `MSC-06` |
+| [Modelling](modelling.md) | GLM contracts with fitted levels, the dispersion estimate's lifecycle, publication outside the lock, fit parameters without hidden defaults, diagnostics measured as the fit was; adaptive low-memory fitting: exact chunked GLM, a low-memory boosted-tree mode (both awaiting a decision) | `MOD-R01` |
 | [Name collisions](name-collisions.md) | Input-binding editors showing their name violations inline | `NAME-09` |
-| [Optimiser validation](optimiser-validation.md) | Per-point convergence traces from price_contour's frontier sweep; a calibrated solve-memory forecast in the Solve panel; the optimiser result workspace's open robustness and CSV questions | `OPT-PC04` |
+| [Optimiser validation](optimiser-validation.md) | Per-point convergence traces from price_contour's frontier sweep; a calibrated solve-memory forecast in the Solve panel; the optimiser result workspace's open robustness and CSV questions; one gate for every persisted optimiser artifact, setup files under a reaped root, failures classified once, the frontier recompute sweep as a decision | `OPT-PC04` |
 | [Pipeline config](pipeline-config.md) | Strict decoding of sidecars and sources, inline keywords refused, comments kept across a save, recovery on the engine's validators, canonical sidecar bytes, dead paths; project context, typed configs, editor state, node specification | `PCFG-R10` |
 | [Polars 2](polars-2.md) | Moving to Polars 2.0: caches computed under Polars 1, new dtypes, deploy parity, generated and teaching code, the operation registry and the tests; then the operator memory evidence and worker baselines | `PL2-15` |
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
