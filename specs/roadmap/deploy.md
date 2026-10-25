@@ -126,8 +126,8 @@ CatBoost model whose file does not declare its offset; for every other MLflow-so
 model it looks for a bare `feature_contract.json` beside the cached download, which
 training never writes, and logs that none was found. The deployed scorer then runs that
 node without a contract, so a served request is checked against the model's own feature
-names only: a dtype or a categorical level that drifted from training is not refused
-at the boundary. The specification says bundling carries each model's feature contract
+names only: a dtype or an offset that drifted from training is not refused at the
+boundary. The specification says bundling carries each model's feature contract
 and that the scorer binds each model to it exactly as the preview does.
 
 **Plan:** Fetch the run's contract (`_resolve_run_contract`) for every MLflow-sourced
@@ -136,8 +136,8 @@ node and the run, when the run logged none. Make the editor's preview bind the s
 contract so the two keep agreeing.
 
 **Acceptance:** A deployed pipeline with an MLflow-sourced XGBoost model refuses a
-request whose categorical value is outside the training levels with the contract
-mismatch error; a run without a contract fails resolution naming it.
+request whose feature dtype differs from training with the contract mismatch error;
+a run without a contract fails resolution naming it.
 
 **Dependencies:** None.
 

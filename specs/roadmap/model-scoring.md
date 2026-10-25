@@ -80,8 +80,8 @@ bundles; it does not broaden Load File's restricted unpickler or silently
 change existing MLflow-source trust behaviour.
 
 The input signature must describe supported named tabular columns; an absent
-or unsupported signature is refused. Offsets and categorical domains come
-only from a feature contract, as for a registry pyfunc. The package digest
+or unsupported signature is refused. Offsets come only from a feature
+contract, as for a registry pyfunc. The package digest
 covers sorted relative file names and their bytes, including `MLmodel`, code,
 pickles, data and requirement files; added and removed files change it too.
 All package members and local model, artifact and code paths declared by
@@ -250,8 +250,7 @@ dependency, no user has asked for it, and pyfunc (`MSC-05`) covers Python
 models first.
 
 **Plan:** If reopened, register an ONNX family in the model family registry: input names
-from the graph, a required feature contract for categorical domains, task and
-offset, `onnxruntime` as an optional extra, and probability outputs mapped to
+from the graph, a required feature contract for task and offset, `onnxruntime` as an optional extra, and probability outputs mapped to
 the binary positive-class rule.
 
 **Acceptance:** An ONNX regressor and classifier converted from another
@@ -267,8 +266,7 @@ extra.
 ### MSC-08 — Dtypes checked on every path, explanation decided after loading
 **Why:** Outside deploy, a bound contract's `feature_types` and `target_type`
 are never compared with the scoring frame: the preview, batch and trace paths
-check feature names, their relative order and "categorical supplied as
-numeric" only, so an `Int64` feature trained as `String` (or a `Date` arriving
+check feature names and "categorical supplied as numeric" only, so an `Int64` feature trained as `String` (or a `Date` arriving
 as `String`) is cast and scored where the deploy scorer's
 `assert_contracts_match` refuses it. The trace decides whether a model has an
 explanation from the configured artifact path before loading: a
