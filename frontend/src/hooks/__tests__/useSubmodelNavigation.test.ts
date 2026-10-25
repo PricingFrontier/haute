@@ -914,7 +914,6 @@ describe("useSubmodelNavigation", () => {
                   ...(node.data.config as Record<string, unknown>),
                   selected_columns: ["_id", "premium"],
                   column_renames: { _id: "identifier" },
-                  categorical_levels: { premium: ["low", "high", null] },
                 },
               },
             }
@@ -944,7 +943,6 @@ describe("useSubmodelNavigation", () => {
     expect(useGraphStore.getState().nodes.find((node) => node.id === "child1")?.data.config).toMatchObject({
       selected_columns: ["_id", "premium"],
       column_renames: { _id: "identifier" },
-      categorical_levels: { premium: ["low", "high", null] },
     })
   })
 

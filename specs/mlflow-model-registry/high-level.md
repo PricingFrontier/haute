@@ -64,9 +64,9 @@ In scope:
 - Preparing an input DataFrame into the shape each flavor's `predict`
   expects (numpy/pandas dtype and categorical handling).
 - Feature-contract validation at score time: presence, relative order,
-  categorical dtype, plus enforcing a model's trained-with offset/exposure column; and the
-  count and report of categorical values the model's training rows never held, which
-  never stops scoring.
+  categorical dtype, plus enforcing a model's trained-with offset/exposure column. A
+  categorical value is never checked: the model scores a value its training rows never
+  held through its own mechanism.
 - Eager (in-memory) and batched (disk, chunked-parquet) scoring, and an
   output/input column write-projection that can prune both to exactly
   what a caller needs.
@@ -210,12 +210,9 @@ Out of scope (owned elsewhere):
   presented as non-numeric — and, if the model declares a trained-with
   offset/exposure column, that column must also be present. Any of these failing raises
   before prediction runs; schema-validation results are memoised for repeated
-  model/schema pairs. The values in the exact materialised scoring frame are then
-  counted against the contract's training levels on every materialisation, because values
-  can change without a schema change: a value the training rows never held, a value outside
-  a declared domain, or a null the training rows did not hold is scored by the model's own
-  mechanism and reported as a `categorical_values_not_in_training` warning (modelling
-  high-level, "Unseen categorical values"), never refused.
+  model/schema pairs. A value the training rows never held, or a null they did not hold,
+  is scored by the model's own mechanism and never refused (modelling high-level,
+  "Unseen categorical values").
 - Scoring runs either eagerly (the input is collected once, in memory,
   and predictions are appended to that same materialisation) or in
   batches (the input is written to a temp parquet file and predicted
@@ -226,9 +223,6 @@ Out of scope (owned elsewhere):
   the output write are pruned to that set (plus the model's own features
   and any declared offset column), avoiding materialising columns nobody
   asked for.
-- The live unseen-value count materialises only the union of model features,
-  categorical columns, offset handling, and write-projection necessities;
-  unrelated columns in a wide input are not collected for that count.
 - An empty scoring batch produces a typed empty result without scoring a
   synthetic all-null row when the flavor exposes sufficient output metadata.
   CatBoost classification derives hard-label dtype from `classes_`; where a

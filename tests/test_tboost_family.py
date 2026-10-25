@@ -384,42 +384,24 @@ def test_with_nothing_pooled_an_unseen_level_scores_in_the_default_cell() -> Non
     assert np.isfinite(model.predict(nulls)).all()
 
 
-@pytest.mark.parametrize("declared", [False, True], ids=["undeclared", "declared"])
-def test_validation_rows_with_values_the_training_rows_lack_train_and_are_logged(
-    tmp_path: Path, declared: bool
-) -> None:
-    from structlog.testing import capture_logs
-
+def test_validation_rows_with_values_the_training_rows_lack_still_train(tmp_path: Path) -> None:
     rng = np.random.default_rng(5)
-    makes = [f"M{i}" for i in range(400)]
-    # A many-levelled feature: a random split leaves some levels in validation only,
-    # and a declared domain listing every make does not hide them.
+    # A many-levelled feature: a random split leaves some levels in validation only.
     data = frame(900).with_columns(
-        make=pl.Series([makes[i] for i in rng.integers(0, 400, 900)]),
+        make=pl.Series([f"M{i}" for i in rng.integers(0, 400, 900)]),
     )
-    with capture_logs() as logs:
-        _job, result = train(
-            tmp_path,
-            target="claims",
-            loss="Poisson",
-            offset="exposure",
-            data=data,
-            feature_columns=["region", "age", "make"],
-            **({"categorical_levels": {"make": makes}} if declared else {}),
-        )
+    _job, result = train(
+        tmp_path,
+        target="claims",
+        loss="Poisson",
+        offset="exposure",
+        data=data,
+        feature_columns=["region", "age", "make"],
+    )
     assert result.diagnostics_errors == []
-    unseen = [entry for entry in logs if entry["event"] == "categorical_values_not_in_training"]
-    assert unseen and all(entry["feature"] == "make" for entry in unseen)
-    assert all(
-        entry["context"] == "Training validation rows" and entry["rows"] >= 1 for entry in unseen
-    )
 
 
 def test_saved_models_score_unseen_levels_through_their_contract(tmp_path: Path) -> None:
-    from structlog.testing import capture_logs
-
-    from haute._model_scorer import UnseenValueReport
-
     data = frame(3000, seed=4)
     _job, result = train(
         tmp_path,
@@ -429,55 +411,17 @@ def test_saved_models_score_unseen_levels_through_their_contract(tmp_path: Path)
         data=data,
         params={**FAST, "learning_rate": 0.1},
     )
-    contract = load_contract(Path(result.model_path).parent / model_contract_filename("tb"))
-    # Undeclared categoricals carry no domain; their training levels drive the report.
-    assert "region" not in contract.categorical_levels
-    assert contract.training_levels["region"] == [*LEVELS, None]
     scoring = load_local_model(result.model_path)
     unseen = data.head(5).with_columns(pl.lit("mars").alias("region"))
-    with capture_logs() as logs:
-        scored = score_frame(
-            model=scoring.raw_model,
-            lf=unseen.lazy(),
-            features=scoring.feature_names,
-            cat_feature_names=scoring.cat_feature_names,
-            flavor="tboost",
-            offset_column=scoring.offset_column,
-            unseen_report=UnseenValueReport(contract.training_levels, "Model Score"),
-        ).collect()["prediction"]
-    np.testing.assert_allclose(scored.to_numpy(), scoring.raw_model.predict(unseen), rtol=1e-12)
-    assert [
-        log["examples"] for log in logs if log["event"] == "categorical_values_not_in_training"
-    ] == [["mars"]]
-
-    # A value outside a declared domain scores too, exactly as t-boost scores it.
-    declared_root = tmp_path / "declared"
-    _job, declared = train(
-        declared_root,
-        target="claims",
-        loss="Poisson",
-        offset="exposure",
-        data=data,
-        params={**FAST, "learning_rate": 0.1},
-        categorical_levels={"region": [*LEVELS, "west", None]},
-    )
-    declared_contract = load_contract(
-        Path(declared.model_path).parent / model_contract_filename("tb")
-    )
-    assert declared_contract.categorical_levels["region"] == [*LEVELS, "west", None]
-    declared_scoring = load_local_model(declared.model_path)
-    declared_scored = score_frame(
-        model=declared_scoring.raw_model,
+    scored = score_frame(
+        model=scoring.raw_model,
         lf=unseen.lazy(),
-        features=declared_scoring.feature_names,
-        cat_feature_names=declared_scoring.cat_feature_names,
+        features=scoring.feature_names,
+        cat_feature_names=scoring.cat_feature_names,
         flavor="tboost",
-        offset_column=declared_scoring.offset_column,
-        unseen_report=UnseenValueReport(declared_contract.training_levels, "Model Score"),
+        offset_column=scoring.offset_column,
     ).collect()["prediction"]
-    np.testing.assert_allclose(
-        declared_scored.to_numpy(), declared_scoring.raw_model.predict(unseen), rtol=1e-12
-    )
+    np.testing.assert_allclose(scored.to_numpy(), scoring.raw_model.predict(unseen), rtol=1e-12)
 
 
 def test_a_model_without_categorical_features_saves_and_loads(tmp_path: Path) -> None:

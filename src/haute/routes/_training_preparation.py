@@ -31,7 +31,6 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
-from haute._graph_utils import upstream_node_ids
 from haute._logging import get_logger
 from haute._polars_dtypes import wide_integer_column, wide_integer_message
 from haute._ram_estimate import RamEstimate
@@ -399,22 +398,6 @@ def resolve_training_input_schema(
             "Make sure an upstream data source is connected and producing data."
         )
     return {name: str(dtype) for name, dtype in frame.collect_schema().items()}
-
-
-def _declared_categorical_levels_for_training(
-    graph: PipelineGraph,
-    node_id: str,
-    config: dict[str, Any],
-) -> dict[str, list[str | None]]:
-    from haute.modelling._feature_contract import merge_categorical_level_declarations
-
-    declarations: list[tuple[str, Any]] = [(node_id, config.get("categorical_levels"))]
-    declarations.extend(
-        (upstream_id, graph.node_map[upstream_id].data.config.get("categorical_levels"))
-        for upstream_id in upstream_node_ids(node_id, graph.parents_of)
-        if upstream_id in graph.node_map
-    )
-    return merge_categorical_level_declarations(declarations)
 
 
 def _find_modelling_node(graph: PipelineGraph, node_id: str) -> GraphNode:

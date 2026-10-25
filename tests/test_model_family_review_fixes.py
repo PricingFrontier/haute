@@ -215,7 +215,6 @@ def test_a_contract_describing_another_loss_fails_at_load(tmp_path: Path) -> Non
         target_name=contract.target_name,
         target_type=contract.target_type,
         task=contract.task,
-        categorical_levels=contract.categorical_levels,
         offset_column=contract.offset_column,
         model=dataclasses.replace(contract.model, loss="Poisson", link="log"),
     )

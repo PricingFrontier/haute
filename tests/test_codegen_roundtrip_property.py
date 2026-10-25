@@ -799,7 +799,6 @@ def test_corpus_roundtrip_semantics_and_source_bytes() -> None:
 _SHARED_COLUMN_CONFIG = {
     "selected_columns": ["_id", "premium (gross)", 'quote " and )'],
     "column_renames": {"_id": "id", "premium (gross)": "premium net"},
-    "categorical_levels": {"_id": ["_low", "high", None]},
 }
 
 
@@ -848,7 +847,6 @@ def test_inline_nodes_canonicalize_only_empty_column_selection(
 
     assert parsed_node.data.config.get("selected_columns", []) == []
     assert "column_renames" not in parsed_node.data.config
-    assert "categorical_levels" not in parsed_node.data.config
 
 
 def test_frame_named_api_parameters_are_a_byte_identical_roundtrip_fixpoint() -> None:
@@ -1009,7 +1007,6 @@ def test_hypothesis_roundtrip_semantics_and_source_bytes(
                 {
                     "selected_columns": [column_name],
                     "column_renames": {column_name: f"renamed {column_name}"},
-                    "categorical_levels": {column_name: ["_low", "high", None]},
                 }
             )
     _assert_roundtrip_invariants(graph)

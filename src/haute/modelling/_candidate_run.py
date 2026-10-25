@@ -41,7 +41,6 @@ _TRAINING_IDENTITY_KEYS = (
     "offset",
     "monotone_constraints",
     "feature_weights",
-    "categorical_levels",
     "positive_class",
     "device",
 )

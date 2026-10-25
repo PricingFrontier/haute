@@ -193,7 +193,6 @@ def repeated_loads(
                         target_name="claims",
                         target_type="Float64",
                         task="regression",
-                        categorical_levels=fit.categorical_levels,
                         offset_column="exposure",
                         model=ModelIdentity(
                             algorithm="ebm",

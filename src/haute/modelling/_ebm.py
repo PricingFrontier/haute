@@ -48,6 +48,25 @@ def _intercept(estimator: Any) -> float:
     return float(np.asarray(estimator.intercept_, dtype=np.float64).reshape(-1)[0])
 
 
+def _estimator_levels(
+    estimator: Any, features: list[str], categorical: set[str]
+) -> dict[str, list[str | None]]:
+    """Each categorical feature's levels, read from the estimator's own bins.
+
+    A nominal feature's first bin level maps each training category to its bin;
+    the contract names which features are categorical, and ``validate`` refuses an
+    estimator whose feature types disagree with it.
+    """
+    bins = list(getattr(estimator, "bins_", []))
+    levels: dict[str, list[str | None]] = {}
+    for index, feature in enumerate(features):
+        if feature not in categorical:
+            continue
+        nominal = bins[index][0] if index < len(bins) and bins[index] else {}
+        levels[feature] = sorted(nominal) if isinstance(nominal, dict) else []
+    return levels
+
+
 @dataclass
 class EBMModel:
     """A fitted EBM plus the contract facts every prediction path needs."""
@@ -169,7 +188,9 @@ class EBMModel:
         model = cls(
             estimator=estimator,
             features=list(contract.features),
-            categorical_levels={k: list(v) for k, v in contract.categorical_levels.items()},
+            categorical_levels=_estimator_levels(
+                estimator, list(contract.features), set(contract.categorical_features)
+            ),
             task=contract.task,
             link=identity.link,
             offset_column=contract.offset_column,
@@ -369,9 +390,7 @@ class EBMAlgorithm(BaseAlgorithm):
         model = EBMModel(
             estimator=None,
             features=list(features),
-            categorical_levels=fit_categorical_levels(
-                train_df, cat_features, kwargs.get("categorical_levels")
-            ),
+            categorical_levels=fit_categorical_levels(train_df, cat_features),
             task=task,
             link=native.link,
             offset_column=offset,
@@ -448,7 +467,6 @@ class EBMAlgorithm(BaseAlgorithm):
             rounds_fitted=None,
             stopping_reason="none",
             threads=1,
-            categorical_levels=dict(model.categorical_levels),
             term_update_steps=[
                 int(step) for step in np.asarray(estimator.best_iteration_).reshape(-1)
             ],

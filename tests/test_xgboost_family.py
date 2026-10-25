@@ -517,20 +517,6 @@ def test_empty_string_categories_fail_before_fitting(tmp_path: Path) -> None:
     assert not list(tmp_path.glob("*.ubj"))
 
 
-def test_training_rows_outside_a_declared_domain_fail_before_fitting(tmp_path: Path) -> None:
-    with pytest.raises(
-        HauteValidationError,
-        match="training values outside its declared categorical_levels: 'south'",
-    ):
-        train(
-            tmp_path,
-            target="severity",
-            loss="RMSE",
-            categorical_levels={"region": ["east", "north", None]},
-        )
-    assert not list(tmp_path.glob("*.ubj"))
-
-
 def test_gamma_deviance_can_drive_an_xgboost_study() -> None:
     config = {
         "target": "y",

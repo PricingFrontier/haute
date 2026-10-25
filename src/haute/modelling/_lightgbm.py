@@ -235,9 +235,7 @@ class LightGBMAlgorithm(BaseAlgorithm):
         model = LightGBMModel(
             booster=None,
             features=list(features),
-            categorical_levels=fit_categorical_levels(
-                train_df, cat_features, kwargs.get("categorical_levels")
-            ),
+            categorical_levels=fit_categorical_levels(train_df, cat_features),
             task=task,
             link=native.link,
             offset_column=offset,
@@ -341,7 +339,6 @@ class LightGBMAlgorithm(BaseAlgorithm):
             rounds_configured=configured,
             rounds_fitted=rounds_fitted,
             stopping_reason=stopping_reason,
-            categorical_levels=dict(model.categorical_levels),
         )
 
     def predict(

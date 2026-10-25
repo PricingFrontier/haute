@@ -595,8 +595,6 @@ class TestOffsetInSignatureAndContract:
             "features": ["age", "region"],
             "feature_types": {"age": "Int64", "region": "String"},
             "categorical_features": ["region"],
-            "categorical_levels": {},
-            "training_levels": {},
             "target_name": "ClaimCount",
             "target_type": "Int64",
             "task": "regression",

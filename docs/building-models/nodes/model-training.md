@@ -763,7 +763,6 @@ A Poisson claim-frequency GLM with an exposure offset:
     | `cv_seed` | The GLM penalty's cross-validation seed; the editor writes 42 when you choose a regularisation. |
     | `evaluation.seed` | The split seed; the editor writes 42. |
     | `evaluation.validation.window` | `"expanding"` for time-based cross-validation; the editor sets it. |
-    | `categorical_levels` | Declared category levels for categorical feature columns. They go into the model's feature contract; an XGBoost, LightGBM, EBM or t-boost model encodes against them, and its training refuses rows holding a value outside them. Scoring still scores such a value, like any value the model was not trained on. |
 
     `feature_columns` and `monotone_constraints` apply to the tree, t-boost and EBM
     families (`feature_weights` to CatBoost only) and are ignored for a GLM, whose features

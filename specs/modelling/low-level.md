@@ -70,7 +70,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/_row_order.py` | The canonical row order every positional selection in training is taken over. `canonical_row_order` refines a run id one column at a time, most significant first (`row_order_columns`: the identity columns, then the rest in the frame's order): a stable sort by (run id, column) followed by a new run id wherever either changes, stopping once every row is distinct or the columns run out. `frame_row_order` reads the columns of an in-memory frame; `scan_row_order` reads them one collect at a time from a lazy frame through the caller's collect, so a training stage keeps its name and its execution context. The result is an array of source positions in canonical order. |
 | `src/haute/modelling/_metrics.py` | Primary metric functions and diagnostic data computation (double lift, AvE, residuals, actual-vs-predicted, Lorenz, PDP). |
 | `src/haute/modelling/_shap.py` | The SHAP diagnostics every SHAP-capable family shares: `shap_sample` (the seeded, shuffled sample of at most `SHAP_SAMPLE_ROWS` = 5,000 diagnostics rows, drawn over their canonical order) and `shap_diagnostics`, which turns the algorithm's per-row SHAP matrix into `ShapViews`: the mean-absolute summary, the beeswarm (`BEESWARM_ROWS` = 2,000 rows, `BEESWARM_FEATURES` = 20 features) and the per-feature curves (`CURVE_BANDS` = 20 numeric bands, `CURVE_LEVELS` = 30 categorical levels). |
-| `src/haute/modelling/_feature_contract.py` | `FeatureContract` build/save/load/cache, contract comparison, categorical-level and training-level normalisation, and the unseen-value count and report (`observed_training_levels`, `count_unseen_categorical_values`, `merge_unseen_categorical_values`, `report_unseen_categorical_values`). |
+| `src/haute/modelling/_feature_contract.py` | `FeatureContract` build/save/load/cache and contract comparison. |
 | `src/haute/modelling/_signature.py` | `build_signature()` — MLflow `ModelSignature` construction with loud dtype/metadata validation, structural Date/parameterised-Datetime mapping, and the explicit no-lossy-Decimal policy. |
 | `src/haute/modelling/_candidate_run.py` | The candidate-run contract builder shared by canvas and scripted logging (`CANDIDATE_RUN_CONTRACT_VERSION`, `training_identity_sha256`, `CandidateProvenance` capture including git state, `CandidateArtifacts.require_files`, `build_candidate_run`); see [mlflow-model-registry](../mlflow-model-registry/low-level.md#candidate-run-contract). |
 | `src/haute/modelling/_native_pyfunc.py` | The MLflow pyfunc for every Haute-trained native model: `package_native_model` copies the model file and its feature contract into one package, and `_load_pyfunc` returns `NativePyfuncModel`, which checks the model against the contract identity and scores through haute's own `load_local_model` + `score_frame` path, returning the label and positive-class probability for classification. |
@@ -159,11 +159,11 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   semantics, deterministic baseline/winner selection, validation-row-weighted final
   tree count, and strict digest-linked artifacts.
 - **`FeatureContract`** (`_feature_contract.py`, frozen dataclass) — `features`,
-  `feature_types`, `categorical_features`, `categorical_levels`, `target_name`,
+  `feature_types`, `categorical_features`, `target_name`,
   `target_type`, `task`, `contract_hash` (sha256 of canonical compact JSON over every
   other field), `offset_column: str | None`, `offset_link: str | None`. Serialized
-  contracts always contain every one of those fields, including an empty
-  `categorical_levels` object and a nullable `offset_column` and `offset_link`.
+  contracts always contain every one of those fields, including a nullable
+  `offset_column` and `offset_link`. A contract holds no list of category values.
   `offset_link` (`log` or `identity`) says how the offset enters the model's raw score.
   It is null when `offset_column` is null, and may be null beside a named column only
   for a model that applies its own offset (a pyfunc, or a family whose file records
@@ -201,8 +201,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   `mlflow_destination` (`""` = the local folder, else `"databricks"|"server"|"local"`;
   any other value is rejected when logging resolves it),
   `output_dir`, `loss_function`, `variance_power`, `offset`,
-  `monotone_constraints`, `feature_weights`, and a normalised
-  `_declared_categorical_levels`. Internal clones additionally receive an
+  `monotone_constraints` and `feature_weights`. Internal clones additionally receive an
   `evaluation_plan`, optional validation `fit_index`, and the orchestrator's
   precomputed `plan_source_sha256`; those arguments are never accepted from node
   JSON. The `split` argument is a private test seam rejected by the public config
@@ -210,7 +209,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   supplying `evaluation` together with `split` fails instead of silently
   ignoring either contract. Canonical `tuning` and internal `evaluation_plan` inputs
   require an explicit canonical `evaluation`. A contract-dtype
-  snapshot (`_contract_feature_dtypes`, `_contract_categorical_levels`,
+  snapshot (`_contract_feature_dtypes`,
   `_contract_target_dtype`, `_contract_offset_dtype`) is populated inside `_prepare_data`
   and consumed by `_save_artifacts` and `_log_to_mlflow`.
 - **Modelling-node algorithm config** — CatBoost constructor hyperparameters are the
@@ -337,9 +336,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 
 1. `POST /api/modelling/train` → `src/haute/routes/modelling.py::train_model` →
    `TrainService.start(body)`.
-2. `TrainService.start`: locate the modelling node in the graph; merge declared
-   `categorical_levels` from the node and its upstream ancestors
-   (`_declared_categorical_levels_for_training`); `_validate_config` (target set,
+2. `TrainService.start`: locate the modelling node in the graph; `_validate_config` (target set,
    algorithm registered, canonical `evaluation` and optional `tuning` parsed,
    the removed `split`/`cross_validation` rejected by the one check
    `src/haute/modelling/_train_config.py::reject_removed_evaluation_fields`, the configured
@@ -1350,23 +1347,9 @@ potentially large copy on its threadpool.
 - The feature contract is hashed over sorted, separator-compact canonical JSON but
   written to disk pretty-printed — human-reviewable on disk, byte-deterministic for
   hashing.
-- A declared `categorical_levels` domain is explicit metadata. For LightGBM, XGBoost, EBM
-  and t-boost it is the level list a fit encodes against (otherwise the training rows'
-  distinct values), and `fit_categorical_levels` refuses training rows holding a value
-  outside it; scoring refuses nothing outside it. The contract's `training_levels` are
-  observed instead: `observed_training_levels` records, from the rows the saved model is
-  fitted on, each level column's sorted distinct non-null values as strings, with `None`
-  appended when the rows hold nulls.
-- `count_unseen_categorical_values` counts, per level column of a frame, the non-null
-  values outside the training levels (each value's rows) and the nulls when `None` is not
-  among them, through one narrow streaming projection for a lazy frame; it never raises for
-  a value, and skips a level column the frame lacks, because feature validation refuses a
-  missing feature first. `merge_unseen_categorical_values` adds one count to another for a
-  chunked score. `report_unseen_categorical_values` logs one
-  `categorical_values_not_in_training` warning per feature with values (distinct count),
-  rows, null rows and up to five sorted examples, plus the caller's context, and records an
-  execution warning of the same code whose reason names the feature, the counts and the
-  examples.
+- No scoring path checks a categorical value against a list: each family scores a
+  value its training rows never held through its own mechanism, and nothing records or
+  reports it.
 - Feature contracts are written only to each model's canonical companion path.
 - Column-projection pushdown (`_glm_select_columns` / `_catboost_select_columns` /
   `_training_required_columns_by_node`) bounds parquet-read memory: GLM reads only its
@@ -1400,7 +1383,7 @@ rows/features) and retry.
   incomplete node still saves.
 - **`FeatureMismatchError`** (`haute.errors.HauteError` subclass) — feature-contract
   structural problems: missing/unknown top-level fields, wrong field types, hash
-  mismatch (edited/corrupted file), invalid `categorical_levels` declarations, and
+  mismatch (edited/corrupted file), and
   train-vs-score disagreement via `assert_contracts_match` (names the offending field
   and shows expected vs. actual).
 - **GLM result diagnostics** — `GLMAlgorithm.glm_result` catches each failing GLM
@@ -1752,8 +1735,8 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
   service's publication and proves their nulls survive.
 - `test_tboost_family.py` trains real t-boost models and proves: each loss reaches its native
   objective and link (Tweedie with the job's variance power), a model saved through
-  `TrainingJob` scores an unseen level through its real contract with `score_frame`, and a
-  value outside a declared domain the same way, a model with no categorical feature (whose
+  `TrainingJob` scores an unseen level through its real contract with `score_frame`, a
+  model with no categorical feature (whose
   document has no `cat_indices`) saves and loads, a classification offset and
   feature weights fail before fitting, and a feature name with `:` trains and explains; with a
   log-link offset the response is the rate times the offset and the margin is the raw score
@@ -1768,8 +1751,7 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
   Shapley values sum to the same total; a categorical value outside the fitted levels scores
   exactly as a level t-boost pooled into `<rare>` does, in the default cell when the axis
   pooled nothing (`unseen_cell`), and a null in the missing level; a training run whose validation
-  rows hold levels the training rows lack completes and logs
-  `categorical_values_not_in_training`, including a level a declared domain lists; a fit is identical across thread allotments for a seed; a group plan's column, which is not a
+  rows hold levels the training rows lack completes; a fit is identical across thread allotments for a seed; a group plan's column, which is not a
   feature, reaches the selection and final fits as `groups`; a model with no tables (t-boost's
   `intercept` placeholder) has no terms, an empty table report and still explains; the table report's scores, read at the cell each row's feature
   values select (right-closed numeric intervals, categorical member levels, row-major axes,
@@ -2104,15 +2086,8 @@ used for staged input.
   job's allotment, and `device` (the `cuda:N` an XGBoost GPU fit trained on, else `None`);
   `TrainResult.fit_evidence` records those threads, else the job's, and the device when set; the response validates it as
   `FitEvidencePayload`, and `build_candidate_run` logs it as `fit_*` parameters.
-- `FeatureContract` has `contract_version` 4, `training_levels` (validated by
-  `normalise_training_levels`: column names among the features, levels strings, an empty
-  string included, or `None`, sorted with `None` last; hashed but never compared against live
-  data) and `model: ModelIdentity | None`. `TrainingJob._train_model` records
-  `observed_training_levels` of the frame it fits on for the contract categoricals and, for
-  a GLM, every categorical, target-encoding and frequency-encoding term's column, and
-  `_save_artifacts` writes them. `_compute_metrics` counts the validation and holdout rows it
-  scores against those levels and reports them through `report_unseen_categorical_values`,
-  its context naming the partition. `ModelIdentity`
+- `FeatureContract` has `contract_version` 4, no category-value list, and
+  `model: ModelIdentity | None`. `ModelIdentity`
   holds `algorithm`, `link`, `engine_name`, `engine_version`, `haute_version`, `loss`,
   `glm_family`, `variance_power`, `class_labels` (`(negative, positive)`), and
   `native_feature_names`; `load_contract` validates every field.
@@ -2134,16 +2109,14 @@ used for staged input.
   `IterationCallback` live in `src/haute/modelling/_algorithm_base.py`, so an adapter module can
   subclass them without importing `_algorithms` (which registers every adapter).
 - `src/haute/modelling/_native_encoding.py` is the shared categorical encoding:
-  `fit_categorical_levels` takes declared levels, else the training frame's sorted distinct
-  non-null values with `None` appended when nulls occur, and raises `HauteValidationError`
-  naming the feature and values when the training frame holds a value a declared domain
-  omits. `encode_frame` builds pandas categoricals whose categories are the non-null levels
+  `fit_categorical_levels` takes the training frame's sorted distinct non-null values,
+  with `None` appended when nulls occur; the model file records them, never the feature
+  contract. `encode_frame` builds pandas categoricals whose categories are the non-null levels
   in stored order, so a null is the native missing code and a literal `"__missing__"` is an
   ordinary level. It never raises for a value outside the levels: with `unseen="missing"`
   (LightGBM, XGBoost) such a value becomes the native missing code, and with
   `unseen="label"` (EBM) the categories gain the outside values, sorted, after the levels,
   so the fitted levels keep their codes and EBM reads the label into its unknown bin.
-  `FitResult.categorical_levels` carries the fitted levels into the feature contract.
 - `XGBoostModel` in `src/haute/modelling/_xgboost.py` wraps the booster with its feature order,
   categorical levels, task, link, offset column and link, and class labels, persisted as the
   `haute` booster attribute of the `.ubj`. It exposes `matrix`, `predict_margin`,
@@ -2223,7 +2196,9 @@ used for staged input.
   categoricals), positional `monotone_constraints`, and interaction pairs as index pairs.
   Categoricals go through the shared `encode_frame` with `unseen="label"`, so an unseen value
   scores in EBM's unknown bin (zero, the book average) and never in its missing bin, and an
-  empty-string training value fails. EBM's own `callback` starts a multiprocessing
+  empty-string training value fails. A loaded EBM reads each categorical feature's levels
+  from its estimator's own bins (`bins_`), the contract naming which features are
+  categorical. EBM's own `callback` starts a multiprocessing
   `SharedMemoryManager`, so progress is reported in rounds before and after the fit. The result
   carries `rounds_configured = max_rounds`, `rounds_fitted = None`, `stopping_reason = "none"`,
   `threads = 1` and `term_update_steps` from `best_iteration_`.
@@ -2297,8 +2272,8 @@ used for staged input.
   `rounds_configured = n_trees`, `rounds_fitted = n_trees_` (the largest per-bag kept count),
   `stopping_reason` mapped from t-boost's `stopping_reason_` (`early_stopping` → `validation`,
   `max_trees` → `none`, `no_split` → `native_exhaustion`; any other value fails),
-  `best_iteration = None`, `categorical_levels = None` (so the contract keeps only a declared
-  domain, and every unseen value reaches t-boost's `unknown_category` policy), a `loss_history` from `_loss_history(evals_result_)` (one row per
+  `best_iteration = None` (every unseen value reaches t-boost's `unknown_category`
+  policy), a `loss_history` from `_loss_history(evals_result_)` (one row per
   round with the mean `train_deviance` and `eval_deviance` over the bags whose curves reach it),
   and the table report computed on the fit's own rows.
 - `TBoostModel` holds the estimator with the record's features, levels, task, link, offset

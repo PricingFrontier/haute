@@ -222,7 +222,6 @@ class TestBuildTrainingJobKwargs:
             "offset",
             "monotone_constraints",
             "feature_weights",
-            "categorical_levels",
         ):
             assert kwargs[key] is None, key
         assert "exclude" not in kwargs
@@ -362,7 +361,6 @@ class TestBuildTrainingJobKwargs:
             "offset": "log_exposure",
             "monotone_constraints": {"age": 1},
             "feature_weights": {"age": 2.0},
-            "categorical_levels": {"region": ["north", None]},
         }
         job = TrainingJob(**build_training_job_kwargs(config, data="d.parquet"))
         assert job.target == "claim_count"

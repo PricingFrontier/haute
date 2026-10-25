@@ -116,9 +116,9 @@ Checking claim frequency by area:
 
     Empty settings are left out, so a new node's decorator is bare.
 
-    The column metadata any node may carry, `selected_columns`, `column_renames` and
-    `categorical_levels`, has no editor control on an Explore node; when present it is
-    stored as decorator arguments too.
+    The column metadata any node may carry, `selected_columns` and `column_renames`, has
+    no editor control on an Explore node; when present it is stored as decorator
+    arguments too.
 
 **See also:**
 

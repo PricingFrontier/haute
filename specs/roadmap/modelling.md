@@ -14,8 +14,7 @@ The GLM distributions that `MOD-M01` names in its acceptance are the subject
 of that package, not a tuning choice. `MOD-R02` to `MOD-R06` come from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md) and are the
 exception to that scope: they cover what the review found in the fits, the
-contracts and the training lifecycle. `MOD-R07` finishes the unseen-value
-report that answered the review's GLM finding.
+contracts and the training lifecycle.
 
 Today a training fit that exceeds its memory budget terminates: bounded
 streaming mode is refused outright (`BoundedMemoryUnsupportedError`, shown as
@@ -61,7 +60,6 @@ something this page settles.
 | MOD-R03 | Planned | P2 | Training publication validates the evaluation plan outside the job-store lock, and the plan stores memberships compactly. |
 | MOD-R04 | Planned | P2 | Fit parameters have no hidden defaults: an unset Tweedie power is refused by the job itself, CatBoost reserves its loss keys, a missing feature or dtype is an error, and `tweedie_deviance` needs its power. |
 | MOD-R05 | Planned | P3 | Diagnostics are measured as the fit was: weighted loss importance, one-based GPU iterations, no GLM `best_iteration`, a dispersion search that stops on `MemoryError`, the offset dtype in the contract, params logged whole. |
-| MOD-R07 | Planned | P2 | A traced quote flags a categorical value its model's training rows never held, and the training result shows the validation and final-test rows' unseen values. |
 | MOD-R06 | Planned | P3 | The training memory log is opt-in, the dead compatibility fields are gone, and the four native wrappers share one base. |
 
 ## Planned improvements
@@ -382,31 +380,3 @@ gone; jscpd reports no clone among the four wrappers.
 `src/haute/modelling/_algorithm_base.py`; `src/haute/modelling/_xgboost.py`;
 `src/haute/modelling/_lightgbm.py`; `src/haute/modelling/_ebm.py`;
 `src/haute/modelling/_tboost.py`.
-
-### MOD-R07 — Unseen values in the trace and the training result
-**Why:** No scoring path refuses a categorical value the model's training rows
-never held: each family scores it through its library's own mechanism, and
-every path reports it as a `categorical_values_not_in_training` warning in the
-log and, in the editor, as an execution warning the preview's diagnostics icon
-lists (modelling high-level, "Unseen categorical values"). Two places still say
-nothing. A traced quote holding such a value shows its price without saying the
-model never saw the value, and a training run's validation and final-test counts
-reach only the log and the job's execution warnings, which the training result
-does not show.
-
-**Plan:** On a traced row's Model Score step, flag each feature whose value the
-contract's training levels do not hold, with how the family scored it. Carry the
-training run's per-partition counts in the training response and show them in
-the result's summary.
-
-**Acceptance:** A traced quote with a make the training rows never held shows the
-flag on its Model Score step and no flag for a known make; a training run whose
-validation rows hold makes the training rows lack shows their count and examples
-in its result.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/modelling/_feature_contract.py::report_unseen_categorical_values`;
-`src/haute/modelling/_training_job.py::TrainingJob._report_unseen_partition`;
-`src/haute/_model_scorer.py::UnseenValueReport`;
-`frontend/src/components/ExecutionDiagnosticsIndicator.tsx`.

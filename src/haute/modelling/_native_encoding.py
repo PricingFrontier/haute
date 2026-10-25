@@ -10,8 +10,7 @@ ordinary level.
 
 A value outside the levels never fails: one new value must not stop a
 production scoring run. It reaches the library through the library's own
-handling of a category it was not trained on (``unseen``), and the scorer
-reports it.
+handling of a category it was not trained on (``unseen``).
 """
 
 from __future__ import annotations
@@ -34,32 +33,16 @@ UnseenEncoding = Literal["missing", "label"]
 def fit_categorical_levels(
     frame: pl.DataFrame,
     cat_features: Sequence[str],
-    declared: CategoricalLevels | None,
 ) -> dict[str, list[str | None]]:
     """The level list each categorical feature is encoded against.
 
-    An authored domain is schema and wins, and the *training* frame must not
-    hold a value it omits; otherwise the levels are the distinct non-null
-    values of the training frame, sorted, with ``None`` appended when the
-    training frame holds nulls.
+    The distinct non-null values of the *training* frame, sorted, with ``None``
+    appended when the training frame holds nulls. The model file records them.
     """
     levels: dict[str, list[str | None]] = {}
     for column in cat_features:
         series = frame.get_column(column).cast(pl.String)
         values = sorted(value for value in series.unique().to_list() if value is not None)
-        if declared is not None and column in declared:
-            domain = list(declared[column])
-            outside = sorted(set(values) - {level for level in domain if level is not None})
-            if outside:
-                shown = ", ".join(repr(value) for value in outside[:5])
-                more = f" and {len(outside) - 5} more" if len(outside) > 5 else ""
-                raise HauteValidationError(
-                    f"Categorical feature '{column}' has training values outside its declared "
-                    f"categorical_levels: {shown}{more}. Add them to the declaration or remove "
-                    "those rows upstream."
-                )
-            levels[column] = domain
-            continue
         if "" in values:
             raise HauteValidationError(
                 f"Categorical feature '{column}' has empty-string values, which a categorical "

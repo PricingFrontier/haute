@@ -192,40 +192,6 @@ describe("ExecutionDiagnosticsIndicator", () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument()
   })
 
-  const unseenWarning = {
-    code: "categorical_values_not_in_training",
-    node_id: "score",
-    reason: "Model Score: 'region' has 1 value not in the training data, in 3 rows ('mars').",
-  }
-
-  it("lists the values a model was not trained on as a warning of their own", () => {
-    const metrics = makeExecutionMetricsFixture({
-      memory_pressure_events: [],
-      execution_strategy: null,
-      warnings: [unseenWarning, { ...unseenWarning }],
-    })
-    render(<ExecutionDiagnosticsIndicator metrics={metrics} />)
-
-    expect(screen.getByLabelText("Preview execution warning details")).toHaveAttribute(
-      "title",
-      "Values the model was not trained on",
-    )
-    expect(screen.getAllByRole("listitem").map((item) => item.textContent)).toEqual([
-      unseenWarning.reason,
-    ])
-  })
-
-  it("adds the unseen values beneath another diagnostic", () => {
-    const metrics = makeExecutionMetricsFixture({
-      execution_strategy: null,
-      warnings: [unseenWarning],
-    })
-    render(<ExecutionDiagnosticsIndicator metrics={metrics} />)
-
-    expect(screen.getByRole("status")).toHaveTextContent("Preview memory pressure")
-    expect(screen.getByRole("listitem")).toHaveTextContent(unseenWarning.reason)
-  })
-
   it.each([
     {
       name: "memory pressure",

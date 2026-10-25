@@ -40,7 +40,6 @@ def contract(model: ModelIdentity | None = IDENTITY):
         target_name="y",
         target_type="Float64",
         task="regression",
-        categorical_levels={"region": ["north", "south", None]},
         model=model,
     )
 
@@ -134,9 +133,9 @@ def test_an_earlier_contract_version_is_rejected_with_a_retrain_message(tmp_path
     path = tmp_path / "c.json"
     save_contract(contract(), path)
     raw = json.loads(path.read_text(encoding="utf-8"))
-    # A contract written before training levels were recorded.
+    # A version-3 contract carried a category-level list.
     raw["contract_version"] = 3
-    del raw["training_levels"]
+    raw["categorical_levels"] = {"region": ["north", "south"]}
     path.write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(FeatureMismatchError, match="not a version-4 feature contract; retrain"):
         load_contract(path)

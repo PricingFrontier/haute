@@ -22,7 +22,6 @@ from haute.projection import ProjectionRequest, plan
 from haute.routes._train_service import (
     TrainService,
     _clamp_row_limit,
-    _declared_categorical_levels_for_training,
     _friendly_error,
     _training_required_columns_by_node,
     _validate_glm_config_values,
@@ -244,55 +243,6 @@ def _inline_route_service(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(service._supervisor, "launch_protocol", capture_launch)
     monkeypatch.setattr("haute.routes.modelling._train_service", service)
     return service, launched
-
-
-class TestTrainingCategoricalLevelDeclarations:
-    def test_collects_source_declared_levels_through_transforms(self):
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "src",
-                        "data": {
-                            "label": "src",
-                            "nodeType": "dataInput",
-                            "config": make_file_input_config(
-                                "quotes.csv",
-                                categorical_levels={"region": ["north", "south"]},
-                            ),
-                        },
-                    },
-                    {
-                        "id": "prep",
-                        "data": {
-                            "label": "prep",
-                            "nodeType": "polars",
-                            "config": {"code": "df = df"},
-                        },
-                    },
-                    {
-                        "id": "train",
-                        "data": {
-                            "label": "train",
-                            "nodeType": "modelling",
-                            "config": {"target": "y", "algorithm": "catboost"},
-                        },
-                    },
-                ],
-                "edges": [
-                    {"id": "e1", "source": "src", "target": "prep"},
-                    {"id": "e2", "source": "prep", "target": "train"},
-                ],
-            }
-        )
-
-        levels = _declared_categorical_levels_for_training(
-            graph,
-            "train",
-            graph.node_map["train"].data.config,
-        )
-
-        assert levels == {"region": ["north", "south"]}
 
 
 def _xgboost_gpu_graph(data_path: str) -> dict:

@@ -130,7 +130,6 @@ from haute.routes._training_preparation import (
     TrainingPreparationRequest,
     _check_gpu_vram,
     _clamp_row_limit,
-    _declared_categorical_levels_for_training,
     _find_modelling_node,
     _gpu_vram_http_exception,
     _http_failure_job_parts,
@@ -318,14 +317,6 @@ class TrainService:
         """
         node = _find_modelling_node(body.graph, body.node_id)
         config = node.data.config
-        declared_categorical_levels = _declared_categorical_levels_for_training(
-            body.graph,
-            body.node_id,
-            config,
-        )
-        if declared_categorical_levels:
-            config = {**config, "categorical_levels": declared_categorical_levels}
-
         self._validate_config(config)
         # Cheap pre-check so a busy server does not run the schema build first;
         # the authoritative check repeats under the start lock.

@@ -296,7 +296,6 @@ DATA_OUTPUT_CONFIG_TYPES = (
 COLUMN_CONFIG_KEYS: tuple[str, ...] = (
     "selected_columns",
     "column_renames",
-    "categorical_levels",
 )
 
 
@@ -314,7 +313,6 @@ class TransformConfig(TypedDict, total=False):
     inputMapping: dict[str, str]
     selected_columns: list[str]
     column_renames: dict[str, str]
-    categorical_levels: dict[str, list[str | None]]
 
 
 class EdgeJoinConfig(TypedDict, total=False):
@@ -330,7 +328,6 @@ class EdgeJoinConfig(TypedDict, total=False):
     maintainOrder: Required[str]
     selected_columns: list[str]
     column_renames: dict[str, str]
-    categorical_levels: dict[str, list[str | None]]
 
 
 EDGE_JOIN_CONFIG_KEYS: tuple[str, ...] = (
@@ -365,7 +362,6 @@ class ModelScoreConfig(TypedDict, total=False):
     task: str  # "regression" | "classification"
     output_column: str  # prediction column name, default "prediction"
     feature_contract_path: str  # the feature contract the model scores under
-    categorical_levels: dict[str, list[str | None]]
     code: str  # optional post-processing code
     steps: list[dict[str, Any]]  # low-code post-scoring steps; ``code`` is their rendering
     instanceOf: str
@@ -643,7 +639,6 @@ class ExploreConfig(TypedDict, total=False):
     charts: list[ExploreChartConfig]
     selected_columns: list[str]
     column_renames: dict[str, str]
-    categorical_levels: dict[str, list[str | None]]
 
 
 class ExternalFileConfig(TypedDict, total=False):
@@ -712,7 +707,6 @@ class ModellingConfig(TypedDict, total=False):
     feature_weights: dict[str, float]
     fold_column: str
     id_columns: list[str]
-    categorical_levels: dict[str, list[str | None]]
     mlflow_destination: str  # "" | "databricks" | "server" | "local"; absent = auto
     # Binary classification: the label trained as positive (absent = True / 1)
     positive_class: str | int | float | bool
@@ -913,7 +907,6 @@ MODEL_SCORE_CONFIG_KEYS: tuple[str, ...] = (
     "alias",
     "task",
     "output_column",
-    "categorical_levels",
     "experiment_name",
     "experiment_id",
     "mlflow_destination",
@@ -931,7 +924,6 @@ MODELLING_CONFIG_KEYS: tuple[str, ...] = (
     "metrics",
     "mlflow_experiment",
     "output_dir",
-    "categorical_levels",
     "mlflow_destination",
     "model_export_path",
 )

@@ -662,7 +662,6 @@ def _write_contract(path: Path, contract: object) -> None:
             target_name=contract.target_name,  # type: ignore[attr-defined]
             target_type=contract.target_type,  # type: ignore[attr-defined]
             task=contract.task,  # type: ignore[attr-defined]
-            categorical_levels=contract.categorical_levels,  # type: ignore[attr-defined]
             offset_column=contract.offset_column,  # type: ignore[attr-defined]
             model=contract.model,  # type: ignore[attr-defined]
         ),

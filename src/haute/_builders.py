@@ -1232,26 +1232,6 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
     return produced, None
 
 
-def _declared_categorical_levels_for_model_score(
-    config: dict[str, Any],
-    source_ids: list[str],
-    node_map: dict[str, GraphNode] | None,
-    upstream_ids: list[str] | None = None,
-) -> dict[str, list[str | None]]:
-    """Merge explicit categorical level declarations at a modelScore boundary."""
-    from haute.modelling._feature_contract import merge_categorical_level_declarations
-
-    declarations: list[tuple[str, Any]] = [("modelScore", config.get("categorical_levels"))]
-    candidate_ids = list(dict.fromkeys([*source_ids, *(upstream_ids or [])]))
-    if node_map is not None:
-        declarations.extend(
-            (source_id, node_map[source_id].data.config.get("categorical_levels"))
-            for source_id in candidate_ids
-            if source_id in node_map
-        )
-    return merge_categorical_level_declarations(declarations)
-
-
 @_register(
     NodeType.MODEL_SCORE,
     recompute_cost="costly",
@@ -1285,13 +1265,6 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         ctx.required_output_columns,
         post_processing_code=code,
     )
-    declared_categorical_levels = _declared_categorical_levels_for_model_score(
-        config,
-        ctx.source_ids,
-        ctx.node_map,
-        ctx.upstream_ids,
-    )
-
     scorer = ModelScorer(
         model_source=model_source,
         task=config.get("task", "regression"),
@@ -1303,8 +1276,6 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         schema_only=ctx.schema_only,
         required_output_columns=required_output_columns,
         feature_contract_path=scoring_contract_path(model_source, config, base_dir),
-        categorical_levels=declared_categorical_levels,
-        node_id=ctx.node.id,
         reuse_loaded_model=ctx.reuse_loaded_model,
         input_fanout=_upstream_scenario_fanout(ctx.upstream_ids, ctx.node_map),
         base_dir=base_dir,

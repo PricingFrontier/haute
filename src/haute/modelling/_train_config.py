@@ -779,7 +779,6 @@ def build_training_job_kwargs(
         "offset": config.get("offset") or None,
         "monotone_constraints": None if glm else _effective_monotone_constraints(config),
         "feature_weights": None if glm else config.get("feature_weights") or None,
-        "categorical_levels": config.get("categorical_levels") or None,
         "mlflow_destination": destination,
         "positive_class": positive_class,
         "device": device,

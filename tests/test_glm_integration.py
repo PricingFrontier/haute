@@ -890,7 +890,6 @@ _EXPORT_DEFAULTED_KWARGS: dict[str, object] = {
     "offset": None,
     "monotone_constraints": None,
     "feature_weights": None,
-    "categorical_levels": None,
     "positive_class": None,
     "device": "cpu",
     "mlflow_experiment": None,
@@ -1023,22 +1022,14 @@ class TestGLMTermsEndToEnd:
             rtol=1e-9,
         )
 
-    def test_categorical_terms_record_training_levels_and_unseen_values_score_and_report(
-        self, tmp_path
-    ):
-        """A categorical term on a string and on an integer column, and a
-        target-encoding term, record the values their training rows held; a
-        categorical value neither held scores at the reference level, as
-        RustyStats prices it, and every unseen value is reported, never refused."""
-        from pathlib import Path
-
-        from structlog.testing import capture_logs
-
+    def test_a_category_the_glm_never_saw_scores_at_the_reference_level(self, tmp_path):
+        """A categorical term on a string and on an integer column, beside a
+        target-encoding term: a value the training rows never held scores at its
+        term's reference level, as RustyStats prices it, and is never refused."""
         from haute._mlflow_io import load_local_model
-        from haute._model_scorer import UnseenValueReport, score_frame
-        from haute.modelling._feature_contract import load_contract
+        from haute._model_scorer import score_frame
         from haute.modelling._train_config import build_training_job_kwargs
-        from haute.modelling._training_job import TrainingJob, model_contract_filename
+        from haute.modelling._training_job import TrainingJob
 
         rng = np.random.default_rng(7)
         n = 900
@@ -1071,15 +1062,7 @@ class TestGLMTermsEndToEnd:
                 data=_write(df, tmp_path),
             )
         ).run()
-        model_path = Path(result.model_path)
-        contract = load_contract(model_path.parent / model_contract_filename(model_path.stem))
-        assert contract.training_levels == {
-            "area": ["1", "2", "3"],
-            "make": ["m1", "m2", "m3", "m4"],
-            "region": ["A", "B", "C"],
-        }
-
-        scoring = load_local_model(str(model_path))
+        scoring = load_local_model(result.model_path)
         rows = pl.DataFrame(
             {
                 "region": ["Z", "A", "B"],
@@ -1087,26 +1070,18 @@ class TestGLMTermsEndToEnd:
                 "make": ["m1", "m1", "m1"],
             }
         )
-        with capture_logs() as logs:
-            scored = score_frame(
-                model=scoring.raw_model,
-                lf=rows.lazy(),
-                features=list(scoring.feature_names),
-                cat_feature_names=scoring.cat_feature_names,
-                flavor=scoring.flavor,
-                unseen_report=UnseenValueReport(contract.training_levels, "Model Score"),
-            ).collect()["prediction"]
+        scored = score_frame(
+            model=scoring.raw_model,
+            lf=rows.lazy(),
+            features=list(scoring.feature_names),
+            cat_feature_names=scoring.cat_feature_names,
+            flavor=scoring.flavor,
+        ).collect()["prediction"]
 
         predicted = scored.to_list()
         # Both unseen values take their term's reference level (the first sorted).
         assert predicted[0] == pytest.approx(predicted[1])
         assert predicted[2] != pytest.approx(predicted[1])
-        reports = {
-            log["feature"]: log["examples"]
-            for log in logs
-            if log["event"] == "categorical_values_not_in_training"
-        }
-        assert reports == {"region": ["Z"], "area": ["9"]}
 
     def test_exported_script_carries_the_offset_and_its_exposure_scaling(self, tmp_path):
         """Under the canonical log link an offset is a multiplier, so an export

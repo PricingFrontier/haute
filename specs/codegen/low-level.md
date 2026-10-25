@@ -14,8 +14,8 @@
   state and must be rejected by the same assertions used for healthy results.
   They run without modifying production source files.
 
-- Every executable node type preserves the shared `selected_columns`,
-  `column_renames`, and `categorical_levels` settings through graph -> generated
+- Every executable node type preserves the shared `selected_columns` and
+  `column_renames` settings through graph -> generated
   source plus sidecars -> parsed graph -> repeated save. Inline nodes (Polars,
   Edge Join, Explore) use the same shared field definition as sidecar validation.
   Empty column selection may canonicalize to absence; both mean all columns.

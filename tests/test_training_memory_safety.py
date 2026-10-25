@@ -996,7 +996,7 @@ def test_validation_metric_allocations_are_released_before_holdout(monkeypatch):
         _SplitResult("unused.parquet", False, n_train=1, n_validation=2, n_holdout=2),
         ["x"],
         [],
-        SimpleNamespace(model=object(), algo=Algo(), fit_params={}, training_levels={}),
+        SimpleNamespace(model=object(), algo=Algo(), fit_params={}),
         lambda *_args: None,
     )
     assert order == [PARTITION_VALIDATION, PARTITION_HOLDOUT]

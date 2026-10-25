@@ -33,7 +33,6 @@ import polars as pl
 
 from haute._mlflow_io import ScoringModel
 from haute._model_scorer import (
-    UnseenValueReport,
     _run_score_pipeline,
     score_frame,
 )
@@ -207,59 +206,6 @@ class TestScoreFrameEagerSingleExecution:
         np.testing.assert_allclose(result["pred"].to_numpy(), [10.0, 20.0])
         assert result["keep"].to_list() == [7.0, 8.0]
 
-    def test_unseen_values_counted_once_against_scored_rows(self) -> None:
-        """The unseen-value count must not trigger an extra execution of the
-        upstream plan — it runs against the same materialised frame that
-        is scored."""
-        spy = _UpstreamSpy(pl.DataFrame({"region": ["north", "south"]}))
-        model = MagicMock()
-        model.predict.side_effect = lambda pdf: np.full(len(pdf), 1.5, dtype=np.float64)
-        del model.predict_proba
-
-        result = score_frame(
-            model=model,
-            lf=spy.lazy(),
-            features=["region"],
-            cat_feature_names=frozenset({"region"}),
-            flavor="catboost",
-            task="regression",
-            output_col="pred",
-            batch=False,
-            unseen_report=UnseenValueReport({"region": ["north", "south"]}, "Model Score"),
-        ).collect()
-
-        assert spy.executions == 1, (
-            f"Eager scoring with training levels executed the upstream plan "
-            f"{spy.executions} times; the count must reuse the single "
-            "materialised frame."
-        )
-        assert result["pred"].to_list() == [1.5, 1.5]
-
-    def test_a_value_outside_the_training_levels_scores_and_is_reported(self) -> None:
-        from structlog.testing import capture_logs
-
-        spy = _UpstreamSpy(pl.DataFrame({"region": ["north", "west"]}))
-        model = MagicMock()
-        model.predict.side_effect = lambda pdf: np.full(len(pdf), 1.5, dtype=np.float64)
-        del model.predict_proba
-
-        with capture_logs() as logs:
-            result = score_frame(
-                model=model,
-                lf=spy.lazy(),
-                features=["region"],
-                cat_feature_names=frozenset({"region"}),
-                flavor="catboost",
-                task="regression",
-                output_col="pred",
-                batch=False,
-                unseen_report=UnseenValueReport({"region": ["north", "south"]}, "Model Score"),
-            ).collect()
-
-        assert result["pred"].to_list() == [1.5, 1.5]
-        [entry] = [log for log in logs if log["event"] == "categorical_values_not_in_training"]
-        assert (entry["feature"], entry["examples"], entry["rows"]) == ("region", ["west"], 1)
-
     def test_empty_frame_single_execution(self) -> None:
         spy = _UpstreamSpy(pl.DataFrame({"a": pl.Series([], dtype=pl.Float64)}))
         model = MagicMock()
@@ -413,114 +359,6 @@ class TestRunScorePipelineLiveSingleExecution:
             "c": 10.0,
             "d": 15.0,
         }
-
-    def test_live_with_categorical_levels_single_execution(self) -> None:
-        """Domain validation in the live path must reuse the materialised
-        frame instead of running a separate narrow collection of the plan."""
-        spy = _UpstreamSpy(pl.DataFrame({"region": ["north", "south", "north"]}))
-        model = MagicMock()
-        model.predict.side_effect = lambda pdf: np.full(len(pdf), 2.5, dtype=np.float64)
-        del model.predict_proba
-        scoring_model = ScoringModel(
-            model=model,
-            feature_names=["region"],
-            cat_feature_names=frozenset({"region"}),
-            flavor="catboost",
-        )
-
-        result = _run_score_pipeline(
-            scoring_model,
-            spy.lazy(),
-            task="regression",
-            output_col="pred",
-            source="live",
-            unseen_report=UnseenValueReport({"region": ["north", "south"]}, "Model Score"),
-        ).collect()
-
-        assert spy.executions == 1, (
-            f"Live scoring with training levels executed the upstream plan {spy.executions} times."
-        )
-        assert result["pred"].to_list() == [2.5, 2.5, 2.5]
-
-    def test_live_unseen_count_collects_only_score_projection(
-        self,
-        monkeypatch,
-    ) -> None:
-        """Unrelated wide columns never enter the live unseen-value count collect."""
-        import haute._polars_utils as polars_utils
-
-        collected_schemas: list[list[str]] = []
-        real_collect = polars_utils.streaming_collect
-
-        def recording_collect(lf: pl.LazyFrame, *args: Any, **kwargs: Any) -> pl.DataFrame:
-            collected_schemas.append(lf.collect_schema().names())
-            return real_collect(lf, *args, **kwargs)
-
-        monkeypatch.setattr(polars_utils, "streaming_collect", recording_collect)
-
-        model = MagicMock()
-        model.predict.side_effect = lambda pdf: np.full(len(pdf), 2.5, dtype=np.float64)
-        del model.predict_proba
-        scoring_model = ScoringModel(
-            model=model,
-            feature_names=["region"],
-            cat_feature_names=frozenset({"region"}),
-            flavor="catboost",
-        )
-        lf = pl.DataFrame(
-            {
-                "region": ["north", "south"],
-                "keep": [1, 2],
-                "unused_wide": ["x" * 1_000, "y" * 1_000],
-            }
-        ).lazy()
-
-        result = _run_score_pipeline(
-            scoring_model,
-            lf,
-            task="regression",
-            output_col="pred",
-            source="live",
-            required_output_columns=frozenset({"keep", "pred"}),
-            unseen_report=UnseenValueReport({"region": ["north", "south"]}, "Model Score"),
-        ).collect()
-
-        assert collected_schemas
-        assert collected_schemas[0] == ["region", "keep"]
-        assert all("unused_wide" not in schema for schema in collected_schemas)
-        assert result.columns == ["keep", "pred"]
-
-    def test_live_value_outside_the_training_levels_scores_once_and_is_reported(
-        self,
-    ) -> None:
-        from structlog.testing import capture_logs
-
-        spy = _UpstreamSpy(pl.DataFrame({"region": ["west"]}))
-        model = MagicMock()
-        model.predict.side_effect = lambda pdf: np.full(len(pdf), 2.5, dtype=np.float64)
-        del model.predict_proba
-        scoring_model = ScoringModel(
-            model=model,
-            feature_names=["region"],
-            cat_feature_names=frozenset({"region"}),
-            flavor="catboost",
-        )
-
-        with capture_logs() as logs:
-            result = _run_score_pipeline(
-                scoring_model,
-                spy.lazy(),
-                task="regression",
-                output_col="pred",
-                source="live",
-                unseen_report=UnseenValueReport({"region": ["north", "south"]}, "Model Score"),
-            ).collect()
-
-        assert spy.executions == 1
-        assert result["pred"].to_list() == [2.5]
-        assert [
-            log["feature"] for log in logs if log["event"] == "categorical_values_not_in_training"
-        ] == ["region"]
 
     def test_user_post_processing_code_sees_materialised_result(self) -> None:
         """User code downstream of scoring must not trigger a re-execution

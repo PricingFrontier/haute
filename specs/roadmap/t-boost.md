@@ -281,9 +281,7 @@ extrapolation. Model Scoring can say so precisely.
 the share of scored rows (and exposure, when the offset is present) whose cell
 had zero training support, and a population stability index of the scored
 rows over each table's cells against training. Show it in the preview and
-the trace of an individual quote. Values the fit never saw (scored in the
-rare cell) are already reported for every family; `MOD-R07` adds them to the
-trace and the training result.
+the trace of an individual quote.
 
 **Acceptance:** Scoring a book shifted towards young drivers reports a higher
 out-of-support share for the age interactions and a raised stability index

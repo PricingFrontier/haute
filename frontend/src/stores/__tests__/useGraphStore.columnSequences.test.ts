@@ -5,7 +5,6 @@ import useGraphStore, { resetGraphStoreForTests } from "../useGraphStore"
 type ColumnConfig = {
   selected_columns?: string[]
   column_renames?: Record<string, string>
-  categorical_levels?: Record<string, Array<string | null>>
 }
 
 type Model = { config: ColumnConfig; saved: ColumnConfig; undo: ColumnConfig[]; redo: ColumnConfig[] }
@@ -13,8 +12,6 @@ type Operation =
   | "select"
   | "edit"
   | "rename"
-  | "category"
-  | "categoryNull"
   | "emptySettings"
   | "clear"
   | "undo"
@@ -36,7 +33,6 @@ function initialModel(): Model {
   const config: ColumnConfig = {
     selected_columns: ["id", "city"],
     column_renames: { city: "City" },
-    categorical_levels: { city: ["London"] },
   }
   return { config: clone(config), saved: clone(config), undo: [], redo: [] }
 }
@@ -59,22 +55,13 @@ function applyModel(model: Model, operation: Operation) {
     push()
     next.column_renames = { ...(next.column_renames ?? {}), city: "Municipality" }
     model.config = next
-  } else if (operation === "category") {
-    push()
-    next.categorical_levels = { ...(next.categorical_levels ?? {}), city: ["London", "Paris"] }
-    model.config = next
-  } else if (operation === "categoryNull") {
-    push()
-    next.categorical_levels = { ...(next.categorical_levels ?? {}), city: ["London", null] }
-    model.config = next
   } else if (operation === "emptySettings") {
     push()
-    model.config = { selected_columns: [], column_renames: {}, categorical_levels: {} }
+    model.config = { selected_columns: [], column_renames: {} }
   } else if (operation === "clear") {
     push()
     delete next.selected_columns
     delete next.column_renames
-    delete next.categorical_levels
     model.config = next
   } else if (operation === "undo" && model.undo.length) {
     model.redo.push(clone(model.config))
@@ -88,7 +75,6 @@ function applyModel(model: Model, operation: Operation) {
     model.config = {
       selected_columns: ["sku"],
       column_renames: { sku: "SKU" },
-      categorical_levels: { sku: ["A"], city: [null] },
     }
     model.saved = clone(model.config)
     model.undo = []
@@ -103,7 +89,7 @@ function updateStore(operation: Operation) {
   if (operation === "markSaved") return state.markSaved()
   if (operation === "reload") {
     return state.loadGraphSnapshot({
-      nodes: [nodeFor({ selected_columns: ["sku"], column_renames: { sku: "SKU" }, categorical_levels: { sku: ["A"], city: [null] } })],
+      nodes: [nodeFor({ selected_columns: ["sku"], column_renames: { sku: "SKU" } })],
       edges: [],
       preamble: "",
       submodels: {},
@@ -114,24 +100,20 @@ function updateStore(operation: Operation) {
     if (operation === "select") config.selected_columns = ["id", "city", "country"]
     if (operation === "edit") config.selected_columns = ["city", "id"]
     if (operation === "rename") config.column_renames = { ...config.column_renames, city: "Municipality" }
-    if (operation === "category") config.categorical_levels = { ...config.categorical_levels, city: ["London", "Paris"] }
-    if (operation === "categoryNull") config.categorical_levels = { ...config.categorical_levels, city: ["London", null] }
     if (operation === "emptySettings") {
       config.selected_columns = []
       config.column_renames = {}
-      config.categorical_levels = {}
     }
     if (operation === "clear") {
       delete config.selected_columns
       delete config.column_renames
-      delete config.categorical_levels
     }
     return { ...node, data: { ...node.data, config } }
   }))
 }
 
 function seeded(seed: number, count: number): Operation[] {
-  const choices: Operation[] = ["select", "edit", "rename", "category", "categoryNull", "emptySettings", "clear", "undo", "redo", "markSaved", "reload"]
+  const choices: Operation[] = ["select", "edit", "rename", "emptySettings", "clear", "undo", "redo", "markSaved", "reload"]
   let value = seed
   return Array.from({ length: count }, () => {
     value = (value * 1664525 + 1013904223) >>> 0
@@ -170,7 +152,7 @@ describe("useGraphStore column configuration state sequences", () => {
 
   it("covers empty history, redo discard, clean undo, repeated reload, and explicit empty settings", () => {
     runSequence([
-      "undo", "redo", "markSaved", "rename", "undo", "redo", "undo", "category", "redo",
+      "undo", "redo", "markSaved", "rename", "undo", "redo", "undo", "select", "redo",
       "reload", "reload", "emptySettings", "markSaved", "edit", "undo", "clear",
     ])
   })
@@ -180,8 +162,8 @@ describe("useGraphStore column configuration state sequences", () => {
     updateStore("rename")
     useGraphStore.getState().markSaved()
     const saved = useGraphStore.getState().lastSavedSnapshot!
-    ;((useGraphStore.getState().nodes[0].data.config as ColumnConfig).categorical_levels!.city).push("Aliased")
-    expect((saved.nodes[0].data.config as ColumnConfig).categorical_levels!.city).toEqual(["London"])
+    ;((useGraphStore.getState().nodes[0].data.config as ColumnConfig).selected_columns!).push("Aliased")
+    expect((saved.nodes[0].data.config as ColumnConfig).selected_columns).toEqual(["id", "city"])
     useGraphStore.getState().undo()
     expect(configOf()).toEqual(initialModel().config)
   })

@@ -646,9 +646,7 @@ class TBoostAlgorithm(BaseAlgorithm):
         model = TBoostModel(
             estimator=None,
             features=list(features),
-            categorical_levels=fit_categorical_levels(
-                train_df, cat_features, kwargs.get("categorical_levels")
-            ),
+            categorical_levels=fit_categorical_levels(train_df, cat_features),
             task=task,
             link=native.link,
             offset_column=offset,
@@ -705,9 +703,6 @@ class TBoostAlgorithm(BaseAlgorithm):
             rounds_configured=n_trees,
             rounds_fitted=int(estimator.n_trees_),
             stopping_reason=_STOPPING_REASONS[reason],
-            # No fitted level list for the contract: an unseen value is t-boost's to
-            # score (UNKNOWN_CATEGORY), so the contract keeps only a declared domain.
-            categorical_levels=None,
         )
 
     def predict(

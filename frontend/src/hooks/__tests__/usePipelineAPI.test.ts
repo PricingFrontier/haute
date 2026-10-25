@@ -910,7 +910,7 @@ describe("usePipelineAPI", () => {
     mockSave.mockImplementation(() => new Promise((resolve) => { resolvers.push(resolve) }))
     const params = makeParams()
     wireGraphStoreNodeSetters(params)
-    const first = makeNode("columns", "polars", { data: { label: "Columns", nodeType: "polars", config: { selected_columns: ["city"], column_renames: { city: "City" }, categorical_levels: { city: ["London"] } } } })
+    const first = makeNode("columns", "polars", { data: { label: "Columns", nodeType: "polars", config: { selected_columns: ["city"], column_renames: { city: "City" } } } })
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
     act(() => {
@@ -921,7 +921,7 @@ describe("usePipelineAPI", () => {
     act(() => { older = result.current.handleSave() })
     await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(1))
 
-    const second = { ...first, data: { ...first.data, config: { selected_columns: ["country"], column_renames: { country: "Country" }, categorical_levels: { country: ["GB", "FR"] } } } }
+    const second = { ...first, data: { ...first.data, config: { selected_columns: ["country"], column_renames: { country: "Country" } } } }
     let newer!: Promise<boolean>
     act(() => {
       params.graphRef.current = { nodes: [second], edges: [] }
@@ -932,8 +932,8 @@ describe("usePipelineAPI", () => {
     const oldSavedSnapshot = structuredClone(useGraphStore.getState().undoStack[0])
     if (!("nodes" in oldSavedSnapshot)) throw new Error("Expected the first save snapshot in graph history")
     await act(async () => { resolvers[1]({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-new" }); await newer })
-    const newestSavedConfig = { selected_columns: ["country"], column_renames: { country: "Country" }, categorical_levels: { country: ["GB", "FR"] } }
-    const liveConfig = { ...newestSavedConfig, categorical_levels: { country: ["GB", "FR", "DE"] } }
+    const newestSavedConfig = { selected_columns: ["country"], column_renames: { country: "Country" } }
+    const liveConfig = { ...newestSavedConfig, column_renames: { country: "Nation" } }
     act(() => {
       const live = { ...second, data: { ...second.data, config: liveConfig } }
       params.graphRef.current = { nodes: [live], edges: [] }
@@ -2717,7 +2717,7 @@ describe("usePipelineAPI", () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
 
     const upstream = makeNode("upstream", "polars", {
-      data: { label: "Upstream", nodeType: "polars", config: { selected_columns: ["old"], column_renames: { old: "Old" }, categorical_levels: { old: ["x"] } } },
+      data: { label: "Upstream", nodeType: "polars", config: { selected_columns: ["old"], column_renames: { old: "Old" } } },
     })
     const target = makeNode("target")
     const params = makeParams()
@@ -2755,7 +2755,7 @@ describe("usePipelineAPI", () => {
     expect(mockPreview.mock.calls[0][0].nodeId).toBe("upstream")
 
     act(() => {
-      const edited = { ...upstream, data: { ...upstream.data, config: { selected_columns: ["new"], column_renames: { new: "New" }, categorical_levels: { new: ["y"] } } } }
+      const edited = { ...upstream, data: { ...upstream.data, config: { selected_columns: ["new"], column_renames: { new: "New" } } } }
       params.graphRef.current = { nodes: [edited, target], edges: params.graphRef.current.edges }
       useGraphStore.getState().setNodes([edited, target])
       useGraphStore.setState((state) => ({
@@ -2778,7 +2778,7 @@ describe("usePipelineAPI", () => {
 
     expect(params.setNodes).not.toHaveBeenCalled()
     expect(mockPreview).toHaveBeenCalledTimes(1)
-    expect(useGraphStore.getState().nodes[0].data.config).toEqual({ selected_columns: ["new"], column_renames: { new: "New" }, categorical_levels: { new: ["y"] } })
+    expect(useGraphStore.getState().nodes[0].data.config).toEqual({ selected_columns: ["new"], column_renames: { new: "New" } })
     expect(useGraphStore.getState().nodes[0].data._columns).toBeUndefined()
   })
 

@@ -143,8 +143,7 @@
   `source_names`, `source` (`"live"` → eager, anything else → batched),
   `row_limit` (set for preview and trace; scores through the row-local scan
   regardless of `source`), `required_output_columns`, `feature_contract_path`,
-  `_declared_categorical_levels`, `node_id` (the node an unseen-value warning names;
-  `None` from generated code), `reuse_loaded_model` (plus a private
+  `reuse_loaded_model` (plus a private
   `_scoring_model` slot and lock, used only when pinning a model instance
   to the scorer for a reused streaming session).
 - **`ModelExplanationError(RuntimeError)`** (`_model_explainability.py`)
@@ -285,15 +284,8 @@ it to its contract:
 `load_bound_model` returns a `BoundModel` (`scoring_model`, `contract_path`):
 the bound carrier and the contract it was bound to, whether the node's own or
 the one a run logged. `load_scoring_model` returns its `scoring_model`.
-`ModelScorer` scores through `load_bound_model`, and `_unseen_report_for_score`
-reads that `contract_path`: it refuses a declared `categorical_levels` domain that
-differs from the contract's (a configuration mismatch, raised before any row is
-read), and returns an `UnseenValueReport` of the contract's `training_levels`, the
-context `Model Score` and the scorer's `node_id`, against which every scored
-materialisation's unseen values are counted and reported. A run-logged contract
-therefore drives the report exactly as a file source's sibling and a deployed
-bundle's contract do (context `Deployed model`, and `MLflow model` in the shared
-pyfunc); without a contract, or with no training levels, there is nothing to report.
+`ModelScorer` scores through `load_bound_model`, so a run-logged contract binds
+the model exactly as a file source's sibling and a deployed bundle's contract do.
 
 `bind_feature_contract(scoring_model, contract, *, model_name)` (`_mlflow_io.py`)
 is the one binding rule. A contract with a model identity runs
@@ -309,8 +301,8 @@ the model and the remedy. Binding returns a new `ScoringModel` sharing the raw
 model and never mutates the carrier it was given, which a cache may hold.
 
 For a file source the contract the model scores under is resolved once, by
-`model_contract_path`, and every consumer feeds that same path to binding,
-the unseen-value report and the offset: the builder and
+`model_contract_path`, and every consumer feeds that same path to binding
+and the offset: the builder and
 `score_from_config` hand it to `ModelScorer` as its `feature_contract_path`,
 and column planning reads its features and offset. A discovered sibling is
 therefore enforced exactly as an explicit contract is.
@@ -494,8 +486,7 @@ call through (directly or via the `_score_eager`/`_score_batched_standalone`
 thin delegates). Validates that `flavor` is registered (raises
 `ConfigError` naming the registered flavors otherwise), normalises `required_output_columns` into a
 `ScoreWriteProjection` if given (mutually exclusive with passing
-`write_projection` directly), restricts the contract's training levels to the
-feature set, then dispatches to `_score_batched_unified` (`batch=
+`write_projection` directly), then dispatches to `_score_batched_unified` (`batch=
 True`) or `_score_eager_unified` (`batch=False`).
 The delegates receive `offset_column` on every call, including `None`; there is
 no reduced-arity path for earlier delegate signatures.
@@ -504,8 +495,7 @@ no reduced-arity path for earlier delegate signatures.
   column (explicit argument wins over the model's self-description),
   requires it present if set, prunes the collection to exactly what the
   write projection needs (or the full schema if none), collects once via
-  `streaming_collect`, counts and reports the unseen categorical values in
-  that exact materialisation, prepares the predict frame,
+  `streaming_collect`, prepares the predict frame,
   supplies the CatBoost baseline `Pool` if applicable, predicts, appends
   the proba column for classification when supported, and projects the
   result.
@@ -517,8 +507,8 @@ no reduced-arity path for earlier delegate signatures.
   projection still applies. A limit Polars pushes to the scan bounds prediction
   to the rows the limited result reads, a projection without the prediction
   predicts nothing, and an aggregation over the prediction predicts every row.
-  Each scored batch goes through `_score_collected_frame` (the unseen-value
-  count and report, predict-frame preparation, the CatBoost baseline `Pool`,
+  Each scored batch goes through `_score_collected_frame` (predict-frame
+  preparation, the CatBoost baseline `Pool`,
   prediction, the proba column) and is cast strictly to output dtypes fixed
   before any row is scored by `_resolve_score_dtypes`: `_declared_score_dtypes`
   gives `Float64` for every regression and CatBoost classification's
@@ -561,9 +551,8 @@ no reduced-arity path for earlier delegate signatures.
 ### Batched chunk loop — `_batch_score_to_parquet` (`_model_scorer.py`)
 
 Reads the input parquet via `pyarrow.parquet.ParquetFile.iter_batches`
-(`_SCORE_BATCH_SIZE` = 500,000 rows/chunk). Per chunk: counts unseen
-categorical values (merged across chunks and reported once, after the last
-chunk), prepares the predict frame (offset column riding
+(`_SCORE_BATCH_SIZE` = 500,000 rows/chunk). Per chunk: prepares the predict
+frame (offset column riding
 along for pyfunc/rustystats, or supplied as a CatBoost Pool baseline),
 predicts, appends the proba column if applicable, applies the write
 projection, and writes the chunk as its own part file (`part_name(i)`, Polars
@@ -591,11 +580,6 @@ the uncached validator run. **Errors are never cached** — a
 `FeatureMismatchError` leaves both the last-entry slot and the LRU
 untouched so a later call against the same (fixed) schema re-validates
 rather than replaying a stale exception.
-
-For the live/eager unseen-value count, `_run_score_pipeline` derives the
-materialised frame it counts from the union of model features, categorical
-columns, offset requirements, and the write projection. Unrelated wide-frame
-columns are not collected merely to count categorical values.
 
 ### Explanation — `explain_catboost_prediction` /
 `explain_rustystats_glm_prediction` (`_model_explainability.py`)
@@ -1156,7 +1140,7 @@ to a live MLflow tracking server.
   a limit predicts only the limited rows, an aggregation predicts every row, a
   projection without the prediction predicts nothing, predictions and dtypes
   match eager scoring for regression and classification, and a categorical
-  level the training rows never held scores and is reported.
+  level the training rows never held scores.
 - **`tests/test_scenario_fanout_sink.py`** — the input-sink cap:
   `streaming_chunk_size_cap` semantics (it lowers the Polars value but not the
   setting, never raises it, restores an unset value unset, keeps the smallest of
@@ -1213,6 +1197,6 @@ to a live MLflow tracking server.
 codegen and execution-engine components respectively and are not detailed
 here.
 
-Known coverage gaps: none. Empty-batch schema behavior, minimal live
-unseen-count projection, and the absence of an unbenchmarked
+Known coverage gaps: none. Empty-batch schema behavior and the absence of an
+unbenchmarked
 contiguity conversion all have direct regression coverage.

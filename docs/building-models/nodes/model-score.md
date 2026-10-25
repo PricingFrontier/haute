@@ -110,8 +110,6 @@ none in training. Each model family scores the value its own way:
 | CatBoost | as a category with no history |
 | GLM | at the reference level for a categorical term (with any level **Levels** leaves out), and at the overall average for a target-encoding term |
 
-The preview's warning icon lists each feature that held such values, with how many
-values and rows and a few examples. A deployed model writes the same warning to its log.
 A feature that often meets new values suits a family that pools rare levels (t-boost,
 or LightGBM at its default settings) or a GLM target-encoding term.
 
@@ -161,7 +159,6 @@ Instances let you reuse the same scoring configuration with different inputs  - 
     | Key | What it does |
     |---|---|
     | `feature_contract_path` | An in-project feature-contract file the model scores with, in place of the one saved beside a model file, and bundled with the model when deploying. |
-    | `categorical_levels` | Declared category levels for categorical columns, which must match the model's feature contract. A value outside them still scores, like any value the model was not trained on. |
 
     The example above is stored as:
 

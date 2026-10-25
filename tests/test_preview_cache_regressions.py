@@ -73,7 +73,6 @@ def _column_config_graph(tmp_path: Path, node_type: NodeType, selected: bool) ->
     )
     config = {
         "column_renames": {"_id": "identifier", "segment": "region"},
-        "categorical_levels": {"region": ["North", "South"]},
         **({"selected_columns": ["_id", "premium", "segment"]} if selected else {}),
     }
     nodes = [source]

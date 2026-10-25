@@ -23,10 +23,10 @@ Version 3 adds ``offset_link``: how the offset column enters the model's raw
 score (``log`` or ``identity``), so a contract can declare the baseline of a
 model whose file does not record it.
 
-Version 4 adds ``training_levels``: the values each categorical column held in
-the rows the model was fitted on. They are never compared against live data
-and never refuse a value; scoring counts and reports the values outside them
-(:func:`count_unseen_categorical_values`).
+Version 4 drops ``categorical_levels``: a contract holds no list of category
+values, so it stays small whatever a feature's cardinality. A model's own file
+knows the categories it encodes, and each family scores a value it never saw
+through its own mechanism.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
@@ -47,8 +47,6 @@ _FIELDS: tuple[str, ...] = (
     "features",
     "feature_types",
     "categorical_features",
-    "categorical_levels",
-    "training_levels",
     "target_name",
     "target_type",
     "task",
@@ -58,20 +56,11 @@ _FIELDS: tuple[str, ...] = (
 _ALL_KEYS: frozenset[str] = frozenset((*_FIELDS, "contract_hash", "contract_version", "model"))
 #: The fields live data can disagree with; the offset link, like the model
 #: identity, declares how the model applies its offset and is checked against
-#: the loaded model instead, and the training levels only drive the
-#: unseen-value report.
-_LIVE_FIELDS: tuple[str, ...] = tuple(
-    field for field in _FIELDS if field not in {"offset_link", "training_levels"}
-)
+#: the loaded model instead.
+_LIVE_FIELDS: tuple[str, ...] = tuple(field for field in _FIELDS if field != "offset_link")
 
 #: The only contract format this release reads or writes.
 CONTRACT_VERSION = 4
-
-#: The log event and execution-warning code of a categorical value the
-#: model's training rows never held.
-UNSEEN_CATEGORICAL_VALUES_CODE = "categorical_values_not_in_training"
-#: Examples an unseen-value report names per feature.
-_UNSEEN_EXAMPLES = 5
 _LINKS = frozenset({"identity", "log", "logit"})
 #: How an offset column can enter a model's raw score.
 OFFSET_LINKS = frozenset({"identity", "log"})
@@ -189,11 +178,6 @@ class FeatureContract:
     features: list[str]
     feature_types: dict[str, str]
     categorical_features: list[str]
-    categorical_levels: dict[str, list[str | None]]
-    #: The values each categorical column held in the rows the model was
-    #: fitted on (``None`` when they held nulls). Only the unseen-value report
-    #: reads them.
-    training_levels: dict[str, list[str | None]]
     target_name: str
     target_type: str
     task: Task
@@ -215,8 +199,6 @@ def _canonical_payload(
     features: list[str],
     feature_types: Mapping[str, str],
     categorical_features: list[str],
-    categorical_levels: Mapping[str, Iterable[str | None]] | None,
-    training_levels: Mapping[str, Iterable[str | None]],
     target_name: str,
     target_type: str,
     task: str,
@@ -230,12 +212,6 @@ def _canonical_payload(
         "features": list(features),
         "feature_types": dict(feature_types),
         "categorical_features": list(categorical_features),
-        "categorical_levels": {
-            str(column): list(levels) for column, levels in (categorical_levels or {}).items()
-        },
-        "training_levels": {
-            str(column): list(levels) for column, levels in training_levels.items()
-        },
         "target_name": target_name,
         "target_type": target_type,
         "task": task,
@@ -257,19 +233,15 @@ def build_contract(
     target_name: str,
     target_type: str,
     task: Task,
-    categorical_levels: Mapping[str, Iterable[str | None]] | None = None,
     offset_column: str | None = None,
     model: ModelIdentity | None = None,
     offset_link: str | None = None,
-    training_levels: Mapping[str, Iterable[str | None]] | None = None,
 ) -> FeatureContract:
     """Construct a contract and compute its content hash.
 
     Inputs are accepted as plain lists / dicts and normalised to the
     contract's read-only forms.  ``contract_hash`` is the sha256 of the
-    canonical-JSON representation of every field except itself. A contract
-    rebuilt from live data, or supplied for a generic model, passes no
-    ``training_levels`` and records none.
+    canonical-JSON representation of every field except itself.
     """
     _check_offset_link(offset_column or None, offset_link, "<memory>")
     if offset_column and offset_column in features:
@@ -279,18 +251,10 @@ def build_contract(
             field="offset_column",
             offset_column=offset_column,
         )
-    normalised_levels = normalise_categorical_levels(
-        categorical_levels,
-        features=features,
-        categorical_features=categorical_features,
-    )
-    normalised_training_levels = normalise_training_levels(training_levels, features=features)
     payload = _canonical_payload(
         features,
         feature_types,
         categorical_features,
-        normalised_levels,
-        normalised_training_levels,
         target_name,
         target_type,
         task,
@@ -302,8 +266,6 @@ def build_contract(
         features=list(features),
         feature_types=dict(feature_types),
         categorical_features=list(categorical_features),
-        categorical_levels=normalised_levels,
-        training_levels=normalised_training_levels,
         target_name=target_name,
         target_type=target_type,
         task=task,
@@ -342,12 +304,6 @@ def save_contract(contract: FeatureContract, path: Path | str) -> None:
         "features": list(contract.features),
         "feature_types": dict(contract.feature_types),
         "categorical_features": list(contract.categorical_features),
-        "categorical_levels": {
-            column: list(levels) for column, levels in contract.categorical_levels.items()
-        },
-        "training_levels": {
-            column: list(levels) for column, levels in contract.training_levels.items()
-        },
         "target_name": contract.target_name,
         "target_type": contract.target_type,
         "task": contract.task,
@@ -407,8 +363,6 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
     _check_type(raw, "features", list, path)
     _check_type(raw, "feature_types", dict, path)
     _check_type(raw, "categorical_features", list, path)
-    _check_type(raw, "categorical_levels", dict, path)
-    _check_type(raw, "training_levels", dict, path)
     _check_type(raw, "target_name", str, path)
     _check_type(raw, "target_type", str, path)
     _check_type(raw, "task", str, path)
@@ -417,15 +371,6 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
         _check_type(raw, "offset_column", str, path)
     _check_offset_link(raw["offset_column"], raw["offset_link"], path)
 
-    categorical_levels = normalise_categorical_levels(
-        raw["categorical_levels"],
-        features=raw["features"],
-        categorical_features=raw["categorical_features"],
-        path=path,
-    )
-    training_levels = normalise_training_levels(
-        raw["training_levels"], features=raw["features"], path=path
-    )
     model = (
         ModelIdentity.from_plain_data(raw["model"], path=path) if raw["model"] is not None else None
     )
@@ -436,8 +381,6 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
                 raw["features"],
                 raw["feature_types"],
                 raw["categorical_features"],
-                categorical_levels,
-                training_levels,
                 raw["target_name"],
                 raw["target_type"],
                 raw["task"],
@@ -459,8 +402,6 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
         features=list(raw["features"]),
         feature_types=dict(raw["feature_types"]),
         categorical_features=list(raw["categorical_features"]),
-        categorical_levels=categorical_levels,
-        training_levels=training_levels,
         target_name=raw["target_name"],
         target_type=raw["target_type"],
         task=raw["task"],
@@ -523,366 +464,6 @@ def load_contract_cached(path: Path | str) -> FeatureContract:
 def _clear_contract_cache() -> None:
     """Drop every cached contract (test isolation / targeted resets)."""
     _contract_cache.clear()
-
-
-def normalise_categorical_levels(
-    raw: Mapping[str, Iterable[str | None]] | None,
-    *,
-    features: Iterable[str] | None = None,
-    categorical_features: Iterable[str] | None = None,
-    path: Path | None = None,
-) -> dict[str, list[str | None]]:
-    """Validate and normalise declared categorical value domains.
-
-    Domains are explicit metadata.  They are never inferred from row values.
-    ``None`` is an explicit level for null values; all other levels must be
-    non-empty strings.
-    """
-    if raw is None:
-        return {}
-    if not isinstance(raw, Mapping):
-        raise FeatureMismatchError(
-            "categorical_levels must be a mapping of column name to level list",
-            path=str(path) if path is not None else None,
-            field="categorical_levels",
-            expected_type="dict",
-            actual_type=type(raw).__name__,
-        )
-
-    feature_set = set(features) if features is not None else None
-    categorical_set = set(categorical_features) if categorical_features is not None else None
-    normalised: dict[str, list[str | None]] = {}
-    for column, levels in raw.items():
-        if not isinstance(column, str) or not column:
-            raise FeatureMismatchError(
-                "categorical_levels column names must be non-empty strings",
-                path=str(path) if path is not None else None,
-                field="categorical_levels",
-                column=column,
-            )
-        if feature_set is not None and column not in feature_set:
-            raise FeatureMismatchError(
-                "categorical_levels references a column outside the model features",
-                path=str(path) if path is not None else None,
-                field="categorical_levels",
-                column=column,
-                features=sorted(feature_set),
-            )
-        if categorical_set is not None and column not in categorical_set:
-            raise FeatureMismatchError(
-                "categorical_levels references a non-categorical feature",
-                path=str(path) if path is not None else None,
-                field="categorical_levels",
-                column=column,
-                categorical_features=sorted(categorical_set),
-            )
-        if isinstance(levels, (str, bytes)) or not isinstance(levels, Sequence):
-            raise FeatureMismatchError(
-                "categorical_levels values must be lists of non-empty strings or null",
-                path=str(path) if path is not None else None,
-                field="categorical_levels",
-                column=column,
-                expected_type="list",
-                actual_type=type(levels).__name__,
-            )
-        ordered: list[str | None] = []
-        seen: set[str | None] = set()
-        for level in levels:
-            if level is not None and (not isinstance(level, str) or not level):
-                raise FeatureMismatchError(
-                    "categorical levels must be non-empty strings or null",
-                    path=str(path) if path is not None else None,
-                    field="categorical_levels",
-                    column=column,
-                    level=level,
-                )
-            if level in seen:
-                raise FeatureMismatchError(
-                    "categorical_levels contains a duplicate level",
-                    path=str(path) if path is not None else None,
-                    field="categorical_levels",
-                    column=column,
-                    duplicate_level=level,
-                )
-            seen.add(level)
-            ordered.append(level)
-        if not ordered:
-            raise FeatureMismatchError(
-                "categorical_levels entries must declare at least one level",
-                path=str(path) if path is not None else None,
-                field="categorical_levels",
-                column=column,
-            )
-        normalised_levels: list[str | None] = list(
-            sorted(level for level in ordered if level is not None)
-        )
-        if None in seen:
-            normalised_levels.append(None)
-        normalised[column] = normalised_levels
-    return normalised
-
-
-def merge_categorical_level_declarations(
-    declarations: Iterable[tuple[str, Mapping[str, Iterable[str | None]] | None]],
-) -> dict[str, list[str | None]]:
-    """Merge categorical level declarations from a graph boundary.
-
-    Each declaration is explicit metadata supplied by a named owner, usually
-    a source node or a modelScore node. Missing declarations are ignored, but
-    two owners declaring different domains for the same column is a boundary
-    error.
-    """
-    merged: dict[str, list[str | None]] = {}
-    for owner, raw in declarations:
-        for column, levels in normalise_categorical_levels(raw).items():
-            existing = merged.get(column)
-            if existing is not None and existing != levels:
-                raise FeatureMismatchError(
-                    "Conflicting categorical_levels declarations at modelScore boundary",
-                    field="categorical_levels",
-                    column=column,
-                    existing_levels=existing,
-                    conflicting_levels=levels,
-                    source_node=owner,
-                )
-            merged[column] = levels
-    return merged
-
-
-def normalise_training_levels(
-    raw: Mapping[str, Iterable[str | None]] | None,
-    *,
-    features: Iterable[str] | None = None,
-    path: Path | None = None,
-) -> dict[str, list[str | None]]:
-    """Validate and normalise the values each column held in the training rows.
-
-    Unlike a declared domain these are observed, so an empty string is a value
-    like any other; ``None`` records that the rows held nulls. Levels are
-    sorted, with ``None`` last.
-    """
-    if raw is None:
-        return {}
-    if not isinstance(raw, Mapping):
-        raise FeatureMismatchError(
-            "training_levels must be a mapping of column name to level list",
-            path=str(path) if path is not None else None,
-            field="training_levels",
-            expected_type="dict",
-            actual_type=type(raw).__name__,
-        )
-    feature_set = set(features) if features is not None else None
-    normalised: dict[str, list[str | None]] = {}
-    for column, levels in raw.items():
-        if not isinstance(column, str) or not column:
-            raise FeatureMismatchError(
-                "training_levels column names must be non-empty strings",
-                path=str(path) if path is not None else None,
-                field="training_levels",
-                column=column,
-            )
-        if feature_set is not None and column not in feature_set:
-            raise FeatureMismatchError(
-                "training_levels references a column outside the model features",
-                path=str(path) if path is not None else None,
-                field="training_levels",
-                column=column,
-                features=sorted(feature_set),
-            )
-        if isinstance(levels, (str, bytes)) or not isinstance(levels, Sequence):
-            raise FeatureMismatchError(
-                "training_levels values must be lists of strings or null",
-                path=str(path) if path is not None else None,
-                field="training_levels",
-                column=column,
-                expected_type="list",
-                actual_type=type(levels).__name__,
-            )
-        seen: set[str | None] = set()
-        for level in levels:
-            if level is not None and not isinstance(level, str):
-                raise FeatureMismatchError(
-                    "training levels must be strings or null",
-                    path=str(path) if path is not None else None,
-                    field="training_levels",
-                    column=column,
-                    level=level,
-                )
-            if level in seen:
-                raise FeatureMismatchError(
-                    "training_levels contains a duplicate level",
-                    path=str(path) if path is not None else None,
-                    field="training_levels",
-                    column=column,
-                    duplicate_level=level,
-                )
-            seen.add(level)
-        values: list[str | None] = [*sorted(level for level in seen if level is not None)]
-        if None in seen:
-            values.append(None)
-        normalised[column] = values
-    return normalised
-
-
-def observed_training_levels(frame: Any, columns: Iterable[str]) -> dict[str, list[str | None]]:
-    """The values each of *columns* holds in the eager *frame*, as training levels.
-
-    Values are compared as strings, so an integer column used as a category
-    records ``"3"`` for ``3``; ``None`` records that the column holds nulls.
-    """
-    import polars as pl
-
-    levels: dict[str, list[str | None]] = {}
-    for column in dict.fromkeys(columns):
-        series = frame.get_column(column).cast(pl.String)
-        values: list[str | None] = sorted(
-            value for value in series.unique().to_list() if value is not None
-        )
-        if series.null_count():
-            values.append(None)
-        levels[column] = values
-    return levels
-
-
-@dataclasses.dataclass(frozen=True)
-class UnseenCategoricalValues:
-    """One feature's values outside the levels its training rows held."""
-
-    feature: str
-    #: Each value the training rows never held, as a string, with its rows.
-    value_rows: dict[str, int]
-    #: Null rows, counted only when the training rows held no null.
-    null_rows: int
-
-    @property
-    def rows(self) -> int:
-        return sum(self.value_rows.values())
-
-    @property
-    def examples(self) -> list[str]:
-        return sorted(self.value_rows)[:_UNSEEN_EXAMPLES]
-
-
-def count_unseen_categorical_values(
-    frame: Any,
-    training_levels: Mapping[str, Iterable[str | None]],
-) -> dict[str, UnseenCategoricalValues]:
-    """Count, per feature, the values of *frame* its training rows never held.
-
-    Never raises for a value: a categorical value outside the training levels
-    is scored by the model's own mechanism and only reported. A lazy frame is
-    read through one narrow streaming projection. A column the frame lacks is
-    skipped, because feature validation refuses a missing feature first.
-    Returns only the features with something to report.
-    """
-    import polars as pl
-
-    from haute._polars_utils import streaming_collect
-
-    lazy = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
-    schema = lazy.collect_schema()
-    present = {
-        column: list(levels) for column, levels in training_levels.items() if column in schema
-    }
-    if not present:
-        return {}
-    exprs: list[pl.Expr] = []
-    for index, (column, levels) in enumerate(present.items()):
-        known = [level for level in levels if level is not None]
-        value = pl.col(column).cast(pl.String)
-        exprs.append(
-            value.filter(value.is_not_null() & ~value.is_in(known))
-            .value_counts(name="rows")
-            .implode()
-            .alias(f"values_{index}")
-        )
-        null_count = pl.col(column).is_null().sum() if None not in levels else pl.lit(0)
-        exprs.append(null_count.cast(pl.Int64).alias(f"nulls_{index}"))
-    counted = streaming_collect(lazy.select(exprs))
-    unseen: dict[str, UnseenCategoricalValues] = {}
-    for index, column in enumerate(present):
-        value_rows = {
-            str(entry[column]): int(entry["rows"])
-            for entry in counted.get_column(f"values_{index}")[0].to_list()
-        }
-        null_rows = int(counted.get_column(f"nulls_{index}")[0])
-        if value_rows or null_rows:
-            unseen[column] = UnseenCategoricalValues(column, value_rows, null_rows)
-    return unseen
-
-
-def merge_unseen_categorical_values(
-    total: Mapping[str, UnseenCategoricalValues],
-    more: Mapping[str, UnseenCategoricalValues],
-) -> dict[str, UnseenCategoricalValues]:
-    """*total* with *more* added, for a score counted chunk by chunk."""
-    merged = dict(total)
-    for feature, unseen in more.items():
-        previous = merged.get(feature)
-        if previous is None:
-            merged[feature] = unseen
-            continue
-        value_rows = dict(previous.value_rows)
-        for value, rows in unseen.value_rows.items():
-            value_rows[value] = value_rows.get(value, 0) + rows
-        merged[feature] = UnseenCategoricalValues(
-            feature, value_rows, previous.null_rows + unseen.null_rows
-        )
-    return merged
-
-
-def report_unseen_categorical_values(
-    unseen: Mapping[str, UnseenCategoricalValues],
-    *,
-    context: str,
-    node_id: str | None = None,
-) -> None:
-    """Log each feature's unseen values and record them as an execution warning.
-
-    The warning is what the editor's preview shows; a deployed model has only
-    the log.
-    """
-    from haute._execution_context import current_execution_context
-    from haute._logging import get_logger
-
-    logger = get_logger(component="feature_contract")
-    execution_context = current_execution_context()
-    for feature, counts in unseen.items():
-        logger.warning(
-            UNSEEN_CATEGORICAL_VALUES_CODE,
-            feature=feature,
-            values=len(counts.value_rows),
-            rows=counts.rows,
-            null_rows=counts.null_rows,
-            examples=counts.examples,
-            context=context,
-            node_id=node_id,
-        )
-        if execution_context is not None:
-            execution_context.record_execution_warning(
-                UNSEEN_CATEGORICAL_VALUES_CODE,
-                node_id=node_id,
-                reason=unseen_categorical_reason(counts, context),
-            )
-
-
-def unseen_categorical_reason(counts: UnseenCategoricalValues, context: str) -> str:
-    """One feature's unseen values as the sentence the preview shows."""
-    parts: list[str] = []
-    if counts.value_rows:
-        values = len(counts.value_rows)
-        shown = ", ".join(repr(value) for value in counts.examples)
-        more = ", ..." if values > len(counts.examples) else ""
-        parts.append(
-            f"{values} {'value' if values == 1 else 'values'} not in the training data, "
-            f"in {counts.rows} {'row' if counts.rows == 1 else 'rows'} ({shown}{more})"
-        )
-    if counts.null_rows:
-        parts.append(
-            f"{counts.null_rows} missing {'value' if counts.null_rows == 1 else 'values'}, "
-            "though the training data had none"
-        )
-    return f"{context}: '{counts.feature}' has {' and '.join(parts)}."
 
 
 def assert_contracts_match(expected: FeatureContract, actual: FeatureContract) -> None:

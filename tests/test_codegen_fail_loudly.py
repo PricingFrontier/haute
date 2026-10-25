@@ -74,7 +74,7 @@ def test_config_backed_node_without_decorator_mapping_fails_loudly(
             id="object",
         ),
         pytest.param(
-            {"categorical_levels": {"band": [float("nan")]}},
+            {"column_renames": {"band": float("nan")}},
             "must be a finite number",
             ("value", "nan"),
             id="non-finite-float",

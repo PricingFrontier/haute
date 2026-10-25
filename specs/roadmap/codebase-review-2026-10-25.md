@@ -154,10 +154,11 @@ are an isolation/disclosure concern; the loader reads manifest-named artifacts.
 Concurrent builds can interfere with named artifacts, so reassess the isolation
 priority if shared-checkout concurrency is an advertised deployment workflow.
 
-After validation the owner decided that an unseen categorical value is never refused.
-Each library now scores it through its own mechanism and every scoring path reports
-it, as the modelling specification's "Unseen categorical values" states, in place
-of the fitted-domain enforcement and null policy the table above planned.
+After validation the owner decided that an unseen categorical value is never refused
+or reported: each library scores it through its own mechanism, as the modelling
+specification's "Unseen categorical values" states, and contracts carry no category
+lists. That replaces the fitted-domain enforcement and null policy the table above
+planned.
 
 The roadmap chooses complete canonical content comparison for save recovery, retains
 MLflow's public signature and typed-null input behaviour, uses explicit CLI intent for

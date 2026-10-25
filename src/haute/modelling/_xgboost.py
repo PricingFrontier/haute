@@ -240,9 +240,7 @@ class XGBoostAlgorithm(BaseAlgorithm):
         model = XGBoostModel(
             booster=None,
             features=list(features),
-            categorical_levels=fit_categorical_levels(
-                train_df, cat_features, kwargs.get("categorical_levels")
-            ),
+            categorical_levels=fit_categorical_levels(train_df, cat_features),
             task=task,
             link=native.link,
             offset_column=offset,
@@ -330,7 +328,6 @@ class XGBoostAlgorithm(BaseAlgorithm):
             rounds_configured=configured,
             rounds_fitted=rounds_fitted,
             stopping_reason="validation" if rounds_fitted < configured else "none",
-            categorical_levels=dict(model.categorical_levels),
             device=trained_device,
         )
 

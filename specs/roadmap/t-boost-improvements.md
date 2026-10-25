@@ -440,10 +440,8 @@ the documented fallback; every scoring entry point agrees; a null scores in the 
 level; `unseen_values` counts match a direct count.
 
 **Unlocks in Haute.** Haute sets `unknown_category="rare"`, so a new make is priced as a
-rare make in validation, final test and production, and reports the unseen counts from
-`unseen_values` in the training result and in Model Scoring. Haute now reports
-unseen values for every family itself; `MOD-R07` in the
-[modelling roadmap](modelling.md) adds them to the trace and the training result.
+rare make in validation, final test and production. Haute reports no unseen counts:
+every family scores an unseen value through its own mechanism.
 
 ## Behaviour Haute relies on today
 
