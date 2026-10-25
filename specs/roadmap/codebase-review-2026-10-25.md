@@ -68,8 +68,11 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 - The modelling reviewer scanned `_charts.py` mechanically and did not read
   the modelling test modules systematically, so "a test that would pass
   against a wrong coefficient" is answered only for the GLM level check.
-- Areas whose findings are not yet in this report are in review: tracing and
-  expression parsing;
+- One trace question is open and unprobed: the execution strategy is planned
+  with the clicked row's columns while the cache key carries no column set, so
+  two clicks with different `row_values` columns may share one cache entry built
+  from the first click's API-input port columns.
+- Areas whose findings are not yet in this report are in review:
   git integration and Databricks IO; the assistant; the JSON shredder's
   remaining modules; submodels and Explore; the frontend; the tests, scripts
   and CI as code.
@@ -88,9 +91,10 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 | Pipeline config, second pass (Polars steps, the recovery loader, names, global constants, layout) | reviewer, verified; one probe rerun | every owned file in full | 0 / 1 / 7 / 0 |
 | Optimiser (routes, service, solver, session, frontier, auto-range, estimate, outcomes, artifacts, explainability, the price-contour guard, the Optimiser Apply runtime) | reviewer, verified; two probes | every owned file in full; the price-contour library read where haute's schemas depend on it | 0 / 1 / 9 / 2 |
 | Modelling, the MLflow model registry and the training routes (every family, contracts, evaluation, tuning, export, MLflow IO, the scorer, explainability, the training lifecycle) | reviewer, verified; the GLM probe rerun | every owned file in full except `_charts.py` (mechanical) | 0 / 2 / 21 / 2 |
+| Tracing and expression parsing (trace, correlation, enrichment, lineage, waterfall, the expression parser) | reviewer, verified; the parser probe rerun | every owned file in full | 0 / 2 / 9 / 3 |
 
-One hundred and seventy-five findings so far: one Critical, twenty-seven Major,
-one hundred and twenty-four Minor and twenty-three Suggestions. The Critical and every Major is confirmed at source by the
+One hundred and eighty-nine findings so far: one Critical, twenty-nine Major,
+one hundred and thirty-three Minor and twenty-six Suggestions. The Critical and every Major is confirmed at source by the
 main session; the Minors and Suggestions were read at source or accepted on
 quoted evidence as the verification table records.
 
@@ -168,6 +172,13 @@ quoted evidence as the verification table records.
   (Major, `MOD-R02`): the token is registered after preparation, so the job
   reads `cancelled` and frees the running slot while the preparation child
   keeps running under the job's budget.
+- **A trace's input sources name the nearest step in declaration order, not
+  the node whose value the row carries** (Major, `TRACE-R01`; reproduced): on a
+  join with a shared non-key column the join side is shown as the source of a
+  base-side value, flipping with node order.
+- **`.over(` anywhere in a node's code types every column of the node as a
+  window** (Major, `TRACE-R02`; reproduced): `y = a * 2` is shown as "rank of x
+  over g" with the right value.
 
 ## Findings mapped to packages
 
@@ -238,6 +249,10 @@ quoted evidence as the verification table records.
 | Modelling | MDL-2, MDL-18, MDL-22 | `MOD-R06` |
 | Model scoring | MDL-12, MDL-23 | `MSC-08` |
 | Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
+| Tracing | TRC-1 | `TRACE-R01` |
+| Tracing | TRC-2, TRC-3, TRC-4 | `TRACE-R02` |
+| Tracing | TRC-8, TRC-9, TRC-10, TRC-14 | `TRACE-R03` |
+| Tracing | TRC-5, TRC-6, TRC-7, TRC-11, TRC-12, TRC-13 | `TRACE-R04` |
 | Sandbox security | PM-42 | `SBX-R04` |
 | Workbench | PM-44 | `WB-33` |
 | Workbench | PM-45 | `WB-34` |
@@ -269,7 +284,9 @@ without their training contract in the preview, batch and trace paths as well
 as in deploy (`DEP-R07`, whose plan already names the editor); the test-only
 `_compute_schema_hash` and the training facade (`ENGQ-R01`); the cost of the
 training test modules (`ENGQ-CI03`); fits that exceed their budget
-(`MOD-M01`, `MOD-M02`).
+(`MOD-M01`, `MOD-M02`); the trace route's status by message prefix and its
+sanitized 500 for a node failure (`API-R06`); two trace inconsistencies that
+vanish with node-level instances (`SUB-R01`).
 
 ## Verdicts that changed or stayed open
 
@@ -327,6 +344,8 @@ All probes live outside the repository and wrote nothing into it.
 | same-line return | `extract_user_code("df = quotes.head(1); return df")` returns `''` for the Polars and hook kinds; `"a = 1\ndf = quotes.head(a); return df"` returns `'a = 1'`. |
 | reformat discards steps | A free-code step whose comment carries trailing spaces survives two saves; `ruff format` of the file then logs `polars_steps_discarded`. |
 | `match` bindings | `support_code_inventory` on a preamble `match` lists only `os`; the equivalent `if`/`else` lists `helper` twice. |
+| trace input sources | A left join of A `(policy, x=10)` with B `(policy, x=1000)` and `y = x * 2`: `calc.x` is 10.0 while `input_sources["x"]` names B with 1000.0; declaring B first names A with 10.0; `derivations[].reads` names A both ways. |
+| parser display | `with_columns(rank=pl.col('x').rank().over('g'), y=pl.col('a') * 2)` evaluated for `y`: `expression_type: window`, `substituted_text: rank of x over g`, `result_value: 42.0`; a `replace({'A': 'premium'})` beside a `rename` labels the step a rename of `A`. |
 | price-contour column order | `solve`, `apply_from_grid` and the quote-results schema emit `optimal_<c>` in config order; `ApplyOptimiser.apply` in sorted order, so both haute schemas match their own library path (no finding). |
 
 ## Mechanical metrics
