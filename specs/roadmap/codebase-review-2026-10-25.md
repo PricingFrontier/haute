@@ -69,7 +69,7 @@ tracks it. It owns no work; the component roadmaps carry the plans.
   `_pipeline_recovery.py` (about 1,100 lines) and parts of six smaller modules
   unread; a follow-up reviewer covers them.
 - Areas whose findings are not yet in this report are in review: modelling, the
-  MLflow registry and training; the optimiser; tracing and expression parsing;
+  MLflow registry and training; tracing and expression parsing;
   git integration and Databricks IO; the assistant; the JSON shredder's
   remaining modules; submodels and Explore; the frontend; the tests, scripts
   and CI as code.
@@ -85,9 +85,10 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 | Workers and jobs (isolation, protocol, pool, dedicated worker, caps, job store, timeouts) | reviewer, verified; one probe rerun | full | 0 / 4 / 10 / 0 |
 | Server routes and the save service (pipeline, save, helpers, node data, project files, utility, banding and rating, submodel, error handlers, supersession) | reviewer, verified; two probes | every owned file in full; `schemas.py` the models those routes use | 0 / 4 / 10 / 3 |
 | Pipeline config, codegen, parsing and recovery | reviewer, verified; two probes rerun | core files in full; `_polars_steps.py` and `_pipeline_recovery.py` in part (follow-up pending) | 0 / 3 / 10 / 2 |
+| Optimiser (routes, service, solver, session, frontier, auto-range, estimate, outcomes, artifacts, explainability, the price-contour guard, the Optimiser Apply runtime) | reviewer, verified; two probes | every owned file in full; the price-contour library read where haute's schemas depend on it | 0 / 1 / 9 / 2 |
 
-One hundred and thirty findings so far: one Critical, twenty-three Major,
-eighty-seven Minor and nineteen Suggestions. The Critical and every Major is confirmed at source by the
+One hundred and forty-two findings so far: one Critical, twenty-four Major,
+ninety-six Minor and twenty-one Suggestions. The Critical and every Major is confirmed at source by the
 main session; the Minors and Suggestions were read at source or accepted on
 quoted evidence as the verification table records.
 
@@ -151,6 +152,9 @@ quoted evidence as the verification table records.
   and merged over the sidecar by Recover** (Major, `PCFG-R11`).
 - **Every save drops authored comments outside the kept regions** (Major,
   `PCFG-R12`; five kinds reproduced) with no diagnostic.
+- **The optimiser's MLflow log writes the complete result artifact without the
+  finiteness gate the save applies** (Major, `OPT-R01`): a missing defence layer
+  on a pricing artifact, since the status poll corrects the UI path.
 
 ## Findings mapped to packages
 
@@ -205,6 +209,11 @@ quoted evidence as the verification table records.
 | Pipeline config | PCF-8, PCF-11, PCF-14, PCF-15 | `PCFG-R14` |
 | Pipeline config | PCF-4, PCF-9, PCF-10, PCF-12 | `PCFG-R15` |
 | Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
+| Optimiser | OPR-1, OPR-8, OPR-12 | `OPT-R01` |
+| Optimiser | OPR-3 | `OPT-R02` |
+| Optimiser | OPR-4, OPR-5, OPR-6, OPR-7 | `OPT-R03` |
+| Optimiser | OPR-2 | `OPT-R04` (Decision) |
+| Optimiser | OPR-9, OPR-10, OPR-11 | `OPT-R05` |
 | Sandbox security | PM-42 | `SBX-R04` |
 | Workbench | PM-44 | `WB-33` |
 | Workbench | PM-45 | `WB-34` |
@@ -228,7 +237,10 @@ browser contract (`API-R03`); the cwd-dependent resolvers in the routes and the
 parser (`PCFG-R04`), editor state inside the config (`PCFG-R08`), the per-type
 validators and branches (`PCFG-R07`, `PCFG-R09`); name-violation reporting
 (`NAME-09`); the instance mechanism (`SUB-R01`); unkept statements in submodel
-files (`BUG-19`); the test-only config helpers and event-bus hooks (`ENGQ-R01`).
+files (`BUG-19`); the test-only config helpers and event-bus hooks (`ENGQ-R01`);
+the optimiser's unshown solve-memory forecast (`OPT-W02`) and its frontier
+points without convergence traces (`OPT-PC04`); the optimiser's job registries
+not cancelled at shutdown (`ROAD-WORKER-06`).
 
 ## Verdicts that changed or stayed open
 
@@ -271,6 +283,8 @@ All probes live outside the repository and wrote nothing into it.
 | lenient decode | A cp1252 sidecar `{"name": "Prämie"}` loads as `Pr�mie` and is rewritten as `EF BF BD`; the constants reader refuses the same bytes. |
 | dropped comments | Five comment kinds (a section, decorator-to-`def`, trailing, between functions, on `connect`) are absent after parse → `graph_to_code`; `unkept_module_statements` reports none. |
 | inline keywords | `@pipeline.constant(config=..., values=[...], colour="red")` parses to the sidecar's values with no warning; the regenerated decorator keeps only `config=`. |
+| corrupt parquet scan | `pl.scan_parquet` on a corrupt file returns a lazy frame; `collect_schema()` raises `ComputeError` (Polars 2.0.0). |
+| price-contour column order | `solve`, `apply_from_grid` and the quote-results schema emit `optimal_<c>` in config order; `ApplyOptimiser.apply` in sorted order, so both haute schemas match their own library path (no finding). |
 
 ## Mechanical metrics
 
