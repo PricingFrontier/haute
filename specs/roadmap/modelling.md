@@ -227,7 +227,9 @@ package.
 **Why:** The families disagree today. LightGBM, XGBoost and EBM go through
 `encode_frame`, whose `require_known_levels` raises "values the model was not
 trained on" for the whole column, so one new value fails the scoring call for
-every row in it; none of the three libraries refuses it on its own. t-boost
+every row in it, and a deployed bundle's `_assert_runtime_contract_matches`
+refuses it again against the contract's levels, which for these families are
+the fitted ones. None of the three libraries refuses it on its own. t-boost
 scores it in its pooled `<rare>` cell (`UNKNOWN_CATEGORY`) and logs validation
 rows that hold one. A GLM categorical term and CatBoost score it silently:
 RustyStats encodes an unknown label as all-zero dummies, the reference level
@@ -247,7 +249,7 @@ of 3,000 rows and ten rare levels of 4 rows, whose true mean is 6):
 | Family | Native mechanism | An unseen value scores |
 |---|---|---|
 | t-boost | `unknown_category="rare"`, which Haute sets | in the pooled `<rare>` cell, as the rare levels do (5.98) |
-| LightGBM | a level under `cat_smooth` or `min_data_per_group` never gets its own side of a categorical split | on the rare levels' side (3.20) at the defaults; with both lowered, rare levels split alone and the match ends |
+| LightGBM | its categorical split settings, `cat_smooth` and `min_data_per_group` | as the rare levels do (3.20) at the defaults, passed as a missing value as Haute's encoding passes it; with both settings lowered, rare levels split alone and the match ends |
 | CatBoost | `ctr_leaf_count_limit` (CPU only) keeps statistics for the most frequent categories only | at the zero-count prior by default (6.07, the rare levels 4.43); with the limit set, rare and unseen values share one value near the book average (2.15) |
 | GLM, categorical term | **Levels** fits indicators for the listed levels only | in the intercept, with the reference level and every unlisted level |
 | GLM, target-encoding term | the encoding's prior | at the prior, the training mean that a level's encoding shrinks to as its rows fall (RustyStats documents it; not probed) |
@@ -263,9 +265,12 @@ of 3,000 rows and ten rare levels of 4 rows, whose true mean is 6):
 - Every family records the levels it was fitted on, so an unseen value can be
   detected: the GLM contract stores each categorical term's labels by term
   type, an `Int64` categorical term included, and CatBoost records its training
-  levels. A domain the analyst declares upstream stays a separate constraint
-  that scoring enforces; a value outside it is a declared-domain error, not an
-  unseen value.
+  levels. The contract keeps these fitted levels apart from a domain the
+  analyst declares upstream: today one `categorical_levels` field holds
+  whichever applies (`fit_categorical_levels` lets a declared domain win), and
+  a deployed bundle checks values against it. Only the declared domain is
+  enforced, on every path, and a value outside it is a declared-domain error,
+  not an unseen value. The fitted levels drive detection and the report only.
 - Every scoring path (preview, standalone run, Model Scoring, a deployed
   bundle) counts, per categorical feature, the distinct unseen values, their
   rows, their exposure when the model has an offset, and examples, and logs one
@@ -299,6 +304,8 @@ this package's, for every family.
 
 **Evidence:** `src/haute/modelling/_native_encoding.py::encode_frame`;
 `src/haute/modelling/_native_encoding.py::require_known_levels`;
+`src/haute/modelling/_native_encoding.py::fit_categorical_levels`;
+`src/haute/deploy/_scorer.py::_assert_runtime_contract_matches`;
 `src/haute/modelling/_tboost.py::UNKNOWN_CATEGORY`;
 `src/haute/modelling/_tboost.py::_log_unseen_validation_values`;
 `src/haute/modelling/_rustystats.py::GLMAlgorithm`;

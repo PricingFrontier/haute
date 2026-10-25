@@ -154,6 +154,10 @@ are an isolation/disclosure concern; the loader reads manifest-named artifacts.
 Concurrent builds can interfere with named artifacts, so reassess the isolation
 priority if shared-checkout concurrency is an advertised deployment workflow.
 
+After validation the owner decided that an unseen categorical value is never refused,
+so `MOD-R01` now plans native scoring by each library and a per-feature report instead
+of the fitted-domain enforcement and null policy in the table above.
+
 The roadmap chooses complete canonical content comparison for save recovery, retains
 MLflow's public signature and typed-null input behaviour, uses explicit CLI intent for
 an HTTP first deployment, and excludes the saving socket while retaining fingerprint

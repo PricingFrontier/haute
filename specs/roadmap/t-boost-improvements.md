@@ -441,8 +441,8 @@ level; `unseen_values` counts match a direct count.
 
 **Unlocks in Haute.** Haute sets `unknown_category="rare"`, so a new make is priced as a
 rare make in validation, final test and production, and reports the unseen counts from
-`unseen_values` in the training result and in Model Scoring (`TBOOST-09` in the
-[t-boost roadmap](t-boost.md)).
+`unseen_values` in the training result and in Model Scoring (`MOD-R01` in the
+[modelling roadmap](modelling.md), which reports unseen values for every family).
 
 ## Behaviour Haute relies on today
 
