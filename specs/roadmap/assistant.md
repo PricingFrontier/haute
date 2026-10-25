@@ -10,67 +10,25 @@ and its evaluation harness. Current behaviour is specified in
 [low-level specification](../assistant/low-level.md), and the chat panel in
 [the assistant UI specification](../frontend-assistant-ui/high-level.md).
 
-The assistant was designed in early August 2026, before the Polars step
-builder, the declaration-and-hook pipeline format, the banding rework, the
-modelling families and most optimiser and tracing work. A review on 30
-September 2026 (ten read-only audits, six design angles with scripted tool
-replays, and a Codex second opinion) found that its knowledge, examples and
-several write paths no longer match the product: code written to a node the
-analyst created in the editor is overwritten by that node's steps while the
-chat reports success, every node it creates is locked out of the step
-builder, it is taught that Load File has no inputs, questions end as failed
-turns, and the chat can edit a pipeline other than the one on the canvas. The
-packages below correct that and then make the assistant good at building
-pipelines.
-
-**Target models.** The configured project provider is Databricks Foundation
-Model serving with open-weight models only (`databricks-qwen35-122b-a10b`;
-the workspace also serves gpt-oss-120b, qwen3-next-80b and llama-4-maverick).
-The design works first on these mid-tier models and uses stronger Anthropic
-or OpenAI models when a project configures them. On 30 September 2026 the
-workspace refused every model request with HTTP 400, so live measurements
-wait for access; offline replays through the real tools do not.
-
-**Decisions taken on 30 September 2026.**
-
-- The assistant writes new Polars logic as steps with a free-code card:
-  `[source, free_code]` on a Transform and `[free_code]` on every other
-  stepped surface. Every surface then follows one rule, "transform `df`;
-  other inputs by name on Transform and Load File". Existing structured steps
-  and code-mode nodes are preserved, and the assistant never switches a node
-  to code mode; that switch stays an analyst action in the editor.
-- All five phases below are planned. Phase 5 packages start only when the
-  evaluation shows a gain.
-- A new local file input is checked at dry-run against a schema inferred from
-  the file, recorded as inferred; remote sources without a readable schema
-  fail loudly.
-- Data checks run under a new explicit `[assistant.egress]` permission and
-  report advisory findings; blocking findings wait for evaluation evidence.
-
-**Codex second opinion, adopted.** Refusing code on stepped nodes ships with
-the free-code path that replaces it (`ASSIST-01` and `ASSIST-03` land
-together). The mode-switch rule compares the original and resulting node, so
-`steps: null` plus `code` cannot bypass it. A saved change that fails
-verification has its own outcome. A data check is an execution capability
-and needs its own authorisation and contract. Offline replay proves the tools
-and contracts, not that a prompt change helps a model, and a data check never
-replaces independent execution goldens.
-
-**Phases.** Phase 1 (`ASSIST-01` to `ASSIST-19`) corrects the assistant and
-makes authoring on stepped nodes work. Phase 2 (`ASSIST-20` to `ASSIST-26`)
-teaches node shapes with real values, gives actionable errors, adds per-turn
-context and starts measurement. Phase 3 (`ASSIST-30` to `ASSIST-39`) replaces
-the lexical controller, allows several applies per turn with a change card
-each, adds Undo and Compare, consolidates the tools and modernises the
-providers. Phase 4 (`ASSIST-40` to `ASSIST-44`) lets the assistant see whether
-the data came out right. Phase 5 (`ASSIST-50` to `ASSIST-53`) adds structured
-authoring upgrades gated by evaluation. Each phase is one branch and one pull
-request, with specifications updated before behaviour changes.
+The remaining authoring upgrades are gated by evaluation: blocking advisory
+findings, structured steps with formula text, typed banding and rating,
+item-level edits, and qualification per model. They build on the current
+free-code-card authoring path, node cards, data checks, egress controls and
+evaluation harness described in the component specifications. The packages
+below state the evidence needed to reopen each deferred capability.
 
 **Out of scope.** Converting code-mode nodes back into structured steps,
 editing inside submodels or wiring submodel occurrences, remote table
 discovery, and an OpenAI Responses API migration: none has evidence tying it
 to the build journeys the evaluation targets first.
+
+**Review packages.** `ASSIST-54` to `ASSIST-56` come from the
+[25 October 2026 codebase review](codebase-review-2026-10-25.md): the provider
+client as the policy describes it, bounded requests with a terminal event on
+every stream, and the core's hygiene; `ASSIST-57` to `ASSIST-59`, from the same
+review's pass over the tools, ops, data checks, catalog, recipes and assets:
+tools that never stall the server, facts the model can trust, and the tools'
+hygiene; `ASSIST-60` from its pass over the chat panel.
 
 ## Priorities
 
@@ -81,6 +39,13 @@ to the build journeys the evaluation targets first.
 | ASSIST-51 | Deferred | P3 | Banding and rating are authored in one closed, model-friendly form. |
 | ASSIST-52 | Deferred | P3 | The model extends banding, rating, response and request nodes item by item. |
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
+| ASSIST-54 | Planned | P2 | The provider client uses the validated endpoint, classifies SDK errors by type, builds its request outside the failure catch-all, and logs provider errors redacted. |
+| ASSIST-55 | Planned | P2 | A message is bounded, the turn deadline ends every stream with a terminal event, the chat list is read off the event loop, and an oversized document is counted, not dropped. |
+| ASSIST-56 | Planned | P3 | The assistant core carries no test-only methods, one one-line helper, one readiness resolution per message, and names that mean one thing. |
+| ASSIST-57 | Planned | P2 | A tool never stalls the server: `inspect_node` profiles outside the save lock, the capability manifest is built once per installed set, an example is loaded once, and the egress policy is resolved once per call. |
+| ASSIST-58 | Planned | P2 | What the model is told is true: a join's execution failure is kept unless the validation raised it, the brief's columns follow the data, Load File's summary names the three file types, and no rule is stated that the product does not enforce. |
+| ASSIST-59 | Planned | P3 | A re-validated plan keeps a full TTL, the assistant imports the one canonical JSON encoder and one freeze helper, and its limits are declared once. |
+| ASSIST-60 | Planned | P3 | The chat panel recognises the server's "still finishing" answer by a code, shows the server's detail for every other failure, never throws from a click, and keeps a draft the store refused to send. |
 
 ## Planned improvements
 
@@ -96,7 +61,7 @@ the change card, identified by finding instance.
 **Acceptance:** Seeded cases are refused without acceptance and land with it;
 a partial join never blocks.
 
-**Dependencies:** `ASSIST-41`, `ASSIST-43`.
+**Dependencies:** Evaluation evidence that models ignore near-certain advisory findings.
 
 **Evidence:** `src/haute/assistant/_application.py::build_verified_plan`.
 
@@ -116,14 +81,14 @@ fixtures in both test suites. This adds a backend capability.
 parity fixtures pass in both suites; the evaluation shows a gain in structured
 steps without a loss in pass rate on the configured model.
 
-**Dependencies:** `ASSIST-21`, `ASSIST-36`.
+**Dependencies:** Evaluation evidence that structured authoring improves on the current free-code path.
 
 **Evidence:** `frontend/src/panels/editors/polarsSteps/formula.ts`;
 `src/haute/_polars_steps.py::render_polars_steps`.
 
 ### ASSIST-51 — Typed banding and rating authoring
 **Why:** Banding rules and rating tables are the most error-prone
-configurations; the package is deferred until the node cards from `ASSIST-22`
+configurations; the package is deferred until the existing node cards
 are shown not to be enough.
 
 **Plan:** Author banding factors with string boundaries (number, date or
@@ -135,7 +100,7 @@ the single-node recipes, rewriting the recipes section of the specification.
 **Acceptance:** The banding-to-rating replay case passes; shape errors in the
 evaluation fall.
 
-**Dependencies:** `ASSIST-22`, `ASSIST-36`.
+**Dependencies:** Evaluation evidence of shape errors with the existing node cards.
 
 **Evidence:** `src/haute/assistant/_recipes.py::expand_recipe`;
 `src/haute/_banding_config.py`.
@@ -152,7 +117,7 @@ names.
 **Acceptance:** Replay cases add a factor and a response field under a
 restricted egress policy.
 
-**Dependencies:** `ASSIST-35`.
+**Dependencies:** Evaluation evidence that whole-list edits remain inadequate under the current egress and read-before-write guards.
 
 **Evidence:** `src/haute/assistant/_ops.py::_apply_update_node`. On 2026-10-01,
 under internal egress, 11 of 37 failing live case-runs came from retyping
@@ -161,8 +126,9 @@ withheld lists and 6 were saved as silent corruptions; the dry-run's
 under a readable policy a rewrite of a node the turn has not read is `config_unread`.
 
 ### ASSIST-53 — Qualification per model
-**Why:** Nothing records which models the assistant works with. Deferred until
-the endpoints answer and the case portfolio exists.
+**Why:** The support matrix lists configurations but no qualification verdicts.
+Deferred until the configured endpoints and holdout case portfolio support
+repeatable live evaluation.
 
 **Plan:** Run the holdout split three times for the configured Databricks
 models, and for Anthropic and OpenAI models when a project provides keys,
@@ -172,6 +138,224 @@ failures excluded.
 **Acceptance:** The support matrix carries a qualified or unqualified verdict
 per configuration with run identifiers.
 
-**Dependencies:** `ASSIST-36`, `ASSIST-43`.
+**Dependencies:** Reachable configured endpoints and a representative holdout case portfolio.
 
 **Evidence:** `tests/assistant_eval/support_matrix.json`.
+
+### ASSIST-54 — The provider client as the policy describes it
+**Why:** The endpoint trust validation and the readiness `endpoint_host`
+describe `api.anthropic.com` and `api.openai.com`, but the SDK clients are built
+without an explicit `base_url`, so `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` in
+the process environment, which `haute serve` fills from the project `.env`,
+silently redirects the key, the prompt and project material to an endpoint the
+policy never checked (the installed SDKs read the variable whenever no
+`base_url` is passed); no code or test accounts for the override. Failures are
+classified by substrings of the SDK exception class name, so a wrong model name
+(404) or an overloaded endpoint (529) reads as a "stream failure", and the
+installed-SDK test parametrises only the classes that classify as intended. The
+Anthropic adapter builds its request inside the `try` whose catch-all classifies
+every exception as a provider failure, so a programming error in the history
+translation is shown as a provider failure, while the OpenAI adapter builds
+outside it. The raw SDK error string, which embeds the HTTP response body, is
+logged unredacted.
+
+**Plan:** Pass the validated endpoint explicitly to both constructors (or
+validate the environment variables like `[assistant].base_url` and report the
+real host); classify by `isinstance` against the SDKs' status and connection
+hierarchies with `stream` reserved for mid-stream failures, and extend the
+installed-SDK test to every status class; build the request before the `try`;
+log the error through `redact_sensitive_text` with the key as a known secret.
+
+**Acceptance:** With `ANTHROPIC_BASE_URL` set in the environment the constructed
+client's `base_url` is the validated endpoint (or readiness reports the
+variable's host after validation); a `NotFoundError` is reported as a status
+failure; a translation error reaches the internal-error path; no log line
+carries the response body unredacted.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/assistant/_providers.py::AnthropicProvider`;
+`src/haute/assistant/_providers.py::OpenAIProvider`;
+`src/haute/assistant/_providers.py::_failure_category`;
+`src/haute/assistant/_providers.py::_classify_sdk_error`;
+`src/haute/assistant/_config.py::_endpoint`; `tests/test_assistant_providers.py`.
+
+### ASSIST-55 — Bounded requests and a terminal event on every stream
+**Why:** `AssistantMessageRequest.message` has no length bounds and the server no
+body limit, so an empty message starts a turn that fails only after the stream
+opens and an arbitrarily large one is sent to the provider in every round and
+persisted on every append. The turn's wall clock is an `asyncio.timeout` around
+an async generator that yields to the response task, so a deadline that fires
+while the generator is suspended at a yield cancels the consumer, not the turn:
+no `failed` event is produced and the client sees a closed connection, against
+the one-terminal-event invariant (the ordinary path is covered by explicit
+deadline checks). Listing a pipeline's chats reads, parses and revalidates every
+persisted session file synchronously on the event-loop thread, blocking every
+other request while the chat list opens; a test pins the loop-thread call. A
+documentation file over 64 KB, and the 51st document, are dropped from project
+knowledge silently while an undecodable one fails loudly.
+
+**Plan:** `min_length` and `max_length` on `message` and a `max_length` on
+`session_id`; replace the outer timeout with per-step `asyncio.timeout_at`
+on each awaited step and convert its error to the existing turn-limit path, with
+a test whose consumer sleeps past the deadline between events; read and parse
+the session files on a worker thread (or keep a small summary beside each file)
+and merge on the loop; count omitted documents in the view and the tool result.
+
+**Acceptance:** An empty or over-long message is answered 422; a deadline during
+a slow consumer ends the stream with a `failed` event; the chat list blocks the
+loop for no file read; the project-knowledge result reports the omitted count.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/schemas.py::AssistantMessageRequest`;
+`src/haute/assistant/_loop.py::run_turn`; `src/haute/routes/assistant.py`;
+`src/haute/assistant/_session.py::list_sessions`;
+`src/haute/assistant/_project_knowledge.py`.
+
+### ASSIST-56 — Core hygiene
+**Why:** `AssistantTurn.as_dict`, `AssistantSession.as_dict` and
+`current_turn_deadline` have no production caller while the specification names
+them; `_provider_tools` is a no-op left from the retired lexical router and its
+tests assert its signature; collapsing text to one bounded line is written five
+times with three rules, and the two copies in `_loop.py` disagree on newlines;
+every message send resolves `haute.toml` twice and runs a `git` subprocess whose
+answer decides nothing on that path; `AssistantProvider` names both a `Literal`
+of provider ids and the adapter `Protocol`; the project-knowledge "cache" is
+write-only yet reports `cache_hit`.
+
+**Plan:** Delete the test-only methods and the no-op; one `one_line(text,
+limit)` helper; one config resolution per message; rename the `Literal`; use
+the index or rename the field.
+
+**Acceptance:** The named symbols are gone; one helper collapses text; a message
+send runs no `git`; the field name says what the code does.
+
+**Dependencies:** `ENGQ-R01` owns dead code outside this component.
+
+**Evidence:** `src/haute/assistant/_session.py::as_dict`;
+`src/haute/assistant/_providers.py::current_turn_deadline`;
+`src/haute/assistant/_loop.py::_provider_tools`;
+`src/haute/assistant/_loop.py::_bounded`; `src/haute/routes/assistant.py`;
+`src/haute/assistant/_config.py`;
+`src/haute/assistant/_project_knowledge.py::_write_cache`.
+
+### ASSIST-57 — Tools that never stall the server
+**Why:** `inspect_node` holds the process-wide, cross-process `save_lock` while
+its profile part collects up to a million rows in the preview worker, bounded
+only by the pipeline time limit (30 minutes by default), so every GUI save,
+Files-panel write, submodel operation, assistant read, dry run, apply and undo,
+and any other server process on the project, blocks for the profile's duration;
+only the parse needs the lock, the data part already collects outside it, and a
+wiring test pins the lock as held. `capability_manifest()` rebuilds every node
+and operation descriptor, the operation union, the canonical JSON and the
+SHA-256 on every call and only then consults a cache keyed by the digest it just
+computed (probed: about 47 ms per warm call), paid at least once per tool result
+on the event-loop thread, per project revision, per `read_reference` id and per
+system prompt. Every `read_reference` of an example re-hashes and re-copies the
+whole bundle into a fresh temporary directory. The egress policy is resolved
+from `haute.toml` at eight sites, several within one call.
+
+**Plan:** Prepare the profile under the lock and collect outside it, amending
+the specification's exemption and replacing the lock-held test with one that
+asserts the lock is free during collection; key the manifest cache on
+`(haute_version, digest of the installed capabilities)` and build on a miss
+only, with a test that a warm call constructs no descriptor; cache
+`load_example` per name; resolve the policy once in `_dispatch_tool` and thread
+it down.
+
+**Acceptance:** A save during a profile waits for no collection; a warm
+`capability_manifest()` call is under a millisecond; an example read twice
+hashes once; one policy resolution per tool call.
+
+**Dependencies:** `PCFG-R04` owns the current-directory root the policy is
+resolved from.
+
+**Evidence:** `src/haute/assistant/_tools.py::inspect_node`;
+`src/haute/assistant/_tools.py::_prepare_column_profile`;
+`src/haute/assistant/_catalog.py::capability_manifest`;
+`src/haute/assistant/_assets.py::load_example`;
+`src/haute/assistant/_tools.py::_dispatch_tool`; `tests/test_assistant_tools.py`.
+
+### ASSIST-58 — Facts the model can trust
+**Why:** A data check suppresses an Edge Join's `execution_failed` finding
+whenever its validated side holds duplicate keys, whatever the join raised, so a
+join that fails for another reason (key dtypes that differ between the sides;
+Polars raises `SchemaError`, distinguishable from the `ComputeError` a
+`validate` breach raises) reports only `join_validation_failed`, and the model
+fixes the duplicates while the join still fails. The graph brief's resolved
+columns are cached per project revision, which covers the pipeline file,
+`haute.toml` and the ledger but not the data files, so a column added to a
+parquet between turns leaves the turn context showing the old columns while
+`inspect_node`'s schema part shows the new ones. The prompt's node index tells
+the model Load File loads "a pickle, JSON, joblib or CatBoost file" while the
+product accepts three types and the same node's usage note says so. The Source
+Switch note states "use at most one switch per pipeline" as a rule the product
+does not enforce. The low-level module map still describes a request-text router
+in `_recipes.py` that the high-level specification says does not exist.
+
+**Plan:** Replace the execution finding only when the failure is the
+`ComputeError` the validation raises; key the brief cache on the revision plus
+the lineage's input identity (or a short TTL); derive the Load File summary from
+`EXTERNAL_FILE_TYPES` and add the summaries to the usage-note test; reword the
+switch note as guidance; delete the module-map sentence.
+
+**Acceptance:** A join with duplicates on its join side and mismatched key
+dtypes reports both findings; a column added to a data file appears in the next
+turn's brief; the summary and the loader agree on the file types.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/assistant/_data_check.py::_replaced`;
+`src/haute/assistant/_tools.py::_brief_nodes`;
+`src/haute/assistant/_catalog.py::_SUMMARIES`;
+`src/haute/assistant/_catalog.py::_USAGE_NOTES`; `src/haute/_io.py::EXTERNAL_FILE_TYPES`;
+`specs/assistant/low-level.md`.
+
+### ASSIST-59 — Tool hygiene
+**Why:** A repeated identical dry run keeps the first dry run's expiry:
+`PlanStore.put` on a still-`validated` record replaces the receipt but never
+refreshes `expires_at`, so a plan re-validated late in its ten minutes is
+reported valid with a hash that expires seconds later and the apply answers
+`plan_expired`. `_ops._canonical_json` is a second canonical JSON encoder beside
+`haute._cache.canonical_json`, whose docstring forbids a second one, and three
+recursive freeze helpers exist with two thaw helpers. Every operation descriptor
+declares the same hand-written limits as literals duplicating the tool module's
+constants, and the 30-second timeout they state is true of the data part alone.
+
+**Plan:** Refresh `expires_at` on a re-put of a `validated` plan with a test;
+import the one encoder and move one freeze/thaw pair into `_wire_ops.py`;
+declare the limits once and state the timeout per operation or drop it.
+
+**Acceptance:** A plan re-validated at `ttl - ε` stays applicable for a full
+TTL; one encoder, one freeze pair; the limits have one definition.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/assistant/_ops.py::PlanStore`;
+`src/haute/assistant/_ops.py::_canonical_json`; `src/haute/_cache.py::canonical_json`;
+`src/haute/assistant/_catalog.py::_freeze`; `src/haute/assistant/_wire_ops.py`.
+
+### ASSIST-60 — The chat panel's failures and clicks
+**Why:** The send-time 409 notice is chosen by comparing `error.detail` with the
+server's English sentence ("An assistant turn is already running"), and every
+other HTTP failure (500, 403, 422, 503) is rendered as "Turn interrupted" with
+the server's detail discarded. Two assertions throw from click paths (a
+checklist link whose card is missing; Undo on a card outside an open chat),
+which React does not route to the error boundary, so the click silently does
+nothing. The composer clears the draft before the store re-checks the send gate,
+so a send refused at the gate loses the typed text.
+
+**Plan:** A stable code on the server's 409 and a match on it; render other
+failures as `failed` with the detail; disable the link when the card is absent
+and set a notice instead of throwing; clear the draft only after a successful
+send.
+
+**Acceptance:** A 503 shows the server's detail; a reworded 409 sentence still
+shows the still-finishing notice; a refused send keeps the draft.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/stores/useAssistantStore.ts`;
+`src/haute/routes/assistant.py`; `frontend/src/panels/assistant/BuildChecklist.tsx`;
+`frontend/src/panels/assistant/Composer.tsx`.

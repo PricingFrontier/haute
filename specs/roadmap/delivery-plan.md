@@ -1,11 +1,11 @@
 # Delivery plan
 
-The order in which the active roadmap packages are delivered from one
-checkout, without parallel worktrees. Written on 24 September 2026, after
-the parallel lanes' second rounds merged (PRs #236 to #250). Each package's
-entry in its component roadmap owns the problem, plan, acceptance and
-evidence; this file owns only the grouping and the order. When a phase's PR
-merges, remove its rounds from the table.
+The order for the scheduled roadmap packages, delivered from one checkout
+without parallel worktrees. Each package's entry in its component roadmap
+owns the problem, plan, acceptance and evidence; this file owns only the
+grouping and the order. Remove a round when its packages are complete.
+Round numbers remain stable when earlier rounds are removed. The table is
+not an inventory of all active work; see [Not scheduled](#not-scheduled).
 
 ## Working method
 
@@ -15,9 +15,8 @@ merges, remove its rounds from the table.
   commit per package with the package ID in the message, and open one PR for
   the phase. A phase starts only after the phases holding its rounds' *Needs*
   have merged. While a phase's CI runs, another phase may start on its own
-  branch from `origin/main` if it needs nothing unmerged (phases C and D are
-  independent of each other, and phase H of every earlier phase); never build
-  on an unmerged branch.
+  branch from `origin/main` if it needs nothing unmerged; never build on an
+  unmerged branch.
 - **Per package.** Follow the [working protocol](README.md#working-protocol):
   reverify against `HEAD` and retire the package if its outcome already
   holds; update the owning specification first; add the smallest failing
@@ -47,16 +46,14 @@ merges, remove its rounds from the table.
 | D | 10 | Generated contracts | `API-R03`: node data, cache, JSON-cache status and input cache; output write, destination and assemble dry run; one shared execution-metrics validator | 8 | L | The groups that carry no node config or editor document, generated once the job failure records have settled. |
 | D | 11 | Reuse | `SUB-R01` | — | L | Node-level instances go before the editor-state move and the typed configs would have to model them. Its first step proves the one-node submodel form and stops if an instance use is not covered. |
 | E | 12 | Editor state | `PCFG-R08`, `CACHE-S25` | 11 | M | `CACHE-S25` keys caches on the whole config once editor state has left it. |
-| E | 13 | Typed node configs | `PCFG-R07`, then `API-R03`: pipeline load and save, preview, trace, submodel, recovery and repair, and JSON-cache inference | 10, 12, 20 | L | These `API-R03` groups carry node configs or the editor document, so they follow the typed models. Round 20 establishes the Model Scoring file source and the remaining Load File config; round 21 extends the same models with external-family selection and pyfunc trust. Completes `API-R03`. |
+| E | 13 | Typed node configs | `PCFG-R07`, then `API-R03`: pipeline load and save, preview, trace, submodel, recovery and repair, and JSON-cache inference | 10, 12 | L | These `API-R03` groups carry node configs or the editor document, so they follow the typed models. The existing Model Scoring file source supplies its config seam; round 21 extends the same models with external-family selection and pyfunc trust. Completes `API-R03`. |
 | E | 14 | Node specification and results store | `PCFG-R09`, `FSH-R03` | 13 | M | Both build on the typed models and the complete generated contract. |
 | F | 15 | Cache measurements | `CACHE-S17`, `CACHE-S22`, `CACHE-S18`, `CACHE-S13` | 12 | M | Each runs its measurement and builds only past its gate, once the planner and config changes above have landed. |
 | F | 16 | Containment | `SBX-R01` | 9 | M | The remaining path comparisons, after the project context has deleted the resolvers that held many of them. |
 | F | 17 | Dead code | `ENGQ-R01` | 16 | M | After the refactors have deleted what they replace; adds knip to the frontend lint. |
 | F | 18 | Test organisation | `ENGQ-R05` | 17 | L | Last, so the suite is reorganised once, under the risk-based coverage rule. Several PRs, by component. |
-| H | 20 | Model files in Model Scoring | `MSC-03`, `MSC-04` | — | L | The file source reads the parsed Model Scoring source (`src/haute/_model_source.py`, shaped as the Model Scoring slice of `PCFG-R07` and absorbed by it in round 13) and the model family registry (`src/haute/_model_flavors.py`); CatBoost leaves Load File once Model Scoring scores files. If round 9 has not merged, the model path resolves through the current pipeline-directory resolver and `PCFG-R04` migrates it with the others. |
-| I | 21 | Models trained outside Haute | `MSC-06`, then `MSC-05` | 20 | L | External XGBoost and LightGBM files first, as decided; pyfunc files after, on the same file source. |
-| J | 22 | Polars 2 | `PL2-01`, `PL2-03`, `PL2-08`, `PL2-09`, `PL2-11`, `PL2-16`, `PL2-04`, `PL2-10`, `PL2-05`, `PL2-06`, `PL2-07`, `PL2-12`, `PL2-02`, `PL2-19`, `PL2-14`, `PL2-13`, `PL2-15` | — | L | Independent of every other phase. The pin moves with every seam it breaks and turns spilling on, so the round is one branch and one PR with spilling contained; its six decisions (`PL2-04`, `PL2-06`, `PL2-07`, `PL2-12`, `PL2-16`, `PL2-19`) were taken on 17 October 2026. Work delivered on Polars 1 afterwards would be revisited for Polars 2, so it goes next. |
-| J | 23 | Polars 2 evidence | `PL2-17`, `PL2-18` | 22 | L | Measurements on Polars 2 decide the operator memory policies, whether spilling is turned on and the worker baselines. Two or more PRs: the measurements, then the policy changes they justify. |
+| I | 21 | Models trained outside Haute | `MSC-06`, then `MSC-05` | — | L | External XGBoost and LightGBM files first, as decided; pyfunc files after, on the same file source. |
+| J | 23 | Remaining Polars 2 evidence | `PL2-17`, `PL2-18` | — | L | Reverify the training overhead and width calibration, operator evidence at `10m`, and worker baselines. Apply only the policy changes those measurements justify. |
 
 Sizes are rough: M is a day or so, L several days or more than one PR.
 
@@ -67,11 +64,6 @@ date its entry records; raise an objection before its round starts.
 
 - `SUB-R01`: `@pipeline.instance` and `instanceOf` are rejected; **Create
   Instance** makes a one-node submodel with a second occurrence.
-- `MSC-03`: Model Scoring's **MODEL SOURCE** gains **Model file**. CatBoost
-  artifacts with unknown baseline semantics require an explicit offset or
-  no-offset contract across file, run and registered sources.
-- `MSC-04`: Load File no longer offers **CATBOOST**, and a config naming it is
-  refused as an unsupported file type.
 - `MSC-06`: Model Scoring scores XGBoost and LightGBM files trained outside
   Haute, under a contract drafted in the editor that declares missing-value
   and offset semantics; unsupported objectives and response transforms fail.
@@ -79,35 +71,14 @@ date its entry records; raise an objection before its round starts.
   trust of their content digest. Inspection does not execute package code;
   changed contents require a new trust decision.
 
-The Polars 2 round changes these, as decided on 17 October 2026 by one rule:
-of the robust options, the one that uses least memory, then the fastest.
-
-- `PL2-04`: a Join step or Edge Join carries a required **Maintain order**
-  (new joins keep their inputs' order) and **Sort rows** is stable; for
-  multi-quote requests, deploy validation refuses a pipeline that cannot be
-  proved to keep one row per request in request order (a filter, an inner
-  join, a join whose other side is not proven unique, a sort, an unordered
-  join, an unpivot), so a decline becomes a flag column, and a lookup the
-  deployment carries whose join keys repeat, after its post-load code, is
-  refused when the deployment is built.
-- `PL2-06`: **Change types** parses text into dates with a required format; a
-  numeric **is one of** filter fails naming its step when its column changes
-  between integer, float and `Decimal`; and the step editor offers only the
-  casts, aggregations and functions a column's type accepts.
-- `PL2-07`: a headerless CSV, Excel or ODS Data Input must name every column,
-  and a CSV `schema` is matched by name.
-- `PL2-12`: map columns are converted losslessly where Haute holds the data
-  and refused in a directly scanned Parquet file, extension columns load as
-  their storage type, and an `Int128` feature is refused with a cast hint.
-- `PL2-16`: Polars' spilling stays off, as on 1.44, with its directory inside
-  Haute's runtime storage; a pipeline run in a user's own Python process keeps
-  that process's Polars settings.
-- `PL2-19`: a served model pins the editor's Polars version and refuses to
-  load under another.
-
 ## Not scheduled
 
-Deferred packages start only when their trigger is met: `CACHE-S19` ([caching](caching.md)), `EDA-E18`, `EDA-E23` and
+The component roadmaps remain the complete inventory. Packages outside the
+rounds above, including the [25 October audit](codebase-review-2026-10-25.md)
+packages, have not been assigned a round; that does not defer their stated
+priority. Decision packages need the choice in their entry before scheduling.
+
+Deferred packages start only when their trigger is met. For example, `CACHE-S19` ([caching](caching.md)), `EDA-E18`, `EDA-E23` and
 `EDA-E24` ([Explore and EDA](explore-eda.md)) and `MSC-07`
 ([model scoring](model-scoring.md)) wait for the evidence or demand their
 entries name.

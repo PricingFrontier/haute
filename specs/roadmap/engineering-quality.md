@@ -10,7 +10,9 @@ specified in
 [23 September 2026 codebase review](codebase-review-2026-09-23.md). The
 `ENGQ-CI` packages come from the 30 September 2026 CI duration study: per-test
 timings from diagnostic PR #279 (run 36769548458) and the sharded lanes of
-PR #280.
+PR #280. `ENGQ-CI06`, `ENGQ-R06` and `ENGQ-R07` to `ENGQ-R11` come from the
+[25 October 2026 codebase review](codebase-review-2026-10-25.md), which also added
+evidence to `ENGQ-R01` and `ENGQ-R05`.
 
 ## Priorities
 
@@ -21,6 +23,13 @@ PR #280.
 | ENGQ-CI05 | Planned | P3 | The compatibility shards are balanced by durations measured without coverage. |
 | ENGQ-R01 | Planned | P3 | Production code that nothing calls, or only tests call, is removed. |
 | ENGQ-R05 | Planned | P3 | Tests are organised by component and behaviour, not by coverage campaign. |
+| ENGQ-CI06 | Planned | P3 | Haute's own workflows pin every action by commit. |
+| ENGQ-R06 | Planned | P3 | The build hook fails with the install hint when Node is missing instead of guessing a machine path. |
+| ENGQ-R07 | Planned | P2 | Every gate runs on every run: a red coverage shard fails the coverage gate instead of skipping it, the documentation site builds strictly on every pull request, the warnings filter holds in the exploration lane and in ledger evidence, and the two safety-critical coverage lists agree with each other and the specification. |
+| ENGQ-R08 | Planned | P2 | The suite exercises what production runs: a representative route slice under the process execution mode, the production preparation-join bound, a flaky browser test made visible, and fixture git commands that fail loudly. |
+| ENGQ-R09 | Planned | P3 | The write-sandbox ratchet moves: the observe census is recorded and may not grow, modules with an empty census become strict, the system temp directory is a stated gap or no longer allowed, and the lint allowlist is keyed by site. |
+| ENGQ-R10 | Planned | P3 | Repository-health hygiene: file-reading tests carry the `meta` marker, the specification's bundle and lint numbers are read from their files, `mypy` covers `scripts/`, the package smoke derives its version prefixes, the Windows preflight is held in step, the dependency alarm fires on schedule only, and the e2e server stops its Node child on Windows. |
+| ENGQ-R11 | Decision | P2 | Mutation witnesses cover the rating step and deploy scoring, the modules whose silent failure changes a price, or the specification says why the three JSON-boundary targets suffice. |
 
 ## Planned improvements
 
@@ -173,7 +182,10 @@ reports 8 unused files (including the banding and rating editor barrels), the
 whole `panels/editors/index.ts` barrel of 22 editors (consumers use the lazy
 editors), 33 unused exports, 91 unused exported types and an unlisted
 `@lezer/highlight` dependency. The API client's `checkHauteSession` has no
-production caller left.
+production caller left. The 25 October 2026 review added two parameters that are
+accepted and never read, `_resolve_node_config(n_params=...)` and
+`render_ave_feature_svg(is_categorical=...)`, which every caller computes and
+passes.
 
 **Plan:** Delete the unreferenced code. For test-only functions, either move
 the tests to the production entry point the function was meant to serve or
@@ -204,7 +216,9 @@ is gone; tests import the owning modules.
 `frontend/src/panels/editors/index.ts`;
 `frontend/src/panels/editors/banding/index.ts`;
 `frontend/src/panels/editors/rating/index.ts`;
-`frontend/src/api/client.ts::checkHauteSession`.
+`frontend/src/api/client.ts::checkHauteSession`;
+`src/haute/_config_builder.py::_resolve_node_config`;
+`src/haute/modelling/_charts.py::render_ave_feature_svg`.
 
 ### ENGQ-R05 — Organise tests by behaviour
 **Why:** Backend tests total 421,000 lines, 2.3 times the source they test;
@@ -214,7 +228,8 @@ files named after coverage campaigns or fix waves rather than behaviour:
 `test_algorithms_coverage.py`, `test_json_cache_coverage_uplift.py`,
 `test_coverage_gaps.py`, `test_dry_fixes.py`,
 `test_expression_parser_w3_fixes.py`, `test_trace_w4_fixes.py` and eight
-more `*_coverage` modules. A developer cannot find the tests for a behaviour
+more `*_coverage` modules; the 25 October 2026 review's sweep counted 35 modules
+named after a campaign or a fix wave. A developer cannot find the tests for a behaviour
 by name, and a full serial run takes about forty minutes.
 
 **Plan:** Merge campaign-named modules into the component and behaviour
@@ -234,3 +249,187 @@ modules is unchanged; suite runtime is recorded before and after.
 `tests/test_json_cache_coverage_uplift.py`; `tests/test_coverage_gaps.py`;
 `tests/test_dry_fixes.py`; `tests/test_expression_parser_w3_fixes.py`;
 `tests/test_trace_w4_fixes.py`.
+
+### ENGQ-CI06 — Actions pinned by commit
+**Why:** Haute's own workflows pin actions by floating major tag
+(`actions/checkout@v4`, `astral-sh/setup-uv@v4`, `actions/upload-artifact@v4`; a
+hundred such lines across `.github/workflows`), so a compromised tag runs with
+the release and container-registry secrets. The templates `haute init` writes
+are `CLI-R06`.
+
+**Plan:** Pin each action to a commit SHA with the tag in a comment and let
+Dependabot keep them fresh.
+
+**Acceptance:** Every `uses:` under `.github/workflows` names a 40-hex commit; a
+lint step fails on a tag pin.
+
+**Dependencies:** None.
+
+**Evidence:** `.github/workflows/ci.yml`; `.github/workflows/release.yml`;
+`.github/workflows/container-smoke.yml`.
+
+### ENGQ-R06 — The build hook fails like the CLI
+**Why:** When Node is not on `PATH`, the build hook falls back to
+`C:\Program Files\nodejs\npm.cmd` and prepends that directory to `PATH`, the
+machine-layout fallback the CLI's `_npm` helper deliberately removed because it
+hides the real problem.
+
+**Plan:** Fail with the same install hint as the CLI.
+
+**Acceptance:** A build without Node on `PATH` stops with the hint; no path under
+`Program Files` appears in the hook.
+
+**Dependencies:** None.
+
+**Evidence:** `hatch_build.py::_npm`; `hatch_build.py::_node_env`;
+`src/haute/cli/_helpers.py::_npm`.
+
+### ENGQ-R07 — Every gate runs on every run
+**Why:** The `backend-coverage-gate` job has no `if:` and the shard's coverage artifact is
+uploaded without `if: always()`, so one red coverage shard skips the 90 % floor, the
+per-file critical floors and the changed-code gate entirely and withholds the coverage
+data; a pull request red for an unrelated flaky test learns about an uncovered
+safety-critical line only on the next cycle. The mutation gate already protects itself
+against this (`!cancelled()` plus explicit failure steps) and the specification promises
+it for mutation alone. `mkdocs build --strict` runs only after a merge to `main` and only
+when `docs/` or `mkdocs.yml` changed, so a broken nav entry or dead link merges green and
+is found by a red Pages deploy. The weekly exploration lane and all 31 ledger evidence
+commands pass `-p no:warnings`, which unloads the warnings plugin, so the `RuntimeWarning`
+error filter the pull-request lane applies does not hold there. The changed-code gate's
+35 paths and the 34 critical floors differ by `_workbench_visibility.py`, which the
+specification's "exactly this set" does not name, and no test keeps the two lists equal
+(both checker tests build synthetic `pyproject.toml` files). From the [25 October 2026
+codebase review](codebase-review-2026-10-25.md) (ENG-1, ENG-2, ENG-4, ENG-8).
+
+**Plan:** Upload each shard's coverage and JUnit files `if: always()`, run the gate job
+`if: !cancelled()` and fail its first step explicitly when any shard did not succeed. Add
+a `docs-build` job to `ci.yml` running `mkdocs build --strict`, or run the docs build on
+`pull_request` too. Replace `-p no:warnings` with an ignore of the specific Hypothesis
+warning, and have the ledger validator reject evidence commands that disable the plugin.
+Seed a floor for `_workbench_visibility.py` and name it in the specification, or drop it
+from the paths; add a `meta` test asserting the two lists and the specification agree.
+
+**Acceptance:** A workflow run with one failed shard shows the coverage gate failed, not
+skipped, with every shard's artifact present; a pull request with a broken docs nav entry
+is red; a `RuntimeWarning` fails the exploration lane; the list-parity test passes and
+fails when one list gains a path.
+
+**Dependencies:** None.
+
+**Evidence:** `.github/workflows/ci.yml`, `.github/workflows/mutation.yml`,
+`.github/workflows/docs.yml`, `.github/workflows/property-exploration.yml`,
+`tests/workflow_coverage.toml`, `pyproject.toml`, `tests/test_check_changed_coverage.py`,
+`tests/test_check_critical_coverage.py`, `specs/engineering-quality/high-level.md`.
+
+### ENGQ-R08 — The suite exercises what production runs
+**Why:** An autouse fixture runs every preview, trace and estimate in `thread` mode while
+production defaults to `process`; only 21 sites in 11 modules opt back in, so the pool's
+result serialisation, worker preload and environment propagation are exercised by a few
+dozen tests and a route defect that shows only across the process boundary passes the
+route suite; the engineering-quality specification does not mention the fixture. A second
+autouse fixture rewrites the training service's preparation-join bound from 10 s to 120 s
+for every test, so the production bound is never exercised. Playwright retries twice in CI
+and nothing reports a test that passed on its third attempt; `failOnFlakyTests` is
+available and unset. The test helper `git_run` runs git without `check=True`, so a failed
+`init` or `commit` in fixture setup surfaces later as an unrelated assertion. From the
+[25 October 2026 codebase review](codebase-review-2026-10-25.md) (ENG-5, ENG-6, ENG-10,
+ENG-16).
+
+**Plan:** Document the thread-mode fixture in the specification and run one
+representative route slice (preview, trace, node data, optimiser estimate) under `process`
+mode in a lane, or make the fixture opt-out per module. Keep the production join bound and
+widen it only for the slow training-lifecycle tests, with one test pinning the default. On
+push to `main` set `failOnFlakyTests`, and on pull requests write the flaky titles to the
+job summary. `git_run` raises with stderr on failure.
+
+**Acceptance:** The route slice passes under `process` mode in CI; a test pinning the 10 s
+default exists; a browser test that passes only on retry is red on `main` and named in
+the pull-request summary; a failing fixture git command raises at the call.
+
+**Dependencies:** None.
+
+**Evidence:** `tests/conftest.py::_interactive_execution_test_mode`,
+`src/haute/_interactive_workers.py::resolve_interactive_execution_mode`,
+`tests/conftest.py::_patient_preparation_join`, `frontend/playwright.config.ts`,
+`tests/_git_helpers.py::git_run`, `specs/engineering-quality/low-level.md`.
+
+### ENGQ-R09 — The write-sandbox ratchet moves
+**Why:** Strict interception covers 4 of 603 test modules: `STRICT_FILES` has had no
+addition since 13 July 2026 and lost a module on 23 September. Observe mode allows the
+whole system temp directory, so a test writing to `tempfile.gettempdir()` is never
+recorded, and the specification's "Known gaps" does not say so. The observe census is
+printed to the terminal and never persisted or asserted on CI. The lint allowlist is
+count-based, so a file that swaps one violation for another at the same count passes
+in both directions. From the [25 October 2026 codebase
+review](codebase-review-2026-10-25.md) (ENG-7).
+
+**Plan:** Record the census as a CI artifact and assert it does not grow; move modules
+with an empty census into `STRICT_FILES` on a schedule; add the system temp directory to
+the Known gaps or stop allowing it in observe mode; key the allowlist by a
+`file:line:kind` fingerprint as the debt test does.
+
+**Acceptance:** The census artifact exists on every coverage run and a new observe-mode
+write fails the gate; the strict set grows at each scheduled pass; the lint fails on a
+swapped violation.
+
+**Dependencies:** None.
+
+**Evidence:** `tests/_write_sandbox.py::STRICT_FILES`, `tests/conftest.py`,
+`tests/test_write_sandbox_lint.py::EXPECTED_VIOLATIONS`,
+`specs/engineering-quality/low-level.md`.
+
+### ENGQ-R10 — Repository-health hygiene
+**Why:** The `meta` marker exists so file-reading repository-health checks do not fail
+identically on all six compatibility shards, yet only three modules carry it; the two
+heaviest scans (the debt scan and the write-sandbox lint, each with a 180 s timeout) and
+four other file readers run on every shard, so one stale summary turns seven jobs red.
+The specification states bundle ceilings of 285 and 1,581 KiB and "thirteen" lint
+exceptions while the checker's defaults are 298 and 1,703 KiB and the config has twelve;
+no test pins either. `mypy` excludes `scripts/` (12,486 annotated lines of CI gates) and
+the test helpers. The package smoke hand-copies engine version prefixes the dependency
+caps already state. The CI/preflight parity test reads `preflight.sh` only, so
+`preflight.ps1` can drift unnoticed. The unlocked-resolve alarm fires on any failure
+rather than on schedule or `force_fail` as the other monitoring lanes do. The e2e server
+script stops Vite with `terminate()` on the npm launcher, which on Windows leaves the Node
+child holding the port. From the [25 October 2026 codebase
+review](codebase-review-2026-10-25.md) (ENG-3, ENG-9, ENG-11, ENG-12, ENG-13, ENG-14,
+ENG-15).
+
+**Plan:** `pytestmark = pytest.mark.meta` on the pure file readers and per-test marks in
+the two mixed modules, with an assertion that every test importing the scanners is
+marked. Replace the specification's hard numbers with references to the files, or pin
+them with a test. Add `scripts/` to the `mypy` invocation. Derive the smoke's expected
+versions from the project's specifiers. Parse `preflight.ps1` in the parity test. Use the
+shared alarm condition. Reuse the tree-kill helper on `win32`.
+
+**Acceptance:** The compatibility lanes deselect every file-reading check; the
+specification carries no number the files contradict; `mypy scripts/` passes in CI; a
+cap bump needs no script edit; a drift between the two preflight scripts fails the parity
+test.
+
+**Dependencies:** None.
+
+**Evidence:** `pyproject.toml`, `tests/test_test_debt.py`, `tests/test_write_sandbox_lint.py`,
+`tests/test_docs_accuracy.py`, `frontend/scripts/check-bundle-size.mjs`,
+`frontend/eslint.config.js`, `specs/engineering-quality/low-level.md`,
+`scripts/package_smoke_check.py`, `tests/test_frontend_bundle_budget_ci.py`,
+`scripts/preflight.ps1`, `.github/workflows/dependencies.yml`,
+`scripts/run_frontend_e2e_server.py::_terminate_process`, `scripts/init_smoke.py`.
+
+### ENGQ-R11 — Mutation witnesses for the price-changing modules
+**Why:** The safety-critical list has 35 modules but mutation witnesses cover three
+JSON-boundary targets only; the rating step and deploy scoring, the modules whose silent
+failure changes a price, have coverage floors but no mutation budget. The specification
+states the set deliberately, so this is a scope decision rather than drift. From the
+[25 October 2026 codebase review](codebase-review-2026-10-25.md) (ENG-17).
+
+**Plan:** Decide. Either add a `rating` target (the step is pure Polars over small
+frames, so a witness command is cheap) and a deploy-scoring target before production
+use, or state in the specification why the three targets suffice.
+
+**Acceptance:** One of the two, with the specification's mutation sentence saying which.
+
+**Dependencies:** None.
+
+**Evidence:** `mutation/targets.json`, `pyproject.toml`, `src/haute/_rating.py`,
+`src/haute/deploy/_scorer.py`, `specs/engineering-quality/high-level.md`.

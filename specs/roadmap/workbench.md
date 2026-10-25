@@ -32,6 +32,10 @@ and rules named once and used by many sheets were offered and not taken. Fields 
 columns with conditions of their own, not taken that day, were asked for on 2026-10-22;
 cells shown row by row through "this row" tests were offered again and not taken.
 
+`WB-33` to `WB-38` come from the [25 October 2026 codebase
+review](codebase-review-2026-10-25.md): the server's pricing executor and first saves, and
+what the review found in the Workbench view and the underwriter app in the browser.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -46,6 +50,11 @@ cells shown row by row through "this row" tests were offered again and not taken
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-28 | Planned | P3 | A condition tests a field against another field, text within text, and a date against another date give or take a number of days. |
 | WB-29 | Planned | P3 | A component that takes nothing typed, or a section or a sheet holding only such components, shows by conditions on the price, applied after it so the price never decides what is priced. |
+| WB-33 | Planned | P2 | A pricing that outruns its timeout cannot hold the app's executor: pricings run in a bounded pool and the app answers 503 when it is full. |
+| WB-35 | Planned | P2 | Every quote action in the app says what it did: a quote made while the page stays is announced, a storeless page offers Reload when the release changed, "Open the newest" opens once, and the Quotes page's keys leave a focused select alone. |
+| WB-36 | Planned | P2 | A number list in a Show when condition never splits a thousands separator into two values, and the app reads quote_details ids from one typed map. |
+| WB-37 | Planned | P3 | The column key, the refusal predicate, the 409 detail reader, the empty visibility constants, the half-window width, the collapsible group and the pricing basis each exist once in the workbench and the app. |
+| WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
 
 ## Planned improvements
 
@@ -165,7 +174,7 @@ the run failed and the copy to restore named.
 the app's tests make, once its formats are decided) and WB-12 (the test quotes). The Azure
 resources and identities, provided by the project's IT team. Shared ground with
 [BUG-24](bugs.md#bug-24--container-deploys-log-in-to-their-registry) (the registry login
-before a push); impact's input, once BUG-23, is the `[safety]` portfolio sample, or the test
+before a push); impact's input is the `[safety]` portfolio sample, or the test
 quotes without one.
 
 **Evidence:** `src/haute/_scaffold.py::github_deploy_yml`, `::github_deploy_prod_yml`,
@@ -270,7 +279,11 @@ and is recorded here before the backend's slice. The backend is that engine's dr
 an optional extra, as the Databricks clients are, signing in with the app's managed identity
 where the engine allows it, with the store's tests run against SQLite and that engine alike
 (a service container in CI), and the form copies kept once through that engine's own
-insert-if-absent. A reference's canonical form is compared byte for byte
+insert-if-absent. The current generic `_keep_form` check-then-insert is not a
+supported server-engine implementation; SQLite already has its atomic insert. Use
+the chosen engine's atomic form or a savepoint that rolls back a narrowly identified
+duplicate-key conflict before continuing. Merely catching `IntegrityError` leaves a
+PostgreSQL transaction aborted. A reference's canonical form is compared byte for byte
 ([workbench](../workbench/high-level.md)), so the quote's `reference_key` and its counter's
 take that engine's binary collation (Azure SQL's default ignores case and accents), in the
 metadata and a migration alike, and the unique index on a quote's identity keeps the quotes
@@ -289,7 +302,11 @@ and the fourth, names itself the oldest schema instead, so the previous release 
 database naming the upgrade; the deploy keeps a copy of the database from before such a
 migration, and rolling back past it is restoring that copy.
 
-**Acceptance:** The same store tests pass against SQLite and the server engine; a deploy
+**Acceptance:** The same store tests pass against SQLite and the server engine. Two
+concurrent first saves of a new form revision both commit their quotes and keep one
+form copy on the chosen engine's service container; a non-duplicate constraint error
+still fails the transaction. Forcing the generic branch on SQLite is not evidence of
+server transaction semantics. A deploy
 migrates IT's instance under the schema's identity before the release starts, and the app's
 identity cannot change the schema; the previous release's store tests pass against the
 schema a candidate's migrations leave, and the previous release starts on it, save after a
@@ -468,3 +485,141 @@ sides.
 table named as a fault); `src/haute/_workbench_visibility.py::_tested_column` (input tables
 alone); `src/haute/_workbench_tables.py::sample_quote` (the hidden columns the quote leaves
 out).
+
+### WB-33 — Pricings that outrun the timeout
+**Why:** The underwriter app prices a quote in the default executor under
+`asyncio.wait_for(..., PRICE_TIMEOUT_SECONDS)`; a pricing that outruns the 60 s is left
+running with no cancellation, so a pipeline slow on some quotes accumulates threads, and
+once the executor's workers (`min(32, cpus + 4)`) are all held every later pricing queues
+behind them and times out too, with no recovery until the stuck ones finish. This
+package comes from the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
+
+**Plan:** Price in a bounded executor sized for the app (or in the batch worker with a
+cancellable timeout), count the pricings in flight and answer 503 with a retry hint when
+the bound is reached.
+
+**Acceptance:** With the bound held by sleeping pricings, a further price request is
+answered 503 at once rather than timing out; when one finishes, the next is served.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_workbench_app.py::PRICE_TIMEOUT_SECONDS`.
+
+### WB-35 — Every quote action says what it did
+**Why:** Duplicate and Renew from a quote with unsaved values create the new quote on the
+server, close the window and only then ask the page's leave guard; `navigate` is called
+without `force` and its answer is dropped, so on Cancel the quote exists and nothing on
+the page says so (only the Save-as-new branch toasts). The storeless app (`OneQuote`)
+reads the preview store's error alone, so a release change arrives as "Pricing failed:
+This page was drawn for another release ... reload" with no Reload control; the Reload
+notice is rendered only by the store-backed page. "Open the newest" calls `openQuote`
+and then `navigate`, whose route effect calls `openQuote` again. The Quotes page gates
+`/` and `N` with `isTypingTarget`, so with the Order or Assigned-to select focused `N`
+opens the New quote window instead of the select's type-ahead; the pipeline editor and
+the Workbench view use `isFormControl` for such keys. From the [25 October 2026 codebase
+review](codebase-review-2026-10-25.md) (FWB-1, FWB-6, FWB-8, FWB-9).
+
+**Plan:** Ask the leave guard before Create for Duplicate and Renew, or toast "Made
+<label>" whenever the page does not move to the quote; state the guard case in the
+workbench specification's `send` description. Render the same Reload notice in
+`OneQuote` when `releaseChanged`. Make `navigate` report whether the path changed and
+call `openQuote` only when it did not. Guard the Quotes page's keys with
+`isFormControl`.
+
+**Acceptance:** Tests: Duplicate from a dirty quote followed by Cancel at the guard
+shows the toast naming the quote made (or the guard runs before creation and no quote is
+made); the storeless page shows the Reload notice on a 409 release mismatch; "Open the
+newest" reads the quote once; `N` with a select focused opens no window.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/app/useNewQuoteStore.ts::send`, `frontend/src/app/route.ts::navigate`,
+`frontend/src/app/UnderwriterApp.tsx::OneQuote`, `frontend/src/app/QuoteView.tsx`,
+`frontend/src/app/QuotesPage.tsx`, `frontend/src/hooks/keyboardTargets.ts::isFormControl`.
+
+### WB-36 — Number lists in Show when, and the quote_details ids from one map
+**Why:** "is one of" and "is not one of" on a number column without allowed values split
+the typed list on every comma, so a thousands-separated "1,000" becomes the values "1"
+and "000"; `parseTypedNumber` strips separators, so both pass `valueFits`, no fault
+shows, and the condition silently tests 1 and 0. The single-value field of the same
+column reads "1,000" correctly, and the specification shares the gap ("values typed
+comma-separated"). Separately, the app repeats Haute's quote_details column ids and
+names as string literals (`qd_is_renewal`, `qd_quote_name`, `qd_reference`, the listed
+columns) instead of reading `QUOTE_DETAILS_COLUMNS`, so a rename on the server passes
+`tsc` and the parity tests while the renewal tick, the name cell, the reference and the
+listed columns silently miss. From the [25 October 2026 codebase
+review](codebase-review-2026-10-25.md) (FWB-2, FWB-3).
+
+**Plan:** For Integer and Decimal columns take one value per field, or refuse a comma
+inside a number with a fault; keep the comma split for text; update both specification
+sentences. Export a typed id map from `workbenchForm.ts` (`QUOTE_DETAILS.is_renewal` and
+the rest) and import it at the four sites, or extend the parity test to assert each
+literal is a member of the table.
+
+**Acceptance:** Tests: "1,000" typed into an is-one-of on an Integer column is the one
+value 1000 or shows a fault, never two values; a renamed quote_details id fails `tsc` or
+the parity test.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/workbench/ShowWhenEditor.tsx`,
+`frontend/src/utils/sheetValues.ts::parseTypedNumber`,
+`frontend/src/utils/sheetVisibility.ts::valueFits`,
+`frontend/src/utils/workbenchForm.ts::QUOTE_DETAILS_COLUMNS`, `frontend/src/app/quoteValues.ts`,
+`frontend/src/app/QuoteView.tsx`, `frontend/src/app/useNewQuoteStore.ts`,
+`frontend/src/utils/quoteIdentity.ts`; `specs/workbench/high-level.md` and
+`specs/workbench/low-level.md` (the comma-separated sentences).
+
+### WB-37 — One copy of each workbench helper
+**Why:** The `tableId:columnId` key that looks, Order rows, the Columns list, the
+condition select, the draft's places and the window's fields are looked up by is
+hand-spelled in six places while `columnKey` is exported and already imported by two
+others; the format is load-bearing, so a change to it breaks lookups silently. The
+`refused` predicate (status under 500) is defined twice verbatim; the 409 detail is
+unwrapped by hand in two stores while `api/errors.ts` has an unexported reader; the
+empty visibility and locked constants, the half-window panel width, a collapsible titled
+group and the pricing basis expression (`basisOf` exists but two stores inline it) are
+each written two or three times; `adopted` is a module-level mutable in a component
+file. From the [25 October 2026 codebase review](codebase-review-2026-10-25.md) (FWB-4,
+FWB-5, FAP-14).
+
+**Plan:** Import `columnKey` everywhere and delete the private copies. Export
+`apiErrorRefused` and `apiErrorRawDetail` from `api/errors.ts` and use them in both
+stores. Export the empty constants from `useSheetValues.ts`. One `halfWindowWidth`
+helper, one `Collapsible` in `app/ui.tsx`, `basisOf` called from `useQuoteValues` and the
+preview store, `adopted` moved into the open-quote store.
+
+**Acceptance:** One definition of each by grep; the workbench and app tests pass
+unchanged.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/utils/sheetVisibility.ts::columnKey`,
+`frontend/src/workbench/ShowWhenEditor.tsx`, `frontend/src/workbench/panel/FieldOrder.tsx`,
+`frontend/src/workbench/panel/lookParts.tsx`, `frontend/src/workbench/sheet/fieldCells.ts`,
+`frontend/src/app/quoteValues.ts::basisOf`, `frontend/src/app/useNewQuoteStore.ts`,
+`frontend/src/app/useOpenQuoteStore.ts`, `frontend/src/api/errors.ts::rawDetailRecord`,
+`frontend/src/workbench/useSheetValues.ts`, `frontend/src/stores/useWorkbenchPreviewStore.ts`,
+`frontend/src/app/NewQuoteWindow.tsx`, `frontend/src/app/HistoryPanel.tsx`,
+`frontend/src/app/QuotesPage.tsx`, `frontend/src/workbench/PropertiesPanel.tsx`,
+`frontend/src/workbench/SchemaPane.tsx`.
+
+### WB-38 — Allowed values typed into an older form
+**Why:** The Allowed field carries a branch for "values typed in, as an older form holds
+them" (`TYPED_IN`), a shape the builder can no longer produce and `schemaProblems` names
+as a problem, while the server's `FormSpec` still accepts `options` with
+`options_source` null. Under the canonical-only policy historical input gets no special
+status: either the server refuses the shape and the branch goes, or the shape is
+canonical and should not be called "older". From the [25 October 2026 codebase
+review](codebase-review-2026-10-25.md) (FWB-7).
+
+**Plan:** Decide. Either `FormSpec` refuses `options` without `options_source` for input
+columns, and `TYPED_IN`, its test and the problem text are removed; or both stay and the
+specification and the field stop calling the shape older.
+
+**Acceptance:** One of the two, with the workbench specification saying which.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/workbench/schema/AllowedField.tsx::TYPED_IN`,
+`src/haute/_workbench_form.py::FormSpec`, `frontend/src/utils/workbenchForm.ts`.

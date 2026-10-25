@@ -43,10 +43,14 @@ file defaults to a family.
 | MSC-05 | Planned | P3 | Model Scoring scores an MLflow pyfunc model saved in the project. |
 | MSC-06 | Planned | P2 | An XGBoost or LightGBM model trained outside Haute scores under a declared contract. |
 | MSC-07 | Deferred | P3 | ONNX models score in Model Scoring. |
+| MSC-08 | Planned | P2 | Every scoring path compares a bound contract's dtypes with the live frame, and a model's explanation is decided from the loaded family, not the configured path. |
+| MSC-09 | Planned | P3 | Loader errors keep their meaning: a Haute refusal is not retried as corruption, a transport failure is not a missing contract, a CatBoost metadata failure is not swallowed, and the EBM offset link comes from the contract. |
 
 ## Planned improvements
 
-`MSC-05` and `MSC-06` each build on the file source on their own.
+`MSC-05` and `MSC-06` each build on the file source on their own. `MSC-08`
+and `MSC-09` come from the
+[25 October 2026 codebase review](codebase-review-2026-10-25.md).
 Each family they add is one registration in the model family registry
 (`src/haute/_model_flavors.py`).
 
@@ -259,3 +263,60 @@ extra.
 
 **Evidence:** `src/haute/deploy/_container.py` (`_ARTIFACT_EXT_TO_DEPS`);
 `frontend/src/panels/editors/ModelScoreEditor.tsx`.
+
+### MSC-08 — Dtypes checked on every path, explanation decided after loading
+**Why:** Outside deploy, a bound contract's `feature_types` and `target_type`
+are never compared with the scoring frame: the preview, batch and trace paths
+check feature names, their relative order and "categorical supplied as
+numeric" only, so an `Int64` feature trained as `String` (or a `Date` arriving
+as `String`) is cast and scored where the deploy scorer's
+`assert_contracts_match` refuses it. The trace decides whether a model has an
+explanation from the configured artifact path before loading: a
+registered-model source, or a run source that leaves `artifact_path` blank for
+auto-discovery, resolves to the directory family and shows no explanation even
+when the discovered artifact is a native file that loads with one.
+
+**Plan:** Compare the contract's `feature_types` with the live schema in
+`_validate_features` when a contract is bound, using the deploy helper's logic;
+decide the explanation after loading (the `family.explanation is None` check
+exists) and drop the pre-load gate.
+
+**Acceptance:** An `Int64` feature trained as `String` is refused in the
+preview with the deploy scorer's message; a registered native model shows its
+explanation in the trace.
+
+**Dependencies:** `DEP-R07` binds the run's contract on every path.
+
+**Evidence:** `src/haute/_model_scorer.py::_validate_features_uncached`;
+`src/haute/deploy/_scorer.py`;
+`src/haute/_model_explainability.py::_source_requests_supported_explanation`.
+
+### MSC-09 — Loader errors keep their meaning
+**Why:** `_load_with_bounded_retry` re-raises only `AttributeError`,
+`TypeError`, `KeyError`, `ConfigError` and `ArtifactVersionMismatchError`, so a
+readable model the loader refuses with `HauteValidationError` or
+`FeatureMismatchError` (a `.ubj`, `.lgbm` or `.tboost` without Haute's record,
+a contract whose hash fails) is treated as a corrupt download: deleted,
+re-downloaded and reported as persistently corrupt with the real reason only in
+the last error. `_resolve_run_contract` rewraps every failure, an
+authentication or transport error included, as "Run has no feature contract",
+so an infrastructure failure reads as a missing artifact. `catboost_class_labels`
+swallows a failed metadata read and falls back to `classes_`, against the
+module's rule and in a branch `_wrap_catboost` already makes dead. The EBM
+loader derives `offset_link` from `identity.link` instead of the contract's own
+field.
+
+**Plan:** Re-raise every `HauteError` and `HauteValidationError` and retry only
+on non-Haute exceptions; catch only the not-found shape in the contract fetch;
+remove the metadata `try/except`; read `contract.offset_link`.
+
+**Acceptance:** A `.ubj` without Haute's record fails once with its own message
+and no re-download; a 401 from the artifact store reaches
+`classify_mlflow_error`; the dead branch and the second source of truth are
+gone.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_mlflow_io.py::_load_with_bounded_retry`;
+`src/haute/_mlflow_io.py::_resolve_run_contract`;
+`src/haute/_mlflow_io.py::catboost_class_labels`; `src/haute/modelling/_ebm.py`.

@@ -15,34 +15,52 @@ currently startable package. Priority `P1` marks a package that threatens
 persisted work, computed results, or security; `P2` a material correctness, UX,
 or maintenance issue; `P3` opportunistic work.
 
+Audit finding counts describe the original review inventory, not a count of release
+blockers or independently reproduced defects. Keep measured defects, source-supported
+risks, unconfirmed reachability, product decisions and maintenance work distinct.
+The [25 October validation](codebase-review-2026-10-25.md#validation--25-october-2026)
+records corrections to that audit's claims and proposed remedies.
+
 | Component | Improvement surface | Start with |
 |---|---|---|
-| [Assistant](assistant.md) | Blocking data findings, structured step authoring, typed banding and rating, item-level edits and per-model qualification (all deferred) | — |
-| [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup, one worker primitive | `ROAD-WORKER-05` |
-| [Bugs](bugs.md) | Defects found outside component work: statements a save drops from a submodel file, generated CI/CD files that fail before a first container release or cache nothing on GitLab, and text that no longer matches behaviour | `BUG-24` |
+| [Assistant](assistant.md) | The provider client as the policy describes it, bounded requests with a terminal event on every stream, tools that never stall the server, facts the model can trust, the core's and the tools' hygiene, the chat panel's failures and clicks; blocking data findings, structured step authoring, typed banding and rating, item-level edits and per-model qualification (all deferred) | `ASSIST-54` |
+| [Background jobs and API lifecycle](background-jobs-api.md) | A shutdown that cancels every job, one failure classification with persistence failures surfaced, one worker envelope and one cgroup resolver, one worker primitive | `ROAD-WORKER-06` |
+| [Bugs](bugs.md) | Defects found outside component work: statements a save drops from a submodel file, generated CI/CD files that fail before a first container release or cache nothing on GitLab, text that no longer matches behaviour, the hosted app's boot and build script, the UC transport's clients, the storage binding's unknown keys and a quadratic schema resolution in banding, Databricks browsing failures that name their cause, an atomic first append | `BUG-24` |
 | [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache identity | `CACHE-S17` |
-| [Engineering quality](engineering-quality.md) | Model-training test cost, order- and load-sensitive tests, compatibility shard balance, dead code, test organisation | `ENGQ-CI03` |
-| [Explore and EDA](explore-eda.md) | Advanced pivot and PivotChart parity | — |
-| [Frontend shared](frontend-shared.md) | Results store | `FSH-R03` |
-| [Model scoring](model-scoring.md) | Models trained outside Haute | `MSC-06` |
-| [Modelling](modelling.md) | Adaptive low-memory fitting: exact chunked GLM, a low-memory boosted-tree mode (both awaiting a decision) | `MOD-M01` |
+| [CLI](cli.md) | `haute init --force` keeping the analyst's files, `haute run` as a lazy walk, `haute lint` running the editor's validators, `pyproject.toml` through `tomlkit`, error reporting, generated CI hygiene | `CLI-R01` |
+| [Deploy](deploy.md) | Served requests typed by the manifest's schema, Databricks environments pinned, every MLflow model with its training contract, the registered version from `log_model`, typed `haute.toml`, impact alignment, build directories under the project, one copy of each deploy mechanism | `DEP-R05` |
+| [Engineering quality](engineering-quality.md) | Model-training test cost, order- and load-sensitive tests, compatibility shard balance, dead code, test organisation, actions pinned by commit, a build hook that fails like the CLI; gates that run on every run, a suite that exercises the production execution mode, a write-sandbox ratchet that moves, repository-health hygiene, mutation witnesses for the price-changing modules (a decision) | `ENGQ-CI03` |
+| [Execution engine](execution-engine.md) | Column-free selects in chunked writes, estimate widths from the lineage, fan-out caching, warm pool resilience, watchdog baselines, quiet failures made loud, static-analysis coverage, dead evidence and clones | `EXEC-R09` |
+| [Explore and EDA](explore-eda.md) | Pivot requests answered right (invalid cards, time-zone-aware members, formula causes, one scan per feature), card fields and the specification's stale statements, the chart panels' empty state and glyphs; advanced pivot and PivotChart parity (deferred) | `EDA-R01` |
+| [Frontend graph canvas](frontend-graph-canvas.md) | Every selection path opening the node as a click does, every node renderer drawing every canvas flag, chrome that does not re-render per drag frame, one copy of each shell mechanism with errors shown in full | `FGC-R01` |
+| [Frontend modelling and optimiser UI](frontend-modelling-optimiser-ui.md) | The server's numbers shown as computed (VRAM basis, the Lorenz Gini, percents, elapsed time), a training configuration the server accepts, the specification as the editor is; an auto-range run that survives a save, percentage constraints kept as such, one point-request lifecycle | `FMOU-R01` |
+| [Frontend node editors](frontend-node-editors.md) | Editors that write what the engine reads, drafts in step with the document and errors with their detail, one copy of each picker and helper; grid rules the save refuses with a reason, positions and passthroughs in the subdirectories | `FNED-R01` |
+| [Frontend shared](frontend-shared.md) | A save that keeps the browser in step after a reconnect, surfaced completion errors, aborted fetches, a bootstrap deadline; Ctrl+S saving what is being typed and creation fenced on structure; one copy of each store derivation and helper; the specification as the code is; the results store | `FSH-R05` |
+| [Git integration](git-integration.md) | `outputs/` surviving a move (a decision), git failures the analyst can act on, a dirty tree and a virtual environment at delete and seed, long argument lists through stdin, dead symbols and one compensation helper, hooks on automatic saves (a decision); a git panel that guards and reports every tree change | `GIT-R01` |
+| [IO layer](io-layer.md) | Glob and folder inputs signed, missing against corrupt generations, one path-anchoring rule, lock holds and usage cost, clear and settle rules, one supervised build | `IO-R03` |
+| [JSON shredding](json-shredding.md) | No child row vanishing silently, root arrays tokenised in chunks, declared types that hold exactly, the path grammar as specified, one counted shred | `JSON-R01` |
+| [Model scoring](model-scoring.md) | Models trained outside Haute; dtypes checked on every scoring path, loader errors that keep their meaning | `MSC-06` |
+| [Modelling](modelling.md) | GLM contracts with fitted levels, the dispersion estimate's lifecycle, publication outside the lock, fit parameters without hidden defaults, diagnostics measured as the fit was; adaptive low-memory fitting: exact chunked GLM, a low-memory boosted-tree mode (both awaiting a decision) | `MOD-R01` |
 | [Name collisions](name-collisions.md) | Input-binding editors showing their name violations inline | `NAME-09` |
-| [Optimiser validation](optimiser-validation.md) | Per-point convergence traces from price_contour's frontier sweep; a calibrated solve-memory forecast in the Solve panel; the optimiser result workspace's open robustness and CSV questions | `OPT-PC04` |
-| [Pipeline config](pipeline-config.md) | Project context, typed configs, editor state, node specification | `PCFG-R04` |
-| [Polars 2](polars-2.md) | Moving to Polars 2.0: caches computed under Polars 1, new dtypes, deploy parity, generated and teaching code, the operation registry and the tests; then the operator memory evidence and worker baselines | `PL2-15` |
+| [Optimiser validation](optimiser-validation.md) | Per-point convergence traces from price_contour's frontier sweep; a calibrated solve-memory forecast in the Solve panel; the optimiser result workspace's open robustness and CSV questions; one gate for every persisted optimiser artifact, setup files under a reaped root, failures classified once, the frontier recompute sweep as a decision | `OPT-PC04` |
+| [Pipeline config](pipeline-config.md) | Strict decoding of sidecars and sources, inline keywords refused, comments and a same-line closing return kept across a save, rendered bodies as `ruff format` fixed points, recovery on the engine's validators, canonical sidecar bytes, dead paths; project context, typed configs, editor state, node specification | `PCFG-R10` |
+| [Polars 2](polars-2.md) | Remaining RAM-estimate calibration, large-scale operator measurements and worker baselines; Map columns and quantile/rank binning (deferred) | `PL2-17` |
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
-| [Sandbox security](sandbox-security.md) | Every containment comparison through the one check | `SBX-R01` |
-| [Server API](server-api.md) | Domain errors, generated browser contract | `API-R02` |
-| [Submodels](submodels.md) | One reuse mechanism | `SUB-R01` |
+| [Sandbox security](sandbox-security.md) | Every containment comparison through the one check; restricted joblib loading without a fallback | `SBX-R01` |
+| [Server API](server-api.md) | Client errors answered as client errors, utility files written like project files, a save that never round-trips the watcher, one copy of each route mechanism, bounded requests, no bytecode deletion at start; domain errors, generated browser contract | `API-R07` |
+| [Submodels](submodels.md) | A Load File child keeping its second input across a boundary, dead rewrites and hidden-port fields, one parse per create; one reuse mechanism | `SUB-R04` |
 | [t-boost](t-boost.md) | What rating-table models make possible: cell-level holdout A/E, unfolding into rating steps, model comparison with premium attribution, measured analyst adjustments (all awaiting a decision) | `TBOOST-02` |
-| [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; the quote store on the server (its engine awaiting IT); managing quotes in the app past the Quotes page: comparing revisions, outcomes, many quotes at once; exports from the app (awaiting a decision on formats); test quotes analysts keep and price again, built again after the first version was taken out (awaiting decisions); actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources); what is left of the review of 15 October 2026: Preview priced in one run, the form's file changed outside the editor, the app's sign-in, and building the sheets without a pointer; and more for Show when to test: other fields and the price | `WB-08` |
+| [Tracing](tracing.md) | Input sources from the value lineage, expression facts from the located expression, proven matches kept strict, dead trace paths and clones; the trace panel showing an additive step as one | `TRACE-R01` |
+| [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; the quote store on the server (its engine awaiting IT); managing quotes in the app past the Quotes page: comparing revisions, outcomes, many quotes at once; exports from the app (awaiting a decision on formats); test quotes analysts keep and price again, built again after the first version was taken out (awaiting decisions); actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources); what is left of the review of 15 October 2026: Preview priced in one run, the form's file changed outside the editor, the app's sign-in, and building the sheets without a pointer; and more for Show when to test: other fields and the price; pricings that outrun their timeout and concurrent first saves of a form revision; quote actions that say what they did, number lists in Show when and the quote_details ids from one map, one copy of each workbench helper, typed-in allowed values (a decision) | `WB-08` |
 
-## Delivery plan — 24 September 2026
+## Delivery plan
 
-The [delivery plan](delivery-plan.md) orders every active package into rounds
+The [delivery plan](delivery-plan.md) orders scheduled packages into rounds
 delivered one PR at a time from a single checkout, with each round's
 dependencies, its size and the user-visible changes it makes. It owns only
-the order; the packages above own the work.
+the order; the packages above own the work. The packages the
+[25 October 2026 codebase review](codebase-review-2026-10-25.md) added are not
+yet placed in its rounds.
 
 ## Codebase review — 23 September 2026
 
@@ -52,6 +70,18 @@ solutions, and duplication, made at `main` `9319b11d`. It records its method,
 limits and evidence, and maps every finding to the package that tracks it.
 It is a dated supporting report and owns no work; the packages in the
 component roadmaps above carry the plans.
+
+## Codebase review — 25 October 2026
+
+The [codebase review](codebase-review-2026-10-25.md) is a whole-repository
+review for defects, inconsistencies, duplicated and dead code, over-complicated
+and fragile solutions, made at `main` `859548a4` before the first production
+use, with particular attention to the deployment and serving code. Every area
+was read in full by the main session or by a reviewer whose findings the main
+session verified at their source lines, with probes where a finding turned on
+behaviour. It records its method, limits, probes and evidence, and maps every
+finding to the package that tracks it. It is a dated supporting report and
+owns no work; the packages in the component roadmaps above carry the plans.
 
 ## Workbench review — 15 October 2026
 
