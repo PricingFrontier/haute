@@ -1026,9 +1026,10 @@ class TestGLMTermsEndToEnd:
     def test_categorical_terms_record_training_levels_and_unseen_values_score_and_report(
         self, tmp_path
     ):
-        """A categorical term on a string and on an integer column records the
-        values its training rows held; a value neither held scores at the
-        reference level, as RustyStats prices it, and is reported, never refused."""
+        """A categorical term on a string and on an integer column, and a
+        target-encoding term, record the values their training rows held; a
+        categorical value neither held scores at the reference level, as
+        RustyStats prices it, and every unseen value is reported, never refused."""
         from pathlib import Path
 
         from structlog.testing import capture_logs
@@ -1043,11 +1044,13 @@ class TestGLMTermsEndToEnd:
         n = 900
         region = rng.choice(["A", "B", "C"], size=n)
         area = rng.choice([1, 2, 3], size=n)
+        make = rng.choice(["m1", "m2", "m3", "m4"], size=n)
         rate = np.exp(-1.0 + np.where(region == "B", 0.3, 0.0) + 0.1 * area)
         df = pl.DataFrame(
             {
                 "region": region,
                 "area": pl.Series(area, dtype=pl.Int64),
+                "make": make,
                 "y": rng.poisson(rate).astype(float),
             }
         )
@@ -1055,7 +1058,11 @@ class TestGLMTermsEndToEnd:
             "algorithm": "glm",
             "target": "y",
             "family": "poisson",
-            "terms": {"region": {"type": "categorical"}, "area": {"type": "categorical"}},
+            "terms": {
+                "region": {"type": "categorical"},
+                "area": {"type": "categorical"},
+                "make": {"type": "target_encoding"},
+            },
             "evaluation": _random_evaluation(),
         }
         result = TrainingJob(
@@ -1066,11 +1073,19 @@ class TestGLMTermsEndToEnd:
         ).run()
         model_path = Path(result.model_path)
         contract = load_contract(model_path.parent / model_contract_filename(model_path.stem))
-        assert contract.training_levels == {"area": ["1", "2", "3"], "region": ["A", "B", "C"]}
+        assert contract.training_levels == {
+            "area": ["1", "2", "3"],
+            "make": ["m1", "m2", "m3", "m4"],
+            "region": ["A", "B", "C"],
+        }
 
         scoring = load_local_model(str(model_path))
         rows = pl.DataFrame(
-            {"region": ["Z", "A", "B"], "area": pl.Series([9, 1, 2], dtype=pl.Int64)}
+            {
+                "region": ["Z", "A", "B"],
+                "area": pl.Series([9, 1, 2], dtype=pl.Int64),
+                "make": ["m1", "m1", "m1"],
+            }
         )
         with capture_logs() as logs:
             scored = score_frame(
