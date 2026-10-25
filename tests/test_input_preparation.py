@@ -70,7 +70,7 @@ def _context(profile: ExecutionProfile = ExecutionProfile.LAZY_SINK) -> Executio
 def _prepare(
     config: dict[str, object],
     *,
-    store: SourceCacheStore,
+    store: SourceCacheStore | None,
     base_dir: Path,
     context: ExecutionContext | None,
     schema_only: bool = False,
@@ -1190,6 +1190,7 @@ def _remote_error(remote_type: str) -> IsolatedWorkerRemoteError:
         ("NativeMemoryLimitUnsupportedError", "cap_unavailable"),
         ("NativeMemoryLimitCleanupError", "cap_unavailable"),
         ("MemoryError", "memory_limited"),
+        ("PathTooLongError", "path_too_long"),
         ("ValueError", "build_failed"),
     ],
 )
@@ -1233,6 +1234,7 @@ def test_each_preparation_reason_code_has_its_own_remediation(
     for remote_type, reason in (
         ("NativeMemoryLimitUnsupportedError", "cap_unavailable"),
         ("MemoryError", "memory_limited"),
+        ("PathTooLongError", "path_too_long"),
         ("ValueError", "build_failed"),
     ):
         spawn = _FakeSpawn(
@@ -1253,6 +1255,53 @@ def test_each_preparation_reason_code_has_its_own_remediation(
     assert len(set(remediations.values())) == len(remediations)
     assert "native memory cap" in remediations["cap_unavailable"]
     assert "memory" in remediations["memory_limited"]
+    assert "shorter path" in remediations["path_too_long"]
+    assert "long paths" in remediations["path_too_long"]
+
+
+def test_an_in_process_build_refused_a_path_for_its_length_is_path_too_long() -> None:
+    """The cause is found behind whatever the build wrapped it in."""
+    from haute._file_ops import PathTooLongError
+    from haute._input_preparation import _classify_local_failure
+
+    try:
+        try:
+            raise PathTooLongError("C:\\project\\" + "d" * 300)
+        except PathTooLongError as exc:
+            raise RuntimeError("publishing the snapshot failed") from exc
+    except RuntimeError as wrapped:
+        reason = _classify_local_failure(wrapped, deadline=time.monotonic() + 60, cancelled=False)
+
+    assert reason == "path_too_long"
+
+
+def test_a_cache_folder_windows_refuses_for_its_length_is_path_too_long(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Creating the input cache's own folder is the preparation's first write."""
+    from haute import _input_preparation
+    from haute._file_ops import PathTooLongError
+
+    _project(tmp_path, monkeypatch)
+    path = tmp_path / "rows.csv"
+    pl.DataFrame({"id": [1, 2]}).write_csv(path)
+
+    def cache_folder_refused(_root: Path) -> SourceCacheStore:
+        raise PathTooLongError(str(tmp_path / ".haute_cache" / ("d" * 260)))
+
+    monkeypatch.setattr(_input_preparation, "SourceCacheStore", cache_folder_refused)
+    context = _context()
+    try:
+        with pytest.raises(InputPreparationError) as excinfo:
+            _prepare(_csv_config(path), store=None, base_dir=tmp_path, context=context)
+    finally:
+        context.release_admission()
+
+    assert excinfo.value.reason_code == "path_too_long"
+    assert excinfo.value.node_id == "input"
+    assert "long paths" in excinfo.value.remediation
+    assert isinstance(excinfo.value.__cause__, PathTooLongError)
 
 
 # ------------------------------------------------------ (8) lazy engine scenarios

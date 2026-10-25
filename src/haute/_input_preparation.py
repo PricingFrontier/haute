@@ -31,6 +31,7 @@ from haute._execution_context import (
     ExecutionContext,
     ExecutionProfile,
 )
+from haute._file_ops import PATH_TOO_LONG_REMEDIATION, path_too_long_error
 from haute._logging import get_logger
 from haute._native_memory_limit import current_native_memory_backend
 from haute._pipeline_settings import project_pipeline_settings
@@ -47,6 +48,7 @@ from haute._worker_isolation import (
     IsolatedWorkerRemoteError,
     WorkerTerminalReason,
     isolated_worker_failure_is_memory,
+    isolated_worker_failure_is_path_too_long,
     process_memory_caps_supported,
     run_isolated_worker,
     worker_config_for_memory_policy,
@@ -80,6 +82,7 @@ _REMEDIATION_BY_REASON: Mapping[str, str] = {
         "Preparing this Data Input's snapshot exceeded its time budget. Build it "
         "from the Data Input panel, or raise the preparation timeout, and try again."
     ),
+    "path_too_long": PATH_TOO_LONG_REMEDIATION,
 }
 _API_INPUT_REMEDIATION = (
     "Build this input's tables from its panel, or give the "
@@ -101,6 +104,7 @@ _API_INPUT_REMEDIATION_BY_REASON: Mapping[str, str] = {
         "Preparing this input's tables exceeded its time budget. Build them "
         "from its panel, or raise the preparation timeout, and try again."
     ),
+    "path_too_long": PATH_TOO_LONG_REMEDIATION,
 }
 
 
@@ -374,8 +378,10 @@ def prepare_input_snapshots(
     if not candidates:
         return ()
 
-    cache_store = store or SourceCacheStore(_cache_root())
     effective_profile = profile if profile is not None else execution_context.profile
+    cache_store = store or _open_cache_store(
+        candidates[0], base_dir=base_dir, profile=effective_profile
+    )
     records: list[InputPreparationRecord] = []
     for node_id, kind, config in candidates:
         if kind == "api_input":
@@ -413,6 +419,48 @@ def prepare_input_snapshots(
         records.append(record)
         execution_context.record_input_preparation(record)
     return tuple(records)
+
+
+def _open_cache_store(
+    first: tuple[str, InputKind, Mapping[str, Any]],
+    *,
+    base_dir: str | Path | None,
+    profile: ExecutionProfile,
+) -> SourceCacheStore:
+    """The project's input cache, its folder created on first use.
+
+    Creating that folder is the preparation's first write under the project, so a
+    folder Windows refuses for its length fails here, before any build: it is reported
+    for *first*, the first input that needed the cache, as its builds report theirs.
+    """
+    try:
+        return SourceCacheStore(_cache_root())
+    except OSError as exc:
+        if path_too_long_error(exc) is None:
+            raise
+        from haute._input_providers import input_snapshot_build_class, source_cache_identity
+
+        node_id, kind, config = first
+        if kind == "api_input":
+            from haute._json_shred._snapshots import api_input_snapshot_source
+
+            digest = api_input_snapshot_source(config, str(config["path"])).group_digest
+            build_class = "bounded"
+            message = "Preparing this API Input's tables failed."
+        else:
+            digest = source_cache_identity(config, base_dir=base_dir).digest
+            build_class = input_snapshot_build_class(
+                config, base_dir=base_dir, profile=profile, allow_admitted_eager=True
+            )
+            message = "Preparing this Data Input's snapshot failed."
+        raise _failure(
+            node_id=node_id,
+            digest=digest,
+            build_class=build_class,
+            reason_code="path_too_long",
+            message=message,
+            kind=kind,
+        ) from exc
 
 
 def _prepare_one(
@@ -611,6 +659,8 @@ def _classify_local_failure(
         return "cancelled"
     if isinstance(exc, MemoryError):
         return "memory_limited"
+    if path_too_long_error(exc) is not None:
+        return "path_too_long"
     if isinstance(exc, SourceCacheBuildError):
         if time.monotonic() > deadline:
             return "timed_out"
@@ -626,6 +676,8 @@ def _classify_worker_failure(exc: BaseException) -> str:
     remote_type = exc.remote_type if isinstance(exc, IsolatedWorkerRemoteError) else None
     if remote_type in ("NativeMemoryLimitUnsupportedError", "NativeMemoryLimitCleanupError"):
         return "cap_unavailable"
+    if isolated_worker_failure_is_path_too_long(exc):
+        return "path_too_long"
     if isolated_worker_failure_is_memory(exc):
         return "memory_limited"
     reason = getattr(exc, "terminal_reason", None)

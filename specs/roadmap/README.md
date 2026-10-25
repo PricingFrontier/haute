@@ -29,6 +29,7 @@ records corrections to that audit's claims and proposed remedies.
 | [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache identity | `CACHE-S17` |
 | [CLI](cli.md) | `haute init --force` keeping the analyst's files, `haute run` as a lazy walk, `haute lint` running the editor's validators, `pyproject.toml` through `tomlkit`, error reporting, generated CI hygiene | `CLI-R01` |
 | [Deploy](deploy.md) | Served requests typed by the manifest's schema, Databricks environments pinned, every MLflow model with its training contract, the registered version from `log_model`, typed `haute.toml`, impact alignment, build directories under the project, one copy of each deploy mechanism | `DEP-R05` |
+| [Documentation](docs.md) | The Databricks guide as the deploy runs, the CI pages as the generated workflows are, a new project's path from an empty folder, upgrade notes for a project made by 0.6.0, the site publishing `main` again | `DOC-01` |
 | [Engineering quality](engineering-quality.md) | Model-training test cost, order- and load-sensitive tests, compatibility shard balance, dead code, test organisation, actions pinned by commit, a build hook that fails like the CLI; gates that run on every run, a suite that exercises the production execution mode, a write-sandbox ratchet that moves, repository-health hygiene, mutation witnesses for the price-changing modules (a decision) | `ENGQ-CI03` |
 | [Execution engine](execution-engine.md) | Column-free selects in chunked writes, estimate widths from the lineage, fan-out caching, warm pool resilience, watchdog baselines, quiet failures made loud, static-analysis coverage, dead evidence and clones | `EXEC-R09` |
 | [Explore and EDA](explore-eda.md) | Pivot requests answered right (invalid cards, time-zone-aware members, formula causes, one scan per feature), card fields and the specification's stale statements, the chart panels' empty state and glyphs; advanced pivot and PivotChart parity (deferred) | `EDA-R01` |
@@ -59,7 +60,8 @@ The [delivery plan](delivery-plan.md) orders scheduled packages into rounds
 delivered one PR at a time from a single checkout, with each round's
 dependencies, its size and the user-visible changes it makes. It owns only
 the order; the packages above own the work. The packages the
-[25 October 2026 codebase review](codebase-review-2026-10-25.md) added are not
+[25 October 2026 codebase review](codebase-review-2026-10-25.md) added, and the
+documentation packages from that day's check of the deployment guides, are not
 yet placed in its rounds.
 
 ## Codebase review — 23 September 2026

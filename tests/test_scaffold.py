@@ -1364,6 +1364,73 @@ class TestCiFiles:
         with pytest.raises(ValueError, match="Unknown CI provider: jenkins"):
             ci_files("databricks", "jenkins")
 
+    @pytest.mark.parametrize("ci", ["github", "gitlab", "azure-devops"])
+    def test_the_staging_steps_pass_the_projects_staging_suffix(self, ci: str) -> None:
+        text = "".join(ci_files("databricks", ci, staging_suffix="-stg").values())
+
+        # The staging deploy, its smoke test and the impact analysis, all on the one suffix.
+        assert text.count('--endpoint-suffix "-stg"') == 3
+        assert "--endpoint-suffix" not in text.replace('--endpoint-suffix "-stg"', "")
+
+    @pytest.mark.parametrize("suffix", ["", "-st ag", '-stg" && curl evil', "-stäg"])
+    def test_a_staging_suffix_that_cannot_name_an_endpoint_is_refused(self, suffix: str) -> None:
+        with pytest.raises(ValueError, match="staging suffix"):
+            ci_files("databricks", "github", staging_suffix=suffix)
+
+    @staticmethod
+    def _production_job(ci: str, files: dict[str, str]) -> dict:
+        if ci == "github":
+            workflow = yaml.safe_load(files[".github/workflows/deploy-production.yml"])
+            return workflow["jobs"]["deploy-production"]
+        if ci == "gitlab":
+            return yaml.safe_load(files[".gitlab-ci.yml"])["deploy-production"]
+        stages = yaml.safe_load(files["azure-pipelines.yml"])["stages"]
+        return next(stage for stage in stages if stage["stage"] == "DeployProduction")["jobs"][0]
+
+    @pytest.mark.parametrize("ci", ["github", "gitlab", "azure-devops"])
+    def test_production_runs_under_the_named_environment(self, ci: str) -> None:
+        files = ci_files("databricks", ci, production_environment="production-approval")
+
+        assert self._production_job(ci, files)["environment"] == "production-approval"
+
+    @pytest.mark.parametrize(
+        ("ci", "expected"), [("github", None), ("gitlab", None), ("azure-devops", "production")]
+    )
+    def test_without_a_named_environment_production_needs_none(
+        self, ci: str, expected: str | None
+    ) -> None:
+        """A free GitHub plan has no environments for a private repository, so none is named."""
+        job = self._production_job(ci, ci_files("databricks", ci))
+
+        assert job.get("environment") == expected
+
+    @pytest.mark.parametrize("ci", ["github", "gitlab", "azure-devops"])
+    @pytest.mark.parametrize("name", ["null", "true", "on", "001", "1e3"])
+    def test_a_name_yaml_would_read_as_another_type_stays_a_string(
+        self, ci: str, name: str
+    ) -> None:
+        files = ci_files("databricks", ci, production_environment=name)
+
+        assert self._production_job(ci, files)["environment"] == name
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "prod approval",
+            "-prod",
+            "prod:x",
+            'p" && x',
+            "p\nx",
+            "x" * 256,
+            "prodé",
+            # Azure DevOps reads a dotted name as resource "approval" of environment "production".
+            "production.approval",
+        ],
+    )
+    def test_an_environment_name_the_providers_cannot_take_is_refused(self, name: str) -> None:
+        with pytest.raises(ValueError, match="environment"):
+            ci_files("databricks", "github", production_environment=name)
+
     def test_the_secrets_and_their_placeholders(self) -> None:
         assert ci_secret_names("databricks") == [
             "DATABRICKS_MLFLOW_HOST",

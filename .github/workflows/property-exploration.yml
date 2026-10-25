@@ -73,6 +73,9 @@ jobs:
           uv run pytest $(grep -v '^#' scripts/property_test_files.txt)
           -q -p no:warnings --timeout=1500 --timeout-method=signal
 
+      # A green week never closes this issue: one exploration budget passing does not
+      # prove the counterexample gone. The fix pins it as an @example, and its author
+      # closes the issue.
       - name: Raise the alarm (find-or-create property-watch issue)
         if: failure() && (github.event_name == 'schedule' || inputs.force_fail)
         env:

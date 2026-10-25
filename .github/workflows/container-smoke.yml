@@ -8,7 +8,8 @@ name: Container Smoke
 # building a Docker image and running an isolated container requires Docker and
 # adds runner overhead that would slow down every PR (ledger W13-S02, ENG-T12).
 #
-# Loud: a failure finds-or-creates a `container-watch` issue with the run URL.
+# Loud: a failure finds-or-creates a `container-watch` issue with the run URL, and
+# the lane's next green run on main closes it, so a later failure opens its own.
 
 on:
   workflow_dispatch:
@@ -111,4 +112,18 @@ jobs:
             gh issue comment "${existing}" --body "Still red: ${RUN_URL}"
           else
             gh issue create --title "${title}" --label container-watch --body "${body}"
+          fi
+
+      # Main only: a green dispatch on a branch does not prove main's lane fixed.
+      - name: Stand down the alarm (close the container-watch issue)
+        if: success() && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Weekly container-smoke lane is red"
+          existing="$(gh issue list --state open --label container-watch \
+            --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue close "${existing}" --comment "Green again: ${RUN_URL}"
           fi

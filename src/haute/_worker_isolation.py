@@ -16,6 +16,7 @@ from multiprocessing.process import BaseProcess
 from typing import Any, Literal, TypeVar, cast
 
 from haute._cpu_performance import configure_process_high_qos
+from haute._file_ops import PathTooLongError, path_too_long_error
 from haute._logging import get_logger
 from haute._native_memory_limit import (
     NativeMemoryLease,
@@ -313,6 +314,17 @@ def isolated_worker_failure_is_memory(exc: BaseException) -> bool:
     if isinstance(exc, IsolatedWorkerRemoteError):
         return exc.remote_type in _MEMORY_REMOTE_TYPES
     return False
+
+
+def isolated_worker_failure_is_path_too_long(exc: BaseException) -> bool:
+    """Return whether a worker failure is a path Windows refused for its length.
+
+    A child reports the :class:`~haute._file_ops.PathTooLongError` behind its failure
+    (:func:`_worker_error_envelope`); a failure raised in this process is read directly.
+    """
+    if isinstance(exc, IsolatedWorkerRemoteError):
+        return exc.remote_type == PathTooLongError.__name__
+    return path_too_long_error(exc) is not None
 
 
 def isolated_worker_memory_detail(
@@ -890,11 +902,14 @@ def _isolated_worker_entrypoint(
 
 
 def _worker_error_envelope(exc: BaseException) -> tuple[str, tuple[str, str, str]]:
+    # Windows reports a path too long for it as a missing file; name the cause, so the
+    # parent can classify the failure, and keep the original traceback.
+    reported: BaseException = path_too_long_error(exc) or exc
     return (
         "error",
         (
-            type(exc).__name__,
-            str(exc),
+            type(reported).__name__,
+            str(reported),
             "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
         ),
     )

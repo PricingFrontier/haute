@@ -201,25 +201,46 @@ def handle_ci_update() -> None:
     """Rewrite the generated CI files and ``.env.example`` for the installed haute.
 
     The files are generated as ``haute init`` would for the project's ``[ci]
-    provider``, ``[deploy] target``, workbench and Python; another provider's generated
-    files are removed, and every other file is left alone. Reports each file as
-    updated or unchanged.
+    provider``, ``[deploy] target``, workbench and Python, with the staging steps on its
+    ``[ci.staging] endpoint_suffix`` and the production job under its ``[ci.production]
+    environment``; another provider's generated files are removed, and every other file is
+    left alone. Reports each file as updated or unchanged.
     """
     from haute._project_python import ProjectPythonError, project_python_version
-    from haute._scaffold import ci_files, env_example
+    from haute._scaffold import (
+        ci_files,
+        env_example,
+        production_environment_problem,
+        staging_suffix_problem,
+    )
     from haute._workbench_config import WorkbenchConfigError, read_workbench_config
     from haute.cli._init_cmd import _prune_stale_ci_files, write_generated_files
 
     project_dir, deploy_config = _project()
     provider = deploy_config.ci.provider
     target = deploy_config.target
+    staging_suffix = deploy_config.ci.staging_endpoint_suffix
+    production_environment = deploy_config.ci.production_environment
+    for key, problem in (
+        ("[ci.staging] endpoint_suffix", staging_suffix_problem(staging_suffix)),
+        ("[ci.production] environment", production_environment_problem(production_environment)),
+    ):
+        if problem is not None:
+            raise click.ClickException(f"{key} in haute.toml {problem}.")
     try:
         python_version = project_python_version(project_dir)
         workbench = read_workbench_config(project_dir).enabled
     except (ProjectPythonError, WorkbenchConfigError) as exc:
         raise click.ClickException(str(exc)) from exc
     try:
-        generated = ci_files(target, provider, workbench=workbench, python_version=python_version)
+        generated = ci_files(
+            target,
+            provider,
+            workbench=workbench,
+            python_version=python_version,
+            staging_suffix=staging_suffix,
+            production_environment=production_environment,
+        )
     except ValueError as exc:
         raise click.ClickException(f"{exc} in [ci] provider of haute.toml.") from exc
     files = {**generated, ".env.example": env_example(target)}

@@ -406,6 +406,30 @@ def test_write_failure_has_a_stable_safe_error_code(
     assert "private cache path" not in terminal["message"]
 
 
+def test_a_write_windows_refused_for_its_length_says_so_without_the_path(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._file_ops import PathTooLongError
+    from haute.routes import input_cache
+
+    def write_refused(*args: Any, **kwargs: Any) -> Any:
+        raise PathTooLongError("C:\\private\\" + "d" * 300)
+
+    monkeypatch.setattr(input_cache, "build_input_snapshot", write_refused)
+    started = client.post(
+        "/api/input-cache/build",
+        json={"schema_version": 1, "config": _file_config()},
+    )
+    assert started.status_code == 202
+
+    terminal = _wait_for_terminal(client, started.json()["job_id"])
+    assert terminal["status"] == "error"
+    assert terminal["error_code"] == "path_too_long"
+    assert "long paths" in terminal["message"]
+    assert "private" not in terminal["message"]
+
+
 class _AdmittedEagerHarness:
     """Force the admitted-eager class and stand in for the spawn worker.
 
@@ -1345,6 +1369,32 @@ def test_api_input_worker_failure_is_a_failed_job(
     assert "worker lost" not in terminal["message"]
     status = client.post("/api/input-cache/status", json=_api_input_body()).json()
     assert status["state"] == "missing"
+
+
+def test_api_input_worker_refused_a_path_for_its_length_says_so(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._worker_isolation import IsolatedWorkerRemoteError
+
+    _write_quotes(tmp_path)
+    worker = _ApiInputWorker(
+        failure=IsolatedWorkerRemoteError(
+            remote_type="PathTooLongError",
+            remote_message="Windows cannot use a path of 269 characters: C:\\private",
+            remote_traceback="Traceback (most recent call last):\n",
+        )
+    )
+    worker.install(monkeypatch, tmp_path)
+
+    started = client.post("/api/input-cache/build", json=_api_input_body())
+    terminal = _wait_for_terminal(client, started.json()["job_id"])
+
+    assert terminal["status"] == "error"
+    assert terminal["error_code"] == "path_too_long"
+    assert "long paths" in terminal["message"]
+    assert "private" not in terminal["message"]
 
 
 def _blocking_table_worker(request: Any, budget: Any) -> Any:

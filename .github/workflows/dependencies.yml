@@ -8,7 +8,10 @@ name: Dependencies
 # The unlocked-resolve job deliberately never runs on push/PR: it tests the
 # index's state, not the diff's, so a red run must not block unrelated
 # landings. Non-blocking but loud: a failure finds-or-creates a
-# `dependency-watch` issue with the run URL.
+# `dependency-watch` issue with the run URL, and the lane's next green run on
+# main closes it. Both lanes are deterministic for a given index or advisory
+# feed, so a green run is proof the failure is gone, and the next failure opens
+# an issue of its own instead of landing as "Still red" on a fixed one.
 #
 # Because it is loud, it only fails on a broken install. It used to also fail
 # on a *stale* one: the polars I/O interface contract asserted snapshot
@@ -207,6 +210,20 @@ jobs:
             gh issue create --title "${title}" --label dependency-watch --body "${body}"
           fi
 
+      # Main only: a green dispatch on a branch does not prove main's lane fixed.
+      - name: Stand down the alarm (close the dependency-watch issue)
+        if: success() && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Scheduled unlocked-resolve lane is red"
+          existing="$(gh issue list --state open --label dependency-watch \
+            --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue close "${existing}" --comment "Green again: ${RUN_URL}"
+          fi
+
   locked-advisory-audit:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -283,4 +300,34 @@ jobs:
             gh issue comment "${existing}" --body "Still red: ${RUN_URL}"
           else
             gh issue create --title "${title}" --label dependency-watch --body "${body}"
+          fi
+
+  locked-advisory-all-clear:
+    needs: locked-advisory-audit
+    # A green audit on main (a scheduled sweep, a dispatch, or a lock change landing)
+    # closes the issue a red one raised. A pull request's green audit proves only its
+    # own branch, and neither does a dispatch on another branch.
+    if: >-
+      always() &&
+      needs.locked-advisory-audit.result == 'success' &&
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      # No checkout here either, so gh is told the repository (see the alarm job).
+      - name: Stand down the advisory alarm (close the dependency-watch issue)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Locked dependency advisory audit is red"
+          existing="$(gh issue list --state open --label dependency-watch \
+            --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue close "${existing}" --comment "Green again: ${RUN_URL}"
           fi
