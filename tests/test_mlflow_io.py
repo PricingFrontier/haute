@@ -1810,6 +1810,14 @@ class TestLoadMlflowModelFastCache:
         )
         cached.parent.mkdir(parents=True)
         cached.write_bytes(b"cached model")
+        contract = _artifact_cache_path(
+            tmp_path / ".cache" / "models",
+            backend.digest,
+            "abc123",
+            "model.feature_contract.json",
+        )
+        contract.parent.mkdir(parents=True)
+        contract.write_bytes(b"{}")
         fake_sm = ScoringModel(MagicMock(), ["a"], frozenset(), "catboost")
 
         with (
@@ -1824,8 +1832,13 @@ class TestLoadMlflowModelFastCache:
             )
 
         assert result is fake_sm
+        # The model carries the contract its run logged, read from the same cache.
+        assert result.run_contract_path == str(contract)
         load_local.assert_called_once_with(
-            str(cached), task="regression", source="MLflow run 'abc123'"
+            str(cached),
+            task="regression",
+            contract_path=str(contract),
+            source="MLflow run 'abc123'",
         )
         resolve_source.assert_not_called()
 
@@ -2353,5 +2366,9 @@ class TestCatBoostTaskFromTheModelFile:
                 flavor="catboost",
                 task="regression",
             )
-        assert resolve.call_count == 1
+        # The model and the contract its run logged, each read once: never retried.
+        assert [call.args[3] for call in resolve.call_args_list] == [
+            "model.cbm",
+            "model.feature_contract.json",
+        ]
         assert Path(path).is_file()

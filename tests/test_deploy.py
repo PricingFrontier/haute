@@ -61,17 +61,36 @@ def _write_cached_model(
     """Seed the shared model disk cache under a backend digest partition.
 
     Defaults to the auto-resolved backend, which is what the bundler resolves
-    for a model-score node with no stored ``mlflow_destination``.
+    for a model-score node with no stored ``mlflow_destination``. The contract
+    training logs beside every model is seeded with it.
     """
+    from haute.modelling._feature_contract import build_contract, save_contract
+    from haute.modelling._training_job import model_contract_filename
+
     digest = backend_digest if backend_digest is not None else resolve_backend("").digest
-    cached = _artifact_cache_path(tmp_path / ".cache" / "models", digest, run_id, artifact_path)
+    root = tmp_path / ".cache" / "models"
+    cached = _artifact_cache_path(root, digest, run_id, artifact_path)
     cached.parent.mkdir(parents=True, exist_ok=True)
     if artifact_path.endswith(".cbm"):
-        # The bundler reads a CatBoost model's offset declaration, so seed a real
-        # model that declares no offset, tagged with the payload.
+        # A real model that declares no offset, tagged with the payload.
         _declared_catboost(cached, payload)
     else:
         cached.write_bytes(payload)
+    contract = _artifact_cache_path(
+        root, digest, run_id, model_contract_filename(Path(artifact_path).stem)
+    )
+    contract.parent.mkdir(parents=True, exist_ok=True)
+    save_contract(
+        build_contract(
+            features=["0"],
+            feature_types={"0": "Float64"},
+            categorical_features=[],
+            target_name="y",
+            target_type="Float64",
+            task="regression",
+        ),
+        contract,
+    )
     return cached
 
 
@@ -462,9 +481,8 @@ class TestBundler:
         )
 
         artifacts = collect_artifacts(graph, [], tmp_path)
-        assert len(artifacts) == 1
-        name = next(iter(artifacts))
-        assert name == "ms1__model.cbm"
+        assert sorted(artifacts) == ["ms1__feature_contract.json", "ms1__model.cbm"]
+        name = "ms1__model.cbm"
         assert artifacts[name].is_file()
 
     def test_model_score_skipped_without_run_id(self):
@@ -579,9 +597,8 @@ class TestBundler:
             artifacts = collect_artifacts(graph, [], tmp_path)
 
         mock_resolve.assert_called_once_with("my-prod-model", "3", backend=ANY, alias="")
-        assert len(artifacts) == 1
-        name = next(iter(artifacts))
-        assert name == "ms_reg__model.cbm"
+        assert sorted(artifacts) == ["ms_reg__feature_contract.json", "ms_reg__model.cbm"]
+        name = "ms_reg__model.cbm"
         assert artifacts[name].is_file()
 
     def test_registered_model_latest_version(self, tmp_path, monkeypatch):
@@ -617,7 +634,7 @@ class TestBundler:
             artifacts = collect_artifacts(graph, [], tmp_path)
 
         mock_resolve.assert_called_once_with("my-model", "latest", backend=ANY, alias="")
-        assert len(artifacts) == 1
+        assert sorted(artifacts) == ["ms_latest__feature_contract.json", "ms_latest__model.cbm"]
 
     def test_registered_model_empty_version(self, tmp_path, monkeypatch):
         """sourceType='registered' with empty version (defaults to latest)."""
@@ -652,7 +669,10 @@ class TestBundler:
             artifacts = collect_artifacts(graph, [], tmp_path)
 
         mock_resolve.assert_called_once_with("my-model", "latest", backend=ANY, alias="")
-        assert len(artifacts) == 1
+        assert sorted(artifacts) == [
+            "ms_empty_ver__feature_contract.json",
+            "ms_empty_ver__model.cbm",
+        ]
 
     def test_registered_model_skipped_without_model_name(self):
         """sourceType='registered' with no registered_model is silently skipped."""
@@ -753,7 +773,7 @@ class TestBundler:
         ):
             artifacts = collect_artifacts(graph, [], tmp_path)
 
-        assert len(artifacts) == 2
+        assert len(artifacts) == 4  # each model and its run's contract
         assert "ms_run__direct.cbm" in artifacts
         assert "ms_reg__registered.cbm" in artifacts
         assert artifacts["ms_run__direct.cbm"].is_file()
@@ -786,7 +806,10 @@ class TestBundler:
         )
 
         artifacts = collect_artifacts(graph, [], tmp_path)
-        assert len(artifacts) == 1
+        assert sorted(artifacts) == [
+            "ms_explicit_run__feature_contract.json",
+            "ms_explicit_run__model.cbm",
+        ]
         assert "ms_explicit_run__model.cbm" in artifacts
 
     def test_model_score_without_source_type_is_not_bundled(self, tmp_path, monkeypatch):

@@ -3004,6 +3004,7 @@ df = src.with_columns(
             feature_names = ["feature"]
             cat_feature_names: list[str] = []
             offset_declared = True
+            run_contract_path = None
 
         def fake_score_eager(
             scoring_model,

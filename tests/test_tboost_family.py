@@ -936,10 +936,15 @@ def test_an_mlflow_run_artifact_loads_and_serves_through_the_shared_pyfunc(
     document = json.loads(model_path.read_text(encoding="utf-8"))
     document["metadata"]["haute"]["link"] = "identity"
     _rewrite(broken, document)
+    # Each run logs the contract beside its model, as training does.
+    contract = model_path.parent / model_contract_filename("tb")
+    broken_contract = broken.with_name(model_contract_filename("model"))
+    broken_contract.write_bytes(contract.read_bytes())
     with mlflow_fluent_operation():
         set_tracking_uri_preserving_env(mlflow, resolve_tracking_backend("")[0])
         with mlflow.start_run() as run:
             mlflow.log_artifact(str(model_path))
+            mlflow.log_artifact(str(contract))
             mlflow.pyfunc.log_model(
                 name="model",
                 loader_module="haute.modelling._native_pyfunc",
@@ -947,6 +952,7 @@ def test_an_mlflow_run_artifact_loads_and_serves_through_the_shared_pyfunc(
             )
         with mlflow.start_run() as broken_run:
             mlflow.log_artifact(str(broken))
+            mlflow.log_artifact(str(broken_contract))
         served = mlflow.pyfunc.load_model(f"runs:/{run.info.run_id}/model").predict(
             data.to_pandas()
         )

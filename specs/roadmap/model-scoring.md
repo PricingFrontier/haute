@@ -283,7 +283,7 @@ exists) and drop the pre-load gate.
 preview with the deploy scorer's message; a registered native model shows its
 explanation in the trace.
 
-**Dependencies:** `DEP-R07` binds the run's contract on every path.
+**Dependencies:** None; every MLflow-sourced model is bound to the contract its run logged.
 
 **Evidence:** `src/haute/_model_scorer.py::_validate_features_uncached`;
 `src/haute/deploy/_scorer.py`;

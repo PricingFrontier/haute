@@ -3005,7 +3005,7 @@ the preamble widening, not a copy). Eligibility applies the high-level
 precedence with: `SINK_ONLY_NODE_TYPES` in `src/haute/_types.py`; a Load File's
 `fileType`; a Model Scoring node's locality, decided by the same
 `resolve_backend` (configuration only) and disk-cache path helpers
-(`_disk_cache_root`, `_artifact_cache_path`, with the EBM contract artifact)
+(`_disk_cache_root`, `_artifact_cache_path`, with the contract artifact its run logged)
 that the fast path of `load_mlflow_model` in `src/haute/_mlflow_io.py` uses, as
 a file-existence test only, so the check counts as local exactly what a preview
 would load without a tracking or registry call; an Apply Optimisation node's
@@ -3061,8 +3061,8 @@ stays authoritative) remain readable. It then reads the start binding:
   does not sign;
 - `freshness_tokens`, the `observe_freshness` token (in
   `src/haute/_json_shred/_source_proof.py`: a native file revision or a stat,
-  never content) of every file the digest signs, cached model files and EBM
-  contracts included, keyed by the resolved path. For a snapshot-backed input
+  never content) of every file the digest signs, cached model files and the
+  contracts beside them included, keyed by the resolved path. For a snapshot-backed input
   that is the generation pointer and also the original local source file, whose
   content the identity signs through `source_signature`: `runtime_input_signed_paths`
   lists it through `signed_source_file` (`src/haute/_input_providers.py`, the

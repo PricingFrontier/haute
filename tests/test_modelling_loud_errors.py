@@ -63,7 +63,7 @@ class TestModelScoreColumnDetectionLoud:
         }
         if config_value is not None:
             config["mlflow_destination"] = config_value
-        model = MagicMock(spec=ScoringModel)
+        model = MagicMock(spec=ScoringModel, run_contract_path=None)
         model.feature_names = ["a", "b"]
         with patch("haute._mlflow_io.load_mlflow_model", return_value=model) as mock_load:
             produced, referenced = _model_score_columns(config)

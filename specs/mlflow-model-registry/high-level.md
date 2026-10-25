@@ -141,9 +141,10 @@ Out of scope (owned elsewhere):
   `offset_column` names the column and whose `offset_link` (`log` or
   `identity`) says how it enters the raw score, or whose `offset_column` is
   null. A model whose metadata and contract disagree is refused. A run or
-  registered CatBoost model without the metadata and without an explicit
-  contract is bound to the contract the run logged beside it. A CatBoost model
-  with no declaration is refused, never scored from baseline zero, and a
+  registered native model without an explicit contract is bound to the
+  contract its run logged beside it, and refused naming the run when the run
+  logged none, so the preview binds what a deployed bundle ships. A CatBoost
+  model with no declaration is refused, never scored from baseline zero, and a
   declared offset column missing from the scoring input fails before
   prediction.
 - A file-sourced model is cached in memory by its resolved path, `task` and

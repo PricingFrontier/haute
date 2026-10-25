@@ -87,8 +87,11 @@ model was trained with an offset (its `offset_column` and `offset_link`, `log` f
 exposure or `identity` for an additive term) or without one. A CatBoost model whose offset
 nothing declares is refused, whether it comes from a file, a run or the registry, because
 scoring it without its offset would mis-price every row. A contract that disagrees with
-what the model records is refused too. Run and registered models trained by an earlier
-Haute are scored with the contract the run logged beside the model.
+what the model records is refused too.
+
+A CatBoost, XGBoost, LightGBM, t-boost, EBM or GLM model from a run or the registry scores
+with the feature contract its training run logged beside it, in the editor and when
+deployed. A run that logged no contract is refused, naming the run.
 
 Scoring checks the input against the model's features before it runs: a missing feature,
 a missing offset column the model was trained with, or a numeric column where the model

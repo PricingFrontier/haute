@@ -22,6 +22,8 @@ def registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     from mlflow.tracking import MlflowClient
 
     from haute._sandbox import set_project_root
+    from haute.modelling._feature_contract import build_contract, save_contract
+    from haute.modelling._training_job import model_contract_filename
 
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
     for name in ("MLFLOW_TRACKING_URI", "DATABRICKS_MLFLOW_HOST", "DATABRICKS_MLFLOW_TOKEN"):
@@ -41,7 +43,21 @@ def registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         model.get_metadata()["haute_offset_column"] = ""
         model_file = tmp_path / f"model_{int(scale)}.cbm"
         model.save_model(str(model_file))
+        # Logged beside the model, as training logs it.
+        contract = model_file.with_name(model_contract_filename(model_file.stem))
+        save_contract(
+            build_contract(
+                features=["age"],
+                feature_types={"age": "Float64"},
+                categorical_features=[],
+                target_name="y",
+                target_type="Float64",
+                task="regression",
+            ),
+            contract,
+        )
         client.log_artifact(run.info.run_id, str(model_file))
+        client.log_artifact(run.info.run_id, str(contract))
         client.set_terminated(run.info.run_id)
         client.create_model_version("freq", f"runs:/{run.info.run_id}", run.info.run_id)
     client.set_registered_model_alias("freq", "champion", "1")
@@ -285,19 +301,14 @@ class TestDeployRecordsTheResolvedAlias:
     def test_the_bundle_records_alias_version_and_run(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from haute._mlflow_io import _artifact_cache_path
-        from haute._mlflow_utils import resolve_backend
         from haute.deploy._bundler import collect_artifacts
         from haute.deploy._utils import model_source_line
         from tests.conftest import make_graph
+        from tests.test_deploy import _write_cached_model
 
         monkeypatch.chdir(tmp_path)
-        cache_root = tmp_path / ".cache" / "models"
-        cached = _artifact_cache_path(cache_root, resolve_backend("").digest, "run_7", "model.cbm")
-        cached.parent.mkdir(parents=True)
-        from tests.test_deploy import _declared_catboost
-
-        _declared_catboost(cache_root / cached.relative_to(cache_root), b"model")
+        # The model and the contract its run logged, as a preview leaves them.
+        _write_cached_model(tmp_path, "run_7", "model.cbm", b"model")
         graph = make_graph(
             {
                 "nodes": [

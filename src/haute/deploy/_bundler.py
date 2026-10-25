@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from haute._logging import get_logger
 from haute._model_flavors import family_for_artifact
 from haute._path_resolution import PathPreference, RuntimePathError, resolve_runtime_file_path
-from haute.errors import DeployError
+from haute.errors import ConfigError, DeployError
 from haute.graph_utils import NodeType, PipelineGraph
 
 if TYPE_CHECKING:
@@ -218,31 +218,15 @@ def collect_artifacts(
             artifact_name = f"{nid}__{config['artifact_path']}"
             artifacts.add(nid, artifact_name, local_path)
 
-            # Bundle the feature contract alongside the model so the deploy
-            # scorer can verify train-vs-score drift at load time.
-            # The bare ``feature_contract.json`` name covers contracts
-            # staged into the MLflow download cache (or placed manually);
-            # training itself writes per-model ``{name}.feature_contract.json``
-            # files since W4b.9 and never populates this directory.
-            if explicit_contract is None and (
-                family_for_artifact(artifact_path).requires_contract
-                or _offset_undeclared(local_path, str(config.get("task") or "regression"))
-            ):
-                # A family that loads only under its contract (EBM), and a
-                # CatBoost model whose file does not declare its offset, score
-                # only with the contract the run logged beside the model; bundle
-                # it so the deployed scorer binds the same declaration.
-                import mlflow
-
-                from haute._mlflow_io import _resolve_run_contract
-
+            # Every MLflow model is served under the contract its run logged
+            # beside it, the one the preview binds, so each request is checked
+            # against training's features, dtypes and offset.
+            if explicit_contract is None:
                 artifacts.add(
                     nid,
                     f"{nid}__feature_contract.json",
-                    Path(_resolve_run_contract(mlflow, backend, run_id, artifact_path)),
+                    _run_contract(nid, backend, run_id, artifact_path),
                 )
-            elif explicit_contract is None:
-                _bundle_feature_contract(nid, local_path, artifacts)
 
         elif node_type == NodeType.DATA_INPUT and nid not in input_set:
             _collect_static_data_input(
@@ -307,40 +291,20 @@ def _collect_model_file(
         artifacts.add(node_id, f"{node_id}__{CONTRACT_FILENAME}", sibling)
 
 
-def _offset_undeclared(model_path: Path, task: str) -> bool:
-    """Whether a downloaded model's file leaves its offset undeclared (a CatBoost model)."""
-    if family_for_artifact(model_path.name).flavor != "catboost":
-        return False
-    from haute._mlflow_io import load_local_model
+def _run_contract(node_id: str, backend: ResolvedBackend, run_id: str, artifact: str) -> Path:
+    """The contract run *run_id* logged beside *artifact*; none refuses the deploy."""
+    import mlflow
 
-    return not load_local_model(str(model_path), task).offset_declared
+    from haute._mlflow_io import _resolve_run_contract
 
-
-def _bundle_feature_contract(
-    node_id: str,
-    model_path: Path,
-    artifacts: ArtifactKeys,
-) -> None:
-    """Add the model's feature contract (if present) to the bundle.
-
-    Looks for ``feature_contract.json`` sitting next to the model file —
-    the convention for contracts staged into the MLflow download cache
-    (or placed there manually). Training writes per-model
-    ``{name}.feature_contract.json`` files (W4b.9) and never uses this
-    bare name. The artifact is keyed with the same ``<node>__<filename>``
-    scheme the deploy scorer uses to discover bundled files.
-    """
-    from haute.modelling._feature_contract import CONTRACT_FILENAME
-
-    contract_path = model_path.parent / CONTRACT_FILENAME
-    if not contract_path.is_file():
-        logger.info(
-            "model_score_no_feature_contract",
+    try:
+        return Path(_resolve_run_contract(mlflow, backend, run_id, artifact))
+    except ConfigError as exc:
+        raise DeployError(
+            f"Model Scoring node {node_id!r} cannot be deployed: {exc.message}",
             node_id=node_id,
-            looked_at=str(contract_path),
-        )
-        return
-    artifacts.add(node_id, f"{node_id}__feature_contract.json", contract_path)
+            run_id=run_id,
+        ) from exc
 
 
 def _collect_static_data_input(

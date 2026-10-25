@@ -92,7 +92,11 @@ def _fake_backend(tracking_uri: str, identity: str, mode: str = "databricks") ->
 
 
 class _PayloadDownloader:
-    """``mlflow.artifacts.download_artifacts`` fake keyed on the tracking URI."""
+    """``mlflow.artifacts.download_artifacts`` fake keyed on the tracking URI.
+
+    The contract a run logs beside its model is served from the same backend
+    but recorded apart from ``calls``, which count model downloads.
+    """
 
     def __init__(
         self,
@@ -102,6 +106,7 @@ class _PayloadDownloader:
         self.payloads = payloads
         self.barrier = barrier
         self.calls: list[tuple[str, str]] = []
+        self.contract_calls: list[tuple[str, str]] = []
         self._mutex = threading.Lock()
 
     def __call__(
@@ -112,6 +117,15 @@ class _PayloadDownloader:
         tracking_uri: str | None = None,
         **_kwargs: Any,
     ) -> str:
+        if artifact_uri.endswith(".feature_contract.json"):
+            if tracking_uri not in self.payloads:
+                raise AssertionError(f"contract read from an unexpected backend: {tracking_uri!r}")
+            with self._mutex:
+                self.contract_calls.append((artifact_uri, tracking_uri or ""))
+            assert dst_path is not None
+            out = Path(dst_path) / Path(artifact_uri).name
+            out.write_bytes(b"{}")
+            return str(out)
         with self._mutex:
             self.calls.append((artifact_uri, tracking_uri or ""))
         if self.barrier is not None:

@@ -191,12 +191,11 @@
    Model Scoring source) or else the first existing sibling (`model_contract_path`, which
    refuses a sibling that leaves the project through a symlink as a `DeployError`), is
    bundled under `<node>__feature_contract.json`; a file source never contacts MLflow. For a run or registered source without an explicit
-   contract, the contract logged beside the model in the run is bundled
-   (`_resolve_run_contract`, which fails naming the run when there is none) for a
-   contract-bound family and for a CatBoost model whose file does not declare its offset
-   (`_offset_undeclared` loads the downloaded model to check), so that model is served bound
-   to the same declaration as in the preview; otherwise the bare `feature_contract.json`
-   beside the download is bundled when present. A node left unbundled is then refused by the deploy
+   contract, the contract logged beside the model in the run is always bundled
+   (`_resolve_run_contract`); a run that logged none fails the bundle with a
+   `DeployError` naming the node and the run. Every MLflow-sourced model is therefore
+   served bound to the contract the preview binds, and each request is checked against
+   it. A node left unbundled is then refused by the deploy
    scorer's passthrough guard below. The bundler resolves each model-score node's
    `mlflow_destination` to one
    backend exactly once and passes that object to both registered-model resolution
@@ -788,11 +787,6 @@ JSON have separate structured payloads. A body exactly at the configured limit i
   the sanitised source label otherwise; the same derivation the executor, projection,
   and codegen use, so two frames from one apiInput are individually routable). The
   configured live input must match a connected edge.
-- **Feature-contract bundling filename convention**: the bundler only looks for a bare
-  `feature_contract.json` sitting next to a downloaded model (the MLflow-download-cache
-  convention); training itself writes per-model `{name}.feature_contract.json` and never
-  populates the bare name — this asymmetry is intentional and documented inline
-  (`_bundler.py::_bundle_feature_contract`).
 - **`tolerance_pct` is a raw fraction, not a percentage.** `_validators.py::_parse_tolerance_pct`
   rejects any value `> 1` with a message suggesting the likely intended value divided by
   100 — guards against an operator writing `tolerance_pct: 5` meaning "5%" and

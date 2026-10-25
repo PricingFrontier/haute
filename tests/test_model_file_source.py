@@ -480,6 +480,30 @@ class TestBundling:
         assert bundled.read_bytes() == contract.read_bytes()
 
 
+@pytest.mark.parametrize("kind", ["run", "registered"])
+def test_a_run_model_that_declares_its_offset_binds_its_logged_contract(
+    project: Path, kind: str
+) -> None:
+    """The preview binds the contract the deploy bundle ships for every native model."""
+    from haute._model_source import load_bound_model
+
+    model_path = external_catboost(project, offset=False, stamp="")
+    contract = write_contract(model_path, offset=None, link=None)
+
+    bound = load_bound_model(source_for(kind, model_path, contract), "regression")
+
+    assert bound.contract_path is not None
+    assert Path(bound.contract_path).read_bytes() == contract.read_bytes()
+
+
+@pytest.mark.parametrize("kind", ["run", "registered"])
+def test_a_run_model_without_its_logged_contract_is_refused(project: Path, kind: str) -> None:
+    model_path = external_catboost(project, offset=False, stamp="")
+
+    with pytest.raises(ConfigError, match="has no feature contract ext.feature_contract.json"):
+        score(source_for(kind, model_path, None), data())
+
+
 def test_inspection_reports_the_task_a_contractless_file_was_trained_for(project: Path) -> None:
     from catboost import CatBoostClassifier
 
@@ -547,14 +571,14 @@ def test_a_registered_model_and_its_logged_contract_come_from_one_run(
         client.set_terminated(run.info.run_id)
         client.create_model_version("ext", f"runs:/{run.info.run_id}", run.info.run_id)
     client.set_registered_model_alias("ext", "champion", "1")
-    resolve = _mlflow_io.resolve_run_artifact
+    fetch = _mlflow_io._resolve_run_contract
 
-    def promote_then_resolve(**kwargs: Any) -> tuple[str, str]:
-        # The alias moves after the first model load and before the contract read.
+    def promote_then_fetch(*args: Any) -> str:
+        # The alias moves after the model was resolved and before its contract is read.
         client.set_registered_model_alias("ext", "champion", "2")
-        return resolve(**kwargs)
+        return fetch(*args)
 
-    monkeypatch.setattr(_mlflow_io, "resolve_run_artifact", promote_then_resolve)
+    monkeypatch.setattr(_mlflow_io, "_resolve_run_contract", promote_then_fetch)
     source = RegisteredModelSource(
         registered_model="ext",
         version="",
@@ -566,7 +590,8 @@ def test_a_registered_model_and_its_logged_contract_come_from_one_run(
 
     scored = score(source, frame)
 
-    np.testing.assert_allclose(scored, native_reference(pairs[1][0], frame, offset=False))
+    # Version 1's model under version 1's exposure offset, not version 2's contract.
+    np.testing.assert_allclose(scored, native_reference(pairs[0][0], frame, offset=True))
 
 
 def test_a_run_logged_contract_scores_values_the_model_never_saw(project: Path) -> None:

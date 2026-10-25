@@ -239,7 +239,8 @@ class TestCatBoostPredictOffset:
                 flavor="catboost",
                 task="regression",
             )
-        assert resolve.call_count == 1
+        # The model and the contract its run logged, each read once: never retried.
+        assert resolve.call_count == 2
 
     def test_predict_missing_offset_column_fails_loud(self) -> None:
         pytest.importorskip("catboost", reason="catboost optional dependency not installed")

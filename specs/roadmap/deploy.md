@@ -15,7 +15,6 @@ MLflow target and the impact analysis. Current behaviour is specified in
 |---|---|---:|---|
 | DEP-R05 | Planned | P1 | Flat Quote Input uses checked manifest types; container framing errors return 422, and MLflow's public signature boundary is explicit. |
 | DEP-R06 | Planned | P1 | The Databricks model installs a target-compatible lock for the validated scoring runtime and every bundled engine. |
-| DEP-R07 | Planned | P1 | Every MLflow-sourced Model Score ships the feature contract its training run logged, or the deploy refuses. |
 | DEP-R09 | Planned | P2 | The container image installs a recorded dependency closure resolved for its target Python and platform. |
 | DEP-R10 | Planned | P2 | `haute.toml` values are typed at load, a malformed `[test_quotes] dir` is refused, and an unknown override key raises. |
 | DEP-R11 | Planned | P2 | Impact analysis fails on a row-count mismatch instead of pairing the wrong quotes, and a mistyped production URL is not a first deploy. |
@@ -28,7 +27,7 @@ MLflow target and the impact analysis. Current behaviour is specified in
 
 ## Planned improvements
 
-`DEP-R05` to `DEP-R07` protect served results and come first. `DEP-R06` uses the
+`DEP-R05` and `DEP-R06` protect served results and come first. `DEP-R06` uses the
 target-resolution mechanism in `DEP-R09`; deliver that shared mechanism with it.
 `DEP-R12A` can proceed independently, coordinating edits to shared build code.
 
@@ -117,34 +116,6 @@ this package rather than deferring the P1 environment fix.
 `src/haute/deploy/_model_code.py`; `pyproject.toml`;
 `src/haute/deploy/_container.py::runtime_versions`, `::_pinned_dockerfile_deps` and
 `::_pinned_extra_dockerfile_deps`.
-
-### DEP-R07 — Every MLflow-sourced model ships its training contract
-**Why:** Training logs a feature contract beside every model artefact, but the bundler
-fetches it from the run only for a family that loads under its contract (EBM) or a
-CatBoost model whose file does not declare its offset; for every other MLflow-sourced
-model it looks for a bare `feature_contract.json` beside the cached download, which
-training never writes, and logs that none was found. The deployed scorer then runs that
-node without a contract, so a served request is checked against the model's own feature
-names only: a dtype or an offset that drifted from training is not refused at the
-boundary. The specification says bundling carries each model's feature contract
-and that the scorer binds each model to it exactly as the preview does.
-
-**Plan:** Fetch the run's contract (`_resolve_run_contract`) for every MLflow-sourced
-Model Score and bundle it under the node's contract key; refuse the deploy, naming the
-node and the run, when the run logged none. Make the editor's preview bind the same
-contract so the two keep agreeing.
-
-**Acceptance:** A deployed pipeline with an MLflow-sourced XGBoost model refuses a
-request whose feature dtype differs from training with the contract mismatch error;
-a run without a contract fails resolution naming it.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/deploy/_bundler.py::collect_artifacts` and
-`::_bundle_feature_contract`; `src/haute/_mlflow_io.py::_resolve_run_contract` and
-`::_run_contract_artifact`; `src/haute/deploy/_scorer.py::_score_graph_lazy` (the
-contract-less `model_score_fn` branch); `src/haute/modelling/_mlflow_log.py` (the
-contract logged with every candidate).
 
 ### DEP-R09 — The container's dependency closure is pinned
 **Why:** The Dockerfile pins the scoring-runtime distributions and the artefacts' engines

@@ -3722,7 +3722,7 @@ class TestScoreGraphModelScoreRemap:
         """Configured non-bundled deploy modelScore scores eagerly in memory."""
         from haute.deploy._scorer import score_graph
 
-        scoring_model = MagicMock(offset_column=None, offset_link=None)
+        scoring_model = MagicMock(offset_column=None, offset_link=None, run_contract_path=None)
         captured: dict[str, object] = {}
 
         def fake_run_score_pipeline(*_args, **kwargs):
