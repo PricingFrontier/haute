@@ -18,12 +18,12 @@ or maintenance issue; `P3` opportunistic work.
 | Component | Improvement surface | Start with |
 |---|---|---|
 | [Assistant](assistant.md) | Blocking data findings, structured step authoring, typed banding and rating, item-level edits and per-model qualification (all deferred) | — |
-| [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup, one worker primitive | `ROAD-WORKER-05` |
-| [Bugs](bugs.md) | Defects found outside component work: statements a save drops from a submodel file, generated CI/CD files that fail before a first container release or cache nothing on GitLab, and text that no longer matches behaviour | `BUG-24` |
+| [Background jobs and API lifecycle](background-jobs-api.md) | A shutdown that cancels every job, one failure classification with persistence failures surfaced, one worker envelope and one cgroup resolver, one worker primitive | `ROAD-WORKER-06` |
+| [Bugs](bugs.md) | Defects found outside component work: statements a save drops from a submodel file, generated CI/CD files that fail before a first container release or cache nothing on GitLab, text that no longer matches behaviour, the hosted app's boot and build script, the UC transport's clients, the storage binding's unknown keys and a quadratic schema resolution in banding | `BUG-24` |
 | [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache identity | `CACHE-S17` |
 | [CLI](cli.md) | `haute init --force` keeping the analyst's files, `haute run` as a lazy walk, `haute lint` running the editor's validators, `pyproject.toml` through `tomlkit`, error reporting, generated CI hygiene | `CLI-R01` |
 | [Deploy](deploy.md) | Served requests typed by the manifest's schema, Databricks environments pinned, every MLflow model with its training contract, the registered version from `log_model`, typed `haute.toml`, impact alignment, build directories under the project, one copy of each deploy mechanism | `DEP-R05` |
-| [Engineering quality](engineering-quality.md) | Model-training test cost, order- and load-sensitive tests, compatibility shard balance, dead code, test organisation | `ENGQ-CI03` |
+| [Engineering quality](engineering-quality.md) | Model-training test cost, order- and load-sensitive tests, compatibility shard balance, dead code, test organisation, actions pinned by commit, a build hook that fails like the CLI | `ENGQ-CI03` |
 | [Execution engine](execution-engine.md) | Column-free selects in chunked writes, estimate widths from the lineage, fan-out caching, warm pool resilience, watchdog baselines, quiet failures made loud, static-analysis coverage, dead evidence and clones | `EXEC-R09` |
 | [Explore and EDA](explore-eda.md) | Advanced pivot and PivotChart parity | — |
 | [Frontend shared](frontend-shared.md) | Results store | `FSH-R03` |
@@ -32,21 +32,23 @@ or maintenance issue; `P3` opportunistic work.
 | [Modelling](modelling.md) | Adaptive low-memory fitting: exact chunked GLM, a low-memory boosted-tree mode (both awaiting a decision) | `MOD-M01` |
 | [Name collisions](name-collisions.md) | Input-binding editors showing their name violations inline | `NAME-09` |
 | [Optimiser validation](optimiser-validation.md) | Per-point convergence traces from price_contour's frontier sweep; a calibrated solve-memory forecast in the Solve panel; the optimiser result workspace's open robustness and CSV questions | `OPT-PC04` |
-| [Pipeline config](pipeline-config.md) | Project context, typed configs, editor state, node specification | `PCFG-R04` |
+| [Pipeline config](pipeline-config.md) | Strict decoding of sidecars and sources, inline keywords refused, comments kept across a save, recovery on the engine's validators, canonical sidecar bytes, dead paths; project context, typed configs, editor state, node specification | `PCFG-R10` |
 | [Polars 2](polars-2.md) | Moving to Polars 2.0: caches computed under Polars 1, new dtypes, deploy parity, generated and teaching code, the operation registry and the tests; then the operator memory evidence and worker baselines | `PL2-15` |
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
-| [Sandbox security](sandbox-security.md) | Every containment comparison through the one check | `SBX-R01` |
-| [Server API](server-api.md) | Domain errors, generated browser contract | `API-R02` |
+| [Sandbox security](sandbox-security.md) | Every containment comparison through the one check; restricted joblib loading without a fallback | `SBX-R01` |
+| [Server API](server-api.md) | Client errors answered as client errors, utility files written like project files, a save that never round-trips the watcher, one copy of each route mechanism, bounded requests, no bytecode deletion at start; domain errors, generated browser contract | `API-R07` |
 | [Submodels](submodels.md) | One reuse mechanism | `SUB-R01` |
 | [t-boost](t-boost.md) | What rating-table models make possible: cell-level holdout A/E, unfolding into rating steps, model comparison with premium attribution, measured analyst adjustments (all awaiting a decision) | `TBOOST-02` |
-| [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; the quote store on the server (its engine awaiting IT); managing quotes in the app past the Quotes page: comparing revisions, outcomes, many quotes at once; exports from the app (awaiting a decision on formats); test quotes analysts keep and price again, built again after the first version was taken out (awaiting decisions); actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources); what is left of the review of 15 October 2026: Preview priced in one run, the form's file changed outside the editor, the app's sign-in, and building the sheets without a pointer; and more for Show when to test: other fields and the price | `WB-08` |
+| [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; the quote store on the server (its engine awaiting IT); managing quotes in the app past the Quotes page: comparing revisions, outcomes, many quotes at once; exports from the app (awaiting a decision on formats); test quotes analysts keep and price again, built again after the first version was taken out (awaiting decisions); actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources); what is left of the review of 15 October 2026: Preview priced in one run, the form's file changed outside the editor, the app's sign-in, and building the sheets without a pointer; and more for Show when to test: other fields and the price; pricings that outrun their timeout and concurrent first saves of a form revision | `WB-08` |
 
 ## Delivery plan — 24 September 2026
 
 The [delivery plan](delivery-plan.md) orders every active package into rounds
 delivered one PR at a time from a single checkout, with each round's
 dependencies, its size and the user-visible changes it makes. It owns only
-the order; the packages above own the work.
+the order; the packages above own the work. The packages the
+[25 October 2026 codebase review](codebase-review-2026-10-25.md) added are not
+yet placed in its rounds.
 
 ## Codebase review — 23 September 2026
 

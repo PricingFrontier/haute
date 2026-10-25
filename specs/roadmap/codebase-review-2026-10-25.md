@@ -31,7 +31,8 @@ tracks it. It owns no work; the component roadmaps carry the plans.
    rating step, the Workbench output, input, tables, params and config modules
    and their route, the output assembler, the JSON shredder, the three
    production workflows, `pyproject.toml`, the build hook and the release
-   scripts.
+   scripts; the exceptions (one partial read, the secondary workflows by sweeps
+   only, five modules by targeted greps) are in the coverage table.
 4. **Area reviewers.** The rest of the repository was split into areas, each
    read by one reviewer at a time (two in flight at most) under one protocol:
    read-only, no git state changes, no full test suites, a fixed finding row
@@ -77,7 +78,7 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 
 | Area | Read by | Coverage | Findings (Critical / Major / Minor / Suggestion) |
 |---|---|---|---|
-| Deploy, CLI, scaffold, server shell, hosted storage, Databricks app, sandbox, underwriter app and quote store, rating, Workbench modules, workflows, build and release | main session | every file in full | 0 / 4 / 38 / 8 |
+| Deploy, CLI, scaffold, server shell, hosted storage, Databricks app, sandbox, underwriter app and quote store, rating, Workbench modules, workflows, build and release | main session | every file in full except `scripts/container_smoke.py` (first 120 lines) and the seven secondary workflows (sweeps only); `_global_constants.py`, `_graph_utils.py`, `_execution_admission.py`, `_mlflow_io.py` and `_model_flavors.py` by targeted greps (the last two are the modelling reviewer's) | 0 / 4 / 38 / 8 |
 | Execution core (walker, executor, lazy execution, pipeline, contexts) | reviewer, verified | full | 0 / 2 / 10 / 3 |
 | Caching and IO (source cache, node snapshots, providers, data points, input preparation, registry) | reviewer, verified; the Critical reproduced by the main session | full | 1 / 3 / 4 / 3 |
 | Static analysis (projection, lineage, RAM estimate, chunk classifier, cardinality) | reviewer, verified; two probes rerun | full | 0 / 3 / 5 / 0 |

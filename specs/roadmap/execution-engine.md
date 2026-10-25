@@ -33,17 +33,17 @@ retired.
 `classify_chunk_local_polars_code` accepts `df = source.select(pl.lit(1).alias("one"))`
 as row-local: the node is written a slice of its input at a time, each slice yields the
 literal's single row, and the written parquet holds one row per part (probe: native
-height 1, written height 3 under three parts). The same holds for `pl.len()`,
-`pl.int_range(...)` and any other expression that reads no input column. A capture or an
-explicit build then publishes a generation whose row count is wrong, and every consumer
-reads it as fresh; only the deploy proof's `check_answer_rows` makes the shape loud at
-serve time.
+height 1, written height 3 under three parts). `pl.len()` and `pl.int_range(...)` are
+already refused as unsupported functions (probed); the gap is a `select` built from
+literals alone, which the expression rules accept because they check functions and
+methods, not whether any input column is read. A capture or an explicit build then
+publishes a generation whose row count is wrong, and every consumer reads it as fresh;
+only the deploy proof's `check_answer_rows` makes the shape loud at serve time.
 
-**Plan:** Add a `select` validator that requires every expression to reference at least
-one input column and to be elementwise over it (the row-local expression classifier
-already exists for `with_columns`); refuse `pl.len`, `pl.int_range`, bare literals and
-aggregations in a chunk-local `select`. Record the rule in the chunked-writes section
-of the specification.
+**Plan:** Add a `select` validator that requires at least one expression to reference an
+input column (a literal-only select is a one-row frame, not a row-local map), beside the
+function and method rules that already refuse `pl.len`, `pl.int_range` and aggregations.
+Record the rule in the chunked-writes section of the specification.
 
 **Acceptance:** The probe shape is classified `eligible=False` with a reason naming the
 expression; a corpus of `select` shapes written input-sliced has the native height for
@@ -87,9 +87,10 @@ copy of every fan-out input (probe: 610 MB peak cached against 329–365 MB with
 cache, same results), which is the opposite of what the cache is for and counts against
 the preview's admitted budget.
 
-**Plan:** Cache only when at least two collected consumers read the frame in this walk
-(or none, and rely on Polars' common-subplan elimination, which the probe shows holds
-peak memory at 318–340 MB); measure both on the probe graph before choosing.
+**Plan:** Cache only when at least two collected consumers read the frame in this walk,
+or never (the probe's uncached runs held 329–365 MB with Polars' common-subplan
+elimination on and 318–340 MB with it off, so neither the cache nor the elimination was
+needed on that graph); measure both on the probe graph before choosing.
 
 **Acceptance:** The probe graph's preview peak is within ten percent of the uncached run
 with identical results; a graph where two collected nodes share an expensive input still
