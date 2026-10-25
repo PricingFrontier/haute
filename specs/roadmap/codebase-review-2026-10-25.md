@@ -99,11 +99,11 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 | JSON shredding (records, shred, writer, source proof, inference, caches, the path grammar, the Edge Join, the JSON-cache route) | reviewer, verified; the Critical reproduced by the main session | every owned file in full | 1 / 2 / 8 / 1 |
 
 Two hundred and forty-one findings so far: two Critical, thirty-five Major,
-one hundred and sixty-seven Minor and thirty-seven Suggestions. The Critical and every Major is confirmed at source by the
+one hundred and sixty-seven Minor and thirty-seven Suggestions. Both Criticals and every Major are confirmed at source by the
 main session; the Minors and Suggestions were read at source or accepted on
 quoted evidence as the verification table records.
 
-## The Critical and the Majors
+## The Criticals and the Majors
 
 - **A glob or folder Data Input is invisible to the freshness proofs** (Critical,
   `IO-R03`). `source_signature` answers `"missing"` for a path that is not one
