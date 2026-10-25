@@ -280,12 +280,9 @@ extrapolation. Model Scoring can say so precisely.
 **Plan:** When a Model Scoring node scores a t-boost model, report per table
 the share of scored rows (and exposure, when the offset is present) whose cell
 had zero training support, and a population stability index of the scored
-rows over each table's cells against training. Report too, per categorical
-feature, the rows and exposure holding values the fit never saw (scored in
-the rare cell; t-boost's `unseen_values` counts them), in the training result
-for the validation and final-test rows and in Model Scoring; today these are
-only logged. Show it
-in the preview and the trace of an individual quote.
+rows over each table's cells against training. Show it in the preview and
+the trace of an individual quote. The report of values the fit never saw
+(scored in the rare cell) is `MOD-R01`'s, for every family.
 
 **Acceptance:** Scoring a book shifted towards young drivers reports a higher
 out-of-support share for the age interactions and a raised stability index

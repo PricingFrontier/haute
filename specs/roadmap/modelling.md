@@ -56,7 +56,7 @@ something this page settles.
 |---|---|---:|---|
 | MOD-M01 | Decision | P3 | Exact chunked GLM fitting under a memory budget. |
 | MOD-M02 | Decision | P3 | A low-memory boosted-tree fitting mode under an explicit user choice. |
-| MOD-R01 | Planned | P1 | A GLM's contract records the levels each categorical term was fitted on, and an unseen or null level is refused on every scoring path instead of priced as the reference level. |
+| MOD-R01 | Planned | P1 | No family refuses a categorical value its fit never saw: each library scores it through its own mechanism, Haute assigns it no level, and every scoring path counts and reports such values by feature. |
 | MOD-R02 | Planned | P2 | A dispersion estimate registers its cancellation token before preparing, prepares off the request thread, and reports curated errors. |
 | MOD-R03 | Planned | P2 | Training publication validates the evaluation plan outside the job-store lock, and the plan stores memberships compactly. |
 | MOD-R04 | Planned | P2 | Fit parameters have no hidden defaults: an unset Tweedie power is refused by the job itself, CatBoost reserves its loss keys, a missing feature or dtype is an error, and `tweedie_deviance` needs its power. |
@@ -217,47 +217,102 @@ external-memory measurement. The model-card and result metadata surface.
 `src/haute/modelling/_model_card.py`; `src/haute/_ram_estimate.py` (the
 existing downsample decision).
 
-### MOD-R01 — GLM contracts record fitted levels
-**Why:** RustyStats encodes an unknown categorical label as all-zero dummies,
-so a GLM scores a level it never saw in training, and a null in a categorical
-term, exactly as the reference level (probed: levels D and Z and a null all
-priced at the A value). Haute's GLM contract records no fitted levels, only a
-domain the user declared upstream; `_load_rustystats_model` sets
-`cat_feature_names` empty, so `_validate_features_uncached` knows no GLM
-categoricals and nothing refuses the value on any scoring path, while the
-native families record `fit_categorical_levels` and `encode_frame` refuses an
-unseen value. A GLM's contract `categorical_features` is also dtype-derived,
-so a `categorical` term on an `Int64` column is not a categorical feature in
-the contract at all. New levels are routine in production scoring, and the
-high-level invariant says drift raises rather than producing a plausible
-wrong prediction.
+### MOD-R01 — Unseen categorical values score natively and are reported
+**Decision (the owner, 25 October 2026):** a categorical value the fit never saw
+is never refused. Each library scores it through its own mechanism, Haute maps it
+to no level of its own, and every such value is reported. This replaces the
+refusal and the null policy that the review's validation recorded for this
+package.
 
-**Plan:** Record fitted labels by categorical term type in the GLM contract,
-including an `Int64` column used as a categorical term, while preserving any
-upstream declared domain as a separate constraint. Record an explicit null policy:
-refuse nulls unless the fitted model has a defined, separately encoded null level;
-presence of nulls in training alone does not prove that. Enforce the contract through
-the shared loaded-model/scorer validation on every path. A check confined to the
-training adapter is insufficient: `_load_rustystats_model` loads the native model
-and deployed scoring calls `ScoringModel.predict` directly. Keep other model families'
-declared-domain and encoding semantics intact.
+**Why:** The families disagree today. LightGBM, XGBoost and EBM go through
+`encode_frame`, whose `require_known_levels` raises "values the model was not
+trained on" for the whole column, so one new value fails the scoring call for
+every row in it; none of the three libraries refuses it on its own. t-boost
+scores it in its pooled `<rare>` cell (`UNKNOWN_CATEGORY`) and logs validation
+rows that hold one. A GLM categorical term and CatBoost score it silently:
+RustyStats encodes an unknown label as all-zero dummies, the reference level
+(probed: D, Z and a null all priced at A; the user guide says unseen levels
+share the intercept), and CatBoost gives it its zero-count prior. Only t-boost
+can tell that a value is unseen: the GLM contract records no fitted levels
+(`_load_rustystats_model` sets `cat_feature_names` empty, and the contract's
+dtype-derived `categorical_features` leaves out a `categorical` term on an
+`Int64` column), and CatBoost's contract keeps only a declared domain. New
+levels are routine in production scoring. A refusal turns one into an outage,
+and silence hides an upstream recoding that prices a whole segment at the
+fallback.
 
-**Acceptance:** Scoring a GLM on a level absent from training raises naming
-the term and the value, in the preview, a standalone run and a deployed
-bundle after serialising to `.rsglm` and loading it again. Cover string and integer
-categorical terms, an upstream domain containing an unfitted level and the explicit
-null policy. The probe's null is refused and its A, B and C values are unchanged;
-other families retain their existing domain behaviour.
+Where each library scores an unseen value (probe, 25 October 2026: three levels
+of 3,000 rows and ten rare levels of 4 rows, whose true mean is 6):
 
-**Dependencies:** `DEP-R07` binds the run's contract on every path; this
-package makes the GLM contract carry what binding needs.
+| Family | Native mechanism | An unseen value scores |
+|---|---|---|
+| t-boost | `unknown_category="rare"`, which Haute sets | in the pooled `<rare>` cell, as the rare levels do (5.98) |
+| LightGBM | a level under `cat_smooth` or `min_data_per_group` never gets its own side of a categorical split | on the rare levels' side (3.20) at the defaults; with both lowered, rare levels split alone and the match ends |
+| CatBoost | `ctr_leaf_count_limit` (CPU only) keeps statistics for the most frequent categories only | at the zero-count prior by default (6.07, the rare levels 4.43); with the limit set, rare and unseen values share one value near the book average (2.15) |
+| GLM, categorical term | **Levels** fits indicators for the listed levels only | in the intercept, with the reference level and every unlisted level |
+| GLM, target-encoding term | the encoding's prior | at the prior, the training mean that a level's encoding shrinks to as its rows fall (RustyStats documents it; not probed) |
+| XGBoost | none | down the missing or not-chosen branch of each split |
+| EBM | none: `min_cat_samples` groups thin levels while boosting, but each keeps its own score | in the unknown bin, whose score 0 is the book average (2.02) |
 
-**Evidence:** `src/haute/modelling/_rustystats.py::GLMAlgorithm`;
+**Plan:**
+
+- `encode_frame` stops raising. A value outside the fitted levels reaches the
+  library as an unseen category, so the library's own handling scores it, kept
+  apart from its missing-value handling wherever the library distinguishes the
+  two (EBM's unknown bin is not its missing bin).
+- Every family records the levels it was fitted on, so an unseen value can be
+  detected: the GLM contract stores each categorical term's labels by term
+  type, an `Int64` categorical term included, and CatBoost records its training
+  levels. A domain the analyst declares upstream stays a separate constraint
+  that scoring enforces; a value outside it is a declared-domain error, not an
+  unseen value.
+- Every scoring path (preview, standalone run, Model Scoring, a deployed
+  bundle) counts, per categorical feature, the distinct unseen values, their
+  rows, their exposure when the model has an offset, and examples, and logs one
+  structured warning per feature. Model Scoring and the preview show the
+  counts, and a quote's trace flags the feature. A training run reports the same
+  for its validation and final-test rows in the training result, for every
+  family. A null in a feature whose training rows held none is counted beside
+  them; a null is never an unseen value and keeps its native missing treatment.
+- The model-training user guide states, per family, where an unseen value
+  scores and which native setting controls it (the table above).
+- At delivery the modelling specifications stop saying that an unseen category
+  fails: the feature contract's "any drift raises" keeps raising for missing
+  features and dtype drift, but not for an unseen categorical value.
+
+**Acceptance:** For each of the six families, a model trained on the probe's
+data scores an unseen value without raising, in the preview, a standalone run
+and a deployed bundle after saving and loading, exactly as the library scores it
+directly: t-boost and LightGBM at their rare levels' value, EBM in its unknown
+bin and not its missing bin. A training run whose validation rows hold a level
+the training rows lack completes in every family and reports it. The report
+counts the probe's unseen values and rows exactly on every path; a null in a
+feature whose training rows held none is counted separately; a value outside a
+declared domain is still refused. A GLM with string and `Int64` categorical
+terms records both terms' levels, and its A, B and C prices are unchanged. The
+tests that pin a refusal are replaced by tests of native scoring.
+
+**Dependencies:** `DEP-R07` binds the run's contract on every deployed path, so
+an MLflow-sourced model reports unseen values once it lands. `TBOOST-09` keeps
+t-boost's out-of-support and stability reporting; the unseen-value report is
+this package's, for every family.
+
+**Evidence:** `src/haute/modelling/_native_encoding.py::encode_frame`;
+`src/haute/modelling/_native_encoding.py::require_known_levels`;
+`src/haute/modelling/_tboost.py::UNKNOWN_CATEGORY`;
+`src/haute/modelling/_tboost.py::_log_unseen_validation_values`;
+`src/haute/modelling/_rustystats.py::GLMAlgorithm`;
 `src/haute/modelling/_rustystats.py::prepare_glm_design`;
 `src/haute/modelling/_training_job.py::_save_artifacts`;
 `src/haute/_mlflow_io.py::_load_rustystats_model`;
 `src/haute/_model_scorer.py::_validate_features_uncached`;
-`src/haute/modelling/_feature_contract.py::validate_categorical_value_domains`.
+`src/haute/modelling/_feature_contract.py::validate_categorical_value_domains`;
+`src/haute/_builders.py::_ratebook_lookup_table` (the optimiser's rating tables
+already price an unseen level neutrally and count every miss);
+`tests/test_lightgbm_family.py::test_reordered_categories_score_identically_and_unseen_ones_fail`;
+`tests/test_xgboost_family.py::test_reordered_categories_score_identically_and_unseen_ones_fail`;
+`tests/test_ebm_family.py::test_unseen_categories_fail_and_nulls_score_through_the_missing_bin`;
+`docs/building-models/nodes/model-training.md`.
 
 ### MOD-R02 — The dispersion estimate's lifecycle
 **Why:** `start_dispersion_estimate` creates its admitted context without a
