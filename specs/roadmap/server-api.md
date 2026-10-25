@@ -15,6 +15,11 @@ come from the [23 September 2026 codebase review](codebase-review-2026-09-23.md)
 | API-R02 | Planned | P3 | Domain services raise domain errors; only routes speak HTTP. |
 | API-R03 | Planned | P2 | Every browser type and response parser is generated from the Pydantic models. |
 | API-R05 | Planned | P3 | The server start does not delete bytecode caches under the installed package. |
+| API-R06 | Planned | P2 | A user-fixable error is answered as one: a graph the flattener refuses, a trace that fails in the user's node code, and the two 400s that carry the server-error text, with the trace's status chosen by type rather than by message prefix. |
+| API-R07 | Planned | P1 | Utility files are written like every other project file: atomically, under the project write lock, with a revision precondition and a ledger capture. |
+| API-R08 | Planned | P2 | A save never round-trips through the file watcher, and its request is validated before any file is staged. |
+| API-R09 | Planned | P3 | The repair routes, the admit-run-translate pattern, the path-resolution preludes and the two point-analysis services exist once each, and a save loads the pipeline once. |
+| API-R10 | Planned | P3 | Every free string and list in a request is bounded; the dead response fields and helpers are gone; the repair message and the `file` field say what is true. |
 
 ## Planned improvements
 
@@ -129,3 +134,163 @@ dev-mode watcher still reloads changed code.
 **Dependencies:** None.
 
 **Evidence:** `src/haute/server.py::_clear_bytecache`; `src/haute/server.py::_lifespan`.
+
+### API-R06 — Client errors answered as client errors
+**Why:** `flatten_executable_graph` refuses a client graph with a name violation or an
+undeclared handle by raising `ParseError`, which the trace, write-output,
+output-destination, OUTPUT dry-run, node-data, banding and rating routes call outside any
+`except` and no application handler claims (`ParseError` is a `HauteError`, not a
+`ValueError`), so a user-fixable graph error is answered with the sanitized 500
+"Operation failed. Check the server logs for details."; save and preview handle it
+route-locally. A failure in the user's own node code during a trace (a syntax error, a
+missing column) reaches the client as the same 500, while the same failure in a preview
+is embedded in `NodeResult.error`; two tests pin the 500. `GET /api/schema` and submodel
+creation answer a 400 with the server-error text, so the status says the request was
+wrong and the text says the server failed. The trace route chooses 409, 400 or 404 by
+matching the text of a `ValueError`, with the prefix table duplicated for the worker form,
+so a reworded message turns a 409 into a 500. This package comes from the
+[25 October 2026 codebase review](codebase-review-2026-10-25.md).
+
+**Plan:** Register one application handler `ParseError → 400` with the exception's
+message and drop the route-local clauses; map a node failure the trace walk raises to 422
+carrying the node id and `str(exc)`, as preview does, and change the two tests to assert
+it; let the unexpected `ValueError` in `get_schema` and `create_submodel` reach the 500
+backstop or map the known client errors to 400 with their own message; replace the trace
+prefix table with typed exceptions carrying an `error_code`, mapped once by type and
+carried through the worker's public payload.
+
+**Acceptance:** A graph with two nodes labelled `Rates` and `rates` is answered 400 with
+the collision message by every graph route; a trace of a node with a syntax error is
+answered 422 naming the node; no route answers 400 with the internal-error text; the trace
+route's status tests pass with the messages reworded.
+
+**Dependencies:** `API-R02` moves the services onto domain errors; this package covers
+the route-level mapping that exists today.
+
+**Evidence:** `src/haute/routes/_error_handlers.py::install_exception_handlers`;
+`src/haute/errors.py::ParseError`; `src/haute/routes/pipeline.py::trace_row`;
+`src/haute/routes/output_assemble.py`; `src/haute/routes/node_data.py::_prepared`;
+`src/haute/routes/banding.py`; `src/haute/routes/rating.py`;
+`src/haute/routes/files.py::get_schema`; `src/haute/routes/submodel.py::create_submodel`;
+`tests/test_trace_api.py`.
+
+### API-R07 — Utility files written like project files
+**Why:** Utility files are the one project write that is neither atomic, nor under the
+project write lock, nor revision-checked, nor captured on the save ledger: `write_text`
+truncates then writes, PUT and DELETE take no revision so a second editor's PUT silently
+wins, and nothing captures the write. Readers race it: every trace hashes
+`utility/**/*.py` and preview workers import `utility.*` in the preamble, so a concurrent
+preview can import a truncated file. The primitives exist (`atomic_write_text`, `Writer`,
+`project_write`) and `PUT /api/project-files/content` shows the contract (staged, renamed
+under the lock, 409 `file_exists`, 412 `file_changed`, captured). This package comes from
+the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
+
+**Plan:** Write through `atomic_write_text` (or `Writer`) inside `project_write`, take a
+`revision` (size and mtime_ns, as project files do) on PUT and DELETE and answer 412 on a
+mismatch, capture the write on the ledger, and state the contract in the utility section
+of the server-api specification.
+
+**Acceptance:** A PUT with a stale revision is answered 412 and leaves the file unchanged;
+a reader never observes a partial utility file (a test that reads during a write sees old
+or new bytes); the save ledger records the write.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/routes/utility.py::_ensure_init`;
+`src/haute/routes/utility.py::delete_utility_file`;
+`src/haute/routes/project_files.py`; `src/haute/routes/_helpers.py::project_write`;
+`src/haute/_file_ops.py::atomic_write_text`.
+
+### API-R08 — A save never round-trips the watcher
+**Why:** The `.haute.json` sidecar write (`save_sidecar` → `atomic_write_text`) and the
+post-commit stale-config unlink register no self-write marker, so every save round-trips
+through the file watcher as an external edit: the unmarked sidecar event files under the
+owning pipeline as dependency-triggered, which skips the byte-hash dedupe, reloads the
+document and broadcasts `pipeline.document.update` to every canvas, and a save that
+retires a config file re-parses and broadcasts every pipeline in the project. The
+specification says the server's own edits never round-trip. `active_source` is checked
+against `sources` only by the sidecar model after the `.py`, module and config files were
+staged, so a mismatch rolls everything back and surfaces as a pydantic error through the
+500 backstop. This package comes from the
+[25 October 2026 codebase review](codebase-review-2026-10-25.md).
+
+**Plan:** Mark the sidecar write (`mark_self_write(sidecar, content=bytes)` before the
+write, or a `Writer`) and the stale unlink (`mark_self_write(path, deleted=True)`);
+validate `active_source ∈ sources` on `SavePipelineRequest` (422) before any file is
+staged; add a watcher test that a save, including one that removes a node, publishes no
+`pipeline.document.update`.
+
+**Acceptance:** A save with a live socket produces no document broadcast; a save
+retiring a config file re-parses nothing; a request whose `active_source` is not in
+`sources` is answered 422 with no file touched.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/routes/_helpers.py::save_sidecar`;
+`src/haute/routes/_helpers.py::mark_self_write`;
+`src/haute/routes/_save_pipeline.py::SavePipelineService._write_sidecar`;
+`src/haute/routes/_save_pipeline.py::SavePipelineService._remove_stale_config_files`;
+`src/haute/server.py`; `src/haute/schemas.py::SavePipelineRequest`; `tests/test_server.py`.
+
+### API-R09 — One copy of each route mechanism
+**Why:** The four repair-apply routes are near-identical (save lock, thread pool,
+`PipelineRepairError` → structured JSON, `OSError` → 409), differing in a log event name
+and one word; the admit → run-in-worker-or-thread → translate pattern with its thirty-line
+exception ladder is copied for preview, trace, free-code columns and the OUTPUT dry run;
+the submodel path-resolution call with its 400/403 pair appears three times and the
+"normalise separators, refuse empty, absolute, `~` or `..`" prelude three times with three
+message sets; the banding-statistics and rating-levels services duplicate their whole
+skeleton (cache, consumer resolution, demand widening, missing-column handling) and
+differ only in `_compute`, and both collect the whole grouped frame eagerly before taking
+`.head(value_limit)`, so a high-cardinality text column materialises every distinct value
+to answer a 500-row list. One save loads or parses the on-disk pipeline at least five
+times, and removing a definition parses every other pipeline in the project. This package
+comes from the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
+
+**Plan:** One `_apply_repair(fn, body, *, io_event, io_message)` helper; one
+`run_interactive(...)` coroutine returning the result or raising one typed route error a
+single ladder maps; one child-reference resolver and one relative-path prelude; a small
+base for the two point-analysis services that pushes the sort and head into the lazy plan
+and takes `distinct_count` from `n_unique()`; load the editor document and the strict
+graph once at the top of `save()` and hand both to the steps.
+
+**Acceptance:** jscpd reports none of the pairs; the route status tests pass unchanged;
+a save parses the pipeline file once (a counting test).
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/routes/pipeline.py`; `src/haute/routes/_save_pipeline.py`;
+`src/haute/routes/submodel.py`; `src/haute/routes/_banding_stats.py`;
+`src/haute/routes/_rating_levels.py`; `src/haute/routes/output_assemble.py`.
+
+### API-R10 — Bounded requests, honest fields
+**Why:** Apart from `EditorIdentitiesRequest`, no request bounds its strings or lists:
+no length on names, paths, sources, module names or contents, no size on `row_values` or
+`factor`; a utility name of a few thousand characters passes the identifier check and
+fails in the write as a 500. `UtilityWriteResponse` carries `error` and `error_line`
+fields no route sets, yet the generated contract requires them and the client parses
+them. `raise_validation_error` has no production caller, and the path-less cooldown mode
+of the self-write tracker is written by the save and read by nothing but tests while the
+specification still describes it. The repair routes' `OSError` answer states that the
+original artifacts were restored, but rollback is best-effort and a failed restore is only
+logged. `SavePipelineResponse.file` and `PipelineSummary.file` use OS-native separators
+while every other project-relative path on the wire is POSIX. This package comes from the
+[25 October 2026 codebase review](codebase-review-2026-10-25.md).
+
+**Plan:** `max_length` on every free string that names a file, module, source or node and
+a size cap on contents and value lists; remove the two dead fields and regenerate the
+contract; delete `raise_validation_error`, the bare cooldown mode, its constant and the
+specification sentence; word the repair detail as an attempt or thread the failed paths
+into it; `.as_posix()` for the two `file` fields.
+
+**Acceptance:** An over-long utility name is answered 422; the contract has no
+`error_line`; the dead helpers are gone; a failed rollback is named in the repair
+response; `file` is POSIX on Windows.
+
+**Dependencies:** `API-R03` regenerates the contract.
+
+**Evidence:** `src/haute/schemas.py::UtilityWriteResponse`;
+`src/haute/schemas.py::EditorIdentitiesRequest`;
+`src/haute/routes/_helpers.py::raise_validation_error`;
+`src/haute/routes/_save_pipeline.py::_rollback_artifacts`;
+`src/haute/routes/pipeline.py`; `src/haute/routes/utility.py`.

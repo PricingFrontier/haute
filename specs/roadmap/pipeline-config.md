@@ -15,9 +15,18 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 | PCFG-R07 | Planned | P2 | Every node type has a typed config model that is the single validation boundary. |
 | PCFG-R08 | Planned | P3 | Editor-only state travels beside the node config, not inside it. |
 | PCFG-R09 | Planned | P3 | A node type is declared in one place. |
+| PCFG-R10 | Planned | P1 | A sidecar or pipeline file that is not UTF-8 is refused, never loaded with replacement characters that the next save writes over the author's bytes. |
+| PCFG-R11 | Planned | P2 | An inline keyword on a sidecar-backed node fails the parse by name instead of being dropped, and Recover reports it rather than writing it over the sidecar. |
+| PCFG-R12 | Planned | P2 | A save keeps every authored comment, or reports the ones it would drop before it proceeds. |
+| PCFG-R13 | Planned | P2 | Recover validates with the engine's own validators and resets a submodel node without renaming names in the user's code. |
+| PCFG-R14 | Planned | P3 | Both save paths write the same canonical sidecar bytes, the configured pipeline path stays inside the project, and no placeholder file name reaches an error. |
+| PCFG-R15 | Planned | P3 | The unreachable config branches, the empty `_load_error` mechanism, the other dead symbols, the five duplicated mechanisms and the stale comments are gone. |
+| PCFG-R16 | Decision | P3 | The `earlier` step spelling is either dropped or named as the one allowed recogniser of old generated code. |
 
 `PCFG-R04` to `PCFG-R09` come from the
-[23 September 2026 codebase review](codebase-review-2026-09-23.md).
+[23 September 2026 codebase review](codebase-review-2026-09-23.md);
+`PCFG-R10` to `PCFG-R16` from the
+[25 October 2026 codebase review](codebase-review-2026-10-25.md).
 `PCFG-R08` should precede `PCFG-R07` so the models do not have to carry
 editor state.
 
@@ -171,3 +180,201 @@ specific node type for a concern the specification owns.
 `src/haute/_registry.py::NODE_REGISTRY`; `src/haute/_builders.py`;
 `src/haute/_codegen_builders.py`; `src/haute/projection.py`;
 `src/haute/_trace_correlation.py`; `src/haute/assistant/_catalog.py`.
+
+### PCFG-R10 — Sidecars and sources decode strictly
+**Why:** `_load_json_object` reads a node sidecar with `errors="replace"` under a
+comment that says config JSON remains strict UTF-8, and `read_user_text` tolerates
+non-UTF-8 bytes by design, so a sidecar or pipeline file holding a cp1252 `ä` loads
+as U+FFFD and the next whole-document save writes `EF BF BD` over the author's
+bytes with no error (probed on both sides: `{"name": "Prämie"}` on disk in cp1252
+comes back as `"Pr�mie"` in the rewritten sidecar). The global-constants reader and
+the repair writer refuse the same bytes (`repair_encoding_unsupported`), and the
+editor loader catches a `UnicodeError` its readers can never raise. Haute never
+writes such a file itself; a hand-edited or exported one is enough.
+
+**Plan:** Decode sidecars strictly and raise `ConfigError` naming the path and the
+byte; decode the pipeline source strictly in the parser, or have the document
+loader degrade a source whose decode needed replacement, so a save can never write
+U+FFFD over authored bytes; make the `UnicodeError` handlers reachable or delete
+them.
+
+**Acceptance:** A cp1252 sidecar fails the parse with a message naming the file and
+the byte; a cp1252 pipeline file loads degraded (or fails) and a save is refused; no
+save writes a replacement character that was not in the request.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_config_io.py::_load_json_object`;
+`src/haute/_io.py::read_user_text`;
+`src/haute/_pipeline_repair.py::_decode_utf8_artifact`;
+`src/haute/_config_io.py::parse_global_constants`;
+`src/haute/_pipeline_recovery.py`.
+
+### PCFG-R11 — Inline keywords on a sidecar-backed node are refused
+**Why:** `_resolve_node_config` pops `contract` and `config` and, on the sidecar
+branch, never reads the remaining decorator keywords, so
+`@pipeline.constant(config="...", values=[...], colour="red")` parses to the
+sidecar's values with no warning and the regenerated decorator drops the keywords
+(probed); the error text for a missing `config=` even says inline keyword arguments
+are ignored. Recover settings reads the same keywords as settings that override the
+sidecar (the decorator's keys merged over the sidecar's), so a Recover would write
+the decorator's values into the sidecar: a silent drop and a parser/recovery
+disagreement over what the file means. Recover also converts a `source_type`
+keyword into `sourceType` and reports it retained, a conversion of a non-canonical
+form.
+
+**Plan:** After popping `contract` and `config`, refuse any remaining keyword on a
+sidecar-backed node with a `ConfigError` naming the node and the keys (the node then
+opens for Recover); make `read_raw_node_settings` report such keywords as removed
+field changes instead of merging them; delete the `source_type` conversion.
+
+**Acceptance:** The probe decorator fails the parse naming `values` and `colour`;
+Recover settings on it reports both as removed and leaves the sidecar unchanged;
+`source_type` is reported, not converted.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_config_builder.py::_resolve_node_config`;
+`src/haute/_config_builder.py::_sidecar_required_error`;
+`src/haute/_recovery_sources.py::read_raw_node_settings`.
+
+### PCFG-R12 — Comments survive a save
+**Why:** `_render_module` assembles the file from the preamble, the constructor, the
+preserved blocks, each node's source and regenerated `connect` calls, so every save
+drops a module-level comment between node functions, a comment between a decorator
+and its `def`, a comment after a body's last statement and a comment on a
+`connect()` line (probed, five kinds); the only loss detector,
+`unkept_module_statements`, walks `tree.body` and cannot see comments, so the
+document reads ready and the save proceeds. The codegen specification lists the
+statements regeneration keeps and says nothing of comments.
+
+**Plan:** Either report comment-only lines outside the kept regions as a diagnostic
+of the `unkept_module_statement` kind (a tokenizer pass over the gaps between kept
+spans), or carry them: attach comments between functions to the following function
+as leading lines and keep trailing body comments inside the extracted code. State
+the rule in the codegen specification either way.
+
+**Acceptance:** The probe file round-trips with its five comments kept, or the
+document reports each as unkept with its line and the save is refused until it is
+moved.
+
+**Dependencies:** `BUG-19` is the statement-shaped neighbour in submodel files.
+
+**Evidence:** `src/haute/codegen.py::_render_module`;
+`src/haute/_ast_helpers.py::_function_body_source`;
+`src/haute/_ast_helpers.py::unkept_module_statements`.
+
+### PCFG-R13 — Recovery uses the engine's validators and the node's receiver
+**Why:** `_validator_issues` re-implements rules the engine owns and has drifted: it
+accepts an Edge Join `how="asof"` that `_edge_join.build_edge_join_kwargs` refuses,
+so Recover reports no issue and then fails with the generic "cannot be generated
+from these settings"; it hand-writes the Live Switch map, Scenario Expander range,
+Constant values, External File, Model Score, Modelling and Optimiser rules, and its
+issue paths mix four formats beside the JSON pointers `_reconcile_value` emits.
+`_reset_node` generates a submodel node's function with `receiver="pipeline"` and
+then renames every `pipeline` name in the generated text to `submodel`, including
+names inside the user's hook code, although `_node_to_code` takes `receiver=`.
+
+**Plan:** Call the engine's own validators (`build_edge_join_kwargs`, the scenario,
+constant and io-layer validators) and translate their `ConfigError`s into recovery
+issues with JSON-pointer paths; pass `receiver=` to `_node_to_code` and delete the
+rename.
+
+**Acceptance:** Recover on an Edge Join with `how="asof"` reports the engine's
+message at `/how`; a submodel node whose hook binds a local `pipeline` name is
+reset without that name changing.
+
+**Dependencies:** `PCFG-R07` makes the typed models the one validation boundary;
+this package removes the drift that exists today.
+
+**Evidence:** `src/haute/_node_config_recovery.py::_validator_issues`;
+`src/haute/_edge_join.py::_ALLOWED_HOW`;
+`src/haute/_pipeline_repair_actions.py::_reset_node`;
+`src/haute/codegen.py::_node_to_code`.
+
+### PCFG-R14 — Canonical, complete sidecar bytes and contained paths
+**Why:** The whole-document save writes a `contract` copy into every sidecar whose
+config carries one, while Recover, Reset and the node-scoped save omit it on purpose
+("a sidecar copy is what goes stale"), so the two save paths write different sidecar
+shapes and the on-disk copy lags the decorator. Node sidecar JSON is written in the
+config dict's insertion order, so the same configuration serialises to different
+bytes depending on how the sender ordered its keys; only the global constants file
+is canonicalised. An absolute `[project].pipeline` in `haute.toml` binds a file
+outside the project with no containment check. `parse_pipeline_source` with a base
+directory but no `source_file` invents `<base_dir>/__source__.py`, which then
+appears in errors and logs as a path that does not exist.
+
+**Plan:** Strip `contract` in `_prepare_config_for_sidecar`; sort the keys (or apply
+a per-type key order) at the sidecar write boundary, re-canonicalising existing
+sidecars once; require the configured pipeline path to resolve inside the project
+root; leave `source_file` empty when none is known.
+
+**Acceptance:** Both save paths write byte-identical sidecars for one configuration
+whatever key order was sent; a `haute.toml` naming a pipeline outside the project
+fails with `ConfigError`; no log or error names `__source__.py`.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_config_io.py::collect_node_configs`;
+`src/haute/_config_io.py::_prepare_config_for_sidecar`;
+`src/haute/_pipeline_repair_actions.py::_reset_node`;
+`src/haute/_project.py::_toml_configured_pipeline`;
+`src/haute/parser.py::parse_pipeline_source`.
+
+### PCFG-R15 — Dead branches, dead paths, clones and stale comments
+**Why:** Every folder-backed branch of `_build_node_config` is unreachable from
+production (the sidecar branch raises first) and is kept alive by eight test files;
+several convert an inline decorator format the parser refuses. The `_load_error`
+mechanism (its formatter, the graph warning, the `rf_nodes` scan, the
+`collect_node_configs` skip and `config_load_errors`, which the save service calls)
+can only ever produce an empty result because nothing in `src/` sets the key;
+`_get_docstring`, `_is_pipeline_node_decorator`, `_is_submodel_node_decorator`, the
+textual preamble path and its three regexes, the `n_params` parameter, the
+`_parser_parameter_names` attribute and the `func_bodies` parameter have no
+production reader. Five mechanisms are written more than once: the
+load-document-at-revision preamble (four times), the single-`df`-assignment check
+(twice), the receiver call-chain walk (five), the module-level constructor scan
+(three) and the preserve-marker scanner (two). Comments and three specifications
+still describe the deleted regex recovery and a codegen that post-edits source, and
+name functions nothing calls.
+
+**Plan:** Reduce `_build_node_config` to the Edge Join, Explore and transform
+branches and move the tests onto sidecar fixtures; delete the `_load_error`
+mechanism with the save service's check and the specification sentences; delete the
+other dead symbols and their tests; one helper per duplicated mechanism; align the
+comments and the codegen and expression-parsing specifications with the AST-only
+loader.
+
+**Acceptance:** vulture and the quoted greps show none of the named symbols
+unreferenced; jscpd reports none of the pairs; the specifications name no function
+that does not exist.
+
+**Dependencies:** `ENGQ-R01` owns dead code outside this component; `PCFG-R09` owns
+the per-type branching that remains.
+
+**Evidence:** `src/haute/_config_builder.py::_build_node_config`;
+`src/haute/parser.py`; `src/haute/_config_io.py::config_load_errors`;
+`src/haute/_ast_helpers.py`; `src/haute/_graph_builders.py`;
+`src/haute/_pipeline_repair.py`; `src/haute/_pipeline_repair_actions.py`;
+`src/haute/_code_extraction.py`; `src/haute/_parser_submodels.py`;
+`specs/codegen/low-level.md`; `specs/expression-parsing/high-level.md`.
+
+### PCFG-R16 — The `earlier` step spelling
+**Why:** The parser recognises the renderer's earlier call spelling so bodies saved
+by an older Haute keep their steps; the canonical-only policy in `specs/README.md`
+names old generated-code recognition among the mechanisms production code must not
+have, while the pipeline-config specification documents the spelling as the intended
+reconcile. The two documents contradict each other.
+
+**Plan:** Decide: drop the `earlier` spelling (a body in the old spelling then
+discards its steps and the user re-saves), or amend the policy to name this one
+allowed recogniser and its retirement date.
+
+**Acceptance:** The policy and the pipeline-config specification agree, and the code
+matches them.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_config_builder.py::_reconcile_steps`;
+`src/haute/_polars_steps.py::StepSpelling`; `specs/README.md`;
+`specs/pipeline-config/low-level.md`.

@@ -64,8 +64,10 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 - One finding is kept with its reachability unconfirmed (a request-input edge
   with a null handle, `EXEC-R14`); the code path is real, whether the editor
   can produce the input is not shown.
-- Areas whose findings are not yet in this report are in review: server routes
-  and the save service; pipeline config, codegen and recovery; modelling, the
+- The pipeline-config reviewer left `_polars_steps.py` (about 1,500 lines),
+  `_pipeline_recovery.py` (about 1,100 lines) and parts of six smaller modules
+  unread; a follow-up reviewer covers them.
+- Areas whose findings are not yet in this report are in review: modelling, the
   MLflow registry and training; the optimiser; tracing and expression parsing;
   git integration and Databricks IO; the assistant; the JSON shredder's
   remaining modules; submodels and Explore; the frontend; the tests, scripts
@@ -80,9 +82,11 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 | Caching and IO (source cache, node snapshots, providers, data points, input preparation, registry) | reviewer, verified; the Critical reproduced by the main session | full | 1 / 3 / 4 / 3 |
 | Static analysis (projection, lineage, RAM estimate, chunk classifier, cardinality) | reviewer, verified; two probes rerun | full | 0 / 3 / 5 / 0 |
 | Workers and jobs (isolation, protocol, pool, dedicated worker, caps, job store, timeouts) | reviewer, verified; one probe rerun | full | 0 / 4 / 10 / 0 |
+| Server routes and the save service (pipeline, save, helpers, node data, project files, utility, banding and rating, submodel, error handlers, supersession) | reviewer, verified; two probes | every owned file in full; `schemas.py` the models those routes use | 0 / 4 / 10 / 3 |
+| Pipeline config, codegen, parsing and recovery | reviewer, verified; two probes rerun | core files in full; `_polars_steps.py` and `_pipeline_recovery.py` in part (follow-up pending) | 0 / 3 / 10 / 2 |
 
-Ninety-eight findings so far: one Critical, sixteen Major, sixty-seven Minor and
-fourteen Suggestions. The Critical and every Major is confirmed at source by the
+One hundred and thirty findings so far: one Critical, twenty-three Major,
+eighty-seven Minor and nineteen Suggestions. The Critical and every Major is confirmed at source by the
 main session; the Minors and Suggestions were read at source or accepted on
 quoted evidence as the verification table records.
 
@@ -130,6 +134,22 @@ quoted evidence as the verification table records.
   7.6 s; no job registry is cancelled at shutdown.
 - **A remote user error replaces the warm worker; one failed replacement
   disables the slot for the life of the server** (two Majors, `EXEC-R12`).
+- **Every save round-trips through the file watcher** (Major, `API-R08`): the
+  sidecar write and the stale-config unlink carry no self-write marker, so the
+  saved document is reloaded and broadcast as an external edit.
+- **A graph the flattener refuses, and a trace that fails in the user's node
+  code, are answered with the sanitized 500** (two Majors, `API-R06`); two tests
+  pin the 500.
+- **Utility files are written non-atomically, unlocked and without a revision**
+  (Major, `API-R07`): a second editor's PUT silently wins and a concurrent
+  preview can import a truncated file.
+- **A non-UTF-8 sidecar or pipeline file is loaded with replacement characters
+  that the next save writes over the author's bytes** (Major, `PCFG-R10`;
+  reproduced). The package is P1 because the corruption is silent.
+- **Inline decorator keywords on a sidecar-backed node are dropped by the parse
+  and merged over the sidecar by Recover** (Major, `PCFG-R11`).
+- **Every save drops authored comments outside the kept regions** (Major,
+  `PCFG-R12`; five kinds reproduced) with no diagnostic.
 
 ## Findings mapped to packages
 
@@ -172,6 +192,18 @@ quoted evidence as the verification table records.
 | Background jobs | WRK-5, WRK-6, WRK-11, WRK-14 | `ROAD-WORKER-07` |
 | Background jobs | WRK-8, WRK-9, WRK-10 | `ROAD-WORKER-08` |
 | Server API | PM-43 | `API-R05` |
+| Server API | SRV-2, SRV-3, SRV-9, SRV-11 | `API-R06` |
+| Server API | SRV-4 | `API-R07` |
+| Server API | SRV-1, SRV-5 | `API-R08` |
+| Server API | SRV-6, SRV-7, SRV-8, SRV-13, SRV-15 | `API-R09` |
+| Server API | SRV-10, SRV-12, SRV-14, SRV-16, SRV-17 | `API-R10` |
+| Pipeline config | PCF-1 | `PCFG-R10` |
+| Pipeline config | PCF-2, PCF-5 | `PCFG-R11` |
+| Pipeline config | PCF-3 | `PCFG-R12` |
+| Pipeline config | PCF-6, PCF-7 | `PCFG-R13` |
+| Pipeline config | PCF-8, PCF-11, PCF-14, PCF-15 | `PCFG-R14` |
+| Pipeline config | PCF-4, PCF-9, PCF-10, PCF-12 | `PCFG-R15` |
+| Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
 | Sandbox security | PM-42 | `SBX-R04` |
 | Workbench | PM-44 | `WB-33` |
 | Workbench | PM-45 | `WB-34` |
@@ -189,7 +221,13 @@ root used by the deploy modules, the underwriter app and the server
 (`PCFG-R04`); the SPA path containment and the build hook's asset containment
 (`SBX-R01`); the generated container smoke, impact, registry-login and GitLab
 cache steps (`BUG-21`, `BUG-24`, `BUG-26`); the CLI docstring (`BUG-27`); the
-three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`).
+three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`);
+`HTTPException` raised from service modules (`API-R02`) and the hand-maintained
+browser contract (`API-R03`); the cwd-dependent resolvers in the routes and the
+parser (`PCFG-R04`), editor state inside the config (`PCFG-R08`), the per-type
+validators and branches (`PCFG-R07`, `PCFG-R09`); name-violation reporting
+(`NAME-09`); the instance mechanism (`SUB-R01`); unkept statements in submodel
+files (`BUG-19`); the test-only config helpers and event-bus hooks (`ENGQ-R01`).
 
 ## Verdicts that changed or stayed open
 
@@ -203,6 +241,9 @@ three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`).
 - **STA-1 rated Major in the ledger, P1 as a package.** The shape is narrow (a
   `select` that reads no input column) but the consequence is a cached
   generation with the wrong row count, read as fresh.
+- **PCF-1 rated Major in the ledger, P1 as a package.** The lenient decode needs
+  a non-UTF-8 file Haute never writes, but when it meets one the save corrupts
+  authored bytes silently, which is the Critical definition.
 - **EXE-11 kept Minor, reachability unconfirmed.** The positional binding after
   a dropped name is real; whether the canvas or codegen can emit a request-input
   edge with a null handle was not shown.
@@ -224,14 +265,19 @@ All probes live outside the repository and wrote nothing into it.
 | shutdown join | Main thread exits at 2.0 s with a 6 s child in flight; the process exits at 7.57 s (8 s child: 9.48 s). |
 | pool replacement | Worker pid changes after a child `ValueError`; after one forced start failure, two further requests on the slot fail with "its replacement did not start". |
 | worker `TimeoutError` | A worker raising `TimeoutError` under a 5 s response timeout surfaces as `BlockingWorkTimeoutError` with `outcome=response_timeout`. |
+| sidecar self-write | After `save_sidecar(...)` the self-write registry is empty and `is_self_write(sidecar)` is false; `ParseError` is not a `ValueError`. |
+| save request order | `save_sidecar` with an `active_source` not in `sources` raises pydantic's `ValidationError` after the other files were staged; two nodes labelled `Rates` and `rates` make `flatten_executable_graph` raise `ParseError`. |
+| lenient decode | A cp1252 sidecar `{"name": "Prämie"}` loads as `Pr�mie` and is rewritten as `EF BF BD`; the constants reader refuses the same bytes. |
+| dropped comments | Five comment kinds (a section, decorator-to-`def`, trailing, between functions, on `connect`) are absent after parse → `graph_to_code`; `unkept_module_statements` reports none. |
+| inline keywords | `@pipeline.constant(config=..., values=[...], colour="red")` parses to the sidecar's values with no warning; the regenerated decorator keeps only `config=`. |
 
 ## Mechanical metrics
 
 | Tool | Result |
 |---|---|
 | radon | 285 functions with cyclomatic complexity ≥ 20; 27 ≥ 50 (the largest in the optimiser service, the save service, the assistant tools and the RAM estimate). |
-| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `EXEC-R17`, `IO-R08`, `ROAD-WORKER-08`, `DEP-R13`, `CLI-R05` and `ENGQ-R01`. |
-| jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13`, `EXEC-R17`, `IO-R08` and `ROAD-WORKER-08`. |
+| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `EXEC-R17`, `IO-R08`, `ROAD-WORKER-08`, `DEP-R13`, `CLI-R05`, `API-R10`, `PCFG-R15` and `ENGQ-R01`. |
+| jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13`, `EXEC-R17`, `IO-R08`, `ROAD-WORKER-08`, `API-R09` and `PCFG-R15`. |
 | jscpd TypeScript | 0.34 % duplicated, 29 clones (frontend areas pending). |
 | knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted (frontend areas pending). |
 | sweeps | 100 floating action tags in `.github/workflows` (`ENGQ-CI06`, `CLI-R06`); 35 campaign-named test modules (`ENGQ-R05`). |
