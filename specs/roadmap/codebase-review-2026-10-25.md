@@ -75,10 +75,12 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 - The assistant-core reviewer read the assistant low-level specification's core
   sections and left the tool and op sections to the tools reviewer; the loop's
   tool-summary wording was not checked against the specification.
-- Areas whose findings are not yet in this report are in review: the tests,
-  scripts and CI as code.
+- The engineering-quality reviewer read seven large scripts structurally (their
+  definitions and the subprocess, exception, environment and `cwd` sites), the
+  29 browser specifications by a wait-and-selector census, and eight tests in
+  depth plus metrics for 24 modules, rather than twenty modules line by line.
 
-## Coverage and findings so far
+## Coverage and findings
 
 | Area | Read by | Coverage | Findings (Critical / Major / Minor / Suggestion) |
 |---|---|---|---|
@@ -107,9 +109,10 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 | Frontend trace, git and assistant UI (the trace panel and its cards, the git panel, branch manager, modals and graph rail, the chat panel) | reviewer, verified | every owned file in full except parts of three modals | 0 / 1 / 13 / 8 |
 | Workbench UI (the Workbench view, its sheets, schema editor, panels and Show when editor; the underwriter app's pages and stores) | reviewer, verified | every owned file in full; the tests by name, four bodies read | 0 / 0 / 6 / 3 |
 | App shell, graph canvas and shared components (`App.tsx`, the node renderers, menus, dialogs, toolbar, settings, the form kit, the inspector shell and preview frame) | reviewer, verified; the renderers' flag reads re-read | every owned file in full except the stylesheet | 0 / 0 / 9 / 6 |
+| Tests, scripts and CI as code (conftest and the shared helpers, the gates and their scripts, the ten workflows, the pytest, coverage, ruff and mypy configuration, the Vitest, Playwright and ESLint configuration, the e2e harness) | reviewer, verified; the coverage-list difference and the gate's `if:` re-checked | conftest, the helpers, the gate scripts, the workflows and the configurations in full; seven large scripts structurally; the e2e specifications by census | 0 / 0 / 10 / 7 |
 
-Three hundred and eighty-eight findings so far: two Critical, forty-four Major, two
-hundred and sixty-eight Minor and seventy-four Suggestions. Both Criticals and every Major are confirmed at source by the
+Four hundred and five findings: two Critical, forty-four Major, two hundred and
+seventy-eight Minor and eighty-one Suggestions. Both Criticals and every Major are confirmed at source by the
 main session; the Minors and Suggestions were read at source or accepted on
 quoted evidence as the verification table records.
 
@@ -391,6 +394,11 @@ production:
 | App shell and canvas | FAP-1, FAP-11 | `FGC-R02` |
 | App shell and canvas | FAP-9 | `FGC-R03` |
 | App shell and canvas | FAP-4, FAP-6, FAP-7, FAP-8, FAP-10, FAP-12, FAP-13, FAP-15 | `FGC-R04` |
+| Tests, scripts and CI | ENG-1, ENG-2, ENG-4, ENG-8 | `ENGQ-R07` |
+| Tests, scripts and CI | ENG-5, ENG-6, ENG-10, ENG-16 | `ENGQ-R08` |
+| Tests, scripts and CI | ENG-7 | `ENGQ-R09` |
+| Tests, scripts and CI | ENG-3, ENG-9, ENG-11, ENG-12, ENG-13, ENG-14, ENG-15 | `ENGQ-R10` |
+| Tests, scripts and CI | ENG-17 | `ENGQ-R11` (Decision) |
 
 Already tracked before this review and not repeated: the `cwd`-captured sandbox
 root used by the deploy modules, the underwriter app and the server
@@ -452,7 +460,13 @@ an output-table condition (`WB-29`), the browser's 90 s pricing timeout past the
 server's 60 s (`WB-33`), browser-locale dates (`FSH-R08`), the bootstrap without
 a deadline (`FSH-R05`), Ctrl+S inside a code box (`FSH-R07`), editor state inside
 node data (`PCFG-R08`), the recovery banner's re-minted id (`PCFG-R19`) and the
-modelling pane badges (`FMOU-R03`).
+modelling pane badges (`FMOU-R03`); in the tests, scripts and CI, the hundred
+floating action tags (`ENGQ-CI06`, `CLI-R06`), the campaign-named test modules
+(`ENGQ-R05`), the test-only reset hooks in production code (`ENGQ-R01`), the
+training-test cost, the order-dependent tests and the shard balance
+(`ENGQ-CI03` to `ENGQ-CI05`), the 189 test modules that change directory
+because production resolves the project root from it (`PCFG-R04`), and the
+generated scaffold workflows (`BUG-21`, `BUG-24`, `BUG-26`).
 
 ## Verdicts that changed or stayed open
 
@@ -533,6 +547,6 @@ All probes live outside the repository and wrote nothing into it.
 | radon | 285 functions with cyclomatic complexity ≥ 20; 27 ≥ 50 (the largest in the optimiser service, the save service, the assistant tools and the RAM estimate). |
 | vulture (60 %) | 61 candidates; those confirmed unreferenced are in `EXEC-R17`, `IO-R08`, `ROAD-WORKER-08`, `DEP-R13`, `CLI-R05`, `API-R10`, `PCFG-R15` and `ENGQ-R01`. |
 | jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13`, `EXEC-R17`, `IO-R08`, `ROAD-WORKER-08`, `API-R09` and `PCFG-R15`. |
-| jscpd TypeScript | 0.34 % duplicated, 29 clones (frontend areas pending). |
-| knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted (frontend areas pending). |
+| jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `FNED-R03`, `FNED-R05`, `FMOU-R05`, `EDA-R03`, `GIT-R08`, `WB-37` and `FGC-R04`. |
+| knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted; every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |
 | sweeps | 100 floating action tags in `.github/workflows` (`ENGQ-CI06`, `CLI-R06`); 35 campaign-named test modules (`ENGQ-R05`). |
