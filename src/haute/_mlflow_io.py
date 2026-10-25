@@ -421,14 +421,8 @@ class DiskCachedRunModel:
 
     @property
     def files(self) -> tuple[Path, ...]:
-        """The model and its contract, or the marker of a run that logged none.
-
-        An EBM loads only under its contract, so a marker never stands in for it.
-        """
-        if (
-            self.contract_path.is_file()
-            or family_for_artifact(self.artifact_path).requires_contract
-        ):
+        """The model and its contract, or the marker of a run that logged none."""
+        if self.contract_path.is_file():
             return (self.model_path, self.contract_path)
         return (self.model_path, _contract_absent_marker(self.contract_path))
 
@@ -444,16 +438,17 @@ class DiskCachedRunModel:
     def fingerprint(self) -> str:
         """The byte identity the in-process model cache keys this artifact by.
 
-        An EBM loads under its contract, so the contract joins its identity;
-        another model binds its contract on every load.
+        A model binds its contract on every load, so only the model's bytes count.
         """
-        if not family_for_artifact(self.artifact_path).requires_contract:
-            return _local_artifact_fingerprint(self.artifact_path, str(self.model_path))
-        return _ebm_identity_fingerprint(
-            self.artifact_path,
-            str(self.model_path),
-            self.contract_artifact,
-            str(self.contract_path),
+        return _local_artifact_fingerprint(self.artifact_path, str(self.model_path))
+
+    def identity(self) -> str:
+        """The byte identity of what a load reads: the model, and its contract or marker."""
+        from haute.deploy._scorer import artifact_identity_fingerprint
+
+        model, contract = self.files
+        return artifact_identity_fingerprint(
+            {self.artifact_path: str(model), self.contract_artifact: str(contract)}
         )
 
 
@@ -944,8 +939,7 @@ def load_local_model(
     """Load a model from a local file path (e.g. bundled deploy artifact).
 
     The file's suffix selects its family in the registry, whose loader reads
-    it; a contract-bound family (EBM) loads under *contract_path* when given,
-    else the contract saved beside it.
+    it from the file alone; *contract_path* is the contract the caller binds.
 
     *source* names the model in errors (an MLflow run); the path otherwise.
 
@@ -1061,8 +1055,8 @@ def load_local_model_cached(
 
     io_path = resolve_artifact_path(path)
     name = model_name or repr(Path(path).name)
-    # The contract decides an EBM's offset, labels and loss and an undeclared
-    # CatBoost model's offset: replacing only it must reload.
+    # The contract decides an undeclared CatBoost model's offset and is checked
+    # against every other model: replacing only it must reload.
     contract_identity = (
         artifact_identity_fingerprint({"contract": contract_path}) if contract_path else None
     )
@@ -1098,60 +1092,11 @@ def model_contract_candidates(path: str | Path) -> list[Path]:
     ]
 
 
-def _sibling_contract(path: str) -> Any:
-    """The feature contract saved with *path*; an EBM cannot load without one."""
-    from haute.errors import ConfigError
-    from haute.modelling._feature_contract import load_contract
-
-    for candidate in model_contract_candidates(path):
-        if candidate.is_file():
-            return load_contract(candidate)
-    raise ConfigError(
-        f"No feature contract was found beside {Path(path).name}. An EBM model loads only "
-        "with the contract it was trained with (saved next to it as "
-        f"{model_contract_candidates(path)[0].name}).",
-        model_path=str(path),
-    )
-
-
 def _run_contract_artifact(artifact: str) -> str:
     """The run-relative path of the contract logged beside *artifact*."""
     from pathlib import PurePosixPath
 
     return str(PurePosixPath(artifact).with_name(model_contract_candidates(artifact)[0].name))
-
-
-def _ebm_identity_fingerprint(
-    artifact: str, local_path: str, contract_artifact: str, contract_path: str
-) -> str:
-    """An EBM's cache identity: its model bytes and the contract it loads under."""
-    from haute.deploy._scorer import artifact_identity_fingerprint
-
-    return artifact_identity_fingerprint({artifact: local_path, contract_artifact: contract_path})
-
-
-def _loaded_artifact_fingerprint(
-    flavor: str,
-    mlflow_mod: Any,
-    client: MlflowClient,
-    backend: ResolvedBackend,
-    run_id: str,
-    artifact: str,
-    local_path: str,
-) -> str:
-    """The cache identity of a run artifact: its bytes, plus a contract-bound model's contract.
-
-    Lookup and insertion both use this, so an entry is always found under the
-    key it was stored with.
-    """
-    if not model_family(flavor).requires_contract:
-        return _local_artifact_fingerprint(artifact, local_path)
-    return _ebm_identity_fingerprint(
-        artifact,
-        local_path,
-        _run_contract_artifact(artifact),
-        _resolve_run_contract(mlflow_mod, client, backend, run_id, artifact),
-    )
 
 
 def _run_lists_artifact(client: MlflowClient, run_id: str, artifact: str) -> bool:
@@ -1193,23 +1138,6 @@ def _run_contract_if_logged(
         return None
 
 
-def _resolve_run_contract(
-    mlflow_mod: Any, client: MlflowClient, backend: ResolvedBackend, run_id: str, artifact: str
-) -> str:
-    """The contract a run logged beside an EBM, which loads only under it."""
-    from haute.errors import ConfigError
-
-    contract = _run_contract_if_logged(mlflow_mod, client, backend, run_id, artifact)
-    if contract is None:
-        raise ConfigError(
-            f"Run {run_id} has no feature contract {_run_contract_artifact(artifact)} beside "
-            f"{artifact}, and an EBM loads only with the contract it was trained with.",
-            run_id=run_id,
-            artifact_path=artifact,
-        )
-    return contract
-
-
 def _load_xgboost_file(
     path: str, task: str, *, contract_path: str | None, source: str | None
 ) -> ScoringModel:
@@ -1233,15 +1161,12 @@ def _load_ebm_file(
 ) -> ScoringModel:
     """The EBM family's file loader.
 
-    An EBM file is the bare estimator and loads under its feature contract:
-    *contract_path* when the caller fetched it (the MLflow cache keeps
-    artifacts apart), else the one saved beside the model.
+    An EBM file records what its estimator alone does not say, so it loads
+    from the file alone.
     """
     from haute.modelling._ebm import EBMModel
-    from haute.modelling._feature_contract import load_contract
 
-    contract = load_contract(contract_path) if contract_path else _sibling_contract(path)
-    return _wrapper_scoring_model(EBMModel.load(path, contract), task, "ebm")
+    return _wrapper_scoring_model(EBMModel.load(path), task, "ebm")
 
 
 def _load_tboost_file(
@@ -1711,11 +1636,7 @@ def _load_with_bounded_retry(
             local_path = _resolve_artifact_local(mlflow_mod, backend, run_id, artifact)
             family = model_family(flavor)
             assert family.load_file is not None  # only file-loaded families retry here
-            contract_path = (
-                _resolve_run_contract(mlflow_mod, client, backend, run_id, artifact)
-                if family.requires_contract
-                else _run_contract_if_logged(mlflow_mod, client, backend, run_id, artifact)
-            )
+            contract_path = _run_contract_if_logged(mlflow_mod, client, backend, run_id, artifact)
             scoring_model = family.load_file(
                 local_path,
                 task,
@@ -1990,15 +1911,7 @@ def load_mlflow_model(
                 resolved_run_id,
                 resolved_artifact,
             )
-            artifact_fp = _loaded_artifact_fingerprint(
-                flavor,
-                mlflow_mod,
-                client,
-                backend,
-                resolved_run_id,
-                resolved_artifact,
-                local_artifact_path,
-            )
+            artifact_fp = _local_artifact_fingerprint(resolved_artifact, local_artifact_path)
 
     cache_key = _model_cache_key(
         source_type=source_type,
@@ -2071,14 +1984,8 @@ def load_mlflow_model(
                     version=resolved_version,
                     artifact_path=resolved_artifact,
                     task=task,
-                    artifact_fingerprint=_loaded_artifact_fingerprint(
-                        flavor,
-                        mlflow_mod,
-                        client,
-                        backend,
-                        resolved_run_id,
-                        resolved_artifact,
-                        local_artifact_path,
+                    artifact_fingerprint=_local_artifact_fingerprint(
+                        resolved_artifact, local_artifact_path
                     ),
                     backend_identity=backend.identity,
                 )

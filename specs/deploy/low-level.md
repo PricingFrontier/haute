@@ -199,8 +199,7 @@
    against it. A run that logged none (a completed listing of the run finds no contract
    beside the model; a failed download or listing is raised, never read as absence)
    bundles no contract, and its model is served against the features its file names, as
-   the preview scores it; an EBM, which loads only under its contract, fails the bundle
-   with a `DeployError` naming the node and the run. A node left unbundled is then refused by the deploy
+   the preview scores it. A node left unbundled is then refused by the deploy
    scorer's passthrough guard below. The bundler resolves each model-score node's
    `mlflow_destination` to one
    backend exactly once and passes that object to both registered-model resolution

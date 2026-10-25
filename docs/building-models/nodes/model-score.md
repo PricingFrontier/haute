@@ -75,10 +75,10 @@ file** wrote: CatBoost (`.cbm`), XGBoost (`.ubj`), LightGBM (`.lgbm`), t-boost
 A model file scores with the feature contract saved beside it: `<model name>.feature_contract.json`,
 or else `feature_contract.json` in the same folder. **Save model to file** writes the
 first. The contract names the model's features, categories and offset, so keep it next to
-the model when you copy the model elsewhere in the project. XGBoost, LightGBM and t-boost files describe their own inputs and offset. An EBM file is
-the bare estimator, so it loads only with the feature contract Model Training logged
-beside it, and only under the `interpret-core` version that contract records; a
-contract for a different loss or version is refused rather than scored. A category the
+the model when you copy the model elsewhere in the project. XGBoost, LightGBM, t-boost and
+EBM files describe their own inputs and offset. An EBM file also records the
+`interpret-core` version it was trained with, and loads only under that version; a
+contract for a different loss is refused rather than scored. A category the
 model never saw still scores; see [Values the model was not trained on](#values-the-model-was-not-trained-on).
 
 A CatBoost model file does not record its own offset. Models trained by Haute record it
@@ -93,7 +93,7 @@ A CatBoost, XGBoost, LightGBM, t-boost, EBM or GLM model from a run or the regis
 with the feature contract its training run logged beside it, in the editor and when
 deployed, so its input is checked against the features and types it was trained on. A
 model whose run logged no contract, such as one trained outside Haute, scores against the
-features its own file names. An EBM is the exception: it loads only with its contract.
+features its own file names.
 
 Scoring checks the input against the model's features before it runs: a missing feature,
 a missing offset column the model was trained with, or a numeric column where the model

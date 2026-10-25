@@ -957,8 +957,10 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   each main effect's shape (missing-value bin included) and each interaction's surface as
   additive link-scale term scores, and a traced prediction is explained by the intercept, the
   offset and one contribution per term, an interaction staying one term. The `.ebm` file is
-  the joblib-dumped estimator, loaded only through the restricted unpickler and only under its
-  feature contract, which must record the installed `interpret-core` version exactly.
+  a JSON record of the model's `interpret-core` version, features, task, link, offset and
+  class labels followed by the joblib-dumped estimator, so it describes itself and loads
+  without its feature contract. It is loaded only through the restricted unpickler and only
+  when its record names the installed `interpret-core` version exactly.
 - **t-boost.** The `tboost` family trains a t-boost model (regressor, or binary classifier
   for `Logloss`): gradient boosting on symmetric trees whose fitted model is exactly a set of
   rating tables, one per main effect and per interaction up to `max_interaction_order`, so an

@@ -56,7 +56,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/_xgboost.py` | The XGBoost adapter: `XGBoostModel` (self-describing booster wrapper) and `XGBoostAlgorithm`. |
 | `src/haute/modelling/_gpu.py` | XGBoost GPU capability: `GpuStatus`, `xgboost_cuda_build`, `booster_device`, the once-per-process `xgboost_gpu_status` probe, `require_xgboost_gpu` and `verify_trained_on_gpu`. |
 | `src/haute/modelling/_lightgbm.py` | The LightGBM adapter: `LightGBMModel` (self-describing model-text wrapper) and `LightGBMAlgorithm`. |
-| `src/haute/modelling/_ebm.py` | The EBM adapter: `EBMModel` (the estimator plus its contract facts, and the term report) and `EBMAlgorithm`. |
+| `src/haute/modelling/_ebm.py` | The EBM adapter: `EBMModel` (the estimator plus the facts its file records, and the term report) and `EBMAlgorithm`. |
 | `src/haute/modelling/_tboost.py` | The t-boost adapter: `TBoostModel` (the estimator plus its `haute` record, and the table report) and `TBoostAlgorithm`. |
 | `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC (re-exported from the base module), `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
 | `src/haute/modelling/_rustystats.py` | `GLMAlgorithm` implementing `BaseAlgorithm` via RustyStats; `prepare_glm_design()` (frame-dtype validation, reference-level translation, interaction resolution); `glm_fit_kwargs()` (fixed or cross-validated penalty, solver controls, robust standard errors); `GLMAlgorithm.glm_result()` over `glm_inference`, `glm_coefficient_rows`, `glm_relativity_rows`, `glm_fit_statistics`, `glm_smooth_term_rows`, and `glm_regularization_summary`; `estimate_glm_dispersion()` profile-likelihood estimation. |
@@ -2227,28 +2227,25 @@ used for staged input.
   `SharedMemoryManager`, so progress is reported in rounds before and after the fit. The result
   carries `rounds_configured = max_rounds`, `rounds_fitted = None`, `stopping_reason = "none"`,
   `threads = 1` and `term_update_steps` from `best_iteration_`.
-- `EBMModel` holds the estimator with the contract's features, levels, task, link, offset and
-  class labels. Its margin is `eval_terms` plus `intercept_` plus the transformed offset; the
+- `EBMModel` holds the estimator with its features, levels, task, link, offset and class
+  labels. Its margin is `eval_terms` plus `intercept_` plus the transformed offset; the
   served response is the native `predict(init_score=…)` or `predict_proba[:, 1]`. `contributions`
   returns one value per term (`term_features_`, an interaction one term); `term_report` returns
   each term's name, features, kind, importance (`term_importances`), axes (missing bin first,
   then categories or continuous bin ranges with their cuts, the unknown bin dropped) and scores,
-  and feeds `TrainResult.ebm_terms` and the importances. `save` is `joblib.dump` of the
-  estimator. `load(path, contract)` requires an `ebm` model identity whose `engine_version` is
-  the installed `interpret-core` version (else `ArtifactVersionMismatchError`, before
-  unpickling), unpickles with `restricted_joblib_load`, and `validate` checks the exact class
-  for the task, `feature_names_in_`, `n_features_in_`, `feature_types_in_`, finite scores and
-  intercept, and 0/1 classes; `validate_identity` then refuses a contract whose loss, link or
-  Tweedie variance power is not the estimator's objective, because the contract decides how the
-  offset enters and how labels are read.
-- `load_local_model(path, task, *, contract_path=None)` loads an `.ebm` under `contract_path`
-  or the contract beside it (`model_contract_candidates`: `{stem}.feature_contract.json`, then a
-  package's `feature_contract.json`); an MLflow run load fetches the contract logged beside the
-  artifact with `_resolve_run_contract`, because the artifact cache keeps each artifact in its
-  own directory. Both in-process caches key an EBM by its contract's identity as well as its
-  model bytes (`_ebm_identity_fingerprint` for MLflow loads, including the disk-cache fast
-  path; the bundled contract's stat-gated fingerprint in the deployed scorer), so replacing only
-  the contract reloads the model.
+  and feeds `TrainResult.ebm_terms` and the importances. `save` writes one line,
+  `haute-ebm:` and the JSON `metadata()` (`engine_version`, the installed `interpret-core`
+  version; `features`; `categorical_features`; `task`; `link`; `offset_column`;
+  `offset_link`; `class_labels`), then `joblib.dump` of the estimator. `load(path)` reads that
+  line (at most `_RECORD_LIMIT` bytes) before anything is unpickled and refuses a file without
+  it (`ConfigError`, retrain it in Haute) or whose `engine_version` is not the installed
+  `interpret-core` version (`ArtifactVersionMismatchError`), unpickles the rest with
+  `restricted_joblib_load(path, offset=)`, and `validate` checks the exact class for the task,
+  `feature_names_in_`, `n_features_in_`, `feature_types_in_`, finite scores and intercept, and
+  0/1 classes against the record. A feature contract, when the model has one, binds it like
+  any other self-describing model (`bind_feature_contract`: identity, objective and offset).
+- `load_local_model(path, task, *, contract_path=None)` loads an `.ebm` from the file alone;
+  an explicit, sibling or run-logged contract binds it as it binds every family.
 - The `ebm` descriptor allows `max_rounds` (required, positive), `learning_rate`, `max_bins`,
   `max_interaction_bins`, `interactions`, `min_samples_leaf`, `min_hessian`, `max_leaves`,
   `smoothing_rounds`, `interaction_smoothing_rounds`, `greedy_ratio`, `cyclic_progress`,

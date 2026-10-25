@@ -14,6 +14,7 @@ model's feature contract, which must also record the installed
 
 from __future__ import annotations
 
+import json
 import math
 import warnings
 from dataclasses import dataclass
@@ -33,6 +34,11 @@ from haute.modelling._algorithm_base import (
 from haute.modelling._native_encoding import encode_frame, fit_categorical_levels
 
 EBM_CLASSES = frozenset({"ExplainableBoostingRegressor", "ExplainableBoostingClassifier"})
+#: An ``.ebm`` file's first line: this prefix and the JSON record of what the
+#: estimator alone cannot say, read before anything is unpickled.
+_RECORD_PREFIX = b"haute-ebm:"
+#: The longest record line read before the file is refused.
+_RECORD_LIMIT = 4 * 1024 * 1024
 _MISSING_LABEL = "Missing"
 
 
@@ -69,7 +75,7 @@ def _estimator_levels(
 
 @dataclass
 class EBMModel:
-    """A fitted EBM plus the contract facts every prediction path needs."""
+    """A fitted EBM plus the facts its file records for every prediction path."""
 
     estimator: Any
     features: list[str]
@@ -154,17 +160,35 @@ class EBMModel:
         return str(self.estimator.objective).partition(":")[0]
 
     # -- persistence ------------------------------------------------------
+    def metadata(self) -> dict[str, Any]:
+        """What the estimator alone does not say, and the version that pickled it."""
+        import interpret
+
+        return {
+            "engine_version": interpret.__version__,
+            "features": list(self.features),
+            "categorical_features": [f for f in self.features if f in self.categorical_levels],
+            "task": self.task,
+            "link": self.link,
+            "offset_column": self.offset_column,
+            "offset_link": self.offset_link,
+            "class_labels": list(self.class_labels) if self.class_labels is not None else None,
+        }
+
     def save(self, path: Path) -> None:
+        """The ``haute-ebm:`` record line, then the estimator as joblib writes it."""
         import joblib
 
         path.parent.mkdir(parents=True, exist_ok=True)
-        joblib.dump(self.estimator, path)
+        with open(path, "wb") as handle:
+            handle.write(_RECORD_PREFIX + json.dumps(self.metadata()).encode("utf-8") + b"\n")
+            joblib.dump(self.estimator, handle)
 
     @classmethod
-    def load(cls, path: str | Path, contract: Any) -> EBMModel:
-        """Load *path* under its feature *contract*, refusing anything it does not describe.
+    def load(cls, path: str | Path) -> EBMModel:
+        """Load an ``.ebm`` Haute saved, refusing anything its record does not describe.
 
-        The contract must record the installed ``interpret-core`` version before
+        The record must name the installed ``interpret-core`` version before
         anything is unpickled: scikit-learn's own state hook checks versions only
         for ``sklearn`` classes, so it gives InterpretML none.
         """
@@ -172,69 +196,41 @@ class EBMModel:
 
         from haute._sandbox import ArtifactVersionMismatchError, restricted_joblib_load
 
-        identity = contract.model
-        if identity is None or identity.algorithm != "ebm":
+        with open(path, "rb") as handle:
+            line = handle.readline(_RECORD_LIMIT)
+        if not line.startswith(_RECORD_PREFIX) or not line.endswith(b"\n"):
             raise ConfigError(
-                f"{path} has no EBM feature contract; an EBM model loads only with the "
-                "contract it was trained with."
+                f"{Path(path).name} is not an EBM model Haute saved (no "
+                f"{_RECORD_PREFIX.decode()!r} record); retrain it in Haute.",
+                model_path=str(path),
             )
-        if identity.engine_version != interpret.__version__:
+        meta = json.loads(line[len(_RECORD_PREFIX) :])
+        if meta["engine_version"] != interpret.__version__:
             raise ArtifactVersionMismatchError(
-                f"This EBM was trained with interpret-core {identity.engine_version}, but "
+                f"This EBM was trained with interpret-core {meta['engine_version']}, but "
                 f"interpret-core {interpret.__version__} is installed; retrain the model or "
                 "install the recorded version."
             )
-        estimator = restricted_joblib_load(path)
+        estimator = restricted_joblib_load(path, offset=len(line))
+        features = list(meta["features"])
+        labels = meta["class_labels"]
         model = cls(
             estimator=estimator,
-            features=list(contract.features),
+            features=features,
             categorical_levels=_estimator_levels(
-                estimator, list(contract.features), set(contract.categorical_features)
+                estimator, features, set(meta["categorical_features"])
             ),
-            task=contract.task,
-            link=identity.link,
-            offset_column=contract.offset_column,
-            offset_link=(
-                ("log" if identity.link == "log" else "identity")
-                if contract.offset_column
-                else None
-            ),
-            class_labels=identity.class_labels,
+            task=str(meta["task"]),
+            link=str(meta["link"]),
+            offset_column=meta["offset_column"],
+            offset_link=meta["offset_link"],
+            class_labels=(labels[0], labels[1]) if labels is not None else None,
         )
         model.validate()
-        model.validate_identity(identity)
         return model
 
-    def validate_identity(self, identity: Any) -> None:
-        """Refuse a contract whose loss, link or variance power is not this estimator's.
-
-        The contract decides how the offset enters and how labels are read, so a
-        contract for another loss would score the right file wrongly.
-        """
-        from haute.modelling._descriptors import EBM
-
-        if not identity.loss:
-            raise ConfigError(
-                "This EBM's feature contract records no loss; use the contract saved with it."
-            )
-        expected = EBM.native_loss(self.task, str(identity.loss))
-        objective = str(self.estimator.objective)
-        name, _, options = objective.partition(":")
-        if name != expected.objective or identity.link != expected.link:
-            raise ConfigError(
-                f"This EBM was trained with {objective}, but its feature contract describes a "
-                f"{identity.loss} model ({identity.link} link); use the contract saved with it."
-            )
-        if identity.loss == "Tweedie":
-            power = options.partition("=")[2]
-            if identity.variance_power is None or float(power) != float(identity.variance_power):
-                raise ConfigError(
-                    f"This EBM was trained with {objective}, but its feature contract records "
-                    f"variance power {identity.variance_power}; use the contract saved with it."
-                )
-
     def validate(self) -> None:
-        """Check the unpickled estimator is the model the contract describes."""
+        """Check the unpickled estimator is the model its record describes."""
         estimator = self.estimator
         name = type(estimator).__name__
         if type(estimator).__module__ != "interpret.glassbox._ebm._ebm" or name not in EBM_CLASSES:
@@ -246,14 +242,14 @@ class EBMModel:
         )
         if name != expected:
             raise ConfigError(
-                f"This EBM is an {name} but its contract describes a {self.task} model."
+                f"This EBM is an {name} but its record describes a {self.task} model; "
+                "retrain it in Haute."
             )
         if list(estimator.feature_names_in_) != self.features or estimator.n_features_in_ != len(
             self.features
         ):
             raise ConfigError(
-                "This EBM's features do not match its feature contract; use the contract saved "
-                "with the model."
+                "This EBM's features do not match the record saved with it; retrain it in Haute."
             )
         expected_types = [
             "nominal" if feature in self.categorical_levels else "continuous"
@@ -261,8 +257,8 @@ class EBMModel:
         ]
         if list(estimator.feature_types_in_) != expected_types:
             raise ConfigError(
-                "This EBM's feature types do not match its feature contract; use the contract "
-                "saved with the model."
+                "This EBM's feature types do not match the record saved with it; retrain it "
+                "in Haute."
             )
         scores_finite = all(np.isfinite(scores).all() for scores in estimator.term_scores_)
         if not scores_finite or not math.isfinite(_intercept(estimator)):

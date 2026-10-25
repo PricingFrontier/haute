@@ -3056,10 +3056,9 @@ stays authoritative) remain readable. It then reads the start binding:
   files, snapshot generation pointers, a file-sourced Apply Optimisation artifact
   (`_local_runtime_input_path_fields` lists its `artifact_path`) and the resolved
   MLflow backend of each run-sourced node, and over the identity of each local
-  Model Scoring node's cached artifact, computed by the loader's own helpers in
-  `src/haute/_mlflow_io.py` (`_local_artifact_fingerprint`, or
-  `_ebm_identity_fingerprint` with the cached contract), which that identity
-  does not sign;
+  Model Scoring node's cached artifact and the contract (or absence marker) beside
+  it, which every load binds (`DiskCachedRunModel.identity` in
+  `src/haute/_mlflow_io.py`), which that identity does not sign;
 - `freshness_tokens`, the `observe_freshness` token (in
   `src/haute/_json_shred/_source_proof.py`: a native file revision or a stat,
   never content) of every file the digest signs, cached model files and the

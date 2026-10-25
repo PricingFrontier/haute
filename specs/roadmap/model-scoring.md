@@ -43,7 +43,7 @@ file defaults to a family.
 | MSC-05 | Planned | P3 | Model Scoring scores an MLflow pyfunc model saved in the project. |
 | MSC-06 | Planned | P2 | An XGBoost or LightGBM model trained outside Haute scores under a declared contract. |
 | MSC-07 | Deferred | P3 | ONNX models score in Model Scoring. |
-| MSC-09 | Planned | P3 | Loader errors keep their meaning: a Haute refusal is not retried as corruption, a transport failure is not a missing contract, a CatBoost metadata failure is not swallowed, and the EBM offset link comes from the contract. |
+| MSC-09 | Planned | P3 | Loader errors keep their meaning: a Haute refusal is not retried as corruption and a CatBoost metadata failure is not swallowed. |
 
 ## Planned improvements
 
@@ -269,25 +269,17 @@ readable model the loader refuses with `HauteValidationError` or
 `FeatureMismatchError` (a `.ubj`, `.lgbm` or `.tboost` without Haute's record,
 a contract whose hash fails) is treated as a corrupt download: deleted,
 re-downloaded and reported as persistently corrupt with the real reason only in
-the last error. `_resolve_run_contract` rewraps every failure, an
-authentication or transport error included, as "Run has no feature contract",
-so an infrastructure failure reads as a missing artifact. `catboost_class_labels`
-swallows a failed metadata read and falls back to `classes_`, against the
-module's rule and in a branch `_wrap_catboost` already makes dead. The EBM
-loader derives `offset_link` from `identity.link` instead of the contract's own
-field.
+the last error. `catboost_class_labels` swallows a failed metadata read and
+falls back to `classes_`, against the module's rule and in a branch
+`_wrap_catboost` already makes dead.
 
 **Plan:** Re-raise every `HauteError` and `HauteValidationError` and retry only
-on non-Haute exceptions; catch only the not-found shape in the contract fetch;
-remove the metadata `try/except`; read `contract.offset_link`.
+on non-Haute exceptions; remove the metadata `try/except`.
 
 **Acceptance:** A `.ubj` without Haute's record fails once with its own message
-and no re-download; a 401 from the artifact store reaches
-`classify_mlflow_error`; the dead branch and the second source of truth are
-gone.
+and no re-download; the dead branch is gone.
 
 **Dependencies:** None.
 
 **Evidence:** `src/haute/_mlflow_io.py::_load_with_bounded_retry`;
-`src/haute/_mlflow_io.py::_resolve_run_contract`;
-`src/haute/_mlflow_io.py::catboost_class_labels`; `src/haute/modelling/_ebm.py`.
+`src/haute/_mlflow_io.py::catboost_class_labels`.

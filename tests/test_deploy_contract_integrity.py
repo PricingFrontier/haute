@@ -588,32 +588,6 @@ class TestFeatureContractBundled:
         )
         assert served.height == 2
 
-    def test_an_ebm_whose_run_logged_no_contract_refuses_the_deploy_naming_the_node(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """An EBM loads only under its contract, so it cannot be served without one."""
-        from haute.deploy._bundler import collect_artifacts
-
-        monkeypatch.chdir(tmp_path)
-        cached = _artifact_cache_path(
-            tmp_path / ".cache" / "models", _auto_backend_digest(), "run_ebm", "model.ebm"
-        )
-        cached.parent.mkdir(parents=True, exist_ok=True)
-        cached.write_bytes(b"ebm")
-        graph = _api_score_graph(
-            {"sourceType": "run", "run_id": "run_ebm", "artifact_path": "model.ebm"}
-        )
-
-        with (
-            patch(
-                "haute._mlflow_io._resolve_artifact_local",
-                new=self._unlogged_contract(model_contract_filename("model")),
-            ),
-            patch("mlflow.tracking.MlflowClient.list_artifacts", return_value=[]),
-            pytest.raises(DeployError, match="node 'ms'.*run_ebm has no feature contract"),
-        ):
-            collect_artifacts(graph, ["api_in"], tmp_path)
-
     @staticmethod
     def _unlogged_contract(contract_artifact: str):  # type: ignore[no-untyped-def]
         """The disk-cache reader, failing to download *contract_artifact* as a run without it."""

@@ -92,10 +92,7 @@
   empty for a family stored as a directory, MLflow pyfunc), `load_file`
   (`(path, task, *, contract_path, source) -> ScoringModel`, present exactly
   when it has suffixes), `algorithm` (the Haute training algorithm whose
-  models load as it, or `None`), `requires_contract` (the file loads only
-  under its feature contract: an explicit or sibling contract locally, the
-  contract logged beside it in a run, and the contract's bytes join its cache
-  identity — EBM), `self_describing` (a Haute wrapper that encodes its own
+  models load as it, or `None`), `self_describing` (a Haute wrapper that encodes its own
   inputs, applies its own offset and labels binary predictions; its contract
   identity is checked against its native objective — XGBoost, LightGBM,
   EBM, t-boost), `predict_frame` (`polars` | `tabular` | `pandas`, see Control flow),
@@ -273,9 +270,8 @@ it to its contract:
   run, after its download fails, and is recorded in the disk cache as a marker
   where the contract would sit (`artifact.absent`), so the fast path and a
   disk-cache-only load see it; a download that fails while the listing names
-  the contract, and a failed listing, are raised, never read as absence. An
-  EBM loads only under its contract, so for it `_resolve_run_contract` raises
-  a `ConfigError` naming the run when there is none. The destination resolves to one `ResolvedBackend` at the
+  the contract, and a failed listing, are raised, never read as absence. The
+  destination resolves to one `ResolvedBackend` at the
   start, which the load (`load_mlflow_model(..., backend=)`) uses for both
   reads. An alias that moves, or a settings change, during the load therefore
   cannot pair one version's or one backend's model with another's contract.
@@ -374,12 +370,10 @@ the scoring errors and the route returns them as `400`.
      immediately.
    - **File-loaded families** (every family with a `load_file`) first check
      whether the disk-cached file and the cached contract its run logged
-     beside it (or, for a family that does not require one, the marker
-     recording that the run logged none) already exist under the backend's
-     digest partition;
+     beside it (or the marker recording that the run logged none) already
+     exist under the backend's digest partition;
      if so, compute
-     `_local_artifact_fingerprint` from that file (with the contract's bytes
-     too for a `requires_contract` family; a stat-gated memo, so an
+     `_local_artifact_fingerprint` from that file (a stat-gated memo, so an
      unchanged file is cheap), build the key with that fingerprint, and
      check the in-memory cache. On a hit, record a hit and return; on a
      miss, acquire the per-artifact lock, re-check the memory cache (a
@@ -405,10 +399,8 @@ the scoring errors and the route returns them as `400`.
    cache (single-flight); on a hit, return. Otherwise record a miss, then load:
    file-loaded families go through `_load_with_bounded_retry`, which reads
    the contract the run logged beside the artifact, if any
-   (`_run_contract_if_logged`; `_resolve_run_contract` for an EBM, which is
-   refused without it), calls the family's `load_file` with it (an EBM loads
-   under it; the others ignore it) and records it as the carrier's
-   `run_contract_path`; the
+   (`_run_contract_if_logged`), calls the family's `load_file` and records the
+   contract as the carrier's `run_contract_path`; the
    directory family loads via MLflow's
    pyfunc flavor (`_load_pyfunc_model` + `_wrap_pyfunc`). For a file-loaded
    family, the bounded retry may have deleted
@@ -956,7 +948,6 @@ endpoint.
 | Local path naming the directory family (a pyfunc model) | `ConfigError` (it loads only from MLflow) | `load_local_model`. |
 | CatBoost model metadata cannot be read | `ConfigError` naming the model source (chained from the read failure) | `_wrap_catboost`; re-raised immediately by `_load_with_bounded_retry`. |
 | A contract offset column without its `offset_link` for a CatBoost model whose metadata declares no offset, or a model/contract offset disagreement | `ConfigError` naming the model and the remedy | `bind_feature_contract`, for file, run, registered and deployed models alike. |
-| A run or registered EBM with no contract logged beside it | `ConfigError` naming the run (a `DeployError` naming the node when bundling) | `load_mlflow_model` (`_resolve_run_contract`); the deploy bundler. |
 | A run's contract download fails while a listing names it, or the listing fails | The download or listing error, re-raised (retried by `_load_with_bounded_retry`) | `_run_contract_if_logged`. |
 | File source with a missing model file, an explicit contract that does not exist, or a path outside the project | `ConfigError` naming the file / `RuntimePathOutsideProjectError` | `resolve_model_file`, `model_contract_path`; also `GET /api/model-file` as `400`. |
 | Corrupt/unloadable artifact after bounded retry | `RuntimeError` (chained `from last_err`) | `_load_with_bounded_retry`. |

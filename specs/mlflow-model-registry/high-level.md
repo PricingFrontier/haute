@@ -146,8 +146,7 @@ Out of scope (owned elsewhere):
   registered native model without an explicit contract is bound to the
   contract its run logged beside it when the run logged one, so the preview
   binds what a deployed bundle ships; a model whose run logged none scores
-  against the features its own file names, and an EBM, which loads only under
-  its contract, is refused naming the run. A CatBoost
+  against the features its own file names. A CatBoost
   model with no declaration scores with no offset, the full-policy-term basis
   a quote is priced on (an exposure of one adds nothing to a log-link model),
   and a declared offset column missing from the scoring input fails before
@@ -415,8 +414,8 @@ Out of scope (owned elsewhere):
 - A file source whose `model_path` is empty (`IncompleteModelSourceError`),
   resolves outside the project (`RuntimePathOutsideProjectError`), does not
   exist, or has a suffix no family registers; an explicit
-  `feature_contract_path` that does not exist; and an EBM without its
-  contract: each a `ConfigError` naming the file.
+  `feature_contract_path` that does not exist; and an `.ebm` file without the
+  record Haute writes at its head: each a `ConfigError` naming the file.
 - A model artifact that is still corrupt/unloadable after the one bounded
   retry: `RuntimeError` naming the run ID, artifact path, flavor, and the
   last underlying error.

@@ -356,9 +356,8 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
     it for you. A monotone-constrained feature cannot take part in an interaction. MAE is
     not available.
 
-    An `.ebm` file is loaded only with the feature contract saved beside it, and only
-    under the exact `interpret-core` version that contract records; upgrading
-    `interpret-core` past a minor version means retraining.
+    An `.ebm` file loads only under the exact `interpret-core` version it records;
+    upgrading `interpret-core` past a minor version means retraining.
 
 **Tune parameters**
 
@@ -586,8 +585,7 @@ project root, and the model's extension (`.cbm`, `.ubj`, `.lgbm`, `.tboost`, `.e
 family) is added if you leave it off. The pane shows the **Destination:** before you save,
 refuses an extension that does not match the model format, and asks before replacing a file
 that already exists (**Replace existing file**). After saving it shows where the model and
-its **Feature contract** went. Keep an `.ebm` file's feature contract beside it: the model
-cannot load without it.
+its **Feature contract** went.
 
 The pane remembers where the result was last logged and saved, including after you reload
 the page while the server still holds the training result. After a server restart the pane

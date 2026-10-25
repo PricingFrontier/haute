@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from haute._logging import get_logger
 from haute._model_flavors import family_for_artifact
 from haute._path_resolution import PathPreference, RuntimePathError, resolve_runtime_file_path
-from haute.errors import ConfigError, DeployError
+from haute.errors import DeployError
 from haute.graph_utils import NodeType, PipelineGraph
 
 if TYPE_CHECKING:
@@ -223,7 +223,7 @@ def collect_artifacts(
             # training's features, dtypes and offset; a model whose run logged
             # none is served against the features it names, as the preview scores it.
             if explicit_contract is None:
-                run_contract = _run_contract(nid, backend, run_id, artifact_path)
+                run_contract = _run_contract(backend, run_id, artifact_path)
                 if run_contract is not None:
                     artifacts.add(nid, f"{nid}__feature_contract.json", run_contract)
 
@@ -290,31 +290,16 @@ def _collect_model_file(
         artifacts.add(node_id, f"{node_id}__{CONTRACT_FILENAME}", sibling)
 
 
-def _run_contract(
-    node_id: str, backend: ResolvedBackend, run_id: str, artifact: str
-) -> Path | None:
-    """The contract run *run_id* logged beside *artifact*, or ``None`` when it logged none.
-
-    An EBM loads only under its contract, so for one a run that logged none
-    refuses the deploy.
-    """
-    from haute._mlflow_io import _resolve_run_contract, _run_contract_if_logged
+def _run_contract(backend: ResolvedBackend, run_id: str, artifact: str) -> Path | None:
+    """The contract run *run_id* logged beside *artifact*, or ``None`` when it logged none."""
+    from haute._mlflow_io import _run_contract_if_logged
     from haute._mlflow_utils import resolve_mlflow_source
 
     _run_id, _version, mlflow_mod, client, _backend = resolve_mlflow_source(
         source_type="run", run_id=run_id, backend=backend
     )
-    if not family_for_artifact(artifact).requires_contract:
-        logged = _run_contract_if_logged(mlflow_mod, client, backend, run_id, artifact)
-        return None if logged is None else Path(logged)
-    try:
-        return Path(_resolve_run_contract(mlflow_mod, client, backend, run_id, artifact))
-    except ConfigError as exc:
-        raise DeployError(
-            f"Model Scoring node {node_id!r} cannot be deployed: {exc.message}",
-            node_id=node_id,
-            run_id=run_id,
-        ) from exc
+    logged = _run_contract_if_logged(mlflow_mod, client, backend, run_id, artifact)
+    return None if logged is None else Path(logged)
 
 
 def _collect_static_data_input(

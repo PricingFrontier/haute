@@ -299,12 +299,15 @@ def train(project: Path, algorithm: str, **params: Any) -> Path:
     return Path(result.model_path)
 
 
-def test_an_ebm_without_its_contract_fails_naming_the_file(project: Path) -> None:
+def test_an_ebm_scores_without_its_contract(project: Path) -> None:
     model_path = train(project, "ebm", loss="Poisson", max_rounds=20, interactions=0)
+    frame = data(seed=15)
+    with_contract = score(FileModelSource(model_path=model_path.name), frame)
     model_path.with_name(model_contract_filename(model_path.stem)).unlink()
 
-    with pytest.raises(ConfigError, match=f"beside {model_path.name}"):
-        score(FileModelSource(model_path=model_path.name), data())
+    np.testing.assert_array_equal(
+        score(FileModelSource(model_path=model_path.name), frame), with_contract
+    )
 
 
 GLM = {"terms": {"age": {"type": "linear"}}, "family": "poisson", "link": "log"}

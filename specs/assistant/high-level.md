@@ -1746,8 +1746,8 @@ of `src/haute/execution.py::dataframe_graph_input_identity` over the check's
 lineage under that scenario, which covers the input file signatures, published
 snapshot generation pointers, a file-sourced Apply Optimisation artifact and the
 preamble fingerprint that execution caches already sign, together with the
-identity of each local Model Scoring node's cached model file and an EBM's
-cached contract, which that identity does not sign; `freshness_tokens`, the
+identity of each local Model Scoring node's cached model file and the contract its
+run logged (or the record that it logged none), which that identity does not sign; `freshness_tokens`, the
 native revision or stat token of every file the source generation signs, which
 reading never touches a file's content, a snapshot-backed input's original
 source file included beside its generation pointer while that file exists (a

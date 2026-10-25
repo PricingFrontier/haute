@@ -79,6 +79,20 @@ def contract_of(result: object):
     return load_contract(path.parent / model_contract_filename(path.stem))
 
 
+def record_of(path: str | Path) -> dict:
+    """The JSON record on an ``.ebm`` file's first line."""
+    line = Path(path).read_bytes().split(b"\n", 1)[0]
+    assert line.startswith(b"haute-ebm:")
+    return json.loads(line[len(b"haute-ebm:") :])
+
+
+def rewrite_record(path: str | Path, **change: object) -> None:
+    """Change fields of an ``.ebm`` file's record, keeping its estimator bytes."""
+    head, rest = Path(path).read_bytes().split(b"\n", 1)
+    record = {**json.loads(head[len(b"haute-ebm:") :]), **change}
+    Path(path).write_bytes(b"haute-ebm:" + json.dumps(record).encode() + b"\n" + rest)
+
+
 @pytest.mark.parametrize(
     ("loss", "target", "extra", "objective"),
     [
@@ -88,7 +102,7 @@ def contract_of(result: object):
         ("Tweedie", "claims", {"variance_power": 1.5, "offset": "exposure"}, "tweedie_deviance"),
     ],
 )
-def test_each_loss_trains_weighted_and_reloads_through_its_contract(
+def test_each_loss_trains_weighted_and_reloads_from_its_file(
     tmp_path: Path, loss: str, target: str, extra: dict, objective: str
 ) -> None:
     _job, result = train(tmp_path, target=target, loss=loss, weight="weight", **extra)
@@ -296,12 +310,11 @@ def test_binary_string_labels_score_original_labels_from_the_probability(tmp_pat
 
 def test_a_regression_model_refuses_to_score_as_a_classifier(tmp_path: Path) -> None:
     _job, result = train(tmp_path, target="severity", loss="RMSE")
+    rewrite_record(result.model_path, task="classification")
     with pytest.raises(
-        ConfigError, match="Regressor but its contract describes a classification model"
+        ConfigError, match="Regressor but its record describes a classification model"
     ):
-        EBMModel.load(
-            result.model_path, dataclasses.replace(contract_of(result), task="classification")
-        )
+        EBMModel.load(result.model_path)
 
 
 def test_unseen_categories_score_in_the_unknown_bin_and_nulls_in_the_missing_bin(
@@ -332,40 +345,59 @@ def test_restricted_loader_round_trips_bit_identically(tmp_path: Path) -> None:
         seed=0,
     )
     before = fitted.model.predict(data)
-    _job, result = train(tmp_path, target="severity", loss="RMSE")
-    contract = contract_of(result)
     path = tmp_path / "copy.ebm"
     fitted.model.save(path)
-    save_contract(contract, tmp_path / model_contract_filename("copy"))
-    assert np.array_equal(EBMModel.load(path, contract).predict(data), before)
+    assert np.array_equal(EBMModel.load(path).predict(data), before)
 
 
-def test_a_mismatched_or_missing_engine_version_fails_before_unpickling(
+def test_the_model_file_records_what_the_estimator_cannot_say(tmp_path: Path) -> None:
+    import interpret
+
+    _job, result = train(tmp_path, target="claims", loss="Poisson", offset="exposure")
+
+    assert record_of(result.model_path) == {
+        "engine_version": interpret.__version__,
+        "features": ["region", "age"],
+        "categorical_features": ["region"],
+        "task": "regression",
+        "link": "log",
+        "offset_column": "exposure",
+        "offset_link": "log",
+        "class_labels": None,
+    }
+
+
+def test_a_mismatched_engine_version_or_a_missing_record_fails_before_unpickling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _job, result = train(tmp_path, target="severity", loss="RMSE")
-    contract = contract_of(result)
+    bare = tmp_path / "bare.ebm"
+    bare.write_bytes(Path(result.model_path).read_bytes().split(b"\n", 1)[1])
+    rewrite_record(result.model_path, engine_version="0.7.7")
 
-    def must_not_unpickle(path):
-        raise AssertionError("unpickled before the version check")
+    def must_not_unpickle(*args: object, **kwargs: object) -> None:
+        raise AssertionError("unpickled before the record was checked")
 
     monkeypatch.setattr("haute._sandbox.restricted_joblib_load", must_not_unpickle)
-    stale = dataclasses.replace(
-        contract, model=dataclasses.replace(contract.model, engine_version="0.7.7")
-    )
     with pytest.raises(ArtifactVersionMismatchError, match="interpret-core 0.7.7"):
-        EBMModel.load(result.model_path, stale)
-    with pytest.raises(ConfigError, match="no EBM feature contract"):
-        EBMModel.load(result.model_path, dataclasses.replace(contract, model=None))
+        EBMModel.load(result.model_path)
+    with pytest.raises(ConfigError, match="bare.ebm is not an EBM model Haute saved"):
+        EBMModel.load(bare)
 
 
-def test_a_model_file_without_its_contract_is_refused(tmp_path: Path) -> None:
-    _job, result = train(tmp_path, target="severity", loss="RMSE")
+def test_a_model_file_loads_without_its_contract(tmp_path: Path) -> None:
+    data = frame()
+    _job, result = train(tmp_path, target="claims", loss="Poisson", offset="exposure")
     lone = tmp_path / "lone" / "orphan.ebm"
     lone.parent.mkdir()
     lone.write_bytes(Path(result.model_path).read_bytes())
-    with pytest.raises(ConfigError, match="No feature contract was found beside orphan.ebm"):
-        load_local_model(str(lone))
+
+    scoring = load_local_model(str(lone))
+
+    assert (scoring.offset_column, scoring.offset_link) == ("exposure", "log")
+    np.testing.assert_array_equal(
+        scoring.raw_model.predict(data), load_local_model(result.model_path).raw_model.predict(data)
+    )
 
 
 class _Payload:
@@ -379,8 +411,14 @@ def test_a_crafted_payload_in_an_ebm_file_is_blocked(tmp_path: Path) -> None:
     _job, result = train(tmp_path, target="severity", loss="RMSE")
     target = tmp_path / Path(result.model_path).name
     assert str(target) == result.model_path
-    target.write_bytes(pickle.dumps(_Payload()))
+    record = target.read_bytes().split(b"\n", 1)[0] + b"\n"
+    # A valid record does not let the payload past the restricted unpickler...
+    target.write_bytes(record + pickle.dumps(_Payload()))
     with pytest.raises(pickle.UnpicklingError, match="system"):
+        load_local_model(result.model_path)
+    # ...and without one nothing is unpickled at all.
+    target.write_bytes(pickle.dumps(_Payload()))
+    with pytest.raises(ConfigError, match="not an EBM model Haute saved"):
         load_local_model(result.model_path)
 
 
@@ -576,6 +614,38 @@ def test_an_mlflow_run_artifact_loads_with_the_contract_logged_beside_it(
             mlflow.log_artifact(str(model_path.parent / model_contract_filename("ebm")))
     scoring = load_mlflow_model(source_type="run", run_id=run.info.run_id, task="regression")
     assert scoring.flavor == "ebm"
+    assert scoring.run_contract_path is not None
+    assert np.array_equal(
+        scoring.raw_model.predict(data), load_local_model(str(model_path)).raw_model.predict(data)
+    )
+
+
+def test_an_mlflow_run_artifact_loads_without_a_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import mlflow
+
+    from haute._mlflow_io import load_mlflow_model
+    from haute._mlflow_utils import mlflow_fluent_operation, set_tracking_uri_preserving_env
+    from haute._sandbox import set_project_root
+    from haute.modelling._mlflow_log import resolve_tracking_backend
+
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+    monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
+    data = frame()
+    _job, result = train(tmp_path / "train", target="severity", loss="RMSE")
+    model_path = Path(result.model_path)
+    with mlflow_fluent_operation():
+        set_tracking_uri_preserving_env(mlflow, resolve_tracking_backend("")[0])
+        with mlflow.start_run() as run:
+            mlflow.log_artifact(str(model_path))
+
+    scoring = load_mlflow_model(
+        source_type="run", run_id=run.info.run_id, artifact_path="ebm.ebm", task="regression"
+    )
+
+    assert scoring.run_contract_path is None
     assert np.array_equal(
         scoring.raw_model.predict(data), load_local_model(str(model_path)).raw_model.predict(data)
     )
@@ -591,7 +661,7 @@ def test_saved_contract_records_the_installed_interpret_version(tmp_path: Path) 
     assert raw["model"]["engine"] == {"name": "interpret", "version": interpret.__version__}
 
 
-def test_deploy_bundles_the_run_contract_an_ebm_needs(tmp_path: Path) -> None:
+def test_deploy_bundles_an_ebm_run_contract_when_logged(tmp_path: Path) -> None:
     from unittest.mock import patch
 
     from haute._types import PipelineGraph
@@ -620,7 +690,7 @@ def test_deploy_bundles_the_run_contract_an_ebm_needs(tmp_path: Path) -> None:
     )
     with (
         patch("haute.deploy._bundler._download_model_artifact", return_value=model),
-        patch("haute._mlflow_io._resolve_run_contract", return_value=str(contract)) as fetch,
+        patch("haute._mlflow_io._run_contract_if_logged", return_value=str(contract)) as fetch,
     ):
         artifacts = collect_artifacts(graph, [], tmp_path)
     # (mlflow, client, backend, run_id, artifact)
@@ -629,7 +699,9 @@ def test_deploy_bundles_the_run_contract_an_ebm_needs(tmp_path: Path) -> None:
     assert artifacts["score__ebm.ebm"] == model
 
 
-def test_a_deployed_ebm_loads_under_its_bundled_contract(tmp_path: Path) -> None:
+def test_a_deployed_ebm_binds_its_bundled_contract_and_loads_without_one(
+    tmp_path: Path,
+) -> None:
     from haute._mlflow_io import load_local_model_cached
 
     data = frame()
@@ -647,8 +719,10 @@ def test_a_deployed_ebm_loads_under_its_bundled_contract(tmp_path: Path) -> None
         scoring.raw_model.predict(data),
         load_local_model(result.model_path).raw_model.predict(data),
     )
-    with pytest.raises(ConfigError, match="No feature contract was found"):
-        load_local_model_cached(str(model), "regression", None)
+    assert np.array_equal(
+        load_local_model_cached(str(model), "regression", None).raw_model.predict(data),
+        scoring.raw_model.predict(data),
+    )
 
 
 def _write_contract(path: Path, contract: object) -> None:
@@ -675,10 +749,9 @@ def _write_contract(path: Path, contract: object) -> None:
     [
         ({"loss": "RMSE", "link": "identity"}, "trained with poisson_deviance"),
         ({"loss": "Gamma"}, "describes a Gamma model"),
-        ({"loss": None}, "records no loss"),
     ],
 )
-def test_the_loaders_refuse_a_contract_for_another_loss(
+def test_binding_refuses_a_contract_for_another_loss(
     tmp_path: Path, change: dict, message: str
 ) -> None:
     from haute._mlflow_io import load_local_model_cached
@@ -689,30 +762,13 @@ def test_the_loaders_refuse_a_contract_for_another_loss(
     sidecar = Path(result.model_path).parent / model_contract_filename("ebm")
     _write_contract(sidecar, wrong)
     with pytest.raises(ConfigError, match=message):
-        load_local_model(result.model_path)
-    with pytest.raises(ConfigError, match=message):
         load_local_model_cached(result.model_path, "regression", str(sidecar))
 
 
-def test_a_contract_with_another_tweedie_power_is_refused(tmp_path: Path) -> None:
-    _job, result = train(
-        tmp_path, target="claims", loss="Tweedie", variance_power=1.5, offset="exposure"
-    )
-    contract = contract_of(result)
-    _write_contract(
-        Path(result.model_path).parent / model_contract_filename("ebm"),
-        dataclasses.replace(
-            contract, model=dataclasses.replace(contract.model, variance_power=1.2)
-        ),
-    )
-    with pytest.raises(ConfigError, match="records variance power 1.2"):
-        load_local_model(result.model_path)
-
-
-def _stale_version(contract: object) -> object:
+def _another_loss(contract: object) -> object:
     return dataclasses.replace(
         contract,
-        model=dataclasses.replace(contract.model, engine_version="0.0.1"),  # type: ignore[attr-defined]
+        model=dataclasses.replace(contract.model, loss="Gamma"),  # type: ignore[attr-defined]
     )
 
 
@@ -732,13 +788,13 @@ def test_the_deployed_cache_reloads_when_only_the_contract_changes(tmp_path: Pat
     sidecar = Path(result.model_path).parent / model_contract_filename("ebm")
     first = load_local_model_cached(result.model_path, "regression", str(sidecar))
     assert load_local_model_cached(result.model_path, "regression", str(sidecar)) is first
-    _replace_sidecar(sidecar, _stale_version(contract_of(result)))
-    with pytest.raises(ArtifactVersionMismatchError):
+    _replace_sidecar(sidecar, _another_loss(contract_of(result)))
+    with pytest.raises(ConfigError, match="describes a Gamma model"):
         load_local_model_cached(result.model_path, "regression", str(sidecar))
     _clear_deploy_artifact_caches()
 
 
-def test_the_mlflow_cache_reloads_when_only_the_run_contract_changes(
+def test_a_run_contract_change_rebinds_without_reloading_the_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import mlflow
@@ -772,9 +828,9 @@ def test_the_mlflow_cache_reloads_when_only_the_run_contract_changes(
     loads: list[str] = []
     real_load = EBMModel.load.__func__
 
-    def counting_load(cls, path, contract):
+    def counting_load(cls, path):
         loads.append(str(path))
-        return real_load(cls, path, contract)
+        return real_load(cls, path)
 
     monkeypatch.setattr(EBMModel, "load", classmethod(counting_load))
 
@@ -798,11 +854,15 @@ def test_the_mlflow_cache_reloads_when_only_the_run_contract_changes(
         model_contract_filename("ebm"),
     )
     assert cached_contract.is_file()
-    _replace_sidecar(cached_contract, _stale_version(contract_of(result)))
-    with pytest.raises(ArtifactVersionMismatchError):
-        load("ebm.ebm")
-    with pytest.raises(ArtifactVersionMismatchError):
-        load()
+    _replace_sidecar(cached_contract, _another_loss(contract_of(result)))
+    # The model does not depend on its contract, so it is not reloaded...
+    assert load("ebm.ebm") is explicit
+    # ...but binding reads the replaced contract and refuses it.
+    from haute._model_source import RunModelSource, load_bound_model
+
+    source = RunModelSource(run_id=run_id, artifact_path="ebm.ebm", mlflow_destination="")
+    with pytest.raises(ConfigError, match="describes a Gamma model"):
+        load_bound_model(source, "regression")
     _model_cache.clear()
 
 

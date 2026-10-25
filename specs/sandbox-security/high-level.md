@@ -164,10 +164,12 @@ Out of scope (owned elsewhere, linked where relevant):
   `...ExplainableBoostingClassifier`; no `interpret.*` prefix or other symbol is. A pinned
   0.7.8 `.ebm` references only those classes plus allowlisted joblib/NumPy scaffolding.
   scikit-learn's state hook checks versions only for `sklearn` classes, so an `.ebm` loads
-  only when its feature contract records exactly the installed `interpret-core` version; any
-  other or missing version fails with `ArtifactVersionMismatchError` before unpickling, and the
+  only when the JSON record at its head names exactly the installed `interpret-core` version;
+  the record is read before anything is unpickled, any other version fails with
+  `ArtifactVersionMismatchError` and a file without the record with a `ConfigError`, and the
   loaded estimator's class, features, feature types and finite scores are validated against
-  the contract before inference.
+  the record before inference. `restricted_joblib_load(path, *, offset=0)` unpickles the joblib
+  stream that starts *offset* bytes into the file.
 - **Local API/WebSocket access is gated by configured loopback Host, exact Origin,
   and an HttpOnly session cookie.** Host middleware rejects authorities outside its
   validated allowlist and
