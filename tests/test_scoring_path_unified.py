@@ -587,15 +587,13 @@ class TestRefactorStructuralInvariants:
 
         assert eager["pred"].to_list() == batched["pred"].to_list()
 
-    def test_feature_order_mismatch_still_raises_post_refactor(
+    def test_reordered_features_still_score_by_name_post_refactor(
         self,
         tiny_catboost_model: tuple[Any, Path, list[str]],
     ) -> None:
-        """Regression guard for Phase 1 #1: reordered features must still
-        raise ``FeatureMismatchError`` after the refactor.
-
-        CatBoost's categorical indices are positional; silent reorder =
-        invisible prediction drift.
+        """Regression guard for Phase 1 #1: the scorer selects the model's
+        features by name, so reversed input columns score exactly as the
+        training order does.
         """
         pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         from haute._mlflow_io import load_local_model
@@ -614,14 +612,18 @@ class TestRefactorStructuralInvariants:
         # Pre-check: scoring_model remembers training order
         assert scoring_model.feature_names == features
 
-        with pytest.raises(FeatureMismatchError):
-            _run_score_pipeline(
+        def predictions(frame: pl.DataFrame) -> list[float]:
+            scored = _run_score_pipeline(
                 scoring_model,
-                df.lazy(),
+                frame.lazy(),
                 task="regression",
                 output_col="pred",
                 source="live",
             )
+            collected = scored.collect() if isinstance(scored, pl.LazyFrame) else scored
+            return collected["pred"].to_list()
+
+        assert predictions(df) == predictions(df.select(features))
 
     def test_categorical_type_mismatch_still_raises_post_refactor(self) -> None:
         """Regression guard for Phase 1 #13: passing Int64 for a categorical
