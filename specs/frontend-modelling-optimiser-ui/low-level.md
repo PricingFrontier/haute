@@ -45,7 +45,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/utils/configField.ts`, `frontend/src/utils/trainingObjective.ts`, `frontend/src/utils/executionDiagnostics.ts` | Typed config reads/parsing, training-configuration issue derivation with click-time presentation, and structured execution-error/metric display helpers. |
 | `frontend/src/panels/modelling/algorithmCapabilities.ts`, `frontend/src/panels/modelling/algorithmCapabilities.json` | The backend-generated family capability table (`ALGORITHM_CAPABILITIES`, `algorithmCapability`, `supportedLosses`) that the gateway, target pane and tuning readiness read. |
 | `frontend/src/panels/modelling/modelColumns.ts`, `frontend/src/panels/modelling/WeightOffsetFields.tsx` | What the GLM and tree-family target configurations share: the columns each role may take (the target is never the weight or offset; weight and offset are numeric) and the optional weight and offset pickers. |
-| `frontend/src/panels/modelling/TargetAndTaskConfig.tsx`, `frontend/src/panels/modelling/CommonFeatureConfig.tsx`, `frontend/src/panels/modelling/SplitAndMetricsConfig.tsx` | Tree-family target/loss/metric controls with loss-derived task compatibility and the positive-class field, the common feature/monotonicity browser, and the canonical evaluation editor with exact-plan preview. |
+| `frontend/src/panels/modelling/TargetAndTaskConfig.tsx`, `frontend/src/panels/modelling/CommonFeatureConfig.tsx`, `frontend/src/panels/modelling/SplitAndMetricsConfig.tsx`, `frontend/src/panels/modelling/metricOptions.ts` | Tree-family target/loss/metric controls with loss-derived task compatibility and the positive-class field, the common feature/monotonicity browser, the canonical evaluation editor with exact-plan preview, and the one metric table both families' pickers and the Train guard read. |
 | `frontend/src/panels/modelling/HyperparametersConfig.tsx`, `frontend/src/panels/modelling/hyperparameters.ts`, `frontend/src/panels/modelling/featureSelection.ts` | Algorithm-neutral fixed-parameter JSON editing, optional bounded tuning/search-space editing from each family's starter space, and pure parameter/feature transitions. |
 | `frontend/src/panels/modelling/EBMInteractionsConfig.tsx`, `frontend/src/panels/modelling/EBMTermsTab.tsx` | The EBM Features-pane pairwise-interaction control (a count EBM chooses from, or explicit feature pairs written to `params.interactions`), and the EBM Terms result tab: importance-ranked terms shown as tables with a chart on request (main-effect score tables or shapes with the missing bin, and interaction score tables or lines) of additive link-scale term scores (the docs, not the pane, explain the scale). |
 | `frontend/src/panels/modelling/TBoostTablesTab.tsx`, `frontend/src/panels/modelling/TermTableView.tsx`, `frontend/src/panels/modelling/termCharts.tsx` | The t-boost Tables result tab (importance-ranked tables shown as tables with a chart on request, relativity or link-scale view, training mass per cell, axis selectors for tables of two or more factors; `TBoostTables.test.tsx` renders a main effect's level table, a two-way table whose categorical axis had gapped native cells, its line chart and a three-way table, and proves the shown values follow each axis and slice selection), and the term view both it and the EBM Terms tab draw with: the Table/Chart switch, the axis selectors, and the level table, shape, level, surface and interaction-line charts. |
@@ -94,9 +94,16 @@ Only a current, accepted save response may acknowledge this revision transition.
   structural/config hash state supplied to the shared estimate/job layers.
 - Modelling configuration is a `Record<string, unknown>` split into target, feature,
   algorithm, fixed-parameter, required version-1 `evaluation`, and optional version-1
-  `tuning` contracts. `trainingConfigurationIssues` derives incomplete target,
-  objective, evaluation and tuning requirements for the Train guard; `ModellingConfig`
-  adds any invalid JSON draft for the selected CatBoost parameter strategy. Top-level
+  `tuning` contracts. `trainingConfigurationIssues(config, { targetDtype })` derives incomplete
+  target, objective, evaluation and tuning requirements for the Train guard, each refusal the
+  server would make: a text-target classification without `positive_class` (`positive-class`),
+  a Negative Binomial theta that is not a finite positive number, a reported metric the
+  objective cannot report (`training-metrics`, by `metricCompatible`), and one `tuning-config`
+  issue per cause (an unsupported family, malformed settings, the trial count, the selection
+  metric, the search-space size, no validation rows, which names the Split pane's holdout or
+  cross-validation, and more than 200 trial-validation fits). `ModellingConfig` passes the
+  target's upstream dtype and adds any invalid JSON draft for the selected CatBoost parameter
+  strategy. Top-level
   node config keys `config.split` and `config.cross_validation` have no editor or runtime
   result path (validation settings are edited under `evaluation.validation`, where
   `cross_validation` is an editable method option).

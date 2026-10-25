@@ -207,7 +207,12 @@ strip; it never falls through to CatBoost. Pane ownership:
   CatBoost has no separate task
   selector: choosing a loss derives and stores its regression/classification task, every supported
   loss remains visible, and metrics that are incompatible with the selected loss stay visible but
-  disabled. Selecting Tweedie directly reveals its variance-power slider; when no prior value is
+  disabled. Both families' metric pickers read one table
+  (`frontend/src/panels/modelling/metricOptions.ts`): each metric measures a regression or a
+  classification, and Tweedie deviance, measured at the model's own variance power, is offered
+  only for a Tweedie loss or family. Choosing a loss or a GLM family writes the metrics the
+  backend defaults to for that objective (`effectiveMetrics`), so a Gamma GLM headlines Gamma
+  deviance. Selecting Tweedie directly reveals its variance-power slider; when no prior value is
   stored, that selection writes the displayed 1.5 midpoint in the same update instead of showing
   an intermediate required-value warning action. It also shows the selected algorithm as read-only
   context. The gateway may set the algorithm only while it is unset; after selection, neither this
@@ -631,8 +636,9 @@ this discrete solve a positive λ can sit beside positive slack.
   capability table to its word in that description, so a new family fails it until the
   description names it.
 - A classification objective on a target that is neither Boolean nor 0/1 shows a positive-class
-  field. It is required for a text target and optional for an integer target, whose value is
-  saved as a number. Predictions above 0.5 are labelled with the positive class.
+  field. It is required for a text target, and the Train guard refuses a text target without it;
+  it is optional for an integer target, whose value is saved as a number. Predictions above 0.5
+  are labelled with the positive class.
 - Every family but the GLM shares the Target, Features and Parameters panes and the JSON
   parameter editor (`usesSharedPanes`). An EBM's Features pane adds a pairwise-interaction
   control: "Let EBM choose" writes a count to `params.interactions`, "Choose pairs" a list of

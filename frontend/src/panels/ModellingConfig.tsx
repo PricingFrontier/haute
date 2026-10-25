@@ -453,7 +453,9 @@ export default function ModellingConfig({
       }
     }
   }
-  const configuredValidationIssues = trainingConfigurationIssues(config)
+  const configuredValidationIssues = trainingConfigurationIssues(config, {
+    targetDtype: upstreamColumns.find((column) => column.name === config.target)?.dtype ?? "",
+  })
   const validationIssues = [
     ...configuredValidationIssues,
     ...(paramDraftIssue ? [paramDraftIssue] : []),

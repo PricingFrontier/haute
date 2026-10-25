@@ -266,7 +266,7 @@ describe("trainingConfigurationIssues", () => {
     ).toEqual([])
   })
 
-  it("reports invalid bounded tuning alongside an otherwise complete config", () => {
+  it("reports each invalid tuning setting by its cause", () => {
     expect(
       trainingConfigurationIssues({
         algorithm: "catboost",
@@ -282,8 +282,94 @@ describe("trainingConfigurationIssues", () => {
           metric: "gini",
           search_space: {},
         },
-      }).map((issue) => issue.code),
-    ).toEqual(["tuning-config"])
+      }).map((issue) => [issue.code, issue.message]),
+    ).toEqual([
+      ["tuning-config", "Choose between 5 and 50 tuning trials."],
+      ["tuning-config", "Give the search space between 1 and 32 parameters."],
+    ])
+  })
+
+  it("names validation when tuning has no validation rows (FMOU-R02)", () => {
+    const issues = trainingConfigurationIssues({
+      algorithm: "catboost",
+      target: "loss",
+      feature_columns: ["age"],
+      loss_function: "RMSE",
+      evaluation: { ...evaluation, validation: { method: "none" } },
+      tuning: {
+        schema_version: 1,
+        trial_count: 5,
+        seed: 42,
+        metric: "gini",
+        search_space: { depth: [4, 6] },
+      },
+    })
+    expect(issues.filter((issue) => issue.code === "tuning-config").map((issue) => issue.message))
+      .toEqual([
+        "Parameter tuning compares trials on validation rows: enable holdout or "
+        + "cross-validation in the Split pane.",
+      ])
+  })
+
+  it("refuses a text-target classification without a positive class (FMOU-R02)", () => {
+    const config = {
+      algorithm: "catboost",
+      target: "converted",
+      feature_columns: ["age"],
+      loss_function: "Logloss",
+      task: "classification",
+      evaluation,
+    }
+    const positiveClass = (dtype: string, extra: Record<string, unknown> = {}) =>
+      trainingConfigurationIssues({ ...config, ...extra }, { targetDtype: dtype })
+        .filter((issue) => issue.code === "positive-class")
+        .map((issue) => issue.message)
+
+    expect(positiveClass("String")).toEqual([
+      "Choose which label of the text target is the positive class.",
+    ])
+    expect(positiveClass("String", { positive_class: "yes" })).toEqual([])
+    // Boolean and integer targets have a fixed positive class.
+    expect(positiveClass("Boolean")).toEqual([])
+    expect(positiveClass("Int64")).toEqual([])
+  })
+
+  it("refuses a Negative Binomial theta of zero or below (FMOU-R02)", () => {
+    const thetaIssues = (theta: number) =>
+      trainingConfigurationIssues({
+        algorithm: "glm",
+        target: "claims",
+        family: "negbinomial",
+        theta,
+        terms: { age: { type: "linear" } },
+        evaluation,
+      }).filter((issue) => issue.code === "glm-negbin-theta")
+
+    expect(thetaIssues(0).map((issue) => issue.message)).toEqual([
+      "Negative Binomial theta must be a finite positive number.",
+    ])
+    expect(thetaIssues(-1)).toHaveLength(1)
+    expect(thetaIssues(2.4)).toEqual([])
+  })
+
+  it("refuses a metric the objective cannot report", () => {
+    const metricIssues = (extra: Record<string, unknown>) =>
+      trainingConfigurationIssues({
+        algorithm: "catboost",
+        target: "loss",
+        feature_columns: ["age"],
+        task: "regression",
+        evaluation,
+        ...extra,
+      }).filter((issue) => issue.code === "training-metrics").map((issue) => issue.message)
+
+    expect(metricIssues({ loss_function: "Poisson", metrics: ["gini", "tweedie_deviance"] }))
+      .toEqual([
+        "Tweedie Deviance cannot be reported for a Poisson model; remove it from the metrics.",
+      ])
+    expect(
+      metricIssues({ loss_function: "Tweedie", variance_power: 1.5, metrics: ["tweedie_deviance"] }),
+    ).toEqual([])
   })
 
   it.each([

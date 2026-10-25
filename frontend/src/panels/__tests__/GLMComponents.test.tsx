@@ -205,11 +205,12 @@ describe("GLMTargetConfig", () => {
 
   it("clicking a family updates family, link, and metrics", () => {
     render(<GLMTargetConfig config={baseConfig} onUpdate={onUpdate} columns={defaultColumns} />)
+    // The Gamma family headlines Gamma deviance, the backend's default (FMOU-R02).
     fireEvent.click(screen.getByRole("button", { name: "Gamma" }))
     expect(onUpdate).toHaveBeenCalledWith({
       family: "gamma",
       link: "",
-      metrics: ["gini", "rmse"],
+      metrics: ["gini", "gamma_deviance"],
     })
   })
 
@@ -409,7 +410,9 @@ describe("GLMTargetConfig", () => {
     render(<GLMTargetConfig config={baseConfig} onUpdate={onUpdate} columns={defaultColumns} />)
     expect(screen.getByRole("button", { name: "Gini" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "RMSE" })).toBeTruthy()
-    expect(screen.getByRole("button", { name: "Poisson Dev." })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Poisson Deviance" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Gamma Deviance" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "MSE" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "R²" })).toBeTruthy()
   })
 

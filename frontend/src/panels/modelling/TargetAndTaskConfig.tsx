@@ -2,6 +2,7 @@ import { ConfigSection } from "../../components/form"
 import type { OnUpdateConfig } from "../editors"
 import { configField } from "../../utils/configField"
 import { isNumericDtype } from "../../utils/polarsDtypes"
+import { effectiveMetrics } from "../../utils/trainingObjective"
 import { toggleButtonStyle } from "./styles"
 import { FailoverHelp } from "./FailoverHelp"
 import { ColumnSelector } from "./ColumnSelector"
@@ -9,67 +10,21 @@ import { modelColumnChoices } from "./modelColumns"
 import WeightOffsetFields from "./WeightOffsetFields"
 import { NumberField } from "./NumberField"
 import { algorithmCapability, supportedLosses } from "./algorithmCapabilities"
+import { METRIC_OPTIONS, metricCompatible } from "./metricOptions"
 
 const TWEEDIE_HELP =
   "Tweedie interpolates between Poisson (power 1) and Gamma (power 2); new selections start at the 1.5 midpoint."
 type Column = { name: string; dtype: string }
-const LOSSES: ReadonlyArray<{
-  value: string
-  task: "regression" | "classification"
-  defaultMetrics: string[]
-}> = [
-  { value: "RMSE", task: "regression", defaultMetrics: ["gini", "rmse"] },
-  { value: "MAE", task: "regression", defaultMetrics: ["gini", "rmse"] },
-  {
-    value: "Poisson",
-    task: "regression",
-    defaultMetrics: ["gini", "poisson_deviance"],
-  },
-  {
-    value: "Gamma",
-    task: "regression",
-    defaultMetrics: ["gini", "gamma_deviance"],
-  },
-  {
-    value: "Tweedie",
-    task: "regression",
-    defaultMetrics: ["gini", "tweedie_deviance"],
-  },
-  {
-    value: "Logloss",
-    task: "classification",
-    defaultMetrics: ["auc", "logloss"],
-  },
-  {
-    value: "CrossEntropy",
-    task: "classification",
-    defaultMetrics: ["auc", "logloss"],
-  },
+// A loss's default metrics are the backend's (effectiveMetrics), never a second list.
+const LOSSES: ReadonlyArray<{ value: string; task: "regression" | "classification" }> = [
+  { value: "RMSE", task: "regression" },
+  { value: "MAE", task: "regression" },
+  { value: "Poisson", task: "regression" },
+  { value: "Gamma", task: "regression" },
+  { value: "Tweedie", task: "regression" },
+  { value: "Logloss", task: "classification" },
+  { value: "CrossEntropy", task: "classification" },
 ]
-const REGRESSION_METRICS = [
-  "gini",
-  "rmse",
-  "mae",
-  "mse",
-  "r2",
-  "poisson_deviance",
-  "tweedie_deviance",
-  "gamma_deviance",
-]
-const CLASSIFICATION_METRICS = ["auc", "logloss"]
-const METRICS = [...REGRESSION_METRICS, ...CLASSIFICATION_METRICS]
-const METRIC_LABELS: Record<string, string> = {
-  gini: "Gini",
-  rmse: "RMSE",
-  mae: "MAE",
-  mse: "MSE",
-  r2: "R²",
-  poisson_deviance: "Poisson Deviance",
-  tweedie_deviance: "Tweedie Deviance",
-  gamma_deviance: "Gamma Deviance",
-  auc: "AUC",
-  logloss: "Logloss",
-}
 
 export type TargetAndTaskConfigProps = {
   /** The modelling family; its capabilities decide which losses are offered. */
@@ -119,13 +74,6 @@ export function TargetAndTaskConfig({
   const needsPositiveClass =
     compatibleTask === "classification" && targetDtype !== "" && targetDtype !== "Boolean"
   const positiveClassRequired = needsPositiveClass && !isNumericDtype(targetDtype)
-  const compatibleMetrics = new Set(
-    compatibleTask === "regression"
-      ? REGRESSION_METRICS
-      : compatibleTask === "classification"
-        ? CLASSIFICATION_METRICS
-        : [],
-  )
   const { targetColumns, weightColumns, offsetColumns } = modelColumnChoices(columns, {
     target,
     weight,
@@ -179,7 +127,10 @@ export function TargetAndTaskConfig({
                           : onUpdate({
                               loss_function: loss.value,
                               task: loss.task,
-                              metrics: [...loss.defaultMetrics],
+                              metrics: effectiveMetrics({
+                                loss_function: loss.value,
+                                task: loss.task,
+                              }),
                               ...(loss.value === "Tweedie" &&
                               config.variance_power == null
                                 ? { variance_power: 1.5 }
@@ -305,9 +256,9 @@ export function TargetAndTaskConfig({
             aria-label="Metrics"
             className="flex flex-wrap gap-1.5"
           >
-            {METRICS.map((metric) => {
+            {METRIC_OPTIONS.map(({ value: metric, label }) => {
               const selected = metrics.includes(metric)
-              const compatible = compatibleMetrics.has(metric)
+              const compatible = metricCompatible(metric, compatibleTask, currentLoss)
               return (
                 <button
                   type="button"
@@ -318,7 +269,7 @@ export function TargetAndTaskConfig({
                     compatible
                       ? undefined
                       : currentLoss
-                        ? `${METRIC_LABELS[metric]} is not available with ${currentLoss}`
+                        ? `${label} is not available with ${currentLoss}`
                         : "Choose an objective to enable compatible metrics"
                   }
                   onClick={() =>
@@ -333,7 +284,7 @@ export function TargetAndTaskConfig({
                   className="rounded-md px-2.5 py-1 text-xs font-mono transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                   style={toggleButtonStyle(compatible && selected)}
                 >
-                  {METRIC_LABELS[metric]}
+                  {label}
                 </button>
               )
             })}

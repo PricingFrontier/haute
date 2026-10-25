@@ -71,7 +71,7 @@ XGBoost, LightGBM, t-boost and EBM it has three sections; the GLM's version is d
 | **Target column** | The column the model predicts. Pick it from the searchable list (**Select target…** until you do). Training is blocked with **Select a target column.** until it is set. |
 | **Objective** | The training loss, one button per loss the family supports (see the table above). Choosing a loss also sets the task (regression or classification) and switches on that loss's usual metrics; clicking the selected loss again clears it. Training is blocked until a loss is chosen, because an unset loss would silently train under the library default. MAE is not offered for t-boost or an EBM. |
 | **Variance power** | Shown for the **Tweedie** loss: a slider with a number box beside it, between 1 (Poisson) and 2 (Gamma), exclusive. A new Tweedie selection starts at 1.5. A saved value outside that range shows **Saved variance power must be greater than 1 and less than 2.** |
-| **Positive class** | Shown for a classification loss when the target is not Boolean: the label the model predicts the probability of. Predictions above 0.5 are labelled with it. For a numeric target the label reads **Positive class (only if the labels are not 0/1)**; for text labels it is required and shows **Choose which label is the positive class.** until set. |
+| **Positive class** | Shown for a classification loss when the target is not Boolean: the label the model predicts the probability of. Predictions above 0.5 are labelled with it. For a numeric target the label reads **Positive class (only if the labels are not 0/1)**; for text labels it is required and shows **Choose which label is the positive class.** until set, and training is blocked until it is. |
 
 Binary classification needs exactly two target classes. A Boolean or 0/1 target is
 positive at `True`/`1`; any other pair needs a **Positive class**. Every family labels a
@@ -92,7 +92,8 @@ weight and offset lists hold numeric columns only.
 The evaluation metrics, as toggle buttons: **Gini**, **RMSE**, **MAE**, **MSE**, **R²**,
 **Poisson Deviance**, **Tweedie Deviance**, **Gamma Deviance**, **AUC** and **Logloss**.
 Only the metrics that suit the chosen loss can be switched on: regression losses offer the
-first eight, classification losses **AUC** and **Logloss**. Hovering over a disabled metric
+first eight, classification losses **AUC** and **Logloss**. **Tweedie Deviance** is measured
+at the model's variance power, so only a **Tweedie** loss offers it. Hovering over a disabled metric
 says why (for example **AUC is not available with Poisson**, or **Choose an objective to
 enable compatible metrics**).
 
@@ -112,7 +113,7 @@ A GLM's **TARGET** pane reads **Algorithm Rustystats** and has these controls:
 | **Dispersion theta (required for Neg. Binomial)** | Negative Binomial only: a positive dispersion (variance = mean + mean²/theta). RustyStats refuses to fit without it. Type a value or click **Estimate from data**, which profiles the likelihood on the node's training data. A value of 0 or less shows **Theta must be greater than 0.** |
 | **Weight column (optional)**, **Offset column (optional)** | As above. |
 | **Intercept** | Whether to fit an intercept. Ticked by default. |
-| **Metrics** | **Gini**, **RMSE**, **MAE**, **Poisson Dev.**, **Tweedie Dev.**, **R²**, **AUC** and **Logloss**. |
+| **Metrics** | The same buttons as above, offered by family: **AUC** and **Logloss** for Binomial and Quasi-Binomial, the regression metrics for the others, and **Tweedie Deviance** for Tweedie only. Choosing a family switches on its usual metrics, Gamma deviance for **Gamma**. |
 
 If an estimate fails, the pane shows **Estimation failed:** and the reason.
 
