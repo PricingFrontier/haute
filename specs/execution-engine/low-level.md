@@ -2677,7 +2677,9 @@ present a structural or schema result as execution evidence.
 - `IsolatedWorkerError` hierarchy (`_worker_isolation.py`) —
   `IsolatedWorkerStartError` (process failed to start), `IsolatedWorkerRemoteError`
   (child raised a Python exception; carries `remote_type`/`remote_message`/
-  `remote_traceback`), `IsolatedWorkerCrashedError` (child exited without a result;
+  `remote_traceback`; an exception caused by a path Windows refused for its length is
+  reported as the `PathTooLongError` behind it, with the original traceback, see
+  [io-layer](../io-layer/low-level.md)), `IsolatedWorkerCrashedError` (child exited without a result;
   reclassified to `terminal_reason="memory_limited"` when the exit code looks like
   `SIGKILL`/`SIGABRT`, or the Windows fail-fast status `0xC0000409` (exit code
   `3221226505`), under a configured cap. `SIGABRT` is deliberately kept in

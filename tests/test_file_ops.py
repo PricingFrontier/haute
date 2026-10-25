@@ -861,3 +861,103 @@ class TestRemoveTree:
 
         assert _file_ops.remove_tree(target) is False
         assert target.exists()
+
+
+class TestWindowsPathTooLong:
+    """A path Windows refuses for its length is named, not reported as a missing file.
+
+    While long paths are disabled (Windows' default), Windows reports a path past
+    ``MAX_PATH`` as a file or directory that does not exist, so a project in a deep
+    folder failed with a bare ``FileNotFoundError`` on one of its cache files.
+    """
+
+    @staticmethod
+    def _windows(monkeypatch: pytest.MonkeyPatch, *, long_paths: bool = False) -> None:
+        from haute import _file_ops
+
+        monkeypatch.setattr(_file_ops, "_IS_WINDOWS", True)
+        monkeypatch.setattr(_file_ops, "windows_long_paths_enabled", lambda: long_paths)
+
+    def test_a_missing_file_past_max_path_is_named_as_too_long(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._file_ops import PathTooLongError, path_too_long_error
+
+        self._windows(monkeypatch)
+        path = str(tmp_path / ("d" * 200) / "part-00000.1a2b3c4d.tmp")
+        assert len(path) > 259
+
+        found = path_too_long_error(FileNotFoundError(2, "No such file or directory", path))
+
+        assert isinstance(found, PathTooLongError)
+        assert isinstance(found, OSError)
+        assert found.filename == path
+        assert f"a path of {len(path)} characters" in str(found)
+        assert "Enable Win32 long paths" in str(found)
+
+    def test_windows_naming_the_length_as_the_cause_is_enough(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._file_ops import PathTooLongError, path_too_long_error
+
+        self._windows(monkeypatch, long_paths=True)
+        error = FileNotFoundError(2, "The filename or extension is too long", r"C:\short")
+        error.winerror = 206  # ERROR_FILENAME_EXCED_RANGE
+
+        assert isinstance(path_too_long_error(error), PathTooLongError)
+
+    def test_a_long_path_is_not_blamed_while_long_paths_are_on(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._file_ops import path_too_long_error
+
+        self._windows(monkeypatch, long_paths=True)
+        missing = FileNotFoundError(2, "No such file or directory", str(tmp_path / ("d" * 260)))
+
+        assert path_too_long_error(missing) is None
+
+    def test_short_paths_other_errors_and_other_platforms_are_left_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import _file_ops
+
+        long_path = str(tmp_path / ("d" * 260))
+        monkeypatch.setattr(_file_ops, "_IS_WINDOWS", False)
+        assert _file_ops.path_too_long_error(FileNotFoundError(2, "missing", long_path)) is None
+
+        self._windows(monkeypatch)
+        assert _file_ops.path_too_long_error(FileNotFoundError(2, "missing", r"C:\a.txt")) is None
+        assert _file_ops.path_too_long_error(ValueError(long_path)) is None
+
+    def test_the_cause_behind_a_wrapping_error_is_found(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._file_ops import PathTooLongError, path_too_long_error
+
+        self._windows(monkeypatch)
+        path = str(tmp_path / ("d" * 260))
+        try:
+            try:
+                raise FileNotFoundError(2, "No such file or directory", path)
+            except FileNotFoundError as exc:
+                raise RuntimeError("publishing the snapshot failed") from exc
+        except RuntimeError as wrapped:
+            found = path_too_long_error(wrapped)
+
+        assert isinstance(found, PathTooLongError)
+        assert found.filename == path
+
+    def test_an_atomic_write_refused_for_its_length_raises_path_too_long(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._file_ops import PathTooLongError, atomic_path
+
+        self._windows(monkeypatch)
+        target = tmp_path / ("d" * 200) / "part-00000.parquet"
+
+        with pytest.raises(PathTooLongError) as raised, atomic_path(target) as stage:
+            # What Windows reports when the stage's path is past MAX_PATH.
+            raise FileNotFoundError(2, "No such file or directory", str(stage))
+
+        assert raised.value.filename == str(stage)
+        assert isinstance(raised.value.__cause__, FileNotFoundError)

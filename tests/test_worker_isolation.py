@@ -410,6 +410,57 @@ def test_isolated_worker_failure_is_memory_classifies_every_worker_outcome(
     assert isolated_worker_failure_is_memory(failure) is expected
 
 
+def test_a_child_failure_on_a_path_too_long_for_windows_is_reported_as_such(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The child names the path Windows refused, so the parent can classify the failure."""
+    import haute._file_ops as file_ops
+
+    monkeypatch.setattr(file_ops, "_IS_WINDOWS", True)
+    monkeypatch.setattr(file_ops, "windows_long_paths_enabled", lambda: False)
+    path = str(tmp_path / ("d" * 260))
+    try:
+        raise FileNotFoundError(2, "No such file or directory", path)
+    except FileNotFoundError as exc:
+        kind, (remote_type, remote_message, remote_traceback) = isolation._worker_error_envelope(
+            exc
+        )
+
+    assert kind == "error"
+    assert remote_type == "PathTooLongError"
+    assert f"a path of {len(path)} characters" in remote_message
+    assert "FileNotFoundError" in remote_traceback
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (
+            IsolatedWorkerRemoteError(
+                remote_type="PathTooLongError",
+                remote_message="too long",
+                remote_traceback="traceback",
+            ),
+            True,
+        ),
+        (
+            IsolatedWorkerRemoteError(
+                remote_type="FileNotFoundError",
+                remote_message="missing",
+                remote_traceback="traceback",
+            ),
+            False,
+        ),
+        (RuntimeError("generic"), False),
+    ],
+)
+def test_isolated_worker_failure_is_path_too_long_reads_the_childs_exception(
+    failure: BaseException,
+    expected: bool,
+) -> None:
+    assert isolation.isolated_worker_failure_is_path_too_long(failure) is expected
+
+
 def test_isolated_worker_environment_reaches_the_child_only() -> None:
     """A spawn-time variable is visible in the child and never left in the parent."""
     name = "HAUTE_TEST_WORKER_ENVIRONMENT"

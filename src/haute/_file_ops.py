@@ -41,6 +41,7 @@ from __future__ import annotations
 import errno
 import os
 import shutil
+import sys
 import time
 import uuid
 from collections.abc import Callable, Iterator, Sequence
@@ -51,6 +52,91 @@ from types import TracebackType
 _WINDOWS_REPLACE_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1)
 _IS_WINDOWS = os.name == "nt"
 _DISK_HEADROOM_BYTES = 64 * 1024
+
+# Windows' traditional limit on a path: MAX_PATH (260) less the terminating NUL. A longer
+# path needs the "Enable Win32 long paths" setting, which is off by default.
+WINDOWS_MAX_PATH_CHARS = 259
+_ERROR_FILENAME_EXCED_RANGE = 206
+_LONG_PATHS_KEY = r"SYSTEM\CurrentControlSet\Control\FileSystem"
+
+#: What to do about a path Windows refused for its length, in words that name no path.
+PATH_TOO_LONG_REMEDIATION = (
+    "Windows refused a path in this project's cache for its length: the project's folder "
+    "path is too long while Windows' long paths are disabled. Move the project to a "
+    "folder with a shorter path, or enable long paths (the 'Enable Win32 long paths' "
+    "policy), and try again."
+)
+
+
+class PathTooLongError(OSError):
+    """A file operation failed because Windows refused its path's length.
+
+    Still an ``OSError``, so every handler that catches one keeps doing so; it names the
+    cause and the remedies instead of the bare "file not found" Windows reports.
+    """
+
+    def __init__(self, path: str) -> None:
+        super().__init__(
+            errno.ENAMETOOLONG,
+            f"Windows cannot use a path of {len(path)} characters: its limit is "
+            f"{WINDOWS_MAX_PATH_CHARS + 1} unless long paths are enabled. Move the project "
+            "to a folder with a shorter path, or enable long paths (the 'Enable Win32 long "
+            "paths' policy)",
+            path,
+        )
+
+
+def windows_long_paths_enabled() -> bool:
+    """Whether this Windows machine accepts paths past ``MAX_PATH`` (``LongPathsEnabled``)."""
+    if sys.platform != "win32":
+        return False
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _LONG_PATHS_KEY) as key:
+            value, _kind = winreg.QueryValueEx(key, "LongPathsEnabled")
+    except OSError:
+        return False
+    return bool(value == 1)
+
+
+def path_too_long_error(exc: BaseException) -> PathTooLongError | None:
+    """The :class:`PathTooLongError` behind *exc*, or ``None`` when no path was too long.
+
+    Walks the chain Python prints for *exc* (each ``__cause__``, else an unsuppressed
+    ``__context__``) for an ``OSError`` on a path Windows refused for its length: one it
+    names as such (``ERROR_FILENAME_EXCED_RANGE``), or one past ``MAX_PATH`` while long
+    paths are disabled, which Windows reports as a missing file or directory.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, PathTooLongError):
+            return current
+        if _IS_WINDOWS and isinstance(current, OSError):
+            too_long = _windows_refused_for_length(current)
+            if too_long is not None:
+                return too_long
+        if current.__cause__ is not None:
+            current = current.__cause__
+        elif not current.__suppress_context__:
+            current = current.__context__
+        else:
+            current = None
+    return None
+
+
+def _windows_refused_for_length(exc: OSError) -> PathTooLongError | None:
+    for name in (exc.filename, exc.filename2):
+        if not isinstance(name, str) or not name:
+            continue
+        path = os.path.abspath(name)
+        if getattr(exc, "winerror", None) == _ERROR_FILENAME_EXCED_RANGE or (
+            len(path) > WINDOWS_MAX_PATH_CHARS and not windows_long_paths_enabled()
+        ):
+            return PathTooLongError(path)
+    return None
 
 
 def ensure_disk_headroom(directory: Path, additional_bytes: int = 0) -> None:
@@ -141,7 +227,9 @@ def atomic_path(path: Path) -> Iterator[Path]:
     concurrent open reader (default ``open()`` omits ``FILE_SHARE_DELETE``)
     can make the rename raise ``PermissionError`` (ERROR_ACCESS_DENIED) —
     those transient codes receive a bounded retry before the write fails
-    loudly. See the module docstring for the full cross-OS contract.
+    loudly. A write Windows refused for its path's length raises
+    :class:`PathTooLongError` from the original. See the module docstring for
+    the full cross-OS contract.
     """
     tmp = _temp_path_for(path)
     try:
@@ -152,6 +240,9 @@ def atomic_path(path: Path) -> Iterator[Path]:
             tmp.unlink(missing_ok=True)
         except BaseException as cleanup_exc:
             exc.add_note(f"atomic-write staging cleanup failed: {cleanup_exc}")
+        too_long = path_too_long_error(exc)
+        if too_long is not None and too_long is not exc:
+            raise too_long from exc
         raise
 
 

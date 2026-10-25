@@ -17,7 +17,7 @@
 | `src/haute/_polars_dtypes.py` | The one dtype vocabulary. `parse_dtype`/`dtype_to_spec` are the struct-capable JSON codec used by registry schema arguments, declared API-input source dtypes and, with renamed keys, rating descriptors; a name it does not define is rejected, never looked up as an arbitrary Polars attribute. Named coarser views serve the consumers that need one: `contract_dtype_name` (a model's feature contract, shared by training and deploy scoring), `contract_mlflow_type_name` (that contract's MLflow projection) and `rendered_dtype_mlflow_type_name` (the MLflow type of a rendered Polars dtype, as a deploy manifest records it). `parse_rendered_dtype` rebuilds a dtype from polars' own rendering (`str(dtype)`, as a preview reports a column's type) by reading it as a Python expression tree whose names must be Polars dtypes and whose arguments are literals, lists, tuples, dicts or nested dtypes; it never evaluates the text. `is_string_or_categorical` tests for text by base type, and `WIDE_INTEGER_DTYPES`, `holds_wide_integer`, `wide_integer_column` and `wide_integer_message` find and refuse a 128-bit integer; *Polars 2 dtypes* under Edge cases and invariants gives the rules. |
 | `src/haute/_map_columns.py` | How a map column reaches a pipeline: as a list of `{key, value}` structs holding every entry. `map_entries_table` casts Arrow tables with pyarrow, sharing the map's buffers; `iter_parquet_map_entries` reads a Parquet file through pyarrow one row group at a time; `map_entries_frame` casts a frame Polars read; `parquet_map_column_names` finds a Parquet file's map columns from its footer. |
 | `src/haute/_polars_utils.py` | Shared context-aware automatic/streaming collection, bounded/atomic sink, Parquet metadata, chunk-size scope, and allocator trim helpers. |
-| `src/haute/_file_ops.py` | The one atomic-write primitive (`atomic_path`) and the byte/text writers built on it, used for pointer and metadata publication and, through `_polars_utils.atomic_write`, for every Parquet/CSV write-then-rename; `publish_staged_file` publishes a caller's staging file, replacing the target or only while none exists. |
+| `src/haute/_file_ops.py` | The one atomic-write primitive (`atomic_path`) and the byte/text writers built on it, used for pointer and metadata publication and, through `_polars_utils.atomic_write`, for every Parquet/CSV write-then-rename; `publish_staged_file` publishes a caller's staging file, replacing the target or only while none exists; `PathTooLongError` and `path_too_long_error`, which name a path Windows refused for its length. |
 | `src/haute/_path_resolution.py` | Shared runtime path containment/resolution owned by [sandbox-security](../sandbox-security/low-level.md) and consumed by I/O. |
 | `src/haute/_path_case_audit.py` | Cross-platform case-ambiguity warnings for user-facing paths. |
 | `src/haute/discovery.py` | Pipeline-file discovery used by file-facing workflows. |
@@ -108,6 +108,19 @@ bounded delays `10 ms, 25 ms, 50 ms, 100 ms`, after which the original error sti
 removal — discarding a dead worker's staging directory, which must not abort a job's cleanup —
 and returns whether the tree is gone so its caller reports a tree that survives instead of
 leaking the space silently.
+
+A path Windows refuses for its length is named rather than left a bare "file not found".
+Windows says so with `ERROR_FILENAME_EXCED_RANGE`, or, while `LongPathsEnabled` is off,
+reports a path past `MAX_PATH` (259 characters) as a missing file or directory.
+`path_too_long_error(exc)` finds such an `OSError` in the chain Python prints for `exc` (its
+`__cause__`s, else an unsuppressed `__context__`) and returns a `PathTooLongError`, an
+`OSError` with `ENAMETOOLONG` naming the path's length, the limit and the two remedies: a
+project folder with a shorter path, or the "Enable Win32 long paths" policy. `atomic_path`
+raises it, from the original, for a failed write whose cause it is; an isolated worker reports
+it as the child's exception (`_worker_error_envelope`), so the parent can classify the
+failure. Input preparation's reason code for it is `path_too_long`, and an input-cache build
+job's `error_code` is `path_too_long`; both carry `PATH_TOO_LONG_REMEDIATION`, which names
+no path. On other platforms, and on Windows with long paths on, nothing is renamed.
 The codes are retried only on Windows; every error on another platform and every other Windows
 filesystem error fails immediately. This is retry of the same atomic operation, not
 an in-place or non-atomic fallback.
@@ -214,9 +227,12 @@ an in-place or non-atomic fallback.
    retained-generation list on the worker request or build context.
 8. Worker failure classification maps the child's own exception type name carried by
    `IsolatedWorkerRemoteError.remote_type` first: `NativeMemoryLimitUnsupportedError` /
-   `NativeMemoryLimitCleanupError` are `cap_unavailable`. It then uses
+   `NativeMemoryLimitCleanupError` are `cap_unavailable`, and `PathTooLongError` is
+   `path_too_long`. It then uses
    `isolated_worker_failure_is_memory` and the worker's terminal reason to choose
-   `memory_limited`, `cancelled`, `timed_out`, or `build_failed`. Each reason code carries
+   `memory_limited`, `cancelled`, `timed_out`, or `build_failed`. An in-process build's
+   failure is `path_too_long` when `path_too_long_error` finds one behind it, after a
+   cancellation or a `MemoryError`. Each reason code carries
    its own remediation text. After any spawned-build
    failure or abnormal termination the parent calls
    `SourceCacheStore.reconcile_unpublished(identity, generation_id, staging_token)`, which
@@ -842,7 +858,7 @@ failure. `OSError` subclasses from transient filesystem access are not relabelle
 
 `InputPreparationError` (`error_code="input_preparation_failed"`) wraps automatic
 preparation outcomes with a stable `reason_code` (`cap_unavailable`, `build_failed`,
-`memory_limited`, `cancelled`, `timed_out`), the node id, identity
+`memory_limited`, `cancelled`, `timed_out`, `path_too_long`), the node id, identity
 digest, build class, and a remediation; it never carries a locator or a secret. It is a
 member of `PUBLIC_CONTRACT_ERROR_TYPES` in `haute.routes._contract_errors`: synchronous
 routes answer HTTP 422 with its payload, and background jobs record the `memory_limited`

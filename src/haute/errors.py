@@ -434,6 +434,7 @@ INPUT_PREPARATION_REASON_CODES: tuple[str, ...] = (
     "memory_limited",
     "cancelled",
     "timed_out",
+    "path_too_long",
 )
 
 

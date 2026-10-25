@@ -31,6 +31,7 @@ from haute._execution_context import (
     ExecutionContext,
     ExecutionProfile,
 )
+from haute._file_ops import PATH_TOO_LONG_REMEDIATION, path_too_long_error
 from haute._logging import get_logger
 from haute._native_memory_limit import current_native_memory_backend
 from haute._pipeline_settings import project_pipeline_settings
@@ -47,6 +48,7 @@ from haute._worker_isolation import (
     IsolatedWorkerRemoteError,
     WorkerTerminalReason,
     isolated_worker_failure_is_memory,
+    isolated_worker_failure_is_path_too_long,
     process_memory_caps_supported,
     run_isolated_worker,
     worker_config_for_memory_policy,
@@ -80,6 +82,7 @@ _REMEDIATION_BY_REASON: Mapping[str, str] = {
         "Preparing this Data Input's snapshot exceeded its time budget. Build it "
         "from the Data Input panel, or raise the preparation timeout, and try again."
     ),
+    "path_too_long": PATH_TOO_LONG_REMEDIATION,
 }
 _API_INPUT_REMEDIATION = (
     "Build this input's tables from its panel, or give the "
@@ -101,6 +104,7 @@ _API_INPUT_REMEDIATION_BY_REASON: Mapping[str, str] = {
         "Preparing this input's tables exceeded its time budget. Build them "
         "from its panel, or raise the preparation timeout, and try again."
     ),
+    "path_too_long": PATH_TOO_LONG_REMEDIATION,
 }
 
 
@@ -611,6 +615,8 @@ def _classify_local_failure(
         return "cancelled"
     if isinstance(exc, MemoryError):
         return "memory_limited"
+    if path_too_long_error(exc) is not None:
+        return "path_too_long"
     if isinstance(exc, SourceCacheBuildError):
         if time.monotonic() > deadline:
             return "timed_out"
@@ -626,6 +632,8 @@ def _classify_worker_failure(exc: BaseException) -> str:
     remote_type = exc.remote_type if isinstance(exc, IsolatedWorkerRemoteError) else None
     if remote_type in ("NativeMemoryLimitUnsupportedError", "NativeMemoryLimitCleanupError"):
         return "cap_unavailable"
+    if isolated_worker_failure_is_path_too_long(exc):
+        return "path_too_long"
     if isolated_worker_failure_is_memory(exc):
         return "memory_limited"
     reason = getattr(exc, "terminal_reason", None)
