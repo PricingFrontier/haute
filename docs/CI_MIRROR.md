@@ -470,7 +470,7 @@ uv run python scripts/run_mutation_suite.py --output-dir mutation-artifacts --ch
   PR gate** (`workflow_dispatch` + weekly cron only). Like `performance.yml`,
   it deliberately tests the *index's* state, not the *diff's*, so it must not
   block unrelated PRs; a failure opens/updates a `dependency-watch` issue
-  instead. Its core-subset assertion is already covered locally by the
+  instead, and its next green run on `main` closes it. Its core-subset assertion is already covered locally by the
   `dependency-floors` mirror (A-floors) and the canary subset (gate 4), just
   against a different resolution (latest-within-caps vs. locked vs. floors).
 - **`frontend-shuffle.yml`** — excluded because it is **not a PR gate**
@@ -478,7 +478,8 @@ uv run python scripts/run_mutation_suite.py --output-dir mutation-artifacts --ch
   2026-07-15, see the workflow's own comment). It catches within-file
   test-order dependence in the vitest suite, a slow-moving regression class
   judged not worth charging every PR for. A failure opens/updates a
-  `shuffle-watch` issue with the exact seed to reproduce; run `npm run
+  `shuffle-watch` issue with the exact seed to reproduce, which stays open
+  until the fix's author closes it (one green seed proves nothing); run `npm run
   test:shuffle` in `frontend/` manually if a change is suspicious for
   cross-test state leakage (uncleared mock spies, unconsumed
   `mockImplementationOnce`, DOM/store state not reset).

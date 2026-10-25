@@ -86,7 +86,9 @@ jobs:
 
       # Ring on real nightly failures and on a deliberate force_fail test, but
       # NOT on an ordinary reproduce-a-seed dispatch (the developer is already
-      # watching that run — no need to open a tracker issue).
+      # watching that run — no need to open a tracker issue). A green night never
+      # closes the issue: one passing seed does not prove an order dependence gone,
+      # so the fix's author closes it.
       - name: Raise the alarm (find-or-create shuffle-watch issue)
         if: failure() && (github.event_name == 'schedule' || inputs.force_fail)
         env:

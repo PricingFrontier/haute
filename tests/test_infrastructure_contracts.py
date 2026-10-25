@@ -237,3 +237,68 @@ class TestContainerSmokeWorkflowContract:
         )
         assert alarm_step is not None, "container-watch alarm step missing"
         assert "container-watch" in alarm_step["run"]
+
+
+def _workflow(name: str) -> dict[str, Any]:
+    import yaml
+
+    path = Path(__file__).resolve().parents[1] / ".github" / "workflows" / name
+    data: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return data
+
+
+def _step_running(steps: list[dict[str, Any]], command: str) -> dict[str, Any]:
+    (step,) = [step for step in steps if command in step.get("run", "")]
+    return step
+
+
+class TestWatchLaneIssueContract:
+    """A watch lane's issue says whether the lane is red now, not whether it ever was.
+
+    The locked advisory audit's issue stayed open after its fix, so the next, unrelated
+    advisory would have landed as "Still red" on it. A deterministic lane's next green
+    run on ``main`` closes its issue; a probabilistic lane's cannot.
+    """
+
+    def test_a_deterministic_lane_closes_its_issue_when_it_passes_on_main(self) -> None:
+        jobs = _workflow("dependencies.yml")["jobs"]
+
+        all_clear = jobs["locked-advisory-all-clear"]
+        assert all_clear["needs"] == "locked-advisory-audit"
+        condition = " ".join(all_clear["if"].split())
+        assert "needs.locked-advisory-audit.result == 'success'" in condition
+        assert "github.event_name != 'pull_request'" in condition
+        assert "github.ref == 'refs/heads/main'" in condition
+        assert all_clear["permissions"]["issues"] == "write"
+        (step,) = all_clear["steps"]
+        # No checkout, so gh needs the repository named (as the alarm job does).
+        assert step["env"]["GH_REPO"] == "${{ github.repository }}"
+        assert 'title="Locked dependency advisory audit is red"' in step["run"]
+        assert "--label dependency-watch" in step["run"]
+        assert 'gh issue close "${existing}"' in step["run"]
+
+        for job, steps, title, label in (
+            (
+                "unlocked-resolve",
+                jobs["unlocked-resolve"]["steps"],
+                "Scheduled unlocked-resolve lane is red",
+                "dependency-watch",
+            ),
+            (
+                "container-smoke",
+                _workflow("container-smoke.yml")["jobs"]["container-smoke"]["steps"],
+                "Weekly container-smoke lane is red",
+                "container-watch",
+            ),
+        ):
+            stand_down = _step_running(steps, "gh issue close")
+            assert stand_down["if"] == "success() && github.ref == 'refs/heads/main'", job
+            assert f'title="{title}"' in stand_down["run"], job
+            assert f"--label {label}" in stand_down["run"], job
+
+    @pytest.mark.parametrize("workflow", ["frontend-shuffle.yml", "property-exploration.yml"])
+    def test_a_probabilistic_lane_leaves_its_issue_to_the_fix(self, workflow: str) -> None:
+        """One passing seed or exploration budget does not prove the failure gone."""
+        steps = [step for job in _workflow(workflow)["jobs"].values() for step in job["steps"]]
+
+        assert not any("gh issue close" in step.get("run", "") for step in steps)
