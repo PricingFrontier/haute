@@ -901,8 +901,9 @@ class TestWindowsPathTooLong:
         """Windows names a folder past MAX_PATH less 12 as too long rather than missing."""
         from haute._file_ops import PathTooLongError, path_too_long_error
 
-        folder = str(tmp_path / ("d" * 250))
-        assert 247 < len(folder)
+        # Past the folder limit but within a file's, so only the folder rule can name it.
+        folder = str(tmp_path / ("d" * (252 - len(str(tmp_path)) - 1)))
+        assert 247 < len(folder) <= 259
 
         def too_long(path: str) -> FileNotFoundError:
             error = FileNotFoundError(2, "The filename or extension is too long", path)
