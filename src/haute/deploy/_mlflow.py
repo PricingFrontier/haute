@@ -28,7 +28,7 @@ from haute._polars_dtypes import (
 )
 from haute._polars_environment import polars_process_environment, polars_spill_root
 from haute._project_python import deployed_python_version
-from haute.deploy._config import ResolvedDeploy
+from haute.deploy._config import DEFAULT_CATALOG, DEFAULT_SCHEMA, ResolvedDeploy
 from haute.deploy._databricks_serving import (
     ServingEndpointError,
     endpoint_update_state,
@@ -186,7 +186,7 @@ def _deploy_to_mlflow(
                 set_tracking_uri_preserving_env(mlflow, tracking_uri)
                 mlflow.set_registry_uri(registry_uri)
                 with mlflow.start_run(run_id=run_id):
-                    mlflow.pyfunc.log_model(
+                    model_info = mlflow.pyfunc.log_model(
                         name="model",
                         registered_model_name=uc_model_name,
                         **model_arguments,
@@ -196,18 +196,18 @@ def _deploy_to_mlflow(
             client.set_terminated(run_id, status)
             shutil.rmtree(staging, ignore_errors=True)
 
-        _log(f"Model logged. Fetching registered version for {uc_model_name}...")
-        # 6. Get the registered model version
-        versions = search_versions(client, uc_model_name)
-        if not versions:
+        # 6. The version this call registered. The registry's highest could be another
+        # job's registration of the same name, which would then be served.
+        if model_info.registered_model_version is None:
             raise DeployError(
                 "MLflow did not return a registered model version after logging. "
                 "Refusing to deploy a synthetic version.",
                 registered_model=uc_model_name,
             )
-        latest_version = max(versions, key=lambda v: int(v.version)).version
+        model_version = int(model_info.registered_model_version)
+        _log(f"Model logged as version {model_version} of {uc_model_name}")
 
-        model_uri = f"models:/{uc_model_name}/{latest_version}"
+        model_uri = f"models:/{uc_model_name}/{model_version}"
 
         _log(f"Model URI: {model_uri}")
 
@@ -215,7 +215,7 @@ def _deploy_to_mlflow(
         endpoint_url = _create_or_update_serving_endpoint(
             config=config,
             uc_model_name=uc_model_name,
-            model_version=int(latest_version),
+            model_version=model_version,
             progress=_log,
         )
 
@@ -223,12 +223,12 @@ def _deploy_to_mlflow(
             "deploy_completed",
             model_name=model_name,
             model_uri=model_uri,
-            version=int(latest_version),
+            version=model_version,
             endpoint=config.effective_endpoint_name,
         )
         return DeployResult(
             model_name=model_name,
-            model_version=int(latest_version),
+            model_version=model_version,
             model_uri=model_uri,
             endpoint_url=endpoint_url,
             manifest_path=manifest_path,
@@ -240,8 +240,8 @@ def _deploy_to_mlflow(
 
 def get_deploy_status(
     model_name: str,
-    catalog: str = "main",
-    schema: str = "default",
+    catalog: str = DEFAULT_CATALOG,
+    schema: str = DEFAULT_SCHEMA,
 ) -> dict[str, str | int]:
     """Query MLflow Model Registry for current model versions and status.
 
@@ -658,6 +658,12 @@ def _check_databricks_connectivity(
         urllib.request.urlopen(req, timeout=timeout)  # noqa: S310
         _log("Databricks workspace reachable")
     except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise DeployError(
+                f"Databricks returned 401 Unauthorized. "
+                f"Check that your DATABRICKS_RATING_TOKEN is valid and has not expired. "
+                f"Host: {host}"
+            ) from exc
         if exc.code == 403:
             raise DeployError(
                 f"Databricks returned 403 Forbidden. "

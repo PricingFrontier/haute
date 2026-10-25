@@ -157,9 +157,8 @@ def mock_mlflow_deploy():
     ):
         for name in _AMBIENT_MLFLOW_DATABRICKS_ENV:
             os.environ.pop(name, None)
-        registered = MagicMock()
-        registered.version = "1"
-        m_client.return_value.search_model_versions.return_value = [registered]
+        # log_model answers with the version it registered.
+        m_log_model.return_value.registered_model_version = 1
         # Deploy logs through a destination-bound client: an active experiment
         # and the run it creates.
         m_client.return_value.get_experiment_by_name.return_value = MagicMock(
@@ -1558,31 +1557,21 @@ class TestDatabricksTracking:
     def test_concurrent_deploys_each_serve_the_version_they_registered(
         self, deploy_pipeline_file: Path
     ) -> None:
-        """Deploys share the build directory and read their version back from the
-        registry after logging, so a second deploy may not register in between."""
+        """Deploys share the build directory, so they run one at a time, and each
+        serves the version its own log_model registered."""
         from haute.deploy._mlflow import deploy_to_mlflow
 
         events: list[str] = []
-        registered: list[MagicMock] = []
-        second_registered = threading.Event()
+        registered: list[int] = []
         first_logged = threading.Event()
 
-        def log_model(**_: object) -> None:
+        def log_model(**_: object) -> MagicMock:
             name = threading.current_thread().name
             events.append(f"{name}:register")
-            registered.append(MagicMock(version=str(len(registered) + 1)))
-            if name == "second":
-                second_registered.set()
-            else:
-                first_logged.set()
-
-        def search_model_versions(_filter: str) -> list[MagicMock]:
-            name = threading.current_thread().name
+            registered.append(len(registered) + 1)
             if name == "first":
-                # Give the second deploy the chance to register in between.
-                second_registered.wait(timeout=0.5)
-            events.append(f"{name}:versions")
-            return list(registered)
+                first_logged.set()
+            return MagicMock(registered_model_version=registered[-1])
 
         results: dict[str, int] = {}
         errors: list[BaseException] = []
@@ -1596,7 +1585,6 @@ class TestDatabricksTracking:
 
         with mock_mlflow_deploy() as mocks:
             mocks.log_model.side_effect = log_model
-            mocks.client.return_value.search_model_versions.side_effect = search_model_versions
             first = threading.Thread(target=deploy, args=("first",), name="first")
             second = threading.Thread(target=deploy, args=("second",), name="second")
             first.start()
@@ -1607,12 +1595,7 @@ class TestDatabricksTracking:
 
         assert not errors
         assert results == {"first": 1, "second": 2}
-        assert events == [
-            "first:register",
-            "first:versions",
-            "second:register",
-            "second:versions",
-        ]
+        assert events == ["first:register", "second:register"]
 
     def test_deploy_sets_tracking_uri(self, deploy_pipeline_file: Path) -> None:
         """deploy_to_mlflow() must call mlflow.set_tracking_uri('databricks')."""

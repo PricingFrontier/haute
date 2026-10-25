@@ -100,6 +100,8 @@ def calls() -> Iterator[DeployCalls]:
         ),
         patch("haute.deploy._mlflow.wait_for_endpoint"),
     ):
+        # log_model answers with the version it registered; the status lookup searches.
+        log_model.return_value.registered_model_version = 1
         registered = MagicMock()
         registered.version = "1"
         mlflow_client.return_value.search_model_versions.return_value = [registered]
@@ -240,6 +242,6 @@ def test_deploy_status_builds_its_client_on_the_resolved_destination(
         tracking_uri="databricks", registry_uri="databricks-uc"
     )
     calls.mlflow_client.return_value.search_model_versions.assert_called_once_with(
-        "name='main.default.test-model'"
+        "name='main.pricing.test-model'"
     )
     assert status["latest_version"] == 1

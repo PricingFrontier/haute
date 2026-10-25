@@ -5022,6 +5022,39 @@ class TestCheckDatabricksConnectivity:
             with pytest.raises(DeployError, match="403 Forbidden"):
                 _check_databricks_connectivity(lambda msg: None)
 
+    def test_401_raises_as_a_credential_problem(self, monkeypatch):
+        """An expired token is not a reachable workspace."""
+        from haute.deploy._mlflow import _check_databricks_connectivity
+        from haute.errors import DeployError
+
+        monkeypatch.setenv("DATABRICKS_RATING_HOST", "https://host.databricks.com")
+        monkeypatch.setenv("DATABRICKS_RATING_TOKEN", "expired_token")
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = urllib.error.HTTPError(
+                url="https://host/api",
+                code=401,
+                msg="Unauthorized",
+                hdrs=None,
+                fp=None,
+            )
+
+            with pytest.raises(DeployError, match="401 Unauthorized.*has not expired"):
+                _check_databricks_connectivity(lambda msg: None)
+
+    def test_deploy_status_and_config_share_their_registry_defaults(self):
+        import inspect
+
+        from haute.deploy._config import DatabricksConfig
+        from haute.deploy._mlflow import get_deploy_status
+
+        parameters = inspect.signature(get_deploy_status).parameters
+        config = DatabricksConfig()
+        assert (parameters["catalog"].default, parameters["schema"].default) == (
+            config.catalog,
+            config.schema,
+        )
+
     def test_non_403_http_error_succeeds(self, monkeypatch):
         """Non-403 HTTP errors (e.g. 404) mean host is reachable."""
         from haute.deploy._mlflow import _check_databricks_connectivity

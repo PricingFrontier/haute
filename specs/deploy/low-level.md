@@ -541,9 +541,10 @@ working directory on it too. Spawned batch workers inherit the parent's `sys.pat
    every path.
 
 **Databricks deploy (`_mlflow.py::deploy_to_mlflow`)** — runs one deploy at a time in
-the process (`_DEPLOY_LOCK`), because deploys share the pipeline's build directory and
-read their registered version back from the registry. It checks Databricks connectivity
-(HTTP GET with a short timeout, distinguishing 403 from unreachable), creates an
+the process (`_DEPLOY_LOCK`), because deploys share the pipeline's build directory. It
+checks Databricks connectivity (HTTP GET with a short timeout: a 401 or 403 is a
+credential problem and fails naming the token, any other HTTP answer means the
+workspace is reachable, and no answer fails as unreachable), creates an
 `MlflowClient` bound to the Databricks tracking URI and its Unity Catalog registry URI,
 builds the manifest, writes it under `<pipeline_dir>/.haute_build/`, builds an MLflow
 `ModelSignature` from the resolved schemas (`Categorical` and parameterised `Enum` map to
@@ -576,7 +577,10 @@ release can change a pipeline's results and memory behaviour, so a major range w
 release change a deployed model without a redeploy), and
 `registered_model_name` set to the UC
 three-level name. The client marks the run `FINISHED`, or `FAILED` when logging
-raised. Fetches the newly registered version through the client, then creates or updates the
+raised. The version served is the one this call registered (`log_model`'s
+`ModelInfo.registered_model_version`), never the registry's highest, which a concurrent
+registration of the same name could own; no returned version fails the deploy. It then
+creates or updates the
 Databricks Model Serving endpoint (`_create_or_update_serving_endpoint`) if
 `effective_endpoint_name` is set: created when it does not exist, otherwise refused while
 another update is in progress and then pointed at the new version (a request Databricks

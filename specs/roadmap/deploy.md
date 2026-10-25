@@ -16,7 +16,6 @@ MLflow target and the impact analysis. Current behaviour is specified in
 | DEP-R05 | Planned | P1 | Flat Quote Input uses checked manifest types; container framing errors return 422, and MLflow's public signature boundary is explicit. |
 | DEP-R06 | Planned | P1 | The Databricks model installs a target-compatible lock for the validated scoring runtime and every bundled engine. |
 | DEP-R07 | Planned | P1 | Every MLflow-sourced Model Score ships the feature contract its training run logged, or the deploy refuses. |
-| DEP-R08 | Planned | P1 | The MLflow target serves the version its own log call registered, treats a 401 as a credential problem, and shares one schema default. |
 | DEP-R09 | Planned | P2 | The container image installs a recorded dependency closure resolved for its target Python and platform. |
 | DEP-R10 | Planned | P2 | `haute.toml` values are typed at load, a malformed `[test_quotes] dir` is refused, and an unknown override key raises. |
 | DEP-R11 | Planned | P2 | Impact analysis fails on a row-count mismatch instead of pairing the wrong quotes, and a mistyped production URL is not a first deploy. |
@@ -29,7 +28,7 @@ MLflow target and the impact analysis. Current behaviour is specified in
 
 ## Planned improvements
 
-`DEP-R05` to `DEP-R08` protect served results and come first. `DEP-R06` uses the
+`DEP-R05` to `DEP-R07` protect served results and come first. `DEP-R06` uses the
 target-resolution mechanism in `DEP-R09`; deliver that shared mechanism with it.
 `DEP-R12A` can proceed independently, coordinating edits to shared build code.
 
@@ -146,30 +145,6 @@ a run without a contract fails resolution naming it.
 `::_run_contract_artifact`; `src/haute/deploy/_scorer.py::_score_graph_lazy` (the
 contract-less `model_score_fn` branch); `src/haute/modelling/_mlflow_log.py` (the
 contract logged with every candidate).
-
-### DEP-R08 — The MLflow target's version, credential and default
-**Why:** After `mlflow.pyfunc.log_model` the registered version is found by searching the
-registry and taking the maximum, so a concurrent registration of the same Unity Catalog
-model name from another job would be served instead; `log_model` returns the version it
-registered. The connectivity pre-check treats every HTTP error but 403 as "workspace
-reachable", so an expired token (401) passes and fails later inside MLflow with a less
-direct message. `get_deploy_status` defaults the schema to `default` while
-`DatabricksConfig` defaults it to `pricing`.
-
-**Plan:** Read `ModelInfo.registered_model_version` from the log call; treat 401 like
-403; take the schema from the one `DatabricksConfig` default. This P1 prevents serving
-another job's model; it does not decide which concurrent deploy updates an endpoint last.
-
-**Acceptance:** A competing registration between logging and endpoint update does not
-change the served version: it and the deploy result use this call's returned version;
-a 401 from the pre-check fails with the credential message; the two defaults are one
-constant.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/deploy/_mlflow.py::_deploy_to_mlflow`,
-`::_check_databricks_connectivity` and `::get_deploy_status`;
-`src/haute/deploy/_config.py::DatabricksConfig`.
 
 ### DEP-R09 — The container's dependency closure is pinned
 **Why:** The Dockerfile pins the scoring-runtime distributions and the artefacts' engines

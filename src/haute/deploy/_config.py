@@ -81,13 +81,19 @@ def _validate_base_image_pinning(base_image: str) -> None:
     )
 
 
+#: The Unity Catalog catalog and schema a model registers under when haute.toml
+#: names none; deploy and status read the same defaults.
+DEFAULT_CATALOG = "main"
+DEFAULT_SCHEMA = "pricing"
+
+
 @dataclass
 class DatabricksConfig:
     """Typed Databricks-specific settings from [deploy.databricks] in haute.toml."""
 
     experiment_name: str = "/Shared/haute/default"
-    catalog: str = "main"
-    schema: str = "pricing"
+    catalog: str = DEFAULT_CATALOG
+    schema: str = DEFAULT_SCHEMA
     serving_workload_size: str = "Small"
     serving_scale_to_zero: bool = True
 
