@@ -13,8 +13,7 @@ MLflow target and the impact analysis. Current behaviour is specified in
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| DEP-R06 | Planned | P1 | The Databricks model installs a target-compatible lock for the validated scoring runtime and every bundled engine. |
-| DEP-R09 | Planned | P2 | The container image installs a recorded dependency closure resolved for its target Python and platform. |
+| DEP-R09 | Planned | P2 | The container image and the Databricks model install a recorded dependency closure resolved for their target Python and platform. |
 | DEP-R10 | Planned | P2 | `haute.toml` values are typed at load, a malformed `[test_quotes] dir` is refused, and an unknown override key raises. |
 | DEP-R11 | Planned | P2 | Impact analysis fails on a row-count mismatch instead of pairing the wrong quotes, and a mistyped production URL is not a first deploy. |
 | DEP-R12A | Planned | P2 | Each build owns a fresh directory under the project and ships only its own artefacts. |
@@ -26,48 +25,17 @@ MLflow target and the impact analysis. Current behaviour is specified in
 
 ## Planned improvements
 
-`DEP-R06` protects served results and comes first. It uses the
-target-resolution mechanism in `DEP-R09`; deliver that shared mechanism with it.
-`DEP-R12A` can proceed independently, coordinating edits to shared build code.
+`DEP-R09` locks every target's dependency closure with one resolver. `DEP-R12A` can
+proceed independently, coordinating edits to shared build code.
 
-### DEP-R06 — The Databricks environment pins the scoring runtime
-**Why:** The pyfunc model's environment pins `haute`, `mlflow` and `polars` and nothing
-else, so the model engines (xgboost, lightgbm, catboost, interpret-core, t-boost,
-rustystats) and pandas and numpy resolve at Model Serving build time within haute's
-dependency ranges, and the served model can load under a different engine release than
-the one that trained it. The container target pins each bundled artefact's engine for
-exactly this reason: a different engine version can fail to load the model or change
-its predictions. An importable model alone does not establish equivalent premiums.
-
-**Plan:** Build `_pip_requirements` with the shared target resolver in `DEP-R09`, using
-Model Serving's Linux platform and the conda environment's Python version. Preserve
-this target's existing full Haute dependency profile; sharing a resolver does not mean
-sharing the container's minimal root set. Include the
-pyfunc imports (`mlflow`, `pandas`, `numpy`), Haute's required runtime and each bundled
-engine, constrained to the validated deploying versions where available. pandas is
-already a direct Haute dependency, but the container list pins it only for pickle
-artefacts; copying that list alone is insufficient. Resolve platform-specific
-dependencies for the target and fail clearly if the pinned runtime is incompatible.
-
-**Acceptance:** The logged model's `conda_env` names every resolved runtime distribution,
-including pandas and every bundled engine, at its locked version. Install that
-environment on the target Python/platform, run `pip check`, load the logged model and
-score a representative request. Assert the installed versions against the lock;
-a test of the generated package list alone is insufficient.
-
-**Dependencies:** `DEP-R09` supplies the shared target resolver; ship its resolver with
-this package rather than deferring the P1 environment fix.
-
-**Evidence:** `src/haute/deploy/_mlflow.py::_pip_requirements` and `::_conda_env`;
-`src/haute/deploy/_model_code.py`; `pyproject.toml`;
-`src/haute/deploy/_container.py::runtime_versions`, `::_pinned_dockerfile_deps` and
-`::_pinned_extra_dockerfile_deps`.
-
-### DEP-R09 — The container's dependency closure is pinned
+### DEP-R09 — Every target's dependency closure is locked
 **Why:** The Dockerfile pins the scoring-runtime distributions and the artefacts' engines
 to the deploying environment's versions, but their transitive dependencies (starlette,
 anyio, h11, typing-extensions, ...) resolve at image build time, so two builds of one
-deploy can differ, against the specification's reproducibility rationale.
+deploy can differ, against the specification's reproducibility rationale. The Databricks
+model's environment pins the same way (haute, mlflow, Polars, pandas, NumPy and each
+bundled engine), and the rest of haute's closure resolves at Model Serving's build within
+haute's ranges, from a host whose platform may not be the target's.
 
 **Plan:** Use one resolver for container, pyfunc and hosted-app dependency locks, with
 explicit root requirements for each target. Preserve the
@@ -100,6 +68,12 @@ another package's missing dependency/version conflict. `pip check` remains appro
 for the full pyfunc/hosted-app profiles, but its non-zero status for these declared
 container omissions is not itself a runtime failure.
 
+For the Databricks model, the logged `conda_env` names every resolved runtime
+distribution at its locked version, resolved for Model Serving's Linux platform and the
+environment's Python; install it on that target, run `pip check`, load the logged model,
+score a representative request and assert the installed versions against the lock (a
+test of the generated package list alone is insufficient).
+
 Compare normalised installed distributions with the lock, accounting explicitly for
 the bundled Haute wheel and base-image tooling. An engine-free pricing pipeline passes
 in the minimal container without installing editor/training stacks; removing a required
@@ -111,7 +85,8 @@ in the target installation, not just identical install command text.
 **Dependencies:** None.
 
 **Evidence:** `src/haute/deploy/_container.py::_generate_dockerfile` and
-`::_pinned_dockerfile_deps`.
+`::_pinned_dockerfile_deps`; `src/haute/deploy/_mlflow.py::_pip_requirements` and
+`::_conda_env`.
 
 Resolver reference: [uv platform-specific resolution](https://docs.astral.sh/uv/concepts/resolution/).
 
@@ -193,7 +168,7 @@ the other's bundle or a user's pre-existing directory. Running from another cwd 
 generated build files under the resolved project. P2 addresses this isolation gap;
 reassess as P1 if shared-checkout concurrent deployment is an advertised workflow.
 
-**Dependencies:** None; coordinate edits to shared build code with `DEP-R06` to
+**Dependencies:** None; coordinate edits to shared build code with `DEP-R09` to
 `DEP-R11` without delaying isolation behind those packages.
 
 **Evidence:** `src/haute/deploy/_container.py::build_and_push_image` and

@@ -1079,9 +1079,9 @@ def _pinned_dockerfile_dependency(
     except PackageNotFoundError as exc:
         needed_by = f" (needed by {', '.join(required_by)})" if required_by else ""
         raise DeployError(
-            f"Cannot pin Dockerfile dependency {install_name!r}{needed_by}: "
-            f"installed distribution {distribution_name!r} was not found. The "
-            f"container is pinned to the versions installed in the deploying "
+            f"Cannot pin dependency {install_name!r}{needed_by}: "
+            f"installed distribution {distribution_name!r} was not found. A "
+            f"deployment is pinned to the versions installed in the deploying "
             f"environment, so install {distribution_name!r} here and re-run."
         ) from exc
     return f"{install_name}=={package_version}"

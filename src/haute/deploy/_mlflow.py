@@ -327,6 +327,7 @@ def _pyfunc_model_arguments(
                 resolved.config.project_dir or resolved.config.pipeline_file.parent
             ),
             haute.requirement,
+            resolved,
         ),
     }
 
@@ -388,27 +389,31 @@ def _build_signature(resolved: ResolvedDeploy) -> object:
     return ModelSignature(inputs=input_schema, outputs=output_schema)
 
 
-def _pip_requirements(haute_requirement: str) -> list[str]:
-    """Build pip requirements for the deployed model.
+#: The distributions the served model imports itself, pinned to this environment's:
+#: Model Serving builds the model's container only with ``mlflow`` in it, a Polars release
+#: can change a pipeline's results and memory, and the pyfunc boundary is pandas and NumPy.
+_SERVED_RUNTIME = ("mlflow", "polars", "pandas", "numpy")
+
+
+def _pip_requirements(haute_requirement: str, resolved: ResolvedDeploy) -> list[str]:
+    """Build pip requirements for the deployed model, each pinned and named once.
 
     Haute is the one that validated the deploy (``haute.deploy._served_haute``): a
-    release pinned by version, or a wheel the model carries. MLflow and Polars are
-    pinned to the deploying environment's versions: Model Serving needs ``mlflow``
-    itself in the environment to build the model's container, and a Polars release can
-    change the results a pipeline gives and the memory it takes. Haute brings its own
-    model engines, so no node adds one.
+    release pinned by version, or a wheel the model carries. The served runtime and the
+    engine each bundled artefact loads under are pinned to the versions installed here,
+    as a container image pins them: a model loaded under another engine release than
+    the one that trained it can fail to load or price differently.
     """
-    import mlflow
-    import polars
+    from haute.deploy._container import _pinned_dockerfile_dependency, _pinned_extra_dockerfile_deps
 
-    return [
-        haute_requirement,
-        f"mlflow=={mlflow.__version__}",
-        f"polars=={polars.__version__}",
+    pinned = [
+        *(_pinned_dockerfile_dependency(name, name) for name in _SERVED_RUNTIME),
+        *_pinned_extra_dockerfile_deps(resolved),
     ]
+    return [haute_requirement, *dict.fromkeys(pinned)]
 
 
-def _conda_env(python_version: str, haute_requirement: str) -> dict:
+def _conda_env(python_version: str, haute_requirement: str, resolved: ResolvedDeploy) -> dict:
     """Build a conda environment dict for Databricks Model Serving.
 
     Databricks Model Serving builds the container from it. Python is the project's
@@ -420,7 +425,7 @@ def _conda_env(python_version: str, haute_requirement: str) -> dict:
         "dependencies": [
             f"python={python_version}",
             "pip",
-            {"pip": _pip_requirements(haute_requirement)},
+            {"pip": _pip_requirements(haute_requirement, resolved)},
         ],
         "name": "mlflow-env",
     }

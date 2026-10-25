@@ -215,8 +215,8 @@ the target installation passes `pip check`, including when the bundle was prepar
 on Windows; `requirements.txt` is not committed; `deploy.sh` with another app name
 deploys to it.
 
-**Dependencies:** `DEP-R09` supplies target resolution; coordinate the shared runtime
-rules with `DEP-R06` without assuming the app and Model Serving need identical extras.
+**Dependencies:** `DEP-R09` supplies target resolution and the Model Serving runtime
+rules; share them without assuming the app and Model Serving need identical extras.
 
 **Evidence:** `databricks_app/app.py::_refresh_vendored_wheel`;
 `databricks_app/requirements.txt`; `databricks_app/scripts/deploy.sh`.

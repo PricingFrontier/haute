@@ -396,7 +396,8 @@ With `serving_scale_to_zero = true`, the endpoint shuts down when it's idle. The
 `haute deploy` fails with Databricks' reason and the end of the endpoint's build log. The serving environment installs, on your project's Python (`.python-version`):
 
 - the Haute that ran the deploy: `haute==<version>` from PyPI for a released Haute, or, when your project installs Haute from Git, that Haute itself, packed into the model as a wheel
-- MLflow and Polars at the versions CI used, and the packages they need
+- MLflow, Polars, pandas and NumPy at the versions the deploy ran, and the packages they need
+- the engine each model in the pipeline loads under (CatBoost, XGBoost, LightGBM, EBM, t-boost or the GLM's), at the version installed where the deploy ran
 
 A package that cannot be installed usually means the workspace cannot reach PyPI, or a Python version that Model Serving cannot provide: the build log names which.
 

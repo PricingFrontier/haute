@@ -1066,7 +1066,7 @@ class TestGenerateDockerfile:
 
         monkeypatch.setattr(_container, "metadata_version", fake_version)
 
-        with pytest.raises(DeployError, match="Cannot pin Dockerfile dependency 'fastapi'"):
+        with pytest.raises(DeployError, match="Cannot pin dependency 'fastapi'"):
             _generate_dockerfile("python:3.11-slim", 8080, _make_resolved())
 
     def test_includes_catboost_for_cbm(self) -> None:

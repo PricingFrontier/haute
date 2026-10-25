@@ -4940,31 +4940,49 @@ class TestBuildSignature:
 class TestCondaEnvAndPipRequirements:
     """Tests for _conda_env() and _pip_requirements()."""
 
-    def test_pip_requirements_pin_the_served_haute_mlflow_and_polars(self):
-        """The haute that validated the deploy, and the editor's MLflow and Polars."""
-        import mlflow
-        import polars
+    def test_pip_requirements_pin_the_served_haute_and_the_served_runtime(self):
+        """The haute that validated the deploy, and this environment's MLflow, Polars,
+        pandas and NumPy."""
+        from importlib.metadata import version
 
         from haute.deploy._mlflow import _pip_requirements
 
-        reqs = _pip_requirements("haute==0.6.0")
+        reqs = _pip_requirements("haute==0.6.0", _make_resolved())
 
         assert reqs == [
             "haute==0.6.0",
-            f"mlflow=={mlflow.__version__}",
-            f"polars=={polars.__version__}",
+            *(f"{name}=={version(name)}" for name in ("mlflow", "polars", "pandas", "numpy")),
         ]
 
-    def test_pip_requirements_add_no_model_engine(self):
-        """The pinned Haute brings its own engines; no node adds one."""
+    def test_pip_requirements_pin_each_bundled_engine_once(self, tmp_path):
+        """DEP-R06: a bundled model serves under the engine release that trained it."""
+        from haute.deploy._container import _pinned_extra_dockerfile_deps
         from haute.deploy._mlflow import _pip_requirements
 
-        assert not any("catboost" in r for r in _pip_requirements("haute==0.6.0"))
+        resolved = _make_resolved(
+            artifacts={
+                "score__model.cbm": tmp_path / "model.cbm",
+                "freq__model.ubj": tmp_path / "model.ubj",
+                "sev__model.lgbm": tmp_path / "model.lgbm",
+            }
+        )
+
+        reqs = _pip_requirements("haute==0.6.0", resolved)
+
+        # The pins a container image of these artefacts carries: each engine's installed
+        # distribution (XGBoost's may be xgboost-cpu) at its installed version.
+        engines = _pinned_extra_dockerfile_deps(resolved)
+        assert {pin.split("==")[0] for pin in engines} >= {"catboost", "lightgbm"}
+        assert any(pin.startswith("xgboost") for pin in engines)
+        assert set(engines) <= set(reqs)
+        # pandas is both the pyfunc's and the XGBoost artefact's: named once.
+        assert len(reqs) == len(set(reqs))
+        assert sum(r.startswith("pandas==") for r in reqs) == 1
 
     def test_conda_env_structure(self):
         from haute.deploy._mlflow import _conda_env
 
-        env = _conda_env("3.13", "haute==0.6.0")
+        env = _conda_env("3.13", "haute==0.6.0", _make_resolved())
 
         assert env["name"] == "mlflow-env"
         assert "conda-forge" in env["channels"]
@@ -4976,7 +4994,8 @@ class TestCondaEnvAndPipRequirements:
         """The model serves on the Python the project ran on, at the precision it names."""
         from haute.deploy._mlflow import _conda_env
 
-        assert _conda_env(version, "haute==0.6.0")["dependencies"][0] == f"python={version}"
+        env = _conda_env(version, "haute==0.6.0", _make_resolved())
+        assert env["dependencies"][0] == f"python={version}"
 
 
 class TestCheckDatabricksConnectivity:

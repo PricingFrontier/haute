@@ -581,11 +581,16 @@ when `requires-python` admits every release of it, else its exact release) and p
 `haute==<version>` for a release; for haute installed from Git, an archive or a local
 directory, whose version number names other code on the index, the wheel repacked from its
 installed files, required as `code/<wheel>`, the private-library route Model Serving documents;
-an editable install is refused), `mlflow` pinned to the deploying MLflow (Model Serving builds
-a model's container only with `mlflow` itself in its environment) and Polars pinned to the
-editor's version (the haute brings its own model engines, CatBoost among them, and a Polars
-release can change a pipeline's results and memory behaviour, so a major range would let a 2.x
-release change a deployed model without a redeploy), and
+an editable install is refused), then, each pinned to the version installed where the deploy
+runs, `mlflow` (Model Serving builds a model's container only with `mlflow` itself in its
+environment), Polars (a Polars release can change a pipeline's results and memory behaviour, so
+a range would let a later release change a deployed model without a redeploy), pandas and NumPy
+(the pyfunc boundary's own imports) and the engine each bundled artefact loads under
+(`_container._extra_deps_by_artifact`, the list a container image pins, so an XGBoost, LightGBM,
+CatBoost, EBM, t-boost or GLM model serves under the release that trained it rather than whatever
+haute's ranges resolve at build time; `_pinned_dockerfile_dependency` refuses a distribution not
+installed here), each named once. The rest of haute's dependency closure still resolves at Model
+Serving's build, within haute's ranges (`DEP-R09` locks it), and
 `registered_model_name` set to the UC
 three-level name. The client marks the run `FINISHED`, or `FAILED` when logging
 raised. The version served is the one this call registered (`log_model`'s
