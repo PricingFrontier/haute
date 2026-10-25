@@ -22,10 +22,13 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 | PCFG-R14 | Planned | P3 | Both save paths write the same canonical sidecar bytes, the configured pipeline path stays inside the project, and no placeholder file name reaches an error. |
 | PCFG-R15 | Planned | P3 | The unreachable config branches, the empty `_load_error` mechanism, the other dead symbols, the five duplicated mechanisms and the stale comments are gone. |
 | PCFG-R16 | Decision | P3 | The `earlier` step spelling is either dropped or named as the one allowed recogniser of old generated code. |
+| PCFG-R17 | Planned | P1 | A closing `return df` that shares its line with a statement keeps that statement, instead of the parse loading the node empty and the next save writing a placeholder over the authored body. |
+| PCFG-R18 | Planned | P2 | A rendered step body is the fixed point of `ruff format` the specification promises (free-code trailing whitespace, exponent floats), so a reformat never discards a node's steps, and body extraction splits lines as Python does. |
+| PCFG-R19 | Planned | P3 | Recovery ids are minted once so a diagnostic's "go to" finds its element, the revision captures cover sidecars and configs, a preamble `match` binds names the naming rule sees, and three duplicated recovery mechanisms exist once. |
 
 `PCFG-R04` to `PCFG-R09` come from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md);
-`PCFG-R10` to `PCFG-R16` from the
+`PCFG-R10` to `PCFG-R19` from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md).
 `PCFG-R08` should precede `PCFG-R07` so the models do not have to carry
 editor state.
@@ -378,3 +381,101 @@ matches them.
 **Evidence:** `src/haute/_config_builder.py::_reconcile_steps`;
 `src/haute/_polars_steps.py::StepSpelling`; `specs/README.md`;
 `specs/pipeline-config/low-level.md`.
+
+### PCFG-R17 — A same-line closing return keeps its statement
+**Why:** `_strip_outer_trailing_return` finds the closing `return df` by AST, proves
+it is the last outer statement and that nothing follows it, then drops the return's
+whole *line* rather than its column: a hand-written body `df = quotes.head(1); return
+df` extracts to empty code (probed for the Polars and hook kinds; a two-line body
+keeps only its first line). The strict parse succeeds, so the editor document is
+`ready`, the node shows no code, and the next save writes the incomplete placeholder
+over the authored body; for a hook type the regenerated function is a declaration,
+so its signature goes too. Codegen never writes a `;`-joined return, so the trigger
+is a hand-written or hand-edited file, which is the authoring surface the
+pipeline-config specification describes first; the specification says extraction
+removes only the generated statements. `_function_body_source` already cuts a
+one-line `def` at the column.
+
+**Plan:** Cut the line at the return's column (`line.encode("utf-8")[: last.col_offset]`)
+keeping the text before it, or refuse a closing return that shares a line with another
+statement with a `ParseError` naming the line; add the `;`-joined case to the strip tests.
+
+**Acceptance:** `df = quotes.head(1); return df` round-trips as `df = quotes.head(1)`
+(or fails the parse naming the line); no save writes a placeholder over a body that
+parsed with statements.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_code_extraction.py::_strip_outer_trailing_return`;
+`src/haute/_code_extraction.py::extract_user_code`;
+`src/haute/_ast_helpers.py::_function_body_source`;
+`tests/test_code_extraction_coverage.py`.
+
+### PCFG-R18 — Rendered bodies are ruff fixed points; lines split as Python does
+**Why:** `_render_free_code` strips trailing whitespace from the whole snippet only,
+so each free-code line keeps its own trailing spaces in the rendered body, and
+`_same_program` compares comment tokens verbatim; after `ruff format`, which strips
+trailing whitespace, a free-code comment that carried trailing spaces no longer
+matches and the node's steps are discarded as a hand edit (reproduced end to end:
+two saves keep the steps, `ruff format` then discards them), against the
+specification's promises that a reformatted body keeps its steps and that rendering
+removes trailing whitespace. A float whose `repr` uses exponent form (`1e+20`) is
+rendered as Python writes it and rewritten by ruff (`1e20`), so such a body is not
+the fixed point the specification promises (steps survive, since the tree is the
+same; the cost is churn and drift). Body extraction indexes AST line numbers into
+`str.splitlines()`, which also breaks on form feed, U+2028 and five other characters
+Python does not count as line breaks, so one such character shifts every body after
+it by a line (thirteen sites; mostly loud, one silent drop of a body's last line).
+
+**Plan:** Strip each free-code line and compare comments `rstrip()`ed; normalise
+exponent floats as ruff does in one helper used by `_literal`, `_render_variable` and
+`_source_layout.literal`; split on Python's line breaks in one shared helper used by
+every site; add the three cases to the fixed-point and body-extraction tests.
+
+**Acceptance:** A free-code step with trailing whitespace survives `ruff format` with
+its steps kept; `1e20` renders unchanged by ruff; a form-feed line between two nodes
+leaves both bodies intact.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_polars_steps.py::_render_free_code`;
+`src/haute/_polars_steps.py::_literal`; `src/haute/_polars_steps.py::_render_variable`;
+`src/haute/_source_layout.py::literal`; `src/haute/_config_builder.py::_same_program`;
+`src/haute/_config_builder.py::_comments`;
+`src/haute/_ast_helpers.py::_extract_function_bodies`; `tests/test_polars_steps.py`.
+
+### PCFG-R19 — Recovery ids, captures, `match` bindings and clones
+**Why:** Node and occurrence diagnostics are created with a `recovery_id` minted over
+their own subset and `_build_recovery_graph` then re-mints every id over the combined
+set, so when a node and a submodel occurrence share an authored name the diagnostic's
+`element_id` names an element that no longer exists and the banner's "go to" selects
+nothing (probed). `_SourceCaptures` promises that every later consumer, the revision
+included, reuses the first read, but it covers only the `.py` sources and the
+constants file: the editor sidecar is read twice and every node config on its own,
+and the revision re-reads from disk anything absent from `known_bytes`, so the
+`source_revision` can authenticate sidecar bytes that differ from the ones the
+document shows. `_support_code_names` never recurses into a preamble `match`
+statement (its children are `match_case` nodes, not statements), so a node named
+after a helper bound in a `case` body is not refused and the standalone run rebinds
+it; a 3.12 `type` alias is missed the same way. Three mechanisms are written twice:
+the file-to-recovery-graph pass for a child file and the root, the step-kind to
+input-field table, and the editor-sidecar read with its diagnostic.
+
+**Plan:** Mint the recovery ids once over the combined candidate set before resolving
+candidates; route the sidecar and node-config reads through the captures; recurse
+into `match_case` bodies and yield their capture names (and `TypeAlias.name`), and
+say `match` in the specification; one `_recover_file_graph`, one input-field table,
+one `_read_editor_sidecar`.
+
+**Acceptance:** The probe's "go to" selects the node; a sidecar changed between the
+capture and the revision is caught by the revision; a node named after a
+`match`-bound helper is refused by name; jscpd reports none of the three pairs.
+
+**Dependencies:** `PCFG-R15` owns the first pass's clones.
+
+**Evidence:** `src/haute/_pipeline_recovery.py::_build_recovery_graph`;
+`src/haute/_pipeline_recovery.py::_SourceCaptures`;
+`src/haute/_pipeline_revision.py::pipeline_recovery_revision`;
+`src/haute/_support_code_names.py::support_code_inventory`;
+`src/haute/_polars_steps.py::rename_step_inputs`;
+`src/haute/_polars_steps.py::step_input_references`.

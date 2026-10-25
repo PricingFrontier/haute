@@ -65,9 +65,6 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 - One finding is kept with its reachability unconfirmed (a request-input edge
   with a null handle, `EXEC-R14`); the code path is real, whether the editor
   can produce the input is not shown.
-- The pipeline-config reviewer left `_polars_steps.py` (about 1,500 lines),
-  `_pipeline_recovery.py` (about 1,100 lines) and parts of six smaller modules
-  unread; a follow-up reviewer covers them.
 - The modelling reviewer scanned `_charts.py` mechanically and did not read
   the modelling test modules systematically, so "a test that would pass
   against a wrong coefficient" is answered only for the GLM level check.
@@ -87,12 +84,13 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 | Static analysis (projection, lineage, RAM estimate, chunk classifier, cardinality) | reviewer, verified; two probes rerun | full | 0 / 3 / 5 / 0 |
 | Workers and jobs (isolation, protocol, pool, dedicated worker, caps, job store, timeouts) | reviewer, verified; one probe rerun | full | 0 / 4 / 10 / 0 |
 | Server routes and the save service (pipeline, save, helpers, node data, project files, utility, banding and rating, submodel, error handlers, supersession) | reviewer, verified; two probes | every owned file in full; `schemas.py` the models those routes use | 0 / 4 / 10 / 3 |
-| Pipeline config, codegen, parsing and recovery | reviewer, verified; two probes rerun | core files in full; `_polars_steps.py` and `_pipeline_recovery.py` in part (follow-up pending) | 0 / 3 / 10 / 2 |
+| Pipeline config, codegen, parsing and recovery | reviewer, verified; two probes rerun | core files in full | 0 / 3 / 10 / 2 |
+| Pipeline config, second pass (Polars steps, the recovery loader, names, global constants, layout) | reviewer, verified; one probe rerun | every owned file in full | 0 / 1 / 7 / 0 |
 | Optimiser (routes, service, solver, session, frontier, auto-range, estimate, outcomes, artifacts, explainability, the price-contour guard, the Optimiser Apply runtime) | reviewer, verified; two probes | every owned file in full; the price-contour library read where haute's schemas depend on it | 0 / 1 / 9 / 2 |
 | Modelling, the MLflow model registry and the training routes (every family, contracts, evaluation, tuning, export, MLflow IO, the scorer, explainability, the training lifecycle) | reviewer, verified; the GLM probe rerun | every owned file in full except `_charts.py` (mechanical) | 0 / 2 / 21 / 2 |
 
-One hundred and sixty-seven findings so far: one Critical, twenty-six Major,
-one hundred and seventeen Minor and twenty-three Suggestions. The Critical and every Major is confirmed at source by the
+One hundred and seventy-five findings so far: one Critical, twenty-seven Major,
+one hundred and twenty-four Minor and twenty-three Suggestions. The Critical and every Major is confirmed at source by the
 main session; the Minors and Suggestions were read at source or accepted on
 quoted evidence as the verification table records.
 
@@ -156,6 +154,9 @@ quoted evidence as the verification table records.
   and merged over the sidecar by Recover** (Major, `PCFG-R11`).
 - **Every save drops authored comments outside the kept regions** (Major,
   `PCFG-R12`; five kinds reproduced) with no diagnostic.
+- **A closing `return df` on the same line as a statement drops the statement**
+  (Major, `PCFG-R17`; reproduced): the node loads empty and the next save writes
+  a placeholder over the authored body. The package is P1.
 - **The optimiser's MLflow log writes the complete result artifact without the
   finiteness gate the save applies** (Major, `OPT-R01`): a missing defence layer
   on a pricing artifact, since the status poll corrects the UI path.
@@ -221,6 +222,9 @@ quoted evidence as the verification table records.
 | Pipeline config | PCF-8, PCF-11, PCF-14, PCF-15 | `PCFG-R14` |
 | Pipeline config | PCF-4, PCF-9, PCF-10, PCF-12 | `PCFG-R15` |
 | Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
+| Pipeline config | PCR-1 | `PCFG-R17` |
+| Pipeline config | PCR-2, PCR-3, PCR-4 | `PCFG-R18` |
+| Pipeline config | PCR-5, PCR-6, PCR-7, PCR-8 | `PCFG-R19` |
 | Optimiser | OPR-1, OPR-8, OPR-12 | `OPT-R01` |
 | Optimiser | OPR-3 | `OPT-R02` |
 | Optimiser | OPR-4, OPR-5, OPR-6, OPR-7 | `OPT-R03` |
@@ -282,6 +286,9 @@ training test modules (`ENGQ-CI03`); fits that exceed their budget
 - **PCF-1 rated Major in the ledger, P1 as a package.** The lenient decode needs
   a non-UTF-8 file Haute never writes, but when it meets one the save corrupts
   authored bytes silently, which is the Critical definition.
+- **PCR-1 rated Major in the ledger, P1 as a package.** The trigger is a
+  hand-written one-line body, but the loss of authored code is silent and the
+  next save makes it permanent.
 - **MDL-1 rated Major in the ledger, P1 as a package.** The reviewer rated it
   Major because it needs a value absent from training and the low-level
   specification deliberately keeps declared domains apart from observed values;
@@ -317,6 +324,9 @@ All probes live outside the repository and wrote nothing into it.
 | GLM unseen level | A Poisson GLM on levels A, B, C (RustyStats 0.9) predicts A, B, C, D, Z as 1.133071, 2.475292, 0.634106, 1.133071, 1.133071 and a null as 1.133071. |
 | Tweedie power | XGBoost trains `reg:tweedie` with `tweedie_variance_power=None` at 1.5; LightGBM trains with the `None` kept and its default applied. |
 | evaluation plan size | 2,000,000 rows, five folds: a 71 MB plan; the parent's reload takes 13.3 s with a 0.65 GB peak. |
+| same-line return | `extract_user_code("df = quotes.head(1); return df")` returns `''` for the Polars and hook kinds; `"a = 1\ndf = quotes.head(a); return df"` returns `'a = 1'`. |
+| reformat discards steps | A free-code step whose comment carries trailing spaces survives two saves; `ruff format` of the file then logs `polars_steps_discarded`. |
+| `match` bindings | `support_code_inventory` on a preamble `match` lists only `os`; the equivalent `if`/`else` lists `helper` twice. |
 | price-contour column order | `solve`, `apply_from_grid` and the quote-results schema emit `optimal_<c>` in config order; `ApplyOptimiser.apply` in sorted order, so both haute schemas match their own library path (no finding). |
 
 ## Mechanical metrics
