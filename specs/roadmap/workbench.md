@@ -51,7 +51,6 @@ what the review found in the Workbench view and the underwriter app in the brows
 | WB-28 | Planned | P3 | A condition tests a field against another field, text within text, and a date against another date give or take a number of days. |
 | WB-29 | Planned | P3 | A component that takes nothing typed, or a section or a sheet holding only such components, shows by conditions on the price, applied after it so the price never decides what is priced. |
 | WB-33 | Planned | P2 | A pricing that outruns its timeout cannot hold the app's executor: pricings run in a bounded pool and the app answers 503 when it is full. |
-| WB-34 | Planned | P2 | Two first saves of a new form revision on a server engine both succeed. |
 | WB-35 | Planned | P2 | Every quote action in the app says what it did: a quote made while the page stays is announced, a storeless page offers Reload when the release changed, "Open the newest" opens once, and the Quotes page's keys leave a focused select alone. |
 | WB-36 | Planned | P2 | A number list in a Show when condition never splits a thousands separator into two values, and the app reads quote_details ids from one typed map. |
 | WB-37 | Planned | P3 | The column key, the refusal predicate, the 409 detail reader, the empty visibility constants, the half-window width, the collapsible group and the pricing basis each exist once in the workbench and the app. |
@@ -280,7 +279,11 @@ and is recorded here before the backend's slice. The backend is that engine's dr
 an optional extra, as the Databricks clients are, signing in with the app's managed identity
 where the engine allows it, with the store's tests run against SQLite and that engine alike
 (a service container in CI), and the form copies kept once through that engine's own
-insert-if-absent. A reference's canonical form is compared byte for byte
+insert-if-absent. The current generic `_keep_form` check-then-insert is not a
+supported server-engine implementation; SQLite already has its atomic insert. Use
+the chosen engine's atomic form or a savepoint that rolls back a narrowly identified
+duplicate-key conflict before continuing. Merely catching `IntegrityError` leaves a
+PostgreSQL transaction aborted. A reference's canonical form is compared byte for byte
 ([workbench](../workbench/high-level.md)), so the quote's `reference_key` and its counter's
 take that engine's binary collation (Azure SQL's default ignores case and accents), in the
 metadata and a migration alike, and the unique index on a quote's identity keeps the quotes
@@ -299,7 +302,11 @@ and the fourth, names itself the oldest schema instead, so the previous release 
 database naming the upgrade; the deploy keeps a copy of the database from before such a
 migration, and rolling back past it is restoring that copy.
 
-**Acceptance:** The same store tests pass against SQLite and the server engine; a deploy
+**Acceptance:** The same store tests pass against SQLite and the server engine. Two
+concurrent first saves of a new form revision both commit their quotes and keep one
+form copy on the chosen engine's service container; a non-duplicate constraint error
+still fails the transaction. Forcing the generic branch on SQLite is not evidence of
+server transaction semantics. A deploy
 migrates IT's instance under the schema's identity before the release starts, and the app's
 identity cannot change the schema; the previous release's store tests pass against the
 schema a candidate's migrations leave, and the previous release starts on it, save after a
@@ -497,24 +504,6 @@ answered 503 at once rather than timing out; when one finishes, the next is serv
 **Dependencies:** None.
 
 **Evidence:** `src/haute/_workbench_app.py::PRICE_TIMEOUT_SECONDS`.
-
-### WB-34 — Concurrent first saves of a form revision
-**Why:** On a server engine `_keep_form` checks `COUNT(*)` and then inserts, so two
-concurrent first saves on a new form revision both see 0 and the second fails with the
-engine's `IntegrityError`, which the app does not translate: a 500 for a legitimate save.
-Only SQLite gets `ON CONFLICT DO NOTHING`, while the quote-store specification claims
-correctness under READ COMMITTED. This package comes from the
-[25 October 2026 codebase review](codebase-review-2026-10-25.md).
-
-**Plan:** Use the dialect's `insert(...).on_conflict_do_nothing()` for PostgreSQL as well,
-or catch `IntegrityError` and continue.
-
-**Acceptance:** Two threads saving the first quote of a new form revision both succeed
-(under the server-engine fixture, or SQLite with the server branch forced).
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_quote_store/_store.py::_keep_form`.
 
 ### WB-35 — Every quote action says what it did
 **Why:** Duplicate and Renew from a quote with unsaved values create the new quote on the

@@ -221,15 +221,21 @@ stale fingerprint (the browser half is `FSH-R05`). This package comes from the
 write, or a `Writer`) and the stale unlink (`mark_self_write(path, deleted=True)`);
 validate `active_source ∈ sources` on `SavePipelineRequest` (422) before any file is
 staged; publish the saved document with its fingerprint from the save route to the other
-clients and return the fingerprint to the saver; add a watcher test that a save,
+clients and return the fingerprint to the saver. Carry the saving tab's socket
+connection id with the save and exclude that connection from the route's broadcast;
+retain the frontend fingerprint/snapshot guards for reconnects and in-flight saves.
+Scope the exclusion to the same authorised session and pipeline. Add a watcher test that a save,
 including one that removes a node, publishes no `pipeline.document.update` through the
 watcher.
 
-**Acceptance:** A save with a live socket produces no document broadcast; a save
-retiring a config file re-parses nothing; a request whose `active_source` is not in
-`sources` is answered 422 with no file touched.
+**Acceptance:** A save produces no watcher-originated document update; each other
+connected tab for that pipeline receives one route-originated update with the saved
+fingerprint. The saving tab applies no destructive self-echo in either HTTP/socket
+arrival order and, with `FSH-R05`, retains jobs, undo history and newer dirty edits
+across reconnect. A save retiring a config file triggers no watcher re-parse; a request
+whose `active_source` is not in `sources` is answered 422 with no file touched.
 
-**Dependencies:** None.
+**Dependencies:** Coordinate the server/client contract and two-tab tests with `FSH-R05`.
 
 **Evidence:** `src/haute/routes/_helpers.py::save_sidecar`;
 `src/haute/routes/_helpers.py::mark_self_write`;

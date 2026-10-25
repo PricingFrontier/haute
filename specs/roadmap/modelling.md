@@ -232,17 +232,22 @@ the contract at all. New levels are routine in production scoring, and the
 high-level invariant says drift raises rather than producing a plausible
 wrong prediction.
 
-**Plan:** Record the fitted labels of every `categorical` term (and whether
-the training column held nulls) in the GLM contract so
-`validate_categorical_value_domains` refuses unseen and null values on every
-path, or check the levels in `GLMAlgorithm.predict`; give an `Int64`
-categorical term a term-typed path; add a scoring test with an unseen level
-and a null.
+**Plan:** Record fitted labels by categorical term type in the GLM contract,
+including an `Int64` column used as a categorical term, while preserving any
+upstream declared domain as a separate constraint. Record an explicit null policy:
+refuse nulls unless the fitted model has a defined, separately encoded null level;
+presence of nulls in training alone does not prove that. Enforce the contract through
+the shared loaded-model/scorer validation on every path. A check confined to the
+training adapter is insufficient: `_load_rustystats_model` loads the native model
+and deployed scoring calls `ScoringModel.predict` directly. Keep other model families'
+declared-domain and encoding semantics intact.
 
 **Acceptance:** Scoring a GLM on a level absent from training raises naming
 the term and the value, in the preview, a standalone run and a deployed
-bundle; a null in a categorical term raises likewise; the probe's A, B and C
-values are unchanged.
+bundle after serialising to `.rsglm` and loading it again. Cover string and integer
+categorical terms, an upstream domain containing an unfitted level and the explicit
+null policy. The probe's null is refused and its A, B and C values are unchanged;
+other families retain their existing domain behaviour.
 
 **Dependencies:** `DEP-R07` binds the run's contract on every path; this
 package makes the GLM contract carry what binding needs.

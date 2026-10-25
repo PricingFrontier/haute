@@ -427,14 +427,21 @@ same; the cost is churn and drift). Body extraction indexes AST line numbers int
 Python does not count as line breaks, so one such character shifts every body after
 it by a line (thirteen sites; mostly loud, one silent drop of a body's last line).
 
-**Plan:** Strip each free-code line and compare comments `rstrip()`ed; normalise
-exponent floats as ruff does in one helper used by `_literal`, `_render_variable` and
-`_source_layout.literal`; split on Python's line breaks in one shared helper used by
-every site; add the three cases to the fixed-point and body-extraction tests.
+**Plan:** Use Python token boundaries to remove trailing syntactic whitespace only
+outside string literals, preserving indentation and literal contents; compare COMMENT
+tokens with trailing whitespace removed. Per-line `strip` destroys indentation and even
+per-line `rstrip` changes multiline strings. Normalise exponent floats as ruff does in
+one helper used by `_literal`, `_render_variable` and `_source_layout.literal`; split
+on Python's line breaks in one shared helper used by every site. Handle a leading bare
+string that becomes a function docstring explicitly: formatting must not silently change
+authored string contents or discard the step. Add these cases to the fixed-point and
+body-extraction tests.
 
 **Acceptance:** A free-code step with trailing whitespace survives `ruff format` with
-its steps kept; `1e20` renders unchanged by ruff; a form-feed line between two nodes
-leaves both bodies intact.
+its steps kept; multiline strings retain significant trailing spaces at runtime and
+indented blocks keep their structure. A leading bare-string step remains a fixed point
+without changing its literal value. `1e20` renders unchanged by ruff; a form-feed line
+between two nodes leaves both bodies intact.
 
 **Dependencies:** None.
 

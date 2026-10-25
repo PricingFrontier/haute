@@ -71,7 +71,10 @@ deadline and render the failure screen on timeout. Add a test: save, drop and
 reopen the socket, assert active jobs and undo history survive.
 
 **Acceptance:** A reconnect after a save produces no document frame and bumps
-no generation; a throwing completion callback shows a toast and ends the job
+no generation when the server document is still the saved version. Jointly with
+`API-R08`, test two tabs and both HTTP/socket arrival orders: the saver retains jobs,
+undo history and newer dirty edits, while the other tab receives one saved-document
+update. A throwing completion callback shows a toast and ends the job
 record; a timed-out MLflow fetch is aborted; a silent server reaches the
 bootstrap failure screen within the deadline.
 
@@ -153,15 +156,26 @@ test a Ctrl+S inside the debounce window; fence the five creation sites on
 `structuralFingerprint` plus the ids the creation depends on, in one shared
 helper, and turn the pinning test around; add the id to the edited set only on
 an accepted update; build a copy's data from the authored fields only; on a
-non-HTTP save failure re-read the document and acknowledge the save when its
-revision or content matches what was sent.
+non-HTTP save failure re-read the document and acknowledge only complete canonical
+content equality with the submitted save snapshot. Define that comparison over all
+persisted authored state, including graph, layout, preamble, submodels, constants,
+sources, active source and preserved blocks; exclude transient execution/UI fields.
+Use the same canonical representation as save/read, not raw request-versus-response
+object equality. The submitted `base_revision` is the old version and cannot prove a
+write occurred. Preserve `saveRequestSeq`, `appliedSaveSeq` and `savedSnapshot` fences,
+adopt the confirmed server revision/fingerprint only for that snapshot, and retain
+edits made while waiting. If equality cannot be established, leave the save unconfirmed;
+do not adopt another writer's revision as permission to overwrite their document.
 
 **Acceptance:** Ctrl+S during typing saves the typed text and leaves the canvas
 clean; a selection change during identity resolution does not refuse a
 creation while a structural change still does; a refused scoped update leaves
 the edited set unchanged; a pasted node carries none of the original's
-underscore fields; a save with a dropped response is acknowledged on the next
-read.
+underscore fields. A changed-content request that never reaches the server stays unsaved; a committed
+save with a dropped response is acknowledged after matching canonical content and the
+next save uses the confirmed revision. Edits made during recovery remain dirty. A
+concurrent writer's different content and an older recovery response cannot acknowledge
+or replace a newer save. Layout-only and preserved-code changes participate in equality.
 
 **Dependencies:** `API-R08` for the server's saved-document fingerprint.
 
@@ -243,4 +257,3 @@ store; the supersession test passes with the server message reworded.
 `frontend/src/stores/useNodeResultsStore.ts`;
 `frontend/src/hooks/usePipelineAPI.ts::isPreviewSupersededError`;
 `src/haute/routes/pipeline.py`; `specs/frontend-shared/low-level.md`.
-

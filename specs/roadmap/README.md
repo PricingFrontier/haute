@@ -15,6 +15,12 @@ currently startable package. Priority `P1` marks a package that threatens
 persisted work, computed results, or security; `P2` a material correctness, UX,
 or maintenance issue; `P3` opportunistic work.
 
+Audit finding counts describe the original review inventory, not a count of release
+blockers or independently reproduced defects. Keep measured defects, source-supported
+risks, unconfirmed reachability, product decisions and maintenance work distinct.
+The [25 October validation](codebase-review-2026-10-25.md#validation--25-october-2026)
+records corrections to that audit's claims and proposed remedies.
+
 | Component | Improvement surface | Start with |
 |---|---|---|
 | [Assistant](assistant.md) | The provider client as the policy describes it, bounded requests with a terminal event on every stream, tools that never stall the server, facts the model can trust, the core's and the tools' hygiene, the chat panel's failures and clicks; blocking data findings, structured step authoring, typed banding and rating, item-level edits and per-model qualification (all deferred) | `ASSIST-54` |

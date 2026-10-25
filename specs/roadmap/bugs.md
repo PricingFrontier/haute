@@ -204,14 +204,21 @@ version and digest that drift from the released version until the build script i
 and `deploy.sh` hard-codes the app name `haute-spike` while taking the profile and the
 workspace directory as parameters.
 
-**Plan:** Ship a lock (`uv export`) beside the wheel and install from it, `--no-deps` for
-the wheel plus the pinned requirements; generate `requirements.txt` in the build script
-only and ignore it in git; take the app name as a parameter.
+**Plan:** Use `DEP-R09`'s shared resolver to ship a lock for the hosted app's Linux
+platform, Python version and `databricks` extra beside the wheel; preserve hashes and
+credential-free index provenance. Verify the wheel digest and install it with
+`--no-deps`, and install the locked runtime without resolving fresh dependencies at
+boot. Generate `requirements.txt` in the build script only and ignore it in git; take
+the app name as a parameter. This fixes version drift; offline boot additionally needs
+the locked artifacts to be supplied locally and is not implied by a lock alone.
 
 **Acceptance:** Two boots of one deployment install the lock's versions and nothing else;
-`requirements.txt` is not committed; `deploy.sh` with another app name deploys to it.
+the target installation passes `pip check`, including when the bundle was prepared
+on Windows; `requirements.txt` is not committed; `deploy.sh` with another app name
+deploys to it.
 
-**Dependencies:** None.
+**Dependencies:** `DEP-R09` supplies target resolution; coordinate the shared runtime
+rules with `DEP-R06` without assuming the app and Model Serving need identical extras.
 
 **Evidence:** `databricks_app/app.py::_refresh_vendored_wheel`;
 `databricks_app/requirements.txt`; `databricks_app/scripts/deploy.sh`.

@@ -13,14 +13,15 @@ MLflow target and the impact analysis. Current behaviour is specified in
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| DEP-R05 | Planned | P1 | A flat Quote Input's served request is typed by the manifest's input schema, and a request that cannot be framed is refused with 422. |
-| DEP-R06 | Planned | P1 | The Databricks model's environment pins the scoring runtime and every bundled model's engine to the deploying versions. |
+| DEP-R05 | Planned | P1 | Flat Quote Input uses checked manifest types; container framing errors return 422, and MLflow's public signature boundary is explicit. |
+| DEP-R06 | Planned | P1 | The Databricks model installs a target-compatible lock for the validated scoring runtime and every bundled engine. |
 | DEP-R07 | Planned | P1 | Every MLflow-sourced Model Score ships the feature contract its training run logged, or the deploy refuses. |
-| DEP-R08 | Planned | P2 | The MLflow target reads its registered version from the log call, treats a 401 as a credential problem, and shares one schema default. |
-| DEP-R09 | Planned | P2 | The container image's whole dependency closure is pinned to the deploying environment. |
+| DEP-R08 | Planned | P1 | The MLflow target serves the version its own log call registered, treats a 401 as a credential problem, and shares one schema default. |
+| DEP-R09 | Planned | P2 | The container image installs a recorded dependency closure resolved for its target Python and platform. |
 | DEP-R10 | Planned | P2 | `haute.toml` values are typed at load, a malformed `[test_quotes] dir` is refused, and an unknown override key raises. |
 | DEP-R11 | Planned | P2 | Impact analysis fails on a row-count mismatch instead of pairing the wrong quotes, and a mistyped production URL is not a first deploy. |
-| DEP-R12 | Planned | P3 | Build directories and the output-schema cache live under the project root and leave no stale artefacts behind. |
+| DEP-R12A | Planned | P2 | Each build owns a fresh directory under the project and ships only its own artefacts. |
+| DEP-R12B | Planned | P3 | The output-schema cache lives under the project root with one entry per fingerprint. |
 | DEP-R13 | Planned | P3 | Resolution does not rewrite the graph it ships, and the deploy module's duplicated predicates, loops and defaults are written once. |
 | DEP-R14 | Planned | P3 | Validation parses each test-quote file once and reports every row with missing columns. |
 | DEP-R15 | Planned | P3 | The served error envelopes carry a correlation id rather than the exception text. |
@@ -28,32 +29,52 @@ MLflow target and the impact analysis. Current behaviour is specified in
 
 ## Planned improvements
 
-`DEP-R05`, `DEP-R06` and `DEP-R07` each change what a served pipeline computes or checks,
-so they come first; `DEP-R12` moves files other packages touch, so it comes after them.
+`DEP-R05` to `DEP-R08` protect served results and come first. `DEP-R06` uses the
+target-resolution mechanism in `DEP-R09`; deliver that shared mechanism with it.
+`DEP-R12A` can proceed independently, coordinating edits to shared build code.
 
 ### DEP-R05 — Served requests typed by the manifest schema
 **Why:** A flat Quote Input's served request is framed by Polars inference from the
-JSON values (`pl.DataFrame(rows)` in the generated `app.py`, `pl.DataFrame(rows,
-schema=None)` in the batch worker, `pl.from_pandas` in the Databricks model), not by the
+JSON values (`pl.DataFrame(rows)` in the generated `app.py` and `pl.DataFrame(rows,
+schema=None)` in the batch worker), not by the
 `input_schema` the manifest records: `30` and `30.0` give Int64 and Float64, a `null`
 gives a Null column, so a cast to String (`"30"` against `"30.0"`), a Banding level or
 a categorical model feature can differ from the dry run and the test quotes, which read
 the sample file's types. The specification says only that such a request is read "as
 one frame". A request Polars cannot frame at all (a list mixing an integer and a string)
 is answered 500 `deploy_internal_error` after the execution context was admitted, and
-that context is never released.
+that context is never released. The public MLflow path first enforces the logged
+`ModelSignature`, before `HauteModel.predict` converts the frame: a double signature
+refuses an int64 input in the validation probe. Identical unchecked inference on that
+public path is not established, and a cast inside `predict` cannot repair an earlier
+signature refusal. Polars `cast(strict=True)` also truncates `30.9` to Int64 `30`;
+strict casting alone does not establish lossless validation.
 
-**Plan:** Cast the request frame to the manifest's `input_schema` strictly in the
-single-quote path, the batch worker and the pyfunc model, refusing a value that does
-not fit with 422 naming the column, as the tables path refuses a misfit; frame the
-request before admitting the execution context; catch `UnicodeDecodeError` in
-`read_limited_json_body` as the `invalid_json` envelope. State the typing rule in the
-deploy specification.
+**Plan:** Extract and extend the checked value rules in `_workbench_input._value`
+for reuse by flat Quote Input framing against `input_schema`. Refuse numeric strings,
+booleans in numeric columns, float-to-integer coercion and integer overflow; accept an
+integer in a float column only when the conversion is finite and preserves its exact
+value (test both representable and non-representable integers above 2^53). Preserve
+typed nulls at this input boundary; fitted model contracts can impose stricter null
+rules. Do not infer non-nullability from the sample file. Retain the shared date,
+string and boolean checks and specify the supported dtype mapping before implementation.
 
-**Acceptance:** A served request with `30` for a Float64 column scores as the dry run
-did; a request with `"x"` for an Int64 column, or a value Polars cannot frame, is
-answered 422 naming the column and leaves no admitted context; the batch worker and the
-Databricks model behave the same; a body that is not UTF-8 is answered 422.
+Use this validator in the single-quote path, the admitted batch worker and the pyfunc
+request adapter. Preserve MLflow's public signature enforcement and document its
+stricter accepted-input subset; do not relax the signature to promise target parity.
+Keep batch framing inside its bounded worker. A size-capped single quote may be framed
+before admission; any failure after admission must release the context. Catch
+`UnicodeDecodeError` in `read_limited_json_body` as the `invalid_json` envelope. Define
+these rules and each target's error envelope in the deploy specification.
+
+**Acceptance:** Exercise `30`, `30.0`, `30.9`, `"30"`, `true`, null, integer range
+boundaries, integers on both sides of the exact-float boundary and mixed lists against
+each supported dtype through `/quote`, the batch worker and
+`mlflow.pyfunc.load_model(...).predict`. Container `30` for Float64 matches the dry run;
+`30.9` for Int64 is refused without truncation. Container refusals are 422 naming the
+column and leave no admitted context; MLflow signature refusals occur at the public
+boundary and are asserted separately. Accepted equivalent inputs score equally. Typed
+nulls keep the declared dtype; a body that is not UTF-8 is answered 422.
 
 **Dependencies:** None.
 
@@ -71,20 +92,30 @@ else, so the model engines (xgboost, lightgbm, catboost, interpret-core, t-boost
 rustystats) and pandas and numpy resolve at Model Serving build time within haute's
 dependency ranges, and the served model can load under a different engine release than
 the one that trained it. The container target pins each bundled artefact's engine for
-exactly this reason, and names the risk: a model loaded under another engine is
-silently wrong premiums, not an error.
+exactly this reason: a different engine version can fail to load the model or change
+its predictions. An importable model alone does not establish equivalent premiums.
 
-**Plan:** Build `_pip_requirements` from the same pinned list the container's Dockerfile
-uses (`runtime_versions` plus each artefact's engine), so both targets install the
-deploying environment's versions.
+**Plan:** Build `_pip_requirements` with the shared target resolver in `DEP-R09`, using
+Model Serving's Linux platform and the conda environment's Python version. Preserve
+this target's existing full Haute dependency profile; sharing a resolver does not mean
+sharing the container's minimal root set. Include the
+pyfunc imports (`mlflow`, `pandas`, `numpy`), Haute's required runtime and each bundled
+engine, constrained to the validated deploying versions where available. pandas is
+already a direct Haute dependency, but the container list pins it only for pickle
+artefacts; copying that list alone is insufficient. Resolve platform-specific
+dependencies for the target and fail clearly if the pinned runtime is incompatible.
 
-**Acceptance:** The logged model's `conda_env` names every scoring-runtime distribution
-and every bundled artefact's engine with `==` and the deploying version; the test that
-pins the three-package requirement list is replaced by one over the full list.
+**Acceptance:** The logged model's `conda_env` names every resolved runtime distribution,
+including pandas and every bundled engine, at its locked version. Install that
+environment on the target Python/platform, run `pip check`, load the logged model and
+score a representative request. Assert the installed versions against the lock;
+a test of the generated package list alone is insufficient.
 
-**Dependencies:** None.
+**Dependencies:** `DEP-R09` supplies the shared target resolver; ship its resolver with
+this package rather than deferring the P1 environment fix.
 
 **Evidence:** `src/haute/deploy/_mlflow.py::_pip_requirements` and `::_conda_env`;
+`src/haute/deploy/_model_code.py`; `pyproject.toml`;
 `src/haute/deploy/_container.py::runtime_versions`, `::_pinned_dockerfile_deps` and
 `::_pinned_extra_dockerfile_deps`.
 
@@ -126,10 +157,13 @@ direct message. `get_deploy_status` defaults the schema to `default` while
 `DatabricksConfig` defaults it to `pricing`.
 
 **Plan:** Read `ModelInfo.registered_model_version` from the log call; treat 401 like
-403; take the schema from the one `DatabricksConfig` default.
+403; take the schema from the one `DatabricksConfig` default. This P1 prevents serving
+another job's model; it does not decide which concurrent deploy updates an endpoint last.
 
-**Acceptance:** The deploy result's version is the one `log_model` returned; a 401 from
-the pre-check fails with the credential message; the two defaults are one constant.
+**Acceptance:** A competing registration between logging and endpoint update does not
+change the served version: it and the deploy result use this call's returned version;
+a 401 from the pre-check fails with the credential message; the two defaults are one
+constant.
 
 **Dependencies:** None.
 
@@ -143,18 +177,51 @@ to the deploying environment's versions, but their transitive dependencies (star
 anyio, h11, typing-extensions, ...) resolve at image build time, so two builds of one
 deploy can differ, against the specification's reproducibility rationale.
 
-**Plan:** Export the deploying environment's lock for the runtime closure
-(`uv export` or an equivalent filtered freeze) into the build directory and install
-from it; keep the direct pins as the readable summary.
+**Plan:** Use one resolver for container, pyfunc and hosted-app dependency locks, with
+explicit root requirements for each target. Preserve the
+[minimal scoring container policy](../deploy/high-level.md#scoring-runtime): its roots
+are the scoring runtime plus graph/artefact requirements, and Haute is a separate
+`--no-deps` install. Do not feed Haute's full dependency metadata into the container's
+resolution or add editor, assistant and training stacks just to satisfy metadata.
+The pyfunc and hosted-app profiles retain their full Haute dependencies and extras.
+Compile the selected runtime requirements with
+`uv pip compile runtime.in --python-version <target>
+--python-platform <target-triple> --generate-hashes`, constraining validated direct
+runtime and model-engine versions and including the requested extras. Record the target
+Python, OS/architecture, resolver version, evaluated markers and credential-free index
+provenance beside the lock. Resolve once per deployment bundle and reuse the recorded
+lock on rebuild; a fresh resolution is a new dependency input.
 
-**Acceptance:** The generated build directory holds a requirements file naming every
-installed distribution with `==`; two builds from one environment produce identical pip
-install lines.
+Install the locked runtime with `--no-deps --require-hashes` and verify the separately
+bundled Haute wheel's digest before its `--no-deps` install. Require compatible wheels;
+if a dependency needs a source build, build and hash its wheel in a declared target
+build environment before finalising the bundle. Do not substitute the deploying host's
+freeze: a Windows environment omits Linux-only dependencies such as `uvloop`.
+
+**Acceptance:** Two images from one recorded bundle install the same locked runtime
+versions and pass a selected-runtime dependency check. Use installed `Requires-Dist`
+metadata with target markers and selected extras to verify every required dependency
+and version in that closure. Account for Haute's intentionally omitted non-scoring
+requirements with an explicit, reviewed list tied to the runtime policy; never ignore
+all missing requirements from Haute, omit a selected engine requirement, or suppress
+another package's missing dependency/version conflict. `pip check` remains appropriate
+for the full pyfunc/hosted-app profiles, but its non-zero status for these declared
+container omissions is not itself a runtime failure.
+
+Compare normalised installed distributions with the lock, accounting explicitly for
+the bundled Haute wheel and base-image tooling. An engine-free pricing pipeline passes
+in the minimal container without installing editor/training stacks; removing a required
+transitive dependency or installing an incompatible version fails the runtime check.
+A Windows-originated deployment resolves Linux-only requirements for the target; an
+unavailable compatible artifact or changed hash fails the build. Verify real scoring
+in the target installation, not just identical install command text.
 
 **Dependencies:** None.
 
 **Evidence:** `src/haute/deploy/_container.py::_generate_dockerfile` and
 `::_pinned_dockerfile_deps`.
+
+Resolver reference: [uv platform-specific resolution](https://docs.astral.sh/uv/concepts/resolution/).
 
 ### DEP-R10 — Typed configuration, refused rather than defaulted
 **Why:** `haute.toml` is checked for unknown keys but never for value types: `port =
@@ -190,14 +257,21 @@ yet" is detected by matching the text `HTTP 404` in a `RuntimeError` message, so
 mistyped production URL passes as a first deployment and the impact step goes green with
 nothing compared.
 
-**Plan:** Fail the report when either endpoint's row count differs from the records
-sent (the request-order proof guarantees one row per quote); raise a typed error
-carrying the status code from `score_http_endpoint_batched`, and treat a 404 as a first
-deploy only when the production `/health` is unreachable too.
+**Plan:** Check each response batch before concatenation: require exactly one prediction
+per sent quote, permitting a scalar only for a one-quote batch. Fail with the batch and
+expected/actual counts, and remove `build_report`'s truncation. Check final totals too.
+Raise typed transport errors carrying status and URL. For HTTP, require explicit
+`haute impact --first-deploy` intent to skip an absent production baseline; generated CI
+must opt in for that release, never persist the bypass as a default. A registry-backed
+target may instead use an authoritative not-found result. Authentication failures,
+unexpected 404s, timeouts and unreachable endpoints fail closed; `/health` failure is
+not evidence of a first deploy. Report an intentional skip explicitly.
 
-**Acceptance:** A staging response one row short fails `haute impact` naming both
-counts; a production URL whose `/quote` answers 404 while `/health` answers fails the
-step naming the URL.
+**Acceptance:** A missing middle prediction fails before any positional comparison;
+one short and one long batch fail even when totals match; a scalar for a multi-quote
+batch fails. A 404 or unreachable production endpoint without first-deploy intent fails
+naming the URL. Explicit first-deploy intent and authoritative registry absence each
+produce a labelled skip; authentication failures never produce that skip.
 
 **Dependencies:** None.
 
@@ -205,28 +279,50 @@ step naming the URL.
 `::score_http_endpoint_batched`; `src/haute/cli/_impact.py::_is_http_not_found` and
 `::_impact_http`.
 
-### DEP-R12 — Build directories and caches under the project
+### DEP-R12A — Each build owns its directory and artefacts
 **Why:** The container build writes `cwd/.haute_build`, removes it wholesale on failure
 (whatever a user kept there) and leaves it behind on success with a copy of every
 artefact; a reused directory keeps earlier builds' `artifacts/*`, which the Dockerfile's
 `COPY artifacts/ artifacts/` ships although the manifest never names them. The MLflow
-target roots its build directory at the pipeline's directory instead. The output-schema
-cache is `.haute_cache/output_schema.json` relative to the process cwd, one entry
-overwritten by whichever pipeline deployed last.
+target roots its build directory at the pipeline's directory instead. Stale unnamed
+artefacts are copied into the image even though the served loader reads manifest-named
+files; this is bundle isolation and disclosure risk, not evidence that those unnamed
+files change prices. Concurrent builds sharing the directory can overwrite each other's
+named files.
 
-**Plan:** Build in a fresh directory under the resolved project root (removed after the
-push, kept only on request), stage artefacts into an empty folder, and root the schema
-cache at the project root with one entry per fingerprint.
+**Plan:** Allocate a unique owned directory per build under the resolved project root,
+stage into an empty artefact folder, and remove only that directory after push or
+failure (keep it only on request). Apply the same ownership rule to both targets. Do
+not delete a pre-existing `.haute_build` or another build's files.
 
-**Acceptance:** Two consecutive container builds from one project produce an image
-containing only the manifest's artefacts; `haute deploy --dry-run` run from another
-directory reads and writes no file outside the project.
+**Acceptance:** Consecutive and concurrent builds from one checkout produce bundles
+containing only their own manifest's artefacts. Failure of one build does not change
+the other's bundle or a user's pre-existing directory. Running from another cwd keeps
+generated build files under the resolved project. P2 addresses this isolation gap;
+reassess as P1 if shared-checkout concurrent deployment is an advertised workflow.
 
-**Dependencies:** `DEP-R05` to `DEP-R11`, which change the same files.
+**Dependencies:** None; coordinate edits to shared build code with `DEP-R05` to
+`DEP-R11` without delaying isolation behind those packages.
 
 **Evidence:** `src/haute/deploy/_container.py::build_and_push_image` and
 `::write_bundle`; `src/haute/deploy/_mlflow.py::_deploy_to_mlflow`;
-`src/haute/deploy/_schema.py::infer_output_schema`.
+`src/haute/deploy/_scorer.py`.
+
+### DEP-R12B — A project-scoped output-schema cache
+**Why:** `.haute_cache/output_schema.json` is relative to the process cwd and stores
+one entry overwritten by whichever pipeline deployed last, causing avoidable cache
+misses and placing generated files outside the resolved project.
+
+**Plan:** Root the cache at the resolved project and keep one entry per validated
+fingerprint, preserving the existing freshness checks.
+
+**Acceptance:** Alternating between two unchanged pipelines reuses both entries;
+changing a pipeline invalidates its entry. A dry run from another cwd writes the
+schema cache only under the resolved project.
+
+**Dependencies:** None; coordinate the project-root resolution with `DEP-R12A`.
+
+**Evidence:** `src/haute/deploy/_schema.py::infer_output_schema`.
 
 ### DEP-R13 — One copy of each deploy mechanism
 **Why:** Artefact collection rewrites a Model Score's `artifact_path` in the node's

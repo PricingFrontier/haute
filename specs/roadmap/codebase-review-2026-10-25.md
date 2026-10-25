@@ -49,9 +49,9 @@ tracks it. It owns no work; the component roadmaps carry the plans.
    bypass), Major, Minor, Suggestion. Package priority follows the roadmap
    README: P1 threatens persisted work, computed results or security; P2 a
    material correctness, UX or maintenance issue; P3 opportunistic.
-7. **No second model family.** At the owner's decision this review used no Codex
-   passes; the roadmap files it produced go through the usual Codex plan review
-   before the branch is merged.
+7. **Original review model.** At the owner's decision the initial audit used no
+   Codex passes. The subsequent Codex validation and discussion with Claude Opus 5.5
+   are recorded below; the component roadmaps include their agreed corrections.
 
 ## Limits
 
@@ -117,10 +117,73 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 | App shell, graph canvas and shared components (`App.tsx`, the node renderers, menus, dialogs, toolbar, settings, the form kit, the inspector shell and preview frame) | reviewer, verified; the renderers' flag reads re-read | every owned file in full except the stylesheet | 0 / 0 / 9 / 6 |
 | Tests, scripts and CI as code (conftest and the shared helpers, the gates and their scripts, the ten workflows, the pytest, coverage, ruff and mypy configuration, the Vitest, Playwright and ESLint configuration, the e2e harness) | reviewer, verified; the coverage-list difference and the gate's `if:` re-checked | conftest, the helpers, the gate scripts, the workflows and the configurations in full; seven large scripts structurally; the e2e specifications by census | 0 / 0 / 10 / 7 |
 
-Four hundred and five findings: two Critical, forty-four Major, two hundred and
-seventy-eight Minor and eighty-one Suggestions. Both Criticals and every Major are confirmed at source by the
-main session; the Minors and Suggestions were read at source or accepted on
-quoted evidence as the verification table records.
+The original audit recorded four hundred and five findings: two Critical, forty-four
+Major, two hundred and seventy-eight Minor and eighty-one Suggestions, organised into
+134 new packages. These are the original inventory and grading, not a revised count
+of independently reproduced defects. Its main session reported both Criticals and
+every Major as confirmed at source; the Minors and Suggestions were read at source or
+accepted on quoted evidence as the coverage table records. The validation below
+qualifies claims and remedies without inventing a replacement verified-defect count.
+
+## Validation — 25 October 2026
+
+Codex reviewed the audit branch and cited source/specification seams, then discussed
+13 correction groups plus priorities and scope with Claude Opus 5.5. Claude agreed
+with twelve proposals and partly agreed with two, refining input validation and
+target dependency resolution. The component roadmaps now carry the resulting plans:
+
+| Packages | Correction |
+|---|---|
+| `EXEC-R17` | Keep same-size/same-mtime utility freshness and support deferred imports while scoping `sys.path`; bytecode invalidation is a correctness defence. |
+| `EXEC-R13` | Measure actual RSS at a readiness handshake; native VMS, private-commit and cgroup baselines are different accounting. Preserve startup supervision. |
+| `MOD-R01` | Enforce fitted, term-typed categorical domains and an explicit null policy at the shared loaded-model/scorer boundary, including after serialisation. |
+| `PCFG-R18` | Normalise syntactic whitespace using token boundaries; preserve indentation and multiline literal contents. |
+| `FSH-R07`, `API-R08`, `FSH-R05` | Recover a save only from complete canonical saved-content equality, retain newer dirty edits, and distinguish intended other-tab broadcasts from watcher duplicates and self-echoes. |
+| `DEP-R05` | Separate container inference from MLflow's public signature enforcement; reuse checked input rules with lossless conversions and explicit typed-null behaviour. |
+| `DEP-R11` | Check every response batch before positional pairing; require explicit first-deploy intent or authoritative absence, never infer absence from an outage. |
+| `DEP-R06`, `DEP-R09`, `BUG-40` | Resolve and verify dependency locks for each target Python/platform and extras. pandas is already declared but must be pinned in the pyfunc runtime. |
+| `JSON-R01` | Use persisted array paths for XML singleton normalisation and path-specific inference; the streaming build has no separate validation census. |
+| `WB-10` | Absorb the duplicate server-engine concurrency work from `WB-34`; shipped SQLite already has atomic insert-if-absent. Require a real selected-engine concurrency test and correct transaction recovery. |
+| `JSON-R02` | Keep the throughput issue and remove the whole-file delay claim: decoded records are yielded incrementally. |
+| `GIT-R02` | Preserve configured SSH commands and Git precedence; use process-level noninteractive execution, deadlines and transport cleanup. Appended OpenSSH options do not reliably override earlier ones. |
+
+`DEP-R08` is P1 because the registry maximum can select another job's model and change
+prices. The build-directory work is split into `DEP-R12A` (P2, isolated owned bundles
+and cleanup) and `DEP-R12B` (P3, project-scoped schema caching). Unnamed stale artifacts
+are an isolation/disclosure concern; the loader reads manifest-named artifacts.
+Concurrent builds can interfere with named artifacts, so reassess the isolation
+priority if shared-checkout concurrency is an advertised deployment workflow.
+
+The roadmap chooses complete canonical content comparison for save recovery, retains
+MLflow's public signature and typed-null input behaviour, uses explicit CLI intent for
+an HTTP first deployment, and excludes the saving socket while retaining fingerprint
+guards. XML normalisation belongs at the schema-aware record-to-shred boundary. These
+are planned rules to specify and test in the component specifications before code
+changes. WB-10's server-engine choice remains with the project's IT team; the audit
+does not choose one or present its generic branch as a current SQLite release defect.
+
+The follow-up plan review also required the dependency gate to preserve the existing
+minimal scoring container. DEP-R09 verifies the selected runtime closure with explicit
+accounting for Haute's intentionally omitted non-scoring requirements; it does not
+require installing the editor/training stacks merely to pass an unrestricted metadata
+check. The full pyfunc and hosted-app profiles keep their full dependency checks.
+
+Root validation probes reproduced stale glob signatures after a file rewrite, dropped
+declared child rows, XML singleton/list disagreement, literal-select row multiplication,
+malformed test-quote configuration disabling the gate, mismatched impact-row acceptance,
+same-line return extraction loss, stale utility bytecode, lossy strict float-to-int
+casting and multiline-string changes from line trimming. A public MLflow probe confirmed
+signature enforcement before the model adapter. The SSH option probe used `ssh -G`
+without a network connection. These probes support the named cases, not every subclaim
+in every package.
+
+No cloud deployment or full backend/frontend suite was run for validation. Linux
+memory backends, server-database concurrency and unexecuted browser behaviour remain
+source/documentation based. The original JSON throughput ratio and other performance
+figures were not all remeasured. FGC-R03 remains measure-first; EXEC-R14 retains its
+unconfirmed-reachability qualification. Maintenance packages and product decisions
+are not automatically first-release blockers. Release priority is assessed per
+package, independently of the original finding count.
 
 ## The Criticals and the Majors
 
@@ -137,10 +200,11 @@ quoted evidence as the verification table records.
   and in the deployed request path). XML's singleton rule makes it routine: a
   quote with one `<driver>` loses its driver row while a quote with two keeps
   both, and the inferred schema for such a file fails its own build.
-- **A served flat Quote Input is typed by inference, not by the manifest**
+- **A container's served flat Quote Input is typed by inference, not by the manifest**
   (Major, `DEP-R05`): `30` and `30.0` give different dtypes, a `null` gives a
   Null column, so a cast, a Banding level or a categorical feature can differ
-  from the dry run.
+  from the dry run. The public MLflow path enforces its logged signature first;
+  equivalent unchecked inference there was not established by validation.
 - **The Databricks model's environment pins three distributions** (Major,
   `DEP-R06`): the model engines resolve at Model Serving build time, which the
   container path refuses for exactly this reason.
@@ -148,6 +212,9 @@ quoted evidence as the verification table records.
   `DEP-R07`): the bundler looks only for a bare contract file beside the
   download; the served scorer runs unchecked while the editor binds the run's
   contract.
+- **A concurrent registration can select another job's model** (`DEP-R08`, now P1):
+  the deploy searches for the maximum registered version instead of using the version
+  returned by its own `log_model` call.
 - **`haute init --force` overwrites the analyst's pipeline, utility code, tests
   and form** (Major, `CLI-R01`), and a first `init` deletes a root `main.py` it
   did not write.
@@ -222,8 +289,9 @@ quoted evidence as the verification table records.
   for the profile; 47 ms of descriptor construction per tool result on the
   event-loop thread.
 - **The root JSON array tokeniser reads one byte per Python call** (Major,
-  `JSON-R02`): forty-one times slower than the same records as JSONL; a 1 GB
-  root array tokenises for about three minutes before any row is walked.
+  `JSON-R02`): the original probe reported forty-one times the JSONL total scan
+  time. The approximately three-minute extrapolation for 1 GB is throughput cost;
+  records are yielded as they are decoded, not after the whole file is read.
 - **A WebSocket reconnect after a save discards every running job's tracking
   and the undo history** (Major, `FSH-R05`): the save stores no document
   fingerprint, so the resync is answered with a full document the client takes
@@ -275,7 +343,7 @@ production:
 | Deploy | PM-16 | `DEP-R09` |
 | Deploy | PM-1, PM-2, PM-5 | `DEP-R10` |
 | Deploy | PM-37, PM-38 | `DEP-R11` |
-| Deploy | PM-7, PM-15, PM-25 | `DEP-R12` |
+| Deploy | PM-7, PM-15, PM-25 | `DEP-R12A`, `DEP-R12B` |
 | Deploy | PM-3, PM-4, PM-8, PM-9, PM-10, PM-11, PM-17, PM-19, PM-20, PM-21 | `DEP-R13` |
 | Deploy | PM-6 | `DEP-R14` |
 | Deploy | PM-18 | `DEP-R15` |
@@ -383,7 +451,7 @@ production:
 | Assistant UI | FTG-5, FTG-18, FTG-20 | `ASSIST-60` |
 | Sandbox security | PM-42 | `SBX-R04` |
 | Workbench | PM-44 | `WB-33` |
-| Workbench | PM-45 | `WB-34` |
+| Workbench | PM-45 | `WB-10` (selected server engine's atomic form insertion) |
 | Bugs | PM-40, PM-41 | `BUG-40` |
 | Bugs | PM-46 | `BUG-41` |
 | Bugs | PM-47 | `BUG-42` (Decision) |

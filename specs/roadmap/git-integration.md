@@ -74,14 +74,25 @@ refuse with the hand-written reason.
 **Plan:** Validate typed names with `git check-ref-format --branch` and raise
 `GitDomainError` naming the rule; raise `GitDomainError` with the refresh
 message for inspection, fetch and push timeouts, launch failures and non-zero
-exits, keeping stderr in the log; when the user configures an SSH command,
-append the batch-mode and timeout options to it instead of replacing it; let the
-history error propagate; call `_assert_no_git_op_in_progress` at the top of
+exits, keeping stderr in the log. Preserve the configured `core.sshCommand`, `GIT_SSH`
+or `GIT_SSH_COMMAND` and Git's precedence; set Haute's default OpenSSH command only
+when none is configured. Do not append OpenSSH flags to arbitrary commands: the first
+OpenSSH option wins, and a wrapper or Plink can use different syntax. Prevent prompts
+at the process boundary with closed stdin (`DEVNULL`), no controlling terminal where
+supported, `GIT_TERMINAL_PROMPT=0` and disabled OpenSSH askpass. Apply an outer deadline
+to inspection, fetch and push, and clean up the launched transport process tree on
+timeout, including on Windows. A custom transport must obey the noninteractive
+contract; an outer deadline bounds a transport that hangs rather than proving it
+honours OpenSSH environment settings. Let the history error propagate; call
+`_assert_no_git_op_in_progress` at the top of
 `commit_save` and `commit_milestone`.
 
 **Acceptance:** `my branch` is refused naming the rule; a push against an
-unreachable remote answers the refresh message; a configured `GIT_SSH_COMMAND`
-is honoured (a test asserts the resolved command); a corrupt object store
+unreachable remote answers the refresh message. Behavioural subprocess tests show a
+configured command reaches Git unchanged, including conflicting OpenSSH options and
+a non-OpenSSH wrapper; the wrapper receives no injected OpenSSH flags. A prompting or
+hanging fake transport is terminated with its children within the deadline and reports
+the refresh message. A corrupt object store
 answers an error, not an empty list; a save during a merge answers the
 in-progress message.
 

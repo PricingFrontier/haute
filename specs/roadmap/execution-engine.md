@@ -150,13 +150,24 @@ pools. The watchdog is therefore the tighter bound by the child's import footpri
 and kills jobs the hard cap would admit, as `worker_rss_limit_exceeded`. The pool and the
 dedicated worker sample a warm child, so only the one-shot and protocol parents differ.
 
-**Plan:** Have the child publish its post-cap baseline (a first envelope, or the lease's
-`baseline_bytes`) and arm the parent watchdog from it, or sample the parent baseline only
-once the child reports its cap installed.
+**Plan:** Add a readiness handshake after the child's imports, thread-pool setup and
+native-cap attempt, before user work starts. The parent samples that child's actual RSS,
+arms the growth watchdog and acknowledges readiness before the child runs the job. Send
+readiness even when a native cap is unavailable. Do not use `NativeMemoryLease.baseline_bytes`
+as RSS: it records virtual address space for RLIMIT_AS, private commit on Windows and
+cgroup usage on the cgroup backend. Keep native accounting separate.
+
+Retain bounded startup supervision until readiness: a startup deadline and a startup
+memory ceiling sized for the supported imports, specified separately from the job's
+post-readiness growth allowance. Preserve the existing failure when required memory
+supervision cannot be established; readiness must not silently disable it.
 
 **Acceptance:** A child that imports Polars and a model engine under a 256 MiB budget is
-not killed by the watchdog before the cap binds; the watchdog still kills a child that
-grows past the budget on a host without a native cap.
+not killed merely for its supported import footprint; the watchdog still kills a child
+that grows past the budget on a host without a native cap. Cover RLIMIT_AS, cgroup,
+Windows and no-cap accounting separately. A child that hangs or exceeds the startup
+ceiling before readiness fails and is cleaned up; allocations in the job cannot inflate
+the sampled baseline. Test process behaviour on supported hosts, not just message wiring.
 
 **Dependencies:** None.
 
@@ -259,8 +270,9 @@ high-level specification forbids and the low-level one documents. The declaratio
 validation of `row_local_python_scan` and `fanout_python_scan` is a verbatim 27-line
 clone, and the POLARS, MODEL_SCORE and EXTERNAL_FILE branches of
 `_resolve_row_cardinality_from_index` are the same twelve lines three times. The preamble
-compile reorders `sys.path` process-wide on every compile and deletes `__pycache__` files
-under the project's utility package.
+compile reorders `sys.path` process-wide on every compile. Its deletion of utility
+bytecode is a documented freshness defence: eviction from `sys.modules` and import-cache
+invalidation alone can reuse stale `.pyc` files after an edit preserving size and mtime.
 
 **Plan:** Wire the cache-proof recorders at the one place that decides a source proof or
 delete them with the DTO, the telemetry attributes and the specification sentence
@@ -268,11 +280,19 @@ delete them with the DTO, the telemetry attributes and the specification sentenc
 collect and sink seams; delete the dead entry points and branches; replace the fault
 point with monkeypatching of the real write and align the two specifications; extract
 `_validate_scan_declarations` and `_code_cardinality` helpers; compile the preamble with
-an explicit `sys.path` entry scoped to the compile and leave bytecode caches alone.
+an explicit `sys.path` entry scoped across compilation and node execution, including
+imports deferred inside helper functions, and restore it on success and failure. Preserve
+the existing utility `.pyc` invalidation; a replacement is acceptable only if its
+source-loading mechanism is specified and proves the same freshness guarantee. Publicly
+exported helpers need an API-use assessment before removal; an absent internal caller
+alone does not establish that a library entry point is dead.
 
 **Acceptance:** vulture and the repository greps show none of the named symbols
 unreferenced; the metrics payload carries no always-null field; `sys.path` is unchanged
-after a preamble compile; the clone pairs are gone from jscpd's report.
+after compilation and execution, including failures; a same-size/same-mtime edit to
+`utility.py` changes the next run's result; a helper importing `utility.sub` during node
+execution resolves the correct project's package; the clone pairs are gone from jscpd's
+report. Keep these behavioural guarantees alongside the mechanical cleanup checks.
 
 **Dependencies:** `ENGQ-R01` owns dead code outside the engine.
 

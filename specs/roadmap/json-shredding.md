@@ -42,16 +42,24 @@ answer never loses a quote's rows silently and that no element disappears.
 as a shape mismatch: count a row skip for every table registered at that position
 or under it, so builds log it and `shred_request` refuses naming the table;
 extend conservation to child tables whose parent carries the array. For XML,
-decide list-ness per element name over the validation pass (which already parses
-every record) and wrap a singleton in a one-element list wherever that name ever
-repeats, so one `<driver>` and two shred the same way and inference emits one
-form; where a JSON key is genuinely mixed object and array, prefer the child
-table and report the key as mixed-shape instead of emitting both.
+normalise singleton elements at the schema-aware record-to-shred boundary before
+the array shape check: where the persisted schema declares an array path, wrap
+a single present element as a one-element list, including scalar child elements.
+Do not wrap absent, null or empty arrays, or values at unrelated paths. Carry the
+source format explicitly so JSON objects/scalars at declared array paths remain
+shape errors. Infer XML list-ness by structural path, never by global tag name,
+and persist the decision in the schema so later singleton-only files behave the
+same. The build is streaming; do not assume a separate whole-file validation pass.
+Where a JSON key is genuinely mixed object and array, prefer the child table and
+report the key as mixed-shape instead of emitting both.
 
 **Acceptance:** The reproduction's build logs two skipped rows in `drivers` and
 the deployed request is refused naming the table; the XML quote with one
-`<driver>` yields its driver row and the inferred schema builds; the existing
-conservation tests pass.
+`<driver>` yields its driver row and the inferred schema builds. A later file with
+only singleton drivers still yields rows under that schema; the same tag under
+an unrelated parent is unchanged. Cover object and scalar XML children and test
+missing, null, empty and invalid array values separately, including the JSON
+refusals. The existing conservation tests pass.
 
 **Dependencies:** None.
 
@@ -66,9 +74,11 @@ conservation tests pass.
 (`f.read(1)`, one `bytearray.extend` per byte), so every build and every complete
 inference of a `.json` root array spends most of its time tokenising: on 167,103
 records (41.9 MB) the JSONL path took 0.18 s and the root-array path 7.60 s,
-forty-one times slower, against 0.66 s for `orjson.loads` of the whole file; at
-5.5 MB/s a 1 GB root array tokenises for about three minutes before any row is
-walked. The specification asks for serial scanning, not byte-at-a-time scanning,
+forty-one times slower, against 0.66 s for `orjson.loads` of the whole file. These
+are the original audit's throughput measurements; the approximately three-minute
+extrapolation for 1 GB is total scan time. `_iter_records` yields each decoded
+record immediately, so it is not a delay before the first row can be walked.
+The specification asks for serial scanning, not byte-at-a-time scanning,
 and the sampling twin duplicates the closures.
 
 **Plan:** Scan 64 KiB chunks and find the structural bytes with a compiled
@@ -79,7 +89,10 @@ check; share the scanner between `_iter_records` and
 
 **Acceptance:** The 41.9 MB probe file tokenises within three times the JSONL
 time; the element boundaries, the record-byte bound and the trailing-data refusal
-are unchanged under the existing tests.
+are unchanged under the existing tests. Tokens, strings, multibyte UTF-8 and escapes
+split across 64 KiB chunk boundaries decode identically; the first record is yielded
+without reading the whole file. Repeat the benchmark with the recorded fixture and
+environment when implementing; the validation review did not rerun that speed ratio.
 
 **Dependencies:** None.
 
