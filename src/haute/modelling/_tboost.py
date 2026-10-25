@@ -16,8 +16,8 @@ and how it enters the margin, and the binary class labels) in t-boost's
 ``metadata`` slot, so plain t-boost still loads it and no pickle is involved.
 
 A categorical value the fit never saw is scored by t-boost itself, in the
-cell its ``unknown_category`` policy names (Haute sets it); validation rows
-holding such values are logged, never refused. t-boost refuses temporal columns,
+cell its ``unknown_category`` policy names (Haute sets it); Haute reports such
+values and never refuses them. t-boost refuses temporal columns,
 so Haute casts every non-categorical feature to ``Float64``, as for the other
 families.
 """
@@ -36,7 +36,6 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-from haute._logging import get_logger
 from haute.errors import ConfigError, HauteValidationError
 from haute.modelling._algorithm_base import (
     BaseAlgorithm,
@@ -46,8 +45,6 @@ from haute.modelling._algorithm_base import (
 )
 from haute.modelling._native_encoding import fit_categorical_levels
 from haute.modelling._shap import require_feature_order
-
-logger = get_logger(component="tboost")
 
 RECORD_KEY = "haute"
 #: Where t-boost scores a categorical value the fit never saw: the axis's pooled
@@ -211,16 +208,6 @@ class TBoostModel:
                 else series.cast(pl.Float64)
             )
         return pl.DataFrame(columns)
-
-    def unseen_values(self, frame: pl.DataFrame) -> pl.DataFrame:
-        """t-boost's count of *frame*'s categorical values the fit never saw.
-
-        One row per ``feature`` and ``value`` with its ``rows``, compared with
-        t-boost's fitted levels, not the contract's levels, which may be a
-        declared domain wider than the training rows.
-        """
-        with _float32_features_accepted():
-            return pl.DataFrame(self.estimator.unseen_values(self.prepared(frame)))
 
     def baseline(self, frame: pl.DataFrame) -> np.ndarray | None:
         """The transformed offset each row's margin starts from.
@@ -518,20 +505,6 @@ def _validated_record(record: dict[str, Any], name: str) -> dict[str, Any]:
     }
 
 
-def _log_unseen_validation_values(model: TBoostModel, eval_df: pl.DataFrame) -> None:
-    """Log each feature whose validation values the training rows never held."""
-    unseen = model.unseen_values(eval_df)
-    for (feature,), rows in unseen.group_by("feature", maintain_order=True):
-        logger.warning(
-            "tboost_validation_values_not_in_training",
-            feature=feature,
-            values=rows.height,
-            rows=int(rows.get_column("rows").sum()),
-            examples=rows.get_column("value").head(5).to_list(),
-            scored_as=UNKNOWN_CATEGORY,
-        )
-
-
 def _rows_kwargs(
     model: TBoostModel, frame: pl.DataFrame, target: str, weight: str | None, task: str
 ) -> dict[str, Any]:
@@ -721,8 +694,6 @@ class TBoostAlgorithm(BaseAlgorithm):
             estimator.fit(features_frame, label, **fit_kwargs, callbacks=progress)
         progress.finish()
         model.estimator = estimator
-        if eval_df is not None:
-            _log_unseen_validation_values(model, eval_df)
         model.fit_tables = model.table_report(train_df)
         reason = str(estimator.stopping_reason_)
         if reason not in _STOPPING_REASONS:
@@ -735,8 +706,7 @@ class TBoostAlgorithm(BaseAlgorithm):
             rounds_fitted=int(estimator.n_trees_),
             stopping_reason=_STOPPING_REASONS[reason],
             # No fitted level list for the contract: an unseen value is t-boost's to
-            # score (UNKNOWN_CATEGORY), so the contract keeps only a declared domain,
-            # which scoring still enforces.
+            # score (UNKNOWN_CATEGORY), so the contract keeps only a declared domain.
             categorical_levels=None,
         )
 

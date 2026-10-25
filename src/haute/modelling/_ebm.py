@@ -71,8 +71,8 @@ class EBMModel:
         return frozenset(self.categorical_levels)
 
     def encoded(self, frame: pl.DataFrame) -> Any:
-        """Features as pandas; categoricals checked against the fitted levels."""
-        return encode_frame(frame, self.features, self.categorical_levels, context="EBM")
+        """Features as pandas; an unseen category keeps its label for the unknown bin."""
+        return encode_frame(frame, self.features, self.categorical_levels, unseen="label")
 
     def baseline(self, frame: pl.DataFrame) -> np.ndarray | None:
         """The transformed offset each row's margin starts from."""

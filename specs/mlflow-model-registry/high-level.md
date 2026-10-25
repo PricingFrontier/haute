@@ -64,8 +64,9 @@ In scope:
 - Preparing an input DataFrame into the shape each flavor's `predict`
   expects (numpy/pandas dtype and categorical handling).
 - Feature-contract validation at score time: presence, relative order,
-  categorical dtype and declared categorical value domains, plus enforcing a model's
-  trained-with offset/exposure column.
+  categorical dtype, plus enforcing a model's trained-with offset/exposure column; and the
+  count and report of categorical values the model's training rows never held, which
+  never stops scoring.
 - Eager (in-memory) and batched (disk, chunked-parquet) scoring, and an
   output/input column write-projection that can prune both to exactly
   what a caller needs.
@@ -207,11 +208,14 @@ Out of scope (owned elsewhere):
   same relative order the model was trained with (categorical feature
   indices are positional for CatBoost), with categorical columns
   presented as non-numeric — and, if the model declares a trained-with
-  offset/exposure column, that column must also be present. Declared categorical
-  domains are then checked against the values in the exact materialised scoring frame.
-  Any of these failing raises before prediction runs; schema-validation results are
-  memoised for repeated model/schema pairs, while value-domain validation still runs
-  for each materialisation because values can change without a schema change.
+  offset/exposure column, that column must also be present. Any of these failing raises
+  before prediction runs; schema-validation results are memoised for repeated
+  model/schema pairs. The values in the exact materialised scoring frame are then
+  counted against the contract's training levels on every materialisation, because values
+  can change without a schema change: a value the training rows never held, a value outside
+  a declared domain, or a null the training rows did not hold is scored by the model's own
+  mechanism and reported as a `categorical_values_not_in_training` warning (modelling
+  high-level, "Unseen categorical values"), never refused.
 - Scoring runs either eagerly (the input is collected once, in memory,
   and predictions are appended to that same materialisation) or in
   batches (the input is written to a temp parquet file and predicted
@@ -222,9 +226,9 @@ Out of scope (owned elsewhere):
   the output write are pruned to that set (plus the model's own features
   and any declared offset column), avoiding materialising columns nobody
   asked for.
-- Live categorical validation materialises only the union of model features,
+- The live unseen-value count materialises only the union of model features,
   categorical columns, offset handling, and write-projection necessities;
-  unrelated columns in a wide input are not collected for that check.
+  unrelated columns in a wide input are not collected for that count.
 - An empty scoring batch produces a typed empty result without scoring a
   synthetic all-null row when the flavor exposes sufficient output metadata.
   CatBoost classification derives hard-label dtype from `classes_`; where a
@@ -417,9 +421,9 @@ Out of scope (owned elsewhere):
   corruption — they are never retried and propagate immediately with
   their real stack trace.
 - A scoring input that fails the feature contract (missing features,
-  wrong relative order, a categorical column with numeric dtype, an observed value outside a
-  declared categorical domain, or a missing offset column): `FeatureMismatchError` with the
-  relevant expected/actual context.
+  wrong relative order, a categorical column with numeric dtype, or a missing offset
+  column): `FeatureMismatchError` with the relevant expected/actual context. A categorical
+  value is never such a failure.
 - An unsupported or misspelled scoring flavor reaching `score_frame()`:
   `ConfigError` — never silently treated as pyfunc.
 - A `predict_proba` output representing more than two classes, where only

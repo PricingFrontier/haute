@@ -69,7 +69,7 @@ class LightGBMModel:
 
     def encoded(self, frame: pl.DataFrame) -> Any:
         """Features as pandas with contract-order categoricals."""
-        return encode_frame(frame, self.features, self.categorical_levels, context="LightGBM")
+        return encode_frame(frame, self.features, self.categorical_levels, unseen="missing")
 
     def baseline(self, frame: pl.DataFrame) -> np.ndarray | None:
         """The transformed offset each row's raw score starts from."""

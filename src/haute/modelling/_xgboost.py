@@ -71,7 +71,7 @@ class XGBoostModel:
 
         from haute.modelling._algorithms import _extract_offset_baseline
 
-        encoded = encode_frame(frame, self.features, self.categorical_levels, context="XGBoost")
+        encoded = encode_frame(frame, self.features, self.categorical_levels, unseen="missing")
         margin = None
         if self.offset_column is not None:
             margin = _extract_offset_baseline(

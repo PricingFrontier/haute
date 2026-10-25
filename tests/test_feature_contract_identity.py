@@ -50,8 +50,8 @@ def test_identity_round_trips_through_save_and_load(tmp_path: Path) -> None:
     save_contract(contract(), path)
     loaded = load_contract(path)
     assert loaded.model == IDENTITY
-    assert loaded.contract_version == CONTRACT_VERSION == 3
-    assert json.loads(path.read_text(encoding="utf-8"))["contract_version"] == 3
+    assert loaded.contract_version == CONTRACT_VERSION == 4
+    assert json.loads(path.read_text(encoding="utf-8"))["contract_version"] == 4
 
 
 def test_schema_only_contract_keeps_model_null(tmp_path: Path) -> None:
@@ -134,10 +134,11 @@ def test_an_earlier_contract_version_is_rejected_with_a_retrain_message(tmp_path
     path = tmp_path / "c.json"
     save_contract(contract(), path)
     raw = json.loads(path.read_text(encoding="utf-8"))
-    del raw["contract_version"]
-    del raw["model"]
+    # A contract written before training levels were recorded.
+    raw["contract_version"] = 3
+    del raw["training_levels"]
     path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(FeatureMismatchError, match="not a version-3 feature contract; retrain"):
+    with pytest.raises(FeatureMismatchError, match="not a version-4 feature contract; retrain"):
         load_contract(path)
 
 

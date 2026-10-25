@@ -1304,6 +1304,7 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         required_output_columns=required_output_columns,
         feature_contract_path=scoring_contract_path(model_source, config, base_dir),
         categorical_levels=declared_categorical_levels,
+        node_id=ctx.node.id,
         reuse_loaded_model=ctx.reuse_loaded_model,
         input_fanout=_upstream_scenario_fanout(ctx.upstream_ids, ctx.node_map),
         base_dir=base_dir,

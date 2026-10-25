@@ -578,10 +578,9 @@ def _assert_runtime_contract_matches(
     task: str,
     *,
     categorical_levels: dict[str, list[str | None]] | None = None,
-    validate_values: bool = False,
 ) -> dict[str, list[str | None]]:
     """Raise FeatureMismatchError if the live schema drifts from the bundled
-    contract, returning categorical levels safe to enforce during scoring.
+    contract, returning the contract's training levels.
 
     Rebuilds a :class:`FeatureContract` from the live LazyFrame's schema
     (restricted to the features the bundled contract cares about) and
@@ -589,13 +588,14 @@ def _assert_runtime_contract_matches(
     :func:`assert_contracts_match`.  A disagreement on any field —
     feature set, dtype, categorical membership — raises immediately so
     deploy operators see the mismatch at load time rather than via
-    cryptic downstream errors.
+    cryptic downstream errors. So does a declared ``categorical_levels``
+    domain that differs from the contract's. A categorical value never
+    raises: scoring reports the values outside the returned training levels.
     """
     from haute.modelling._feature_contract import (
         assert_contracts_match,
         build_contract,
         normalise_categorical_levels,
-        validate_categorical_value_domains,
     )
 
     expected = _load_feature_contract_cached(contract_path)
@@ -661,12 +661,7 @@ def _assert_runtime_contract_matches(
         offset_column=runtime_offset,
     )
     assert_contracts_match(expected, actual)
-    score_levels = (
-        expected.categorical_levels if expected.categorical_levels else runtime_declared_levels
-    )
-    if validate_values:
-        validate_categorical_value_domains(lf, score_levels)
-    return {column: list(levels) for column, levels in score_levels.items()}
+    return {column: list(levels) for column, levels in expected.training_levels.items()}
 
 
 def score_graph_lazy(
@@ -1165,18 +1160,23 @@ def _score_graph_lazy(
                     _categorical_levels: dict[str, list[str | None]] = _declared_levels,
                     _source: str = _score_source,
                     _required: Any = _required_output_columns,
+                    _nid: str = nid,
                 ) -> _Frame:
-                    from haute._model_scorer import _run_score_pipeline
+                    from haute._model_scorer import UnseenValueReport, _run_score_pipeline
 
                     lf = dfs[0] if dfs else pl.LazyFrame()
-                    score_categorical_levels = dict(_categorical_levels)
+                    unseen_report = None
                     if _contract_path is not None:
-                        score_categorical_levels = _assert_runtime_contract_matches(
+                        training_levels = _assert_runtime_contract_matches(
                             lf,
                             _contract_path,
                             _t,
                             categorical_levels=_categorical_levels,
                         )
+                        if training_levels:
+                            unseen_report = UnseenValueReport(
+                                training_levels, "Deployed model", _nid
+                            )
                     # Bound to the bundled contract, which declares the offset
                     # a pyfunc or an undeclared CatBoost model scores with.
                     scoring_model = load_local_model_cached(_p, _t, _contract_path)
@@ -1191,7 +1191,7 @@ def _score_graph_lazy(
                         source=_source,
                         required_output_columns=_required,
                         temporary_paths=model_score_temp_paths,
-                        categorical_levels=score_categorical_levels,
+                        unseen_report=unseen_report,
                         preamble_ns=_preamble_names,
                     )
 
@@ -1218,7 +1218,6 @@ def _score_graph_lazy(
                         _contract_path,
                         _t,
                         categorical_levels=_categorical_levels,
-                        validate_values=True,
                     )
                     # The contract matched, but without a model artifact
                     # there is no honest prediction to return.

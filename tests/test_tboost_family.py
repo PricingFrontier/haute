@@ -359,10 +359,6 @@ def test_an_unseen_level_scores_like_the_pooled_rare_levels() -> None:
     contributions = model.contributions(rows)
     column = contributions.terms.index(("make",))
     assert contributions.values[0, column] == pytest.approx(contributions.values[1, column])
-    unseen = model.unseen_values(rows)
-    assert unseen.select("feature", "value", "rows").to_dicts() == [
-        {"feature": "make", "value": "never-seen", "rows": 1}
-    ]
 
 
 def test_with_nothing_pooled_an_unseen_level_scores_in_the_default_cell() -> None:
@@ -388,15 +384,18 @@ def test_with_nothing_pooled_an_unseen_level_scores_in_the_default_cell() -> Non
     assert np.isfinite(model.predict(nulls)).all()
 
 
+@pytest.mark.parametrize("declared", [False, True], ids=["undeclared", "declared"])
 def test_validation_rows_with_values_the_training_rows_lack_train_and_are_logged(
-    tmp_path: Path,
+    tmp_path: Path, declared: bool
 ) -> None:
     from structlog.testing import capture_logs
 
     rng = np.random.default_rng(5)
-    # A many-levelled feature: a random split leaves some levels in validation only.
+    makes = [f"M{i}" for i in range(400)]
+    # A many-levelled feature: a random split leaves some levels in validation only,
+    # and a declared domain listing every make does not hide them.
     data = frame(900).with_columns(
-        make=pl.Series([f"M{i}" for i in rng.integers(0, 400, 900)]),
+        make=pl.Series([makes[i] for i in rng.integers(0, 400, 900)]),
     )
     with capture_logs() as logs:
         _job, result = train(
@@ -406,17 +405,20 @@ def test_validation_rows_with_values_the_training_rows_lack_train_and_are_logged
             offset="exposure",
             data=data,
             feature_columns=["region", "age", "make"],
+            **({"categorical_levels": {"make": makes}} if declared else {}),
         )
     assert result.diagnostics_errors == []
-    unseen = [
-        entry for entry in logs if entry["event"] == "tboost_validation_values_not_in_training"
-    ]
+    unseen = [entry for entry in logs if entry["event"] == "categorical_values_not_in_training"]
     assert unseen and all(entry["feature"] == "make" for entry in unseen)
-    assert all(entry["scored_as"] == "rare" and entry["rows"] >= 1 for entry in unseen)
+    assert all(
+        entry["context"] == "Training validation rows" and entry["rows"] >= 1 for entry in unseen
+    )
 
 
 def test_saved_models_score_unseen_levels_through_their_contract(tmp_path: Path) -> None:
-    from haute.errors import FeatureMismatchError
+    from structlog.testing import capture_logs
+
+    from haute._model_scorer import UnseenValueReport
 
     data = frame(3000, seed=4)
     _job, result = train(
@@ -428,22 +430,27 @@ def test_saved_models_score_unseen_levels_through_their_contract(tmp_path: Path)
         params={**FAST, "learning_rate": 0.1},
     )
     contract = load_contract(Path(result.model_path).parent / model_contract_filename("tb"))
-    # Undeclared categoricals carry no domain, so scoring leaves unseen values to t-boost.
+    # Undeclared categoricals carry no domain; their training levels drive the report.
     assert "region" not in contract.categorical_levels
+    assert contract.training_levels["region"] == [*LEVELS, None]
     scoring = load_local_model(result.model_path)
     unseen = data.head(5).with_columns(pl.lit("mars").alias("region"))
-    scored = score_frame(
-        model=scoring.raw_model,
-        lf=unseen.lazy(),
-        features=scoring.feature_names,
-        cat_feature_names=scoring.cat_feature_names,
-        flavor="tboost",
-        offset_column=scoring.offset_column,
-        categorical_levels=contract.categorical_levels,
-    ).collect()["prediction"]
+    with capture_logs() as logs:
+        scored = score_frame(
+            model=scoring.raw_model,
+            lf=unseen.lazy(),
+            features=scoring.feature_names,
+            cat_feature_names=scoring.cat_feature_names,
+            flavor="tboost",
+            offset_column=scoring.offset_column,
+            unseen_report=UnseenValueReport(contract.training_levels, "Model Score"),
+        ).collect()["prediction"]
     np.testing.assert_allclose(scored.to_numpy(), scoring.raw_model.predict(unseen), rtol=1e-12)
+    assert [
+        log["examples"] for log in logs if log["event"] == "categorical_values_not_in_training"
+    ] == [["mars"]]
 
-    # A declared domain is schema: a value outside it still fails at scoring.
+    # A value outside a declared domain scores too, exactly as t-boost scores it.
     declared_root = tmp_path / "declared"
     _job, declared = train(
         declared_root,
@@ -459,16 +466,18 @@ def test_saved_models_score_unseen_levels_through_their_contract(tmp_path: Path)
     )
     assert declared_contract.categorical_levels["region"] == [*LEVELS, "west", None]
     declared_scoring = load_local_model(declared.model_path)
-    with pytest.raises(FeatureMismatchError):
-        score_frame(
-            model=declared_scoring.raw_model,
-            lf=unseen.lazy(),
-            features=declared_scoring.feature_names,
-            cat_feature_names=declared_scoring.cat_feature_names,
-            flavor="tboost",
-            offset_column=declared_scoring.offset_column,
-            categorical_levels=declared_contract.categorical_levels,
-        ).collect()
+    declared_scored = score_frame(
+        model=declared_scoring.raw_model,
+        lf=unseen.lazy(),
+        features=declared_scoring.feature_names,
+        cat_feature_names=declared_scoring.cat_feature_names,
+        flavor="tboost",
+        offset_column=declared_scoring.offset_column,
+        unseen_report=UnseenValueReport(declared_contract.training_levels, "Model Score"),
+    ).collect()["prediction"]
+    np.testing.assert_allclose(
+        declared_scored.to_numpy(), declared_scoring.raw_model.predict(unseen), rtol=1e-12
+    )
 
 
 def test_a_model_without_categorical_features_saves_and_loads(tmp_path: Path) -> None:
@@ -478,21 +487,6 @@ def test_a_model_without_categorical_features_saves_and_loads(tmp_path: Path) ->
     model.save(path)
     assert "cat_indices" not in json.loads(path.read_text(encoding="utf-8"))
     assert np.array_equal(TBoostModel.load(path).predict(data), model.predict(data))
-
-
-def test_a_declared_domain_does_not_hide_validation_values_the_training_rows_lack() -> None:
-    from structlog.testing import capture_logs
-
-    data = frame()
-    declared = {"region": [*LEVELS, "west", None]}
-    validation = frame(200, seed=3).with_columns(
-        region=pl.when(pl.col("age") < 40).then(pl.lit("west")).otherwise(pl.col("region"))
-    )
-    with capture_logs() as logs:
-        model = fit_adapter(data, categorical_levels=declared, eval_df=validation).model
-    entries = [e for e in logs if e["event"] == "tboost_validation_values_not_in_training"]
-    assert [(e["feature"], e["examples"]) for e in entries] == [("region", ["west"])]
-    assert model.unseen_values(validation).get_column("value").to_list() == ["west"]
 
 
 def test_reordered_categories_score_identically() -> None:

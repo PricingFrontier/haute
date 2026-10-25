@@ -504,6 +504,9 @@ class _TrainModelResult:
     algo: Any
     fit_result: Any
     fit_params: dict[str, Any]
+    #: The values each categorical column held in the rows the model was
+    #: fitted on, for the contract's unseen-value report.
+    training_levels: dict[str, list[str | None]] = field(default_factory=dict)
 
 
 @dataclass
@@ -2475,6 +2478,11 @@ class TrainingJob:
             execution_context=execution_context,
         )
         _mem_checkpoint(f"read train partition ({len(train_df):,} rows)")
+        from haute.modelling._feature_contract import observed_training_levels
+
+        training_levels = observed_training_levels(
+            train_df, self._training_level_columns(features, cat_features)
+        )
 
         def load_validation() -> pl.DataFrame:
             _report("Loading validation data", 0.25)
@@ -2629,7 +2637,43 @@ class TrainingJob:
             algo=algo,
             fit_result=fit_result,
             fit_params=fit_params,
+            training_levels=training_levels,
         )
+
+    def _training_level_columns(self, features: list[str], cat_features: list[str]) -> list[str]:
+        """The columns whose training values the contract records.
+
+        Every categorical feature, and for a GLM every column a categorical,
+        target-encoding or frequency-encoding term reads, an integer one
+        included.
+        """
+        columns = list(cat_features)
+        if self.algorithm == "glm":
+            from haute.modelling._glm_terms import ENCODING_TERM_TYPES
+
+            terms = self.params.get("terms") or {}
+            for name, spec in terms.items():
+                if spec.get("type") == "categorical":
+                    column = name
+                elif spec.get("type") in ENCODING_TERM_TYPES:
+                    column = spec.get("variable", name)
+                else:
+                    continue
+                if column in features:
+                    columns.append(column)
+        return list(dict.fromkeys(columns))
+
+    def _report_unseen_partition(
+        self, frame: pl.DataFrame, train_result: _TrainModelResult, partition: str
+    ) -> None:
+        """Report the evaluation rows' categorical values the training rows never held."""
+        from haute.modelling._feature_contract import (
+            count_unseen_categorical_values,
+            report_unseen_categorical_values,
+        )
+
+        unseen = count_unseen_categorical_values(frame, train_result.training_levels)
+        report_unseen_categorical_values(unseen, context=f"Training {partition} rows")
 
     def _glm_select_columns(self, features: list[str]) -> list[str] | None:
         """Column subset needed for GLM parquet reads, or ``None`` for CatBoost.
@@ -2844,6 +2888,7 @@ class TrainingJob:
                 execution_context=execution_context,
                 stage_name="training_validation_metrics_materialise",
             )
+            self._report_unseen_partition(val_df, train_result, "validation")
             val_y_true = val_df[self.target].to_numpy()
             val_y_pred = self._predict_diagnostic_batches(
                 algo, model, val_df, features, execution_context=execution_context
@@ -2868,6 +2913,12 @@ class TrainingJob:
             stage_name=f"training_{diagnostics_set}_diagnostics_materialise",
         )
         _mem_checkpoint(f"read {diagnostics_set} partition for diagnostics ({len(diag_df):,} rows)")
+        if diagnostics_set != "train":
+            self._report_unseen_partition(
+                diag_df,
+                train_result,
+                _PUBLIC_EVALUATION_SET_LABELS.get(diagnostics_set, diagnostics_set),
+            )
         y_true = diag_df[self.target].to_numpy()
         # Reported fit quality describes the predictions the model serves.
         y_pred = self._predict_diagnostic_batches(
@@ -3102,6 +3153,7 @@ class TrainingJob:
                 offset_column=self.offset,
                 offset_link=self._contract_offset_link(),
                 model=self._model_identity(),
+                training_levels=train_result.training_levels,
             )
             contract_path = output_dir / model_contract_filename(self.name)
             save_contract(contract, contract_path)

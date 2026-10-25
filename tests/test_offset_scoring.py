@@ -596,12 +596,13 @@ class TestOffsetInSignatureAndContract:
             "feature_types": {"age": "Int64", "region": "String"},
             "categorical_features": ["region"],
             "categorical_levels": {},
+            "training_levels": {},
             "target_name": "ClaimCount",
             "target_type": "Int64",
             "task": "regression",
             "offset_column": None,
             "offset_link": None,
-            "contract_version": 3,
+            "contract_version": 4,
             "model": None,
         }
         import hashlib

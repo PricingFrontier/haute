@@ -10,7 +10,7 @@ import contextvars
 import os
 import shutil
 import threading
-from collections.abc import Hashable, Iterable, Iterator, Mapping
+from collections.abc import Hashable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, closing, contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -96,7 +96,6 @@ _ModelFeatureContractKey: TypeAlias = tuple[tuple[str, ...], frozenset[str], str
 _FeatureValidationCacheKey: TypeAlias = tuple[_ModelFeatureContractKey, _SchemaValidationKey]
 _FeatureValidationResult: TypeAlias = tuple[list[str], list[str]]
 _FeatureValidationLastEntry: TypeAlias = tuple[_FeatureValidationCacheKey, _FeatureValidationResult]
-_CategoricalLevels: TypeAlias = Mapping[str, Iterable[str | None]] | None
 
 _feature_validation_cache: LRUCache[_FeatureValidationCacheKey, _FeatureValidationResult] = (
     LRUCache(max_size=_MLFLOW_MODEL_CACHE_MAX_SIZE)
@@ -387,6 +386,50 @@ _scenario_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
 )
 
 _SCORE_BATCH_SIZE = 500_000
+
+
+@dataclass(frozen=True, slots=True)
+class UnseenValueReport:
+    """Where a score reports the categorical values its model's training rows never held.
+
+    *training_levels* are the contract's; *context* names the scoring path in the
+    log and the preview warning, and *node_id* the node, when there is one.
+    Reporting never refuses a value.
+    """
+
+    training_levels: Mapping[str, Sequence[str | None]]
+    context: str
+    node_id: str | None = None
+
+    def for_features(self, features: Iterable[str]) -> UnseenValueReport | None:
+        """This report narrowed to *features*, or ``None`` when none has levels."""
+        feature_set = set(features)
+        levels = {
+            column: list(values)
+            for column, values in self.training_levels.items()
+            if column in feature_set
+        }
+        if not levels:
+            return None
+        return UnseenValueReport(levels, self.context, self.node_id)
+
+
+def _report_unseen_values(
+    frame: pl.DataFrame | pl.LazyFrame, report: UnseenValueReport | None
+) -> None:
+    """Count and report the values of *frame* the model's training rows never held."""
+    if report is None:
+        return
+    from haute.modelling._feature_contract import (
+        count_unseen_categorical_values,
+        report_unseen_categorical_values,
+    )
+
+    report_unseen_categorical_values(
+        count_unseen_categorical_values(frame, report.training_levels),
+        context=report.context,
+        node_id=report.node_id,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -841,7 +884,7 @@ def _score_eager_unified(
     task: str,
     output_col: str,
     write_projection: ScoreWriteProjection | None = None,
-    categorical_levels: _CategoricalLevels = None,
+    unseen_report: UnseenValueReport | None = None,
     offset_column: str | None = None,
     offset_link: str | None = None,
 ) -> pl.LazyFrame:
@@ -894,7 +937,7 @@ def _score_eager_unified(
         flavor,
         task,
         output_col,
-        categorical_levels=categorical_levels,
+        unseen_report=unseen_report,
         offset_column=offset_column,
         offset_link=offset_link,
     )
@@ -915,14 +958,14 @@ def _score_collected_frame(
     task: str,
     output_col: str,
     *,
-    categorical_levels: _CategoricalLevels,
+    unseen_report: UnseenValueReport | None,
     offset_column: str | None,
     offset_link: str | None,
 ) -> tuple[pl.DataFrame, list[str]]:
-    """Validate and score one materialised frame; return it with predictions."""
+    """Report and score one materialised frame; return it with predictions."""
     from haute._mlflow_io import _prepare_predict_frame
 
-    _validate_runtime_categorical_values(frame, categorical_levels or {})
+    _report_unseen_values(frame, unseen_report)
     predict_features = _offset_predict_features(features, flavor, offset_column)
     if flavor == "rustystats":
         _require_positive_log_link_offset(frame, offset_column, offset_link)
@@ -966,7 +1009,7 @@ def _score_row_local_scan(
     task: str,
     *,
     write_projection: ScoreWriteProjection | None,
-    categorical_levels: _CategoricalLevels,
+    unseen_report: UnseenValueReport | None,
 ) -> pl.LazyFrame:
     """Score through a row-local Python scan that Polars can push a limit into.
 
@@ -1027,7 +1070,7 @@ def _score_row_local_scan(
             flavor,
             task,
             output_col,
-            categorical_levels=categorical_levels,
+            unseen_report=unseen_report,
             offset_column=offset_column,
             offset_link=offset_link,
         )
@@ -1078,32 +1121,6 @@ def _normalise_score_write_projection(
     )
 
 
-def _normalise_runtime_categorical_levels(
-    categorical_levels: _CategoricalLevels,
-    *,
-    features: list[str],
-) -> dict[str, list[str | None]]:
-    from haute.modelling._feature_contract import normalise_categorical_levels
-
-    feature_set = set(features)
-    return {
-        column: levels
-        for column, levels in normalise_categorical_levels(categorical_levels).items()
-        if column in feature_set
-    }
-
-
-def _validate_runtime_categorical_values(
-    frame: pl.LazyFrame | pl.DataFrame,
-    categorical_levels: Mapping[str, Iterable[str | None]],
-) -> None:
-    if not categorical_levels:
-        return
-    from haute.modelling._feature_contract import validate_categorical_value_domains
-
-    validate_categorical_value_domains(frame, categorical_levels)
-
-
 def _ordered_required_columns(
     schema_names: list[str],
     required_columns: frozenset[str],
@@ -1127,7 +1144,7 @@ def _score_batched_unified(
     output_col: str,
     write_projection: ScoreWriteProjection | None = None,
     temporary_paths: list[str] | None = None,
-    categorical_levels: _CategoricalLevels = None,
+    unseen_report: UnseenValueReport | None = None,
     offset_column: str | None = None,
     offset_link: str | None = None,
 ) -> pl.LazyFrame:
@@ -1185,7 +1202,7 @@ def _score_batched_unified(
             output_col,
             task,
             write_projection=write_projection,
-            categorical_levels=categorical_levels,
+            unseen_report=unseen_report,
             destination=destination,
         )
     finally:
@@ -1215,7 +1232,7 @@ def score_frame(
     required_output_columns: frozenset[str] | set[str] | None = None,
     write_projection: ScoreWriteProjection | None = None,
     temporary_paths: list[str] | None = None,
-    categorical_levels: _CategoricalLevels = None,
+    unseen_report: UnseenValueReport | None = None,
     offset_column: str | None = None,
     offset_link: str | None = None,
 ) -> pl.LazyFrame:
@@ -1287,10 +1304,7 @@ def score_frame(
             task=task,
         )
 
-    normalised_levels = _normalise_runtime_categorical_levels(
-        categorical_levels,
-        features=features,
-    )
+    scored_report = unseen_report.for_features(features) if unseen_report else None
 
     if batch:
         return _score_batched_unified(
@@ -1303,7 +1317,7 @@ def score_frame(
             output_col,
             write_projection=write_projection,
             temporary_paths=temporary_paths,
-            categorical_levels=normalised_levels,
+            unseen_report=scored_report,
             offset_column=offset_column,
             offset_link=offset_link,
         )
@@ -1316,7 +1330,7 @@ def score_frame(
         task,
         output_col,
         write_projection=write_projection,
-        categorical_levels=normalised_levels,
+        unseen_report=scored_report,
         offset_column=offset_column,
         offset_link=offset_link,
     )
@@ -1336,7 +1350,7 @@ def _run_score_pipeline(
     schema_only: bool = False,
     required_output_columns: frozenset[str] | set[str] | None = None,
     temporary_paths: list[str] | None = None,
-    categorical_levels: _CategoricalLevels = None,
+    unseen_report: UnseenValueReport | None = None,
     preamble_ns: dict[str, Any] | None = None,
 ) -> _Frame:
     """Core scoring logic shared by ``ModelScorer.score()`` and deploy scorer.
@@ -1374,10 +1388,7 @@ def _run_score_pipeline(
     schema = lf.collect_schema()
     features, _missing = _validate_features(scoring_model, schema)
     resolved_offset = _declared_offset_column(scoring_model)
-    normalised_levels = _normalise_runtime_categorical_levels(
-        categorical_levels,
-        features=features,
-    )
+    scored_report = unseen_report.for_features(features) if unseen_report else None
 
     # No catch-all here by design.  ``_validate_features`` above already
     # raises ``FeatureMismatchError`` with full schema context for the
@@ -1408,12 +1419,12 @@ def _run_score_pipeline(
             output_col,
             task,
             write_projection=write_projection,
-            categorical_levels=normalised_levels,
+            unseen_report=scored_report,
         )
     elif source == "live":
         eager_lf = lf
-        if normalised_levels:
-            # Materialise ONCE so domain validation inspects the exact rows
+        if scored_report is not None:
+            # Materialise ONCE so the unseen-value count reads the exact rows
             # that get scored.  Validating the lazy plan would execute the
             # upstream a second time (the eager scorer collects again), and
             # an order- or row-unstable upstream could diverge between the
@@ -1421,23 +1432,23 @@ def _run_score_pipeline(
             # DataFrame-backed plan re-runs no upstream compute.
             from haute._polars_utils import streaming_collect
 
-            validation_lf = lf
-            validation_columns = _score_input_projection_columns(
+            count_lf = lf
+            count_columns = _score_input_projection_columns(
                 lf,
                 features,
                 write_projection,
                 offset_column=resolved_offset,
             )
-            if validation_columns is not None:
-                validation_lf = lf.select(
+            if count_columns is not None:
+                count_lf = lf.select(
                     _ordered_required_columns(
                         schema.names(),
-                        validation_columns,
-                        context="live model-score categorical validation projection",
+                        count_columns,
+                        context="live model-score unseen-value count projection",
                     )
                 )
-            collected = streaming_collect(validation_lf)
-            _validate_runtime_categorical_values(collected, normalised_levels)
+            collected = streaming_collect(count_lf)
+            _report_unseen_values(collected, scored_report)
             eager_lf = collected.lazy()
         result_lf = score_eager_(
             scoring_model,
@@ -1460,7 +1471,7 @@ def _run_score_pipeline(
             task,
             write_projection=write_projection,
             temporary_paths=temporary_paths,
-            categorical_levels=normalised_levels,
+            unseen_report=scored_report,
         )
 
     if code:
@@ -1487,7 +1498,7 @@ def _score_batched_standalone(
     task: str,
     write_projection: ScoreWriteProjection | None = None,
     temporary_paths: list[str] | None = None,
-    categorical_levels: _CategoricalLevels = None,
+    unseen_report: UnseenValueReport | None = None,
 ) -> pl.LazyFrame:
     """Sink → batch score → lazy scan (low-memory path).
 
@@ -1505,7 +1516,7 @@ def _score_batched_standalone(
         batch=True,
         write_projection=write_projection,
         temporary_paths=temporary_paths,
-        categorical_levels=categorical_levels,
+        unseen_report=unseen_report,
         offset_column=_declared_offset_column(scoring_model),
         offset_link=_declared_offset_link(scoring_model),
     )
@@ -1546,9 +1557,11 @@ class ModelScorer:
     feature_contract_path : str | None
         The resolved feature contract the model scores under
         (:func:`haute._model_source.scoring_contract_path`: explicit, or saved
-        beside a model file). The model is bound to it, and when it declares
-        categorical value domains, runtime declarations must match and
-        observed values are checked before prediction.
+        beside a model file). The model is bound to it; when it declares
+        categorical value domains, runtime declarations must match, and the
+        values its training rows never held are reported, never refused.
+    node_id : str | None
+        The node an unseen-value warning names (``None`` from generated code).
     base_dir : str | Path | None
         The pipeline directory a relative model file may resolve against.
     reuse_loaded_model : bool
@@ -1574,7 +1587,8 @@ class ModelScorer:
         schema_only: bool = False,
         required_output_columns: frozenset[str] | set[str] | None = None,
         feature_contract_path: str | None = None,
-        categorical_levels: _CategoricalLevels = None,
+        categorical_levels: Mapping[str, Iterable[str | None]] | None = None,
+        node_id: str | None = None,
         reuse_loaded_model: bool = False,
         input_fanout: int = 1,
         base_dir: str | Path | None = None,
@@ -1603,6 +1617,7 @@ class ModelScorer:
             if categorical_levels is not None
             else None
         )
+        self.node_id = node_id
         self.reuse_loaded_model = reuse_loaded_model
         self.input_fanout = max(1, int(input_fanout))
         self.base_dir = base_dir
@@ -1633,36 +1648,25 @@ class ModelScorer:
                 self._bound_model = self._load_bound_model_uncached()
         return self._bound_model
 
-    def _categorical_levels_for_score(
-        self, contract_path: str | None
-    ) -> dict[str, list[str | None]]:
-        """Return the categorical value domains to enforce for this score call.
+    def _unseen_report_for_score(self, contract_path: str | None) -> UnseenValueReport | None:
+        """Where this score call reports its unseen categorical values, if anywhere.
 
         *contract_path* is the contract the model is bound to: the node's own,
-        or the one its run logged for a model that needs it.
+        or the one its run logged for a model that needs it. A declared domain
+        that differs from the contract's is a configuration mismatch and fails
+        before any row is read; a value outside either never fails.
         """
-        declared = self._declared_categorical_levels
         if contract_path is None:
-            return {column: list(levels) for column, levels in (declared or {}).items()}
+            return None
 
-        from haute.modelling._feature_contract import (
-            load_contract,
-            normalise_categorical_levels,
-        )
+        from haute.modelling._feature_contract import load_contract
 
         expected = load_contract(contract_path)
-        if not expected.categorical_levels:
-            return normalise_categorical_levels(declared, features=expected.features)
-
-        declared_for_contract = {
-            column: levels
-            for column, levels in (declared or {}).items()
-            if column in expected.categorical_levels
-        }
         mismatched_levels = {
             column: levels
-            for column, levels in declared_for_contract.items()
-            if levels != expected.categorical_levels[column]
+            for column, levels in (self._declared_categorical_levels or {}).items()
+            if column in expected.categorical_levels
+            and levels != expected.categorical_levels[column]
         }
         if mismatched_levels:
             raise FeatureMismatchError(
@@ -1672,7 +1676,9 @@ class ModelScorer:
                 actual=mismatched_levels,
                 feature_contract_path=contract_path,
             )
-        return {column: list(levels) for column, levels in expected.categorical_levels.items()}
+        if not expected.training_levels:
+            return None
+        return UnseenValueReport(expected.training_levels, "Model Score", self.node_id)
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -1688,13 +1694,13 @@ class ModelScorer:
         reconstructed in the scorer's declared-source order.
         """
         if self.feature_contract_path is not None:
-            # A configured contract's domain drift fails before the model loads.
-            categorical_levels = self._categorical_levels_for_score(self.feature_contract_path)
+            # A configured contract's domain mismatch fails before the model loads.
+            unseen_report = self._unseen_report_for_score(self.feature_contract_path)
             scoring_model = self._load_bound_model().scoring_model
         else:
             # A contract the run logged is known only once the model has loaded.
             bound = self._load_bound_model()
-            categorical_levels = self._categorical_levels_for_score(bound.contract_path)
+            unseen_report = self._unseen_report_for_score(bound.contract_path)
             scoring_model = bound.scoring_model
 
         if dfs_by_name:
@@ -1719,7 +1725,7 @@ class ModelScorer:
                 row_limit=self.row_limit,
                 schema_only=self.schema_only,
                 required_output_columns=self.required_output_columns,
-                categorical_levels=categorical_levels,
+                unseen_report=unseen_report,
                 preamble_ns=self.preamble_ns,
             )
         finally:
@@ -1937,7 +1943,7 @@ def _batch_score_to_parquet(
     task: str,
     *,
     write_projection: ScoreWriteProjection | None = None,
-    categorical_levels: _CategoricalLevels = None,
+    unseen_report: UnseenValueReport | None = None,
     destination: ScoreOutputDestination | None = None,
 ) -> str:
     """Score a parquet input in batches; return the directory of scored part files.
@@ -1955,6 +1961,12 @@ def _batch_score_to_parquet(
     from haute._mlflow_io import (
         _append_classification_proba,
         _prepare_predict_frame,
+    )
+    from haute.modelling._feature_contract import (
+        UnseenCategoricalValues,
+        count_unseen_categorical_values,
+        merge_unseen_categorical_values,
+        report_unseen_categorical_values,
     )
 
     if destination is not None:
@@ -1985,10 +1997,9 @@ def _batch_score_to_parquet(
     wrote_any = False
     want_proba = task == "classification"
     can_predict_proba = want_proba and _raw_model_supports_predict_proba(scoring_model)
-    normalised_levels = _normalise_runtime_categorical_levels(
-        categorical_levels,
-        features=features,
-    )
+    scored_report = unseen_report.for_features(features) if unseen_report else None
+    # Counted chunk by chunk, reported once after the last.
+    unseen: dict[str, UnseenCategoricalValues] = {}
     offset_column = _declared_offset_column(scoring_model)
     offset_link = _declared_offset_link(scoring_model)
     predict_features = _offset_predict_features(
@@ -2030,8 +2041,13 @@ def _batch_score_to_parquet(
                 if execution_context is not None:
                     execution_context.checkpoint(label="model_score_batch")
                 chunk = chunk_raw.to_frame() if isinstance(chunk_raw, pl.Series) else chunk_raw
-                feature_chunk = chunk.select(features)
-                _validate_runtime_categorical_values(feature_chunk, normalised_levels)
+                if scored_report is not None:
+                    unseen = merge_unseen_categorical_values(
+                        unseen,
+                        count_unseen_categorical_values(
+                            chunk.select(features), scored_report.training_levels
+                        ),
+                    )
                 if scoring_model.flavor == "rustystats":
                     _require_positive_log_link_offset(chunk, offset_column, offset_link)
                 x_data = _prepare_predict_frame(
@@ -2118,6 +2134,10 @@ def _batch_score_to_parquet(
             write_part(empty)
         if destination is not None:
             destination.digests = digests
+        if scored_report is not None:
+            report_unseen_categorical_values(
+                unseen, context=scored_report.context, node_id=scored_report.node_id
+            )
     except BaseException:
         # A failure leaves nothing: the parts written so far, and the
         # directory too unless it was the caller's.

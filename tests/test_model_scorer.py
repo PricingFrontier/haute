@@ -108,6 +108,7 @@ def _write_region_feature_contract(
     tmp_path: Path,
     *,
     categorical_levels: dict[str, list[str | None]],
+    training_levels: dict[str, list[str | None]] | None = None,
 ) -> Path:
     from haute.modelling._feature_contract import build_contract, save_contract
 
@@ -118,6 +119,7 @@ def _write_region_feature_contract(
             feature_types={"region": "String"},
             categorical_features=["region"],
             categorical_levels=categorical_levels,
+            training_levels=training_levels,
             target_name="target",
             target_type="Float64",
             task="regression",
@@ -397,62 +399,54 @@ class TestModelScorerScore:
         mock_load.assert_not_called()
         mock_score_eager.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "declared",
+        [None, {"region": ["north", "south"]}],
+        ids=["without-a-declaration", "with-a-matching-declaration"],
+    )
     @patch("haute._mlflow_io._score_eager")
     @patch("haute._mlflow_io.load_mlflow_model")
-    def test_feature_contract_rejects_observed_category_outside_domain_live(
+    def test_feature_contract_scores_and_reports_a_value_outside_its_training_levels(
         self,
         mock_load,
         mock_score_eager,
         tmp_path,
+        declared,
     ):
-        """A matching declaration still rejects live values outside the training domain."""
+        """A value the training rows never held, or outside the declared domain, scores."""
+        from structlog.testing import capture_logs
+
         contract_path = _write_region_feature_contract(
             tmp_path,
             categorical_levels={"region": ["north", "south"]},
+            training_levels={"region": ["north", "south"]},
         )
         mock_load.return_value = _make_scoring_model(
             feature_names=["region"],
             cat_feature_names=frozenset({"region"}),
         )
-        scorer = ModelScorer(
-            model_source=_run_source("abc"),
-            source="live",
-            feature_contract_path=str(contract_path),
-            categorical_levels={"region": ["north", "south"]},
-        )
-
-        with pytest.raises(FeatureMismatchError, match="outside declared"):
-            scorer.score(pl.DataFrame({"region": ["west"]}).lazy())
-
-        mock_score_eager.assert_not_called()
-
-    @patch("haute._mlflow_io._score_eager")
-    @patch("haute._mlflow_io.load_mlflow_model")
-    def test_feature_contract_enforces_levels_without_runtime_redeclaration(
-        self,
-        mock_load,
-        mock_score_eager,
-        tmp_path,
-    ):
-        """The saved contract is self-sufficient when runtime config omits levels."""
-        contract_path = _write_region_feature_contract(
-            tmp_path,
-            categorical_levels={"region": ["north", "south"]},
-        )
-        mock_load.return_value = _make_scoring_model(
-            feature_names=["region"],
-            cat_feature_names=frozenset({"region"}),
+        mock_score_eager.side_effect = lambda _model, lf, *_args, **_kwargs: lf.with_columns(
+            pl.lit(1.0).alias("prediction")
         )
         scorer = ModelScorer(
             model_source=_run_source("abc"),
             source="live",
             feature_contract_path=str(contract_path),
+            categorical_levels=declared,
+            node_id="score",
         )
 
-        with pytest.raises(FeatureMismatchError, match="outside declared"):
-            scorer.score(pl.DataFrame({"region": ["west"]}).lazy())
+        with capture_logs() as logs:
+            result = scorer.score(pl.DataFrame({"region": ["west", None]}).lazy()).collect()
 
-        mock_score_eager.assert_not_called()
+        assert result["prediction"].to_list() == [1.0, 1.0]
+        [entry] = [log for log in logs if log["event"] == "categorical_values_not_in_training"]
+        assert (entry["feature"], entry["examples"], entry["null_rows"], entry["node_id"]) == (
+            "region",
+            ["west"],
+            1,
+            "score",
+        )
 
     @patch("haute._mlflow_io._score_eager")
     @patch("haute._mlflow_io.load_mlflow_model")
@@ -826,27 +820,48 @@ class TestBatchScoreToParquet:
         assert created_paths
         assert all(not Path(path).exists() for path in created_paths)
 
-    def test_declared_categorical_levels_validate_before_batch_predict(self, tmp_path):
-        """Batch scoring checks category domains per chunk before predict."""
+    def test_an_unseen_value_report_narrows_to_the_scored_features(self):
+        from haute._model_scorer import UnseenValueReport
+
+        report = UnseenValueReport({"region": ["north"], "make": ["A"]}, "Model Score", "score")
+
+        assert report.for_features(["region", "age"]) == UnseenValueReport(
+            {"region": ["north"]}, "Model Score", "score"
+        )
+        assert report.for_features(["age"]) is None
+
+    def test_batch_scoring_counts_every_chunk_and_reports_once(self, tmp_path, monkeypatch):
+        """Each chunk's unseen values are counted and the total reported once."""
+        from structlog.testing import capture_logs
+
+        import haute._model_scorer as model_scorer
+        from haute._chunked_writes import part_paths, scan_parts
+
+        monkeypatch.setattr(model_scorer, "_SCORE_BATCH_SIZE", 1)
         input_path = str(tmp_path / "input.parquet")
-        pl.DataFrame({"region": ["west"]}).write_parquet(input_path)
+        pl.DataFrame({"region": ["west", "north", "west", "east"]}).write_parquet(input_path)
         sm = _make_scoring_model(
             feature_names=["region"],
             cat_feature_names=frozenset({"region"}),
             predictions=np.array([0.1]),
         )
 
-        with pytest.raises(FeatureMismatchError, match="outside declared"):
-            _batch_score_to_parquet(
+        with capture_logs() as logs:
+            out_dir = _batch_score_to_parquet(
                 sm,
                 input_path,
                 ["region"],
                 "pred",
                 "regression",
-                categorical_levels={"region": ["north", "south"]},
+                unseen_report=model_scorer.UnseenValueReport(
+                    {"region": ["north", "south"]}, "Model Score"
+                ),
             )
 
-        sm.raw_model.predict.assert_not_called()
+        assert sm.raw_model.predict.call_count == 4
+        assert scan_parts(part_paths(Path(out_dir))).collect()["pred"].to_list() == [0.1] * 4
+        [entry] = [log for log in logs if log["event"] == "categorical_values_not_in_training"]
+        assert (entry["values"], entry["rows"], entry["examples"]) == (2, 3, ["east", "west"])
 
 
 # ===========================================================================
@@ -1954,8 +1969,13 @@ class TestRowLocalScanScoring:
         assert scanned.schema == eager.schema
         assert scanned.equals(eager)
 
-    def test_undeclared_categorical_level_raises_through_the_scan(self) -> None:
+    def test_a_level_outside_the_training_levels_scores_and_is_reported_through_the_scan(
+        self,
+    ) -> None:
         from catboost import CatBoostRegressor
+        from structlog.testing import capture_logs
+
+        from haute._model_scorer import UnseenValueReport
 
         model = CatBoostRegressor(
             iterations=5, depth=2, random_seed=7, verbose=0, allow_writing_files=False
@@ -1977,11 +1997,17 @@ class TestRowLocalScanScoring:
             output_col="pred",
             source="batch",
             row_limit=10,
-            categorical_levels={"region": ["north", "south"]},
+            unseen_report=UnseenValueReport({"region": ["north", "south"]}, "Model Score"),
         )
 
-        with pytest.raises(FeatureMismatchError, match="west"):
-            streaming_collect(scored)
+        with capture_logs() as logs:
+            result = streaming_collect(scored)
+
+        expected = model.predict(pl.DataFrame({"region": ["north", "west"]}).to_pandas())
+        np.testing.assert_allclose(result["pred"].to_numpy(), expected)
+        assert [
+            log["examples"] for log in logs if log["event"] == "categorical_values_not_in_training"
+        ] == [["west"]]
 
 
 class TestFeatureMismatchTypeOverflow:

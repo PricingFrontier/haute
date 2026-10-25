@@ -30,13 +30,19 @@ import pytest
 
 from haute.errors import FeatureMismatchError
 from haute.modelling._feature_contract import (
+    CONTRACT_VERSION,
+    UNSEEN_CATEGORICAL_VALUES_CODE,
     FeatureContract,
+    UnseenCategoricalValues,
     assert_contracts_match,
     build_contract,
+    count_unseen_categorical_values,
     load_contract,
     merge_categorical_level_declarations,
+    merge_unseen_categorical_values,
+    observed_training_levels,
+    report_unseen_categorical_values,
     save_contract,
-    validate_categorical_value_domains,
 )
 
 # ---------------------------------------------------------------------------
@@ -112,37 +118,115 @@ class TestBuildContract:
 # ---------------------------------------------------------------------------
 
 
-class TestValidateCategoricalValueDomains:
-    def test_allows_null_only_when_declared(self) -> None:
+class TestUnseenCategoricalValues:
+    def test_counts_values_and_nulls_the_training_rows_never_held(self) -> None:
+        frame = pl.DataFrame({"region": ["north", "east", "east", "west", None]})
+
+        for scored in (frame, frame.lazy()):
+            assert count_unseen_categorical_values(scored, {"region": ["north"]}) == {
+                "region": UnseenCategoricalValues("region", {"east": 2, "west": 1}, 1)
+            }
+
+    def test_a_null_the_training_rows_held_is_not_counted(self) -> None:
         frame = pl.DataFrame({"region": ["north", None]})
 
-        validate_categorical_value_domains(
-            frame,
-            {"region": ["north", None]},
-        )
+        assert count_unseen_categorical_values(frame, {"region": ["north", None]}) == {}
 
-    def test_rejects_null_when_not_declared(self) -> None:
-        frame = pl.DataFrame({"region": [None]})
-
-        with pytest.raises(FeatureMismatchError, match="outside declared") as exc_info:
-            validate_categorical_value_domains(frame, {"region": ["north"]})
-
-        assert exc_info.value.context["column"] == "region"
-        assert exc_info.value.context["invalid_levels"] == [None]
-
-    def test_rejects_unknown_observed_level(self) -> None:
-        frame = pl.DataFrame({"region": ["east"]})
-
-        with pytest.raises(FeatureMismatchError, match="outside declared") as exc_info:
-            validate_categorical_value_domains(frame, {"region": ["north", "south"]})
-
-        assert exc_info.value.context["invalid_levels"] == ["east"]
-
-    def test_rejects_missing_declared_column(self) -> None:
+    def test_never_raises_and_skips_a_column_the_frame_lacks(self) -> None:
         frame = pl.DataFrame({"other": ["north"]})
 
-        with pytest.raises(FeatureMismatchError, match="missing"):
-            validate_categorical_value_domains(frame, {"region": ["north"]})
+        assert count_unseen_categorical_values(frame, {"region": ["north"]}) == {}
+
+    def test_an_integer_category_is_compared_as_strings(self) -> None:
+        training = pl.DataFrame({"area": [1, 2, None], "region": ["", "north", "north"]})
+        levels = observed_training_levels(training, ["area", "region"])
+
+        assert levels == {"area": ["1", "2", None], "region": ["", "north"]}
+        scored = pl.DataFrame({"area": [2, 3], "region": ["", None]})
+        assert count_unseen_categorical_values(scored, levels) == {
+            "area": UnseenCategoricalValues("area", {"3": 1}, 0),
+            "region": UnseenCategoricalValues("region", {}, 1),
+        }
+
+    def test_chunk_counts_merge(self) -> None:
+        first = {"region": UnseenCategoricalValues("region", {"east": 1}, 1)}
+        second = {
+            "region": UnseenCategoricalValues("region", {"east": 2, "west": 1}, 0),
+            "make": UnseenCategoricalValues("make", {"Zed": 4}, 0),
+        }
+
+        merged = merge_unseen_categorical_values(first, second)
+        assert merged["region"] == UnseenCategoricalValues("region", {"east": 3, "west": 1}, 1)
+        assert merged["make"].rows == 4
+
+    def test_the_reason_reads_in_the_singular_and_names_nulls_alone(self) -> None:
+        from haute.modelling._feature_contract import unseen_categorical_reason
+
+        one = UnseenCategoricalValues("region", {"mars": 1}, 0)
+        nulls = UnseenCategoricalValues("region", {}, 1)
+
+        assert unseen_categorical_reason(one, "Deployed model") == (
+            "Deployed model: 'region' has 1 value not in the training data, in 1 row ('mars')."
+        )
+        assert unseen_categorical_reason(nulls, "Deployed model") == (
+            "Deployed model: 'region' has 1 missing value, though the training data had none."
+        )
+
+    @pytest.mark.parametrize(
+        ("raw", "message"),
+        [
+            (["region"], "must be a mapping"),
+            ({"": ["north"]}, "column names must be non-empty strings"),
+            ({"postcode": ["north"]}, "outside the model features"),
+            ({"region": "north"}, "values must be lists"),
+            ({"region": [3]}, "must be strings or null"),
+            ({"region": ["north", "north"]}, "duplicate level"),
+        ],
+    )
+    def test_malformed_training_levels_are_refused(self, raw: object, message: str) -> None:
+        from haute.modelling._feature_contract import normalise_training_levels
+
+        with pytest.raises(FeatureMismatchError, match=message):
+            normalise_training_levels(raw, features=["age", "region"])  # type: ignore[arg-type]
+
+    def test_the_report_logs_and_records_an_execution_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from structlog.testing import capture_logs
+
+        import haute._execution_context as execution_context
+
+        recorded: list[tuple[str, str | None, str | None]] = []
+
+        class _Context:
+            def record_execution_warning(
+                self, code: str, *, node_id: str | None = None, reason: str | None = None
+            ) -> None:
+                recorded.append((code, node_id, reason))
+
+        monkeypatch.setattr(execution_context, "current_execution_context", _Context)
+        values = {f"v{index}": 1 for index in range(7)}
+        unseen = {"make": UnseenCategoricalValues("make", values, 2)}
+        with capture_logs() as logs:
+            report_unseen_categorical_values(unseen, context="Model Score", node_id="score")
+
+        [entry] = [log for log in logs if log["event"] == UNSEEN_CATEGORICAL_VALUES_CODE]
+        assert (entry["feature"], entry["values"], entry["rows"], entry["null_rows"]) == (
+            "make",
+            7,
+            7,
+            2,
+        )
+        assert entry["examples"] == ["v0", "v1", "v2", "v3", "v4"]
+        assert recorded == [
+            (
+                UNSEEN_CATEGORICAL_VALUES_CODE,
+                "score",
+                "Model Score: 'make' has 7 values not in the training data, in 7 rows "
+                "('v0', 'v1', 'v2', 'v3', 'v4', ...) and 2 missing values, though the "
+                "training data had none.",
+            )
+        ]
 
 
 class TestMergeCategoricalLevelDeclarations:
@@ -198,6 +282,8 @@ class TestContractHash:
             {"categorical_features": ["region", "age"]},
             # Change categorical value-domain
             {"categorical_levels": {"region": ["north", "east"]}},
+            # Change the training levels
+            {"training_levels": {"region": ["north"]}},
             # Change target name
             {"target_name": "ClaimAmount"},
             # Change target type
@@ -270,6 +356,18 @@ class TestSaveLoad:
         assert loaded == basic_contract
         assert loaded.contract_hash == basic_contract.contract_hash
 
+    def test_training_levels_round_trip_and_are_never_compared_with_live_data(
+        self, tmp_path: Path
+    ) -> None:
+        trained = build_contract(
+            **_basic_kwargs(), training_levels={"region": ["south", "", None, "north"]}
+        )
+        path = tmp_path / "feature_contract.json"
+        save_contract(trained, path)
+
+        assert load_contract(path).training_levels == {"region": ["", "north", "south", None]}
+        assert_contracts_match(trained, build_contract(**_basic_kwargs()))
+
     def test_saved_json_is_human_readable(
         self, tmp_path: Path, basic_contract: FeatureContract
     ) -> None:
@@ -315,13 +413,14 @@ class TestLoadRejectsMalformed:
             "feature_types": c.feature_types,
             "categorical_features": c.categorical_features,
             "categorical_levels": c.categorical_levels,
+            "training_levels": c.training_levels,
             "target_name": c.target_name,
             "target_type": c.target_type,
             "task": c.task,
             "contract_hash": c.contract_hash,
             "offset_column": c.offset_column,
             "offset_link": c.offset_link,
-            "contract_version": 3,
+            "contract_version": CONTRACT_VERSION,
             "model": None,
         }
 
@@ -556,13 +655,14 @@ def _raw_from_contract(contract: FeatureContract) -> dict:
         "feature_types": contract.feature_types,
         "categorical_features": contract.categorical_features,
         "categorical_levels": contract.categorical_levels,
+        "training_levels": contract.training_levels,
         "target_name": contract.target_name,
         "target_type": contract.target_type,
         "task": contract.task,
         "contract_hash": contract.contract_hash,
         "offset_column": contract.offset_column,
         "offset_link": contract.offset_link,
-        "contract_version": 3,
+        "contract_version": CONTRACT_VERSION,
         "model": None,
     }
 

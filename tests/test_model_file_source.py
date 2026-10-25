@@ -569,7 +569,9 @@ def test_a_registered_model_and_its_logged_contract_come_from_one_run(
     np.testing.assert_allclose(scored, native_reference(pairs[1][0], frame, offset=False))
 
 
-def test_a_run_logged_contract_enforces_its_categorical_domains(project: Path) -> None:
+def test_a_run_logged_contract_reports_values_outside_its_training_levels(project: Path) -> None:
+    from structlog.testing import capture_logs
+
     model_path = external_catboost(project, offset=True)
     contract = model_path.with_name(model_contract_filename(model_path.stem))
     save_contract(
@@ -578,6 +580,7 @@ def test_a_run_logged_contract_enforces_its_categorical_domains(project: Path) -
             feature_types={"age": "Float64", "region": "String"},
             categorical_features=["region"],
             categorical_levels={"region": ["east", "north"]},
+            training_levels={"region": ["east", "north"]},
             target_name="claims",
             target_type="Float64",
             task="regression",
@@ -588,8 +591,16 @@ def test_a_run_logged_contract_enforces_its_categorical_domains(project: Path) -
     )
     frame = data().with_columns(region=pl.lit("south"))
 
-    with pytest.raises(FeatureMismatchError, match="south"):
-        score(source_for("run", model_path, contract), frame)
+    with capture_logs() as logs:
+        scored = score(source_for("run", model_path, contract), frame)
+
+    assert len(scored) == frame.height
+    [entry] = [log for log in logs if log["event"] == "categorical_values_not_in_training"]
+    assert (entry["feature"], entry["examples"], entry["rows"]) == (
+        "region",
+        ["south"],
+        frame.height,
+    )
 
 
 def test_a_sibling_contract_outside_the_project_is_refused(project: Path) -> None:

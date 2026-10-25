@@ -1023,6 +1023,76 @@ class TestGLMTermsEndToEnd:
             rtol=1e-9,
         )
 
+    def test_categorical_terms_record_training_levels_and_unseen_values_score_and_report(
+        self, tmp_path
+    ):
+        """A categorical term on a string and on an integer column records the
+        values its training rows held; a value neither held scores at the
+        reference level, as RustyStats prices it, and is reported, never refused."""
+        from pathlib import Path
+
+        from structlog.testing import capture_logs
+
+        from haute._mlflow_io import load_local_model
+        from haute._model_scorer import UnseenValueReport, score_frame
+        from haute.modelling._feature_contract import load_contract
+        from haute.modelling._train_config import build_training_job_kwargs
+        from haute.modelling._training_job import TrainingJob, model_contract_filename
+
+        rng = np.random.default_rng(7)
+        n = 900
+        region = rng.choice(["A", "B", "C"], size=n)
+        area = rng.choice([1, 2, 3], size=n)
+        rate = np.exp(-1.0 + np.where(region == "B", 0.3, 0.0) + 0.1 * area)
+        df = pl.DataFrame(
+            {
+                "region": region,
+                "area": pl.Series(area, dtype=pl.Int64),
+                "y": rng.poisson(rate).astype(float),
+            }
+        )
+        config = {
+            "algorithm": "glm",
+            "target": "y",
+            "family": "poisson",
+            "terms": {"region": {"type": "categorical"}, "area": {"type": "categorical"}},
+            "evaluation": _random_evaluation(),
+        }
+        result = TrainingJob(
+            **build_training_job_kwargs(
+                {**config, "name": "levels", "output_dir": str(tmp_path)},
+                data=_write(df, tmp_path),
+            )
+        ).run()
+        model_path = Path(result.model_path)
+        contract = load_contract(model_path.parent / model_contract_filename(model_path.stem))
+        assert contract.training_levels == {"area": ["1", "2", "3"], "region": ["A", "B", "C"]}
+
+        scoring = load_local_model(str(model_path))
+        rows = pl.DataFrame(
+            {"region": ["Z", "A", "B"], "area": pl.Series([9, 1, 2], dtype=pl.Int64)}
+        )
+        with capture_logs() as logs:
+            scored = score_frame(
+                model=scoring.raw_model,
+                lf=rows.lazy(),
+                features=list(scoring.feature_names),
+                cat_feature_names=scoring.cat_feature_names,
+                flavor=scoring.flavor,
+                unseen_report=UnseenValueReport(contract.training_levels, "Model Score"),
+            ).collect()["prediction"]
+
+        predicted = scored.to_list()
+        # Both unseen values take their term's reference level (the first sorted).
+        assert predicted[0] == pytest.approx(predicted[1])
+        assert predicted[2] != pytest.approx(predicted[1])
+        reports = {
+            log["feature"]: log["examples"]
+            for log in logs
+            if log["event"] == "categorical_values_not_in_training"
+        }
+        assert reports == {"region": ["Z"], "area": ["9"]}
+
     def test_exported_script_carries_the_offset_and_its_exposure_scaling(self, tmp_path):
         """Under the canonical log link an offset is a multiplier, so an export
         that drops the column silently trains an unexposed model."""

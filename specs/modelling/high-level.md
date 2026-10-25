@@ -278,9 +278,29 @@ Invariants that always hold:
   infinite-valued target passes the gate and fails downstream inside the wrapped
   metric stage with its own bounded message.
 - Every trained model is saved together with a feature contract pinning its exact
-  feature order, dtypes, categorical domains, target, and offset column. Any drift
-  detected later (train vs. score) raises rather than producing a plausible-looking
-  wrong prediction.
+  feature order, dtypes, categorical domains, the categorical values its training rows
+  held, target, and offset column. Structural drift detected later (train vs. score: a
+  missing feature, a changed dtype, a missing offset column) raises rather than producing
+  a plausible-looking wrong prediction. A categorical value the training rows never held
+  is not structural drift and never stops scoring (below).
+- **Unseen categorical values.** No scoring path refuses a categorical value the rows
+  the model was fitted on never held, a value outside a declared `categorical_levels`
+  domain, or a null in a feature whose training rows held none: one new value must not
+  stop a production scoring run. Each family scores the value through its library's own
+  mechanism, and Haute maps it to no level of its own. t-boost scores it in its pooled
+  `<rare>` cell. LightGBM and XGBoost receive it as a missing value (XGBoost refuses a
+  category it was not trained on, and LightGBM turns one into a missing value itself), so it
+  takes the branch a null takes; at LightGBM's default categorical settings that is also the
+  side its thinnest levels take. EBM scores it in its unknown bin, whose score is zero (the
+  book average). CatBoost scores it at its zero-count prior. A GLM categorical term scores
+  it at the reference level, with every level **Levels** leaves unlisted, and a
+  target-encoding term at the encoding's prior. Every scoring path counts these values per
+  feature against the contract's training levels and reports the distinct values, their
+  rows, the nulls the training rows did not hold, and up to five examples, as a
+  `categorical_values_not_in_training` warning in the log and, in the editor, as an
+  execution warning the preview shows. A training run reports its validation and final-test
+  rows the same way. A null is never an unseen value: every family scores it through its own
+  missing-value handling.
 - MLflow signatures preserve temporal inputs deliberately: Polars `Date` and
   every supported parameterised `Datetime` unit/time-zone form map to MLflow
   `datetime`, survive signature persistence, and accept the corresponding
@@ -885,8 +905,9 @@ Cancellation, crash, malformed result, or validation failure removes the directo
 - **XGBoost.** The `xgboost` family trains a native CPU `hist` booster. Categorical codes come
   from the level list the model was fitted against (declared levels, else the training
   partition's distinct values), stored in the model and the contract, because XGBoost 3.2 reads
-  a booster sliced to its best round positionally; an unseen category fails instead of scoring
-  as missing. A regression offset enters as `base_margin` at fit and predict, because a model
+  a booster sliced to its best round positionally; a value outside that list reaches the
+  booster as a missing value, because XGBoost refuses a category it was not trained on. A
+  regression offset enters as `base_margin` at fit and predict, because a model
   trained with a margin ignores its fitted `base_score`. Early stopping on Haute's validation
   partition keeps `best_iteration + 1` rounds, and the refit reuses the weighted count through
   `num_boost_round`. Losses are `RMSE`, `MAE`, `Poisson`, `Gamma`, `Tweedie` and `Logloss`;
@@ -990,16 +1011,21 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   an XGBoost GPU job is refused when `estimate_xgboost_gpu_vram_bytes` exceeds free VRAM.
   LightGBM's wheels have no GPU or CUDA learner on Windows and only OpenCL on Linux (no OpenCL
   device under WSL), so LightGBM, like EBM and t-boost, trains on the CPU only.
-- **Model identity.** A version-3 feature contract carries an optional model identity:
+- **Model identity.** A version-4 feature contract carries an optional model identity:
   algorithm, Haute loss or GLM family, link, variance power, class labels, native feature names,
   and exact engine and Haute versions, all inside the hashed payload. Training always writes
   it; a contract supplied for a generic MLflow model may omit it. An earlier contract version
   fails to load with a retrain message.
-- **Offset declaration.** A version-3 contract records how its offset enters the raw score
+- **Training levels.** A version-4 contract records `training_levels`: for each categorical
+  feature, and for each GLM categorical, target-encoding or frequency-encoding term's column
+  (an `Int64` term included), the values the rows the saved model was fitted on held, with
+  `null` when they held nulls. It drives only the unseen-value report; a contract supplied for
+  a generic MLflow model may record none. Version 4 adds the field, so contracts written by an
+  earlier Haute fail to load and are regenerated by retraining.
+- **Offset declaration.** A version-4 contract records how its offset enters the raw score
   (`offset_link`: `log` or `identity`) beside the offset column, so a contract can declare the
   baseline of a model whose file does not, such as a CatBoost model trained outside Haute.
-  Training writes the link whenever it writes an offset column. Version 3 adds the field, so
-  contracts written by an earlier Haute fail to load and are regenerated by retraining. The shared MLflow pyfunc and Model Score check a loaded model
+  Training writes the link whenever it writes an offset column. The shared MLflow pyfunc and Model Score check a loaded model
   against the identity (its model type, and CatBoost's recorded loss) and fail on a mismatch.
   Only the schema fields are compared against live data.
 

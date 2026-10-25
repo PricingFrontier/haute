@@ -17,6 +17,17 @@ type IndicatorContent = {
   remediation?: string
 }
 
+/** The execution warning a categorical value the model's training data never held raises. */
+const UNSEEN_CATEGORICAL_VALUES_CODE = "categorical_values_not_in_training"
+
+/** Each unseen-value warning's sentence, naming the feature, the counts and examples. */
+function unseenValueReasons(metrics: ExecutionMetrics): string[] {
+  const reasons = metrics.warnings
+    .filter((warning) => warning.code === UNSEEN_CATEGORICAL_VALUES_CODE && warning.reason)
+    .map((warning) => warning.reason as string)
+  return [...new Set(reasons)]
+}
+
 /** Names the node that kept part of the pipeline full-width, and which part. */
 function projectionCauseExplanation(cause: ExecutionStrategyProjectionCause): string {
   const node = `'${cause.node_id}' (${cause.operator})`
@@ -106,7 +117,14 @@ export default function ExecutionDiagnosticsIndicator({ metrics }: ExecutionDiag
     }
   }
 
-  const content = baseContent
+  const unseenReasons = unseenValueReasons(metrics)
+  const content: IndicatorContent | null = baseContent ?? (unseenReasons.length > 0
+    ? {
+        severity: "warning",
+        title: "Values the model was not trained on",
+        explanation: "Scored by the model's own handling of new categories.",
+      }
+    : null)
   if (!content) return null
 
   const isError = content.severity === "error"
@@ -132,6 +150,11 @@ export default function ExecutionDiagnosticsIndicator({ metrics }: ExecutionDiag
         <p className="mt-1 leading-4">{content.explanation}</p>
         {content.remediation && (
           <p className="mt-1 leading-4"><span className="font-medium">Suggested action:</span> {content.remediation}</p>
+        )}
+        {unseenReasons.length > 0 && (
+          <ul className="mt-1 list-disc pl-4 leading-4">
+            {unseenReasons.map((reason) => <li key={reason}>{reason}</li>)}
+          </ul>
         )}
       </div>
     </details>

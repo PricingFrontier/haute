@@ -304,15 +304,18 @@ def test_a_regression_model_refuses_to_score_as_a_classifier(tmp_path: Path) -> 
         )
 
 
-def test_unseen_categories_fail_and_nulls_score_through_the_missing_bin(tmp_path: Path) -> None:
+def test_unseen_categories_score_in_the_unknown_bin_and_nulls_in_the_missing_bin(
+    tmp_path: Path,
+) -> None:
     _job, result = train(tmp_path, target="severity", loss="RMSE")
     model = load_local_model(result.model_path).raw_model
-    with pytest.raises(HauteValidationError, match="not trained on: 'mars'"):
-        model.predict(frame().with_columns(pl.lit("mars").alias("region")))
-    probe = pl.DataFrame({"region": [None], "age": [40.0]})
-    missing_score = model.contributions(probe).values[0][0]
+    probe = pl.DataFrame({"region": ["mars", None], "age": [40.0, 40.0]})
+    unseen_score, missing_score = (row[0] for row in model.contributions(probe).values)
     region_term = next(term for term in result.ebm_terms if term["term"] == "region")
+    assert region_term["scores"][0] != 0.0
     assert missing_score == pytest.approx(region_term["scores"][0])
+    # EBM's unknown bin scores zero, the average across the training rows.
+    assert unseen_score == 0.0
 
 
 def test_restricted_loader_round_trips_bit_identically(tmp_path: Path) -> None:

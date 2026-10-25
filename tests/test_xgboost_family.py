@@ -166,15 +166,18 @@ def test_save_reload_is_bit_identical_and_scoring_matches_the_native_booster(
     np.testing.assert_allclose(scored.to_numpy(), native, rtol=1e-6)
 
 
-def test_reordered_categories_score_identically_and_unseen_ones_fail(tmp_path: Path) -> None:
+def test_reordered_categories_score_identically_and_unseen_ones_score_as_missing(
+    tmp_path: Path,
+) -> None:
     data = frame()
     _job, result = train(tmp_path, target="severity", loss="RMSE")
     model = XGBoostModel.load(result.model_path)
     base = model.predict(data)
     reordered = data.with_columns(pl.col("region").cast(pl.Enum(["south", "north", "east"])))
     assert np.array_equal(model.predict(reordered), base)
-    with pytest.raises(HauteValidationError, match="not trained on: 'mars'"):
-        model.predict(data.with_columns(pl.lit("mars").alias("region")))
+    unseen = model.predict(data.with_columns(pl.lit("mars").alias("region")))
+    missing = model.predict(data.with_columns(pl.lit(None, dtype=pl.String).alias("region")))
+    np.testing.assert_array_equal(unseen, missing)
 
 
 def test_nulls_score_as_missing_and_a_literal_missing_label_is_its_own_level(
@@ -511,6 +514,20 @@ def test_empty_string_categories_fail_before_fitting(tmp_path: Path) -> None:
     )
     with pytest.raises(HauteValidationError, match="empty-string values"):
         train(tmp_path, target="severity", loss="RMSE", data=data)
+    assert not list(tmp_path.glob("*.ubj"))
+
+
+def test_training_rows_outside_a_declared_domain_fail_before_fitting(tmp_path: Path) -> None:
+    with pytest.raises(
+        HauteValidationError,
+        match="training values outside its declared categorical_levels: 'south'",
+    ):
+        train(
+            tmp_path,
+            target="severity",
+            loss="RMSE",
+            categorical_levels={"region": ["east", "north", None]},
+        )
     assert not list(tmp_path.glob("*.ubj"))
 
 

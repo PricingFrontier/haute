@@ -30,11 +30,10 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import polars as pl
-import pytest
 
 from haute._mlflow_io import ScoringModel
 from haute._model_scorer import (
-    FeatureMismatchError,
+    UnseenValueReport,
     _run_score_pipeline,
     score_frame,
 )
@@ -208,8 +207,8 @@ class TestScoreFrameEagerSingleExecution:
         np.testing.assert_allclose(result["pred"].to_numpy(), [10.0, 20.0])
         assert result["keep"].to_list() == [7.0, 8.0]
 
-    def test_categorical_levels_validated_once_against_scored_rows(self) -> None:
-        """Domain validation must not trigger an extra execution of the
+    def test_unseen_values_counted_once_against_scored_rows(self) -> None:
+        """The unseen-value count must not trigger an extra execution of the
         upstream plan — it runs against the same materialised frame that
         is scored."""
         spy = _UpstreamSpy(pl.DataFrame({"region": ["north", "south"]}))
@@ -226,22 +225,26 @@ class TestScoreFrameEagerSingleExecution:
             task="regression",
             output_col="pred",
             batch=False,
-            categorical_levels={"region": ["north", "south"]},
+            unseen_report=UnseenValueReport({"region": ["north", "south"]}, "Model Score"),
         ).collect()
 
         assert spy.executions == 1, (
-            f"Eager scoring with categorical domains executed the upstream plan "
-            f"{spy.executions} times; validation must reuse the single "
+            f"Eager scoring with training levels executed the upstream plan "
+            f"{spy.executions} times; the count must reuse the single "
             "materialised frame."
         )
         assert result["pred"].to_list() == [1.5, 1.5]
 
-    def test_categorical_domain_violation_still_raises_before_predict(self) -> None:
+    def test_a_value_outside_the_training_levels_scores_and_is_reported(self) -> None:
+        from structlog.testing import capture_logs
+
         spy = _UpstreamSpy(pl.DataFrame({"region": ["north", "west"]}))
         model = MagicMock()
+        model.predict.side_effect = lambda pdf: np.full(len(pdf), 1.5, dtype=np.float64)
+        del model.predict_proba
 
-        with pytest.raises(FeatureMismatchError, match="outside declared"):
-            score_frame(
+        with capture_logs() as logs:
+            result = score_frame(
                 model=model,
                 lf=spy.lazy(),
                 features=["region"],
@@ -250,10 +253,12 @@ class TestScoreFrameEagerSingleExecution:
                 task="regression",
                 output_col="pred",
                 batch=False,
-                categorical_levels={"region": ["north", "south"]},
-            )
+                unseen_report=UnseenValueReport({"region": ["north", "south"]}, "Model Score"),
+            ).collect()
 
-        model.predict.assert_not_called()
+        assert result["pred"].to_list() == [1.5, 1.5]
+        [entry] = [log for log in logs if log["event"] == "categorical_values_not_in_training"]
+        assert (entry["feature"], entry["examples"], entry["rows"]) == ("region", ["west"], 1)
 
     def test_empty_frame_single_execution(self) -> None:
         spy = _UpstreamSpy(pl.DataFrame({"a": pl.Series([], dtype=pl.Float64)}))
@@ -429,20 +434,19 @@ class TestRunScorePipelineLiveSingleExecution:
             task="regression",
             output_col="pred",
             source="live",
-            categorical_levels={"region": ["north", "south"]},
+            unseen_report=UnseenValueReport({"region": ["north", "south"]}, "Model Score"),
         ).collect()
 
         assert spy.executions == 1, (
-            f"Live scoring with categorical domains executed the upstream plan "
-            f"{spy.executions} times."
+            f"Live scoring with training levels executed the upstream plan {spy.executions} times."
         )
         assert result["pred"].to_list() == [2.5, 2.5, 2.5]
 
-    def test_live_categorical_validation_collects_only_score_projection(
+    def test_live_unseen_count_collects_only_score_projection(
         self,
         monkeypatch,
     ) -> None:
-        """Unrelated wide columns never enter the live validation collect."""
+        """Unrelated wide columns never enter the live unseen-value count collect."""
         import haute._polars_utils as polars_utils
 
         collected_schemas: list[list[str]] = []
@@ -478,7 +482,7 @@ class TestRunScorePipelineLiveSingleExecution:
             output_col="pred",
             source="live",
             required_output_columns=frozenset({"keep", "pred"}),
-            categorical_levels={"region": ["north", "south"]},
+            unseen_report=UnseenValueReport({"region": ["north", "south"]}, "Model Score"),
         ).collect()
 
         assert collected_schemas
@@ -486,9 +490,15 @@ class TestRunScorePipelineLiveSingleExecution:
         assert all("unused_wide" not in schema for schema in collected_schemas)
         assert result.columns == ["keep", "pred"]
 
-    def test_live_categorical_violation_raises_before_scoring(self) -> None:
+    def test_live_value_outside_the_training_levels_scores_once_and_is_reported(
+        self,
+    ) -> None:
+        from structlog.testing import capture_logs
+
         spy = _UpstreamSpy(pl.DataFrame({"region": ["west"]}))
         model = MagicMock()
+        model.predict.side_effect = lambda pdf: np.full(len(pdf), 2.5, dtype=np.float64)
+        del model.predict_proba
         scoring_model = ScoringModel(
             model=model,
             feature_names=["region"],
@@ -496,17 +506,21 @@ class TestRunScorePipelineLiveSingleExecution:
             flavor="catboost",
         )
 
-        with pytest.raises(FeatureMismatchError, match="outside declared"):
-            _run_score_pipeline(
+        with capture_logs() as logs:
+            result = _run_score_pipeline(
                 scoring_model,
                 spy.lazy(),
                 task="regression",
                 output_col="pred",
                 source="live",
-                categorical_levels={"region": ["north", "south"]},
-            )
+                unseen_report=UnseenValueReport({"region": ["north", "south"]}, "Model Score"),
+            ).collect()
 
-        model.predict.assert_not_called()
+        assert spy.executions == 1
+        assert result["pred"].to_list() == [2.5]
+        assert [
+            log["feature"] for log in logs if log["event"] == "categorical_values_not_in_training"
+        ] == ["region"]
 
     def test_user_post_processing_code_sees_materialised_result(self) -> None:
         """User code downstream of scoring must not trigger a re-execution

@@ -3061,12 +3061,13 @@ class TestScoreGraphModelScoreRemap:
         assert result.columns == ["pred"]
         assert result["pred"].to_list() == [42.0]
 
-    def test_remapped_model_score_rejects_observed_category_before_predict(
+    def test_remapped_model_score_scores_and_reports_a_category_outside_its_training_levels(
         self,
         tmp_path,
     ):
+        from structlog.testing import capture_logs
+
         from haute.deploy._scorer import score_graph
-        from haute.errors import FeatureMismatchError
         from haute.modelling._feature_contract import (
             CONTRACT_FILENAME,
             build_contract,
@@ -3082,6 +3083,7 @@ class TestScoreGraphModelScoreRemap:
                 feature_types={"region": "String"},
                 categorical_features=["region"],
                 categorical_levels={"region": ["north", "south"]},
+                training_levels={"region": ["north", "south"]},
                 target_name="target",
                 target_type="Float64",
                 task="regression",
@@ -3127,7 +3129,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": make_output_config([]),
+                            "config": make_output_config(["pred"]),
                         },
                     },
                 ],
@@ -3145,9 +3147,9 @@ class TestScoreGraphModelScoreRemap:
 
         with (
             patch("haute._mlflow_io._load_catboost_model", return_value=mock_model),
-            pytest.raises(FeatureMismatchError, match="outside declared"),
+            capture_logs() as logs,
         ):
-            score_graph(
+            result = score_graph(
                 graph=graph,
                 input_df=pl.DataFrame({"region": ["west"]}),
                 input_node_ids=["src"],
@@ -3158,7 +3160,13 @@ class TestScoreGraphModelScoreRemap:
                 },
             )
 
-        mock_model.predict.assert_not_called()
+        assert result["pred"].to_list() == [42.0]
+        [entry] = [log for log in logs if log["event"] == "categorical_values_not_in_training"]
+        assert (entry["context"], entry["node_id"], entry["examples"]) == (
+            "Deployed model",
+            "ms",
+            ["west"],
+        )
 
     def test_contract_only_model_score_rejects_runtime_feature_order_drift(
         self,
@@ -3399,12 +3407,17 @@ class TestScoreGraphModelScoreRemap:
                 artifact_paths={f"ms__{CONTRACT_FILENAME}": str(contract_path)},
             )
 
-    def test_contract_only_model_score_rejects_observed_category_outside_domain(
+    @pytest.mark.parametrize(
+        "declared",
+        [{"region": ["north", "south"]}, None],
+        ids=["with-a-declaration", "without-a-declaration"],
+    )
+    def test_contract_only_model_score_fails_for_its_missing_model_not_for_a_category(
         self,
         tmp_path,
+        declared,
     ):
         from haute.deploy._scorer import score_graph
-        from haute.errors import FeatureMismatchError
         from haute.modelling._feature_contract import (
             CONTRACT_FILENAME,
             build_contract,
@@ -3418,26 +3431,24 @@ class TestScoreGraphModelScoreRemap:
                 feature_types={"region": "String"},
                 categorical_features=["region"],
                 categorical_levels={"region": ["north", "south"]},
+                training_levels={"region": ["north", "south"]},
                 target_name="target",
                 target_type="Float64",
                 task="regression",
             ),
             contract_path,
         )
+        source_config = (
+            _single_frame_api_input_config("region", label="src", categorical_levels=declared)
+            if declared
+            else _single_frame_api_input_config("region", label="src")
+        )
         graph = _g(
             {
                 "nodes": [
                     {
                         "id": "src",
-                        "data": {
-                            "label": "src",
-                            "nodeType": "apiInput",
-                            "config": _single_frame_api_input_config(
-                                "region",
-                                label="src",
-                                categorical_levels={"region": ["north", "south"]},
-                            ),
-                        },
+                        "data": {"label": "src", "nodeType": "apiInput", "config": source_config},
                     },
                     {
                         "id": "ms",
@@ -3471,84 +3482,7 @@ class TestScoreGraphModelScoreRemap:
             }
         )
 
-        with pytest.raises(FeatureMismatchError, match="outside declared"):
-            score_graph(
-                graph=graph,
-                input_df=pl.DataFrame({"region": ["west"]}),
-                input_node_ids=["src"],
-                output_node_id="out",
-                artifact_paths={f"ms__{CONTRACT_FILENAME}": str(contract_path)},
-            )
-
-    def test_contract_only_model_score_uses_contract_levels_without_redeclaration(
-        self,
-        tmp_path,
-    ):
-        from haute.deploy._scorer import score_graph
-        from haute.errors import FeatureMismatchError
-        from haute.modelling._feature_contract import (
-            CONTRACT_FILENAME,
-            build_contract,
-            save_contract,
-        )
-
-        contract_path = tmp_path / CONTRACT_FILENAME
-        save_contract(
-            build_contract(
-                features=["region"],
-                feature_types={"region": "String"},
-                categorical_features=["region"],
-                categorical_levels={"region": ["north", "south"]},
-                target_name="target",
-                target_type="Float64",
-                task="regression",
-            ),
-            contract_path,
-        )
-        graph = _g(
-            {
-                "nodes": [
-                    {
-                        "id": "src",
-                        "data": {
-                            "label": "src",
-                            "nodeType": "apiInput",
-                            "config": _single_frame_api_input_config("region", label="src"),
-                        },
-                    },
-                    {
-                        "id": "ms",
-                        "data": {
-                            "label": "ms",
-                            "nodeType": "modelScore",
-                            "config": {
-                                "task": "regression",
-                                "output_column": "pred",
-                            },
-                        },
-                    },
-                    {
-                        "id": "out",
-                        "data": {
-                            "label": "out",
-                            "nodeType": "output",
-                            "config": make_output_config([]),
-                        },
-                    },
-                ],
-                "edges": [
-                    {
-                        "id": "e1",
-                        "source": "src",
-                        "target": "ms",
-                        "sourceHandle": "src",
-                    },
-                    {"id": "e2", "source": "ms", "target": "out"},
-                ],
-            }
-        )
-
-        with pytest.raises(FeatureMismatchError, match="outside declared"):
+        with pytest.raises(RuntimeError, match="no bundled model artifact"):
             score_graph(
                 graph=graph,
                 input_df=pl.DataFrame({"region": ["west"]}),

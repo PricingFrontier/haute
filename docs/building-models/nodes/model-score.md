@@ -78,9 +78,8 @@ first. The contract names the model's features, categories and offset, so keep i
 the model when you copy the model elsewhere in the project. XGBoost, LightGBM and t-boost files describe their own inputs and offset. An EBM file is
 the bare estimator, so it loads only with the feature contract Model Training logged
 beside it, and only under the `interpret-core` version that contract records; a
-contract for a different loss or version is refused rather than scored. Categorical
-values an XGBoost, LightGBM or EBM model never saw fail instead of scoring as missing; a
-t-boost model scores them in its pooled rare level, like the levels too thin to model alone (the default level on a feature where nothing was pooled), unless its feature contract declares that feature's levels: scoring refuses a value outside declared levels.
+contract for a different loss or version is refused rather than scored. A category the
+model never saw still scores; see [Values the model was not trained on](#values-the-model-was-not-trained-on).
 
 A CatBoost model file does not record its own offset. Models trained by Haute record it
 in the model; for any other CatBoost model the feature contract must say whether the
@@ -95,6 +94,26 @@ Scoring checks the input against the model's features before it runs: a missing 
 a missing offset column the model was trained with, features in a different order from
 training, or a numeric column where the model expects a categorical one fails with an error
 listing what is wrong, rather than predicting from mismatched data.
+
+### Values the model was not trained on
+
+A categorical value the model's training data never held, such as a new vehicle make or
+region code, never stops scoring, and neither does a missing value in a column that had
+none in training. Each model family scores the value its own way:
+
+| Family | A value it was not trained on scores |
+|---|---|
+| t-boost | in its pooled rare level, like the levels too thin to model alone (the default level on a feature where nothing was pooled) |
+| LightGBM | as a missing value. At LightGBM's default categorical settings that is also where its thinnest levels go |
+| XGBoost | as a missing value |
+| EBM | at zero, the average across the training data |
+| CatBoost | as a category with no history |
+| GLM | at the reference level for a categorical term (with any level **Levels** leaves out), and at the overall average for a target-encoding term |
+
+The preview's warning icon lists each feature that held such values, with how many
+values and rows and a few examples. A deployed model writes the same warning to its log.
+A feature that often meets new values suits a family that pools rare levels (t-boost,
+or LightGBM at its default settings) or a GLM target-encoding term.
 
 ## The TRANSFORM tab
 
@@ -142,7 +161,7 @@ Instances let you reuse the same scoring configuration with different inputs  - 
     | Key | What it does |
     |---|---|
     | `feature_contract_path` | An in-project feature-contract file the model scores with, in place of the one saved beside a model file, and bundled with the model when deploying. |
-    | `categorical_levels` | Declared category levels for categorical columns, checked against the model's feature contract when deploying. |
+    | `categorical_levels` | Declared category levels for categorical columns, which must match the model's feature contract. A value outside them still scores, like any value the model was not trained on. |
 
     The example above is stored as:
 

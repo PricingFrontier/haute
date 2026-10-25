@@ -185,15 +185,18 @@ def test_scoring_matches_the_native_booster_with_the_offset_applied_once(tmp_pat
     np.testing.assert_allclose(LightGBMModel.load(result.model_path).predict(doubled), 2 * reloaded)
 
 
-def test_reordered_categories_score_identically_and_unseen_ones_fail(tmp_path: Path) -> None:
+def test_reordered_categories_score_identically_and_unseen_ones_score_as_missing(
+    tmp_path: Path,
+) -> None:
     data = frame()
     _job, result = train(tmp_path, target="severity", loss="RMSE")
     model = LightGBMModel.load(result.model_path)
     base = model.predict(data)
     reordered = data.with_columns(pl.col("region").cast(pl.Enum(["south", "north", "east"])))
     assert np.array_equal(model.predict(reordered), base)
-    with pytest.raises(HauteValidationError, match="not trained on: 'mars'"):
-        model.predict(data.with_columns(pl.lit("mars").alias("region")))
+    unseen = model.predict(data.with_columns(pl.lit("mars").alias("region")))
+    missing = model.predict(data.with_columns(pl.lit(None, dtype=pl.String).alias("region")))
+    np.testing.assert_array_equal(unseen, missing)
 
 
 def test_a_batch_holding_some_levels_scores_exactly_as_the_full_frame(tmp_path: Path) -> None:

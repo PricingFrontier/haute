@@ -295,6 +295,39 @@ def test_regression_scores_identically_on_every_path(
 
 
 @pytest.mark.parametrize("family", FAMILIES)
+def test_a_category_the_model_never_saw_scores_on_every_path_and_is_reported(
+    tmp_path: Path, family: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from structlog.testing import capture_logs
+
+    result = train(tmp_path, family, offset="exposure")
+    data = frame(seed=3).with_columns(
+        region=pl.when(pl.col("row") % 3 == 0)
+        .then(pl.lit("mars"))
+        .when(pl.col("row") % 3 == 1)
+        .then(pl.lit(None, dtype=pl.String))
+        .otherwise(pl.col("region"))
+    )
+    with capture_logs() as logs:
+        paths = every_path(result, data, "regression", tmp_path, monkeypatch)
+
+    reference = paths["eager"]["prediction"].to_numpy()
+    assert np.isfinite(reference).all()
+    for name, scored in paths.items():
+        assert scored.height == data.height, name
+        assert_close(scored["prediction"].to_numpy(), reference)
+    reports = [log for log in logs if log["event"] == "categorical_values_not_in_training"]
+    assert {log["context"] for log in reports} == {"Deployed model", "Model Score", "MLflow model"}
+    unseen_rows = data.filter(pl.col("region") == "mars").height
+    null_rows = data.filter(pl.col("region").is_null()).height
+    assert all(
+        (log["feature"], log["examples"], log["rows"], log["null_rows"])
+        == ("region", ["mars"], unseen_rows, null_rows)
+        for log in reports
+    )
+
+
+@pytest.mark.parametrize("family", FAMILIES)
 def test_classification_labels_follow_the_probability_on_every_path(
     tmp_path: Path, family: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

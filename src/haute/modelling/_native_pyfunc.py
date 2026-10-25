@@ -54,7 +54,7 @@ class NativePyfuncModel:
                 algorithm=contract.model.algorithm,
             )
         self._task = contract.task
-        self._categorical_levels = dict(contract.categorical_levels)
+        self._training_levels = dict(contract.training_levels)
         self._scoring = bind_feature_contract(
             load_local_model(str(model_file), task=contract.task),
             contract,
@@ -64,7 +64,7 @@ class NativePyfuncModel:
     def predict(self, model_input: Any, params: dict[str, Any] | None = None) -> Any:
         import polars as pl
 
-        from haute._model_scorer import score_frame
+        from haute._model_scorer import UnseenValueReport, score_frame
         from haute._polars_utils import streaming_collect
 
         del params
@@ -81,7 +81,11 @@ class NativePyfuncModel:
                 task=self._task,
                 output_col=_PREDICTION_COLUMN,
                 batch=False,
-                categorical_levels=self._categorical_levels or None,
+                unseen_report=(
+                    UnseenValueReport(self._training_levels, "MLflow model")
+                    if self._training_levels
+                    else None
+                ),
                 offset_column=self._scoring.offset_column,
                 offset_link=self._scoring.offset_link,
             )
