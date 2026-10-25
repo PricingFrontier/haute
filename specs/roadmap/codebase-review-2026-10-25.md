@@ -76,8 +76,8 @@ tracks it. It owns no work; the component roadmaps carry the plans.
   sections and left the tool and op sections to the tools reviewer; the loop's
   tool-summary wording was not checked against the specification.
 - Areas whose findings are not yet in this report are in review: the frontend's
-  hooks and utilities, node editors, panels, canvas, workbench and app shell; the
-  tests, scripts and CI as code.
+  hooks and utilities, the node editors' subdirectories, panels, canvas,
+  workbench and app shell; the tests, scripts and CI as code.
 
 ## Coverage and findings so far
 
@@ -100,9 +100,10 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 | JSON shredding (records, shred, writer, source proof, inference, caches, the path grammar, the Edge Join, the JSON-cache route) | reviewer, verified; the Critical reproduced by the main session | every owned file in full | 1 / 2 / 8 / 1 |
 | Submodels and Explore / EDA (instances, paths, flatten, the submodel routes, pivots, profiles, relationships, charts) | reviewer, verified; one probe rerun | every owned file in full | 0 / 0 / 10 / 2 |
 | Frontend API client, wire types and guards, stores, generated contracts | reviewer, verified | every owned file in full; a client-path against server-route probe | 0 / 1 / 7 / 4 |
+| Frontend node editors, top-level files (45 files) | reviewer, verified | every owned file in full except `CodeMirrorEditor.tsx` lines 1-235 (grep) | 0 / 0 / 16 / 1 |
 
-Two hundred and sixty-five findings so far: two Critical, thirty-six Major,
-one hundred and eighty-four Minor and forty-three Suggestions. Both Criticals and every Major are confirmed at source by the
+Two hundred and eighty-two findings so far: two Critical, thirty-six Major,
+two hundred Minor and forty-four Suggestions. Both Criticals and every Major are confirmed at source by the
 main session; the Minors and Suggestions were read at source or accepted on
 quoted evidence as the verification table records.
 
@@ -329,6 +330,9 @@ production:
 | Frontend shared | FSA-1, FSA-2, FSA-8, FSA-10 | `FSH-R05` |
 | Frontend shared | FSA-3, FSA-4, FSA-5, FSA-6, FSA-7, FSA-9, FSA-12 | `FSH-R06` |
 | Server API | FSA-11 | `API-R08` (extended) |
+| Frontend node editors | FNE-1, FNE-2, FNE-4, FNE-7, FNE-8, FNE-17 | `FNED-R01` |
+| Frontend node editors | FNE-3, FNE-5, FNE-6, FNE-9, FNE-11 | `FNED-R02` |
+| Frontend node editors | FNE-10, FNE-12, FNE-13, FNE-14, FNE-15, FNE-16 | `FNED-R03` |
 | Sandbox security | PM-42 | `SBX-R04` |
 | Workbench | PM-44 | `WB-33` |
 | Workbench | PM-45 | `WB-34` |
@@ -376,7 +380,11 @@ rewriters (`SUB-R01`), the Explore routes' `ParseError` and the submodel route's
 browser's hand-written contract mirrors (`API-R03`), `hashConfig`'s exclusion
 list (`PCFG-R08`), the results store's optimiser logic (`FSH-R03`) and the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
-(`ENGQ-R01`).
+(`ENGQ-R01`); the editors' unused barrel and unlisted `@lezer/highlight`
+(`ENGQ-R01`), Banding's `_prevRules` stash (`PCFG-R08`), the path-grammar
+mirrors, which agree construct for construct (`JSON-R04`), the Edge Join
+editor's `coalesce` (`JSON-R03`), the API Input label rule (`NAME-09`) and the
+contract path no editor sets (`DEP-R07`, `MSC-08`).
 
 ## Verdicts that changed or stayed open
 

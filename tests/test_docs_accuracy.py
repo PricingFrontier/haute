@@ -157,6 +157,7 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "engineering-quality",
     "execution-engine",
     "explore-eda",
+    "frontend-node-editors",
     "frontend-shared",
     "git-integration",
     "io-layer",
