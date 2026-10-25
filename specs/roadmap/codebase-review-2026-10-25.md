@@ -75,9 +75,9 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 - The assistant-core reviewer read the assistant low-level specification's core
   sections and left the tool and op sections to the tools reviewer; the loop's
   tool-summary wording was not checked against the specification.
-- Areas whose findings are not yet in this report are in review: the frontend's
-  hooks and utilities, the node editors' subdirectories, panels, canvas,
-  workbench and app shell; the tests, scripts and CI as code.
+- Areas whose findings are not yet in this report are in review: the node
+  editors' subdirectories, the panels, the canvas, the workbench and the app
+  shell; the tests, scripts and CI as code.
 
 ## Coverage and findings so far
 
@@ -101,9 +101,10 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 | Submodels and Explore / EDA (instances, paths, flatten, the submodel routes, pivots, profiles, relationships, charts) | reviewer, verified; one probe rerun | every owned file in full | 0 / 0 / 10 / 2 |
 | Frontend API client, wire types and guards, stores, generated contracts | reviewer, verified | every owned file in full; a client-path against server-route probe | 0 / 1 / 7 / 4 |
 | Frontend node editors, top-level files (45 files) | reviewer, verified | every owned file in full except `CodeMirrorEditor.tsx` lines 1-235 (grep) | 0 / 0 / 16 / 1 |
+| Frontend hooks and utilities (36 hooks, 78 utilities; the sheet-visibility mirror compared rule by rule with the server) | reviewer, verified | every owned file in full | 0 / 1 / 13 / 4 |
 
-Two hundred and eighty-two findings so far: two Critical, thirty-six Major,
-two hundred Minor and forty-four Suggestions. Both Criticals and every Major are confirmed at source by the
+Three hundred findings so far: two Critical, thirty-seven Major, two hundred and
+thirteen Minor and forty-eight Suggestions. Both Criticals and every Major are confirmed at source by the
 main session; the Minors and Suggestions were read at source or accepted on
 quoted evidence as the verification table records.
 
@@ -213,6 +214,10 @@ quoted evidence as the verification table records.
   and the undo history** (Major, `FSH-R05`): the save stores no document
   fingerprint, so the resync is answered with a full document the client takes
   for an external change.
+- **Ctrl+S with the cursor in a code box saves without the last keystrokes**
+  (Major, `FSH-R07`): the save helper blurs only text fields, the code editor's
+  debounced commit flushes only on blur, and the toolbar shows "Saved" while the
+  canvas re-dirties with no indicator.
 
 ## Design choices the review asks the owner to confirm
 
@@ -333,6 +338,9 @@ production:
 | Frontend node editors | FNE-1, FNE-2, FNE-4, FNE-7, FNE-8, FNE-17 | `FNED-R01` |
 | Frontend node editors | FNE-3, FNE-5, FNE-6, FNE-9, FNE-11 | `FNED-R02` |
 | Frontend node editors | FNE-10, FNE-12, FNE-13, FNE-14, FNE-15, FNE-16 | `FNED-R03` |
+| Frontend shared | FSB-1, FSB-2, FSB-10, FSB-12, FSB-15 | `FSH-R07` |
+| Frontend shared | FSB-3, FSB-4, FSB-5, FSB-6, FSB-9, FSB-13, FSB-14, FSB-16, FSB-17, FSB-18 | `FSH-R08` |
+| Frontend shared | FSB-7, FSB-8, FSB-11 | `FSH-R09` |
 | Sandbox security | PM-42 | `SBX-R04` |
 | Workbench | PM-44 | `WB-33` |
 | Workbench | PM-45 | `WB-34` |
@@ -384,7 +392,10 @@ list (`PCFG-R08`), the results store's optimiser logic (`FSH-R03`) and the dead
 (`ENGQ-R01`), Banding's `_prevRules` stash (`PCFG-R08`), the path-grammar
 mirrors, which agree construct for construct (`JSON-R04`), the Edge Join
 editor's `coalesce` (`JSON-R03`), the API Input label rule (`NAME-09`) and the
-contract path no editor sets (`DEP-R07`, `MSC-08`).
+contract path no editor sets (`DEP-R07`, `MSC-08`); the dead
+`submodelGraphFromMetadata` and two dead duplicate exports in the hooks and
+utilities (`ENGQ-R01`), and the sheet-visibility fault on an output condition
+(`WB-29`).
 
 ## Verdicts that changed or stayed open
 
@@ -452,6 +463,7 @@ All probes live outside the repository and wrote nothing into it.
 | date guessing | `['15/01/2024']` builds a `Date` series as 15 January and `['01/02/2024']` as 1 February; an ISO timestamp is refused. |
 | tz-aware pivot member | A member `2020-06-01T10:00:00+01:00` restored to an aware `datetime` compares against a `Datetime('μs', 'Europe/London')` column with `SchemaError`; a UTC column and a nanosecond column each match their row. |
 | client paths | Every `/api/...` literal in `frontend/src/api/*.ts` has a server route with the same method and body fields; eight server routes have no browser caller. |
+| formatter boundaries | `formatNumber(999999)` is "1000.0K", `formatBytes(1048575)` is "1024.0 KB"; `(1234.5).toLocaleString("de-DE")` is "1.234,5"; `Date.UTC(99, 0, 1)` reads as 1999. |
 | price-contour column order | `solve`, `apply_from_grid` and the quote-results schema emit `optimal_<c>` in config order; `ApplyOptimiser.apply` in sorted order, so both haute schemas match their own library path (no finding). |
 
 ## Mechanical metrics
