@@ -11,9 +11,8 @@ six trained families (CatBoost, GLM through RustyStats, XGBoost, LightGBM,
 EBM and t-boost) are in scope only for what each backend exposes to a caller
 that must bound memory; their losses, tuning and evaluation are out of scope.
 The GLM distributions that `MOD-M01` names in its acceptance are the subject
-of that package, not a tuning choice. `MOD-R02`, `MOD-R03`, `MOD-R05` and `MOD-R06`
-come from the
-[25 October 2026 codebase review](codebase-review-2026-10-25.md) and are the
+of that package, not a tuning choice. `MOD-R03`, `MOD-R05` and `MOD-R06` come from
+the [25 October 2026 codebase review](codebase-review-2026-10-25.md) and are the
 exception to that scope: they cover what the review found in the fits, the
 contracts and the training lifecycle.
 
@@ -57,7 +56,6 @@ something this page settles.
 |---|---|---:|---|
 | MOD-M01 | Decision | P3 | Exact chunked GLM fitting under a memory budget. |
 | MOD-M02 | Decision | P3 | A low-memory boosted-tree fitting mode under an explicit user choice. |
-| MOD-R02 | Planned | P2 | A dispersion estimate registers its cancellation token before preparing, prepares off the request thread, and reports curated errors. |
 | MOD-R03 | Planned | P2 | Training publication validates the evaluation plan outside the job-store lock, and the plan stores memberships compactly. |
 | MOD-R05 | Planned | P3 | Diagnostics are measured as the fit was: weighted loss importance, one-based GPU iterations, no GLM `best_iteration`, a dispersion search that stops on `MemoryError`, the offset dtype in the contract, params logged whole. |
 | MOD-R06 | Planned | P3 | The training memory log is opt-in, the dead compatibility fields are gone, and the four native wrappers share one base. |
@@ -215,41 +213,6 @@ external-memory measurement. The model-card and result metadata surface.
 `src/haute/modelling/_ebm.py`; `src/haute/modelling/_training_job.py`;
 `src/haute/modelling/_model_card.py`; `src/haute/_ram_estimate.py` (the
 existing downsample decision).
-
-### MOD-R02 — The dispersion estimate's lifecycle
-**Why:** `start_dispersion_estimate` creates its admitted context without a
-cancellation token and registers the job's token only after
-`_execute_and_sink` returns, so cancelling during preparation finds no token
-(`cancel` returns `False`), the preparation child keeps running the upstream
-pipeline under the job's admitted budget, and the job is nevertheless
-transitioned to `cancelled`, freeing the single running slot while the work
-continues; training registers its token before preparation. The RAM estimate,
-the upstream materialisation and the worker launch all run inside the HTTP
-request, which returns the job id only afterwards, so on a large pipeline the
-request blocks for minutes and the client has no id to poll or cancel;
-training moved exactly this work to an owned preparation thread. A start
-failure outside the HTTP and memory classes records `str(exc)` verbatim where
-training curates it.
-
-**Plan:** Register the token under the start lock as `start()` does and pass
-it into the admitted context before preparing; run the dispersion preparation
-through the same owned thread as training, parametrised on the launch
-function, returning the job id at once; route failures through
-`_friendly_error` and the HTTP-failure parts.
-
-**Acceptance:** Cancelling during preparation stops the preparation worker and
-releases admission before the job reads `cancelled`; the start route answers
-within the admission wait on a large pipeline; a start failure carries a
-curated message.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/routes/_training_lifecycle.py::start_dispersion_estimate`;
-`src/haute/routes/_training_lifecycle.py::cancel_dispersion`;
-`src/haute/routes/_training_lifecycle.py::_launch_dispersion_protocol`;
-`src/haute/routes/_training_lifecycle.py::_prepare_and_launch_training`;
-`src/haute/routes/_background_jobs.py::CancellableJobRegistry`;
-`src/haute/routes/modelling.py::estimate_dispersion`.
 
 ### MOD-R03 — Publication validates outside the lock
 **Why:** The evaluation plan stores every source position of the development

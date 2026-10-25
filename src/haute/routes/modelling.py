@@ -230,8 +230,9 @@ def _dispersion_status_response(job: Mapping[str, Any]) -> DispersionEstimateSta
 def estimate_dispersion(body: DispersionEstimateRequest) -> DispersionEstimateResponse:
     """Estimate a GLM dispersion parameter (NB theta / Tweedie var_power).
 
-    Materialises the node's training frame exactly as /train would, then
-    profiles the log-likelihood over the parameter in a background job.
+    Returns the job id once the request validates; the job then materialises
+    the node's training frame exactly as /train would and profiles the
+    log-likelihood over the parameter.
     The resolved value is returned for the user to accept into the config —
     the training-objective gate still requires an explicit value; this
     endpoint never sets one silently.

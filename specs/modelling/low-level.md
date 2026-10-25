@@ -694,8 +694,18 @@ experiment logs nothing.
    stubbed to a placeholder value so its own gate doesn't fire) any other
    incomplete part of the training objective.
 3. Under `_start_lock`, reject if a job is already running (shared with training —
-   `_check_no_concurrent_jobs` does not distinguish job type) and create the job
-   record (`job_type="dispersion_estimate"`).
+   `_check_no_concurrent_jobs` does not distinguish job type), create the job
+   record (`job_type="dispersion_estimate"`) and register its cancellation token in the
+   `CancellableJobRegistry`. The route then returns the job id: `_spawn_preparation`, the
+   owned-thread starter `start()` uses too, runs `_prepare_and_launch_dispersion` in
+   `haute-dispersion-prep-<job id>`, and a thread that cannot start fails the job and the
+   request with a 500. The admitted preparation context carries the registered token, so
+   `cancel_dispersion` during preparation stops the preparation worker, whose owner then
+   releases admission and the registry entry. A preparation failure lands in the job through
+   `_record_preparation_failure`, shared with training: a cancellation takes the token's
+   reason, an admission or memory failure is `memory_limited` (507), an `HTTPException` keeps
+   its `contract_error`/`error` parts, and anything else is `error` with `_friendly_error`'s
+   curated "Dispersion estimation of …" message (the raw text stays in `error`).
 4. `_estimate_ram` and `_execute_and_sink` reuse the exact same helpers `start()` uses
    to materialise the node's training frame — same pipeline execution, projection, and
    seeded row sampling — so the profiled data matches what a real training run would

@@ -233,7 +233,9 @@ compatibility facade and route own no duplicate state or worker implementation.
   `theta` or Tweedie `var_power` by profile likelihood over the node's own training
   data, as a background job the client polls
   (`GET /api/modelling/dispersion/status/{job_id}`) and can cancel
-  (`POST /api/modelling/dispersion/cancel/{job_id}`); after that explicit estimate
+  (`POST /api/modelling/dispersion/cancel/{job_id}`). As for training, the request returns
+  the job id once its configuration is validated: preparing the data runs inside the job,
+  where cancelling stops it and a failure is a curated job status; after that explicit estimate
   action resolves, the UI writes the value into the visible editable node-config
   field. The user can inspect or adjust that auto-filled value before their normal
   save/publish action. Its process supervisor enforces the timeout stamped at job
