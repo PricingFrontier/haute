@@ -75,8 +75,9 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 - The assistant-core reviewer read the assistant low-level specification's core
   sections and left the tool and op sections to the tools reviewer; the loop's
   tool-summary wording was not checked against the specification.
-- Areas whose findings are not yet in this report are in review: submodels and
-  Explore; the frontend; the tests, scripts and CI as code.
+- Areas whose findings are not yet in this report are in review: the frontend's
+  hooks and utilities, node editors, panels, canvas, workbench and app shell; the
+  tests, scripts and CI as code.
 
 ## Coverage and findings so far
 
@@ -97,9 +98,11 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 | Assistant core (application, loop, sessions, providers, configuration, rendering, project knowledge, the route) | reviewer, verified | every owned file in full; the specification's core sections | 0 / 1 / 8 / 5 |
 | Assistant tools (tools, ops, data checks, catalog, recipes, assets) | reviewer, verified; two timing probes | every owned file in full; the specification's tool, op and data-check sections | 0 / 2 / 6 / 4 |
 | JSON shredding (records, shred, writer, source proof, inference, caches, the path grammar, the Edge Join, the JSON-cache route) | reviewer, verified; the Critical reproduced by the main session | every owned file in full | 1 / 2 / 8 / 1 |
+| Submodels and Explore / EDA (instances, paths, flatten, the submodel routes, pivots, profiles, relationships, charts) | reviewer, verified; one probe rerun | every owned file in full | 0 / 0 / 10 / 2 |
+| Frontend API client, wire types and guards, stores, generated contracts | reviewer, verified | every owned file in full; a client-path against server-route probe | 0 / 1 / 7 / 4 |
 
-Two hundred and forty-one findings so far: two Critical, thirty-five Major,
-one hundred and sixty-seven Minor and thirty-seven Suggestions. Both Criticals and every Major are confirmed at source by the
+Two hundred and sixty-five findings so far: two Critical, thirty-six Major,
+one hundred and eighty-four Minor and forty-three Suggestions. Both Criticals and every Major are confirmed at source by the
 main session; the Minors and Suggestions were read at source or accepted on
 quoted evidence as the verification table records.
 
@@ -205,6 +208,10 @@ quoted evidence as the verification table records.
 - **The root JSON array tokeniser reads one byte per Python call** (Major,
   `JSON-R02`): forty-one times slower than the same records as JSONL; a 1 GB
   root array tokenises for about three minutes before any row is walked.
+- **A WebSocket reconnect after a save discards every running job's tracking
+  and the undo history** (Major, `FSH-R05`): the save stores no document
+  fingerprint, so the resync is answered with a full document the client takes
+  for an external change.
 
 ## Design choices the review asks the owner to confirm
 
@@ -315,6 +322,13 @@ production:
 | JSON shredding | JSN-4, JSN-5, JSN-8, JSN-9 | `JSON-R03` |
 | JSON shredding | JSN-6, JSN-7 | `JSON-R04` |
 | JSON shredding | JSN-10, JSN-11, JSN-12 | `JSON-R05` |
+| Submodels | SUB-1 | `SUB-R04` |
+| Submodels | SUB-2, SUB-3, SUB-4, SUB-11 | `SUB-R05` |
+| Explore / EDA | SUB-5, SUB-6, SUB-7, SUB-10 | `EDA-R01` |
+| Explore / EDA | SUB-8, SUB-9, SUB-12 | `EDA-R02` |
+| Frontend shared | FSA-1, FSA-2, FSA-8, FSA-10 | `FSH-R05` |
+| Frontend shared | FSA-3, FSA-4, FSA-5, FSA-6, FSA-7, FSA-9, FSA-12 | `FSH-R06` |
+| Server API | FSA-11 | `API-R08` (extended) |
 | Sandbox security | PM-42 | `SBX-R04` |
 | Workbench | PM-44 | `WB-33` |
 | Workbench | PM-45 | `WB-34` |
@@ -356,7 +370,13 @@ browsing routes (`BUG-41`); the assistant catalog's hand tables and key-only
 config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
 (`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the API
 Input's supervised build (`IO-R08`), the Edge Join as a boundary (`EXEC-R15`)
-and Recover's `how="asof"` (`PCFG-R13`).
+and Recover's `how="asof"` (`PCFG-R13`); node-level instances and their
+rewriters (`SUB-R01`), the Explore routes' `ParseError` and the submodel route's
+400 (`API-R06`), the pivot registry at shutdown (`ROAD-WORKER-06`); the
+browser's hand-written contract mirrors (`API-R03`), `hashConfig`'s exclusion
+list (`PCFG-R08`), the results store's optimiser logic (`FSH-R03`) and the dead
+`checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
+(`ENGQ-R01`).
 
 ## Verdicts that changed or stayed open
 
@@ -422,6 +442,8 @@ All probes live outside the repository and wrote nothing into it.
 | shred shape mismatch | Records with an object and a scalar at a declared `drivers[:]` key give two driver rows for four quotes and empty skip statistics; `shred_request` answers without raising; an XML quote with one `<driver>` loses it while a quote with two keeps both. |
 | root-array tokeniser | 167,103 records (41.9 MB): JSONL 0.18 s, root JSON array 7.60 s, `orjson.loads` of the whole file 0.66 s. |
 | date guessing | `['15/01/2024']` builds a `Date` series as 15 January and `['01/02/2024']` as 1 February; an ISO timestamp is refused. |
+| tz-aware pivot member | A member `2020-06-01T10:00:00+01:00` restored to an aware `datetime` compares against a `Datetime('μs', 'Europe/London')` column with `SchemaError`; a UTC column and a nanosecond column each match their row. |
+| client paths | Every `/api/...` literal in `frontend/src/api/*.ts` has a server route with the same method and body fields; eight server routes have no browser caller. |
 | price-contour column order | `solve`, `apply_from_grid` and the quote-results schema emit `optimal_<c>` in config order; `ApplyOptimiser.apply` in sorted order, so both haute schemas match their own library path (no finding). |
 
 ## Mechanical metrics

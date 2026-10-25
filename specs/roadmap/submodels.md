@@ -10,13 +10,16 @@ comes from the [23 September 2026 codebase review](codebase-review-2026-09-23.md
 work like a Python module, is delivered: a pipeline imports each submodel module
 from the `modules/` folder beside it and registers the imported definition
 (`from modules import x`, then `pipeline.submodel(x.submodel, "x")`), and a
-registration by file path is refused, with no migration.
+registration by file path is refused, with no migration. `SUB-R04` and `SUB-R05`
+come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | SUB-R01 | Planned | P3 | One mechanism reuses a node or group of nodes. |
+| SUB-R04 | Planned | P2 | A Load File child whose free code names a second input keeps that input across a submodel boundary, as a Polars child does. |
+| SUB-R05 | Planned | P3 | The no-op alias rewrite, the hidden-port fields nothing produces, the parse that create and dissolve never read, and the second validation per flatten are gone. |
 
 ## Planned improvements
 
@@ -73,3 +76,59 @@ is in the [specification README](../README.md#canonical-only-format-policy).
 `docs/building-models/nodes/instances.md`;
 `docs/building-models/nodes/submodel.md`;
 `frontend/src/utils/canonicalSubmodelBoundaryEditing.ts`.
+
+### SUB-R04 — A Load File child keeps its second input
+**Why:** When flattening renames a definition's physical input (the port name
+becomes the upstream name), `rewrite_boundary_input_names` records an
+`inputMapping` only for a stepped surface or a `POLARS` node, while
+`_build_external_file` binds free code by edge name through
+`_exec_user_code(..., input_mapping=...)` and the stepped-surface table says a
+Load File's other edges stay addressable. A Load File child whose free code
+names a second input therefore loses it across the boundary and fails at
+execution naming a frame that no longer exists; the specification names only
+Polars code as keeping its logical name.
+
+**Plan:** Key the rename branch on "a surface whose code addresses inputs by
+name and holds no steps" rather than on `NodeType.POLARS`, so a free-code Load
+File child gets the same `inputMapping`; add a flatten test with a Load File
+child reading a second input; say so in the specification.
+
+**Acceptance:** A grouped Load File child that names a renamed second input
+executes after flattening with the same result as before grouping.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_submodel_instances.py::rewrite_boundary_input_names`;
+`src/haute/_builders.py::_build_external_file`.
+
+### SUB-R05 — Dead rewrites, hidden ports and double work
+**Why:** `rewrite_submodel_alias_references` is a no-op: its only caller passes
+the identity map, so every occurrence is copied through `with_config` for
+nothing, and `rewrite_node_references` exists only to serve it. The "hidden
+authored port" fields `sourcePort` and `targetPort` are a format nothing
+produces: the parser always writes `None`, the browser and the recovery document
+only pass a value through, yet every boundary edge identity, the dedupe key, two
+port fallbacks and every clone thread them. Create and dissolve parse the whole
+on-disk pipeline (hashing every source and sidecar for its revision) and use
+nothing from it, since both transform the request graph and take the editor
+document's revision. Every flatten validates the graph twice, in `flatten_graph`
+and again in `expand_submodel_instances`.
+
+**Plan:** Delete the two rewriters and the parser call; remove the two fields,
+the hidden-port branch of the edge identity, the fallbacks and the dedupe
+columns, so a boundary edge's identity is the ordinary four-field form; parse the
+strict graph only for drill-down; pass the resolved occurrence map into
+`expand_submodel_instances`.
+
+**Acceptance:** The named symbols and fields are gone; create and dissolve
+perform no pipeline parse (a counting test); one validation per flatten; the
+submodel tests pass unchanged.
+
+**Dependencies:** `SUB-R01` removes node-level instances, not these.
+
+**Evidence:** `src/haute/_submodel_instances.py::rewrite_submodel_alias_references`;
+`src/haute/_submodel_instances.py::rewrite_node_references`;
+`src/haute/_types.py::GraphEdge`; `src/haute/_graph_utils.py::_edge_id`;
+`src/haute/routes/submodel.py::_load_parent_document`;
+`src/haute/_flatten.py::flatten_graph`;
+`src/haute/_submodel_instances.py::expand_submodel_instances`.

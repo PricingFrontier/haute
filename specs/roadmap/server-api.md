@@ -211,14 +211,19 @@ retires a config file re-parses and broadcasts every pipeline in the project. Th
 specification says the server's own edits never round-trip. `active_source` is checked
 against `sources` only by the sidecar model after the `.py`, module and config files were
 staged, so a mismatch rolls everything back and surfaces as a pydantic error through the
-500 backstop. This package comes from the
+500 backstop. The save route itself publishes no `pipeline.document.update` and returns
+no document fingerprint, so a second tab of the same pipeline learns of a change only
+when its own save is refused 409, and the saving tab's next WebSocket resync carries a
+stale fingerprint (the browser half is `FSH-R05`). This package comes from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md).
 
 **Plan:** Mark the sidecar write (`mark_self_write(sidecar, content=bytes)` before the
 write, or a `Writer`) and the stale unlink (`mark_self_write(path, deleted=True)`);
 validate `active_source ∈ sources` on `SavePipelineRequest` (422) before any file is
-staged; add a watcher test that a save, including one that removes a node, publishes no
-`pipeline.document.update`.
+staged; publish the saved document with its fingerprint from the save route to the other
+clients and return the fingerprint to the saver; add a watcher test that a save,
+including one that removes a node, publishes no `pipeline.document.update` through the
+watcher.
 
 **Acceptance:** A save with a live socket produces no document broadcast; a save
 retiring a config file re-parses nothing; a request whose `active_source` is not in

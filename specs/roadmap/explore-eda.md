@@ -15,8 +15,75 @@ specified in [Explore / EDA](../explore-eda/high-level.md),
 | EDA-E18 | Deferred | P3 | Evaluate advanced Excel-parity pivot operations after representative use. |
 | EDA-E23 | Deferred | P3 | Add shared chart filter and hierarchy interactions after representative use. |
 | EDA-E24 | Deferred | P3 | Evaluate the remaining PivotChart parity surface from evidence. |
+| EDA-R01 | Planned | P2 | A pivot request is answered right: an invalid card is a 400, a filter on a time-zone-aware column matches, a formula failure names its cause, and a relationships question scans each feature once. |
+| EDA-R02 | Planned | P3 | Card fields are required or documented as defaulted, the specification's stale statements are corrected, and the duplicate-count scratch never partitions down to single rows. |
+
+`EDA-R01` and `EDA-R02` come from the
+[25 October 2026 codebase review](codebase-review-2026-10-25.md).
 
 ## Planned improvements
+
+### EDA-R01 — Pivot requests answered right
+
+**Why:** An invalid pivot card posted to the run route is answered with the
+sanitized 500: `PivotService.start` validates it with `validate_explore_pivots`,
+which raises `ConfigError`, and neither the route nor the application handlers
+claim that type while the request model types the card as a plain dict. A
+filter member on a time-zone-aware `Datetime` column can never match: the
+members endpoint emits the value with its offset, `_member_literal` restores an
+aware `datetime`, `pl.lit` types it UTC, and the comparison against a
+`Europe/London` column raises `SchemaError` (probed), so the job ends `error`
+with Polars' message. Every formula failure (a syntax error, a sandbox refusal,
+a non-expression result) is reported as "Pivot formula is invalid." with the
+cause chained but never shown or logged. Each categorical feature of a
+relationships question collects the same grouped plan three times and each
+numeric feature twice, so one question of fifty features scans the data point
+about a hundred and fifty times.
+
+**Plan:** Catch `ConfigError` in `start()` and answer 400 with its message (or
+add it to the application handler `API-R06` plans); build the member literal in
+the column's dtype; put the chained cause's message in the failure; collect the
+three derived frames with one `collect_all` or fold them into one aggregation.
+
+**Acceptance:** An invalid card answers 400 naming the field; a tz-aware member
+filter returns its row (the probe's shape as a test); a formula failure names the
+refused construct; a relationships question performs one collect per feature.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/routes/_pivot_service.py::PivotService`;
+`src/haute/routes/_pivot_service.py::_member_literal`;
+`src/haute/routes/_pivot_service.py::_formula_expression`;
+`src/haute/routes/_explore_relationships.py::_categorical_levels`;
+`src/haute/routes/explore.py`.
+
+### EDA-R02 — Card fields, stale statements, the partition floor
+
+**Why:** Three absent card fields (`sort`, `sort_rows`, `color_scale`) are
+materialised with defaults while their siblings are required, so a card missing
+`color_scale_split_by` is rejected and one missing `color_scale` is silently
+completed, against the canonical-only policy and the specification's "rejected
+rather than migrated". Two statements of the Explore specification contradict
+the code: the "single aggregation guarantee" (the profile collects once per
+batch of eight columns plus the histogram and duplicate-count passes, which its
+own test counts) and the decorator's kwarg order, which omits `pivot_formulas`.
+The duplicate-count scratch floors its partition size at one row, so a small
+memory headroom turns a large frame into up to one partition per row.
+
+**Plan:** Require the three fields like their siblings (the writers already emit
+them) or document the exception; delete or restate the two specification
+sentences; floor the partition size at tens of thousands of rows and let the
+memory limit fail the job instead.
+
+**Acceptance:** A card missing `sort` is refused like one missing
+`decimal_places`; the specification matches the collect count and the kwarg
+order; the scratch writes a bounded number of partitions.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_explore_pivots.py`;
+`src/haute/_frame_profile.py::_count_unique_rows`;
+`src/haute/_codegen_builders.py`; `specs/explore-eda/low-level.md`.
 
 ### EDA-E18 — Advanced Excel pivot parity
 
