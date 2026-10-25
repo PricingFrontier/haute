@@ -17,6 +17,7 @@ packages come from the [25 October 2026 codebase review](codebase-review-2026-10
 | CLI-R04 | Planned | P3 | `haute init` edits `pyproject.toml` through `tomlkit` instead of a hand-written TOML scanner. |
 | CLI-R05 | Planned | P3 | Unexpected errors keep their tracebacks, the transport helper raises instead of exiting, and `haute serve` opens the browser when the server is ready. |
 | CLI-R06 | Planned | P3 | Generated workflows pin actions by commit, and the generated pre-commit hook formats only what is staged. |
+| CLI-R07 | Decision | P2 | A team can require a reviewer before a production deploy in its CI provider's settings, and `haute ci update` keeps what that needs. |
 
 ## Planned improvements
 
@@ -143,3 +144,36 @@ partially staged file commits only its staged hunks under the hook.
 
 **Evidence:** `src/haute/_scaffold.py::github_ci_yml`, `::github_deploy_yml`,
 `::github_deploy_prod_yml` and `::pre_commit_hook`.
+
+### CLI-R07 — Who may start a production deploy
+**Why:** The generated workflows gate production only by who may start it. GitHub's
+production workflow runs on `workflow_dispatch`, so anyone with write access to the
+repository can run it, and GitLab's `deploy-production` job is `when: manual`, so anyone who
+may run the pipeline's jobs can play it; Azure DevOps' production stage runs under
+`environment: production`, whose checks are configured in the portal. A GitHub or GitLab
+team that wants a required reviewer needs the production job to name an environment, which
+the generated files do not, and an `environment:` added by hand is lost at the next
+`haute ci update`, which rewrites the generated files. Which reviewers an environment allows
+depends on the plan: GitHub offers required reviewers to private repositories only on
+GitHub Enterprise (Free, Pro and Team have them for public repositories), and GitLab's
+protected environments and deployment approvals need Premium or Ultimate; that is why the
+pipeline-config specification has GitHub's production split work without environment
+protection rules. `[safety.approval] min_approvers`, which `haute init` writes, is read by
+nothing, as both CI pages say.
+
+**Decision:** Whether the generated GitHub and GitLab production jobs name
+`environment: production`, always or when `haute.toml` asks, so that reviewers configured
+in the provider's settings gate them and survive `haute ci update`; and whether
+`min_approvers` stays as a record or goes.
+
+**Plan:** Once decided, the generators name the environment as decided; the
+pipeline-config specification's release flow changes with them, and DOC-02 describes it.
+
+**Acceptance:** With required reviewers configured on the named environment, a production
+deploy waits for a reviewer, and `haute ci update` keeps the job's environment.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_scaffold.py::github_deploy_prod_yml`, `::gitlab_ci_yml` and
+`::azure_devops_yml`; `specs/pipeline-config/high-level.md` (the release flow's approval
+mechanisms); `docs/deployment/ci/github-actions.md` and `gitlab.md` (the approval advice).
