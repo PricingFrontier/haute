@@ -152,9 +152,13 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "background-jobs-api",
     "bugs",
     "caching",
+    "cli",
+    "deploy",
     "engineering-quality",
+    "execution-engine",
     "explore-eda",
     "frontend-shared",
+    "io-layer",
     "model-scoring",
     "modelling",
     "name-collisions",
@@ -170,6 +174,7 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
 )
 _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
     "codebase-review-2026-09-23.md",
+    "codebase-review-2026-10-25.md",
     "delivery-plan.md",
     "polars-2-review-2026-10-17.md",
     "price-contour-polars-2.md",

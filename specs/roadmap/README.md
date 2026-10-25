@@ -21,9 +21,13 @@ or maintenance issue; `P3` opportunistic work.
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup, one worker primitive | `ROAD-WORKER-05` |
 | [Bugs](bugs.md) | Defects found outside component work: statements a save drops from a submodel file, generated CI/CD files that fail before a first container release or cache nothing on GitLab, and text that no longer matches behaviour | `BUG-24` |
 | [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache identity | `CACHE-S17` |
+| [CLI](cli.md) | `haute init --force` keeping the analyst's files, `haute run` as a lazy walk, `haute lint` running the editor's validators, `pyproject.toml` through `tomlkit`, error reporting, generated CI hygiene | `CLI-R01` |
+| [Deploy](deploy.md) | Served requests typed by the manifest's schema, Databricks environments pinned, every MLflow model with its training contract, the registered version from `log_model`, typed `haute.toml`, impact alignment, build directories under the project, one copy of each deploy mechanism | `DEP-R05` |
 | [Engineering quality](engineering-quality.md) | Model-training test cost, order- and load-sensitive tests, compatibility shard balance, dead code, test organisation | `ENGQ-CI03` |
+| [Execution engine](execution-engine.md) | Column-free selects in chunked writes, estimate widths from the lineage, fan-out caching, warm pool resilience, watchdog baselines, quiet failures made loud, static-analysis coverage, dead evidence and clones | `EXEC-R09` |
 | [Explore and EDA](explore-eda.md) | Advanced pivot and PivotChart parity | — |
 | [Frontend shared](frontend-shared.md) | Results store | `FSH-R03` |
+| [IO layer](io-layer.md) | Glob and folder inputs signed, missing against corrupt generations, one path-anchoring rule, lock holds and usage cost, clear and settle rules, one supervised build | `IO-R03` |
 | [Model scoring](model-scoring.md) | Models trained outside Haute | `MSC-06` |
 | [Modelling](modelling.md) | Adaptive low-memory fitting: exact chunked GLM, a low-memory boosted-tree mode (both awaiting a decision) | `MOD-M01` |
 | [Name collisions](name-collisions.md) | Input-binding editors showing their name violations inline | `NAME-09` |
@@ -52,6 +56,18 @@ solutions, and duplication, made at `main` `9319b11d`. It records its method,
 limits and evidence, and maps every finding to the package that tracks it.
 It is a dated supporting report and owns no work; the packages in the
 component roadmaps above carry the plans.
+
+## Codebase review — 25 October 2026
+
+The [codebase review](codebase-review-2026-10-25.md) is a whole-repository
+review for defects, inconsistencies, duplicated and dead code, over-complicated
+and fragile solutions, made at `main` `859548a4` before the first production
+use, with particular attention to the deployment and serving code. Every area
+was read in full by the main session or by a reviewer whose findings the main
+session verified at their source lines, with probes where a finding turned on
+behaviour. It records its method, limits, probes and evidence, and maps every
+finding to the package that tracks it. It is a dated supporting report and
+owns no work; the packages in the component roadmaps above carry the plans.
 
 ## Workbench review — 15 October 2026
 

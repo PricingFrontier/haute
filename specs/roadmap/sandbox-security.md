@@ -13,6 +13,7 @@ These packages come from the
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | SBX-R01 | Planned | P3 | Every containment comparison goes through the one check. |
+| SBX-R04 | Planned | P3 | Restricted joblib loading has no fallback path. |
 
 ## Planned improvements
 
@@ -55,3 +56,22 @@ optimiser and assistant work own.
 `src/haute/_path_resolution.py`; `src/haute/_pipeline_recovery.py`;
 `src/haute/_pipeline_repair.py`; `src/haute/_worker_protocol.py`;
 `src/haute/server.py`; `src/haute/assistant/_project_knowledge.py`.
+
+### SBX-R04 — Restricted joblib loading has no fallback
+**Why:** When `joblib` cannot be imported, `restricted_joblib_load` falls back to
+`safe_unpickle`, which applies the project-root containment the function's
+docstring says it does not apply, so an MLflow-cache model outside the project
+would be refused for the wrong reason. `joblib` is a required dependency, so the
+branch is dead, and the sandbox-security specification's rule is no fallback.
+This package comes from the
+[25 October 2026 codebase review](codebase-review-2026-10-25.md).
+
+**Plan:** Delete the fallback and let the import error propagate.
+
+**Acceptance:** `restricted_joblib_load` has one code path; a test that hides
+`joblib` sees `ModuleNotFoundError`.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_sandbox.py::restricted_joblib_load`;
+`src/haute/_sandbox.py::safe_unpickle`.

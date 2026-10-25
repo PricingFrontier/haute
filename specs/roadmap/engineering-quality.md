@@ -10,7 +10,9 @@ specified in
 [23 September 2026 codebase review](codebase-review-2026-09-23.md). The
 `ENGQ-CI` packages come from the 30 September 2026 CI duration study: per-test
 timings from diagnostic PR #279 (run 36769548458) and the sharded lanes of
-PR #280.
+PR #280. `ENGQ-CI06` and `ENGQ-R06` come from the
+[25 October 2026 codebase review](codebase-review-2026-10-25.md), which also added
+evidence to `ENGQ-R01` and `ENGQ-R05`.
 
 ## Priorities
 
@@ -21,6 +23,8 @@ PR #280.
 | ENGQ-CI05 | Planned | P3 | The compatibility shards are balanced by durations measured without coverage. |
 | ENGQ-R01 | Planned | P3 | Production code that nothing calls, or only tests call, is removed. |
 | ENGQ-R05 | Planned | P3 | Tests are organised by component and behaviour, not by coverage campaign. |
+| ENGQ-CI06 | Planned | P3 | Haute's own workflows pin every action by commit. |
+| ENGQ-R06 | Planned | P3 | The build hook fails with the install hint when Node is missing instead of guessing a machine path. |
 
 ## Planned improvements
 
@@ -173,7 +177,10 @@ reports 8 unused files (including the banding and rating editor barrels), the
 whole `panels/editors/index.ts` barrel of 22 editors (consumers use the lazy
 editors), 33 unused exports, 91 unused exported types and an unlisted
 `@lezer/highlight` dependency. The API client's `checkHauteSession` has no
-production caller left.
+production caller left. The 25 October 2026 review added two parameters that are
+accepted and never read, `_resolve_node_config(n_params=...)` and
+`render_ave_feature_svg(is_categorical=...)`, which every caller computes and
+passes.
 
 **Plan:** Delete the unreferenced code. For test-only functions, either move
 the tests to the production entry point the function was meant to serve or
@@ -204,7 +211,9 @@ is gone; tests import the owning modules.
 `frontend/src/panels/editors/index.ts`;
 `frontend/src/panels/editors/banding/index.ts`;
 `frontend/src/panels/editors/rating/index.ts`;
-`frontend/src/api/client.ts::checkHauteSession`.
+`frontend/src/api/client.ts::checkHauteSession`;
+`src/haute/_config_builder.py::_resolve_node_config`;
+`src/haute/modelling/_charts.py::render_ave_feature_svg`.
 
 ### ENGQ-R05 — Organise tests by behaviour
 **Why:** Backend tests total 421,000 lines, 2.3 times the source they test;
@@ -214,7 +223,8 @@ files named after coverage campaigns or fix waves rather than behaviour:
 `test_algorithms_coverage.py`, `test_json_cache_coverage_uplift.py`,
 `test_coverage_gaps.py`, `test_dry_fixes.py`,
 `test_expression_parser_w3_fixes.py`, `test_trace_w4_fixes.py` and eight
-more `*_coverage` modules. A developer cannot find the tests for a behaviour
+more `*_coverage` modules; the 25 October 2026 review's sweep counted 35 modules
+named after a campaign or a fix wave. A developer cannot find the tests for a behaviour
 by name, and a full serial run takes about forty minutes.
 
 **Plan:** Merge campaign-named modules into the component and behaviour
@@ -234,3 +244,37 @@ modules is unchanged; suite runtime is recorded before and after.
 `tests/test_json_cache_coverage_uplift.py`; `tests/test_coverage_gaps.py`;
 `tests/test_dry_fixes.py`; `tests/test_expression_parser_w3_fixes.py`;
 `tests/test_trace_w4_fixes.py`.
+
+### ENGQ-CI06 — Actions pinned by commit
+**Why:** Haute's own workflows pin actions by floating major tag
+(`actions/checkout@v4`, `astral-sh/setup-uv@v4`, `actions/upload-artifact@v4`; a
+hundred such lines across `.github/workflows`), so a compromised tag runs with
+the release and container-registry secrets. The templates `haute init` writes
+are `CLI-R06`.
+
+**Plan:** Pin each action to a commit SHA with the tag in a comment and let
+Dependabot keep them fresh.
+
+**Acceptance:** Every `uses:` under `.github/workflows` names a 40-hex commit; a
+lint step fails on a tag pin.
+
+**Dependencies:** None.
+
+**Evidence:** `.github/workflows/ci.yml`; `.github/workflows/release.yml`;
+`.github/workflows/container-smoke.yml`.
+
+### ENGQ-R06 — The build hook fails like the CLI
+**Why:** When Node is not on `PATH`, the build hook falls back to
+`C:\Program Files\nodejs\npm.cmd` and prepends that directory to `PATH`, the
+machine-layout fallback the CLI's `_npm` helper deliberately removed because it
+hides the real problem.
+
+**Plan:** Fail with the same install hint as the CLI.
+
+**Acceptance:** A build without Node on `PATH` stops with the hint; no path under
+`Program Files` appears in the hook.
+
+**Dependencies:** None.
+
+**Evidence:** `hatch_build.py::_npm`; `hatch_build.py::_node_env`;
+`src/haute/cli/_helpers.py::_npm`.

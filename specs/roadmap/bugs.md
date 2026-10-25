@@ -14,7 +14,10 @@ that works today for each, and drop it when the package lands; `BUG-22`, `BUG-23
 `BUG-25`, the Databricks ones found with them, are fixed. `BUG-27` to
 `BUG-30`, found the same day, are text that no longer matches the behaviour it
 describes: the CLI's help, the offset tooltip, a tuned t-boost run's summary and the
-t-boost starter parameters in the modelling UI specification.
+t-boost starter parameters in the modelling UI specification. `BUG-40` to `BUG-43`
+come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md): the hosted
+Databricks app's boot and build script, the UC transport's clients, the storage binding's
+unknown keys and a quadratic schema resolution in banding.
 
 ## Priorities
 
@@ -28,6 +31,10 @@ t-boost starter parameters in the modelling UI specification.
 | BUG-28 | Planned | P2 | The offset tooltip names every loss that treats the offset as an exposure, and the losses that take no offset. |
 | BUG-29 | Planned | P2 | A tuned t-boost run's summary says its published model is the winning trial's fit, not a refit. |
 | BUG-30 | Planned | P3 | The modelling UI specification lists the t-boost starter parameters and readiness issues the editor has. |
+| BUG-40 | Planned | P2 | The hosted Databricks app installs the wheel and its pinned dependencies from a lock at boot, and its build script takes the app name as a parameter. |
+| BUG-41 | Planned | P3 | The UC volume transport builds one workspace client per process. |
+| BUG-42 | Decision | P3 | The storage binding record either rejects unknown keys or is named as the exception to the canonical-only policy. |
+| BUG-43 | Planned | P3 | Banding factors resolve the plan's schema once instead of once per factor. |
 
 ## Planned improvements
 
@@ -184,3 +191,68 @@ values, and the readiness issues match `trainingObjective.ts`.
 **Evidence:** `specs/frontend-modelling-optimiser-ui/high-level.md` (Behaviour, t-boost);
 `frontend/src/panels/ModellingConfig.tsx` (`TBOOST_DEFAULT_PARAMS`);
 `frontend/src/utils/trainingObjective.ts` (the t-boost readiness issues).
+
+### BUG-40 — The hosted app boots from a lock
+**Why:** Every boot of the hosted Databricks app force-reinstalls the vendored wheel and
+then runs `pip install <wheel>[databricks]`, resolving Haute's dependency ranges from the
+index at boot time, so two boots of one deployment can run different dependency versions
+and a boot needs the index to be reachable. The committed `requirements.txt` names a wheel
+version and digest that drift from the released version until the build script is run,
+and `deploy.sh` hard-codes the app name `haute-spike` while taking the profile and the
+workspace directory as parameters.
+
+**Plan:** Ship a lock (`uv export`) beside the wheel and install from it, `--no-deps` for
+the wheel plus the pinned requirements; generate `requirements.txt` in the build script
+only and ignore it in git; take the app name as a parameter.
+
+**Acceptance:** Two boots of one deployment install the lock's versions and nothing else;
+`requirements.txt` is not committed; `deploy.sh` with another app name deploys to it.
+
+**Dependencies:** None.
+
+**Evidence:** `databricks_app/app.py::_refresh_vendored_wheel`;
+`databricks_app/requirements.txt`; `databricks_app/scripts/deploy.sh`.
+
+### BUG-41 — One workspace client per process
+**Why:** Every UC volume read, write, list and delete constructs a new `WorkspaceClient()`,
+resolving authentication each time, including the 30 s claim heartbeat.
+
+**Plan:** Build the client once per process and reset it on an authentication failure.
+
+**Acceptance:** A heartbeat and a read in one process share one client (a test counting
+constructions).
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_uc_transport.py::_files_api`.
+
+### BUG-42 — Unknown keys in the storage binding record
+**Why:** `StorageBinding.from_payload` deliberately ignores unknown keys so that an older
+Haute can read a newer record, which the canonical-only format policy forbids in general
+(an unknown key is rejected by name). Either the hosted-project-storage specification
+names this record as the exception, or the loader rejects.
+
+**Plan:** Decide; then record the exception in the specification or reject unknown keys
+by name.
+
+**Acceptance:** The specification and the loader agree, with a test for an unknown key.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_project_storage.py::StorageBinding`; `specs/README.md`;
+`specs/hosted-project-storage/high-level.md`.
+
+### BUG-43 — Banding factors resolve the schema once
+**Why:** `apply_banding_factors` calls `collect_schema()` on the growing lazy plan once per
+breakpoint factor, the quadratic pattern `_apply_rating_step_outputs` avoids by threading
+one schema through its loop.
+
+**Plan:** Resolve the schema once and update it per factor as the rating step does.
+
+**Acceptance:** A banding node with many factors resolves its schema once (a counting
+test); results unchanged.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_rating.py::apply_banding_factors`;
+`src/haute/_rating.py::_apply_rating_step_outputs`.
