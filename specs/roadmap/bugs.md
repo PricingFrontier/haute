@@ -5,13 +5,11 @@
 Defects found outside a component's own roadmap work, kept here until they
 are fixed. `BUG-19`, found on 4 October 2026 while making standalone runs execute
 submodels, extends the check for statements a save would drop from the pipeline file to
-submodel files; `BUG-18`, found with it (a deployed pipeline skipped its submodels), is
-fixed.
+submodel files.
 `BUG-21`, `BUG-24` and `BUG-26` were found on 5 October 2026 while checking the deployment
 guides against the CI/CD files `haute init` generates: as generated, those files fail before a
 first container release succeeds, or cache nothing on GitLab. The guides give the manual step
-that works today for each, and drop it when the package lands; `BUG-22`, `BUG-23` and
-`BUG-25`, the Databricks ones found with them, are fixed. `BUG-27` to
+that works today for each, and drop it when the package lands. `BUG-27` to
 `BUG-30`, found the same day, are text that no longer matches the behaviour it
 describes: the CLI's help, the offset tooltip, a tuned t-boost run's summary and the
 t-boost starter parameters in the modelling UI specification. `BUG-40` to `BUG-43`

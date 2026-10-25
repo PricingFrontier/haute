@@ -15,34 +15,14 @@ Current behaviour is specified in [caching](../caching/high-level.md), the
 [execution engine](../execution-engine/high-level.md). Explore consumers of
 these packages are owned by the [Explore / EDA roadmap](explore-eda.md).
 
-## Where the aim stands
+## Current behaviour and remaining gaps
 
-The shared store, the data-point resolver, the node-data build service, the
-analysis-result store, seed plans, chunked writes, and the preview and trace
-seeding that a `banding-rating-ui` review examined on 19 September 2026 are
-delivered and specified; their packages are retired from this roadmap.
-Choosing captures by recompute cost, recording why a candidate was skipped,
-computing part digests during the write, heavy-row index windows and their
-cardinality check, one chunk size per explicit build with its reported
-rows-per-part bound, reporting a preview served from the response cache
-as seeded while raising the node-data epoch only for an unseen capture
-generation, and a cache-usage surface opened from the toolbar were delivered
-on the same branch and are specified in
-[caching](../caching/low-level.md#seed-plans), the
-[IO layer](../io-layer/low-level.md#node-output-snapshots), the
-[execution engine](../execution-engine/low-level.md), the
-[server API](../server-api/low-level.md#node-data-builds) and its
-[cache usage](../server-api/low-level.md#cache-usage) section, and
-[frontend shared](../frontend-shared/low-level.md#the-shared-data-cache).
-The byte and generation budgets that surface first reported have since been
-removed: only automatic captures now have a budget, and the Pipeline settings
-pane lists it as a cached-data inventory with per-entry clearing. The
-review found no data-corruption defect and confirmed the chunked join against
-the native join on a lookup side whose hot key matched ten times the chunk
-size. What remains is where the delivered behaviour is narrower than the aim
-or where it will not hold at scale.
+The shared store, resolver, seed plans, chunked writer and leased reads are
+specified in the component specifications linked above. The remaining work
+addresses duplicate cold computations, planning cost, write recipes and
+measured limits of the existing consumers.
 
-| Aim | Delivered | Gap |
+| Aim | Current behaviour | Gap |
 |---|---|---|
 | One store, every consumer | Node outputs, input snapshots (including each emitting table of a structured API Input, prepared automatically), and analyses share `.haute_cache`; previews, bounded runs, explicit builds, and traces run under one seed plan. | — |
 | No duplicated runs | A bounded run seeds from any fresh covering generation and captures a join, fan-out, join feeder, batch Model Score, or consumed producer only where recomputing it costs more than the cache round trip, and records why it skipped the others; a preview seeds the same way and captures only the joins and costly full-input work it must compute in full. A chain of plain transforms is recomputed by every preview and bounded run by design, because recomputing it costs less than the cache round trip. Each capture publishes as soon as it is written, so a run that fails or is cancelled later keeps what it had already published. A preview served from the response cache reports its generations as seeded, and the canvas raises the node-data epoch only for a capture generation it has not seen, so a repeat preview costs no refetch. | Two consumers that resolve the same cold capture point at the same time, or an explicit build and an automatic capture of one node, both compute it; the publication lock decides only who publishes (`CACHE-S19`). |
@@ -65,13 +45,10 @@ or where it will not hold at scale.
 
 Delivery order is `CACHE-S17` → `CACHE-S22` → `CACHE-S18`, each gated on a
 measurement named in its own entry rather than started on the strength of its
-shape; `CACHE-S19` is deferred with the others. `CACHE-S12` (a refused
-capture shown at the node) was retired on 23-Sep-2026: the cache budgets
-whose refusals it would have shown are removed, and a failed build already
-reports its error through the shared job poller. `CACHE-S13` moved down on 20-Sep-2026 because measurement showed
-no preview near its timeout. `CACHE-S25`, from the
+shape; `CACHE-S19` remains deferred. `CACHE-S13` is also measurement-gated:
+no measured preview approaches its timeout. `CACHE-S25`, from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md), sits
-outside that order: it follows the pipeline-config package `PCFG-R08`. Every full-frame write is now bounded, so what
+outside that order: it follows the pipeline-config package `PCFG-R08`. What
 is left is measured against cost rather than shape. A package must not bypass
 the resolver, lease, signature, seed-plan, or capture contracts already
 specified. Every package builds on the node-output snapshot store (signature,

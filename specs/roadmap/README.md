@@ -44,7 +44,7 @@ records corrections to that audit's claims and proposed remedies.
 | [Name collisions](name-collisions.md) | Input-binding editors showing their name violations inline | `NAME-09` |
 | [Optimiser validation](optimiser-validation.md) | Per-point convergence traces from price_contour's frontier sweep; a calibrated solve-memory forecast in the Solve panel; the optimiser result workspace's open robustness and CSV questions; one gate for every persisted optimiser artifact, setup files under a reaped root, failures classified once, the frontier recompute sweep as a decision | `OPT-PC04` |
 | [Pipeline config](pipeline-config.md) | Strict decoding of sidecars and sources, inline keywords refused, comments and a same-line closing return kept across a save, rendered bodies as `ruff format` fixed points, recovery on the engine's validators, canonical sidecar bytes, dead paths; project context, typed configs, editor state, node specification | `PCFG-R10` |
-| [Polars 2](polars-2.md) | Moving to Polars 2.0: caches computed under Polars 1, new dtypes, deploy parity, generated and teaching code, the operation registry and the tests; then the operator memory evidence and worker baselines | `PL2-15` |
+| [Polars 2](polars-2.md) | Remaining RAM-estimate calibration, large-scale operator measurements and worker baselines; Map columns and quantile/rank binning (deferred) | `PL2-17` |
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
 | [Sandbox security](sandbox-security.md) | Every containment comparison through the one check; restricted joblib loading without a fallback | `SBX-R01` |
 | [Server API](server-api.md) | Client errors answered as client errors, utility files written like project files, a save that never round-trips the watcher, one copy of each route mechanism, bounded requests, no bytecode deletion at start; domain errors, generated browser contract | `API-R07` |
@@ -53,9 +53,9 @@ records corrections to that audit's claims and proposed remedies.
 | [Tracing](tracing.md) | Input sources from the value lineage, expression facts from the located expression, proven matches kept strict, dead trace paths and clones; the trace panel showing an additive step as one | `TRACE-R01` |
 | [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; the quote store on the server (its engine awaiting IT); managing quotes in the app past the Quotes page: comparing revisions, outcomes, many quotes at once; exports from the app (awaiting a decision on formats); test quotes analysts keep and price again, built again after the first version was taken out (awaiting decisions); actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources); what is left of the review of 15 October 2026: Preview priced in one run, the form's file changed outside the editor, the app's sign-in, and building the sheets without a pointer; and more for Show when to test: other fields and the price; pricings that outrun their timeout and concurrent first saves of a form revision; quote actions that say what they did, number lists in Show when and the quote_details ids from one map, one copy of each workbench helper, typed-in allowed values (a decision) | `WB-08` |
 
-## Delivery plan — 24 September 2026
+## Delivery plan
 
-The [delivery plan](delivery-plan.md) orders every active package into rounds
+The [delivery plan](delivery-plan.md) orders scheduled packages into rounds
 delivered one PR at a time from a single checkout, with each round's
 dependencies, its size and the user-visible changes it makes. It owns only
 the order; the packages above own the work. The packages the

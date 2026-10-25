@@ -50,7 +50,7 @@ warm interactive worker pool.
 `src/haute/_worker_protocol.py::run_worker_protocol`;
 `src/haute/routes/_background_jobs.py::IsolatedJobSupervisor`;
 `src/haute/routes/_isolated_worker_async.py`; `src/haute/routes/_timeouts.py`;
-`src/haute/_dedicated_workers.py::DedicatedWorker` (the optimiser's solver session, OPT-W01,
+`src/haute/_dedicated_workers.py::DedicatedWorker` (the optimiser's solver session,
 which already reuses the warm pool's error family).
 
 ### ROAD-WORKER-06 — Shutdown cancels every job

@@ -6,11 +6,7 @@ Submodel definitions and occurrences, and the other mechanisms for reusing
 logic in a pipeline. Current behaviour is specified in
 [the submodels specification](../submodels/high-level.md). `SUB-R01`
 comes from the [23 September 2026 codebase review](codebase-review-2026-09-23.md).
-`SUB-R03`, from the user's direction on 4 October 2026 that a submodel should
-work like a Python module, is delivered: a pipeline imports each submodel module
-from the `modules/` folder beside it and registers the imported definition
-(`from modules import x`, then `pipeline.submodel(x.submodel, "x")`), and a
-registration by file path is refused, with no migration. `SUB-R04` and `SUB-R05`
+`SUB-R04` and `SUB-R05`
 come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
 
 ## Priorities
@@ -23,8 +19,8 @@ come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
 
 ## Planned improvements
 
-`SUB-R01` changes how a node instance becomes an occurrence, registered by
-import as `SUB-R03` made every occurrence. `SUB-R01` is best taken before
+`SUB-R01` changes how a node instance becomes an occurrence, using the existing
+import-based registration. `SUB-R01` is best taken before
 `PCFG-R08` and `PCFG-R07` (pipeline config), so the editor-state move and the
 typed config models never have to carry node-level instances.
 

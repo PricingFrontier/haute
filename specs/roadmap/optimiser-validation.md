@@ -9,8 +9,7 @@ component specifications, not here:
   bounds, typed frontier points, the analysis-column side table, bounded choice
   queries, adjustment reports, segment breakdowns, the Quotes explorer, the
   ratebook per-quote evaluation and collar, the price-contour contract haute
-  relies on, and the cancellable frontier-point apply (OPT-PC02, price-contour
-  0.6.0).
+  relies on, and the cancellable frontier-point apply.
 - [Modelling and optimiser UI high-level](../frontend-modelling-optimiser-ui/high-level.md)
   and [low-level](../frontend-modelling-optimiser-ui/low-level.md): the shared
   results workspace and every optimiser pane.
@@ -50,7 +49,7 @@ applicable" below):
 
 ### OPT-W02 — A calibrated solve-memory forecast in the Solve panel
 
-**Why:** Since OPT-W01 a process-mode solve is never refused on an estimate: its solver session
+**Why:** A process-mode solve is never refused on an estimate: its solver session
 runs under a native cap and only a solve that exceeds it stops. The user still gets no warning
 before a solve that will not fit. The resident-grid estimate the thread mode gates on
 (`estimate_optimiser_grid_peak_bytes`) is conservative — on 26 September 2026 it estimated about
@@ -79,7 +78,7 @@ and the panel renders the forecast and the warning without disabling Solve.
 ### OPT-PC04 — Per-point convergence traces from the frontier sweep
 
 **Why:** The Convergence tab charts only the base solve's history, whichever frontier point is
-selected. price_contour 0.5.0 records a per-iteration history for `OnlineOptimiser.solve`
+selected. The installed price-contour 0.7.0 records a per-iteration history for `OnlineOptimiser.solve`
 (`record_history=True`), but `frontier()` and the native `sweep_frontier_py` return, per point,
 only its totals, λ, iteration count, `converged`, `solver_path` and `non_convergence_reason`: no
 trace. Since haute solves a swept constraint at the start of its range, the base solve is often
@@ -95,7 +94,8 @@ from the bisection result at 14 of 15 points, so a replay charts a different alg
 one that produced the point. Re-running a bisection in haute with `apply_from_grid` probes would
 roughly double the frontier's cost and still not match the library's steps.
 
-**Plan:** First price-contour, released as 0.7.0 (0.6.0 shipped OPT-PC02's cancellation):
+**Plan:** First extend price-contour and release a version containing this API; the
+current 0.7.0 release does not provide it:
 
 - `OnlineOptimiser.frontier(..., record_history: bool = False)` and
   `sweep_frontier_py(..., record_history=...)`. When set, each point records the steps the sweep
@@ -112,7 +112,8 @@ roughly double the frontier's cost and still not match the library's steps.
 
 Then haute:
 
-- Pin `price-contour>=0.7,<0.8`. `_compute_frontier` asks for the history, the frontier recompute
+- Raise the price-contour minimum to the release providing this contract, with a
+  compatible upper bound. `_compute_frontier` asks for the history, the frontier recompute
   path does too, and each generation keeps its points' traces job-side, keyed by
   `(frontier_generation, point_index)`. They stay out of the status payload, whose size is
   unchanged.
@@ -134,12 +135,13 @@ Then haute:
   generation and point with no solver call and refuses a stale generation; the Convergence tab
   charts the selected point's own trace; the canvas-assurance e2e reads point 2's trace.
 
-**Dependencies:** a price-contour 0.7.0 release. Until it lands, the Convergence tab keeps showing
+**Dependencies:** a price-contour release with per-point frontier history. Until it lands,
+the Convergence tab keeps showing
 the base solve's history.
 
 **Evidence:** `src/haute/routes/_optimiser_solver.py::_compute_frontier` and `_solve_online`;
 `src/haute/routes/_optimiser_frontier.py`;
-`frontend/src/panels/optimiser/ConvergenceChart.tsx`; price-contour 0.5.0's
+`frontend/src/panels/optimiser/ConvergenceChart.tsx`; price-contour 0.7.0's
 `OnlineOptimiser.frontier` signature and `sweep_frontier_py` stub (no `record_history`), and its
 `SolverPath` enum (`bisection`, `subgradient`).
 

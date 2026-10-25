@@ -79,7 +79,7 @@ shapes.
 test connection and discovery lists; modelling GPU status, training estimate,
 dispersion start and status, training MLflow log and model save; every git
 success response; the training responses (`TrainResponse`,
-`TrainStatusResponse`), with `MOD-T10`; Explore pivot run, status, cancel and
+`TrainStatusResponse`); Explore pivot run, status, cancel and
 members, and the data profile; banding stats and rating levels; I/O
 capabilities; the session check and file listing; editor identities, Polars
 step rendering and execution settings; the git 409 advisory bodies

@@ -174,7 +174,7 @@ the run failed and the copy to restore named.
 the app's tests make, once its formats are decided) and WB-12 (the test quotes). The Azure
 resources and identities, provided by the project's IT team. Shared ground with
 [BUG-24](bugs.md#bug-24--container-deploys-log-in-to-their-registry) (the registry login
-before a push); impact's input, once BUG-23, is the `[safety]` portfolio sample, or the test
+before a push); impact's input is the `[safety]` portfolio sample, or the test
 quotes without one.
 
 **Evidence:** `src/haute/_scaffold.py::github_deploy_yml`, `::github_deploy_prod_yml`,
