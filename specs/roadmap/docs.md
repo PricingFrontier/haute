@@ -219,13 +219,17 @@ the next release writes differently, and nothing tells its team what to change o
   `$(uv run haute status --version-only 2>/dev/null || echo "unknown")`, so a status read
   without credentials tags `deploy/vunknown` (BUG-25), and its other generated steps predate
   the Databricks deploy fixes, until `haute ci update` rewrites them.
-- A submodel it registered by file path (`pipeline.submodel("modules/x.py", ...)`) is now
-  refused as removed; saving the pipeline in the editor writes the import form.
+- A submodel it registered by file path (`pipeline.submodel("modules/x.py", "x")`) is now
+  refused as removed, and never migrated: the pipeline opens degraded, its occurrence
+  unavailable and saving disabled, until the file is corrected by hand.
 
 **Plan:** An "Upgrading" page in the deployment guide, linked from the release notes: run
 `haute ci update`; remove the 0.6.0 `impact_dataset` line, or commit a sample outside `data/`
-and name it; add the two mypy keys; save each pipeline that registers a submodel by path.
-Each step says how to tell whether it applies.
+and name it; add the two mypy keys; and in each pipeline file that registers a submodel by
+path, add `from modules import x` and write `pipeline.submodel(x.submodel, "x")` in place of
+the path, keeping the occurrence's name, then reload it (the correction
+`docs/building-models/recovering-a-pipeline.md` already gives). Each step says how to tell
+whether it applies.
 
 **Acceptance:** A project made by `haute init` 0.6.0, with a path-registered submodel and
 the scaffolded `impact_dataset`, upgraded by following the page alone, passes its generated
@@ -236,4 +240,6 @@ lint, type-check, test and validation jobs, and its staging deploy's smoke and i
 **Evidence:** `git show v0.6.0:src/haute/_scaffold.py` (the `impact_dataset` line and the
 tag step) and `git show v0.6.0:src/haute/cli/_init_cmd.py` (`_MYPY_BLOCK` without the two
 keys); `src/haute/cli/_init_cmd.py::_MYPY_BLOCK`; `src/haute/_parser_submodels.py` (the
-refusal of a path-registered submodel); `tests/test_cli_impact.py::TestImpactWithoutAPortfolioSample`.
+refusal of a path-registered submodel) and
+`tests/test_pipeline_repair_actions.py::test_a_registration_by_file_path_is_unavailable_and_names_the_import_form`
+(no migration); `tests/test_cli_impact.py::TestImpactWithoutAPortfolioSample`.
