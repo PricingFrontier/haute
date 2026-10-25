@@ -17,6 +17,8 @@ These packages come from the
 | FMOU-R01 | Planned | P2 | Every number the modelling panel shows is the server's: the VRAM figure is sized at the rows training will use, the Lorenz chart carries the server's Gini, percent fields round, and the summary's elapsed time is the completed job's. |
 | FMOU-R02 | Planned | P2 | The training configuration offers the metrics the backend defaults to and refuses what the server refuses, with each guard message naming its cause. |
 | FMOU-R03 | Planned | P3 | The frontend modelling specification describes the editor that exists; the dead sidebar component, the duplicated GLM conflict derivations and view switches, the message-prefix matching and the family-blind tune copy are gone. |
+| FMOU-R04 | Planned | P2 | A save never retires an auto-range run, a percentage constraint is shown and edited as one instead of being rewritten as an absolute bound, and the frontier marker that looks selected is the selected point. |
+| FMOU-R05 | Planned | P3 | The optimiser workspace has one fenced point-request lifecycle, one formatter, no raw Float32 collar, a specification that matches its Summary, and no dead exports. |
 
 ## Planned improvements
 
@@ -115,3 +117,79 @@ previews.
 `frontend/src/panels/modelling/TermTableView.tsx`;
 `frontend/src/panels/ModellingConfig.tsx`;
 `frontend/src/panels/modelling/HyperparametersConfig.tsx`.
+
+### FMOU-R04 — Auto-range survives a save; constraints keep their kind
+**Why:** Saving the pipeline while an auto-range run is in flight silently
+retires and cancels it: the hook's scope key includes the document's
+`sourceRevision`, which every successful save advances, so the effect that
+retires an active run on a scope change fires on a save, aborts the request,
+posts a cancel and resets the button with no message, against the
+specification's "Saving during background work"; the solve itself fences on the
+execution identity and is unaffected. A `min_pct`/`max_pct` constraint, which the
+backend accepts and the assistant's node card advertises, renders in the
+Constraints pane as "at least 0" (the pane looks for `min` or `max` only and
+defaults to 0) and a commit of the bound type or the value rewrites it as
+`{min: value}`, silently replacing the percentage constraint with an absolute
+one; the Frontier tab's "Holding at" select shows the fraction unlabelled beside
+absolute values. When the selected frontier point shares a pixel with global
+point 2, the shared marker is drawn in the selected style but activating it
+selects point 2; the preference was written for an end-to-end journey and a unit
+test pins it.
+
+**Plan:** Fence the auto-range run on the execution fence, the structural
+version and the node id, as the solve does, and test that `acknowledgeSave`
+mid-run leaves the job polling; render percentage constraints as such (bound
+type and value in percent, committed under the pct key) or refuse to edit an
+unknown bound key with a readiness issue, and label the held value with its
+unit; prefer the selected point in an overlap bucket and move the journey's
+selection into the journey.
+
+**Acceptance:** A save during an auto-range run leaves it running and its
+ranges published; `{min_pct: 0.95}` shows as "at least 95% of baseline" and a
+value edit keeps the pct key; clicking the marker drawn as selected keeps the
+selection.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/panels/optimiser/useOptimiserAutoRange.ts::useOptimiserAutoRange`;
+`frontend/src/panels/optimiser/OptimiserConstraintSettings.tsx`;
+`frontend/src/hooks/useConstraintHandlers.ts`;
+`frontend/src/panels/optimiser/frontierSlices.ts::sliceFrontier`;
+`frontend/src/panels/optimiser/FrontierChart.tsx`;
+`src/haute/assistant/assets/node_cards/optimiser.json`.
+
+### FMOU-R05 — One point-request lifecycle and one formatter
+**Why:** The fenced frontier-point request (abort on identity change, request
+sequence, generation check, the 409 `frontier_point_apply_replaced` and the 410)
+is implemented five times in four shapes that disagree: only Adjustments and
+Segments reissue the 409, Quotes shows it as a failure with Retry, the Export
+pane's load has no abort and no 409 or 410 handling, and Rates keys a map by
+request id. `formatStat` is another private number formatter with the no-carry
+rounding `FSH-R08` records. The combined-factor collar sentence prints the
+Float32-widened grid ends raw (`0.800000011920929`) while the Adjustments and
+Segments tabs strip the widening. The specification says a selected point's
+Summary offers the Adjustments button; the code renders nothing and its test
+agrees with the code. Five exports in the optimiser panels are referenced only
+at their definitions, and a dozen more only inside their own module.
+
+**Plan:** Lift `useLatestRequest` into the optimiser panels and use it from
+Rates, Adjustments, Quotes and the Export load with one policy for 409 and 410;
+replace `formatStat` with the shared formatter; format the collar with
+`formatScenarioValue`; correct the specification; delete the dead exports and
+un-export the internal ones.
+
+**Acceptance:** One fenced-request hook; jscpd reports none of the pairs; the
+collar sentence shows `0.8`; knip reports none of the exports.
+
+**Dependencies:** `FSH-R08` for the shared formatter.
+
+**Evidence:** `frontend/src/panels/optimiser/SegmentsTab.tsx`;
+`frontend/src/panels/optimiser/AdjustmentsTab.tsx`;
+`frontend/src/panels/optimiser/QuotesTab.tsx`;
+`frontend/src/panels/optimiser/OptimiserPublishSection.tsx`;
+`frontend/src/panels/OptimiserPreview.tsx`;
+`frontend/src/panels/optimiser/OptimiserScenarioPanes.tsx`;
+`frontend/src/panels/optimiser/adjustments.ts::formatScenarioValue`;
+`frontend/src/panels/optimiser/SummaryTab.tsx`;
+`frontend/src/panels/optimiser/solveReadiness.ts`;
+`frontend/src/panels/optimiser/ratebookFactorTables.ts`.
