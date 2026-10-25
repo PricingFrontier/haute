@@ -1052,6 +1052,7 @@ use the same stable codes and named fields under terminal `contract_error` (or `
 | `ApiInputSchemaError` | `api_input_schema_invalid` | — |
 | `WorkbenchTablesError` | `workbench_tables_invalid` | — |
 | `WorkbenchInputError` | `workbench_input_invalid` | — |
+| `QuoteInputError` | `quote_input_invalid` | `column`, `quote` |
 | `PreambleError` | `preamble_failed` | `source_line` |
 | `ContractResolutionError` | `contract_resolution_failed` | `node_id`, `node_type`, `failure_kind` |
 | `InputPreparationError` | `input_preparation_failed` | `node_id`, `identity_digest`, `build_class`, `reason_code`, `remediation` |

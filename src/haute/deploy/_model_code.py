@@ -31,7 +31,10 @@ def _plain(value: Any) -> Any:
 
 
 def _request(
-    graph: PipelineGraph, input_node_ids: list[str], model_input: pd.DataFrame
+    graph: PipelineGraph,
+    input_node_ids: list[str],
+    model_input: pd.DataFrame,
+    input_schema: dict[str, Any],
 ) -> DeployInput:
     """The request as the pipeline's request input takes it.
 
@@ -39,17 +42,28 @@ def _request(
     each value as it was sent: a frame inferred from the request would type a column the
     tables do not name, and fail on one of mixed types, before the reader could leave it
     unread, where the signature lets any value through (specs/workbench). Any other
-    request input takes the frame.
+    request input takes a frame typed by its declared *input_schema*, as a container's
+    request is: pandas has no typed null, so a missing value (``NaN``, ``NaT``, ``NA``) is a
+    null first.
     """
-    import polars as pl
-
+    from haute.deploy._request_frame import frame_rows
     from haute.deploy._scorer import QuoteRequest, reads_records
 
+    records = [_plain(record) for record in model_input.to_dict(orient="records")]
     if reads_records(graph, input_node_ids):
-        return QuoteRequest(
-            tuple(_plain(record) for record in model_input.to_dict(orient="records"))
-        )
-    return pl.from_pandas(model_input)
+        return QuoteRequest(tuple(records))
+    present = [
+        {key: None if _missing(value) else value for key, value in record.items()}
+        for record in records
+    ]
+    return frame_rows(present, input_schema)
+
+
+def _missing(value: object) -> bool:
+    """Whether *value* is pandas' missing value (``NaN``, ``NaT``, ``NA``)."""
+    import pandas as pd
+
+    return not isinstance(value, dict | list | tuple) and bool(pd.isna(value))
 
 
 def _require_deployed_polars(deployed: str) -> None:
@@ -86,6 +100,15 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
         from haute.deploy._request_rows import RequestRows
 
         self._request_rows = RequestRows.from_manifest(self._manifest["request_rows"])
+        from haute.deploy._request_frame import request_frame_schema
+        from haute.deploy._scorer import reads_records
+
+        # A flat Quote Input's request is framed by the schema its sample recorded.
+        self._input_schema = (
+            {}
+            if reads_records(self._graph, self._input_node_ids)
+            else request_frame_schema(self._manifest["input_schema"])
+        )
 
         manifest_artifacts = set(self._manifest.get("artifacts", {}))
         missing_artifacts = sorted(manifest_artifacts - set(context.artifacts))
@@ -115,7 +138,9 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
         preserve_primary_error = False
         try:
             with execution_context.stage("deploy_from_pandas"):
-                input_df = _request(self._graph, self._input_node_ids, model_input)
+                input_df = _request(
+                    self._graph, self._input_node_ids, model_input, self._input_schema
+                )
             execution_context.checkpoint(label="after_deploy_from_pandas")
             result = score_graph(
                 graph=self._graph,

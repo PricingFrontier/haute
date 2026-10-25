@@ -131,6 +131,7 @@ class TestHauteModelLoadContext:
             "pruned_graph": {"nodes": [], "edges": []},
             "input_node_ids": ["api_src"],
             "output_node_id": "out",
+            "input_schema": {},
             "request_rows": {
                 "multi_quote": "in_request_order",
                 "refusals": [],
@@ -170,6 +171,7 @@ class TestHauteModelLoadContext:
             "pruned_graph": {"nodes": [], "edges": []},
             "input_node_ids": ["src"],
             "output_node_id": "out",
+            "input_schema": {},
             "request_rows": {
                 "multi_quote": "in_request_order",
                 "refusals": [],
@@ -197,6 +199,7 @@ class TestHauteModelLoadContext:
             "pruned_graph": {"nodes": [], "edges": []},
             "input_node_ids": ["src"],
             "output_node_id": "out",
+            "input_schema": {},
             "request_rows": {
                 "multi_quote": "in_request_order",
                 "refusals": [],
@@ -254,6 +257,7 @@ class TestHauteModelPredict:
         model._artifact_paths = {}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
+        model._input_schema = {"x": pl.Float64(), "y": pl.Float64()}
 
         input_pd = pd.DataFrame({"x": [1.0, 2.0], "y": [3.0, 4.0]})
         expected_result = pl.DataFrame({"x": [1.0, 2.0], "result": [10.0, 20.0]})
@@ -290,6 +294,7 @@ class TestHauteModelPredict:
         model._artifact_paths = {}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
+        model._input_schema = {"x": pl.Float64()}
         admission_error = ExecutionAdmissionError(
             "deploy_pyfunc_predict",
             profile=ExecutionProfile.DEPLOY_BATCH,
@@ -337,14 +342,14 @@ class TestHauteModelPredict:
         model._artifact_paths = {}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
+        model._input_schema = {"x": pl.Float64()}
 
         monkeypatch.setattr(
             "haute.deploy._scorer.admit_deploy_execution",
             lambda **_kwargs: execution_context,
         )
         monkeypatch.setattr(
-            pl,
-            "from_pandas",
+            "haute.deploy._request_frame.frame_rows",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bad pandas frame")),
         )
 
@@ -373,6 +378,7 @@ class TestHauteModelPredict:
         model._artifact_paths = {}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
+        model._input_schema = {"x": pl.Float64()}
 
         class Result:
             def to_pandas(self):
@@ -405,6 +411,7 @@ class TestHauteModelPredict:
         model._artifact_paths = {}
         model._output_fields = ["premium"]
         model._request_rows = RequestRows("in_request_order")
+        model._input_schema = {"x": pl.Float64()}
 
         input_pd = pd.DataFrame({"x": [1.0]})
         mock_result = pl.DataFrame({"premium": [100.0]})
@@ -431,6 +438,7 @@ class TestHauteModelPredict:
         model._artifact_paths = {"model.pkl": "/served/model.pkl"}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
+        model._input_schema = {"x": pl.Float64()}
 
         input_pd = pd.DataFrame({"x": [1.0]})
         mock_result = pl.DataFrame({"x": [1.0]})
@@ -460,6 +468,14 @@ class TestHauteModelPredict:
         model._output_node_id = "output"
         model._output_fields = output_fields
         model._request_rows = RequestRows("in_request_order")
+        model._input_schema = {
+            "IDpol": pl.Int64(),
+            "VehPower": pl.Int64(),
+            "Area": pl.String(),
+            "VehAge": pl.Int64(),
+            "BonusMalus": pl.Int64(),
+            "Exposure": pl.Float64(),
+        }
         model._artifact_paths = {}
         return model
 
@@ -4802,7 +4818,7 @@ class TestBuildSignature:
             # The pandas frame MLflow hands ``predict`` after enforcing the signature, taken
             # as ``HauteModel.predict`` takes it: the records, for the reader.
             enforced = _enforce_schema(pd.DataFrame([quote]), signature.inputs)
-            request = _request(graph, ["request"], enforced)
+            request = _request(graph, ["request"], enforced, {})
             assert isinstance(request, QuoteRequest)
             frames = workbench_request_frames(config, request.records)
             return {name: frame.to_dicts() for name, frame in frames.items()}
@@ -4847,7 +4863,7 @@ class TestBuildSignature:
                 "items": [np.array([{"item_id": "Z", "value": np.float64(1.5)}], dtype=object)],
             }
         )
-        assert _request(graph, ["request"], by_hand) == QuoteRequest(
+        assert _request(graph, ["request"], by_hand, {}) == QuoteRequest(
             (
                 {
                     "policy": {"limit": 100, "start": "2026-01-02"},
@@ -4867,7 +4883,8 @@ class TestBuildSignature:
                 "edges": [],
             }
         )
-        assert _request(flat, ["quotes"], pd.DataFrame({"limit": [100]})).to_dicts() == [
+        limits = pd.DataFrame({"limit": [100]})
+        assert _request(flat, ["quotes"], limits, {"limit": pl.Int64()}).to_dicts() == [
             {"limit": 100}
         ]
 

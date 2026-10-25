@@ -286,6 +286,20 @@ class DeployError(HauteError):
     """Deploy validation or bundling failure."""
 
 
+class QuoteInputError(HauteError):
+    """A flat Quote Input's served request a deployment refuses: a value its column does
+    not hold, or a quote that is not an object. A public contract error: HTTP 422.
+    """
+
+    error_code = "quote_input_invalid"
+    public_fields = ("column", "quote")
+
+    def __init__(self, message: str, *, column: str | None, quote: int) -> None:
+        self.column = column
+        self.quote = quote
+        super().__init__(message, column=column, quote=quote)
+
+
 class QuoteAnswerRowsError(DeployError):
     """A quote of a batch answered quote by quote gave no row or several.
 

@@ -13,7 +13,6 @@ MLflow target and the impact analysis. Current behaviour is specified in
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| DEP-R05 | Planned | P1 | Flat Quote Input uses checked manifest types; container framing errors return 422, and MLflow's public signature boundary is explicit. |
 | DEP-R06 | Planned | P1 | The Databricks model installs a target-compatible lock for the validated scoring runtime and every bundled engine. |
 | DEP-R09 | Planned | P2 | The container image installs a recorded dependency closure resolved for its target Python and platform. |
 | DEP-R10 | Planned | P2 | `haute.toml` values are typed at load, a malformed `[test_quotes] dir` is refused, and an unknown override key raises. |
@@ -27,62 +26,9 @@ MLflow target and the impact analysis. Current behaviour is specified in
 
 ## Planned improvements
 
-`DEP-R05` and `DEP-R06` protect served results and come first. `DEP-R06` uses the
+`DEP-R06` protects served results and comes first. It uses the
 target-resolution mechanism in `DEP-R09`; deliver that shared mechanism with it.
 `DEP-R12A` can proceed independently, coordinating edits to shared build code.
-
-### DEP-R05 — Served requests typed by the manifest schema
-**Why:** A flat Quote Input's served request is framed by Polars inference from the
-JSON values (`pl.DataFrame(rows)` in the generated `app.py` and `pl.DataFrame(rows,
-schema=None)` in the batch worker), not by the
-`input_schema` the manifest records: `30` and `30.0` give Int64 and Float64, a `null`
-gives a Null column, so a cast to String (`"30"` against `"30.0"`), a Banding level or
-a categorical model feature can differ from the dry run and the test quotes, which read
-the sample file's types. The specification says only that such a request is read "as
-one frame". A request Polars cannot frame at all (a list mixing an integer and a string)
-is answered 500 `deploy_internal_error` after the execution context was admitted, and
-that context is never released. The public MLflow path first enforces the logged
-`ModelSignature`, before `HauteModel.predict` converts the frame: a double signature
-refuses an int64 input in the validation probe. Identical unchecked inference on that
-public path is not established, and a cast inside `predict` cannot repair an earlier
-signature refusal. Polars `cast(strict=True)` also truncates `30.9` to Int64 `30`;
-strict casting alone does not establish lossless validation.
-
-**Plan:** Extract and extend the checked value rules in `_workbench_input._value`
-for reuse by flat Quote Input framing against `input_schema`. Refuse numeric strings,
-booleans in numeric columns, float-to-integer coercion and integer overflow; accept an
-integer in a float column only when the conversion is finite and preserves its exact
-value (test both representable and non-representable integers above 2^53). Preserve
-typed nulls at this input boundary; fitted model contracts can impose stricter null
-rules. Do not infer non-nullability from the sample file. Retain the shared date,
-string and boolean checks and specify the supported dtype mapping before implementation.
-
-Use this validator in the single-quote path, the admitted batch worker and the pyfunc
-request adapter. Preserve MLflow's public signature enforcement and document its
-stricter accepted-input subset; do not relax the signature to promise target parity.
-Keep batch framing inside its bounded worker. A size-capped single quote may be framed
-before admission; any failure after admission must release the context. Catch
-`UnicodeDecodeError` in `read_limited_json_body` as the `invalid_json` envelope. Define
-these rules and each target's error envelope in the deploy specification.
-
-**Acceptance:** Exercise `30`, `30.0`, `30.9`, `"30"`, `true`, null, integer range
-boundaries, integers on both sides of the exact-float boundary and mixed lists against
-each supported dtype through `/quote`, the batch worker and
-`mlflow.pyfunc.load_model(...).predict`. Container `30` for Float64 matches the dry run;
-`30.9` for Int64 is refused without truncation. Container refusals are 422 naming the
-column and leave no admitted context; MLflow signature refusals occur at the public
-boundary and are asserted separately. Accepted equivalent inputs score equally. Typed
-nulls keep the declared dtype; a body that is not UTF-8 is answered 422.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/deploy/_container.py::_generate_app_source` (the generated
-`/quote` route);
-`src/haute/deploy/_batch_scoring.py::score_batch_scoring_request` and
-`::prepare_batch_scoring` (the worker's frame and the schema only the dry run passes);
-`src/haute/deploy/_model_code.py::_request`;
-`src/haute/deploy/_request_limits.py::read_limited_json_body`;
-`src/haute/_workbench_input.py::read_quote` (the typed reader the tables path uses).
 
 ### DEP-R06 — The Databricks environment pins the scoring runtime
 **Why:** The pyfunc model's environment pins `haute`, `mlflow` and `polars` and nothing
@@ -247,7 +193,7 @@ the other's bundle or a user's pre-existing directory. Running from another cwd 
 generated build files under the resolved project. P2 addresses this isolation gap;
 reassess as P1 if shared-checkout concurrent deployment is an advertised workflow.
 
-**Dependencies:** None; coordinate edits to shared build code with `DEP-R05` to
+**Dependencies:** None; coordinate edits to shared build code with `DEP-R06` to
 `DEP-R11` without delaying isolation behind those packages.
 
 **Evidence:** `src/haute/deploy/_container.py::build_and_push_image` and

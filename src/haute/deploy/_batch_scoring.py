@@ -20,6 +20,7 @@ import shutil
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -188,6 +189,13 @@ def _classify_batch_failure(exc: BaseException) -> BatchScoreOutcome | None:
     return None
 
 
+def _iso_value(value: object) -> str:
+    """A dry run's ``date`` or ``datetime`` as JSON carries it: its ISO string."""
+    if isinstance(value, date | datetime):
+        return value.isoformat()
+    raise TypeError(f"{type(value).__name__} is not JSON serialisable")
+
+
 def score_batch_scoring_request(
     request: BatchScoreRequest,
     *,
@@ -205,11 +213,15 @@ def score_batch_scoring_request(
     rows = json.loads(Path(request.input_path).read_text(encoding="utf-8"))
     # A Workbench Input, and a Quote Input with tables, read the quotes from the records
     # as sent, typing each value themselves.
-    input_df = (
-        QuoteRequest(tuple(rows))
-        if reads_records(request.graph, request.input_node_ids)
-        else pl.DataFrame(rows, schema=request.input_schema)
-    )
+    if reads_records(request.graph, request.input_node_ids):
+        input_df: pl.DataFrame | QuoteRequest = QuoteRequest(tuple(rows))
+    else:
+        # A flat Quote Input's quotes, typed by its declared schema, never by inference.
+        from haute.deploy._request_frame import frame_rows
+
+        if request.input_schema is None:
+            raise ValueError("A flat Quote Input's batch needs its input schema to be framed.")
+        input_df = frame_rows(rows, request.input_schema)
     execution_context.checkpoint(label="after_deploy_batch_dataframe")
 
     if answers_quote_by_quote(request.request_rows, input_df.height):
@@ -357,7 +369,7 @@ def prepare_batch_scoring(
         temp_dir = tempfile.mkdtemp(prefix="haute_deploy_batch_")
         try:
             input_path = Path(temp_dir) / "input.json"
-            input_path.write_text(json.dumps(rows), encoding="utf-8")
+            input_path.write_text(json.dumps(rows, default=_iso_value), encoding="utf-8")
             request = BatchScoreRequest(
                 graph=graph,
                 input_node_ids=list(input_node_ids),

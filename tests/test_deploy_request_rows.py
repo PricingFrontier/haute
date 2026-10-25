@@ -46,6 +46,8 @@ ORDERED_LEFT = {"how": "left", "on": "region", "suffix": "_r", "maintainOrder": 
 QUOTES = pl.DataFrame(
     {"quote_id": [7, 3, 9, 1, 5], "region": ["S", "N", "E", "N", "W"], "age": [40, 22, 35, 61, 18]}
 )
+#: The request schema the deployment records from its sample, as the manifest renders it.
+QUOTE_SCHEMA = {name: str(dtype) for name, dtype in QUOTES.schema.items()}
 
 
 def _output(fields: list[str], port: str) -> dict[str, Any]:
@@ -222,6 +224,7 @@ def test_the_batch_worker_answers_in_request_order_and_counts(tmp_path, remap):
         output_fields=None,
         input_path=str(input_path),
         result_path=str(tmp_path / "result.parquet"),
+        input_schema=dict(QUOTES.schema),
         request_rows=rows,
     )
     context = admit_deploy_execution(operation="deploy_quote", row_count=QUOTES.height)
@@ -245,6 +248,7 @@ def test_the_databricks_model_answers_in_request_order_or_quote_by_quote(tmp_pat
             "pruned_graph": graph.model_dump(mode="json"),
             "input_node_ids": ["quotes"],
             "output_node_id": "out",
+            "input_schema": QUOTE_SCHEMA,
             "output_fields": None,
             "request_rows": rows.to_manifest(),
             "artifacts": dict.fromkeys(remap, ""),
@@ -724,6 +728,7 @@ def test_a_deployment_the_proof_does_not_cover_answers_a_batch_quote_by_quote(tm
         output_node_id="out",
         artifact_paths=remap,
         output_fields=None,
+        input_schema=QUOTES.schema,
         request_rows=SORTED,
     )
     try:
@@ -815,6 +820,7 @@ def test_two_quotes_whose_answers_coincide_are_answered_with_a_row_each(tmp_path
         output_fields=None,
         input_path=str(input_path),
         result_path=str(tmp_path / "result.parquet"),
+        input_schema=dict(QUOTES.schema),
         request_rows=rows,
     )
     context = admit_deploy_execution(operation="deploy_quote", row_count=2)
@@ -830,6 +836,7 @@ def _load_app(tmp_path: Path, rows: RequestRows, graph: PipelineGraph) -> Any:
         "pruned_graph": graph.model_dump(mode="json"),
         "input_node_ids": ["quotes"],
         "output_node_id": "out",
+        "input_schema": QUOTE_SCHEMA,
         "request_rows": rows.to_manifest(),
         "artifacts": {},
         "output_fields": None,
@@ -903,6 +910,7 @@ def test_a_covered_deployment_fails_an_answer_whose_row_count_changes(tmp_path, 
         output_fields=None,
         input_path=str(input_path),
         result_path=str(tmp_path / "result.parquet"),
+        input_schema=dict(QUOTES.schema),
         request_rows=claimed,
     )
     context = admit_deploy_execution(operation="deploy_quote", row_count=QUOTES.height)

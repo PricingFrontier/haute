@@ -103,7 +103,32 @@ first quote the same way. Where a build counts a skipped row, a served request i
 instead, naming the table (HTTP 422 from a container): a quote that is not an object, an
 array element whose shape does not fit its table, or a value that does not fit its column's
 type would otherwise be answered without it ([JSON shredding](../json-shredding/high-level.md)).
-Any other Quote Input reads the request as one frame. For a graph with no request input,
+Any other Quote Input reads the request as one frame typed by the input schema the manifest
+records (the sample file's columns and types), never by inference from the JSON values, so a
+request types its columns as the dry run and the test quotes do. A key the schema does not
+name is ignored, and a column a quote leaves out, or sends as null, is a null of the declared
+type; no column is made non-nullable from the sample. A value is accepted only when the
+declared type holds it exactly:
+
+| Declared type | Accepts |
+|---|---|
+| An integer (`Int8` to `Int64`, `UInt8` to `UInt64`) | A JSON integer within the type's range; never a boolean, a numeric string or a number with a fraction, which is refused rather than truncated (`30.9` for `Int64`). A whole number written with a fraction (`30.0`) is refused too. |
+| `Float32`, `Float64` | A finite JSON number; an integer only when the float type holds its exact value (`2^53 + 1` is refused for `Float64`). Never a boolean or a string. |
+| `String`, `Categorical`, `Enum` | A JSON string (for an `Enum`, one of its categories). |
+| `Boolean` | `true` or `false`. |
+| `Date` | An ISO date string (`2024-05-01`). |
+| `Datetime` | An ISO date-time string: with an offset when the type has a time zone, without one when it has none. |
+| `Null` | Only null. |
+
+Any other declared type (`Decimal`, `Time`, `Duration`, `Binary`, `List`, `Array`, `Struct`,
+`Object`) refuses the deploy, naming the column, before anything is built. A value that does
+not fit is refused naming the column, the quote and the value. A container answers HTTP 422
+`quote_input_invalid`: a single quote is framed before anything is admitted, and a batch inside
+its worker; a body that is not UTF-8 is the 422 `invalid_json` envelope. The Databricks model
+applies the same check to the frame MLflow hands it, after MLflow has enforced the model's
+logged signature, which accepts a stricter subset first (a `Float64` column's signature is
+`double`, so MLflow refuses an integer before Haute sees it); a pandas missing value (`NaN`,
+`NaT`, `NA`) there is a null. For a graph with no request input,
 exactly one source may be promoted only when it is a `dataInput`, whose configured data
 provides schema/sample information before live requests replace it. A `constant` or any
 other source type is never promoted accidentally; deployment fails with a correction that

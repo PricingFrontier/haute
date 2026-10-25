@@ -652,6 +652,7 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
     )
     from haute._project import resolve_pipeline_file
     from haute.deploy._bundler import collect_artifacts
+    from haute.deploy._request_frame import request_frame_schema
     from haute.deploy._request_rows import record_digests, request_rows
     from haute.deploy._schema import (
         DeployBatchRuntime,
@@ -792,6 +793,12 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
         # admitted, never one outside the project.
         with runtime_project_root_scope(config.pipeline_file, project_root=project_root):
             input_schema = infer_input_schema(pruned_graph, deploy_inputs[0])
+            from haute.deploy._scorer import reads_records
+
+            if not reads_records(pruned_graph, deploy_inputs):
+                # A flat Quote Input's request is framed by this schema: a type a JSON
+                # request cannot carry is refused before anything is built.
+                request_frame_schema(input_schema)
             # Plan the served batch strategy first: it needs only the one-row
             # sample, and a target that scores batches in process must refuse an
             # unprovable group-by before the schema dry-run tries to run one.
