@@ -75,6 +75,12 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 - The assistant-core reviewer read the assistant low-level specification's core
   sections and left the tool and op sections to the tools reviewer; the loop's
   tool-summary wording was not checked against the specification.
+- Two observations are recorded without a package: the server's `FormSpec`
+  applies no frame-label check to a schema column's name at save, so a saved
+  form can hold a name the tables route refuses, which is consistent with the
+  advisory-problems design but unstated in the workbench specification's error
+  handling; and whether the `mutation` workflow is a required check in branch
+  protection is outside the repository and was not checked.
 - The engineering-quality reviewer read seven large scripts structurally (their
   definitions and the subprocess, exception, environment and `cwd` sites), the
   29 browser specifications by a wait-and-selector census, and eight tests in
@@ -494,6 +500,10 @@ generated scaffold workflows (`BUG-21`, `BUG-24`, `BUG-26`).
 - **EXE-11 kept Minor, reachability unconfirmed.** The positional binding after
   a dropped name is real; whether the canvas or codegen can emit a request-input
   edge with a null handle was not shown.
+- **A workbench question closed as sound.** The workbench reviewer asked whether
+  the app's price route returns Int64 values beyond 2^53 as JSON numbers, which
+  the browser would round; `to_json_safe` returns such integers as strings, so
+  the browser's exact whole-number handling holds end to end.
 - **WRK-1 proportion noted.** The 51 MiB gap is a fifth of a 256 MiB budget and
   a small fraction of a multi-GiB one; the package is P2.
 

@@ -163,7 +163,7 @@ reports no pair among the compensation blocks.
 **Dependencies:** `ENGQ-R01` owns `_assert_not_protected`.
 
 **Evidence:** `src/haute/_git_core.py`; `src/haute/_git_remote.py::fetch_pair`;
-`src/haute/_git_history.py::commit_parent`;
+`src/haute/_git_core.py::commit_parent`;
 `src/haute/_git_archive.py::_unique_archive_name`;
 `src/haute/_git_remote.py::_unique_aside_name`.
 

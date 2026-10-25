@@ -222,7 +222,7 @@ collection argument.
 **Dependencies:** None.
 
 **Evidence:** `src/haute/projection.py::materialising_operator_sequences_by_input_names`;
-`src/haute/_polars_io_registry.py::POLARS_OPERATIONS`;
+`src/haute/_polars_operations.py::POLARS_OPERATIONS`;
 `src/haute/_column_lineage.py::_expression_has_unbounded_row_effect`.
 
 ### EXEC-R16 — Preview cache extension
