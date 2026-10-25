@@ -75,7 +75,10 @@ to the build journeys the evaluation targets first.
 **Review packages.** `ASSIST-54` to `ASSIST-56` come from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md): the provider
 client as the policy describes it, bounded requests with a terminal event on
-every stream, and the core's hygiene.
+every stream, and the core's hygiene; `ASSIST-57` to `ASSIST-59`, from the same
+review's pass over the tools, ops, data checks, catalog, recipes and assets:
+tools that never stall the server, facts the model can trust, and the tools'
+hygiene.
 
 ## Priorities
 
@@ -89,6 +92,9 @@ every stream, and the core's hygiene.
 | ASSIST-54 | Planned | P2 | The provider client uses the validated endpoint, classifies SDK errors by type, builds its request outside the failure catch-all, and logs provider errors redacted. |
 | ASSIST-55 | Planned | P2 | A message is bounded, the turn deadline ends every stream with a terminal event, the chat list is read off the event loop, and an oversized document is counted, not dropped. |
 | ASSIST-56 | Planned | P3 | The assistant core carries no test-only methods, one one-line helper, one readiness resolution per message, and names that mean one thing. |
+| ASSIST-57 | Planned | P2 | A tool never stalls the server: `inspect_node` profiles outside the save lock, the capability manifest is built once per installed set, an example is loaded once, and the egress policy is resolved once per call. |
+| ASSIST-58 | Planned | P2 | What the model is told is true: a join's execution failure is kept unless the validation raised it, the brief's columns follow the data, Load File's summary names the three file types, and no rule is stated that the product does not enforce. |
+| ASSIST-59 | Planned | P3 | A re-validated plan keeps a full TTL, the assistant imports the one canonical JSON encoder and one freeze helper, and its limits are declared once. |
 
 ## Planned improvements
 
@@ -281,3 +287,99 @@ send runs no `git`; the field name says what the code does.
 `src/haute/assistant/_loop.py::_bounded`; `src/haute/routes/assistant.py`;
 `src/haute/assistant/_config.py`;
 `src/haute/assistant/_project_knowledge.py::_write_cache`.
+
+### ASSIST-57 — Tools that never stall the server
+**Why:** `inspect_node` holds the process-wide, cross-process `save_lock` while
+its profile part collects up to a million rows in the preview worker, bounded
+only by the pipeline time limit (30 minutes by default), so every GUI save,
+Files-panel write, submodel operation, assistant read, dry run, apply and undo,
+and any other server process on the project, blocks for the profile's duration;
+only the parse needs the lock, the data part already collects outside it, and a
+wiring test pins the lock as held. `capability_manifest()` rebuilds every node
+and operation descriptor, the operation union, the canonical JSON and the
+SHA-256 on every call and only then consults a cache keyed by the digest it just
+computed (probed: about 47 ms per warm call), paid at least once per tool result
+on the event-loop thread, per project revision, per `read_reference` id and per
+system prompt. Every `read_reference` of an example re-hashes and re-copies the
+whole bundle into a fresh temporary directory. The egress policy is resolved
+from `haute.toml` at eight sites, several within one call.
+
+**Plan:** Prepare the profile under the lock and collect outside it, amending
+the specification's exemption and replacing the lock-held test with one that
+asserts the lock is free during collection; key the manifest cache on
+`(haute_version, digest of the installed capabilities)` and build on a miss
+only, with a test that a warm call constructs no descriptor; cache
+`load_example` per name; resolve the policy once in `_dispatch_tool` and thread
+it down.
+
+**Acceptance:** A save during a profile waits for no collection; a warm
+`capability_manifest()` call is under a millisecond; an example read twice
+hashes once; one policy resolution per tool call.
+
+**Dependencies:** `PCFG-R04` owns the current-directory root the policy is
+resolved from.
+
+**Evidence:** `src/haute/assistant/_tools.py::inspect_node`;
+`src/haute/assistant/_tools.py::_prepare_column_profile`;
+`src/haute/assistant/_catalog.py::capability_manifest`;
+`src/haute/assistant/_assets.py::load_example`;
+`src/haute/assistant/_tools.py::_dispatch_tool`; `tests/test_assistant_tools.py`.
+
+### ASSIST-58 — Facts the model can trust
+**Why:** A data check suppresses an Edge Join's `execution_failed` finding
+whenever its validated side holds duplicate keys, whatever the join raised, so a
+join that fails for another reason (key dtypes that differ between the sides;
+Polars raises `SchemaError`, distinguishable from the `ComputeError` a
+`validate` breach raises) reports only `join_validation_failed`, and the model
+fixes the duplicates while the join still fails. The graph brief's resolved
+columns are cached per project revision, which covers the pipeline file,
+`haute.toml` and the ledger but not the data files, so a column added to a
+parquet between turns leaves the turn context showing the old columns while
+`inspect_node`'s schema part shows the new ones. The prompt's node index tells
+the model Load File loads "a pickle, JSON, joblib or CatBoost file" while the
+product accepts three types and the same node's usage note says so. The Source
+Switch note states "use at most one switch per pipeline" as a rule the product
+does not enforce. The low-level module map still describes a request-text router
+in `_recipes.py` that the high-level specification says does not exist.
+
+**Plan:** Replace the execution finding only when the failure is the
+`ComputeError` the validation raises; key the brief cache on the revision plus
+the lineage's input identity (or a short TTL); derive the Load File summary from
+`EXTERNAL_FILE_TYPES` and add the summaries to the usage-note test; reword the
+switch note as guidance; delete the module-map sentence.
+
+**Acceptance:** A join with duplicates on its join side and mismatched key
+dtypes reports both findings; a column added to a data file appears in the next
+turn's brief; the summary and the loader agree on the file types.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/assistant/_data_check.py::_replaced`;
+`src/haute/assistant/_tools.py::_brief_nodes`;
+`src/haute/assistant/_catalog.py::_SUMMARIES`;
+`src/haute/assistant/_catalog.py::_USAGE_NOTES`; `src/haute/_io.py::EXTERNAL_FILE_TYPES`;
+`specs/assistant/low-level.md`.
+
+### ASSIST-59 — Tool hygiene
+**Why:** A repeated identical dry run keeps the first dry run's expiry:
+`PlanStore.put` on a still-`validated` record replaces the receipt but never
+refreshes `expires_at`, so a plan re-validated late in its ten minutes is
+reported valid with a hash that expires seconds later and the apply answers
+`plan_expired`. `_ops._canonical_json` is a second canonical JSON encoder beside
+`haute._cache.canonical_json`, whose docstring forbids a second one, and three
+recursive freeze helpers exist with two thaw helpers. Every operation descriptor
+declares the same hand-written limits as literals duplicating the tool module's
+constants, and the 30-second timeout they state is true of the data part alone.
+
+**Plan:** Refresh `expires_at` on a re-put of a `validated` plan with a test;
+import the one encoder and move one freeze/thaw pair into `_wire_ops.py`;
+declare the limits once and state the timeout per operation or drop it.
+
+**Acceptance:** A plan re-validated at `ttl - ε` stays applicable for a full
+TTL; one encoder, one freeze pair; the limits have one definition.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/assistant/_ops.py::PlanStore`;
+`src/haute/assistant/_ops.py::_canonical_json`; `src/haute/_cache.py::canonical_json`;
+`src/haute/assistant/_catalog.py::_freeze`; `src/haute/assistant/_wire_ops.py`.

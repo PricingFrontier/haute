@@ -75,10 +75,8 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 - The assistant-core reviewer read the assistant low-level specification's core
   sections and left the tool and op sections to the tools reviewer; the loop's
   tool-summary wording was not checked against the specification.
-- Areas whose findings are not yet in this report are in review: the
-  assistant's tools, ops, data checks, catalog, recipes and assets; the JSON
-  shredder's remaining modules; submodels and Explore; the frontend; the tests,
-  scripts and CI as code.
+- Areas whose findings are not yet in this report are in review: submodels and
+  Explore; the frontend; the tests, scripts and CI as code.
 
 ## Coverage and findings so far
 
@@ -97,9 +95,11 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 | Tracing and expression parsing (trace, correlation, enrichment, lineage, waterfall, the expression parser) | reviewer, verified; the parser probe rerun | every owned file in full | 0 / 2 / 9 / 3 |
 | Git integration and Databricks IO (every `_git*` module, the git route, credentials, SQL IO, the output writer, the browsing route) | reviewer, verified; two probes | every owned file in full | 0 / 1 / 12 / 1 |
 | Assistant core (application, loop, sessions, providers, configuration, rendering, project knowledge, the route) | reviewer, verified | every owned file in full; the specification's core sections | 0 / 1 / 8 / 5 |
+| Assistant tools (tools, ops, data checks, catalog, recipes, assets) | reviewer, verified; two timing probes | every owned file in full; the specification's tool, op and data-check sections | 0 / 2 / 6 / 4 |
+| JSON shredding (records, shred, writer, source proof, inference, caches, the path grammar, the Edge Join, the JSON-cache route) | reviewer, verified; the Critical reproduced by the main session | every owned file in full | 1 / 2 / 8 / 1 |
 
-Two hundred and seventeen findings so far: one Critical, thirty-one Major,
-one hundred and fifty-three Minor and thirty-two Suggestions. The Critical and every Major is confirmed at source by the
+Two hundred and forty-one findings so far: two Critical, thirty-five Major,
+one hundred and sixty-seven Minor and thirty-seven Suggestions. The Critical and every Major is confirmed at source by the
 main session; the Minors and Suggestions were read at source or accepted on
 quoted evidence as the verification table records.
 
@@ -113,6 +113,11 @@ quoted evidence as the verification table records.
   2028 while the snapshot stays fresh. A parquet glob also cannot be deployed
   (it is "direct", then refused as absent) while a CSV glob's stale snapshot is
   bundled.
+- **A value that is not a list at a declared array key yields no child rows, no
+  skip count and no error** (Critical, `JSON-R01`; reproduced in the build walk
+  and in the deployed request path). XML's singleton rule makes it routine: a
+  quote with one `<driver>` loses its driver row while a quote with two keeps
+  both, and the inferred schema for such a file fails its own build.
 - **A served flat Quote Input is typed by inference, not by the manifest**
   (Major, `DEP-R05`): `30` and `30.0` give different dtypes, a `null` gives a
   Null column, so a cast, a Banding level or a categorical feature can differ
@@ -192,6 +197,14 @@ quoted evidence as the verification table records.
   (Major, `ASSIST-54`): `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` in the
   server's environment redirects the key, the prompt and project material to a
   host the endpoint policy never checked.
+- **`inspect_node` holds the project's save lock while profiling up to a million
+  rows, and the capability manifest is rebuilt on every call** (two Majors,
+  `ASSIST-57`): every save, write and other server process on the project waits
+  for the profile; 47 ms of descriptor construction per tool result on the
+  event-loop thread.
+- **The root JSON array tokeniser reads one byte per Python call** (Major,
+  `JSON-R02`): forty-one times slower than the same records as JSONL; a 1 GB
+  root array tokenises for about three minutes before any row is walked.
 
 ## Design choices the review asks the owner to confirm
 
@@ -294,6 +307,14 @@ production:
 | Assistant | ASA-1, ASA-2, ASA-7, ASA-13 | `ASSIST-54` |
 | Assistant | ASA-3, ASA-4, ASA-6, ASA-9 | `ASSIST-55` |
 | Assistant | ASA-5, ASA-8, ASA-10, ASA-11, ASA-12, ASA-14 | `ASSIST-56` |
+| Assistant | ASB-1, ASB-2, ASB-10, ASB-12 | `ASSIST-57` |
+| Assistant | ASB-4, ASB-5, ASB-6, ASB-8, ASB-9 | `ASSIST-58` |
+| Assistant | ASB-3, ASB-7, ASB-11 | `ASSIST-59` |
+| JSON shredding | JSN-1, JSN-3 | `JSON-R01` |
+| JSON shredding | JSN-2 | `JSON-R02` |
+| JSON shredding | JSN-4, JSN-5, JSN-8, JSN-9 | `JSON-R03` |
+| JSON shredding | JSN-6, JSN-7 | `JSON-R04` |
+| JSON shredding | JSN-10, JSN-11, JSN-12 | `JSON-R05` |
 | Sandbox security | PM-42 | `SBX-R04` |
 | Workbench | PM-44 | `WB-33` |
 | Workbench | PM-45 | `WB-34` |
@@ -331,7 +352,11 @@ vanish with node-level instances (`SUB-R01`); the git routes' and the
 assistant's current-directory project root (`PCFG-R04`); the Databricks client
 factory's and the save service's `HTTPException`s (`API-R02`); the assistant's
 own containment comparisons (`SBX-R01`); the per-request workspace client in the
-browsing routes (`BUG-41`).
+browsing routes (`BUG-41`); the assistant catalog's hand tables and key-only
+config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
+(`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the API
+Input's supervised build (`IO-R08`), the Edge Join as a boundary (`EXEC-R15`)
+and Recover's `how="asof"` (`PCFG-R13`).
 
 ## Verdicts that changed or stayed open
 
@@ -393,6 +418,10 @@ All probes live outside the repository and wrote nothing into it.
 | parser display | `with_columns(rank=pl.col('x').rank().over('g'), y=pl.col('a') * 2)` evaluated for `y`: `expression_type: window`, `substituted_text: rank of x over g`, `result_value: 42.0`; a `replace({'A': 'premium'})` beside a `rename` labels the step a rename of `A`. |
 | typed branch names | Seven names git refuses (`my branch`, `feat..x`, `feat.lock`, `.hidden`, `a//b`, `trail/`, `x@{1}`) pass `_validate_ref_name` and fail in `set_working_branch` with a plain `GitError`. |
 | argv limit | `git rev-parse` with 800 forty-character SHAs fails on Windows with `WinError 206` at 32,814 characters; 500 succeed. |
+| manifest timing | Five warm `capability_manifest()` calls: 47.3, 47.5, 48.6, 47.2, 47.2 ms, the same object each time. |
+| shred shape mismatch | Records with an object and a scalar at a declared `drivers[:]` key give two driver rows for four quotes and empty skip statistics; `shred_request` answers without raising; an XML quote with one `<driver>` loses it while a quote with two keeps both. |
+| root-array tokeniser | 167,103 records (41.9 MB): JSONL 0.18 s, root JSON array 7.60 s, `orjson.loads` of the whole file 0.66 s. |
+| date guessing | `['15/01/2024']` builds a `Date` series as 15 January and `['01/02/2024']` as 1 February; an ISO timestamp is refused. |
 | price-contour column order | `solve`, `apply_from_grid` and the quote-results schema emit `optimal_<c>` in config order; `ApplyOptimiser.apply` in sorted order, so both haute schemas match their own library path (no finding). |
 
 ## Mechanical metrics
