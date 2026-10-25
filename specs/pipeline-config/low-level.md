@@ -429,10 +429,12 @@ The production generators take `production_environment` (`[ci.production] enviro
 `CIConfig.production_environment`, default empty): when it is set, GitHub's `deploy-production`
 job and GitLab's `deploy-production` job name it as their `environment`, and Azure DevOps'
 production deployment names it in place of `production`; when it is empty, the GitHub and
-GitLab jobs name no environment and Azure DevOps keeps `production`. `_production_environment`
-raises `ValueError` with `production_environment_problem`'s reason for a value that is not a
+GitLab jobs name no environment and Azure DevOps keeps `production`. The name is written
+quoted, so one such as `true` or `001` stays a string. `_production_environment` raises
+`ValueError` with `production_environment_problem`'s reason for a value that is not a
 string, or one that is not an ASCII letter or digit followed by up to 254 letters, digits,
-`-`, `_` and `.`, a name both providers accept that stays inert in the generated YAML.
+`-` and `_`. That is a name every provider reads as one environment, inert in the generated
+YAML; a dot is refused because Azure DevOps reads `a.b` as resource `b` of environment `a`.
 `staging_suffix_problem` likewise refuses a suffix that is not a string.
 `ci_files(target, ci, workbench=..., python_version=..., staging_suffix=..., production_environment=...)` returns exactly the files of the
 chosen `ci` value, path to content (`"none"` has none, an unknown provider raises), which

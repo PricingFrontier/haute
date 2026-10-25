@@ -262,8 +262,10 @@ def _pin_staging_suffix(text: str, staging_suffix: str) -> str:
     )
 
 
-# A name GitHub and GitLab both accept for an environment, inert in the generated YAML.
-_PRODUCTION_ENVIRONMENT_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}")
+# A name every provider reads as one environment, inert in the generated YAML, where it is
+# quoted so that a name such as "true" or "001" stays a string. No dot: Azure DevOps reads
+# "a.b" as resource "b" of environment "a".
+_PRODUCTION_ENVIRONMENT_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,254}")
 
 # The environment Azure DevOps' production deployment runs under when none is named: a
 # deployment job always needs one there.
@@ -280,8 +282,8 @@ def production_environment_problem(name: object) -> str | None:
         return f"is {name!r}: an environment name must be a string"
     if name and _PRODUCTION_ENVIRONMENT_PATTERN.fullmatch(name) is None:
         return (
-            f"is {name!r}: an environment name may hold only ASCII letters, digits, '-', '_' "
-            "and '.', starting with a letter or digit, in at most 255 characters"
+            f"is {name!r}: an environment name may hold only ASCII letters, digits, '-' and "
+            "'_', starting with a letter or digit, in at most 255 characters"
         )
     return None
 
@@ -800,7 +802,7 @@ def _github_deploy_prod_yml(target: str, environment: str) -> str:
     release_tag = _release_tag_script(target, " " * 10)
     # A Databricks release tag reads the registered version from MLflow.
     tag_env = "" if target in _CONTAINER_BASED_TARGETS else f"        env:\n{secrets_env}\n"
-    environment_line = f"    environment: {environment}\n" if environment else ""
+    environment_line = f'    environment: "{environment}"\n' if environment else ""
 
     return (
         _build_only_notice(target)
@@ -885,7 +887,7 @@ def _gitlab_ci_yml(target: str, environment: str) -> str:
     """
     secrets_env = _gitlab_secrets_env(target)
     release_tag = _release_tag_script(target, " " * 6)
-    environment_line = f"  environment: {environment}\n" if environment else ""
+    environment_line = f'  environment: "{environment}"\n' if environment else ""
     verify = target not in BUILD_AND_PUSH_ONLY_TARGETS
     verification_stages = "  - smoke-test\n  - impact-analysis\n" if verify else ""
     verification_jobs = (
@@ -1204,7 +1206,7 @@ stages:
         timeoutInMinutes: {_deploy_timeout_minutes(target)}
         pool:
           vmImage: ubuntu-latest
-        environment: {environment}
+        environment: "{environment}"
         strategy:
           runOnce:
             deploy:

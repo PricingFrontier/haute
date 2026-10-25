@@ -1404,8 +1404,28 @@ class TestCiFiles:
 
         assert job.get("environment") == expected
 
+    @pytest.mark.parametrize("ci", ["github", "gitlab", "azure-devops"])
+    @pytest.mark.parametrize("name", ["null", "true", "on", "001", "1e3"])
+    def test_a_name_yaml_would_read_as_another_type_stays_a_string(
+        self, ci: str, name: str
+    ) -> None:
+        files = ci_files("databricks", ci, production_environment=name)
+
+        assert self._production_job(ci, files)["environment"] == name
+
     @pytest.mark.parametrize(
-        "name", ["prod approval", "-prod", "prod:x", 'p" && x', "p\nx", "x" * 256, "prodé"]
+        "name",
+        [
+            "prod approval",
+            "-prod",
+            "prod:x",
+            'p" && x',
+            "p\nx",
+            "x" * 256,
+            "prodé",
+            # Azure DevOps reads a dotted name as resource "approval" of environment "production".
+            "production.approval",
+        ],
     )
     def test_an_environment_name_the_providers_cannot_take_is_refused(self, name: str) -> None:
         with pytest.raises(ValueError, match="environment"):
