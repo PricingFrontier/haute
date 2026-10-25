@@ -108,22 +108,27 @@ bounded delays `10 ms, 25 ms, 50 ms, 100 ms`, after which the original error sti
 removal — discarding a dead worker's staging directory, which must not abort a job's cleanup —
 and returns whether the tree is gone so its caller reports a tree that survives instead of
 leaking the space silently.
-
-A path Windows refuses for its length is named rather than left a bare "file not found".
-Windows says so with `ERROR_FILENAME_EXCED_RANGE`, or, while `LongPathsEnabled` is off,
-reports a path past `MAX_PATH` (259 characters) as a missing file or directory.
-`path_too_long_error(exc)` finds such an `OSError` in the chain Python prints for `exc` (its
-`__cause__`s, else an unsuppressed `__context__`) and returns a `PathTooLongError`, an
-`OSError` with `ENAMETOOLONG` naming the path's length, the limit and the two remedies: a
-project folder with a shorter path, or the "Enable Win32 long paths" policy. `atomic_path`
-raises it, from the original, for a failed write whose cause it is; an isolated worker reports
-it as the child's exception (`_worker_error_envelope`), so the parent can classify the
-failure. Input preparation's reason code for it is `path_too_long`, and an input-cache build
-job's `error_code` is `path_too_long`; both carry `PATH_TOO_LONG_REMEDIATION`, which names
-no path. On other platforms, and on Windows with long paths on, nothing is renamed.
 The codes are retried only on Windows; every error on another platform and every other Windows
 filesystem error fails immediately. This is retry of the same atomic operation, not
 an in-place or non-atomic fallback.
+
+A path Windows refuses for its length is named rather than left a bare "file not found".
+While `LongPathsEnabled` is off, Windows takes a file path of at most `MAX_PATH` less its NUL
+(259 characters) and a folder path of 12 fewer (247): a folder past that fails with
+`ERROR_FILENAME_EXCED_RANGE`, and a file past it fails as missing (`FileNotFoundError`).
+`path_too_long_error(exc)` finds such an `OSError` in the chain Python prints for `exc` (its
+`__cause__`s, else an unsuppressed `__context__`) and returns a `PathTooLongError`, an
+`OSError` with `ENAMETOOLONG` naming the path's length, the limits and the two remedies: a
+project folder with a shorter path, or the "Enable Win32 long paths" policy. Any other error on
+a long path is that error (a refused permission, a full disk), and a path with the
+extended-length `\\?\` or device `\\.\` prefix, which `MAX_PATH` does not limit, is never
+named. `atomic_path` raises it, from the original, for a failed write whose cause it is; an
+isolated worker reports it as the child's exception (`_worker_error_envelope`), so the parent
+can classify the failure. Input preparation's reason code for it is `path_too_long`, including
+when the input cache's own folder cannot be created (`_open_cache_store`, which reports it for
+the first input that needed the cache), and an input-cache build job's `error_code` is
+`path_too_long`; both carry `PATH_TOO_LONG_REMEDIATION`, which names no path. On other
+platforms, and on Windows with long paths on, nothing is renamed.
 
 ## Control flow
 

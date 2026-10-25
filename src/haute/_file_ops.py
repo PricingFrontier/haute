@@ -53,10 +53,14 @@ _WINDOWS_REPLACE_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1)
 _IS_WINDOWS = os.name == "nt"
 _DISK_HEADROOM_BYTES = 64 * 1024
 
-# Windows' traditional limit on a path: MAX_PATH (260) less the terminating NUL. A longer
-# path needs the "Enable Win32 long paths" setting, which is off by default.
+# Windows' traditional limit on a path: MAX_PATH (260) less the terminating NUL, and for a
+# folder 12 fewer, so a folder can still hold an 8.3 file name. A longer path needs the
+# "Enable Win32 long paths" setting, which is off by default.
 WINDOWS_MAX_PATH_CHARS = 259
+_WINDOWS_MAX_FOLDER_PATH_CHARS = 247
 _ERROR_FILENAME_EXCED_RANGE = 206
+# The extended-length and device prefixes, whose paths MAX_PATH does not limit.
+_UNLIMITED_PATH_PREFIXES = ("\\\\?\\", "\\\\.\\")
 _LONG_PATHS_KEY = r"SYSTEM\CurrentControlSet\Control\FileSystem"
 
 #: What to do about a path Windows refused for its length, in words that name no path.
@@ -78,10 +82,11 @@ class PathTooLongError(OSError):
     def __init__(self, path: str) -> None:
         super().__init__(
             errno.ENAMETOOLONG,
-            f"Windows cannot use a path of {len(path)} characters: its limit is "
-            f"{WINDOWS_MAX_PATH_CHARS + 1} unless long paths are enabled. Move the project "
-            "to a folder with a shorter path, or enable long paths (the 'Enable Win32 long "
-            "paths' policy)",
+            f"Windows refused a path of {len(path)} characters for its length: unless long "
+            f"paths are enabled, a file's path may have at most {WINDOWS_MAX_PATH_CHARS} "
+            f"characters and a folder's {_WINDOWS_MAX_FOLDER_PATH_CHARS}. Move the project to a "
+            "folder with a shorter path, or enable long paths (the 'Enable Win32 long paths' "
+            "policy)",
             path,
         )
 
@@ -104,9 +109,9 @@ def path_too_long_error(exc: BaseException) -> PathTooLongError | None:
     """The :class:`PathTooLongError` behind *exc*, or ``None`` when no path was too long.
 
     Walks the chain Python prints for *exc* (each ``__cause__``, else an unsuppressed
-    ``__context__``) for an ``OSError`` on a path Windows refused for its length: one it
-    names as such (``ERROR_FILENAME_EXCED_RANGE``), or one past ``MAX_PATH`` while long
-    paths are disabled, which Windows reports as a missing file or directory.
+    ``__context__``) for an ``OSError`` Windows raised on a path past its limit while long
+    paths are disabled: a folder it names as too long (``ERROR_FILENAME_EXCED_RANGE``), or
+    a file it reports as missing. Any other error on a long path is that error.
     """
     seen: set[int] = set()
     current: BaseException | None = exc
@@ -128,13 +133,15 @@ def path_too_long_error(exc: BaseException) -> PathTooLongError | None:
 
 
 def _windows_refused_for_length(exc: OSError) -> PathTooLongError | None:
+    named_too_long = getattr(exc, "winerror", None) == _ERROR_FILENAME_EXCED_RANGE
     for name in (exc.filename, exc.filename2):
-        if not isinstance(name, str) or not name:
+        if not isinstance(name, str) or not name or name.startswith(_UNLIMITED_PATH_PREFIXES):
             continue
         path = os.path.abspath(name)
-        if getattr(exc, "winerror", None) == _ERROR_FILENAME_EXCED_RANGE or (
-            len(path) > WINDOWS_MAX_PATH_CHARS and not windows_long_paths_enabled()
-        ):
+        refused = (named_too_long and len(path) > _WINDOWS_MAX_FOLDER_PATH_CHARS) or (
+            isinstance(exc, FileNotFoundError) and len(path) > WINDOWS_MAX_PATH_CHARS
+        )
+        if refused and not windows_long_paths_enabled():
             return PathTooLongError(path)
     return None
 

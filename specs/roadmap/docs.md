@@ -180,9 +180,9 @@ without a sample, and a missing production endpoint taken as a first deploy).
 
 ### DOC-04 — The site describes the package users install
 **Why:** `.github/workflows/docs.yml` deploys the site on every push to `main` that changes
-`docs/` or `mkdocs.yml`, while PyPI's latest release is 0.6.0 of 5 October 2026 and `main`
-is 381 commits past it, the Databricks deploy fixes among them. Published from `main`, the
-site would describe behaviour `pip install haute` does not have. The site has also not
+`docs/` or `mkdocs.yml`, while PyPI's latest release is 0.6.0 of 5 October 2026, which
+predates the Databricks deploy fixes on `main` (403 commits at `7bafedad`). Published from
+`main`, the site would describe behaviour `pip install haute` does not have. The site has also not
 published since 2 October: that day's run built, but its deploy job has stayed queued for a
 runner, holding the `pages` concurrency group, so every later docs run waits and is
 cancelled by the next.

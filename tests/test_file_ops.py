@@ -895,16 +895,28 @@ class TestWindowsPathTooLong:
         assert f"a path of {len(path)} characters" in str(found)
         assert "Enable Win32 long paths" in str(found)
 
-    def test_windows_naming_the_length_as_the_cause_is_enough(
-        self, monkeypatch: pytest.MonkeyPatch
+    def test_a_folder_past_the_folder_limit_is_named_as_too_long(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Windows names a folder past MAX_PATH less 12 as too long rather than missing."""
         from haute._file_ops import PathTooLongError, path_too_long_error
 
-        self._windows(monkeypatch, long_paths=True)
-        error = FileNotFoundError(2, "The filename or extension is too long", r"C:\short")
-        error.winerror = 206  # ERROR_FILENAME_EXCED_RANGE
+        folder = str(tmp_path / ("d" * 250))
+        assert 247 < len(folder)
 
-        assert isinstance(path_too_long_error(error), PathTooLongError)
+        def too_long(path: str) -> FileNotFoundError:
+            error = FileNotFoundError(2, "The filename or extension is too long", path)
+            error.winerror = 206  # ERROR_FILENAME_EXCED_RANGE
+            return error
+
+        self._windows(monkeypatch)
+        assert isinstance(path_too_long_error(too_long(folder)), PathTooLongError)
+        # A short path refused for its length has a name component past 255
+        # characters, which no shorter project folder cures.
+        assert path_too_long_error(too_long(r"C:\short")) is None
+
+        self._windows(monkeypatch, long_paths=True)
+        assert path_too_long_error(too_long(folder)) is None
 
     def test_a_long_path_is_not_blamed_while_long_paths_are_on(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -928,6 +940,16 @@ class TestWindowsPathTooLong:
         self._windows(monkeypatch)
         assert _file_ops.path_too_long_error(FileNotFoundError(2, "missing", r"C:\a.txt")) is None
         assert _file_ops.path_too_long_error(ValueError(long_path)) is None
+        # Past MAX_PATH Windows reports a missing path; any other error on a long
+        # path is that error, not the path's length.
+        denied = PermissionError(13, "Access is denied", long_path)
+        assert _file_ops.path_too_long_error(denied) is None
+        full = OSError(28, "There is not enough space on the disk", long_path)
+        assert _file_ops.path_too_long_error(full) is None
+        # The extended-length prefix exempts a path from MAX_PATH, so a missing file
+        # under it is missing.
+        extended = "\\\\?\\" + long_path
+        assert _file_ops.path_too_long_error(FileNotFoundError(2, "missing", extended)) is None
 
     def test_the_cause_behind_a_wrapping_error_is_found(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -378,8 +378,10 @@ def prepare_input_snapshots(
     if not candidates:
         return ()
 
-    cache_store = store or SourceCacheStore(_cache_root())
     effective_profile = profile if profile is not None else execution_context.profile
+    cache_store = store or _open_cache_store(
+        candidates[0], base_dir=base_dir, profile=effective_profile
+    )
     records: list[InputPreparationRecord] = []
     for node_id, kind, config in candidates:
         if kind == "api_input":
@@ -417,6 +419,48 @@ def prepare_input_snapshots(
         records.append(record)
         execution_context.record_input_preparation(record)
     return tuple(records)
+
+
+def _open_cache_store(
+    first: tuple[str, InputKind, Mapping[str, Any]],
+    *,
+    base_dir: str | Path | None,
+    profile: ExecutionProfile,
+) -> SourceCacheStore:
+    """The project's input cache, its folder created on first use.
+
+    Creating that folder is the preparation's first write under the project, so a
+    folder Windows refuses for its length fails here, before any build: it is reported
+    for *first*, the first input that needed the cache, as its builds report theirs.
+    """
+    try:
+        return SourceCacheStore(_cache_root())
+    except OSError as exc:
+        if path_too_long_error(exc) is None:
+            raise
+        from haute._input_providers import input_snapshot_build_class, source_cache_identity
+
+        node_id, kind, config = first
+        if kind == "api_input":
+            from haute._json_shred._snapshots import api_input_snapshot_source
+
+            digest = api_input_snapshot_source(config, str(config["path"])).group_digest
+            build_class = "bounded"
+            message = "Preparing this API Input's tables failed."
+        else:
+            digest = source_cache_identity(config, base_dir=base_dir).digest
+            build_class = input_snapshot_build_class(
+                config, base_dir=base_dir, profile=profile, allow_admitted_eager=True
+            )
+            message = "Preparing this Data Input's snapshot failed."
+        raise _failure(
+            node_id=node_id,
+            digest=digest,
+            build_class=build_class,
+            reason_code="path_too_long",
+            message=message,
+            kind=kind,
+        ) from exc
 
 
 def _prepare_one(
