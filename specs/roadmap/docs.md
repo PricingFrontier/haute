@@ -6,8 +6,9 @@ The user documentation under `docs/` that the site publishes: the getting-starte
 the deployment guide and its per-target and per-CI-provider pages, and the README's install
 and deploy sections. These packages come from a check of those pages against `main` at
 `7bafedad` on 25 October 2026: two reviewers read each page against the code it describes,
-and every finding below was verified again at its source lines. The building-models and
-Workbench pages were not part of that check.
+and every finding below was verified again at its source lines. `DOC-05` comes from the same
+day's live check, which added a submodel to a project scaffolded before the current `haute
+init`. The building-models and Workbench pages were not part of that check.
 
 A defect in the behaviour a page describes belongs to the component that owns the behaviour,
 and a package here names it as a dependency rather than copying it:
@@ -25,6 +26,7 @@ workflows gate production).
 | DOC-02 | Planned | P2 | The CI pages describe the workflows Haute generates: who can start production, each target's secrets, job limits and images, and what `haute ci update` rewrites. |
 | DOC-03 | Planned | P2 | A new project reaches a green first pull request and a staging deploy by following the guides from an empty folder. |
 | DOC-04 | Decision | P2 | The published site describes the package users install, and it publishes again. |
+| DOC-05 | Planned | P2 | A project made by haute 0.6.0 upgrades to the next release by following one page. |
 
 ## Planned improvements
 
@@ -200,3 +202,38 @@ unreleased, and a docs-only change on `main` publishes only as the decision says
 
 **Evidence:** `.github/workflows/docs.yml` (its triggers and `concurrency: pages`);
 `.github/workflows/release.yml`; the Deploy docs runs since 2 October 2026.
+
+### DOC-05 — Upgrade notes for a project made by 0.6.0
+**Why:** A project `haute init` made with 0.6.0, the release PyPI serves, keeps files that
+the next release writes differently, and nothing tells its team what to change on upgrading:
+- Its `haute.toml` names `impact_dataset = "data/portfolio_sample.parquet"`, under the
+  gitignored `data/`, so CI's impact step stops with "Impact dataset not found". BUG-23 fixed
+  that for new projects only: today's scaffold leaves the line commented, and impact
+  compares the test quotes.
+- Its `[tool.mypy]` block lacks `mypy_path = "rating"` and `explicit_package_bases = true`.
+  The pipeline now imports a submodel as `from modules import <name>`, so once the team
+  creates one, the generated type-check job fails: mypy cannot find `modules`. A project
+  scaffolded before those keys showed this on 25 October 2026, when a submodel was added to
+  it.
+- Its production workflow tags the release with
+  `$(uv run haute status --version-only 2>/dev/null || echo "unknown")`, so a status read
+  without credentials tags `deploy/vunknown` (BUG-25), and its other generated steps predate
+  the Databricks deploy fixes, until `haute ci update` rewrites them.
+- A submodel it registered by file path (`pipeline.submodel("modules/x.py", ...)`) is now
+  refused as removed; saving the pipeline in the editor writes the import form.
+
+**Plan:** An "Upgrading" page in the deployment guide, linked from the release notes: run
+`haute ci update`; remove the 0.6.0 `impact_dataset` line, or commit a sample outside `data/`
+and name it; add the two mypy keys; save each pipeline that registers a submodel by path.
+Each step says how to tell whether it applies.
+
+**Acceptance:** A project made by `haute init` 0.6.0, with a path-registered submodel and
+the scaffolded `impact_dataset`, upgraded by following the page alone, passes its generated
+lint, type-check, test and validation jobs, and its staging deploy's smoke and impact steps.
+
+**Dependencies:** DOC-04 (the page publishes with the release it describes).
+
+**Evidence:** `git show v0.6.0:src/haute/_scaffold.py` (the `impact_dataset` line and the
+tag step) and `git show v0.6.0:src/haute/cli/_init_cmd.py` (`_MYPY_BLOCK` without the two
+keys); `src/haute/cli/_init_cmd.py::_MYPY_BLOCK`; `src/haute/_parser_submodels.py` (the
+refusal of a path-registered submodel); `tests/test_cli_impact.py::TestImpactWithoutAPortfolioSample`.
