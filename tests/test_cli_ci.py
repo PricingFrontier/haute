@@ -261,6 +261,42 @@ def test_update_follows_a_change_of_provider(runner, project: Path) -> None:
     assert not (project / ".github").exists()
 
 
+def _set_staging_suffix(project: Path, suffix: str) -> None:
+    toml = project / "haute.toml"
+    text = toml.read_text(encoding="utf-8")
+    assert 'endpoint_suffix = "-staging"' in text
+    toml.write_text(
+        text.replace('endpoint_suffix = "-staging"', f'endpoint_suffix = "{suffix}"'),
+        encoding="utf-8",
+    )
+
+
+def test_update_passes_the_recorded_staging_suffix(runner, project: Path) -> None:
+    _set_staging_suffix(project, "-stg")
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 0, result.output
+    staging = (project / ".github" / "workflows" / "deploy-staging.yml").read_text(encoding="utf-8")
+    assert staging.count('--endpoint-suffix "-stg"') == 3
+    assert '--endpoint-suffix "-staging"' not in staging
+
+
+def test_update_refuses_a_staging_suffix_that_cannot_name_an_endpoint(
+    runner, project: Path
+) -> None:
+    staging = project / ".github" / "workflows" / "deploy-staging.yml"
+    staging.write_text("name: edited\n", encoding="utf-8")
+    _set_staging_suffix(project, "")
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 1
+    assert "[ci.staging] endpoint_suffix" in result.output
+    assert "would deploy staging over production" in result.output
+    assert staging.read_text(encoding="utf-8") == "name: edited\n"
+
+
 def test_update_outside_a_project_fails(runner, tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
 

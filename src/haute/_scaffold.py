@@ -6,13 +6,14 @@ project name, deploy target, and CI provider.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from pathlib import PurePosixPath
 
 from haute._project_python import DEFAULT_PYTHON, container_base_image
 from haute._workbench_config import DEFAULT_FORM_PATH
 from haute._workbench_form import blank_form, render_form
-from haute.deploy._config import DEFAULT_TEST_QUOTES_DIR
+from haute.deploy._config import DEFAULT_STAGING_ENDPOINT_SUFFIX, DEFAULT_TEST_QUOTES_DIR
 
 # ── Per-target configuration ─────────────────────────────────────────
 #
@@ -223,6 +224,42 @@ def _pin_ci_python(text: str, python_version: str) -> str:
     return text
 
 
+# The characters a Databricks serving endpoint name takes. A staging suffix is appended to
+# the endpoint, model and experiment names, and is written into the generated YAML and
+# shell, where these characters are inert.
+_STAGING_SUFFIX_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
+
+# How the templates' staging deploy, smoke and impact steps name the staging suffix;
+# ``_pin_staging_suffix`` swaps in the project's.
+_STAGING_SUFFIX_FLAG = '--endpoint-suffix "{}"'
+
+
+def staging_suffix_problem(suffix: str) -> str | None:
+    """Why *suffix* cannot name a staging deploy, or ``None`` when it can."""
+    if not suffix:
+        return (
+            "is empty, so the staging deploy would deploy staging over production; "
+            f'set a staging suffix such as "{DEFAULT_STAGING_ENDPOINT_SUFFIX}"'
+        )
+    if _STAGING_SUFFIX_PATTERN.fullmatch(suffix) is None:
+        return (
+            f"is {suffix!r}: a staging suffix may hold only ASCII letters, digits, '-' and '_', "
+            "the characters a Databricks endpoint name takes"
+        )
+    return None
+
+
+def _pin_staging_suffix(text: str, staging_suffix: str) -> str:
+    """*text* with the staging steps' suffix moved from the default to *staging_suffix*."""
+    problem = staging_suffix_problem(staging_suffix)
+    if problem is not None:
+        raise ValueError(f"The staging suffix {problem}")
+    return text.replace(
+        _STAGING_SUFFIX_FLAG.format(DEFAULT_STAGING_ENDPOINT_SUFFIX),
+        _STAGING_SUFFIX_FLAG.format(staging_suffix),
+    )
+
+
 def _github_trigger_paths(workbench: bool) -> str:
     """The deploy workflow's ``on.push.paths`` entries, one per release input."""
     dirs = [f'      - "{name}/**"' for name in _release_input_dirs(workbench)]
@@ -360,7 +397,7 @@ min_approvers = {min_approvers}
 provider = "{ci}"
 
 [ci.staging]
-endpoint_suffix = "-staging"
+endpoint_suffix = "{DEFAULT_STAGING_ENDPOINT_SUFFIX}"
 """,
     ]
     if workbench:
@@ -567,10 +604,15 @@ jobs:
 
 
 def github_deploy_yml(
-    target: str, *, workbench: bool = False, python_version: str = DEFAULT_CI_PYTHON
+    target: str,
+    *,
+    workbench: bool = False,
+    python_version: str = DEFAULT_CI_PYTHON,
+    staging_suffix: str = DEFAULT_STAGING_ENDPOINT_SUFFIX,
 ) -> str:
-    """:func:`_github_deploy_yml` with every job's Python pinned to *python_version*."""
-    return _pin_ci_python(_github_deploy_yml(target, workbench=workbench), python_version)
+    """:func:`_github_deploy_yml` on *python_version*, its staging steps on *staging_suffix*."""
+    text = _pin_ci_python(_github_deploy_yml(target, workbench=workbench), python_version)
+    return _pin_staging_suffix(text, staging_suffix)
 
 
 def _github_deploy_yml(target: str, *, workbench: bool = False) -> str:
@@ -774,9 +816,15 @@ jobs:
 # ── GitLab CI ────────────────────────────────────────────────────────
 
 
-def gitlab_ci_yml(target: str, *, python_version: str = DEFAULT_CI_PYTHON) -> str:
-    """:func:`_gitlab_ci_yml` with every job's Python pinned to *python_version*."""
-    return _pin_ci_python(_gitlab_ci_yml(target), python_version)
+def gitlab_ci_yml(
+    target: str,
+    *,
+    python_version: str = DEFAULT_CI_PYTHON,
+    staging_suffix: str = DEFAULT_STAGING_ENDPOINT_SUFFIX,
+) -> str:
+    """:func:`_gitlab_ci_yml` on *python_version*, its staging steps on *staging_suffix*."""
+    text = _pin_ci_python(_gitlab_ci_yml(target), python_version)
+    return _pin_staging_suffix(text, staging_suffix)
 
 
 def _gitlab_ci_yml(target: str) -> str:
@@ -891,10 +939,15 @@ deploy-production:
 
 
 def azure_devops_yml(
-    target: str, *, workbench: bool = False, python_version: str = DEFAULT_CI_PYTHON
+    target: str,
+    *,
+    workbench: bool = False,
+    python_version: str = DEFAULT_CI_PYTHON,
+    staging_suffix: str = DEFAULT_STAGING_ENDPOINT_SUFFIX,
 ) -> str:
-    """:func:`_azure_devops_yml` with every job's Python pinned to *python_version*."""
-    return _pin_ci_python(_azure_devops_yml(target, workbench=workbench), python_version)
+    """:func:`_azure_devops_yml` on *python_version*, its staging steps on *staging_suffix*."""
+    text = _pin_ci_python(_azure_devops_yml(target, workbench=workbench), python_version)
+    return _pin_staging_suffix(text, staging_suffix)
 
 
 def _azure_devops_yml(target: str, *, workbench: bool = False) -> str:
@@ -1129,29 +1182,46 @@ stages:
 
 
 def ci_files(
-    target: str, ci: str, *, workbench: bool = False, python_version: str = DEFAULT_CI_PYTHON
+    target: str,
+    ci: str,
+    *,
+    workbench: bool = False,
+    python_version: str = DEFAULT_CI_PYTHON,
+    staging_suffix: str = DEFAULT_STAGING_ENDPOINT_SUFFIX,
 ) -> dict[str, str]:
     """The CI files ``haute init`` and ``haute ci update`` write for *ci*: path -> content.
 
     Paths are relative to the project root, in the order they are reported; ``"none"``
-    has no files. Every job runs *python_version*, the project's Python.
+    has no files. Every job runs *python_version*, the project's Python, and the staging
+    deploy, smoke and impact steps pass *staging_suffix*, its ``[ci.staging]
+    endpoint_suffix``.
     """
     if ci == "github":
         return {
             ".github/workflows/ci.yml": github_ci_yml(python_version=python_version),
             ".github/workflows/deploy-staging.yml": github_deploy_yml(
-                target, workbench=workbench, python_version=python_version
+                target,
+                workbench=workbench,
+                python_version=python_version,
+                staging_suffix=staging_suffix,
             ),
             ".github/workflows/deploy-production.yml": github_deploy_prod_yml(
                 target, python_version=python_version
             ),
         }
     if ci == "gitlab":
-        return {".gitlab-ci.yml": gitlab_ci_yml(target, python_version=python_version)}
+        return {
+            ".gitlab-ci.yml": gitlab_ci_yml(
+                target, python_version=python_version, staging_suffix=staging_suffix
+            )
+        }
     if ci == "azure-devops":
         return {
             "azure-pipelines.yml": azure_devops_yml(
-                target, workbench=workbench, python_version=python_version
+                target,
+                workbench=workbench,
+                python_version=python_version,
+                staging_suffix=staging_suffix,
             )
         }
     if ci == "none":

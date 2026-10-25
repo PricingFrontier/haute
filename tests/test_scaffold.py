@@ -1364,6 +1364,19 @@ class TestCiFiles:
         with pytest.raises(ValueError, match="Unknown CI provider: jenkins"):
             ci_files("databricks", "jenkins")
 
+    @pytest.mark.parametrize("ci", ["github", "gitlab", "azure-devops"])
+    def test_the_staging_steps_pass_the_projects_staging_suffix(self, ci: str) -> None:
+        text = "".join(ci_files("databricks", ci, staging_suffix="-stg").values())
+
+        # The staging deploy, its smoke test and the impact analysis, all on the one suffix.
+        assert text.count('--endpoint-suffix "-stg"') == 3
+        assert "--endpoint-suffix" not in text.replace('--endpoint-suffix "-stg"', "")
+
+    @pytest.mark.parametrize("suffix", ["", "-st ag", '-stg" && curl evil', "-stäg"])
+    def test_a_staging_suffix_that_cannot_name_an_endpoint_is_refused(self, suffix: str) -> None:
+        with pytest.raises(ValueError, match="staging suffix"):
+            ci_files("databricks", "github", staging_suffix=suffix)
+
     def test_the_secrets_and_their_placeholders(self) -> None:
         assert ci_secret_names("databricks") == [
             "DATABRICKS_MLFLOW_HOST",

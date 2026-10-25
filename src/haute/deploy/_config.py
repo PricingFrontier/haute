@@ -143,12 +143,18 @@ class SafetyConfig:
     min_approvers: int = 2
 
 
+#: The suffix a staging deploy appends to the endpoint, model and experiment names when
+#: ``[ci.staging]`` records none, as ``haute init`` writes it. The generated workflows pass
+#: the recorded suffix to the staging deploy, smoke and impact steps.
+DEFAULT_STAGING_ENDPOINT_SUFFIX = "-staging"
+
+
 @dataclass
 class CIConfig:
     """CI/CD settings from [ci] in haute.toml."""
 
     provider: str = "github"
-    staging_endpoint_suffix: str = "-staging"
+    staging_endpoint_suffix: str = DEFAULT_STAGING_ENDPOINT_SUFFIX
     staging_endpoint_url: str = ""
     production_endpoint_url: str = ""
 
@@ -380,7 +386,9 @@ class DeployConfig:
 
         ci_config = CIConfig(
             provider=ci_raw.get("provider", "github"),
-            staging_endpoint_suffix=ci_staging.get("endpoint_suffix", "-staging"),
+            staging_endpoint_suffix=ci_staging.get(
+                "endpoint_suffix", DEFAULT_STAGING_ENDPOINT_SUFFIX
+            ),
             staging_endpoint_url=ci_staging.get("endpoint_url", ""),
             production_endpoint_url=ci_raw.get("production", {}).get("endpoint_url", ""),
         )

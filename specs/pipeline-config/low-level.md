@@ -417,7 +417,15 @@ and writes `.python-version` with it when the project has none. An unreadable
 `ProjectPythonError`, which `handle_init` reports as a CLI error before writing any file.
 So uv's local environment, every CI job and the deployed model
 (see [deploy](../deploy/low-level.md)) run one Python.
-`ci_files(target, ci, workbench=..., python_version=...)` returns exactly the files of the
+The staging deploy, smoke and impact steps' generators also take `staging_suffix` (default
+`DEFAULT_STAGING_ENDPOINT_SUFFIX`, `-staging`, which the scaffolded `[ci.staging]
+endpoint_suffix` records and `CIConfig` defaults to; `haute ci update` passes the recorded
+one): `_pin_staging_suffix` moves each `--endpoint-suffix` to it. It raises `ValueError` with
+`staging_suffix_problem`'s reason for an empty suffix, which would deploy staging over
+production, or one holding anything but ASCII letters, digits, `-` and `_`, the characters a
+Databricks endpoint name takes, which also keeps the value inert in the generated YAML and
+shell.
+`ci_files(target, ci, workbench=..., python_version=..., staging_suffix=...)` returns exactly the files of the
 chosen `ci` value, path to content (`"none"` has none, an unknown provider raises), which
 `handle_init` and `haute ci update` both write through `write_generated_files`; on `--force`
 `handle_init` first calls
