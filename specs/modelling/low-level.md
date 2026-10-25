@@ -1922,7 +1922,10 @@ The implementation seams are:
   `estimate_training` returns it as `TrainEstimateResponse.unavailable`
   (`{reason, blocking_node_id}`, null when available) with `estimated_mb`, `training_mb`
   and `bytes_per_row` null, and skips the GPU VRAM check. `safe_row_limit` still reports
-  the user's row limit. `TrainEstimateResponse` and `parseTrainEstimateResponse` both
+  the user's row limit. An available GPU estimate sizes VRAM at
+  `_training_rows(total_rows, safe_row_limit)` (`_training_preparation.py`, the count
+  `_check_gpu_vram_before_launch` also uses) and reports it as `gpu_vram_rows`, null exactly
+  when `gpu_vram_estimated_mb` is. `TrainEstimateResponse` and `parseTrainEstimateResponse` both
   reject a memory figure beside a reason, a missing figure without one, a row total that
   disagrees with the reason, and a downsampling verdict, warning or VRAM field on an
   unavailable estimate.

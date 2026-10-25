@@ -40,6 +40,11 @@ export function formatValueCompact(v: unknown): string {
   return s.length > 20 ? s.slice(0, 18) + "\u2026" : s
 }
 
+/** A stored fraction as a percentage without float noise: 0.29 → 29, not 28.999999999999996. */
+export function fractionToPercent(fraction: number): number {
+  return Number((fraction * 100).toPrecision(12))
+}
+
 /** Format large numbers compactly: 1234567 → "1.23M", 12345 → "12.3K". */
 export function formatNumber(n: number): string {
   if (Math.abs(n) >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M"

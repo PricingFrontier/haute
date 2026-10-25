@@ -106,6 +106,22 @@ describe("SplitAndMetricsConfig", () => {
     expect(screen.queryByLabelText("Evaluation seed")).not.toBeInTheDocument()
   })
 
+  it("shows a stored fraction as a whole percentage (FMOU-R01)", () => {
+    render(
+      <SplitAndMetricsConfig
+        {...makeProps({
+          evaluation: {
+            ...DEFAULT_EVALUATION,
+            test: { size: 0.29 },
+            validation: { method: "single", size: 0.29 },
+          },
+        })}
+      />,
+    )
+    expect(screen.getByLabelText("Validation set (%)")).toHaveValue(29)
+    expect(screen.getByLabelText("Test set (%)")).toHaveValue(29)
+  })
+
   it("defaults the test percentage to zero and commits a positive percentage as a fraction", () => {
     const evaluation = {
       schema_version: 1,

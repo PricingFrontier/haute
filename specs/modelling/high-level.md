@@ -47,6 +47,9 @@ the workspace. Related charts stack when their container is narrow.
   Lorenz may be compared together when the workspace is wide; a narrow workspace
   has a labelled view switch. A result containing only Lorenz data still renders.
   Deciles identify their prediction ordering, and full values/counts are available.
+  The Lorenz chart is labelled with the server's Gini on the rows it is drawn from (the
+  Summary's diagnostics), never a figure recomputed from the downsampled curve, and is
+  unlabelled when Gini is not reported.
 - Residual distribution and actual/predicted scatter use aligned responsive
   layouts, numeric residual ticks and explicit reference lines. Existing weighting,
   sampling disclosure and diagnostic statistics are preserved.
@@ -177,7 +180,9 @@ compatibility facade and route own no duplicate state or worker implementation.
   process (`available`, an actionable `detail`, the `device`), probed once per process.
 - `POST /api/modelling/estimate` returns a RAM/row-limit and (for GPU CatBoost or GPU
   XGBoost) VRAM
-  estimate without starting a job. Both this estimate and the pre-training RAM check
+  estimate without starting a job. The VRAM figure is sized at the rows training will use
+  (the source total under the user's and the RAM-safe row limit), the count the pre-launch
+  check sizes it at too, and the response states that basis (`gpu_vram_rows`). Both this estimate and the pre-training RAM check
   use fresh shared node snapshots that cover the training column demand: cached
   outputs supply measured row counts and schema even when their original computation
   cannot be analysed statically. Estimating RAM alone never builds missing snapshots

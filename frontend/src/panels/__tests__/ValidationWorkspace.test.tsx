@@ -23,7 +23,7 @@ const result = makeTrainResult({
   ],
   pdp_data: [{ feature: "age", type: "numeric", grid: [{ value: 25, avg_prediction: 1.1 }] }],
 })
-const data = { result, jobId: "job", nodeLabel: "Frequency", configHash: "hash" }
+const data = { result, jobId: "job", nodeLabel: "Frequency", configHash: "hash", elapsedSeconds: null }
 beforeEach(() => useUIStore.setState({ modellingPreviewHeight: 420 }))
 afterEach(cleanup)
 

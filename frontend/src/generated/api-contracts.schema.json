@@ -14104,6 +14104,18 @@
           "default": null,
           "title": "Gpu Vram Estimated Mb"
         },
+        "gpu_vram_rows": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gpu Vram Rows"
+        },
         "gpu_warning": {
           "anyOf": [
             {
@@ -14195,6 +14207,7 @@
         "was_downsampled",
         "warning",
         "gpu_vram_estimated_mb",
+        "gpu_vram_rows",
         "gpu_vram_available_mb",
         "gpu_warning",
         "unavailable",

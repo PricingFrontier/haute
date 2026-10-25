@@ -21,6 +21,11 @@ export const METRIC_OPTIONS: ReadonlyArray<{ value: string; label: string; task:
   { value: "logloss", label: "Logloss", task: "classification" },
 ]
 
+/** A reported metric's value as every modelling surface shows it (four decimals). */
+export function formatMetricValue(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(4) : "N/A"
+}
+
 export function metricLabel(metric: string): string {
   return METRIC_OPTIONS.find((option) => option.value === metric)?.label ?? metric
 }

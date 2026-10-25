@@ -185,6 +185,12 @@ def _clamp_row_limit(
     return current_limit
 
 
+def _training_rows(total_rows: int | None, row_limit: int | None) -> int:
+    """The rows a fit trains on: the source total, capped by the effective row limit."""
+    total = total_rows or 0
+    return min(total, row_limit) if row_limit else total
+
+
 def _glm_training_term_columns(config: Mapping[str, Any]) -> frozenset[str] | None:
     """Columns a GLM reads: native keys, expression identifiers, interaction factors."""
     if not is_glm_config(config):

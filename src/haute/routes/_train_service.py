@@ -38,6 +38,7 @@ from haute.routes._training_preparation import (
     _training_projection_keep_columns,
     _training_required_columns_by_node,
     _training_required_metadata_columns,
+    _training_rows,
     _VramCheck,
     build_training_feature_selection,
 )
@@ -77,6 +78,7 @@ __all__ = [
     "_check_gpu_vram",
     "_child_execution_context",
     "_clamp_row_limit",
+    "_training_rows",
     "_default_train_timeout",
     "_evaluation_preview_payload",
     "_find_modelling_node",

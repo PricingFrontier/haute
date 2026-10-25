@@ -138,6 +138,7 @@ from haute.routes._training_preparation import (
     _seeded_training_sample,
     _training_projection_keep_columns,
     _training_required_columns_by_node,
+    _training_rows,
     create_training_parquet_path,
     estimate_training_memory,
     preparation_failure_outcome,
@@ -1482,7 +1483,7 @@ class TrainService:
             return
 
         try:
-            effective_rows = row_limit or (total_source_rows or 0)
+            effective_rows = _training_rows(total_source_rows, row_limit)
             vram_check = _check_gpu_vram(
                 effective_rows,
                 probe_columns,

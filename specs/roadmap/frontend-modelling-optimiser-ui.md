@@ -14,45 +14,11 @@ These packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FMOU-R01 | Planned | P2 | Every number the modelling panel shows is the server's: the VRAM figure is sized at the rows training will use, the Lorenz chart carries the server's Gini, percent fields round, and the summary's elapsed time is the completed job's. |
 | FMOU-R03 | Planned | P3 | The frontend modelling specification describes the editor that exists; the dead sidebar component, the duplicated GLM conflict derivations and view switches, the message-prefix matching and the family-blind tune copy are gone. |
 | FMOU-R04 | Planned | P2 | A save never retires an auto-range run, a percentage constraint is shown and edited as one instead of being rewritten as an absolute bound, and the frontier marker that looks selected is the selected point. |
 | FMOU-R05 | Planned | P3 | The optimiser workspace has one fenced point-request lifecycle, one formatter, no raw Float32 collar, a specification that matches its Summary, and no dead exports. |
 
 ## Planned improvements
-
-### FMOU-R01 — The server's numbers, shown as the server computed them
-**Why:** The Train pane rescales the GPU VRAM figure assuming the server sized
-it at `safe_row_limit ?? total_rows` rows, but the server sizes it at the full
-source count, so with any row limit the figure and the "Select CPU and retry"
-warning it drives are wrong by `total_rows / safe_row_limit` (ten times in the
-worked case). The Lorenz chart prints a Gini recomputed in the browser from the
-200-point downsampled curve, which differs from the server's `gini` on the
-Summary tab at the fourth decimal both print (probed at three sample sizes).
-Percent fields and the run summary render `fraction * 100` unrounded, so a
-stored 0.29 displays as `28.999999999999996`. The Summary's elapsed time reads
-the running job's progress, which the store removes at completion, so it never
-shows for a completed result and shows a re-train's clock beside the previous
-result. Detail lines and values tables print raw floats where the axes format.
-
-**Plan:** Size VRAM on the server at the rows training will use and return the
-basis; label the chart with the server's `gini` and delete `computeGini`; round
-the percent displays; pass the cached result's terminal elapsed time; format
-every displayed statistic through one helper. Add tests with a row limit below
-the total, a pinned Lorenz label and a 0.29 fraction.
-
-**Acceptance:** The VRAM figure with a row limit of 100,000 over 1,000,000 rows
-is the 100,000-row figure; the Lorenz label equals the Summary's Gini; 0.29
-displays as 29; a completed result shows its own elapsed time.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/modelling/TrainingActionsAndResults.tsx`;
-`src/haute/routes/modelling.py`; `frontend/src/panels/modelling/LiftTab.tsx`;
-`frontend/src/panels/modelling/SplitAndMetricsConfig.tsx`;
-`frontend/src/panels/modelling/TrainingRunSummary.tsx`;
-`frontend/src/panels/modelling/SummaryTab.tsx`;
-`frontend/src/panels/ModellingPreview.tsx`.
 
 ### FMOU-R03 — The specification, the dead copy and the duplicates
 **Why:** The frontend modelling specification describes an editor the code and

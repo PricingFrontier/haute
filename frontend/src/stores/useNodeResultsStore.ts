@@ -412,7 +412,13 @@ function sortObjectKeys(value: unknown): unknown {
 // Writes keep these memo entries up to date so getOptimiserPreview /
 // getModellingPreview can be read during render without mutating module state.
 
-type ModellingPreviewData = { result: TrainResult; jobId: string; nodeLabel: string; configHash: string }
+type ModellingPreviewData = {
+  result: TrainResult
+  jobId: string
+  nodeLabel: string
+  configHash: string
+  elapsedSeconds: number | null
+}
 
 const _optimiserPreviewCache: Record<string, { source: SolvedCachedSolveResult; result: OptimiserPreviewData }> = {}
 const _modellingPreviewCache: Record<string, { source: CachedTrainResult; nodeLabel: string; result: ModellingPreviewData }> = {}
@@ -625,6 +631,9 @@ function buildModellingPreview(cached: CachedTrainResult, nodeLabel: string): Mo
     jobId: cached.jobId,
     nodeLabel,
     configHash: cached.configHash,
+    // The terminal status, never a later job's progress: a re-train's clock
+    // is not this result's.
+    elapsedSeconds: cached.terminalStatus?.elapsed_seconds ?? null,
   }
 }
 

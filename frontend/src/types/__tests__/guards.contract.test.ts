@@ -3079,7 +3079,7 @@ describe("API response guards", () => {
     const estimate = parseTrainEstimateResponse({
       total_rows: 1000, safe_row_limit: null, estimated_mb: 12.5,
       training_mb: 25, available_mb: 512, bytes_per_row: 256,
-      was_downsampled: false, warning: null, unbounded_join_node_ids: [], gpu_vram_estimated_mb: null,
+      was_downsampled: false, warning: null, unbounded_join_node_ids: [], gpu_vram_estimated_mb: null, gpu_vram_rows: null,
       gpu_vram_available_mb: null, gpu_warning: null, unavailable: null,
       evaluation_preview: {
         schema_version: 1, strategy: "temporal", validation_method: "cross_validation",
@@ -3131,7 +3131,8 @@ describe("API response guards", () => {
       [{ estimated_mb: undefined }, /estimated_mb/],
       [{ unavailable: schema }, /has no memory figures/],
       [{ ...blank, unavailable: schema, was_downsampled: true }, /no downsampling verdict or warning/],
-      [{ ...blank, unavailable: schema, gpu_vram_estimated_mb: 12 }, /no GPU VRAM check/],
+      [{ ...blank, unavailable: schema, gpu_vram_estimated_mb: 12, gpu_vram_rows: 100 }, /no GPU VRAM check/],
+      [{ gpu_vram_estimated_mb: 12 }, /states the rows it is sized at/],
       [
         { ...blank, unavailable: { reason: "row_count_unprovable", blocking_node_id: "join" } },
         /only a row_count_unprovable estimate lacks a row total/,
@@ -3153,7 +3154,7 @@ describe("API response guards", () => {
     const estimate = {
       total_rows: 1000, safe_row_limit: null, estimated_mb: 12.5,
       training_mb: 25, available_mb: 512, bytes_per_row: 256,
-      was_downsampled: false, warning: null, unbounded_join_node_ids: [], gpu_vram_estimated_mb: null,
+      was_downsampled: false, warning: null, unbounded_join_node_ids: [], gpu_vram_estimated_mb: null, gpu_vram_rows: null,
       gpu_vram_available_mb: null, gpu_warning: null, unavailable: null,
     }
     expect(() => parseTrainEstimateResponse({

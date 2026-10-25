@@ -277,6 +277,24 @@ describe("TrainingActionsAndResults", () => {
     expect(screen.queryByText(/fall back.*automatically/i)).not.toBeInTheDocument()
   })
 
+  it("shows the GPU VRAM for the rows training will use (FMOU-R01)", () => {
+    // The RAM-safe limit binds: training uses 100,000 of 1,000,000 rows, and the
+    // server sized the VRAM figure at those 100,000.
+    render(<TrainingActionsAndResults {...makeProps({
+      ramEstimate: makeTrainEstimate({
+        total_rows: 1000000,
+        safe_row_limit: 100000,
+        was_downsampled: true,
+        gpu_vram_estimated_mb: 2048,
+        gpu_vram_rows: 100000,
+        gpu_vram_available_mb: 8192,
+      }),
+    })} />)
+
+    expect(screen.getByText("Est. GPU VRAM").nextElementSibling).toHaveTextContent("2.0 GB")
+    expect(screen.queryByText(/Select CPU and retry/i)).not.toBeInTheDocument()
+  })
+
   it("shows downsampling warning when was_downsampled", () => {
     render(<TrainingActionsAndResults {...makeProps({
       ramEstimate: makeTrainEstimate({

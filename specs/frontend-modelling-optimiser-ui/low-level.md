@@ -94,7 +94,11 @@ Only a current, accepted save response may acknowledge this revision transition.
   structural/config hash state supplied to the shared estimate/job layers.
 - Modelling configuration is a `Record<string, unknown>` split into target, feature,
   algorithm, fixed-parameter, required version-1 `evaluation`, and optional version-1
-  `tuning` contracts. `trainingConfigurationIssues(config, { targetDtype })` derives incomplete
+  `tuning` contracts. Displayed numbers are the server's, shown as it computed them: a
+  metric value through `formatMetricValue` (four decimals) wherever it appears, so the Lorenz
+  label is the Summary's diagnostics Gini; a chart's detail line and values table through
+  `formatChartNumber`, as its axes; and a stored fraction through `fractionToPercent`, so
+  0.29 reads 29. `trainingConfigurationIssues(config, { targetDtype })` derives incomplete
   target, objective, evaluation and tuning requirements for the Train guard, each refusal the
   server would make: a text-target classification without `positive_class` (`positive-class`),
   a Negative Binomial theta that is not a finite positive number, a reported metric the

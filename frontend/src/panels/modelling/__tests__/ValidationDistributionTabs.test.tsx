@@ -32,6 +32,44 @@ describe("LiftTab", () => {
     expect(screen.getByText("Lorenz curve")).toBeInTheDocument()
   })
 
+  it("labels the Lorenz curve with the Summary's Gini (FMOU-R01)", () => {
+    render(
+      <LiftTab
+        width={420}
+        result={{
+          ...baseResult,
+          diagnostic_metrics: { gini: 0.43219 },
+          double_lift: [],
+          // A browser recomputation from these points would read about 0.3.
+          lorenz_curve: [
+            { cum_weight_frac: 0, cum_actual_frac: 0 },
+            { cum_weight_frac: 0.5, cum_actual_frac: 0.65 },
+            { cum_weight_frac: 1, cum_actual_frac: 1 },
+          ],
+        }}
+      />,
+    )
+    expect(screen.getByText("Gini = 0.4322")).toBeInTheDocument()
+  })
+
+  it("leaves the Lorenz curve unlabelled when Gini is not reported", () => {
+    render(
+      <LiftTab
+        width={420}
+        result={{
+          ...baseResult,
+          diagnostic_metrics: { rmse: 1.2 },
+          double_lift: [],
+          lorenz_curve: [
+            { cum_weight_frac: 0, cum_actual_frac: 0 },
+            { cum_weight_frac: 1, cum_actual_frac: 1 },
+          ],
+        }}
+      />,
+    )
+    expect(screen.queryByText(/Gini =/)).toBeNull()
+  })
+
   it("uses a switch when narrow and shows both views when wide", () => {
     const result = {
       ...baseResult,

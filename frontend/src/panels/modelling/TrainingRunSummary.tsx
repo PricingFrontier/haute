@@ -1,5 +1,6 @@
 import type { EvaluationPreview } from "../../api/types"
 import { configField } from "../../utils/configField"
+import { fractionToPercent } from "../../utils/formatValue"
 import { isStringOrCategoricalDtype } from "../../utils/polarsDtypes"
 import { algorithmCapability, publishesValidationFit, trainsOnGpu } from "./algorithmCapabilities"
 import {
@@ -128,7 +129,7 @@ export function TrainingRunSummary({
       ? "No test set reserved"
       : evaluation.strategy === "temporal"
         ? `Test starts ${String(test.start || "—")}`
-        : `${(Number(test.size) * 100).toLocaleString()}% reserved for the test set`
+        : `${fractionToPercent(Number(test.size)).toLocaleString()}% reserved for the test set`
   if (evaluationConfigurationIssues(evaluation).length > 0) {
     allocation = "Complete the split settings"
   } else if (validation.method === "single") {
@@ -138,8 +139,8 @@ export function TrainingRunSummary({
     ) {
       allocation = `${preview.min_selection_train_rows.toLocaleString()} training / ${preview.min_selection_validation_rows.toLocaleString()} validation / ${preview.final_test_rows.toLocaleString()} test rows`
     } else if (evaluation.strategy !== "temporal") {
-      const validationPercent = Number(validation.size) * 100
-      const testPercent = test ? Number(test.size) * 100 : 0
+      const validationPercent = fractionToPercent(Number(validation.size))
+      const testPercent = test ? fractionToPercent(Number(test.size)) : 0
       allocation = `${Number((100 - validationPercent - testPercent).toFixed(2))}% training / ${validationPercent}% validation / ${testPercent}% test`
     }
   }

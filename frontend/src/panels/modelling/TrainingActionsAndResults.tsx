@@ -110,16 +110,12 @@ export function TrainingActionsAndResults({
     const wasDownsampled = ramEstimate.was_downsampled
       && !(hasUserLimit && rowLimit <= (ramEstimate.safe_row_limit ?? sourceRows))
 
-    // GPU VRAM: scale from the backend estimate using effective rows.
-    // Unlike RAM, don't clamp to safe_row_limit — show what the user's
-    // chosen row count would actually need on the GPU.
+    // GPU VRAM: the server sized it at gpu_vram_rows, the rows training would
+    // use when it estimated; rescale it to the rows training will use now.
     let gpuVramMb = ramEstimate.gpu_vram_estimated_mb ?? null
-    if (gpuVramMb != null) {
-      const gpuRows = hasUserLimit ? Math.min(rowLimit, sourceRows) : sourceRows
-      const originalRows = ramEstimate.safe_row_limit ?? sourceRows
-      if (originalRows > 0 && gpuRows !== originalRows) {
-        gpuVramMb = gpuVramMb * gpuRows / originalRows
-      }
+    const vramRows = ramEstimate.gpu_vram_rows
+    if (gpuVramMb != null && vramRows != null && vramRows > 0 && rows !== vramRows) {
+      gpuVramMb = gpuVramMb * rows / vramRows
     }
 
     return { rows, trainingMb, wasDownsampled, isLimited, gpuVramMb }

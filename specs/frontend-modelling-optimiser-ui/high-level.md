@@ -293,7 +293,8 @@ strip; it never falls through to CatBoost. Pane ownership:
   the server can train on a CUDA GPU, otherwise disabled beside the server's reason, and
   always switchable back to CPU), row
   limit beside the RAM/VRAM estimate it modulates (an estimate the server cannot size
-  shows its reason in place of the missing figures, never a memory verdict),
+  shows its reason in place of the missing figures, never a memory verdict; the VRAM figure
+  is rescaled from the server's `gpu_vram_rows` to the rows training will use),
   staleness banner, Train/Cancel actions, click-time validation banner, live progress, completion
   badge and error card. Its read-only run summary names, for a CatBoost model whose selected
   features include String or Categorical columns, their encoding: "One-hot up to N levels,
@@ -362,7 +363,8 @@ so the diagnostics are in-sample, the validation fit's selection metrics (the me
 metric) lead instead, labelled "Validation, N rows" for holdout or "Validation (K-fold mean),
 N rows" for cross-validation, with the in-sample diagnostics beneath; a run without validation
 is unchanged. Then come the selection score and variability, baseline improvement, winning/final parameters,
-fit count/elapsed time and a bounded top-trial table. **Use best as fixed
+fit count/elapsed time (the completed job's own, from its terminal status, never a later
+run's clock) and a bounded top-trial table. **Use best as fixed
 parameters** asks for confirmation, atomically writes the reported fixed-parameter
 projection and disables tuning; an asynchronous result never mutates node config
 automatically.

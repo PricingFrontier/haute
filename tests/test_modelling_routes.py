@@ -2037,6 +2037,31 @@ class TestEstimateEndpoint:
         assert data.get("gpu_vram_estimated_mb") is not None
         assert data.get("gpu_warning") is not None
 
+    def test_estimate_sizes_gpu_vram_at_the_rows_training_uses(self, client, training_data):
+        """FMOU-R01: a row limit below the total sizes VRAM at the limited rows, and says so."""
+        from haute.routes import modelling
+
+        graph = _make_modelling_graph(
+            training_data,
+            params=_fast_training_params(task_type="GPU"),
+        )
+        for node in graph["nodes"]:
+            if node["id"] == "train":
+                node["data"]["config"]["row_limit"] = 10
+        with (
+            patch("haute._host_memory.available_vram_bytes", return_value=10**12),
+            patch(
+                "haute.routes.modelling._check_gpu_vram", wraps=modelling._check_gpu_vram
+            ) as vram_check,
+        ):
+            resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["total_rows"] > 10
+        assert vram_check.call_args.args[0] == 10
+        assert data["gpu_vram_rows"] == 10
+        assert data["gpu_vram_estimated_mb"] is not None
+
     def test_estimate_xgboost_gpu_vram_path(self, client, training_data):
         graph = _xgboost_gpu_graph(training_data)
         with patch("haute._host_memory.available_vram_bytes", return_value=1):
@@ -2188,10 +2213,12 @@ class TestEstimateEndpoint:
                     "training_mb": None,
                     "bytes_per_row": None,
                     "gpu_vram_estimated_mb": 12.0,
+                    "gpu_vram_rows": 100,
                     "unavailable": {"reason": "schema_unresolvable", "blocking_node_id": None},
                 },
                 "no GPU VRAM check",
             ),
+            ({"gpu_vram_estimated_mb": 12.0}, "states the rows it is sized at"),
             (
                 {
                     "estimated_mb": None,

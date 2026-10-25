@@ -3832,6 +3832,8 @@ class TrainEstimateResponse(BaseModel):
     warning: str | None = None
     # GPU VRAM estimation
     gpu_vram_estimated_mb: float | None = None
+    gpu_vram_rows: int | None = None
+    """The rows ``gpu_vram_estimated_mb`` is sized at: those training will use."""
     gpu_vram_available_mb: float | None = None
     gpu_warning: str | None = None
     unavailable: TrainEstimateUnavailable | None
@@ -3848,6 +3850,8 @@ class TrainEstimateResponse(BaseModel):
         figures = (self.estimated_mb, self.training_mb, self.bytes_per_row)
         if self.unbounded_join_node_ids and (self.was_downsampled or self.warning is not None):
             raise ValueError("a worst-case row bound has no downsampling verdict or warning")
+        if (self.gpu_vram_rows is None) != (self.gpu_vram_estimated_mb is None):
+            raise ValueError("a GPU VRAM figure states the rows it is sized at")
         if self.unavailable is None:
             if self.total_rows is None or any(value is None for value in figures):
                 raise ValueError("an available estimate requires a row total and memory figures")
