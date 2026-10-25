@@ -123,13 +123,22 @@ function emulateScrollContainerLayout(): () => void {
   }
 }
 
+// Every test in this file renders DataPreview, which measures its scroll
+// container with a ResizeObserver: each test gets the mock, whichever describe
+// it is in and whatever ran before it.
+beforeEach(() => {
+  vi.stubGlobal("ResizeObserver", MockResizeObserver)
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
 describe("DataPreview", () => {
   beforeEach(() => {
     resizeObserverStats.constructed = 0
     resizeObserverStats.observed = 0
     resizeObserverStats.disconnected = 0
-    // Provide ResizeObserver for jsdom
-    globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver
   })
 
   afterEach(cleanup)

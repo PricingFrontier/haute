@@ -389,7 +389,9 @@ describe("SchemaEditor", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Label and rules of state" }))
     const from = await screen.findByRole("combobox", { name: "Where the allowed values of state come from" })
-    expect(within(from).getAllByRole("option").map((option) => option.textContent)).toEqual(["", "sic_codes.csv", "LEGACY.CSV"])
+    // The choice shows before the params folder is listed: wait for the listing,
+    // which lands as its own render, whenever the event loop runs it.
+    await waitFor(() => expect(within(from).getAllByRole("option").map((option) => option.textContent)).toEqual(["", "sic_codes.csv", "LEGACY.CSV"]))
     fireEvent.change(from, { target: { value: "sic_codes.csv" } })
     // The form changes once a column is picked.
     const columnSelect = await screen.findByRole("combobox", { name: "Column the allowed values of state come from" })

@@ -10,7 +10,7 @@
  * completes, previewData is never cleared, so node B's panel still shows
  * node A's rows.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import usePipelineAPI from "../usePipelineAPI"
@@ -83,6 +83,14 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
 }
 
 describe("usePipelineAPI - aborted preview clears stale data (#31)", () => {
+  // A preview imports ensureInputSnapshots lazily before it sends its request.
+  // The fake-timer test below expects A's request in flight as soon as the
+  // debounce fires, which holds only once that module is loaded: load it here
+  // rather than rely on a test that previewed earlier having loaded it.
+  beforeAll(async () => {
+    await import("../ensureInputSnapshots")
+  })
+
   beforeEach(() => {
     vi.useRealTimers()
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live"] })
