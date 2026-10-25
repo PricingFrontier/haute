@@ -58,6 +58,8 @@ def _framed(dtype: pl.DataType, value: object) -> Any:
         (pl.Boolean(), True, True),
         (pl.Date(), "2024-05-01", date(2024, 5, 1)),
         (pl.Date(), date(2024, 5, 1), date(2024, 5, 1)),
+        # A pandas Timestamp for a date column: midnight, without a zone.
+        (pl.Date(), datetime(2024, 5, 1), date(2024, 5, 1)),
         (pl.Datetime("us"), "2024-05-01T10:30:00", datetime(2024, 5, 1, 10, 30)),
         (pl.Null(), None, None),
     ],
@@ -93,6 +95,8 @@ def test_a_value_its_type_holds_exactly_is_accepted(
         (pl.Date(), "2024-5-1"),
         (pl.Date(), "2024-02-30"),
         (pl.Date(), 20240501),
+        (pl.Date(), datetime(2024, 5, 1, 10, 30)),
+        (pl.Datetime("us"), "yesterday"),
         (pl.Datetime("us"), "2024-05-01T10:30:00+01:00"),
         (pl.Datetime("us", "UTC"), "2024-05-01T10:30:00"),
         (pl.Null(), 1),
@@ -287,6 +291,32 @@ def test_a_body_that_is_not_utf8_is_invalid_json(tmp_path, monkeypatch):
 
     assert response.status_code == 422, response.text
     assert response.json()["reason"] == "invalid_json"
+
+
+def test_the_dry_run_writes_only_dates_beyond_json_and_a_flat_batch_needs_its_schema(tmp_path):
+    from haute.deploy._batch_scoring import BatchScoreRequest, _iso_value
+
+    assert _iso_value(datetime(2024, 5, 1, 9, 30)) == "2024-05-01T09:30:00"
+    with pytest.raises(TypeError, match="set is not JSON serialisable"):
+        _iso_value({1})
+
+    input_path = tmp_path / "input.json"
+    input_path.write_text(json.dumps([{"quote_id": 1, "age": 30}]), encoding="utf-8")
+    request = BatchScoreRequest(
+        graph=_graph(),
+        input_node_ids=["quotes"],
+        output_node_id="out",
+        artifact_paths={},
+        output_fields=None,
+        input_path=str(input_path),
+        result_path=str(tmp_path / "result.parquet"),
+    )
+    context = admit_deploy_execution(operation="deploy_quote", row_count=1)
+    try:
+        with pytest.raises(ValueError, match="needs its input schema"):
+            score_batch_scoring_request(request, execution_context=context)
+    finally:
+        context.release_admission(preserve_primary_error=True)
 
 
 def test_a_dated_dry_run_reaches_the_worker_as_iso_strings(tmp_path):
