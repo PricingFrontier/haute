@@ -72,10 +72,13 @@ tracks it. It owns no work; the component roadmaps carry the plans.
   with the clicked row's columns while the cache key carries no column set, so
   two clicks with different `row_values` columns may share one cache entry built
   from the first click's API-input port columns.
-- Areas whose findings are not yet in this report are in review:
-  git integration and Databricks IO; the assistant; the JSON shredder's
-  remaining modules; submodels and Explore; the frontend; the tests, scripts
-  and CI as code.
+- The assistant-core reviewer read the assistant low-level specification's core
+  sections and left the tool and op sections to the tools reviewer; the loop's
+  tool-summary wording was not checked against the specification.
+- Areas whose findings are not yet in this report are in review: the
+  assistant's tools, ops, data checks, catalog, recipes and assets; the JSON
+  shredder's remaining modules; submodels and Explore; the frontend; the tests,
+  scripts and CI as code.
 
 ## Coverage and findings so far
 
@@ -92,9 +95,11 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 | Optimiser (routes, service, solver, session, frontier, auto-range, estimate, outcomes, artifacts, explainability, the price-contour guard, the Optimiser Apply runtime) | reviewer, verified; two probes | every owned file in full; the price-contour library read where haute's schemas depend on it | 0 / 1 / 9 / 2 |
 | Modelling, the MLflow model registry and the training routes (every family, contracts, evaluation, tuning, export, MLflow IO, the scorer, explainability, the training lifecycle) | reviewer, verified; the GLM probe rerun | every owned file in full except `_charts.py` (mechanical) | 0 / 2 / 21 / 2 |
 | Tracing and expression parsing (trace, correlation, enrichment, lineage, waterfall, the expression parser) | reviewer, verified; the parser probe rerun | every owned file in full | 0 / 2 / 9 / 3 |
+| Git integration and Databricks IO (every `_git*` module, the git route, credentials, SQL IO, the output writer, the browsing route) | reviewer, verified; two probes | every owned file in full | 0 / 1 / 12 / 1 |
+| Assistant core (application, loop, sessions, providers, configuration, rendering, project knowledge, the route) | reviewer, verified | every owned file in full; the specification's core sections | 0 / 1 / 8 / 5 |
 
-One hundred and eighty-nine findings so far: one Critical, twenty-nine Major,
-one hundred and thirty-three Minor and twenty-six Suggestions. The Critical and every Major is confirmed at source by the
+Two hundred and seventeen findings so far: one Critical, thirty-one Major,
+one hundred and fifty-three Minor and thirty-two Suggestions. The Critical and every Major is confirmed at source by the
 main session; the Minors and Suggestions were read at source or accepted on
 quoted evidence as the verification table records.
 
@@ -179,6 +184,31 @@ quoted evidence as the verification table records.
 - **`.over(` anywhere in a node's code types every column of the node as a
   window** (Major, `TRACE-R02`; reproduced): `y = a * 2` is shown as "rank of x
   over g" with the right value.
+- **Move, Catch up and Spin off a copy delete the project's `outputs/` folder**
+  (Major, `GIT-R01`, a decision): the specification lists it among the wiped
+  caches, but it is the documented local folder of analyst results, which git
+  cannot restore.
+- **The assistant's SDK clients are built without the validated endpoint**
+  (Major, `ASSIST-54`): `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` in the
+  server's environment redirects the key, the prompt and project material to a
+  host the endpoint policy never checked.
+
+## Design choices the review asks the owner to confirm
+
+Four behaviours are specified and implemented as specified, and the review
+still puts them in front of the owner because of what they can cost in
+production:
+
+- A move, catch-up or spin-off wipes `outputs/` (`GIT-R01`).
+- The assistant's dry run executes model-produced Python in the server process
+  (the planned preamble, free-code steps and node bodies are compiled and run
+  for their schemas, and a planned Load File's pickle is deserialised) before
+  anything is saved; the specification says so openly and gates it by the
+  egress ceiling, so a prompt-injected project document or a misbehaving model
+  can run code on the server without saving. No package is filed; the choice
+  is the owner's.
+- `haute run` executes the whole pipeline eagerly in memory (`CLI-R02`).
+- Automatic ledger saves run the project's git hooks (`GIT-R06`).
 
 ## Findings mapped to packages
 
@@ -253,6 +283,17 @@ quoted evidence as the verification table records.
 | Tracing | TRC-2, TRC-3, TRC-4 | `TRACE-R02` |
 | Tracing | TRC-8, TRC-9, TRC-10, TRC-14 | `TRACE-R03` |
 | Tracing | TRC-5, TRC-6, TRC-7, TRC-11, TRC-12, TRC-13 | `TRACE-R04` |
+| Git integration | GIT-1 | `GIT-R01` (Decision) |
+| Git integration | GIT-3, GIT-4, GIT-5, GIT-8, GIT-9 | `GIT-R02` |
+| Git integration | GIT-6, GIT-7 | `GIT-R03` |
+| Git integration | GIT-2 | `GIT-R04` |
+| Git integration | GIT-12, GIT-13 | `GIT-R05` |
+| Git integration | GIT-14 | `GIT-R06` (Decision) |
+| Bugs | GIT-10 | `BUG-44` |
+| Bugs | GIT-11 | `BUG-45` |
+| Assistant | ASA-1, ASA-2, ASA-7, ASA-13 | `ASSIST-54` |
+| Assistant | ASA-3, ASA-4, ASA-6, ASA-9 | `ASSIST-55` |
+| Assistant | ASA-5, ASA-8, ASA-10, ASA-11, ASA-12, ASA-14 | `ASSIST-56` |
 | Sandbox security | PM-42 | `SBX-R04` |
 | Workbench | PM-44 | `WB-33` |
 | Workbench | PM-45 | `WB-34` |
@@ -286,7 +327,11 @@ as in deploy (`DEP-R07`, whose plan already names the editor); the test-only
 training test modules (`ENGQ-CI03`); fits that exceed their budget
 (`MOD-M01`, `MOD-M02`); the trace route's status by message prefix and its
 sanitized 500 for a node failure (`API-R06`); two trace inconsistencies that
-vanish with node-level instances (`SUB-R01`).
+vanish with node-level instances (`SUB-R01`); the git routes' and the
+assistant's current-directory project root (`PCFG-R04`); the Databricks client
+factory's and the save service's `HTTPException`s (`API-R02`); the assistant's
+own containment comparisons (`SBX-R01`); the per-request workspace client in the
+browsing routes (`BUG-41`).
 
 ## Verdicts that changed or stayed open
 
@@ -346,6 +391,8 @@ All probes live outside the repository and wrote nothing into it.
 | `match` bindings | `support_code_inventory` on a preamble `match` lists only `os`; the equivalent `if`/`else` lists `helper` twice. |
 | trace input sources | A left join of A `(policy, x=10)` with B `(policy, x=1000)` and `y = x * 2`: `calc.x` is 10.0 while `input_sources["x"]` names B with 1000.0; declaring B first names A with 10.0; `derivations[].reads` names A both ways. |
 | parser display | `with_columns(rank=pl.col('x').rank().over('g'), y=pl.col('a') * 2)` evaluated for `y`: `expression_type: window`, `substituted_text: rank of x over g`, `result_value: 42.0`; a `replace({'A': 'premium'})` beside a `rename` labels the step a rename of `A`. |
+| typed branch names | Seven names git refuses (`my branch`, `feat..x`, `feat.lock`, `.hidden`, `a//b`, `trail/`, `x@{1}`) pass `_validate_ref_name` and fail in `set_working_branch` with a plain `GitError`. |
+| argv limit | `git rev-parse` with 800 forty-character SHAs fails on Windows with `WinError 206` at 32,814 characters; 500 succeed. |
 | price-contour column order | `solve`, `apply_from_grid` and the quote-results schema emit `optimal_<c>` in config order; `ApplyOptimiser.apply` in sorted order, so both haute schemas match their own library path (no finding). |
 
 ## Mechanical metrics

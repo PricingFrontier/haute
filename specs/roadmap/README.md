@@ -17,9 +17,9 @@ or maintenance issue; `P3` opportunistic work.
 
 | Component | Improvement surface | Start with |
 |---|---|---|
-| [Assistant](assistant.md) | Blocking data findings, structured step authoring, typed banding and rating, item-level edits and per-model qualification (all deferred) | — |
+| [Assistant](assistant.md) | The provider client as the policy describes it, bounded requests with a terminal event on every stream, the core's hygiene; blocking data findings, structured step authoring, typed banding and rating, item-level edits and per-model qualification (all deferred) | `ASSIST-54` |
 | [Background jobs and API lifecycle](background-jobs-api.md) | A shutdown that cancels every job, one failure classification with persistence failures surfaced, one worker envelope and one cgroup resolver, one worker primitive | `ROAD-WORKER-06` |
-| [Bugs](bugs.md) | Defects found outside component work: statements a save drops from a submodel file, generated CI/CD files that fail before a first container release or cache nothing on GitLab, text that no longer matches behaviour, the hosted app's boot and build script, the UC transport's clients, the storage binding's unknown keys and a quadratic schema resolution in banding | `BUG-24` |
+| [Bugs](bugs.md) | Defects found outside component work: statements a save drops from a submodel file, generated CI/CD files that fail before a first container release or cache nothing on GitLab, text that no longer matches behaviour, the hosted app's boot and build script, the UC transport's clients, the storage binding's unknown keys and a quadratic schema resolution in banding, Databricks browsing failures that name their cause, an atomic first append | `BUG-24` |
 | [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache identity | `CACHE-S17` |
 | [CLI](cli.md) | `haute init --force` keeping the analyst's files, `haute run` as a lazy walk, `haute lint` running the editor's validators, `pyproject.toml` through `tomlkit`, error reporting, generated CI hygiene | `CLI-R01` |
 | [Deploy](deploy.md) | Served requests typed by the manifest's schema, Databricks environments pinned, every MLflow model with its training contract, the registered version from `log_model`, typed `haute.toml`, impact alignment, build directories under the project, one copy of each deploy mechanism | `DEP-R05` |
@@ -27,6 +27,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Execution engine](execution-engine.md) | Column-free selects in chunked writes, estimate widths from the lineage, fan-out caching, warm pool resilience, watchdog baselines, quiet failures made loud, static-analysis coverage, dead evidence and clones | `EXEC-R09` |
 | [Explore and EDA](explore-eda.md) | Advanced pivot and PivotChart parity | — |
 | [Frontend shared](frontend-shared.md) | Results store | `FSH-R03` |
+| [Git integration](git-integration.md) | `outputs/` surviving a move (a decision), git failures the analyst can act on, a dirty tree and a virtual environment at delete and seed, long argument lists through stdin, dead symbols and one compensation helper, hooks on automatic saves (a decision) | `GIT-R01` |
 | [IO layer](io-layer.md) | Glob and folder inputs signed, missing against corrupt generations, one path-anchoring rule, lock holds and usage cost, clear and settle rules, one supervised build | `IO-R03` |
 | [Model scoring](model-scoring.md) | Models trained outside Haute; dtypes checked on every scoring path, loader errors that keep their meaning | `MSC-06` |
 | [Modelling](modelling.md) | GLM contracts with fitted levels, the dispersion estimate's lifecycle, publication outside the lock, fit parameters without hidden defaults, diagnostics measured as the fit was; adaptive low-memory fitting: exact chunked GLM, a low-memory boosted-tree mode (both awaiting a decision) | `MOD-R01` |

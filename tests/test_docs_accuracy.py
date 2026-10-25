@@ -158,6 +158,7 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "execution-engine",
     "explore-eda",
     "frontend-shared",
+    "git-integration",
     "io-layer",
     "model-scoring",
     "modelling",

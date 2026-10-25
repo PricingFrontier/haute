@@ -17,7 +17,8 @@ describes: the CLI's help, the offset tooltip, a tuned t-boost run's summary and
 t-boost starter parameters in the modelling UI specification. `BUG-40` to `BUG-43`
 come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md): the hosted
 Databricks app's boot and build script, the UC transport's clients, the storage binding's
-unknown keys and a quadratic schema resolution in banding.
+unknown keys and a quadratic schema resolution in banding; `BUG-44` and `BUG-45`, from the
+same review, are the Databricks browsing errors and the non-atomic first append.
 
 ## Priorities
 
@@ -35,6 +36,8 @@ unknown keys and a quadratic schema resolution in banding.
 | BUG-41 | Planned | P3 | The UC volume transport builds one workspace client per process. |
 | BUG-42 | Decision | P3 | The storage binding record either rejects unknown keys or is named as the exception to the canonical-only policy. |
 | BUG-43 | Planned | P3 | Banding factors resolve the plan's schema once instead of once per factor. |
+| BUG-44 | Planned | P2 | A Databricks browsing failure (an expired token, a missing catalog, a missing permission) is answered with a message naming the cause instead of the sanitized 500. |
+| BUG-45 | Planned | P2 | A first `append` to a Databricks table that does not yet exist either creates and fills it in one statement or leaves nothing behind when the insert fails. |
 
 ## Planned improvements
 
@@ -256,3 +259,44 @@ test); results unchanged.
 
 **Evidence:** `src/haute/_rating.py::apply_banding_factors`;
 `src/haute/_rating.py::_apply_rating_step_outputs`.
+
+### BUG-44 — Databricks browsing failures name their cause
+**Why:** The four browsing routes call the SDK with no handler, so an expired PAT, a
+missing catalog or a missing `USE SCHEMA` grant reaches the analyst as "Operation failed.
+Check the server logs for details."; the specification's module map says the route logs
+unexpected SDK messages before a generic 500 and its testing section claims coverage of
+the error responses, but the test file checks only that a 503 from the client factory
+passes through.
+
+**Plan:** Catch `databricks.sdk.errors.DatabricksError` once in a small wrapper used by
+the four routes and answer 4xx or 502 with a hand-written message naming
+`DATABRICKS_TOKEN` or the object; log the SDK text; add the test the specification claims.
+
+**Acceptance:** A `NotFound` from the catalog listing answers 404 naming the catalog; an
+`Unauthenticated` answers 401 naming the token variable.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/routes/databricks.py::list_databricks_catalogs`;
+`src/haute/routes/databricks.py::_get_databricks_client`;
+`tests/test_databricks_endpoints.py`.
+
+### BUG-45 — An atomic first append
+**Why:** `load_statements` returns two statements for `append`, `CREATE TABLE IF NOT
+EXISTS ... LIMIT 0` then `INSERT INTO ... BY NAME`, executed in a plain loop with no
+transaction, so a failing insert leaves an empty table behind; only `overwrite` has the
+"previous table left in place" guarantee the specification states. Beside it, `CREATE
+VOLUME` hand-quotes the catalog and schema while `_quoted_table_name` exists, and
+`_connection_settings` duplicates `_resolve_connection` with `_sql_auth_kwargs`.
+
+**Plan:** Test existence first and use one `CREATE TABLE ... AS SELECT` when the table
+is new, otherwise `INSERT` alone; state the append guarantee in the specification; quote
+the volume with the table-name parts and delete `_connection_settings`.
+
+**Acceptance:** A failing first append leaves no table; a failing later append leaves
+the table unchanged.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_databricks_output.py::load_statements`;
+`src/haute/_databricks_io.py`.
