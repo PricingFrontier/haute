@@ -917,14 +917,17 @@ class TestModelFileSourceInvalidation:
         assert after[0] == pytest.approx(before[0] + 100.0)
         assert after[2] != before[2]
 
-    def test_removing_the_model_or_its_required_contract_fails_by_name(self, scoring):
+    def test_removing_the_contract_rescores_and_removing_the_model_fails_by_name(self, scoring):
         root, model, graph = scoring
         sibling = model.with_name("freq.feature_contract.json")
-        _contract_file(sibling, offset=None)
-        self._observe(graph())
+        _contract_file(sibling, offset="exposure")
+        before = self._observe(graph())
 
+        # With nothing declaring it, the model scores with no offset.
         sibling.unlink()
-        assert "does not record whether it was trained with an offset" in self._error(graph())
+        after = self._observe(graph())
+        assert after[0] == pytest.approx(before[0] - 100.0)
+        assert after[2] != before[2]
 
         _contract_file(sibling, offset=None)
         model.unlink()

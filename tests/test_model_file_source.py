@@ -211,11 +211,16 @@ def test_an_explicit_no_offset_contract_scores(project: Path) -> None:
 
 
 @pytest.mark.parametrize("kind", SOURCES)
-def test_an_undeclared_catboost_offset_is_refused(project: Path, kind: str) -> None:
+def test_an_undeclared_catboost_offset_scores_with_no_offset(project: Path, kind: str) -> None:
+    """A quote is priced for a full policy term: an exposure of one adds nothing."""
     model_path = external_catboost(project, offset=True)
+    frame = data(seed=14)
 
-    with pytest.raises(ConfigError, match="does not record whether it was trained with an offset"):
-        score(source_for(kind, model_path, None), data())
+    scored = score(source_for(kind, model_path, None), frame)
+
+    np.testing.assert_allclose(scored, native_reference(model_path, frame, offset=False))
+    full_term = frame.with_columns(exposure=pl.lit(1.0))
+    np.testing.assert_allclose(scored, native_reference(model_path, full_term, offset=True))
 
 
 @pytest.mark.parametrize("kind", SOURCES)
@@ -387,13 +392,15 @@ class TestInspectionEndpoint:
         assert (body["offset_column"], body["offset_link"]) == ("exposure", "log")
         assert body["contract_path"] == model_contract_filename(model_path.stem)
 
-    def test_reports_the_scoring_refusal(self, project: Path, client: Any) -> None:
+    def test_reports_an_undeclared_offset_as_none(self, project: Path, client: Any) -> None:
         model_path = external_catboost(project, offset=True)
 
         response = client.get("/api/model-file", params={"path": model_path.name})
 
-        assert response.status_code == 400
-        assert "does not record whether it was trained with an offset" in response.json()["detail"]
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert (body["offset_column"], body["offset_link"]) == (None, None)
+        assert body["contract_path"] is None
 
 
 def _model_score_graph(config: dict[str, Any]) -> Any:

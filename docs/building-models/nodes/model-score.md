@@ -82,12 +82,12 @@ contract for a different loss or version is refused rather than scored. A catego
 model never saw still scores; see [Values the model was not trained on](#values-the-model-was-not-trained-on).
 
 A CatBoost model file does not record its own offset. Models trained by Haute record it
-in the model; for any other CatBoost model the feature contract must say whether the
-model was trained with an offset (its `offset_column` and `offset_link`, `log` for an
-exposure or `identity` for an additive term) or without one. A CatBoost model whose offset
-nothing declares is refused, whether it comes from a file, a run or the registry, because
-scoring it without its offset would mis-price every row. A contract that disagrees with
-what the model records is refused too.
+in the model; for any other CatBoost model a feature contract can say whether the model
+was trained with an offset (its `offset_column` and `offset_link`, `log` for an exposure
+or `identity` for an additive term) or without one. A CatBoost model whose offset nothing
+declares scores with no offset, whether it comes from a file, a run or the registry: a
+quote is priced for a full policy term, and an exposure of one adds nothing to a log-link
+model. A contract that disagrees with what the model records is refused.
 
 A CatBoost, XGBoost, LightGBM, t-boost, EBM or GLM model from a run or the registry scores
 with the feature contract its training run logged beside it, in the editor and when

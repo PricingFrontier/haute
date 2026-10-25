@@ -779,8 +779,8 @@ def _catboost_offset_column(model: Any) -> str | None:
 
     ``CatBoostAlgorithm.fit`` records the offset column name under
     ``CATBOOST_OFFSET_METADATA_KEY`` because the .cbm format has no native
-    baseline memory — without this, a served model would silently score
-    from baseline 0. ``None`` covers both an empty value (no offset) and an
+    baseline memory — without this, a served model would ignore the offset
+    it was trained with. ``None`` covers both an empty value (no offset) and an
     absent key (undeclared, see :func:`_catboost_offset_declared`); a failed
     metadata read propagates.
     """
@@ -983,13 +983,16 @@ def bind_feature_contract(
     pyfunc model, whose contract is its only offset description, takes the
     contract's. A CatBoost model whose file does not declare its offset takes
     the contract's declaration: a null ``offset_column`` declares no offset, a
-    named one with an ``offset_link`` declares that offset. Returns the carrier
+    named one with an ``offset_link`` declares that offset; with no contract it
+    scores with no offset, the full-policy-term basis a quote is priced on (an
+    exposure of one adds nothing to a log-link model). Returns the carrier
     to score (a new one when the offset changes); *scoring_model* itself, which
     a cache may hold, is never mutated.
 
     Raises:
-        ConfigError: the identity or the offset disagree, or a CatBoost
-            model's offset is declared by neither its file nor its contract.
+        ConfigError: the identity or the offset disagree, or the contract of a
+            CatBoost model that declares no offset names an offset column
+            without its link.
     """
     from haute.errors import ConfigError
 
@@ -1002,12 +1005,7 @@ def bind_feature_contract(
             "for a model trained without one), or retrain it with this version of Haute."
         )
         if contract is None:
-            raise ConfigError(
-                f"CatBoost model {model_name} does not record whether it was trained with "
-                f"an offset, and no feature contract declares it. Scoring it without its "
-                f"offset would mis-price every row. {remedy}",
-                model=model_name,
-            )
+            return scoring_model.with_offset(None, None)
         if contract.offset_column is not None and contract.offset_link is None:
             raise ConfigError(
                 f"The feature contract of CatBoost model {model_name} names offset column "

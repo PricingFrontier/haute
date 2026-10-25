@@ -138,18 +138,19 @@ Out of scope (owned elsewhere):
 - A loaded model is bound to the feature contract it scores under before
   anything scores it. A contract that records a model identity must describe
   the loaded model. A CatBoost file records no baseline of its own, so its
-  offset must be declared: by the `haute_offset_column` metadata Haute stamps
-  at fit (an empty value declares no offset), or by a contract whose
-  `offset_column` names the column and whose `offset_link` (`log` or
-  `identity`) says how it enters the raw score, or whose `offset_column` is
-  null. A model whose metadata and contract disagree is refused. A run or
+  offset is declared by the `haute_offset_column` metadata Haute stamps at fit
+  (an empty value declares no offset), or by a contract whose `offset_column`
+  names the column and whose `offset_link` (`log` or `identity`) says how it
+  enters the raw score, or whose `offset_column` is null. A model whose
+  metadata and contract disagree is refused. A run or
   registered native model without an explicit contract is bound to the
   contract its run logged beside it when the run logged one, so the preview
   binds what a deployed bundle ships; a model whose run logged none scores
   against the features its own file names, and an EBM, which loads only under
   its contract, is refused naming the run. A CatBoost
-  model with no declaration is refused, never scored from baseline zero, and a
-  declared offset column missing from the scoring input fails before
+  model with no declaration scores with no offset, the full-policy-term basis
+  a quote is priced on (an exposure of one adds nothing to a log-link model),
+  and a declared offset column missing from the scoring input fails before
   prediction.
 - A file-sourced model is cached in memory by its resolved path, `task` and
   the byte identity of the contract it scores under, gated on the model
@@ -403,15 +404,14 @@ Out of scope (owned elsewhere):
 - A model file or run artifact whose suffix no family registers:
   `ConfigError` naming the supported suffixes, raised before any download.
 - A CatBoost model whose metadata cannot be read: `ConfigError` naming the
-  model file or run artifact. An unreadable one is never taken to mean the
-  model has no offset, because the model would then score from baseline zero.
-- A CatBoost model whose offset is declared neither by its metadata nor by a
-  contract, a contract that names an offset column without its `offset_link`,
-  or metadata and a contract that disagree on the offset: `ConfigError` naming
-  the model and the remedy (save a contract beside it, or retrain). This holds
-  for file, run and registered sources; a model trained by an earlier Haute
-  without an offset and scored without its contract is refused where it was
-  once scored from baseline zero.
+  model file or run artifact, because a file whose metadata does not read is
+  not one to price from.
+- A contract that names an offset column without its `offset_link` for a
+  CatBoost model whose metadata declares no offset, or metadata and a contract
+  that disagree on the offset: `ConfigError` naming the model and the remedy
+  (save a contract beside it, or retrain). This holds for file, run and
+  registered sources. A CatBoost model whose offset neither its metadata nor a
+  contract declares is not an error: it scores with no offset.
 - A file source whose `model_path` is empty (`IncompleteModelSourceError`),
   resolves outside the project (`RuntimePathOutsideProjectError`), does not
   exist, or has a suffix no family registers; an explicit
