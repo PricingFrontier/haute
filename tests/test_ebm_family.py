@@ -623,7 +623,8 @@ def test_deploy_bundles_the_run_contract_an_ebm_needs(tmp_path: Path) -> None:
         patch("haute._mlflow_io._resolve_run_contract", return_value=str(contract)) as fetch,
     ):
         artifacts = collect_artifacts(graph, [], tmp_path)
-    assert fetch.call_args.args[2:] == ("run", "ebm.ebm")
+    # (mlflow, client, backend, run_id, artifact)
+    assert fetch.call_args.args[3:] == ("run", "ebm.ebm")
     assert artifacts["score__feature_contract.json"] == contract
     assert artifacts["score__ebm.ebm"] == model
 

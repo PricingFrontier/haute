@@ -210,19 +210,11 @@ def test_an_explicit_no_offset_contract_scores(project: Path) -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("kind", "message"),
-    [
-        ("file", "does not record whether it was trained with an offset"),
-        # A run's model is bound to the contract logged beside it, which is missing.
-        ("run", "has no feature contract ext.feature_contract.json beside ext.cbm"),
-        ("registered", "has no feature contract ext.feature_contract.json beside ext.cbm"),
-    ],
-)
-def test_an_undeclared_catboost_offset_is_refused(project: Path, kind: str, message: str) -> None:
+@pytest.mark.parametrize("kind", SOURCES)
+def test_an_undeclared_catboost_offset_is_refused(project: Path, kind: str) -> None:
     model_path = external_catboost(project, offset=True)
 
-    with pytest.raises(ConfigError, match=message):
+    with pytest.raises(ConfigError, match="does not record whether it was trained with an offset"):
         score(source_for(kind, model_path, None), data())
 
 
@@ -497,11 +489,37 @@ def test_a_run_model_that_declares_its_offset_binds_its_logged_contract(
 
 
 @pytest.mark.parametrize("kind", ["run", "registered"])
-def test_a_run_model_without_its_logged_contract_is_refused(project: Path, kind: str) -> None:
-    model_path = external_catboost(project, offset=False, stamp="")
+def test_a_run_model_without_a_logged_contract_scores_against_its_own_features(
+    project: Path, kind: str
+) -> None:
+    """A model trained outside Haute scores; it is checked against the features it names."""
+    from haute._model_source import load_bound_model
 
-    with pytest.raises(ConfigError, match="has no feature contract ext.feature_contract.json"):
-        score(source_for(kind, model_path, None), data())
+    model_path = external_catboost(project, offset=False, stamp="")
+    source = source_for(kind, model_path, None)
+    frame = data(seed=11)
+
+    assert load_bound_model(source, "regression").contract_path is None
+    np.testing.assert_allclose(
+        score(source, frame), native_reference(model_path, frame, offset=False)
+    )
+    with pytest.raises(FeatureMismatchError, match="age"):
+        score(source, frame.drop("age"))
+
+
+def test_a_run_without_a_contract_loads_from_the_disk_cache_alone(project: Path) -> None:
+    """The cache records that the run logged none, so a cache-only execution still loads it."""
+    from haute._mlflow_io import _model_cache, disk_cache_only_model_loads
+
+    model_path = external_catboost(project, offset=False, stamp="")
+    source = source_for("run", model_path, None)
+    frame = data(seed=12)
+    expected = native_reference(model_path, frame, offset=False)
+    np.testing.assert_allclose(score(source, frame), expected)
+    _model_cache.clear()
+
+    with disk_cache_only_model_loads():
+        np.testing.assert_allclose(score(source, frame), expected)
 
 
 @pytest.mark.parametrize("column", ["region", "age"])
@@ -593,14 +611,14 @@ def test_a_registered_model_and_its_logged_contract_come_from_one_run(
         client.set_terminated(run.info.run_id)
         client.create_model_version("ext", f"runs:/{run.info.run_id}", run.info.run_id)
     client.set_registered_model_alias("ext", "champion", "1")
-    fetch = _mlflow_io._resolve_run_contract
+    fetch = _mlflow_io._run_contract_if_logged
 
-    def promote_then_fetch(*args: Any) -> str:
+    def promote_then_fetch(*args: Any) -> str | None:
         # The alias moves after the model was resolved and before its contract is read.
         client.set_registered_model_alias("ext", "champion", "2")
         return fetch(*args)
 
-    monkeypatch.setattr(_mlflow_io, "_resolve_run_contract", promote_then_fetch)
+    monkeypatch.setattr(_mlflow_io, "_run_contract_if_logged", promote_then_fetch)
     source = RegisteredModelSource(
         registered_model="ext",
         version="",

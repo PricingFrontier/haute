@@ -193,11 +193,14 @@
    Model Scoring source) or else the first existing sibling (`model_contract_path`, which
    refuses a sibling that leaves the project through a symlink as a `DeployError`), is
    bundled under `<node>__feature_contract.json`; a file source never contacts MLflow. For a run or registered source without an explicit
-   contract, the contract logged beside the model in the run is always bundled
-   (`_resolve_run_contract`); a run that logged none fails the bundle with a
-   `DeployError` naming the node and the run. Every MLflow-sourced model is therefore
-   served bound to the contract the preview binds, and each request is checked against
-   it. A node left unbundled is then refused by the deploy
+   contract, the contract logged beside the model in the run is bundled
+   (`_run_contract_if_logged`, the reader the preview's loader uses), so an MLflow-sourced
+   model is served bound to the contract the preview binds and each request is checked
+   against it. A run that logged none (a completed listing of the run finds no contract
+   beside the model; a failed download or listing is raised, never read as absence)
+   bundles no contract, and its model is served against the features its file names, as
+   the preview scores it; an EBM, which loads only under its contract, fails the bundle
+   with a `DeployError` naming the node and the run. A node left unbundled is then refused by the deploy
    scorer's passthrough guard below. The bundler resolves each model-score node's
    `mlflow_destination` to one
    backend exactly once and passes that object to both registered-model resolution

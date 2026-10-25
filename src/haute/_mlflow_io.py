@@ -409,8 +409,9 @@ def _model_cache_key(
 class DiskCachedRunModel:
     """Where the fast path of :func:`load_mlflow_model` finds one run artifact on disk.
 
-    The model file and the contract its run logged beside it, in the disk model
-    cache partition of one resolved backend.
+    The model file and the contract its run logged beside it, or the marker
+    recording that the run logged none, in the disk model cache partition of
+    one resolved backend.
     """
 
     artifact_path: str
@@ -420,7 +421,21 @@ class DiskCachedRunModel:
 
     @property
     def files(self) -> tuple[Path, ...]:
-        return (self.model_path, self.contract_path)
+        """The model and its contract, or the marker of a run that logged none.
+
+        An EBM loads only under its contract, so a marker never stands in for it.
+        """
+        if (
+            self.contract_path.is_file()
+            or family_for_artifact(self.artifact_path).requires_contract
+        ):
+            return (self.model_path, self.contract_path)
+        return (self.model_path, _contract_absent_marker(self.contract_path))
+
+    @property
+    def run_contract(self) -> str | None:
+        """The cached contract the run logged, or ``None`` when it logged none."""
+        return str(self.contract_path) if self.contract_path.is_file() else None
 
     def present(self) -> bool:
         """Whether every file the fast path loads exists (a stat, never a read)."""
@@ -442,6 +457,11 @@ class DiskCachedRunModel:
         )
 
 
+def _contract_absent_marker(contract_cache_path: Path) -> Path:
+    """Where the disk cache records that a run logged no contract beside a model."""
+    return contract_cache_path.with_name("artifact.absent")
+
+
 def _disk_cached_run_model(
     backend: ResolvedBackend, run_id: str, artifact_path: str
 ) -> DiskCachedRunModel | None:
@@ -452,7 +472,7 @@ def _disk_cached_run_model(
     root = _disk_cache_root()
     model_path = _artifact_cache_path(root, backend.digest, run_id, artifact_path)
     # A run's model scores under the contract its run logged beside it, so it is
-    # only as current as that contract.
+    # only as current as that contract or the record that there is none.
     contract_artifact = _run_contract_artifact(artifact_path)
     return DiskCachedRunModel(
         artifact_path,
@@ -542,7 +562,7 @@ class ScoringModel:
 
     ``run_contract_path`` is the local copy of the contract an MLflow run logged
     beside a native model :func:`load_mlflow_model` loaded, read from that same
-    run; ``None`` for any other model.
+    run; ``None`` for a run that logged none and for any other model.
     """
 
     __slots__ = (
@@ -1115,6 +1135,7 @@ def _ebm_identity_fingerprint(
 def _loaded_artifact_fingerprint(
     flavor: str,
     mlflow_mod: Any,
+    client: MlflowClient,
     backend: ResolvedBackend,
     run_id: str,
     artifact: str,
@@ -1131,31 +1152,64 @@ def _loaded_artifact_fingerprint(
         artifact,
         local_path,
         _run_contract_artifact(artifact),
-        _resolve_run_contract(mlflow_mod, backend, run_id, artifact),
+        _resolve_run_contract(mlflow_mod, client, backend, run_id, artifact),
     )
 
 
-def _resolve_run_contract(
-    mlflow_mod: Any, backend: ResolvedBackend, run_id: str, artifact: str
-) -> str:
-    """Fetch the feature contract a run logged beside *artifact*.
+def _run_lists_artifact(client: MlflowClient, run_id: str, artifact: str) -> bool:
+    """Whether a completed listing of *artifact*'s directory in the run names it."""
+    from pathlib import PurePosixPath
 
-    Every native model from a run scores under it; an EBM also loads only
-    under it.
+    parent = str(PurePosixPath(artifact).parent)
+    listed = (
+        client.list_artifacts(run_id) if parent == "." else client.list_artifacts(run_id, parent)
+    )
+    return any(item.path == artifact for item in listed)
+
+
+def _run_contract_if_logged(
+    mlflow_mod: Any, client: MlflowClient, backend: ResolvedBackend, run_id: str, artifact: str
+) -> str | None:
+    """The local copy of the contract a run logged beside *artifact*, or ``None``.
+
+    A native model from a run scores under its contract when the run logged
+    one. Absence is read only from a completed listing of the run after the
+    download fails, and recorded beside where the contract would sit in the
+    disk cache, so the fast path and a disk-cache-only load see it; a failed
+    download of a contract the listing names, and a failed listing, propagate.
     """
+    contract_artifact = _run_contract_artifact(artifact)
+    with _disk_cache_run_in_use(run_id):
+        marker = _contract_absent_marker(
+            _artifact_cache_path(_disk_cache_root(), backend.digest, run_id, contract_artifact)
+        )
+        if marker.is_file():
+            return None
+        try:
+            return _resolve_artifact_local(mlflow_mod, backend, run_id, contract_artifact)
+        except Exception:
+            if _run_lists_artifact(client, run_id, contract_artifact):
+                raise
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+        return None
 
+
+def _resolve_run_contract(
+    mlflow_mod: Any, client: MlflowClient, backend: ResolvedBackend, run_id: str, artifact: str
+) -> str:
+    """The contract a run logged beside an EBM, which loads only under it."""
     from haute.errors import ConfigError
 
-    contract_artifact = _run_contract_artifact(artifact)
-    try:
-        return _resolve_artifact_local(mlflow_mod, backend, run_id, contract_artifact)
-    except Exception as exc:
+    contract = _run_contract_if_logged(mlflow_mod, client, backend, run_id, artifact)
+    if contract is None:
         raise ConfigError(
-            f"Run {run_id} has no feature contract {contract_artifact} beside {artifact}, and "
-            f"this model scores only with the contract it was trained with ({exc}).",
+            f"Run {run_id} has no feature contract {_run_contract_artifact(artifact)} beside "
+            f"{artifact}, and an EBM loads only with the contract it was trained with.",
             run_id=run_id,
             artifact_path=artifact,
-        ) from exc
+        )
+    return contract
 
 
 def _load_xgboost_file(
@@ -1630,6 +1684,7 @@ _LOAD_BACKOFF_JITTER_S = 0.1
 def _load_with_bounded_retry(
     *,
     mlflow_mod: Any,
+    client: MlflowClient,
     backend: ResolvedBackend,
     run_id: str,
     artifact: str,
@@ -1658,7 +1713,11 @@ def _load_with_bounded_retry(
             local_path = _resolve_artifact_local(mlflow_mod, backend, run_id, artifact)
             family = model_family(flavor)
             assert family.load_file is not None  # only file-loaded families retry here
-            contract_path = _resolve_run_contract(mlflow_mod, backend, run_id, artifact)
+            contract_path = (
+                _resolve_run_contract(mlflow_mod, client, backend, run_id, artifact)
+                if family.requires_contract
+                else _run_contract_if_logged(mlflow_mod, client, backend, run_id, artifact)
+            )
             scoring_model = family.load_file(
                 local_path,
                 task,
@@ -1815,13 +1874,14 @@ def load_mlflow_model(
                 return cached
         else:
             with _disk_cache_run_in_use(run_id):
-                # A run model is only as current as the contract logged beside
-                # it, so the fast path needs the cached contract too.
+                # A run model is only as current as what its run logged beside
+                # it, so the fast path needs the cached contract, or the record
+                # that there is none.
                 cached_files = _disk_cached_run_model(backend, run_id, artifact_path)
                 assert cached_files is not None  # only a pyfunc has no cached file
                 local_path = cached_files.model_path
-                contract_local = cached_files.contract_path
                 if cached_files.present():
+                    contract_local = cached_files.run_contract
                     fast_key = _model_cache_key(
                         source_type=source_type,
                         run_id=run_id,
@@ -1859,10 +1919,10 @@ def load_mlflow_model(
                             scoring_model = load_local_model(
                                 str(local_path),
                                 task=task,
-                                contract_path=str(contract_local),
+                                contract_path=contract_local,
                                 source=f"MLflow run {run_id!r}",
                             )
-                            scoring_model.run_contract_path = str(contract_local)
+                            scoring_model.run_contract_path = contract_local
                             _model_cache.put(fast_key, scoring_model)
                             logger.info(
                                 "mlflow_model_loaded_from_disk_cache",
@@ -1889,9 +1949,9 @@ def load_mlflow_model(
             else f"registered model {registered_model!r}"
         )
         raise ModelNotInDiskCacheError(
-            f"The local model cache does not hold {reference} with the feature contract "
-            "its run logged, and this execution loads models only from that cache. "
-            "Preview the Model Scoring node in the editor, which fills it.",
+            f"The local model cache does not hold {reference} ready to load, and this "
+            "execution loads models only from that cache. Preview the Model Scoring node "
+            "in the editor, which fills it.",
             source_type=source_type,
         )
 
@@ -1933,7 +1993,13 @@ def load_mlflow_model(
                 resolved_artifact,
             )
             artifact_fp = _loaded_artifact_fingerprint(
-                flavor, mlflow_mod, backend, resolved_run_id, resolved_artifact, local_artifact_path
+                flavor,
+                mlflow_mod,
+                client,
+                backend,
+                resolved_run_id,
+                resolved_artifact,
+                local_artifact_path,
             )
 
     cache_key = _model_cache_key(
@@ -1989,6 +2055,7 @@ def load_mlflow_model(
             with _disk_cache_run_in_use(resolved_run_id):
                 scoring_model = _load_with_bounded_retry(
                     mlflow_mod=mlflow_mod,
+                    client=client,
                     backend=backend,
                     run_id=resolved_run_id,
                     artifact=resolved_artifact,
@@ -2009,6 +2076,7 @@ def load_mlflow_model(
                     artifact_fingerprint=_loaded_artifact_fingerprint(
                         flavor,
                         mlflow_mod,
+                        client,
                         backend,
                         resolved_run_id,
                         resolved_artifact,

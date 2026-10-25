@@ -222,8 +222,17 @@ class TestCatBoostPredictOffset:
         from unittest.mock import MagicMock, patch
 
         from haute._mlflow_io import _load_with_bounded_retry
+        from haute._mlflow_utils import ResolvedBackend
 
         model_path = self._save_with_unreadable_metadata(haute_scratch, monkeypatch)
+        monkeypatch.setattr("haute._mlflow_io._disk_cache_root", lambda: haute_scratch / "cache")
+        backend = ResolvedBackend(
+            mode="local",
+            tracking_uri="file:///mlruns",
+            registry_uri="file:///mlruns",
+            identity="local:mlruns|registry=file:///mlruns",
+            digest="0123456789abcdef",
+        )
 
         with (
             patch(
@@ -233,7 +242,8 @@ class TestCatBoostPredictOffset:
         ):
             _load_with_bounded_retry(
                 mlflow_mod=MagicMock(),
-                backend=MagicMock(),
+                client=MagicMock(),
+                backend=backend,
                 run_id="run-7",
                 artifact="model.cbm",
                 flavor="catboost",

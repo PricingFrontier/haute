@@ -2345,12 +2345,13 @@ class TestCatBoostTaskFromTheModelFile:
             load_local_model(path, task="classification")
         assert load_local_model(path, task="regression").flavor == "catboost"
 
-    def test_a_task_mismatch_is_not_retried_as_a_corrupt_download(self, tmp_path):
+    def test_a_task_mismatch_is_not_retried_as_a_corrupt_download(self, tmp_path, monkeypatch):
         from catboost import CatBoostClassifier
 
         from haute._mlflow_io import _load_with_bounded_retry
         from haute.errors import ConfigError
 
+        monkeypatch.setattr("haute._mlflow_io._disk_cache_root", lambda: tmp_path / "cache")
         path = self._saved(
             tmp_path, CatBoostClassifier(iterations=2, verbose=0, allow_writing_files=False)
         )
@@ -2360,7 +2361,8 @@ class TestCatBoostTaskFromTheModelFile:
         ):
             _load_with_bounded_retry(
                 mlflow_mod=MagicMock(),
-                backend=MagicMock(),
+                client=MagicMock(),
+                backend=_FAKE_BACKEND,
                 run_id="r",
                 artifact="model.cbm",
                 flavor="catboost",
@@ -2372,3 +2374,69 @@ class TestCatBoostTaskFromTheModelFile:
             "model.feature_contract.json",
         ]
         assert Path(path).is_file()
+
+
+class TestRunContractIfLogged:
+    """A run's contract is optional, but only a completed listing says it is absent."""
+
+    @pytest.fixture(autouse=True)
+    def _cache_root(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("haute._mlflow_io._disk_cache_root", lambda: tmp_path / "cache")
+
+    @staticmethod
+    def _marker(run_id: str, contract_artifact: str) -> Path:
+        from haute import _mlflow_io
+
+        # The module's patched root, not the name this test module imported.
+        return _mlflow_io._contract_absent_marker(
+            _artifact_cache_path(
+                _mlflow_io._disk_cache_root(), _FAKE_BACKEND.digest, run_id, contract_artifact
+            )
+        )
+
+    def test_a_failed_download_of_a_listed_contract_is_raised_not_read_as_absence(self):
+        from haute._mlflow_io import _run_contract_if_logged
+
+        client = MagicMock()
+        client.list_artifacts.return_value = [MagicMock(path="m.feature_contract.json")]
+        with (
+            patch("haute._mlflow_io._resolve_artifact_local", side_effect=OSError("reset")),
+            pytest.raises(OSError, match="reset"),
+        ):
+            _run_contract_if_logged(MagicMock(), client, _FAKE_BACKEND, "r1", "m.cbm")
+        assert not self._marker("r1", "m.feature_contract.json").exists()
+
+    def test_a_failed_listing_is_raised_not_read_as_absence(self):
+        from mlflow.exceptions import MlflowException
+
+        from haute._mlflow_io import _run_contract_if_logged
+
+        client = MagicMock()
+        client.list_artifacts.side_effect = MlflowException("401 Unauthorized")
+        with (
+            patch("haute._mlflow_io._resolve_artifact_local", side_effect=OSError("missing")),
+            pytest.raises(MlflowException, match="401"),
+        ):
+            _run_contract_if_logged(MagicMock(), client, _FAKE_BACKEND, "r2", "m.cbm")
+        assert not self._marker("r2", "m.feature_contract.json").exists()
+
+    def test_an_absent_contract_is_recorded_and_not_fetched_again(self):
+        from haute._mlflow_io import _run_contract_if_logged
+
+        client = MagicMock()
+        client.list_artifacts.return_value = [MagicMock(path="models/m.cbm")]
+        with patch(
+            "haute._mlflow_io._resolve_artifact_local", side_effect=OSError("missing")
+        ) as resolve:
+            first = _run_contract_if_logged(
+                MagicMock(), client, _FAKE_BACKEND, "r3", "models/m.cbm"
+            )
+            second = _run_contract_if_logged(
+                MagicMock(), client, _FAKE_BACKEND, "r3", "models/m.cbm"
+            )
+
+        assert first is None and second is None
+        # The contract's own directory is listed, once; the marker answers the second call.
+        client.list_artifacts.assert_called_once_with("r3", "models")
+        assert resolve.call_count == 1
+        assert self._marker("r3", "models/m.feature_contract.json").is_file()

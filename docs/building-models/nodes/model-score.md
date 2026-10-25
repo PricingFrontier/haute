@@ -91,7 +91,9 @@ what the model records is refused too.
 
 A CatBoost, XGBoost, LightGBM, t-boost, EBM or GLM model from a run or the registry scores
 with the feature contract its training run logged beside it, in the editor and when
-deployed. A run that logged no contract is refused, naming the run.
+deployed, so its input is checked against the features and types it was trained on. A
+model whose run logged no contract, such as one trained outside Haute, scores against the
+features its own file names. An EBM is the exception: it loads only with its contract.
 
 Scoring checks the input against the model's features before it runs: a missing feature,
 a missing offset column the model was trained with, or a numeric column where the model

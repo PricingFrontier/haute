@@ -555,10 +555,12 @@ class TestFeatureContractBundled:
         with pytest.raises(FeatureMismatchError, match="contract mismatch: feature_types"):
             serve(pl.Series([30, 41]))
 
-    def test_a_run_that_logged_no_contract_refuses_the_deploy_naming_the_node(
+    def test_a_run_that_logged_no_contract_deploys_against_the_model_features(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """A model trained outside Haute deploys and serves as the preview scores it."""
         from haute.deploy._bundler import collect_artifacts
+        from haute.deploy._scorer import score_graph
 
         monkeypatch.chdir(tmp_path)
         self._seed_xgboost_run(tmp_path, "run_bare", with_contract=False)
@@ -566,20 +568,65 @@ class TestFeatureContractBundled:
             {"sourceType": "run", "run_id": "run_bare", "artifact_path": "xgb.ubj"}
         )
 
+        with (
+            patch(
+                "haute._mlflow_io._resolve_artifact_local",
+                new=self._unlogged_contract(model_contract_filename("xgb")),
+            ),
+            # The run's listing completes and names no contract.
+            patch("mlflow.tracking.MlflowClient.list_artifacts", return_value=[]),
+        ):
+            artifacts = collect_artifacts(graph, ["api_in"], tmp_path)
+
+        assert f"ms__{CONTRACT_FILENAME}" not in artifacts
+        served = score_graph(
+            graph=graph,
+            input_df=pl.DataFrame({"region": ["north", "east"], "age": [30.0, 41.0]}),
+            input_node_ids=["api_in"],
+            output_node_id="output",
+            artifact_paths={key: str(path) for key, path in artifacts.items()},
+        )
+        assert served.height == 2
+
+    def test_an_ebm_whose_run_logged_no_contract_refuses_the_deploy_naming_the_node(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An EBM loads only under its contract, so it cannot be served without one."""
+        from haute.deploy._bundler import collect_artifacts
+
+        monkeypatch.chdir(tmp_path)
+        cached = _artifact_cache_path(
+            tmp_path / ".cache" / "models", _auto_backend_digest(), "run_ebm", "model.ebm"
+        )
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_bytes(b"ebm")
+        graph = _api_score_graph(
+            {"sourceType": "run", "run_id": "run_ebm", "artifact_path": "model.ebm"}
+        )
+
+        with (
+            patch(
+                "haute._mlflow_io._resolve_artifact_local",
+                new=self._unlogged_contract(model_contract_filename("model")),
+            ),
+            patch("mlflow.tracking.MlflowClient.list_artifacts", return_value=[]),
+            pytest.raises(DeployError, match="node 'ms'.*run_ebm has no feature contract"),
+        ):
+            collect_artifacts(graph, ["api_in"], tmp_path)
+
+    @staticmethod
+    def _unlogged_contract(contract_artifact: str):  # type: ignore[no-untyped-def]
+        """The disk-cache reader, failing to download *contract_artifact* as a run without it."""
         from haute import _mlflow_io
 
         resolve = _mlflow_io._resolve_artifact_local
 
-        def unlogged_contract(mlflow_mod, backend, run_id, artifact):  # type: ignore[no-untyped-def]
-            if artifact == model_contract_filename("xgb"):
+        def read(mlflow_mod, backend, run_id, artifact):  # type: ignore[no-untyped-def]
+            if artifact == contract_artifact:
                 raise FileNotFoundError(artifact)
             return resolve(mlflow_mod, backend, run_id, artifact)
 
-        with (
-            patch("haute._mlflow_io._resolve_artifact_local", new=unlogged_contract),
-            pytest.raises(DeployError, match="node 'ms'.*run_bare has no feature contract"),
-        ):
-            collect_artifacts(graph, ["api_in"], tmp_path)
+        return read
 
     @staticmethod
     def _seed_xgboost_run(tmp_path: Path, run_id: str, *, with_contract: bool = True) -> None:

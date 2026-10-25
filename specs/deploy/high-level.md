@@ -577,7 +577,9 @@ hold an object of any third-party package haute's restricted unpickler allows, s
 of them: `catboost`, `interpret-core`, `pandas` and `scikit-learn`. Both
 score XGBoost, LightGBM, EBM and t-boost on CPU with no extra requirement. Bundling discovers `.ubj`, `.lgbm`, `.ebm` and `.tboost`
 artifacts with the other native suffixes and carries each model's feature contract: a run or
-registered model's is the contract its run logged beside it, and a run that logged none
-refuses the deploy naming the node. The deployed scorer loads each model, an EBM included,
-under its bundled contract. A macOS image must provide `libomp`.
+registered model's is the contract its run logged beside it, when it logged one. A model whose
+run logged none is served against the features its own file names, as the preview scores it;
+an EBM, which loads only under its contract, refuses the deploy naming the node. The deployed
+scorer loads each model under its bundled contract when there is one. A macOS image must
+provide `libomp`.
 
