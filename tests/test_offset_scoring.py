@@ -394,27 +394,27 @@ class TestTrainingMetricsIncludeOffset:
         assert np.isfinite(result.metrics["rmse"])
 
     @pytest.mark.parametrize(
-        ("loss_function", "params", "link"),
+        ("loss_function", "variance_power", "link"),
         [
-            (None, {"loss_function": "Poisson"}, "log"),
-            ("Tweedie", {}, "log"),
-            (None, {}, "identity"),
-            ("RMSE", {"loss_function": "Poisson"}, "identity"),
+            ("Poisson", None, "log"),
+            ("Tweedie", 1.5, "log"),
+            (None, None, "identity"),
+            ("RMSE", None, "identity"),
         ],
     )
     def test_catboost_offset_link_follows_the_loss_the_fit_uses(
-        self, loss_function: str | None, params: dict, link: str
+        self, loss_function: str | None, variance_power: float | None, link: str
     ) -> None:
         """The training baseline and the link stamped on the model both follow
-        the effective loss, whether it is a job setting or a ``params`` key."""
+        the job's loss setting (``params`` cannot name one)."""
         from haute.modelling._training_job import TrainingJob
 
         job = TrainingJob(
             name="cb_link",
             data=_freq_frame(n=10),
             target="claim_count",
-            params=params,
             loss_function=loss_function,
+            variance_power=variance_power,
             offset="exposure",
         )
         assert job._offset_link() == link
@@ -447,7 +447,7 @@ class TestTrainingMetricsIncludeOffset:
         params = (
             {"terms": {"age": {"type": "linear"}}, "family": "poisson"}
             if algorithm == "glm"
-            else {"iterations": 5, "depth": 2, "verbose": 0, "loss_function": "Poisson"}
+            else {"iterations": 5, "depth": 2, "verbose": 0}
         )
         job = TrainingJob(
             name=f"{algorithm}_bad_exposure",
@@ -455,6 +455,7 @@ class TestTrainingMetricsIncludeOffset:
             target="claim_count",
             algorithm=algorithm,
             params=params,
+            loss_function="Poisson" if algorithm == "catboost" else None,
             offset="exposure",
             metrics=["rmse"],
             output_dir=str(haute_scratch),
@@ -497,7 +498,8 @@ class TestTrainingMetricsIncludeOffset:
             data=df,
             target="y",
             offset="base",
-            params={"iterations": 60, "depth": 3, "verbose": 0, "loss_function": "RMSE"},
+            params={"iterations": 60, "depth": 3, "verbose": 0},
+            loss_function="RMSE",
             metrics=["rmse"],
             output_dir=str(haute_scratch),
         )
