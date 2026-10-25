@@ -159,9 +159,16 @@ const DEFAULT_PARAMS: Record<string, Record<string, unknown>> = {
   tboost: TBOOST_DEFAULT_PARAMS,
 }
 
-const CATBOOST_RESERVED_PARAM_KEYS = ["task_type"] as const
+const TREE_RESERVED_PARAM_HELP =
+  "Haute sets the objective, threads, seed, offset and categorical handling; "
+  + "choose the loss in the Target pane and monotonicity in the Features pane."
+// CatBoost's GPU setting (task_type) lives in the Train pane; the rest Haute sets.
+const CATBOOST_RESERVED_PARAM_KEYS: readonly string[] = [
+  "task_type",
+  ...(algorithmCapability("catboost")?.reserved_params ?? []),
+]
 const CATBOOST_RESERVED_PARAM_HELP =
-  "GPU training is configured in the Train pane."
+  `${TREE_RESERVED_PARAM_HELP} GPU training is configured in the Train pane.`
 
 /** Keys the params editor refuses for a tree family, with the reason shown. */
 function reservedParamsFor(algorithm: string): { keys: readonly string[]; help: string } {
@@ -170,9 +177,7 @@ function reservedParamsFor(algorithm: string): { keys: readonly string[]; help: 
   }
   return {
     keys: algorithmCapability(algorithm)?.reserved_params ?? [],
-    help:
-      "Haute sets the objective, threads, seed, offset and categorical handling; "
-      + "choose the loss in the Target pane and monotonicity in the Features pane.",
+    help: TREE_RESERVED_PARAM_HELP,
   }
 }
 const DEFAULT_EVALUATION: Record<string, unknown> = {

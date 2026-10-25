@@ -110,6 +110,100 @@ def test_catboost_params_stay_open_but_thread_count_is_owned_by_the_allotment() 
         )
 
 
+@pytest.mark.parametrize(
+    "key",
+    [
+        "loss_function",
+        "objective",
+        "eval_metric",
+        "random_seed",
+        "random_state",
+        "allow_writing_files",
+        "train_dir",
+        "save_snapshot",
+        "snapshot_file",
+    ],
+)
+def test_catboost_refuses_a_key_haute_sets_by_name(key: str) -> None:
+    """The node's loss, metric, seed and file handling would silently overwrite it."""
+    with pytest.raises(TrainingConfigError, match=f"cannot set '{key}': Haute owns it"):
+        build_training_job_kwargs(
+            catboost_config(params={"iterations": 10, key: "RMSE"}), data="d.parquet"
+        )
+
+
+TWEEDIE_FAMILIES = sorted(
+    key for key, family in DESCRIPTORS.items() if "Tweedie" in family.losses.get("regression", {})
+)
+
+
+@pytest.mark.parametrize("algorithm", TWEEDIE_FAMILIES)
+def test_a_training_job_without_a_tweedie_power_is_refused(algorithm: str) -> None:
+    frame = pl.DataFrame({"y": [1.0, 2.0], "x": [0.0, 1.0]})
+
+    with pytest.raises(HauteValidationError, match="Tweedie loss needs its variance power"):
+        TrainingJob(name="t", data=frame, target="y", algorithm=algorithm, loss_function="Tweedie")
+
+
+def test_tweedie_deviance_without_a_power_is_refused_before_training() -> None:
+    frame = pl.DataFrame({"y": [1.0, 2.0], "x": [0.0, 1.0]})
+
+    with pytest.raises(HauteValidationError, match="tweedie_deviance needs a variance power"):
+        TrainingJob(
+            name="t",
+            data=frame,
+            target="y",
+            loss_function="Poisson",
+            metrics=["gini", "tweedie_deviance"],
+        )
+
+
+def test_a_tweedie_glm_measures_deviance_at_its_own_power() -> None:
+    frame = pl.DataFrame({"y": [1.0, 2.0], "x": [0.0, 1.0]})
+
+    job = TrainingJob(
+        name="t",
+        data=frame,
+        target="y",
+        algorithm="glm",
+        params={"family": "tweedie", "var_power": 1.6, "terms": {"x": {"type": "linear"}}},
+    )
+
+    assert job.variance_power == 1.6
+
+
+def test_catboost_trains_with_the_jobs_seed(tmp_path: Path) -> None:
+    """CatBoost takes the evaluation seed like every other family, not its own default."""
+    from catboost import CatBoostRegressor
+
+    rng = np.random.default_rng(0)
+    frame = pl.DataFrame({"x": rng.random(80), "y": rng.random(80)})
+    result = TrainingJob(
+        name="seeded",
+        data=frame,
+        target="y",
+        loss_function="RMSE",
+        params={"iterations": 5, "depth": 2},
+        evaluation={**EVALUATION, "seed": 11, "validation": {"method": "none"}},
+        output_dir=str(tmp_path),
+    ).run()
+
+    model = CatBoostRegressor()
+    model.load_model(result.model_path)
+    assert model.get_all_params()["random_seed"] == 11
+
+
+def test_the_contract_never_guesses_a_dtype_the_snapshot_lacks() -> None:
+    frame = pl.DataFrame({"y": [1.0, 2.0], "x": [0.0, 1.0]})
+    job = TrainingJob(name="t", data=frame, target="y", loss_function="RMSE")
+    job._contract_feature_dtypes = {"x": "Float64"}
+
+    with pytest.raises(HauteValidationError, match="'z'"):
+        job._feature_dtypes_for_contract(["x", "z"])
+    with pytest.raises(HauteValidationError, match="target"):
+        job._target_dtype_for_contract()
+
+
 def test_glm_parameter_contract_is_unchanged() -> None:
     assert GLM.allowed_params is None
     assert GLM.reserved_params == frozenset()

@@ -29,6 +29,7 @@ from haute._polars_utils import bounded_collect_batches, streaming_collect
 from haute.errors import HauteError, HauteValidationError
 from haute.modelling._algorithms import (
     ALGORITHM_REGISTRY,
+    TWEEDIE_LOSS_NEEDS_POWER,
     IterationCallback,
     _malloc_trim,
     resolve_loss_function,
@@ -55,7 +56,7 @@ from haute.modelling._evaluation import (
 )
 from haute.modelling._evaluation import file_sha256 as evaluation_file_sha256
 from haute.modelling._feature_contract import ModelIdentity
-from haute.modelling._metrics import compute_metrics
+from haute.modelling._metrics import TWEEDIE_DEVIANCE_NEEDS_POWER, compute_metrics
 from haute.modelling._model_export import MODEL_FILE_SUFFIXES
 from haute.modelling._row_order import frame_row_order, scan_row_order
 from haute.modelling._shap import shap_diagnostics, shap_sample
@@ -638,7 +639,16 @@ class TrainingJob:
         self.mlflow_destination = mlflow_destination
         self.output_dir = output_dir
         self.loss_function = loss_function
+        if (
+            algorithm == "glm"
+            and variance_power is None
+            and str(self.params.get("family", "")).lower() == "tweedie"
+        ):
+            # A Tweedie GLM's power is its var_power; its deviance is measured there.
+            variance_power = self.params.get("var_power")
         self.variance_power = variance_power
+        if algorithm != "glm" and loss_function == "Tweedie" and variance_power is None:
+            raise HauteValidationError(TWEEDIE_LOSS_NEEDS_POWER)
         if positive_class is not None and (
             isinstance(positive_class, float) or not isinstance(positive_class, (bool, int, str))
         ):
@@ -688,6 +698,10 @@ class TrainingJob:
             )
             if config_issue is not None:
                 raise HauteValidationError(config_issue)
+        if self.variance_power is None and any(
+            metric.lower() == "tweedie_deviance" for metric in self.metrics
+        ):
+            raise HauteValidationError(TWEEDIE_DEVIANCE_NEEDS_POWER)
         #: One thread allotment per job, passed to every engine that takes one.
         self.threads = training_threads()
         if split is not None and evaluation is not None:
@@ -1192,17 +1206,17 @@ class TrainingJob:
         return roles
 
     def _catboost_loss_function(self) -> str | None:
-        """The CatBoost ``loss_function`` the fit uses.
+        """The CatBoost ``loss_function`` the fit uses: the job's loss setting.
 
-        The job's loss setting wins over a ``loss_function`` inside ``params``,
-        exactly as the fit params are built, so the offset baseline and the
-        link stamped on the model always describe the same loss.
+        ``params`` cannot name one (Haute owns the key), so the offset baseline
+        and the link stamped on the model always describe this loss.
         """
-        resolved = resolve_loss_function(self.loss_function, self.task, self.variance_power)
-        if resolved:
-            return resolved
-        in_params = self.params.get("loss_function")
-        return str(in_params) if in_params else None
+        return resolve_loss_function(self.loss_function, self.task, self.variance_power)
+
+    @property
+    def _fit_seed(self) -> int:
+        """The seed every family fits with: the evaluation's, 0 for a temporal plan or none."""
+        return int(self.evaluation.seed or 0) if self.evaluation is not None else 0
 
     def _resolve_class_labels(
         self,
@@ -2437,6 +2451,7 @@ class TrainingJob:
             loss_function = self._catboost_loss_function()
             if loss_function:
                 fit_params["loss_function"] = loss_function
+            fit_params["random_seed"] = self._fit_seed
 
         # Read train partition
         _report("Loading training data", 0.2)
@@ -2473,7 +2488,7 @@ class TrainingJob:
                     "variance_power": self.variance_power,
                     "threads": self.threads,
                     "class_labels": self._class_labels,
-                    "seed": self.evaluation.seed if self.evaluation is not None else 0,
+                    "seed": self._fit_seed,
                     "device": self.device,
                     "groups": self._plan_group_column(),
                 }
@@ -3240,11 +3255,22 @@ class TrainingJob:
         features than we snapshotted — iterate ``features`` to preserve
         the training order.
         """
-        return {f: self._contract_feature_dtypes.get(f, "Float64") for f in features}
+        missing = [f for f in features if f not in self._contract_feature_dtypes]
+        if missing:
+            raise HauteValidationError(
+                f"No dtype was recorded for the features {', '.join(repr(f) for f in missing)}; "
+                "the feature contract never guesses one."
+            )
+        return {f: self._contract_feature_dtypes[f] for f in features}
 
     def _target_dtype_for_contract(self) -> str:
         """Return the target dtype seen at data-prep time."""
-        return self._contract_target_dtype or "Float64"
+        if not self._contract_target_dtype:
+            raise HauteValidationError(
+                f"No dtype was recorded for the target {self.target!r}; the feature contract "
+                "never guesses one."
+            )
+        return self._contract_target_dtype
 
     @property
     def training_identity_sha256(self) -> str:

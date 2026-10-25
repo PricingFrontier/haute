@@ -1035,9 +1035,9 @@ class TestResolveLossFunction:
         result = resolve_loss_function("Tweedie", "regression", 1.5)
         assert result == "Tweedie:variance_power=1.5"
 
-    def test_tweedie_default_variance_power(self):
-        result = resolve_loss_function("Tweedie", "regression")
-        assert result == "Tweedie:variance_power=1.5"
+    def test_tweedie_without_a_variance_power_is_refused(self):
+        with pytest.raises(HauteValidationError, match="Tweedie loss needs its variance power"):
+            resolve_loss_function("Tweedie", "regression")
 
     def test_classification_losses(self):
         assert resolve_loss_function("Logloss", "classification") == "Logloss"
@@ -1099,7 +1099,7 @@ class TestDevianceMetrics:
     def test_tweedie_deviance(self):
         y_true = np.array([1.0, 2.0, 3.0, 4.0])
         y_pred = y_true.copy()
-        result = compute_metrics(y_true, y_pred, None, ["tweedie_deviance"])
+        result = compute_metrics(y_true, y_pred, None, ["tweedie_deviance"], variance_power=1.5)
         assert result["tweedie_deviance"] == pytest.approx(0.0, abs=1e-6)
 
 

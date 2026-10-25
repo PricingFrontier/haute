@@ -191,6 +191,13 @@ class _CatBoostProgressCallback:
 
 # User-friendly loss name → CatBoost loss_function string.
 # For Tweedie, the caller appends `:variance_power=X` via resolve_loss_function().
+#: The refusal for a Tweedie loss without the power it trains at.
+TWEEDIE_LOSS_NEEDS_POWER = (
+    "A Tweedie loss needs its variance power: set variance_power (greater than 1 and less "
+    "than 2); without one the library would train at a power nobody chose."
+)
+
+
 def resolve_loss_function(
     loss_name: str | None,
     task: str,
@@ -208,8 +215,9 @@ def resolve_loss_function(
     CATBOOST.native_loss(task, loss_name)
 
     if loss_name == "Tweedie":
-        vp = variance_power if variance_power is not None else 1.5
-        return f"Tweedie:variance_power={vp}"
+        if variance_power is None:
+            raise HauteValidationError(TWEEDIE_LOSS_NEEDS_POWER)
+        return f"Tweedie:variance_power={variance_power}"
 
     return loss_name
 
@@ -251,12 +259,15 @@ def _build_pool(
 
     cat_set = set(cat_features or [])
 
-    # Select only features present in the DataFrame (may differ when the
-    # caller pre-selects columns).
-    cols_to_select = [f for f in features if f in df.columns]
-
-    # Compute cat_indices from cols_to_select (not features) so indices
-    # match the actual columns in x_data after filtering.
+    # Every requested feature must be in the frame: dropping one would narrow
+    # the pool and shift every categorical index after it.
+    missing = [f for f in features if f not in df.columns]
+    if missing:
+        raise HauteValidationError(
+            f"CatBoost pool: the features {', '.join(repr(f) for f in missing)} are not in "
+            "the frame"
+        )
+    cols_to_select = list(features)
     cat_indices = [i for i, f in enumerate(cols_to_select) if f in cat_set]
     selected = df.select(cols_to_select) if cols_to_select != df.columns else df
 
@@ -528,9 +539,7 @@ class CatBoostAlgorithm(BaseAlgorithm):
 
         # Enable early stopping when eval set is present and user hasn't explicitly set it
         if eval_pool is not None and "early_stopping_rounds" not in model_params:
-            early_stop = model_params.pop("early_stopping_rounds", 50)
-            if early_stop and early_stop > 0:
-                model_params["early_stopping_rounds"] = early_stop
+            model_params["early_stopping_rounds"] = 50
 
         # Map feature-name-based monotone_constraints to index-based list
         if monotone_constraints:

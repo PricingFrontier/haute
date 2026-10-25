@@ -254,7 +254,9 @@ strip; it never falls through to CatBoost. Pane ownership:
   `one_hot_max_size: 10`, visible and editable in that JSON; Haute adds no hidden default, and
   nodes created earlier keep their parameters. A syntactically
   valid top-level object updates its corresponding config automatically, except that a
-  fixed-parameter object containing the Train-owned `task_type` key is rejected. Invalid,
+  fixed-parameter object containing the Train-owned `task_type` key, or a key the backend's
+  CatBoost descriptor reserves (its loss, metric, seed and training-file keys, read from
+  `algorithmCapabilities.json`), is rejected. Invalid,
   non-object, or reserved-key drafts remain local for that node and contribute only to the
   ordinary click-time Train validation banner while their strategy is selected. This preserves
   the complete CatBoost parameter surface without duplicating the algorithm library's evolving

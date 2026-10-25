@@ -268,7 +268,8 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
 
 ??? info "CatBoost parameters"
     Any CatBoost constructor parameter can go in **Parameters JSON**, except the ones Haute
-    sets. The starting keys are:
+    sets: the loss and metric, threads, seed, class order and training-file output. The
+    starting keys are:
 
     | Key | Description |
     |---|---|

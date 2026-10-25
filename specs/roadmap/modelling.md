@@ -11,7 +11,8 @@ six trained families (CatBoost, GLM through RustyStats, XGBoost, LightGBM,
 EBM and t-boost) are in scope only for what each backend exposes to a caller
 that must bound memory; their losses, tuning and evaluation are out of scope.
 The GLM distributions that `MOD-M01` names in its acceptance are the subject
-of that package, not a tuning choice. `MOD-R02` to `MOD-R06` come from the
+of that package, not a tuning choice. `MOD-R02`, `MOD-R03`, `MOD-R05` and `MOD-R06`
+come from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md) and are the
 exception to that scope: they cover what the review found in the fits, the
 contracts and the training lifecycle.
@@ -58,7 +59,6 @@ something this page settles.
 | MOD-M02 | Decision | P3 | A low-memory boosted-tree fitting mode under an explicit user choice. |
 | MOD-R02 | Planned | P2 | A dispersion estimate registers its cancellation token before preparing, prepares off the request thread, and reports curated errors. |
 | MOD-R03 | Planned | P2 | Training publication validates the evaluation plan outside the job-store lock, and the plan stores memberships compactly. |
-| MOD-R04 | Planned | P2 | Fit parameters have no hidden defaults: an unset Tweedie power is refused by the job itself, CatBoost reserves its loss keys, a missing feature or dtype is an error, and `tweedie_deviance` needs its power. |
 | MOD-R05 | Planned | P3 | Diagnostics are measured as the fit was: weighted loss importance, one-based GPU iterations, no GLM `best_iteration`, a dispersion search that stops on `MemoryError`, the offset dtype in the contract, params logged whole. |
 | MOD-R06 | Planned | P3 | The training memory log is opt-in, the dead compatibility fields are gone, and the four native wrappers share one base. |
 
@@ -273,43 +273,6 @@ publication.
 `src/haute/routes/_training_artifacts.py::_validate_evaluation_artifact_contents`;
 `src/haute/routes/_job_store.py::compare_and_publish_completion`;
 `src/haute/routes/_training_lifecycle.py`.
-
-### MOD-R04 — Fit parameters without hidden defaults
-**Why:** `TrainingJob` does not gate the Tweedie variance power: a direct
-`TrainingJob(loss_function="Tweedie")` without `variance_power` trains at 1.5
-for CatBoost (`resolve_loss_function` fills it in), XGBoost and LightGBM (a
-`None` parameter is dropped; probed), the library default the objective gate
-exists to refuse; only the config builder and the route gate it. CatBoost's
-`reserved_params` names only `thread_count` and `class_names`, so a
-`loss_function`, `objective`, `eval_metric` or `random_seed` typed into the
-Parameters JSON is accepted and silently overwritten by the node's loss, while
-every other family refuses `objective`; its early-stopping block pops a key the
-guarding `if` has shown absent. The contract writer guesses `Float64` for a
-feature missing from the dtype snapshot and for an empty target dtype, the
-fallback the specification forbids. `_build_pool` silently drops any requested
-feature absent from the frame and recomputes the categorical indices over the
-survivors, so the one function every CatBoost fit and diagnostic goes through
-can build a pool of the wrong width. `tweedie_deviance` requested on a model
-without a variance power is computed at a hard-coded 1.5 without saying so.
-
-**Plan:** Raise `HauteValidationError` in `TrainingJob.__init__` (or in each
-adapter) when the loss is Tweedie and the power is `None`, and drop the 1.5
-default; add the loss, objective, metric, seed and file-writing keys to
-CatBoost's `reserved_params`; raise for a feature missing from the snapshot or
-the frame; require a variance power whenever the metric is computed.
-
-**Acceptance:** A `TrainingJob` without a Tweedie power is refused for every
-family; a CatBoost `loss_function` in the Parameters JSON is refused by name;
-`_build_pool` raises naming a missing feature; `tweedie_deviance` without a
-power raises.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/modelling/_algorithms.py::resolve_loss_function`;
-`src/haute/modelling/_algorithms.py::_build_pool`;
-`src/haute/modelling/_descriptors.py`;
-`src/haute/modelling/_training_job.py::_feature_dtypes_for_contract`;
-`src/haute/modelling/_metrics.py::_tweedie_deviance`.
 
 ### MOD-R05 — Diagnostics measured as the fit was
 **Why:** The CatBoost `LossFunctionChange` importance is computed on a pool

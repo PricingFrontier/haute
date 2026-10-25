@@ -207,8 +207,25 @@ CATBOOST = AlgorithmDescriptor(
     ),
     allowed_params=None,
     # ``thread_count`` belongs to the allotment; ``class_names`` would reorder
-    # the probability columns away from the job's positive = 1 encoding.
-    reserved_params=frozenset({"thread_count", "class_names"}),
+    # the probability columns away from the job's positive = 1 encoding. The
+    # node's loss owns the loss, objective and metric, the job owns the seed, and
+    # Haute decides whether CatBoost writes training files: each is refused by
+    # name rather than silently overwritten.
+    reserved_params=frozenset(
+        {
+            "thread_count",
+            "class_names",
+            "loss_function",
+            "objective",
+            "eval_metric",
+            "random_seed",
+            "random_state",
+            "allow_writing_files",
+            "train_dir",
+            "save_snapshot",
+            "snapshot_file",
+        }
+    ),
     tuning_reserved_params=frozenset(
         {
             "allow_writing_files",

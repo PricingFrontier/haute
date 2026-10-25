@@ -211,7 +211,16 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   require an explicit canonical `evaluation`. A contract-dtype
   snapshot (`_contract_feature_dtypes`,
   `_contract_target_dtype`, `_contract_offset_dtype`) is populated inside `_prepare_data`
-  and consumed by `_save_artifacts` and `_log_to_mlflow`.
+  and consumed by `_save_artifacts` and `_log_to_mlflow`; a feature or target missing from it
+  raises `HauteValidationError` naming it, never a guessed `Float64`.
+  `TrainingJob.__init__` refuses a `Tweedie` loss without `variance_power` for every tree
+  family (before parameter validation) and, after it, a `tweedie_deviance` metric without a
+  variance power; a Tweedie GLM's `variance_power` defaults to its `var_power`.
+  `resolve_loss_function` raises for a Tweedie loss without a power, and `compute_metrics`
+  for a `tweedie_deviance` metric without one (`_tweedie_deviance` takes the power as a
+  required keyword). A CatBoost fit takes the job's seed as `random_seed` (`_fit_seed`: the
+  evaluation's seed, or 0 for a temporal plan or none), as the other families take it as
+  `seed`.
 - **Modelling-node algorithm config** — CatBoost constructor hyperparameters are the
   contents of top-level `params`, with CatBoost Tweedie power in top-level
   `variance_power`. The editor's starter `params` for a new CatBoost node include
@@ -256,6 +265,9 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   the final feature list, and accepts only canonical numeric contract dtypes
   (`Int64`/`Float64`). The resulting validated mapping is passed unchanged to
   CatBoost's feature-index translation.
+- **CatBoost pool width** — `_build_pool` raises `HauteValidationError` naming any
+  requested feature missing from the frame, so its categorical indices always describe the
+  features the model was asked to train on.
 - **CatBoost numeric array handoff** — `_build_pool` calls
   `_prepare_predict_frame(..., flavor="catboost")`, which returns a multi-column
   numeric Polars frame as a Fortran-contiguous `Float32` NumPy matrix and passes it

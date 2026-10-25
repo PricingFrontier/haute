@@ -510,7 +510,10 @@ model instead. Both are permanently closed off by making the builder the only pa
 objective: an unset Tweedie variance power, Negative Binomial `theta`, GLM terms,
 or elastic-net L1 ratio would otherwise fall through to a library default (variance power
 1.5, theta 1.0, an intercept-only design, pure ridge) that produces a real, trainable,
-plausible-looking model — just not the one the user intended. Cross-validation uses a
+plausible-looking model — just not the one the user intended. A `TrainingJob` built
+directly applies the same rule: a Tweedie loss without its variance power is refused for
+every family, and so is a `tweedie_deviance` metric (a Tweedie GLM measures at its own
+`var_power`), so nothing trains or measures at a library's 1.5. Cross-validation uses a
 fixed seed of 42 when older configurations have none, avoiding unseeded folds without
 requiring a user-facing seed control.
 `training_objective_issue` gates this identically at config-build time and at the
@@ -874,10 +877,14 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   `CrossEntropy`. CatBoost supports all of them except `Gamma` (CatBoost 1.2.10 has no Gamma
   loss). The GLM configures `family`/`link` instead and trains regression only: a binomial GLM
   predicts a probability, not a class label.
-- **Parameters.** CatBoost raw `params` are forwarded unchanged apart from `thread_count`,
-  which the thread allotment owns, and `class_names`, which would reorder the probability
-  columns away from the positive = 1 encoding; tuning search spaces still exclude CatBoost's
-  orchestration-owned keys, and a CatBoost fit whose classes are not the encoded `[0, 1]`
+- **Parameters.** CatBoost raw `params` are forwarded unchanged apart from the keys Haute
+  sets, which are refused by name rather than silently overwritten: `thread_count`, which the
+  thread allotment owns; `class_names`, which would reorder the probability columns away from
+  the positive = 1 encoding; the loss, objective and metric (`loss_function`, `objective`,
+  `eval_metric`), which the node's loss setting owns; the seed (`random_seed`,
+  `random_state`), which is the job's seed as for every family; and the training-file keys
+  (`allow_writing_files`, `train_dir`, `save_snapshot`, `snapshot_file`). Tuning search
+  spaces still exclude CatBoost's orchestration-owned keys, and a CatBoost fit whose classes are not the encoded `[0, 1]`
   fails. The GLM keeps its own configuration-key validation. A family with
   an allowlist rejects reserved keys, aliases, duplicate spellings, and unknown keys.
 - **Refits.** A round-refitting family feeds zero-based best iterations to
