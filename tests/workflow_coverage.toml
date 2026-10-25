@@ -857,7 +857,7 @@ tests = [
   "tests/test_mlflow_model_cache_key_contract.py::TestFastPathArtifactPerturbation::test_relogged_artifact_bytes_invalidate_in_process_cache",
   "tests/test_mlflow_model_cache_key_contract.py::TestFullPathArtifactPerturbation::test_latest_retrain_in_place_invalidates_cache",
   "tests/test_model_scorer.py::TestModelScorerScore::test_all_features_present_scores_successfully",
-  "tests/test_model_scorer.py::TestModelScorerScore::test_feature_contract_rejects_declared_categorical_level_drift",
+  "tests/test_model_scorer.py::TestModelScorerScore::test_feature_contract_scores_a_category_the_model_never_saw",
   "tests/test_model_scorer.py::TestValidateFeatures::test_missing_features_raises",
   "tests/test_model_scorer.py::TestBatchScoreToParquetEmpty::test_empty_input_produces_empty_parquet_regression",
   "tests/test_modelling.py::TestTrainingJob::test_offset_column",
@@ -869,9 +869,9 @@ tests = [
 invariant = "Configure, train, cancel, retry, persist, load and score run through the real lifecycle and a real CatBoost fit; a failed or cancelled run leaves the node startable again, owns no artifacts, and leaves the last completed run's job-owned artifacts intact until a newer run of the node supersedes them; empty input, target/weight validation, partition boundaries, non-finite metrics, stale model or cache identity and artifact mismatch each have their typed outcome; and the modelling panels switch without losing results."
 
 [scenarios.evidence]
-commit = "090a5003"
+commit = "c90c1bef4"
 command = 'uv run pytest tests/test_train_service_coverage.py tests/test_training_worker_protocol.py tests/test_train_config_builder.py tests/test_mlflow_io.py tests/test_mlflow_io_concurrency.py tests/test_mlflow_model_cache_key_contract.py tests/test_model_scorer.py tests/test_target_task_gate.py tests/test_training_evaluation.py tests/test_training_lorenz_nonfinite.py tests/test_modelling_export.py tests/test_offset_scoring.py "tests/test_modelling.py::TestCatBoostAlgorithm" "tests/test_modelling.py::TestTrainingJob" "tests/test_modelling_routes.py::TestTrainBackgroundLaunchFailures" -q -p no:warnings'
-result = "607 passed in 55.68s"
+result = "752 passed, 2 skipped in 109.48s"
 
 [[scenarios]]
 id = "W08-S03"
