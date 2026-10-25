@@ -3,8 +3,9 @@
 Seeds an EXISTING e2e project (the ``.tmp-e2e-project`` the browser harness
 scaffolds) with model files and their feature contracts under
 ``rating/files/models``, the folder Model Training's **Save model to file**
-writes. A spec then scores them through a file-sourced Model Scoring node
-without training in the browser. Every model trains through the same
+writes. ``frontend/e2e/model-scoring.spec.ts`` then scores them through a
+file-sourced Model Scoring node without training in the browser; the modelling
+journeys score the models they train themselves. Every model trains through the same
 ``build_training_job_kwargs`` -> ``TrainingJob`` path the editor uses, on rows
 shaped like the project's ``raw_rows`` sample (``proposer_age``, ``channel``,
 ``vehicle_age``, ``mileage``), with ``channel`` holding only ``direct`` and
@@ -13,7 +14,7 @@ shaped like the project's ``raw_rows`` sample (``proposer_age``, ``channel``,
 CLI (once per project reset; ``git clean`` between browser tests removes the
 models):
 
-    uv run python scripts/e2e_scoring_models.py --seed <project-dir> --models glm,catboost
+    uv run python scripts/e2e_scoring_models.py --seed <project-dir> --models glm,classifier
 
 Prints a JSON summary mapping each model name to its ``model_path`` relative
 to the pipeline directory (``rating``), as a Model Scoring node's file source
@@ -53,31 +54,9 @@ REGRESSION_CONFIGS: Mapping[str, Mapping[str, Any]] = {
             "mileage": {"type": "linear"},
         },
     },
-    "catboost": {"loss_function": "RMSE", "params": {"iterations": 30, "depth": 3}},
     "xgboost": {
         "loss_function": "RMSE",
         "params": {"num_boost_round": 20, "eta": 0.3, "max_depth": 3},
-    },
-    "lightgbm": {
-        "loss_function": "RMSE",
-        "params": {
-            "num_iterations": 20,
-            "learning_rate": 0.3,
-            "num_leaves": 7,
-            "min_data_in_leaf": 3,
-        },
-    },
-    "ebm": {"loss_function": "RMSE", "params": {"max_rounds": 40, "interactions": []}},
-    "tboost": {
-        "loss_function": "RMSE",
-        "params": {
-            "n_trees": 60,
-            "learning_rate": 0.3,
-            "n_bags": 1,
-            "prune": False,
-            "validation_fraction": None,
-        },
-        "evaluation": {**EVALUATION, "validation": {"method": "none"}},
     },
 }
 #: A binary CatBoost classifier for the probability column.
@@ -93,7 +72,7 @@ CLASSIFIER_CONFIG: Mapping[str, Any] = {
 
 
 def training_rows(n: int = 600, seed: int = 0) -> pl.DataFrame:
-    """Rows with the sample's columns and dtypes, enough for every family to fit."""
+    """Rows with the sample's columns and dtypes, enough for each model to fit."""
     rng = np.random.default_rng(seed)
     age = rng.integers(18, 80, n)
     channel = rng.choice(["direct", "broker"], n)

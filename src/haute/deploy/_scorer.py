@@ -575,10 +575,9 @@ def _assert_runtime_contract_matches(
     expected = _load_feature_contract_cached(contract_path)
     schema = lf.collect_schema()
     feature_types: dict[str, str] = {}
-    expected_feature_set = set(expected.features)
-    runtime_features = [name for name in schema.names() if name in expected_feature_set]
-    seen_runtime_features = set(runtime_features)
-    runtime_features.extend(name for name in expected.features if name not in seen_runtime_features)
+    # In the contract's own order: scoring selects the features by name, so the
+    # order the request's columns arrive in never matters.
+    runtime_features = list(expected.features)
     categorical_features: list[str] = []
     for name in expected.features:
         dtype = schema.get(name)

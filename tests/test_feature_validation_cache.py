@@ -9,8 +9,8 @@ Background
 
 ``_validate_features`` at ``src/haute/_model_scorer.py:81`` walks the
 model's expected feature list, checks presence against the input schema,
-checks categorical dtype compatibility, and enforces that the model's
-features appear in the same relative order as at training time.
+and checks categorical dtype compatibility. It never checks order: the
+usable features come back in the model's own order whatever the schema's.
 
 For the batch / preview hot path (thousands of ``score`` calls against
 the same model with the same input schema) this per-call validation is
@@ -255,14 +255,8 @@ class TestValidationCacheHitsAndMisses:
 
         assert spy.call_count == 1
 
-    def test_different_schema_order_is_miss(self) -> None:
-        """A warm cache must not hide feature-order mismatches.
-
-        CatBoost categorical feature indices are positional. The validation
-        worker enforces training feature order, so the cache key must include
-        schema order. If it does not, a valid first call can prime the cache
-        and a reversed second call incorrectly returns success.
-        """
+    def test_a_reordered_schema_validates_in_the_model_order(self) -> None:
+        """A reordered schema is a fresh entry, and its features come back in model order."""
         import haute._model_scorer as ms
 
         sm = _make_scoring_model(["region", "age"])
@@ -271,11 +265,12 @@ class TestValidationCacheHitsAndMisses:
         with patch.object(
             ms, "_validate_features_uncached", wraps=ms._validate_features_uncached
         ) as spy:
-            with pytest.raises(FeatureMismatchError) as exc_info:
-                _validate_features(sm, pl.Schema({"age": pl.Float64, "region": pl.Utf8}))
+            usable, missing = _validate_features(
+                sm, pl.Schema({"age": pl.Float64, "region": pl.Utf8})
+            )
 
         assert spy.call_count == 1
-        assert exc_info.value.context["actual"] == ["age", "region"]
+        assert (usable, missing) == (["region", "age"], [])
 
     def test_same_contract_new_instance_is_content_addressed_hit(self) -> None:
         """Two ``ScoringModel`` objects with an identical contract share an entry.

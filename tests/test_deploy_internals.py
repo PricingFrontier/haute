@@ -3153,13 +3153,12 @@ class TestScoreGraphModelScoreRemap:
 
         assert result["pred"].to_list() == [42.0]
 
-    def test_contract_only_model_score_rejects_runtime_feature_order_drift(
+    def test_contract_only_model_score_accepts_features_in_any_order(
         self,
         tmp_path,
     ):
-        """Bundled contract checks compare live feature order, not just names."""
+        """Scoring selects features by name, so a reordered request passes the contract."""
         from haute.deploy._scorer import score_graph
-        from haute.errors import FeatureMismatchError
         from haute.modelling._feature_contract import (
             CONTRACT_FILENAME,
             build_contract,
@@ -3186,7 +3185,31 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": _single_frame_api_input_config("region", label="src"),
+                            "config": _single_frame_api_input_config(
+                                "region",
+                                label="src",
+                                tables=[
+                                    {
+                                        "path": "$[:]",
+                                        "label": "src",
+                                        "emit": True,
+                                        "columns": [
+                                            {
+                                                "name": "region",
+                                                "path": "$[:].region",
+                                                "type": "str",
+                                                "selected": True,
+                                            },
+                                            {
+                                                "name": "age",
+                                                "path": "$[:].age",
+                                                "type": "int",
+                                                "selected": True,
+                                            },
+                                        ],
+                                    }
+                                ],
+                            ),
                         },
                     },
                     {
@@ -3221,7 +3244,8 @@ class TestScoreGraphModelScoreRemap:
             }
         )
 
-        with pytest.raises(FeatureMismatchError, match="features"):
+        # The contract matched (region before age is fine); only the missing model stops it.
+        with pytest.raises(RuntimeError, match="no bundled model artifact"):
             score_graph(
                 graph=graph,
                 input_df=pl.DataFrame({"region": ["north"], "age": [30]}),

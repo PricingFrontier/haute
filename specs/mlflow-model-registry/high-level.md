@@ -63,8 +63,8 @@ In scope:
   this component's own dispatch helpers.
 - Preparing an input DataFrame into the shape each flavor's `predict`
   expects (numpy/pandas dtype and categorical handling).
-- Feature-contract validation at score time: presence, relative order,
-  categorical dtype, plus enforcing a model's trained-with offset/exposure column. A
+- Feature-contract validation at score time: presence and categorical
+  dtype, plus enforcing a model's trained-with offset/exposure column. A
   categorical value is never checked: the model scores a value its training rows never
   held through its own mechanism.
 - Eager (in-memory) and batched (disk, chunked-parquet) scoring, and an
@@ -204,13 +204,13 @@ Out of scope (owned elsewhere):
   `CatBoostRegressor`, a RustyStats `GLMModel`, or an MLflow
   `PyFuncModel`.
 - Before a prediction is attempted, the input schema is checked against
-  the model's declared features: every feature must be present, in the
-  same relative order the model was trained with (categorical feature
-  indices are positional for CatBoost), with categorical columns
-  presented as non-numeric — and, if the model declares a trained-with
+  the model's declared features: every feature must be present, with
+  categorical columns presented as non-numeric — and, if the model declares a trained-with
   offset/exposure column, that column must also be present. Any of these failing raises
   before prediction runs; schema-validation results are memoised for repeated
-  model/schema pairs. A value the training rows never held, or a null they did not hold,
+  model/schema pairs. The order the input's columns arrive in never matters: every
+  scoring path selects the model's features by name, in the model's own order, before
+  predicting. A value the training rows never held, or a null they did not hold,
   is scored by the model's own mechanism and never refused (modelling high-level,
   "Unseen categorical values").
 - Scoring runs either eagerly (the input is collected once, in memory,
@@ -302,11 +302,11 @@ Out of scope (owned elsewhere):
   object, still gets a cache hit, and a genuinely evicted contract
   doesn't leave stale validation results pinned forever.
 - **Fail loud on structural mismatches.** CatBoost's categorical feature
-  indices and offset baseline are positional/structural, not named —
-  scoring with reordered features or a missing offset would silently
-  produce a wrong-but-plausible prediction rather than an error. The
-  codebase's stated preference for loud failure over silent fallback is
-  applied deliberately hard here: feature order, categorical dtype, and
+  indices and offset baseline are positional/structural, not named, so the
+  scorer hands every model its features selected by name in the model's own
+  order: a reordered input can never misalign them, and is never refused. A
+  missing feature or offset would silently produce a wrong-but-plausible
+  prediction rather than an error, so feature presence, categorical dtype, and
   offset presence are all checked before any `predict()` call, and a
   multiclass `predict_proba` output is rejected rather than arbitrarily
   picking one class's column.
@@ -415,7 +415,7 @@ Out of scope (owned elsewhere):
   corruption — they are never retried and propagate immediately with
   their real stack trace.
 - A scoring input that fails the feature contract (missing features,
-  wrong relative order, a categorical column with numeric dtype, or a missing offset
+  a categorical column with numeric dtype, or a missing offset
   column): `FeatureMismatchError` with the relevant expected/actual context. A categorical
   value is never such a failure.
 - An unsupported or misspelled scoring flavor reaching `score_frame()`:

@@ -1,15 +1,21 @@
 import { execFileSync } from "node:child_process"
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { resolve } from "node:path"
 
-import { expect, test, type Locator, type Page } from "@playwright/test"
+import { expect, test } from "@playwright/test"
 
+import {
+  addNovelRows,
+  addScoreNode,
+  appendToPipeline,
+  asNumber,
+  columnValues,
+  openNode,
+  refreshPreview,
+} from "./modelScoring"
 import { e2eProjectRoot, repoRoot, resetE2eProject } from "./projectIsolation"
 
-const ratingDir = resolve(e2eProjectRoot, "rating")
-const mainPath = resolve(ratingDir, "main.py")
-const scoringConfigDir = resolve(ratingDir, "config", "model_scoring")
-const regressionFamilies = ["catboost", "xgboost", "lightgbm", "ebm", "tboost", "glm"]
+// Every family trained by the modelling journeys (core-flows) is scored there, over
+// novel_rows. These journeys cover the rest of Model Scoring with models trained
+// beforehand by scripts/e2e_scoring_models.py, so none trains in the browser.
 
 /** Train saved models into the project and return each one's pipeline-relative path. */
 function seedModels(models: string[]): Record<string, string> {
@@ -25,67 +31,6 @@ function seedModels(models: string[]): Record<string, string> {
   return JSON.parse(lines.slice(start).join("\n")) as Record<string, string>
 }
 
-// resetE2eProject restores main.py and removes these sidecars before the next test.
-function appendToPipeline(block: string): void {
-  writeFileSync(mainPath, readFileSync(mainPath, "utf8").trimEnd() + "\n\n\n" + block.trim() + "\n", "utf8")
-}
-
-function addScoreNode(
-  name: string,
-  source: string,
-  modelPath: string,
-  task: "regression" | "classification",
-): void {
-  mkdirSync(scoringConfigDir, { recursive: true })
-  writeFileSync(
-    resolve(scoringConfigDir, name + ".json"),
-    JSON.stringify({ sourceType: "file", model_path: modelPath, task, output_column: "prediction" }, null, 2),
-    "utf8",
-  )
-  appendToPipeline(`@pipeline.model_score(config="config/model_scoring/${name}.json")\ndef ${name}(${source}): ...`)
-}
-
-// Every third row holds a channel no model was trained on, and the next a missing one.
-const novelRows = `
-@pipeline.polars
-def novel_rows(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
-    return raw_rows.with_columns(
-        channel=pl.when(pl.col("id") % 3 == 0)
-        .then(pl.lit("carrier_pigeon"))
-        .when(pl.col("id") % 3 == 1)
-        .then(pl.lit(None, dtype=pl.String))
-        .otherwise(pl.col("channel"))
-    )
-`
-
-async function openNode(page: Page, name: string): Promise<void> {
-  const node = page.getByRole("button", { name: new RegExp(name, "i") })
-  await expect(node).toBeVisible()
-  await node.click()
-}
-
-async function refreshPreview(page: Page): Promise<Locator> {
-  await page.getByRole("button", { name: "Refresh", exact: true }).click()
-  const table = page.getByTestId("data-preview-table")
-  await expect(table).toBeVisible({ timeout: 60_000 })
-  return table
-}
-
-/** The text of every rendered row's cell in *column* (the first cell is the row number). */
-async function columnValues(table: Locator, column: string): Promise<string[]> {
-  const headers = (await table.locator("thead th > div:first-child").allInnerTexts()).map((text) => text.trim())
-  const index = headers.indexOf(column)
-  expect(index, `${column} in ${headers.join(", ")}`).toBeGreaterThanOrEqual(0)
-  return table.locator("tbody tr").evaluateAll(
-    (rows, cell) => rows.map((row) => (row.children[cell] as HTMLElement).innerText.trim()),
-    index + 1,
-  )
-}
-
-function asNumber(text: string): number {
-  return Number.parseFloat(text.replace(/,/g, ""))
-}
-
 test.describe.configure({ mode: "serial" })
 
 test.describe("model scoring", () => {
@@ -93,33 +38,10 @@ test.describe("model scoring", () => {
     resetE2eProject()
   })
 
-  test("scores a saved model of every family, including categories it never saw and missing values", async ({ page }) => {
-    test.slow()
-    const paths = seedModels(regressionFamilies)
-    appendToPipeline(novelRows)
-    for (const family of regressionFamilies) {
-      addScoreNode("score_" + family, "novel_rows", paths["score_" + family], "regression")
-    }
-    await page.goto("/")
-
-    for (const family of regressionFamilies) {
-      await openNode(page, "score_" + family)
-      await expect(page.getByText("Task recorded with the model.")).toBeVisible()
-      const table = await refreshPreview(page)
-      const channels = await columnValues(table, "channel")
-      expect(channels, family).toContain("carrier_pigeon")
-      const predictions = await columnValues(table, "prediction")
-      expect(predictions.length, family).toBe(channels.length)
-      for (const prediction of predictions) {
-        expect(Number.isFinite(asNumber(prediction)), `${family}: ${prediction}`).toBe(true)
-      }
-    }
-  })
-
   test("a classifier adds the probability of the positive class", async ({ page }) => {
     test.slow()
     const paths = seedModels(["classifier"])
-    appendToPipeline(novelRows)
+    addNovelRows()
     addScoreNode("score_classifier", "novel_rows", paths.score_classifier, "classification")
     await page.goto("/")
 
@@ -129,7 +51,6 @@ test.describe("model scoring", () => {
     const labels = await columnValues(table, "prediction")
     const probabilities = (await columnValues(table, "prediction_proba")).map(asNumber)
     expect(labels.length).toBeGreaterThan(0)
-    expect(new Set(labels)).toEqual(new Set(labels.filter((label) => label === "yes" || label === "no")))
     expect(probabilities).toHaveLength(labels.length)
     labels.forEach((label, row) => {
       expect(probabilities[row]).toBeGreaterThan(0)

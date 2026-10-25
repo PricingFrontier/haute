@@ -91,9 +91,9 @@ what the model records is refused too. Run and registered models trained by an e
 Haute are scored with the contract the run logged beside the model.
 
 Scoring checks the input against the model's features before it runs: a missing feature,
-a missing offset column the model was trained with, features in a different order from
-training, or a numeric column where the model expects a categorical one fails with an error
-listing what is wrong, rather than predicting from mismatched data.
+a missing offset column the model was trained with, or a numeric column where the model
+expects a categorical one fails with an error listing what is wrong, rather than predicting
+from mismatched data. The order the input's columns arrive in does not matter.
 
 ### Values the model was not trained on
 

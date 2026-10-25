@@ -864,7 +864,7 @@ tests = [
   "tests/test_modelling_export.py::TestByteStableExportForExistingConfigs::test_clean_catboost_script_is_byte_stable",
   "frontend/src/panels/__tests__/PreviewPanelTabs.test.tsx::moves focus and activation with arrows, wrapping and skipping disabled tabs",
   "frontend/src/panels/__tests__/ModellingPreview.test.tsx::shows Loss tab when loss_history has data",
-  "frontend/e2e/core-flows.spec.ts::runs a real modelling training job, keeps results when switching panels, and saves the model to a file",
+  "frontend/e2e/core-flows.spec.ts::runs a real modelling training job, keeps results when switching panels, saves the model to a file, and scores it",
 ]
 invariant = "Configure, train, cancel, retry, persist, load and score run through the real lifecycle and a real CatBoost fit; a failed or cancelled run leaves the node startable again, owns no artifacts, and leaves the last completed run's job-owned artifacts intact until a newer run of the node supersedes them; empty input, target/weight validation, partition boundaries, non-finite metrics, stale model or cache identity and artifact mismatch each have their typed outcome; and the modelling panels switch without losing results."
 
@@ -895,9 +895,9 @@ tests = [
   "tests/test_lightgbm_family.py::test_fitting_with_the_offset_as_init_score_matches_an_independent_native_fit",
   "tests/test_ebm_family.py::test_selection_fits_see_training_rows_and_the_refit_development_rows",
   "tests/test_ebm_family.py::test_published_responses_match_the_staged_ebm_artifacts",
-  "frontend/e2e/core-flows.spec.ts::trains an XGBoost node and saves its model file",
-  "frontend/e2e/core-flows.spec.ts::trains a LightGBM node and saves its model file",
-  "frontend/e2e/core-flows.spec.ts::chooses an EBM interaction, trains it, and reads the interaction surface",
+  "frontend/e2e/core-flows.spec.ts::trains an XGBoost node, saves its model file, and scores it",
+  "frontend/e2e/core-flows.spec.ts::trains a LightGBM node, saves its model file, and scores it",
+  "frontend/e2e/core-flows.spec.ts::chooses an EBM interaction, trains it, reads the interaction surface, and scores it",
 ]
 invariant = "Every native family (CatBoost, XGBoost, LightGBM, EBM) trains, cancels, fails and retrains through the real service with a real fit; a cancelled or failed run publishes nothing and the last completed model still loads and scores; a cancelled native fit stops at its next progress report and saves nothing; eager, batched, pyfunc, deployed-graph and Model Score runtime scoring agree, an executed exported training script trains the same model as the canvas config, a prediction-only classifier still deploys its labels, labels follow probability above 0.5, and selected rounds, offsets and EBM row routing match independent native oracles."
 

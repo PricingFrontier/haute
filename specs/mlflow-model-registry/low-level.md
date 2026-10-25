@@ -862,11 +862,13 @@ endpoint.
   `_extract_pyfunc_features` reads `signature.inputs.input_names()`; Haute's
   MLflow dependency floor is 3.11 and no older list-shaped signature adapter
   is retained.
-- **Feature order is checked only relatively.** Extra columns elsewhere
-  in the input schema are fine; what's enforced is that the model's own
-  features appear in the schema in the same relative order they were
-  declared in training (`_validate_features_uncached`'s
-  `actual_order_by_position` check).
+- **Feature order is never checked.** `_validate_features_uncached` checks
+  presence and categorical dtype and returns the usable features in the model's
+  own order; every scoring path selects that list from the input before
+  predicting, so a GLM (whose RustyStats feature list is alphabetical) or any
+  other model scores input columns in whatever order they arrive. The deployed
+  contract check likewise rebuilds the live contract in the bundled contract's
+  feature order.
 - **The batch scorer's zero-row output dtype is derived from model metadata
   where available, never assumed from the task alone.** CatBoost classification
   uses `classes_` for hard labels and raises if that metadata is absent; other
