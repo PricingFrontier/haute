@@ -425,7 +425,16 @@ one): `_pin_staging_suffix` moves each `--endpoint-suffix` to it. It raises `Val
 production, or one holding anything but ASCII letters, digits, `-` and `_`, the characters a
 Databricks endpoint name takes, which also keeps the value inert in the generated YAML and
 shell.
-`ci_files(target, ci, workbench=..., python_version=..., staging_suffix=...)` returns exactly the files of the
+The production generators take `production_environment` (`[ci.production] environment`,
+`CIConfig.production_environment`, default empty): when it is set, GitHub's `deploy-production`
+job and GitLab's `deploy-production` job name it as their `environment`, and Azure DevOps'
+production deployment names it in place of `production`; when it is empty, the GitHub and
+GitLab jobs name no environment and Azure DevOps keeps `production`. `_production_environment`
+raises `ValueError` with `production_environment_problem`'s reason for a value that is not a
+string, or one that is not an ASCII letter or digit followed by up to 254 letters, digits,
+`-`, `_` and `.`, a name both providers accept that stays inert in the generated YAML.
+`staging_suffix_problem` likewise refuses a suffix that is not a string.
+`ci_files(target, ci, workbench=..., python_version=..., staging_suffix=..., production_environment=...)` returns exactly the files of the
 chosen `ci` value, path to content (`"none"` has none, an unknown provider raises), which
 `handle_init` and `haute ci update` both write through `write_generated_files`; on `--force`
 `handle_init` first calls
@@ -704,11 +713,12 @@ it on the reading node instead of aborting the walk, and every other run propaga
   strategy nests `env:` at 18 spaces (so keys need 20). `azure_devops_yml` calls the helper
   twice with different `indent` values for this reason — sharing one indent across both call
   sites would under-indent the production secrets block into unparseable YAML.
-- **Azure DevOps approval boundary.** The workflow's `environment: production`
-  block only names the environment; its approval check is configured in the
-  Azure DevOps portal, not emitted by `_scaffold.py`. A freshly scaffolded
-  project's production stage runs unapproved until an operator configures that
-  check out of band.
+- **Approval boundary.** A generated workflow only names an environment
+  (Azure DevOps always, `production` by default; GitHub and GitLab when
+  `[ci.production] environment` is set); its approval check is configured in
+  the provider, not emitted by `_scaffold.py`. A freshly scaffolded project's
+  production deploy runs unapproved until an operator configures that check,
+  and on GitHub or GitLab until the project also names the environment.
 
 ## Error handling
 

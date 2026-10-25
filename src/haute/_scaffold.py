@@ -234,8 +234,10 @@ _STAGING_SUFFIX_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
 _STAGING_SUFFIX_FLAG = '--endpoint-suffix "{}"'
 
 
-def staging_suffix_problem(suffix: str) -> str | None:
+def staging_suffix_problem(suffix: object) -> str | None:
     """Why *suffix* cannot name a staging deploy, or ``None`` when it can."""
+    if not isinstance(suffix, str):
+        return f"is {suffix!r}: a staging suffix must be a string"
     if not suffix:
         return (
             "is empty, so the staging deploy would deploy staging over production; "
@@ -258,6 +260,38 @@ def _pin_staging_suffix(text: str, staging_suffix: str) -> str:
         _STAGING_SUFFIX_FLAG.format(DEFAULT_STAGING_ENDPOINT_SUFFIX),
         _STAGING_SUFFIX_FLAG.format(staging_suffix),
     )
+
+
+# A name GitHub and GitLab both accept for an environment, inert in the generated YAML.
+_PRODUCTION_ENVIRONMENT_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}")
+
+# The environment Azure DevOps' production deployment runs under when none is named: a
+# deployment job always needs one there.
+_AZURE_PRODUCTION_ENVIRONMENT = "production"
+
+
+def production_environment_problem(name: object) -> str | None:
+    """Why *name* cannot name the production deploy's environment, or ``None`` when it can.
+
+    Empty names none: the GitHub and GitLab production jobs then run for whoever may start
+    them, which works on every plan.
+    """
+    if not isinstance(name, str):
+        return f"is {name!r}: an environment name must be a string"
+    if name and _PRODUCTION_ENVIRONMENT_PATTERN.fullmatch(name) is None:
+        return (
+            f"is {name!r}: an environment name may hold only ASCII letters, digits, '-', '_' "
+            "and '.', starting with a letter or digit, in at most 255 characters"
+        )
+    return None
+
+
+def _production_environment(name: str) -> str:
+    """*name*, checked to stand as the production job's ``environment``."""
+    problem = production_environment_problem(name)
+    if problem is not None:
+        raise ValueError(f"The production environment {problem}")
+    return name
 
 
 def _github_trigger_paths(workbench: bool) -> str:
@@ -737,17 +771,25 @@ jobs:
     )
 
 
-def github_deploy_prod_yml(target: str, *, python_version: str = DEFAULT_CI_PYTHON) -> str:
-    """:func:`_github_deploy_prod_yml` with every job's Python pinned to *python_version*."""
-    return _pin_ci_python(_github_deploy_prod_yml(target), python_version)
+def github_deploy_prod_yml(
+    target: str,
+    *,
+    python_version: str = DEFAULT_CI_PYTHON,
+    production_environment: str = "",
+) -> str:
+    """:func:`_github_deploy_prod_yml` on *python_version*, under *production_environment*."""
+    text = _github_deploy_prod_yml(target, _production_environment(production_environment))
+    return _pin_ci_python(text, python_version)
 
 
-def _github_deploy_prod_yml(target: str) -> str:
+def _github_deploy_prod_yml(target: str, environment: str) -> str:
     """Manual production deploy workflow for GitHub Actions.
 
     Triggered via the GitHub Actions UI (workflow_dispatch) after
-    reviewing the impact report from the deploy workflow.
-    Works on GitHub Free - no environment protection rules needed.
+    reviewing the impact report from the deploy workflow. Without an
+    *environment* it works on GitHub Free, which offers a private repository
+    no environments; with one, the job runs under it, so the reviewers
+    configured on it gate the deploy.
 
     Accepts a ``sha`` input so the deployer can pin the exact commit
     that was staged and impact-analysed.  The workflow verifies that the
@@ -758,6 +800,7 @@ def _github_deploy_prod_yml(target: str) -> str:
     release_tag = _release_tag_script(target, " " * 10)
     # A Databricks release tag reads the registered version from MLflow.
     tag_env = "" if target in _CONTAINER_BASED_TARGETS else f"        env:\n{secrets_env}\n"
+    environment_line = f"    environment: {environment}\n" if environment else ""
 
     return (
         _build_only_notice(target)
@@ -785,7 +828,7 @@ jobs:
   deploy-production:
     name: Deploy → Production
     runs-on: ubuntu-latest
-    timeout-minutes: {_deploy_timeout_minutes(target)}
+{environment_line}    timeout-minutes: {_deploy_timeout_minutes(target)}
     steps:
       - uses: actions/checkout@v4
       - name: Verify commit matches staged SHA
@@ -821,23 +864,28 @@ def gitlab_ci_yml(
     *,
     python_version: str = DEFAULT_CI_PYTHON,
     staging_suffix: str = DEFAULT_STAGING_ENDPOINT_SUFFIX,
+    production_environment: str = "",
 ) -> str:
-    """:func:`_gitlab_ci_yml` on *python_version*, its staging steps on *staging_suffix*."""
-    text = _pin_ci_python(_gitlab_ci_yml(target), python_version)
-    return _pin_staging_suffix(text, staging_suffix)
+    """:func:`_gitlab_ci_yml` on *python_version* and *staging_suffix*, production under
+    *production_environment*."""
+    text = _gitlab_ci_yml(target, _production_environment(production_environment))
+    return _pin_staging_suffix(_pin_ci_python(text, python_version), staging_suffix)
 
 
-def _gitlab_ci_yml(target: str) -> str:
+def _gitlab_ci_yml(target: str, environment: str) -> str:
     """Combined CI + deploy pipeline for GitLab CI/CD.
 
     Uses GitLab stages to enforce ordering.  The ``deploy-production``
-    job uses ``when: manual`` so a reviewer must click to approve.
+    job uses ``when: manual``, so someone who may run it must click to
+    deploy; with an *environment* the job runs under it, so a protected
+    environment's approvers gate it.
 
     Credentials are only available in deploy/smoke/impact/production
     jobs (protected-branch jobs), not in the MR validation job.
     """
     secrets_env = _gitlab_secrets_env(target)
     release_tag = _release_tag_script(target, " " * 6)
+    environment_line = f"  environment: {environment}\n" if environment else ""
     verify = target not in BUILD_AND_PUSH_ONLY_TARGETS
     verification_stages = "  - smoke-test\n  - impact-analysis\n" if verify else ""
     verification_jobs = (
@@ -919,7 +967,7 @@ deploy-staging:
 {verification_jobs}# ── Production (manual approval) ─────────────────────────────
 deploy-production:
   stage: deploy-production
-  timeout: {_deploy_timeout_minutes(target)} minutes
+{environment_line}  timeout: {_deploy_timeout_minutes(target)} minutes
   resource_group: deploy
   variables:
 {secrets_env}
@@ -944,18 +992,21 @@ def azure_devops_yml(
     workbench: bool = False,
     python_version: str = DEFAULT_CI_PYTHON,
     staging_suffix: str = DEFAULT_STAGING_ENDPOINT_SUFFIX,
+    production_environment: str = "",
 ) -> str:
-    """:func:`_azure_devops_yml` on *python_version*, its staging steps on *staging_suffix*."""
-    text = _pin_ci_python(_azure_devops_yml(target, workbench=workbench), python_version)
-    return _pin_staging_suffix(text, staging_suffix)
+    """:func:`_azure_devops_yml` on *python_version* and *staging_suffix*, production under
+    *production_environment*, ``production`` when it is empty."""
+    environment = _production_environment(production_environment) or _AZURE_PRODUCTION_ENVIRONMENT
+    text = _azure_devops_yml(target, workbench=workbench, environment=environment)
+    return _pin_staging_suffix(_pin_ci_python(text, python_version), staging_suffix)
 
 
-def _azure_devops_yml(target: str, *, workbench: bool = False) -> str:
+def _azure_devops_yml(target: str, *, workbench: bool = False, environment: str) -> str:
     """Combined CI + deploy pipeline for Azure DevOps.
 
     Uses stages to enforce ordering.  The ``DeployProduction`` stage
-    uses an Environment with approval checks so a reviewer must approve
-    before production deployment proceeds.
+    runs under *environment*, whose approval checks, configured in the
+    portal, make a reviewer approve before production deployment proceeds.
 
     Credentials are read from an Azure DevOps variable group named
     ``haute-credentials`` - the env var names are identical to other
@@ -1153,7 +1204,7 @@ stages:
         timeoutInMinutes: {_deploy_timeout_minutes(target)}
         pool:
           vmImage: ubuntu-latest
-        environment: production
+        environment: {environment}
         strategy:
           runOnce:
             deploy:
@@ -1188,13 +1239,15 @@ def ci_files(
     workbench: bool = False,
     python_version: str = DEFAULT_CI_PYTHON,
     staging_suffix: str = DEFAULT_STAGING_ENDPOINT_SUFFIX,
+    production_environment: str = "",
 ) -> dict[str, str]:
     """The CI files ``haute init`` and ``haute ci update`` write for *ci*: path -> content.
 
     Paths are relative to the project root, in the order they are reported; ``"none"``
-    has no files. Every job runs *python_version*, the project's Python, and the staging
+    has no files. Every job runs *python_version*, the project's Python; the staging
     deploy, smoke and impact steps pass *staging_suffix*, its ``[ci.staging]
-    endpoint_suffix``.
+    endpoint_suffix``; and the production job runs under *production_environment*, its
+    ``[ci.production] environment``, when it names one.
     """
     if ci == "github":
         return {
@@ -1206,13 +1259,18 @@ def ci_files(
                 staging_suffix=staging_suffix,
             ),
             ".github/workflows/deploy-production.yml": github_deploy_prod_yml(
-                target, python_version=python_version
+                target,
+                python_version=python_version,
+                production_environment=production_environment,
             ),
         }
     if ci == "gitlab":
         return {
             ".gitlab-ci.yml": gitlab_ci_yml(
-                target, python_version=python_version, staging_suffix=staging_suffix
+                target,
+                python_version=python_version,
+                staging_suffix=staging_suffix,
+                production_environment=production_environment,
             )
         }
     if ci == "azure-devops":
@@ -1222,6 +1280,7 @@ def ci_files(
                 workbench=workbench,
                 python_version=python_version,
                 staging_suffix=staging_suffix,
+                production_environment=production_environment,
             )
         }
     if ci == "none":

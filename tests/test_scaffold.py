@@ -1377,6 +1377,40 @@ class TestCiFiles:
         with pytest.raises(ValueError, match="staging suffix"):
             ci_files("databricks", "github", staging_suffix=suffix)
 
+    @staticmethod
+    def _production_job(ci: str, files: dict[str, str]) -> dict:
+        if ci == "github":
+            workflow = yaml.safe_load(files[".github/workflows/deploy-production.yml"])
+            return workflow["jobs"]["deploy-production"]
+        if ci == "gitlab":
+            return yaml.safe_load(files[".gitlab-ci.yml"])["deploy-production"]
+        stages = yaml.safe_load(files["azure-pipelines.yml"])["stages"]
+        return next(stage for stage in stages if stage["stage"] == "DeployProduction")["jobs"][0]
+
+    @pytest.mark.parametrize("ci", ["github", "gitlab", "azure-devops"])
+    def test_production_runs_under_the_named_environment(self, ci: str) -> None:
+        files = ci_files("databricks", ci, production_environment="production-approval")
+
+        assert self._production_job(ci, files)["environment"] == "production-approval"
+
+    @pytest.mark.parametrize(
+        ("ci", "expected"), [("github", None), ("gitlab", None), ("azure-devops", "production")]
+    )
+    def test_without_a_named_environment_production_needs_none(
+        self, ci: str, expected: str | None
+    ) -> None:
+        """A free GitHub plan has no environments for a private repository, so none is named."""
+        job = self._production_job(ci, ci_files("databricks", ci))
+
+        assert job.get("environment") == expected
+
+    @pytest.mark.parametrize(
+        "name", ["prod approval", "-prod", "prod:x", 'p" && x', "p\nx", "x" * 256, "prodé"]
+    )
+    def test_an_environment_name_the_providers_cannot_take_is_refused(self, name: str) -> None:
+        with pytest.raises(ValueError, match="environment"):
+            ci_files("databricks", "github", production_environment=name)
+
     def test_the_secrets_and_their_placeholders(self) -> None:
         assert ci_secret_names("databricks") == [
             "DATABRICKS_MLFLOW_HOST",

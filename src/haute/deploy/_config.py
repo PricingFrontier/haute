@@ -157,6 +157,9 @@ class CIConfig:
     staging_endpoint_suffix: str = DEFAULT_STAGING_ENDPOINT_SUFFIX
     staging_endpoint_url: str = ""
     production_endpoint_url: str = ""
+    # The environment the generated production job runs under, whose reviewers gate it;
+    # empty names none, which works on every plan (``haute._scaffold.ci_files``).
+    production_environment: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +199,7 @@ _VALID_TOML_SCHEMA: dict[str, set[str] | dict[str, set[str]]] = {
     "ci": {
         "_self": {"provider"},
         "staging": {"endpoint_suffix", "endpoint_url"},
-        "production": {"endpoint_url"},
+        "production": {"endpoint_url", "environment"},
     },
     "server": {"host"},
     "assistant": {
@@ -391,6 +394,7 @@ class DeployConfig:
             ),
             staging_endpoint_url=ci_staging.get("endpoint_url", ""),
             production_endpoint_url=ci_raw.get("production", {}).get("endpoint_url", ""),
+            production_environment=ci_raw.get("production", {}).get("environment", ""),
         )
 
         config = cls(

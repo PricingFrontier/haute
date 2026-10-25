@@ -261,18 +261,25 @@ def test_update_follows_a_change_of_provider(runner, project: Path) -> None:
     assert not (project / ".github").exists()
 
 
-def _set_staging_suffix(project: Path, suffix: str) -> None:
+def _set_staging_suffix(project: Path, toml_value: str) -> None:
     toml = project / "haute.toml"
     text = toml.read_text(encoding="utf-8")
     assert 'endpoint_suffix = "-staging"' in text
     toml.write_text(
-        text.replace('endpoint_suffix = "-staging"', f'endpoint_suffix = "{suffix}"'),
+        text.replace('endpoint_suffix = "-staging"', f"endpoint_suffix = {toml_value}"),
         encoding="utf-8",
     )
 
 
+def _set_production_environment(project: Path, toml_value: str) -> None:
+    toml = project / "haute.toml"
+    text = toml.read_text(encoding="utf-8")
+    assert "[ci.production]" not in text
+    toml.write_text(f"{text}\n[ci.production]\nenvironment = {toml_value}\n", encoding="utf-8")
+
+
 def test_update_passes_the_recorded_staging_suffix(runner, project: Path) -> None:
-    _set_staging_suffix(project, "-stg")
+    _set_staging_suffix(project, '"-stg"')
 
     result = runner.invoke(cli, ["ci", "update"])
 
@@ -282,19 +289,54 @@ def test_update_passes_the_recorded_staging_suffix(runner, project: Path) -> Non
     assert '--endpoint-suffix "-staging"' not in staging
 
 
+@pytest.mark.parametrize(
+    ("toml_value", "reason"),
+    [('""', "would deploy staging over production"), ("1", "must be a string")],
+)
 def test_update_refuses_a_staging_suffix_that_cannot_name_an_endpoint(
-    runner, project: Path
+    runner, project: Path, toml_value: str, reason: str
 ) -> None:
     staging = project / ".github" / "workflows" / "deploy-staging.yml"
     staging.write_text("name: edited\n", encoding="utf-8")
-    _set_staging_suffix(project, "")
+    _set_staging_suffix(project, toml_value)
 
     result = runner.invoke(cli, ["ci", "update"])
 
     assert result.exit_code == 1
     assert "[ci.staging] endpoint_suffix" in result.output
-    assert "would deploy staging over production" in result.output
+    assert reason in result.output
     assert staging.read_text(encoding="utf-8") == "name: edited\n"
+
+
+def test_update_puts_production_under_the_recorded_environment(runner, project: Path) -> None:
+    import yaml
+
+    _set_production_environment(project, '"production"')
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 0, result.output
+    production = project / ".github" / "workflows" / "deploy-production.yml"
+    workflow = yaml.safe_load(production.read_text(encoding="utf-8"))
+    assert workflow["jobs"]["deploy-production"]["environment"] == "production"
+
+
+@pytest.mark.parametrize(
+    ("toml_value", "reason"), [('"prod approval"', "may hold only"), ("true", "must be a string")]
+)
+def test_update_refuses_an_environment_the_providers_cannot_take(
+    runner, project: Path, toml_value: str, reason: str
+) -> None:
+    production = project / ".github" / "workflows" / "deploy-production.yml"
+    production.write_text("name: edited\n", encoding="utf-8")
+    _set_production_environment(project, toml_value)
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 1
+    assert "[ci.production] environment" in result.output
+    assert reason in result.output
+    assert production.read_text(encoding="utf-8") == "name: edited\n"
 
 
 def test_update_outside_a_project_fails(runner, tmp_path: Path, monkeypatch) -> None:

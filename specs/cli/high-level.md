@@ -76,8 +76,9 @@ Out of scope, owned elsewhere:
   project's GitHub repository from `.env`, after checking Databricks accepts them; `--check`
   reports which are set. On GitLab and Azure DevOps it names the secrets to add by hand.
 - `haute ci update` rewrites the CI files `haute init` generated, and `.env.example`, for the
-  installed Haute and the project's `[ci]` table, so a project takes up fixed workflows, or a
-  changed `[ci.staging] endpoint_suffix`, without being initialised again.
+  installed Haute and the project's `[ci]` table, so a project takes up fixed workflows, a
+  changed `[ci.staging] endpoint_suffix`, or a `[ci.production] environment` whose reviewers
+  then gate production, without being initialised again.
 - `haute smoke [--endpoint-suffix]` sends each test quote in `tests/quotes/` to a live
   serving endpoint as a request of its own, as a pipeline reading one quote per request takes it, and
   holds each quote with an `expected` output to it as the deploy check does, walked into a

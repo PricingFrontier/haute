@@ -243,11 +243,17 @@ by hand, so those checks would test the old service. The production job tags the
 Databricks as `deploy/v<registered model version>`; a container-based target, which has no
 registered version, as `deploy/<short commit>` (the commit its image tag carries), leaving an
 existing tag in place when the same commit is deployed again. GitHub uses
-a separate `workflow_dispatch`-triggered workflow (so the split works without GitHub
-Team/Enterprise environment protection rules); GitLab uses `when: manual` on the production
-job; Azure DevOps runs the production job as a `deployment` under an `environment: production`
-block, whose actual approval check is configured on that environment in the Azure DevOps
-portal rather than in the generated YAML. Re-running `haute init --force` with a different
+a separate `workflow_dispatch`-triggered workflow; GitLab uses `when: manual` on the production
+job; Azure DevOps runs the production job as a `deployment` under an environment, `production`
+unless `haute.toml` names another, whose actual approval check is configured on that
+environment in the Azure DevOps portal rather than in the generated YAML. As generated, a
+GitHub or GitLab production deploy runs for whoever may start that workflow or play that job,
+which works on every plan, a free GitHub plan included. A team that wants a reviewer to approve
+production names an environment in `[ci.production] environment`; `haute ci update` then puts
+the GitHub and GitLab production jobs under it, so the reviewers configured on it in the
+provider gate the deploy. Where the plan offers them: GitHub gives required reviewers to a
+private repository only on GitHub Enterprise, and GitLab's protected environments need Premium.
+Re-running `haute init --force` with a different
 `--ci` prunes the previously-chosen provider's workflow files before writing the new ones, so
 switching providers doesn't leave orphaned config behind.
 
