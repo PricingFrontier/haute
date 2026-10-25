@@ -17,6 +17,8 @@ These packages come from the
 | FNED-R01 | Planned | P2 | An editor writes only what the engine reads, shows values as the engine will match them, resolves a registered alias's version, flags only the conflicts the save refuses, and refuses a non-integer step count instead of coercing it. |
 | FNED-R02 | Planned | P2 | Every text control goes through the committed-input kit, so a value changed by undo, redo or a document broadcast is shown, no field commits per keystroke, and every request failure shows the server's detail. |
 | FNED-R03 | Planned | P3 | The pickers, cards and grouping helpers written twice exist once, and the vestigial `errorLine` prop and the dead exports are gone. |
+| FNED-R04 | Planned | P2 | A banding rule the sidecar writer refuses is marked in the grid and refused by the save validator with a 400, a typed relativity that does not parse is refused rather than replaced, and the step builder's argument controls refuse what the renderer refuses with a visible message. |
+| FNED-R05 | Planned | P3 | The step builder's open card follows its step through undo, the pivot editor carries no unknown keys the backend refuses, the two banding grids, the two rating grids, the params pickers and the zone cards exist once, and the internal-only exports are un-exported. |
 
 ## Planned improvements
 
@@ -133,3 +135,94 @@ dependency.
 `frontend/src/panels/editors/jsonpath.ts`;
 `frontend/src/panels/editors/outputMappingSchema.ts`;
 `frontend/src/panels/editors/outputPathTools.ts`.
+
+### FNED-R04 — What the grids let through, the save refuses with a reason
+**Why:** The banding grids leave three rule states unmarked that the save
+validator accepts but the sidecar writer refuses: a breakpoint row with a blank
+Band name (what "Add" creates), a categorical row with a blank Value or Maps To
+(what "Add manually" creates), and a repeated categorical Value. The writer's
+`ConfigSettingError` is a `HauteValidationError` with no HTTP handler, and the
+save's only enclosing handler rolls back and re-raises, so Save fails with a 500
+whose reason reaches only the server log, against the specification's "refused
+with a 400 naming the node and the setting, before anything is written"
+(validator-versus-writer split probed; the 500 traced statically). A typed
+rating relativity is parsed with `parseFloat` and anything unparseable is
+silently replaced by the table default (`1,5` writes 1, `abc` writes 1.0) while
+the paste path uses strict `Number` and refuses with a toast. The step builder's
+`integer` arguments have no minimum, so `-1` is committed and refused only by the
+render; the formula parser accepts negative and fractional integers the same
+way; a date `format` typed without `%` is thrown away with no message; a
+quantile above 1 is clamped to 1 silently; and a Change-types entry keeps a
+`format` the form then hides when the column's type stops being text, so the run
+fails with "remove the format" while the control to remove it is not shown.
+
+**Plan:** Have `validate_banding_config` run the writer's row checks so the
+refusal is the documented 400, mark the offending row inline in both grids, and
+give `HauteValidationError` a 400 handler so a writer refusal can never be a
+500; parse typed relativities with the paste path's strict parser and mark the
+cell invalid; `min={0}` on integer arguments and a `FormulaError` for a negative
+or fractional integer literal; a visible refusal for a `%`-less format and a
+`max` on the quantile field; show the Format field whenever a format is set or
+strip it when the schema says the column is not text.
+
+**Acceptance:** Saving a banding node with a blank Band name is answered 400
+naming the node and the row, and the row is marked before the save; typing
+`1,5` into a relativity cell shows an invalid mark and writes nothing; `-1`
+decimal places, a `%`-less format and a quantile of 1.5 each show a message;
+a Change-types entry with a stale format shows its Format field.
+
+**Dependencies:** `API-R06` adds the application handlers for client errors.
+
+**Evidence:** `frontend/src/panels/editors/banding/BreakpointGrid.tsx`;
+`frontend/src/panels/editors/banding/BandingRulesGrid.tsx`;
+`src/haute/_rating.py::validate_banding_config`;
+`src/haute/_banding_config.py::compact_banding_config_for_sidecar`;
+`src/haute/_validation_error.py::ConfigSettingError`;
+`frontend/src/panels/editors/rating/TwoWayGrid.tsx`;
+`frontend/src/panels/editors/rating/OneWayEditor.tsx`;
+`frontend/src/panels/editors/polarsSteps/forms.tsx`;
+`frontend/src/panels/editors/polarsSteps/fields.tsx`;
+`frontend/src/panels/editors/polarsSteps/formula.ts`.
+
+### FNED-R05 — Positions, passthroughs and copies in the editor subdirectories
+**Why:** The step builder holds its open card and pointed step as positions,
+adjusted only by its own moves and deletes, so an undo that re-inserts an
+earlier step opens a different step's form in place of the one being edited.
+`futurePlacementFields` carries unknown pivot placement keys through every move
+while the backend validator refuses any key outside its known set, a
+forward-compatibility branch the canonical-only policy forbids and a frontend
+specification sentence that contradicts the backend's rule. The two banding
+grids each carry a copy of the header recogniser, pasted-range applier, TSV
+builder and cell-paste handler; the one-way and two-way rating grids
+re-implement the same selection state machine and copy handler; Banding's Import
+from params and the Workbench's Allowed values each own the params-folder
+listing and header cache; the formula card and the field card in a pivot zone
+repeat the draggable-card scaffolding; two private dtype classifiers re-implement
+the shared `castFamily`; twenty-odd exports are referenced only inside their own
+module. The numeric Generate dialog suggests a step of 1 for any range below 10,
+so rates and factors get a single band; the aggregation column box and the type
+select offer two different type lists.
+
+**Plan:** Hold the open and pointed steps by id; delete the passthrough and the
+specification sentence (or make the backend carry unknown keys); one grid
+clipboard hook, one cell-selection hook, one params-files hook, one placement
+card, `castFamily` everywhere; un-export the internal symbols; a
+magnitude-aware suggested step; one type list.
+
+**Acceptance:** Undo while a card is open keeps that card's form; a placement
+with an unknown key is refused by the editor as by the backend; jscpd reports
+none of the pairs; knip reports none of the exports; a range of 0.2–0.9 suggests
+about ten bands.
+
+**Dependencies:** `EDA-R02` requires the defaulted card fields on the backend.
+
+**Evidence:** `frontend/src/panels/editors/polarsSteps/PolarsStepsEditor.tsx`;
+`frontend/src/panels/editors/explorePivots/placements.ts::futurePlacementFields`;
+`frontend/src/panels/editors/banding/BreakpointGrid.tsx`;
+`frontend/src/panels/editors/banding/BandingRulesGrid.tsx`;
+`frontend/src/panels/editors/rating/TwoWayGrid.tsx`;
+`frontend/src/panels/editors/banding/ImportParamValues.tsx`;
+`frontend/src/workbench/schema/AllowedField.tsx`;
+`frontend/src/panels/editors/explorePivots/ZoneSection.tsx`;
+`frontend/src/panels/editors/banding/GenerateBandsDialog.tsx`;
+`frontend/src/utils/polarsDtypes.ts`.

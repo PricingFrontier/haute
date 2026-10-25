@@ -75,9 +75,9 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 - The assistant-core reviewer read the assistant low-level specification's core
   sections and left the tool and op sections to the tools reviewer; the loop's
   tool-summary wording was not checked against the specification.
-- Areas whose findings are not yet in this report are in review: the node
-  editors' subdirectories, the panels, the canvas, the workbench and the app
-  shell; the tests, scripts and CI as code.
+- Areas whose findings are not yet in this report are in review: the optimiser
+  and Explore panels, the trace, git and assistant UI, the workbench UI, the app
+  shell and canvas; the tests, scripts and CI as code.
 
 ## Coverage and findings so far
 
@@ -103,8 +103,11 @@ tracks it. It owns no work; the component roadmaps carry the plans.
 | Frontend node editors, top-level files (45 files) | reviewer, verified | every owned file in full except `CodeMirrorEditor.tsx` lines 1-235 (grep) | 0 / 0 / 16 / 1 |
 | Frontend hooks and utilities (36 hooks, 78 utilities; the sheet-visibility mirror compared rule by rule with the server) | reviewer, verified | every owned file in full | 0 / 1 / 13 / 4 |
 
-Three hundred findings so far: two Critical, thirty-seven Major, two hundred and
-thirteen Minor and forty-eight Suggestions. Both Criticals and every Major are confirmed at source by the
+| Frontend node editors, subdirectories (banding, rating, Polars steps, Explore pivots, shared; 43 files) | reviewer, verified; the validator-versus-writer probe rerun | every owned file in full | 0 / 1 / 11 / 3 |
+| Frontend modelling panels (training configuration, results workspace, export) | reviewer, verified | every owned file in full except the stylesheet | 0 / 3 / 8 / 4 |
+
+Three hundred and thirty findings so far: two Critical, forty-one Major, two
+hundred and thirty-two Minor and fifty-five Suggestions. Both Criticals and every Major are confirmed at source by the
 main session; the Minors and Suggestions were read at source or accepted on
 quoted evidence as the verification table records.
 
@@ -214,6 +217,13 @@ quoted evidence as the verification table records.
   and the undo history** (Major, `FSH-R05`): the save stores no document
   fingerprint, so the resync is answered with a full document the client takes
   for an external change.
+- **A banding rule the grid leaves unmarked fails the save with a 500** (Major,
+  `FNED-R04`): the save validator accepts a blank band name, a blank categorical
+  value or a repeated value, the sidecar writer refuses them, and the writer's
+  error has no HTTP handler.
+- **The Train pane's VRAM figure is rescaled from the wrong row basis, the Lift
+  tab's Gini is recomputed in the browser, and the Gamma GLM family writes the
+  wrong default metric** (three Majors, `FMOU-R01`, `FMOU-R02`).
 - **Ctrl+S with the cursor in a code box saves without the last keystrokes**
   (Major, `FSH-R07`): the save helper blurs only text fields, the code editor's
   debounced commit flushes only on blur, and the toolbar shows "Saved" while the
@@ -341,6 +351,11 @@ production:
 | Frontend shared | FSB-1, FSB-2, FSB-10, FSB-12, FSB-15 | `FSH-R07` |
 | Frontend shared | FSB-3, FSB-4, FSB-5, FSB-6, FSB-9, FSB-13, FSB-14, FSB-16, FSB-17, FSB-18 | `FSH-R08` |
 | Frontend shared | FSB-7, FSB-8, FSB-11 | `FSH-R09` |
+| Frontend node editors | FNB-1, FNB-2, FNB-3, FNB-5, FNB-13 | `FNED-R04` |
+| Frontend node editors | FNB-4, FNB-6, FNB-7, FNB-8, FNB-9, FNB-10, FNB-11, FNB-12, FNB-14, FNB-15 | `FNED-R05` |
+| Frontend modelling | FMD-1, FMD-2, FMD-4, FMD-5, FMD-12 | `FMOU-R01` |
+| Frontend modelling | FMD-3, FMD-6 | `FMOU-R02` |
+| Frontend modelling | FMD-7, FMD-8, FMD-9, FMD-10, FMD-11, FMD-13, FMD-14, FMD-15 | `FMOU-R03` |
 | Sandbox security | PM-42 | `SBX-R04` |
 | Workbench | PM-44 | `WB-33` |
 | Workbench | PM-45 | `WB-34` |
@@ -395,7 +410,12 @@ editor's `coalesce` (`JSON-R03`), the API Input label rule (`NAME-09`) and the
 contract path no editor sets (`DEP-R07`, `MSC-08`); the dead
 `submodelGraphFromMetadata` and two dead duplicate exports in the hooks and
 utilities (`ENGQ-R01`), and the sheet-visibility fault on an output condition
-(`WB-29`).
+(`WB-29`); Banding's `_id` and the step error string inside the config
+(`PCFG-R08`), the editors' barrels (`ENGQ-R01`), the pivot editor writing the
+fields the backend defaults (`EDA-R02`); the panel half of the GPU loss-history
+numbering and the GLM `best_iteration` (`MOD-R05`), the offset help text, the
+tuned-refit wording and the t-boost starters (`BUG-28`, `BUG-29`, `BUG-30`), and
+a second fabricated train-failure sentinel (`FSH-R06`).
 
 ## Verdicts that changed or stayed open
 
@@ -464,6 +484,9 @@ All probes live outside the repository and wrote nothing into it.
 | tz-aware pivot member | A member `2020-06-01T10:00:00+01:00` restored to an aware `datetime` compares against a `Datetime('μs', 'Europe/London')` column with `SchemaError`; a UTC column and a nanosecond column each match their row. |
 | client paths | Every `/api/...` literal in `frontend/src/api/*.ts` has a server route with the same method and body fields; eight server routes have no browser caller. |
 | formatter boundaries | `formatNumber(999999)` is "1000.0K", `formatBytes(1048575)` is "1024.0 KB"; `(1234.5).toLocaleString("de-DE")` is "1.234,5"; `Date.UTC(99, 0, 1)` reads as 1999. |
+| banding validator versus writer | A breakpoint rule with a blank label passes `validate_banding_config` and `compact_banding_config_for_sidecar` raises `ConfigSettingError`, a `HauteValidationError` with no HTTP handler. |
+| browser Gini | The browser's trapezoid Gini over the 200-point downsampled Lorenz curve differs from the server's tie-aggregated Gini by about 1.2e-4 at n = 2,000, 20,000 and 200,000. |
+| percent display | `0.29 * 100` is `28.999999999999996`; 0.07, 0.14, 0.57 and 0.58 likewise; 0.20, 0.25 and 0.30 are exact. |
 | price-contour column order | `solve`, `apply_from_grid` and the quote-results schema emit `optimal_<c>` in config order; `ApplyOptimiser.apply` in sorted order, so both haute schemas match their own library path (no finding). |
 
 ## Mechanical metrics
