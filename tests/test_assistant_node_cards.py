@@ -149,6 +149,10 @@ def _log_model_run(project: Path, fixture: dict[str, Any]) -> str:
     import mlflow
     from catboost import CatBoostRegressor
 
+    from haute._polars_dtypes import contract_dtype_name
+    from haute.modelling._feature_contract import build_contract, save_contract
+    from haute.modelling._training_job import model_contract_filename
+
     run = fixture["model_run"]
     rows = fixture["frames"][run["frame"]]["rows"]
     features = pl.DataFrame(rows).select(run["features"])
@@ -166,9 +170,28 @@ def _log_model_run(project: Path, fixture: dict[str, Any]) -> str:
     model_path = project / "trained" / run["artifact"]
     model_path.parent.mkdir()
     model.save_model(str(model_path))
+    # Logged beside the model, as training logs it: a run's model scores under it.
+    contract_path = model_path.with_name(model_contract_filename(model_path.stem))
+    save_contract(
+        build_contract(
+            features=list(features.columns),
+            feature_types={
+                name: contract_dtype_name(dtype, column=name)
+                for name, dtype in features.schema.items()
+            },
+            categorical_features=[
+                name for name, dtype in features.schema.items() if dtype == pl.String
+            ],
+            target_name="target",
+            target_type="Float64",
+            task="regression",
+        ),
+        contract_path,
+    )
     client = mlflow.MlflowClient(tracking_uri=(project / "mlruns").as_uri())
     run_id = client.create_run(client.create_experiment("node_cards")).info.run_id
     client.log_artifact(run_id, str(model_path))
+    client.log_artifact(run_id, str(contract_path))
     client.set_terminated(run_id)
     return run_id
 
