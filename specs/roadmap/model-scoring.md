@@ -44,6 +44,7 @@ file defaults to a family.
 | MSC-06 | Planned | P3 | XGBoost and LightGBM files saved under their libraries' generic suffixes score, and an XGBoost model's missing-value sentinel can be declared. |
 | MSC-07 | Deferred | P3 | ONNX models score in Model Scoring. |
 | MSC-09 | Planned | P3 | Loader errors keep their meaning: a Haute refusal is not retried as corruption and a CatBoost metadata failure is not swallowed. |
+| MSC-10 | Planned | P3 | A model records whether its offset is an exposure or a base premium, so only an exposure scores as a full policy term when a quote leaves it out. |
 
 ## Planned improvements
 
@@ -195,3 +196,25 @@ and no re-download; the dead branch is gone.
 
 **Evidence:** `src/haute/_mlflow_io.py::_load_with_bounded_retry`;
 `src/haute/_mlflow_io.py::catboost_class_labels`.
+
+### MSC-10 — An offset's role is recorded at training
+**Why:** Scoring treats every log-link offset as an exposure: a quote that leaves one out,
+or sends it empty, is priced for a full policy term (an exposure of one). A log-link offset
+can also be a base premium a model multiplies (an existing tariff, or another model's
+prediction); left out, it is silently priced as one instead of refused. Only an additive
+offset is known to be a base premium today, and the documentation asks the analyst to give a
+log-link base premium in every quote.
+
+**Plan:** Training records the offset's role (exposure or base premium) beside its column
+and link, in Haute's model record and the feature contract, and a model trained outside
+Haute declares it the way it declares its offset. Scoring fills only an exposure; a missing
+or empty base premium is refused, whatever its link.
+
+**Acceptance:** A log-link base-premium model refuses a quote without its premium, naming
+it, in the preview, a pipeline, the trace and a deployed request; a log-link exposure model
+still prices one as a full policy term.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/modelling/_algorithms.py::full_term_offset`;
+`src/haute/_model_scorer.py::_full_term_offset`.

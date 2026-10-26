@@ -84,7 +84,15 @@ scores such a model wrongly without one. Before saving, run
 `booster.set_attr(haute_offset="none")` for a model trained without a margin, or
 `booster.set_attr(haute_offset="exposure:log")` for one trained with log-exposure margins
 (`"premium:identity"` for an additive one); a feature contract that declares the offset
-works too. A multi-class or ranking model, and
+works too.
+
+Two things a model file from outside Haute cannot tell Haute, so check them yourself: a
+missing-value marker other than an empty value (an XGBoost model trained with
+`missing=-999` reads -999 in the input as a number, so prepare the input as you did for
+training), and a custom XGBoost objective, which XGBoost saves under the name of a built-in
+one. Compare a few of Haute's prices with your own before relying on them. An EBM saved
+outside Haute is not read: log it with MLflow's sklearn flavour instead, and it scores as
+an MLflow model. A multi-class or ranking model, and
 an XGBoost model saved without feature names, cannot be scored. An EBM file also records the
 `interpret-core` version it was trained with, and loads only under that version; a
 contract for a different loss is refused rather than scored. A category the
@@ -110,7 +118,9 @@ what is wrong, rather than predicting from mismatched data. An exposure offset (
 model applies through a log link) is optional: a quote is priced for a full policy term, so a
 missing exposure column, or a row whose exposure is empty, scores as an exposure of one. An
 exposure of zero or less is still refused. An additive offset, such as a base premium the
-model adds to, is required: a missing column or an empty value fails, naming it. A model with a feature contract also refuses a column whose type
+model adds to, is required: a missing column or an empty value fails, naming it. Haute treats
+every log-link offset as an exposure, so give a base premium applied through a log link in
+every quote: one left out would be priced as a full policy term. A model with a feature contract also refuses a column whose type
 differs from training, such as whole numbers where it was trained on decimals, with the
 same error a deployed pipeline gives. The order the input's columns arrive in does not
 matter.

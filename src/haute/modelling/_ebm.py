@@ -201,7 +201,9 @@ class EBMModel:
         if not line.startswith(_RECORD_PREFIX) or not line.endswith(b"\n"):
             raise ConfigError(
                 f"{Path(path).name} is not an EBM model Haute saved (no "
-                f"{_RECORD_PREFIX.decode()!r} record); retrain it in Haute.",
+                f"{_RECORD_PREFIX.decode()!r} record), and a bare EBM pickle records no "
+                "interpret-core version to check it under. Retrain it in Haute, or log an EBM "
+                "trained elsewhere with MLflow's sklearn flavour, which scores as an MLflow model.",
                 model_path=str(path),
             )
         meta = json.loads(line[len(_RECORD_PREFIX) :])
