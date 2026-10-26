@@ -1181,15 +1181,16 @@ def test_a_lightgbm_model_trained_outside_haute_keeps_its_response_transform(
         )
 
 
-def test_the_preview_notes_an_exposure_it_priced_as_a_full_policy_term(project: Path) -> None:
+def test_the_preview_notes_an_exposure_it_priced_as_a_full_policy_term(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Nothing fails, but a renamed column or a join that empties rows is said, not hidden."""
     from haute.executor import execute_graph
     from tests.conftest import make_edge, make_graph, make_node, make_source_node
 
     model_path = train(project, "catboost", loss="Poisson", iterations=10, depth=2)
 
-    def notes(frame: pl.DataFrame, name: str, columns: list[str] | None = None) -> list[str]:
-        frame.write_parquet(project / name)
+    def notes(name: str, columns: list[str] | None = None) -> list[str]:
         graph = make_graph(
             {
                 "nodes": [
@@ -1218,19 +1219,30 @@ def test_the_preview_notes_an_exposure_it_priced_as_a_full_policy_term(project: 
         return result["ms"].notes
 
     frame = data(seed=29).head(10)
-    assert notes(frame, "full.parquet") == []
-    assert notes(frame.drop("exposure"), "none.parquet") == [
-        "Scored as a full policy term: the input has no 'exposure' column."
-    ]
     blanks = frame.with_columns(
         exposure=pl.when(pl.int_range(pl.len()) < 3).then(None).otherwise(pl.col("exposure"))
     )
+    frame.write_parquet(project / "full.parquet")
+    frame.drop("exposure").write_parquet(project / "none.parquet")
+    blanks.write_parquet(project / "blanks.parquet")
+    blanks.write_parquet(project / "projected.parquet")
+
+    assert notes("full.parquet") == []
+    assert notes("none.parquet") == [
+        "Scored as a full policy term: the input has no 'exposure' column."
+    ]
     counted = ["3 of the 10 rows scored had no 'exposure' and were scored as a full policy term."]
-    assert notes(blanks, "blanks.parquet") == counted
-    # A cached preview says the same, and so does one that shows only the prediction:
-    # the count is what scoring filled, not what the preview displays.
-    assert notes(blanks, "blanks.parquet") == counted
-    assert notes(blanks, "projected.parquet", columns=["pred"]) == counted
+    assert notes("blanks.parquet") == counted
+    # One that shows only the prediction says the same: the count is what scoring
+    # filled, not what the preview displays.
+    assert notes("projected.parquet", columns=["pred"]) == counted
+
+    # A repeat is answered from the preview cache, without scoring again, and keeps it.
+    def no_scoring(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("the repeat scored again")
+
+    monkeypatch.setattr("haute._model_scorer._full_term_offset", no_scoring)
+    assert notes("blanks.parquet") == counted
 
 
 def test_the_note_reads_a_model_score_fed_by_one_table_of_several(project: Path) -> None:
