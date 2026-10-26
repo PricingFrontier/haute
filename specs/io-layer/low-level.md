@@ -144,7 +144,8 @@ platforms, and on Windows with long paths on, nothing is renamed.
    unknown arguments, and missing required provider fields. Arguments are judged by the
    callable a build calls: a configured `read` by the scanner when `snapshot_input_plan`
    prefers it (every argument scanner-accepted, so a scanner-only argument such as
-   Parquet's `hidden_file_prefix` is valid there), otherwise by the mode's own callable. Structural, branch, mode, and
+   Parquet's `hidden_file_prefix` is valid there), otherwise by the mode's own callable;
+   arguments that are not an object are refused by that check before any plan is made. Structural, branch, mode, and
    argument rules are always strict. Presence of required locator values (file/lakehouse
    `path`, Databricks `http_path`/`table`, database locator and `query`) is a separate
    completeness concern: with `require_complete=False` the validator returns those gaps as
@@ -983,7 +984,8 @@ failure sections above are the maintained answers.
 - `tests/test_discovery.py` and `tests/test_path_case_audit.py` cover pipeline discovery,
   deduplication, unreadable files, retained resolver seams, and cross-platform path spelling.
 - `tests/test_input_cache_route.py` covers HTTP build/status/cancel/clear lifecycle and
-  conflict/admission behaviour, and that an admitted-eager explicit build runs through the
+  conflict/admission behaviour, a `read` configuration whose arguments are not an object
+  answered 400 `invalid_input_config`, and that an admitted-eager explicit build runs through the
   worker entry point with its `memory_limited`, `cancelled`, `timed_out`, and
   `completed` outcomes mapped onto the job lifecycle (a fake spawn receives the budget, the
   generation id, and the staging token; a memory-limited outcome reconciles both through

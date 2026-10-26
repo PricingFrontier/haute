@@ -233,13 +233,21 @@ def _link(link: Path, folder: Path) -> None:
         link.symlink_to(folder, target_is_directory=True)
 
 
-@pytest.mark.parametrize("path", ["linked/rates.parquet", "linked/*.parquet"], ids=["file", "glob"])
+@pytest.mark.parametrize(
+    "path",
+    ["linked/rates.parquet", "linked/*.parquet", "*/rates.parquet"],
+    ids=["file", "glob", "expanded"],
+)
 def test_linked_outside_data_refused(project: Path, path: str) -> None:
-    """A link inside the pipeline folder to data outside it does not ship that data."""
+    """A link inside the pipeline folder to data outside it does not ship that data.
+
+    In ``expanded`` the pattern itself lies inside the folder: only a file it matches,
+    reached through the link, lies outside.
+    """
     _rates(project / "data" / "rates.parquet", {"N": 1.1, "S": 1.2})
     _link(project / "rating" / "files" / "data" / "linked", project / "data")
 
-    with pytest.raises(DeployError) as raised:
+    with pytest.raises(DeployError, match="outside the pipeline folder") as raised:
         _deploy(project, make_file_input_config(f"files/data/{path}"))
 
     assert "'rates'" in str(raised.value)

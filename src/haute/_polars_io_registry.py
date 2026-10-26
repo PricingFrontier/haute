@@ -605,10 +605,13 @@ def _validated_data_input(
     if input_type != "database":
         assert mode is not None
         # A configured read is built through the scanner when the scanner accepts every
-        # argument, so its arguments are judged by the callable that build calls.
-        built = snapshot_input_plan(fmt, result)[0] if mode == "read" else mode
+        # argument, so its arguments are judged by the callable that build calls; arguments
+        # that are not an object are left to the mode's own check, which refuses them.
+        arguments = result.get("arguments") or {}
+        planned = mode == "read" and isinstance(arguments, Mapping)
+        built = snapshot_input_plan(fmt, result)[0] if planned else mode
         owner, callable_name = input_callable_key(fmt, built)
-        validate_arguments(fmt, owner, callable_name, result.get("arguments") or {})
+        validate_arguments(fmt, owner, callable_name, arguments)
     return result, gaps
 
 

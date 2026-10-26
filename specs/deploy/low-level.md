@@ -1017,7 +1017,8 @@ what they cover:
 - **`test_deploy_data_location.py`** — a project with its pipeline in `rating/`: a Parquet or
   CSV the quote output reads from the project's `data/` is refused naming the node, the
   path and the folder, and so is one reached through a link (a junction on Windows) inside
-  the folder, as a file or a glob, while one read only off the path to the quote output (a
+  the folder, as a file, a glob under the link, or a glob inside the folder whose match
+  lies through it, while one read only off the path to the quote output (a
   dangling branch, or a source switch's non-live input) is not shipped; a snapshot
   preparation could only reuse (the file edited with no memory cap, or deleted) is refused;
   a direct Parquet folder ships read with its scan's own `hidden_file_prefix`; a CSV in the pipeline folder deploys from an empty cache and an edited one
